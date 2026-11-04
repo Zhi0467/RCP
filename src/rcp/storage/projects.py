@@ -702,6 +702,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 ).rowcount
                 for table in (
                     "browser_turn_status",
+                    "paper_coach_steers",
                     "graph_run_outputs",
                     "graph_run_events",
                     "graph_run_receipts",

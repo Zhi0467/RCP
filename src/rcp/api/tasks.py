@@ -74,6 +74,7 @@ from rcp.runs.steering import (
     chat_steer_action_label,
     chat_steering_state,
     chat_steering_visible,
+    coach_steer_message,
     finish_chat_steer,
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
@@ -275,6 +276,11 @@ def _agent_task_response(
                 cache[key] = _current_chat_session_id(store, record.project_id, *key)
             session_id = cache[key]
         response["current_chat_session_id"] = session_id
+    if record.kind == "paper_coach":
+        response["steers"] = [
+            coach_steer_message(row).model_dump(mode="json")
+            for row in store.paper_coach_steers(record.operation_id)
+        ]
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -637,6 +643,7 @@ def agent_tasks(
     store: StoreDependency,
     background_tasks: BackgroundTasksDependency,
     branch_id: str | None = None,
+    paper_session: str | None = None,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
     target = (
@@ -645,7 +652,11 @@ def agent_tasks(
         else None
     )
     user = get_identity_access(request).acting_user(request)
-    records = store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
+    records = (
+        store.paper_session_tasks(project_id, paper_session)
+        if paper_session
+        else store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
+    )
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     edit_outcomes = store.agent_task_artifact_edit_outcomes(

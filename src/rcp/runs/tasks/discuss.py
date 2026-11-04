@@ -93,7 +93,11 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
-from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
+from rcp.runs.session_artifacts import (
+    publish_session_artifacts,
+    run_edits,
+    sync_session_artifacts,
+)
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     prepare_graph_observation,
@@ -516,7 +520,7 @@ def _settle_discuss_outcome(
         artifacts = []
     artifacts = publish_session_artifacts(
         execution,
-        request,
+        run_edits(execution, request),
         context.artifact_directory,
         context.remote_stage,
         artifacts=artifacts,
@@ -795,10 +799,12 @@ async def stream_discuss_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
-            edit_path = (
-                sync_session_artifacts(execution, request, artifact_directory, remote_stage)
+            edit_paths = (
+                sync_session_artifacts(
+                    execution, run_edits(execution, request), artifact_directory, remote_stage
+                )
                 if execution is not None
-                else None
+                else {}
             )
             artifact_context_pointer = stage_artifact_context(
                 service,
@@ -806,7 +812,7 @@ async def stream_discuss_run(
                 execution,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                edit_path=edit_path,
+                edit_paths=edit_paths,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -823,6 +829,7 @@ async def stream_discuss_run(
                 request.attachments,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
+                edit_paths=edit_paths,
             )
             if artifact_context_pointer is not None:
                 attachment_pointers.append(artifact_context_pointer.pointer)

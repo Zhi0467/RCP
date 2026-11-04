@@ -21,6 +21,7 @@ import type {
   ChatMessage,
   ChatTranscript,
   ProposalCardDecisionResult,
+  RunningList,
   SteerRequest,
   WatcherRecord,
 } from "../core/types";
@@ -327,6 +328,11 @@ export function readAgentCards(
   request: Request = api,
 ): Promise<AgentCardList | null> {
   return loadAgentCards(threadId, request).catch(() => null);
+}
+
+/** The member's runs and project agents across their projects, for the Space thread. */
+export function loadRunningList(request: Request = api): Promise<RunningList> {
+  return request(`${THREADS}/running`);
 }
 
 export type ProposalCardOutcome =

@@ -290,7 +290,7 @@ async def test_launcher_delivers_grant_environment(tmp_path, monkeypatch):
     assert path.startswith("/browser/bin:")
 
 
-@pytest.mark.parametrize("capability", ["paper_suggest", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["scratch_patch"])
 def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
     staged = stage_command_mailbox(
         local_stage=tmp_path,
@@ -346,7 +346,12 @@ def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_p
     turn = profile_for("codex").runtime(runtime).turn(request)
     policy = next(arg for arg in turn.command if arg.startswith("permissions="))
     stage = tomllib.loads(policy)["permissions"]["rcp_paper"]
-    assert stage["filesystem"] == {":root": "read", str(tmp_path / "changes"): "write"}
+    assert stage["filesystem"] == {
+        ":root": "read",
+        str(tmp_path / "changes"): "write",
+        ":tmpdir": "write",
+        ":slash_tmp": "write",
+    }
     assert stage["network"]["enabled"] is True
     staged.cleanup()
 

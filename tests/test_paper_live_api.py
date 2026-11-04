@@ -99,7 +99,7 @@ def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
         assert client.get(prefix + "/tree").json()["files"][0]["path"] == "chapter.md"
         for path, data, content_type, disposition in (
             ("figure.png", b"raster", "image/png", "inline"),
-            ("figure.svg", b"<svg onload='alert(1)'/>", "image/svg+xml", "attachment"),
+            ("figure.svg", b"<svg onload='alert(1)'/>", "image/svg+xml", "inline"),
             ("page.html", b"<script>alert(1)</script>", "text/html", "attachment"),
         ):
             response = client.post(

@@ -183,51 +183,53 @@ export function PaperChanges({
   if (!changes.length) return null;
   return (
     <div className="paper-changes" aria-busy={busy}>
-      <div className={`paper-change-summary${failure?.id === "all" ? " paper-failure" : ""}`}>
-        <span>{changes.length} changes</span>
-        {pending.length > 0 && (
-          <button
-            className="icon-button compact"
-            title="Accept all"
-            aria-label="Accept all"
-            disabled={busy}
-            onClick={() =>
-              void perform("all", async () => {
-                for (const id of new Set(pending.map((change) => change.group_id)))
-                  await onAction(id, "accept");
-              })
-            }
-          >
-            <CheckCheck size={15} />
-          </button>
-        )}
-        {applied.length > 0 && (
-          <button
-            className="icon-button compact"
-            title="Undo all"
-            aria-label="Undo all"
-            disabled={busy}
-            onClick={() =>
-              void perform("all", async () => {
-                for (const id of new Set(applied.map((change) => change.task_id)))
-                  await onUndoAll(id);
-              })
-            }
-          >
-            <Undo2 size={15} />
-          </button>
-        )}
-        {failure?.id === "all" && (
-          <button
-            className="icon-button compact"
-            aria-label={retryAll ? "Retry changes" : "Dismiss changes failure"}
-            title={failure?.error}
-            onClick={() => (retryAll ? void perform("all", retryAll) : setFailure(null))}
-          >
-            {retryAll ? <RotateCcw size={15} /> : <X size={15} />}
-          </button>
-        )}
-      </div>
+      {changes.length > 1 && (
+        <div className={`paper-change-summary${failure?.id === "all" ? " paper-failure" : ""}`}>
+          <span>{changes.length} changes</span>
+          {pending.length > 0 && (
+            <button
+              className="icon-button compact"
+              title="Accept all"
+              aria-label="Accept all"
+              disabled={busy}
+              onClick={() =>
+                void perform("all", async () => {
+                  for (const id of new Set(pending.map((change) => change.group_id)))
+                    await onAction(id, "accept");
+                })
+              }
+            >
+              <CheckCheck size={15} />
+            </button>
+          )}
+          {applied.length > 0 && (
+            <button
+              className="icon-button compact"
+              title="Undo all"
+              aria-label="Undo all"
+              disabled={busy}
+              onClick={() =>
+                void perform("all", async () => {
+                  for (const id of new Set(applied.map((change) => change.task_id)))
+                    await onUndoAll(id);
+                })
+              }
+            >
+              <Undo2 size={15} />
+            </button>
+          )}
+          {failure?.id === "all" && (
+            <button
+              className="icon-button compact"
+              aria-label={retryAll ? "Retry changes" : "Dismiss changes failure"}
+              title={failure?.error}
+              onClick={() => (retryAll ? void perform("all", retryAll) : setFailure(null))}
+            >
+              {retryAll ? <RotateCcw size={15} /> : <X size={15} />}
+            </button>
+          )}
+        </div>
+      )}
       {changes.map((change) => {
         const Icon = icons[change.kind];
         const settled = ["accepted", "rejected", "applied", "undone"].includes(change.state);

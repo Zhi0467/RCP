@@ -54,9 +54,11 @@ remain behind a red icon across reloads until recreated. Restart pauses the edit
 without unmounting it or losing typing. Refused or inaccessible unsent text remains
 downloadable. Leaving with unsent text asks first. An early connection close never
 discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
-transfer. Uploaded binaries deduplicate by content hash. Text SVG and unknown text
-types preview as source; unknown binary types download. Only raster images
-display inline as images. Text HTML previews inside the agent
+transfer. Uploaded binaries deduplicate by content hash. Unknown text types
+preview as source; unknown binary types download. Raster images and SVG display
+inline as images. SVG loads only through `<img>`, where it runs no script, and
+the raw route serves every file under a sandbox policy that allows inline style
+and nothing else. Text HTML previews inside the agent
 artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
@@ -88,6 +90,10 @@ different request cancels the project's older request and shows Retry. Previous
 PDFs remain readable within retention. An uploaded PDF renders in the in-app PDF
 viewer, with Download in the panel header and area comments, but without SyncTeX.
 
+Returning to Paper reopens what the member left there: the open file with its
+cursor and scroll, the Preview or Coach panel, and the coach chat they were in.
+A link opens its file once, so it never overrides a later choice.
+
 Preview selects the one compile root that reaches the open file. A LaTeX file
 with its own `\documentclass` is its own root, so the file the user is in
 compiles even when another root inputs it. If no root or multiple roots qualify,
@@ -96,7 +102,10 @@ LaTeX compiles with SyncTeX; the backend parses it beside the result into each
 tree file's first PDF page and height per source line, bounded in `limits.py`.
 After each compile and when the cursor settles, the PDF scrolls to the open
 file's line, so a section opens at its own page rather than page 1. Typst and a
-LaTeX file outside the map keep the per-root remembered scroll. The preview's actions
+LaTeX file outside the map keep the per-root remembered scroll. The reverse holds
+too: double-clicking a word in a Markdown, plain-text, or mapped LaTeX preview opens
+its source file in the editor with that word selected, found within the lines the
+clicked block renders from. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
@@ -224,8 +233,12 @@ The saved mode normalizes the request's apply-directly choice. Rewrite Compare
 fetches the full proposed text through the member-only plain-text attachment
 route with `nosniff`. From RCP attaches all saved paper or files selected by stable
 id. The coach shares chat's composer, transcript, attachments, comments, and
-editable agent picker. Provider changes announce a fresh session. History and
-New chat sit at the end of Paper's view-switch row without adding a phone row.
+editable agent picker. It renders through the same agent window as chat, so it
+keeps the reader's position, shows live progress, and offers Resume and Retry as
+chat does; only its change cards are its own. Provider changes announce a fresh
+session, and the conversation stays one, as chat's does, after a reload too.
+History and New chat sit at the end of Paper's view-switch row without adding a
+phone row.
 The coach has no direct paper, Patch, approval, or graph-promotion authority.
 [Containment](providers-and-containment.md) remains fixed regardless of transcripts
 or skills.
@@ -582,8 +595,10 @@ cards. Unregistered paths fail. Prompts render this same contract.
 ## Temporary chat inputs versus outputs
 
 Inputs are claimed by a turn and never offered for later download. Project
-artifact and paper references are immutable admission copies. Their sources
-remain unchanged. Outputs come only from the exact turn directory. Keep changes
+artifact and paper references are immutable admission copies. A paper or node
+source remains unchanged; a saved artifact changes only through its tracked file,
+published as its next version
+([owner](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)). Outputs come only from the exact turn directory. Keep changes
 retention, not type or authority. Neither inputs nor outputs are canonical provenance.
 
 ## Glossary presentation

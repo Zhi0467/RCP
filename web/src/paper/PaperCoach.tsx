@@ -1,28 +1,33 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { History, ListChecks, MessageCirclePlus, RotateCcw, Send, Square, Zap } from "lucide-react";
 import {
-  History,
-  ListChecks,
-  LoaderCircle,
-  MessageCirclePlus,
-  RotateCcw,
-  Send,
-  Square,
-  Zap,
-} from "lucide-react";
-import { coachConversation, isActiveTask, reconstructTaskTranscript } from "../agents/agentTasks";
+  coachConversation,
+  coachSteersAfterPrompts,
+  isActiveTask,
+  type TaskTranscriptLine,
+} from "../agents/agentTasks";
+import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
+import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
+import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
+import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
+import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
+import { useAgentWindowLines } from "../agentWindow/useAgentWindowLines";
 import { panelTools } from "./panelTools";
 import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
 import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import { api } from "../core/api";
 import { readPref, writePref } from "../core/prefStorage";
 import { useLayerDismiss } from "../core/useLayerDismiss";
+import { useResource } from "../core/useResource";
+import { paperSessionTasksProfile } from "../agents/taskResources";
 import { returnSends } from "../ui/composerKeys";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import type {
+  AgentQuestion,
   AgentRunConfig,
   AgentTask,
+  ChatMessage,
   ProjectSnapshot,
   StartAgentTask,
   WritingSession,
@@ -31,12 +36,13 @@ import { taskRetryRequestBody } from "../taskRecovery";
 import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import { AgentStatusStrip } from "../chat/AgentStatusStrip";
-import { SentAttachments } from "../chat/SentAttachments";
 import { useComposerAttachments } from "../chat/composerAttachments";
-import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
+import type { AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
+
+const NO_QUESTIONS: AgentQuestion[] = [];
 
 /** A session's agent pick; the coach always runs on its profile's machine, the base. */
 function sessionConfig(session: WritingSession, baseMachine: string): AgentRunConfig {
@@ -46,6 +52,11 @@ function sessionConfig(session: WritingSession, baseMachine: string): AgentRunCo
     reasoning: session.reasoning ?? "medium",
     run_on: baseMachine,
   };
+}
+
+export interface CoachOpening {
+  sessionId: string | null;
+  fresh: boolean;
 }
 
 export function PaperCoach({
@@ -65,6 +76,8 @@ export function PaperCoach({
   setError,
   transcriptRef,
   textarea,
+  opening,
+  onOpening,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
@@ -84,11 +97,13 @@ export function PaperCoach({
   setError: (value: string | null) => void;
   transcriptRef: RefObject<HTMLDivElement | null>;
   textarea: RefObject<HTMLTextAreaElement | null>;
+  opening?: CoachOpening;
+  onOpening: (opening: CoachOpening) => void;
 }) {
   const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [fresh, setFresh] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(opening?.sessionId ?? null);
+  const [fresh, setFresh] = useState(opening?.fresh ?? false);
   // Turns started here, kept from admission until the task list carries them.
   const [started, setStarted] = useState<AgentTask[]>([]);
   // The human's pick for the next turns, kept while the same conversation stays open.
@@ -142,7 +157,7 @@ export function PaperCoach({
     setHistoryOpen(false);
     setError(null);
   };
-  const mergedTasks = useMemo(
+  const knownTasks = useMemo(
     () => [
       ...tasks,
       ...started.filter((turn) => !tasks.some((task) => task.operation_id === turn.operation_id)),
@@ -152,11 +167,23 @@ export function PaperCoach({
   const openedSession =
     sessionId ??
     (!fresh
-      ? (mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
+      ? (knownTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
           ?.native_session_id ??
         sessions[0]?.native_session_id ??
         null)
       : null);
+  const sessionRead = useResource(
+    `${project.id}:paper-coach`,
+    openedSession ? paperSessionTasksProfile(project.id, openedSession) : null,
+  );
+  const mergedTasks = useMemo(() => {
+    const byId = new Map(knownTasks.map((task) => [task.operation_id, task]));
+    for (const task of sessionRead.value ?? []) {
+      const known = byId.get(task.operation_id);
+      if (!known || known.updated_at <= task.updated_at) byId.set(task.operation_id, task);
+    }
+    return [...byId.values()];
+  }, [knownTasks, sessionRead.value]);
   const conversation = coachConversation(
     mergedTasks,
     openedSession,
@@ -164,6 +191,11 @@ export function PaperCoach({
   );
   // The session the next turn resumes: the newest turn's, as in chat.
   const currentSessionId = conversation.sessionId;
+  const openedAt = openedSession ?? currentSessionId;
+  useEffect(
+    () => onOpening(openedAt ? { sessionId: openedAt, fresh: false } : { sessionId: null, fresh }),
+    [openedAt, fresh, onOpening],
+  );
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );
@@ -175,7 +207,30 @@ export function PaperCoach({
         : profileRunConfig(project.agent_profiles.paper_coach);
   const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
-  const transcript = reconstructTaskTranscript(sessionTasks);
+  const steeringTask =
+    activeTask?.steer_visible && activeTask.can_steer && activeTask.steer_turn_id
+      ? activeTask
+      : null;
+  const [receivedSteers, setReceivedSteers] = useState<ChatMessage[]>([]);
+  const steers = useMemo(() => {
+    const byId = new Map(
+      sessionTasks.flatMap((task) => task.steers ?? []).map((steer) => [steer.message_id, steer]),
+    );
+    for (const steer of receivedSteers)
+      if (sessionTasks.some((task) => task.operation_id === steer.operation_id))
+        byId.set(steer.message_id, steer);
+    return [...byId.values()];
+  }, [sessionTasks, receivedSteers]);
+  const lines = useAgentWindowLines({ messages: steers, tasks: sessionTasks });
+  const transcript = useMemo(() => coachSteersAfterPrompts(lines.transcript), [lines.transcript]);
+  const scroll = useRef<AgentWindowScroll>(null);
+  const endpoints = useMemo(
+    () => ({
+      ...projectAgentWindowEndpoints(project.id, `paper-coach:${openedSession ?? ""}`),
+      canCommentArtifacts: false,
+    }),
+    [project.id, openedSession],
+  );
   const agentPicker = useAgentConfigPicker({
     project,
     value: config,
@@ -200,11 +255,40 @@ export function PaperCoach({
       requestAnimationFrame(() => textarea.current?.focus());
     },
   });
+  const steer = async (task: AgentTask) => {
+    if (!text || composer.staged || submitting || !task.steer_turn_id) return;
+    if (!comments.requireComplete()) return;
+    const sent = comments.annotations;
+    scroll.current?.follow();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const receipt = await endpoints.steer(task.operation_id, {
+        message_id: crypto.randomUUID(),
+        attempt: task.attempt,
+        expected_turn_id: task.steer_turn_id,
+        message: text,
+      });
+      setReceivedSteers((current) => [
+        ...current.filter((item) => item.message_id !== receipt.message_id),
+        receipt,
+      ]);
+      setMessage("");
+      skills.reset();
+      comments.clear(sent);
+    } catch (cause) {
+      setError(`Steering receipt could not be read. Nothing was resent. ${String(cause)}`);
+    } finally {
+      setSubmitting(false);
+    }
+  };
   const send = async () => {
+    if (steeringTask) return steer(steeringTask);
     if (!text || composer.unready || activeTask || submitting) return;
     if (!comments.requireComplete()) return;
     const sent = comments.annotations;
     composer.closeMenu();
+    scroll.current?.follow();
     setSubmitting(true);
     setError(null);
     try {
@@ -233,9 +317,7 @@ export function PaperCoach({
   };
   // One UUID per attempt, so a repeated click replays the same retry admission.
   const retryKeys = useRef(new Map<string, string>());
-  const retry = async (task: AgentTask) => {
-    // A paused or interrupted turn continues in its own session; a failed one retries.
-    const action = task.can_resume ? "resume" : "retry";
+  const continueTask = async (task: AgentTask, action: "resume" | "retry") => {
     setSubmitting(true);
     setError(null);
     const attempt = `${task.operation_id}:${task.attempt}:${action}`;
@@ -269,26 +351,6 @@ export function PaperCoach({
       setError(String(cause));
     }
   };
-  const retryButton = (task: AgentTask) => (
-    <button
-      className="icon-button compact paper-reply-retry"
-      aria-label={task.can_resume ? "Resume coach reply" : "Retry coach reply"}
-      title={task.error || undefined}
-      disabled={submitting || !(task.can_retry || task.can_resume)}
-      onClick={() => void retry(task)}
-    >
-      <RotateCcw size={15} />
-    </button>
-  );
-  // A resumed or retried turn continues in a child task; only the newest attempt shows.
-  const continued = new Set(sessionTasks.flatMap((task) => task.parent_operation_id ?? []));
-  // Failed, stopped, or cut off by a restart: each shows its edge and a way forward.
-  const stuck = (task: AgentTask | undefined): task is AgentTask =>
-    !!task &&
-    !continued.has(task.operation_id) &&
-    !isActiveTask(task) &&
-    (task.failed || task.can_resume || task.can_retry);
-  const renderedTasks = new Set<string>();
   const cards = (taskId: string) => (
     <PaperChanges
       apiBase={apiBase}
@@ -298,6 +360,23 @@ export function PaperCoach({
       onLocate={onLocate}
     />
   );
+  // Each turn's cards follow its last reply.
+  const lastReplies = new Map(
+    transcript.filter((line) => line.role === "agent").map((line) => [line.taskId, line.lineId]),
+  );
+  const replyTask = (line: TaskTranscriptLine) =>
+    lastReplies.get(line.taskId) === line.lineId
+      ? sessionTasks.find((task) => task.operation_id === line.taskId)
+      : undefined;
+  const artifacts = useAgentWindowArtifacts({
+    endpoints,
+    chatId: endpoints.scopeKey,
+    relatedTasks: sessionTasks,
+    transcript,
+    comments,
+    onRefreshTask: endpoints.loadTask,
+    setSubmitError: setError,
+  });
   return (
     <div className="chat-dock paper-coach" data-mode="discuss">
       {panelTools(
@@ -354,80 +433,53 @@ export function PaperCoach({
           ))}
         </div>
       )}
-      <div
-        className="node-chat-lines paper-coach-transcript"
-        aria-live="polite"
-        ref={transcriptRef}
+      <AgentWindowLines
+        scrollKey={endpoints.scopeKey}
+        linesRef={transcriptRef}
+        transcript={transcript}
+        questions={NO_QUESTIONS}
+        scroll={scroll}
       >
-        {transcript
-          // The red edge and its icon carry failures and pauses; a continuation repeats
-          // its parent's message, which already shows once.
-          .filter(
-            (line) =>
-              line.role !== "error" &&
-              line.role !== "meta" &&
-              !(
-                line.role === "human" &&
-                sessionTasks.find((task) => task.operation_id === line.taskId)?.parent_operation_id
-              ),
-          )
-          .map((line, index, lines) => {
-            const task = sessionTasks.find((item) => item.operation_id === line.taskId);
-            const lastAnswer =
-              line.role === "agent" &&
-              !lines
-                .slice(index + 1)
-                .some((next) => next.taskId === line.taskId && next.role === "agent");
-            if (lastAnswer) renderedTasks.add(line.taskId);
-            return (
-              <div
-                className={`node-chat-line ${line.role}${lastAnswer && stuck(task) ? " paper-failure" : ""}`}
-                key={line.lineId}
-              >
-                {line.role === "agent" ? (
-                  <>
-                    <div className="chat-markdown chat-annotatable-answer">
-                      <MarkdownAnswer text={line.text} />
-                    </div>
-                    <AnswerCommentButton comments={comments} />
-                  </>
-                ) : (
-                  <div className="chat-human-message">
-                    <span className="node-chat-text">{line.text}</span>
-                    <SentAttachments
-                      attachments={line.attachments}
-                      projectId={project.id}
-                      now={Date.now()}
-                    />
+        <AgentWindowTranscript
+          transcript={transcript}
+          tasks={sessionTasks}
+          questions={NO_QUESTIONS}
+          endpoints={endpoints}
+          artifacts={artifacts}
+          comments={comments}
+          compactionByLine={lines.compactionByLine}
+          continuedTaskIds={lines.continuedTaskIds}
+          latestGraphReceiptLineIds={lines.latestGraphReceiptLineIds}
+          showModes={false}
+          submitting={submitting}
+          onResumeTask={(task) => void continueTask(task, "resume")}
+          onRetryTask={(task) => void continueTask(task, "retry")}
+          lineTrail={(line) => {
+            const task = replyTask(line);
+            return task && cards(task.operation_id);
+          }}
+          footer={
+            <>
+              {sessionTasks
+                .filter((task) => !lastReplies.has(task.operation_id))
+                .map((task) => (
+                  <div key={task.operation_id} className="node-chat-line agent">
+                    {cards(task.operation_id)}
                   </div>
-                )}
-                {lastAnswer && stuck(task) && retryButton(task)}
-                {lastAnswer && cards(line.taskId)}
-              </div>
-            );
-          })}
-        {sessionTasks
-          .filter((task) => !renderedTasks.has(task.operation_id))
-          .map((task) => (
-            <div
-              key={task.operation_id}
-              className={`node-chat-line agent${stuck(task) ? " paper-failure bare" : ""}`}
-            >
-              {stuck(task) && retryButton(task)}
-              {cards(task.operation_id)}
-            </div>
-          ))}
-        {!sessionTasks.length && !fresh && (
-          <PaperChanges
-            apiBase={apiBase}
-            changes={changes}
-            onAction={onChangeAction}
-            onUndoAll={onUndoAll}
-            onLocate={onLocate}
-          />
-        )}
-        {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
-      </div>
+                ))}
+              {!sessionTasks.length && !fresh && (
+                <PaperChanges
+                  apiBase={apiBase}
+                  changes={changes}
+                  onAction={onChangeAction}
+                  onUndoAll={onUndoAll}
+                  onLocate={onLocate}
+                />
+              )}
+            </>
+          }
+        />
+      </AgentWindowLines>
       <ChatComposer
         hint={
           <ProviderSwitchHint
@@ -485,33 +537,44 @@ export function PaperCoach({
           </>
         }
         actions={
-          activeTask?.can_pause ? (
+          <>
+            {activeTask?.can_pause && (
+              <button
+                className="icon-button"
+                aria-label="Stop coach"
+                onClick={() => void stop(activeTask)}
+              >
+                <Square size={14} />
+              </button>
+            )}
             <button
               className="icon-button primary chat-send-button"
-              aria-label="Stop coach"
-              title={error || undefined}
-              onClick={() => void stop(activeTask)}
-            >
-              <Square size={14} />
-            </button>
-          ) : (
-            <button
-              className="icon-button primary chat-send-button"
-              aria-label={error ? "Retry message" : "Send coach message"}
-              title={error || undefined}
+              aria-label={
+                steeringTask
+                  ? steeringTask.steer_action_label
+                  : error
+                    ? "Retry message"
+                    : "Send coach message"
+              }
+              title={
+                (activeTask && !steeringTask ? activeTask.steer_unavailable_reason : error) ||
+                undefined
+              }
               disabled={
                 !text ||
                 !comments.complete ||
-                composer.unready ||
-                Boolean(activeTask) ||
                 submitting ||
-                !launchProviderReady(project, config, false, Boolean(currentSessionId))
+                (steeringTask
+                  ? composer.staged
+                  : composer.unready ||
+                    Boolean(activeTask) ||
+                    !launchProviderReady(project, config, false, Boolean(currentSessionId)))
               }
               onClick={() => void send()}
             >
-              {error ? <RotateCcw size={16} /> : <Send size={16} />}
+              {error && !steeringTask ? <RotateCcw size={16} /> : <Send size={16} />}
             </button>
-          )
+          </>
         }
       />
       {agentPicker.panel}

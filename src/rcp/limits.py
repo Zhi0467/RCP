@@ -4,6 +4,7 @@ from datetime import timedelta
 
 # Operational storage retention and query bounds.
 SPACE_RUNS_COMPLETED_TTL = timedelta(days=7)
+SPACE_RUNNING_MAX_ROWS = 50
 LOOP_OVERLAP_MAX_ROWS = 10
 LOOP_OVERLAP_MAX_BYTES = 12 * 1024
 EPISODE_TIMELINE_EVENT_LIMIT = 400

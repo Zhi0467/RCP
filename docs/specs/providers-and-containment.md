@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Reads a snapshot of the saved paper; writes only its task's changes folder; no graph mutation or direct paper-write authority. Graph history reads use the protected command client. |
+| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, which RCP reviews or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
 
@@ -438,9 +438,9 @@ permission profile so the same denial applies in exec and app-server; the
 app-server checks the activated profile before starting a turn.
 
 Paper coach uses the `rcp_paper` permission profile in exec and app-server,
-for fresh and resumed sessions. Its shell remains enabled to read the saved
-snapshot and write proposed files. The only writable root is the turn's changes
-folder: the workspace and temporary directories receive no implicit write grant.
+for fresh and resumed sessions. Its shell runs any command, such as a figure
+converter. Its writable roots are the turn's changes folder and the temporary
+directories; the workspace receives no write grant.
 App-server verifies that this profile is active before delivering the turn.
 
 ### Browser grants
@@ -498,8 +498,8 @@ admitted through `--add-dir` for ordinary Discuss chats.
 
 Every Claude launch names its tools with `--tools`, from one code-defined set
 per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
-`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Paper coach
-gets the file tools, `Bash`, `WebFetch` and `WebSearch`. Session summaries get
+`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`; so does the
+Paper coach. Session summaries get
 none. `--tools` decides which tools exist; the permission rules above decide
 which run unprompted. The local process also drops a hosting Claude Code
 session's identity and channel variables, named in `ClaudeAuthentication`.
@@ -511,9 +511,9 @@ system prompt and Artifact tools to a turn started from inside it.
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
 `Edit` rules confine all file-writing tools, including `Write`, to that folder.
-General shell access is denied. Only the protected graph-history client receives
-a narrow `Bash` allowance when its broker gate is present. WebSearch and WebFetch
-remain available, subject to the resolved hidden-read policy.
+`Bash` is allowed, as for Work, and as for Work the `Edit` rules do not bound it.
+WebSearch and WebFetch remain available, subject to the resolved hidden-read
+policy.
 
 **Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -566,10 +566,9 @@ matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
 path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages, including the paper coach's, are
-outside Git. The coach's native read tools remain available, and its edit rules
-allow only its task's changes folder. General shell access is denied; only the
-protected graph-history client receives a narrow allowance when its broker gate
-is present. Discuss and ingestion may edit only their workspace and their own
+outside Git. The coach's native read tools remain available, its edit rules
+allow only its task's changes folder, and its shell is allowed, as Work's is.
+Discuss and ingestion may edit only their workspace and their own
 write folders. Discuss and ingestion deny general shell commands, allowing only
 `python3 -I -S <staged-client-path> *` when their broker gate names that client.
 Discuss also allows `playwright-cli *` and the artifact preview command when the
@@ -987,7 +986,8 @@ state workspace.
 
 ### Live human steering
 
-Steering addresses RCP's live process for one exact ordinary Discuss/Work attempt.
+Steering addresses RCP's live process for one exact ordinary Discuss/Work or
+Paper coach attempt.
 It cannot select a newer attempt, start work or target an episode worker. Agent
 mail uses its own channel. Input retains the attempt's mode, scope, target and
 budget; [chat records](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)

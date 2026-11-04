@@ -9,6 +9,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { AskedTime } from "../chat/QuestionCard";
 import { ApiError } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
@@ -52,6 +53,7 @@ export function ApprovalCardShell({
   state,
   stateLabel,
   project,
+  askedAt,
   details,
   error,
   busy,
@@ -62,6 +64,7 @@ export function ApprovalCardShell({
 }: {
   icon: LucideIcon;
   title: string;
+  askedAt: string;
   /** "pending" while open, else the settled outcome. */
   state: string;
   stateLabel: string;
@@ -102,6 +105,7 @@ export function ApprovalCardShell({
         <span className="question-state">
           {pending ? stateLabel : stateLabel.charAt(0).toUpperCase() + stateLabel.slice(1)}
         </span>
+        <AskedTime at={askedAt} />
       </div>
       {open && <div className="approval-details">{details}</div>}
       {error && (
@@ -195,6 +199,7 @@ export function AskedApprovalCard({
       state={state}
       stateLabel={pending ? "Needs you" : answered ? answer : "Expired"}
       project={projectName ? { id: card.action.project_id, name: projectName } : null}
+      askedAt={question.created_at}
       details={
         <>
           {question.question && <p>{question.question}</p>}
@@ -282,6 +287,7 @@ export function ProposalApprovalCard({
       state={decided ?? "pending"}
       stateLabel={decided ?? "Needs you"}
       project={showProject ? { id: view.project_id, name: view.project_name } : null}
+      askedAt={view.turn_created_at}
       details={
         <>
           <dl className="approval-prose">

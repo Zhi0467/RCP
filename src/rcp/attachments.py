@@ -651,8 +651,13 @@ def stage_turn_attachments(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
+    edit_paths: dict[str, str],
 ) -> tuple[list[dict[str, object]], list[Path]]:
-    """Return the admitted batch's pointers and attachment read directories."""
+    """Return the admitted batch's pointers and attachment read directories.
+
+    An attached saved artifact whose tracked file turn start wrote, by artifact id in
+    `edit_paths`, points the agent at that file to change in place.
+    """
     if bool(batch_id) != bool(attachments):
         raise ValueError("The chat task has incomplete attachment batch metadata.")
     pointers = (
@@ -662,6 +667,12 @@ def stage_turn_attachments(
         if batch_id
         else []
     )
+    for pointer, attachment in zip(pointers, attachments, strict=True):
+        reference = attachment.reference
+        if reference is not None and reference.kind == "artifact":
+            edit_path = edit_paths.get(reference.source_id)
+            if edit_path is not None:
+                pointer["edit_path"] = edit_path
     return pointers, list(dict.fromkeys(Path(str(item["path"])).parent for item in pointers))
 
 

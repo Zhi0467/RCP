@@ -134,6 +134,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "351ef3ffe0b83ed572a128b7b4cc5e4a05ac0b37",
         "08e8c24de3c49836f723cf3672de1490f7dd1f889808109a1302cf1a8ce8d7cd",
     ),
+    "pre-coach-steers-v41-911af57": (
+        "911af57787c52ff37f29255df44b95dea912a690",
+        "cc2a7176f6b84e92625bc357a9650006d512d94763fb337acdd630f0c45baf94",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

@@ -84,7 +84,12 @@ test("card refusals have a visible edge and dismiss; transient failures retry", 
 });
 
 test("summary refusals expose one dismiss action and a red edge", async (t) => {
-  const { page, context } = await open(t, { cards: [{ ...card, state: "applied" }] });
+  const { page, context } = await open(t, {
+    cards: [
+      { ...card, state: "applied" },
+      { ...card, change_id: "c2", group_id: "g2", state: "applied" },
+    ],
+  });
   await context.route("**/changes/undo-all", (route) => route.fulfill({ status: 409, json: {} }));
   await coach(page);
   await page.getByRole("button", { name: "Undo all", exact: true }).click();
@@ -104,8 +109,17 @@ test("outdated cards can be rejected", async (t) => {
   assert.ok(posts.some((post) => post.path.endsWith("/g1/reject")));
 });
 
-test("accepted cards offer task-level undo", async (t) => {
-  const { page, posts } = await open(t, { cards: [{ ...card, state: "accepted" }] });
+test("one change undoes on its own row; two or more add a task-level undo", async (t) => {
+  const one = await open(t, { cards: [{ ...card, state: "accepted" }] });
+  await coach(one.page);
+  await one.page.getByRole("button", { name: "Undo change", exact: true }).waitFor();
+  assert.equal(await one.page.locator(".paper-change-summary").count(), 0);
+  const { page, posts } = await open(t, {
+    cards: [
+      { ...card, state: "accepted" },
+      { ...card, change_id: "c2", group_id: "g2", state: "accepted" },
+    ],
+  });
   await coach(page);
   const response = page.waitForResponse((response) => response.url().endsWith("/undo-all"));
   await page.getByRole("button", { name: "Undo all", exact: true }).click();
@@ -199,7 +213,7 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
             maxBytes: 9,
             format: "markdown",
             changes: [],
-            focusChange: null,
+            focus: null,
             onDecide: () => {},
           })
         : null;
@@ -298,7 +312,7 @@ test("on a touch phone Return writes a new line and a tap outside closes chat hi
   assert.equal(await message.inputValue(), "one\ntwo");
   await page.getByRole("button", { name: "Coach chat history" }).tap();
   await page.locator(".paper-session-list").waitFor();
-  await page.locator(".paper-coach-transcript").tap();
+  await page.locator(".paper-coach .node-chat-lines").tap();
   await page.locator(".paper-session-list").waitFor({ state: "detached" });
 });
 
@@ -422,7 +436,7 @@ test("a sent coach turn shows its files and the session's context", async (t) =>
     });
     await coach(page);
     await page
-      .locator(".paper-coach .chat-human-message .chat-input-attachment", { hasText: "notes.md" })
+      .locator(".paper-coach .node-chat-line.human .chat-input-attachment", { hasText: "notes.md" })
       .waitFor();
     await page.locator(".paper-panel-tools").getByRole("button", { name: "Context" }).waitFor();
     await fits(page);
@@ -570,4 +584,303 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
   await post("Third words");
   await page.getByText("Third words").first().waitFor();
   assert.equal(await comment.inputValue(), "half written");
+});
+
+const running = {
+  ...turn,
+  operation_id: "t2",
+  request: { message: "Check the claims", session_id: "s1" },
+  result: null,
+  active: true,
+  can_pause: true,
+  steer_visible: true,
+  can_steer: true,
+  steer_turn_id: "turn-1",
+  steer_action_label: "Steer",
+  steer_unavailable_reason: null,
+  steers: [],
+};
+const steerMessage = (body, operation_id) => ({
+  message_id: body.message_id,
+  operation_id,
+  role: "user",
+  text: body.message,
+  timestamp: new Date(Date.now() + 1000).toISOString(),
+  trigger: "human",
+  attachments: [],
+  steering: { attempt: 1, turn_id: "turn-1", status: "delivered", label: "Delivered" },
+});
+
+test("a running coach turn takes a steer from the composer beside Stop", async (t) => {
+  const steers = [];
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}, ${JSON.stringify(running)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body, ...rest) => {
+        if (path !== "/api/projects/p/tasks/t2/steer") return respond(path, method, body, ...rest);
+        steers.push(body);
+        return { json: steerMessage(body, "t2") };
+      };
+    },
+  });
+  await coach(page);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  await page.getByRole("textbox", { name: "Message" }).fill("Focus on section 2.");
+  await page.getByRole("button", { name: "Steer", exact: true }).click();
+  const steered = page.locator(".paper-coach .node-chat-line.human", {
+    has: page.locator(".chat-steering-receipt"),
+  });
+  await steered.waitFor();
+  assert.equal(steers.length, 1);
+  const { message_id, ...request } = steers[0];
+  assert.match(message_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(request, {
+    attempt: 1,
+    expected_turn_id: "turn-1",
+    message: "Focus on section 2.",
+  });
+  assert.equal(await steered.locator(".node-chat-text").textContent(), "Focus on section 2.");
+  assert.equal(await steered.evaluate((line) => line.previousElementSibling.dataset.taskId), "t2");
+  assert.equal(await page.getByRole("textbox", { name: "Message" }).inputValue(), "");
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  await fits(page);
+  assert.deepEqual(errors, []);
+});
+
+test("a settled turn's steers sit between its prompt and reply; an unsteerable turn disables Send", async (t) => {
+  const steered = {
+    ...turn,
+    steers: [steerMessage({ message_id: "m1", message: "Shorter, please." }, "t1")],
+  };
+  const unsteerable = {
+    ...running,
+    can_steer: false,
+    steer_turn_id: null,
+    steer_unavailable_reason: "This runtime cannot be steered.",
+  };
+  const { page } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(steered)}, ${JSON.stringify(unsteerable)}], started: [] };`,
+  });
+  await coach(page);
+  const lines = page.locator(".paper-coach .node-chat-line[data-task-id=t1]");
+  await lines.nth(2).waitFor();
+  assert.deepEqual(
+    await lines.evaluateAll((items) =>
+      items.map((line) => [
+        line.classList.contains("human"),
+        Boolean(line.querySelector(".chat-steering-receipt")),
+      ]),
+    ),
+    [
+      [true, false],
+      [true, true],
+      [false, false],
+    ],
+  );
+  const send = page.getByRole("button", { name: "Send coach message" });
+  await page.getByRole("textbox", { name: "Message" }).fill("More.");
+  assert.equal(await send.isDisabled(), true);
+  assert.equal(await send.getAttribute("title"), unsteerable.steer_unavailable_reason);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+});
+
+test("a coach session's turns show though the project task list no longer carries them", async (t) => {
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path === "/api/projects/p/tasks") return { json: [running, turn] };
+        if (path.endsWith("/sessions"))
+          return {
+            json: [
+              {
+                provider: "codex",
+                native_session_id: "s1",
+                execution_machine: "local",
+                project_id: "p",
+                model: "",
+                reasoning: "medium",
+                created_at: turn.created_at,
+                last_resumed_at: turn.created_at,
+              },
+            ],
+          };
+        return respond(path, ...rest);
+      };
+    },
+  });
+  await coach(page);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  assert.deepEqual(await prompts.allTextContents(), [
+    "Review the introduction",
+    "Check the claims",
+  ]);
+  assert.deepEqual(errors, []);
+});
+
+test("the coach reopens where the reader left it, as every agent window does", async (t) => {
+  const turns = Array.from({ length: 12 }, (_, index) => ({
+    ...turn,
+    operation_id: `t${index}`,
+    request: { message: `Question ${index}`, session_id: "s1" },
+    result: { messages: [`Answer ${index}. `.repeat(40)] },
+    created_at: new Date(Date.UTC(2026, 10, 3, 10, index)).toISOString(),
+    updated_at: new Date(Date.UTC(2026, 10, 3, 10, index)).toISOString(),
+  }));
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: ${JSON.stringify(turns)}, started: [] };`,
+  });
+  const lines = page.locator(".paper-coach .node-chat-lines");
+  await coach(page);
+  await page.waitForFunction(() => {
+    const element = document.querySelector(".paper-coach .node-chat-lines");
+    return element && element.scrollTop > 0;
+  });
+  assert.ok(
+    await lines.evaluate(
+      (element) => element.scrollHeight - element.clientHeight - element.scrollTop < 2,
+    ),
+  );
+  await lines.evaluate((element) => {
+    element.scrollTop = 200;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await coach(page);
+  await page.waitForFunction(
+    () => document.querySelector(".paper-coach .node-chat-lines")?.scrollTop === 200,
+  );
+  assert.deepEqual(errors, []);
+});
+
+test("returning to Paper reopens the coach chat picked from history", async (t) => {
+  const newer = {
+    ...turn,
+    operation_id: "t2",
+    native_session_id: "s2",
+    request: { message: "Tighten the abstract", session_id: null },
+  };
+  const session = (id, title) => ({
+    provider: "codex",
+    native_session_id: id,
+    execution_machine: "local",
+    title,
+    model: "",
+    created_at: turn.created_at,
+  });
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: ${JSON.stringify([newer, turn])}, started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions")
+          ? { json: [session("s2", "Abstract"), session("s1", "Introduction")] }
+          : respond(path, ...rest);
+    },
+  });
+  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  await coach(page);
+  await page.getByText("Tighten the abstract").waitFor();
+  await page.getByRole("button", { name: "Coach chat history" }).click();
+  await page.getByRole("button", { name: "Introduction", exact: true }).click();
+  await page.getByText("Review the introduction").waitFor();
+  await page.evaluate(() => window.paperTab.leave());
+  await page.evaluate(() => window.paperTab.back());
+  await page.getByText("Review the introduction").waitFor();
+  assert.deepEqual(await prompts.allTextContents(), ["Review the introduction"]);
+  assert.deepEqual(errors, []);
+});
+
+test("a failed coach turn shows the shared error line, whose Retry starts the turn again", async (t) => {
+  const failed = {
+    ...turn,
+    operation_id: "t9",
+    result: null,
+    failed: true,
+    settled: true,
+    error: "The provider quit.",
+    can_retry: true,
+    can_resume: false,
+  };
+  const retries = [];
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(failed)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body, ...rest) => {
+        if (path !== "/api/projects/p/tasks/t9/retry") return respond(path, method, body, ...rest);
+        retries.push(body);
+        return { json: { ...turn, operation_id: "t10", parent_operation_id: "t9", active: true } };
+      };
+    },
+  });
+  await coach(page);
+  const line = page.locator(".paper-coach .node-chat-line.error");
+  assert.equal(await line.locator(".node-chat-text").textContent(), failed.error);
+  await Promise.all([
+    page.waitForResponse(/\/tasks\/t9\/retry$/),
+    line.getByRole("button", { name: "Retry" }).click(),
+  ]);
+  assert.equal(retries.length, 1);
+  await fits(page);
+  assert.deepEqual(errors, []);
+});
+
+test("a coach turn's artifact offers no comment, since a coach turn carries no artifact context", async (t) => {
+  const plot = {
+    artifact_id: "plot",
+    name: "plot.png",
+    view: "image",
+    media_type: "image/png",
+    size_bytes: 64,
+    available: true,
+    unavailable_reason: null,
+    can_open: true,
+    can_download: true,
+    can_keep: true,
+    can_discuss: true,
+  };
+  const drawn = {
+    ...turn,
+    result: { messages: ["![plot](/scratch/turns/t1/artifacts/plot.png)"], artifacts: [plot] },
+  };
+  const state = {
+    pin_branch_id: null,
+    pin_branch_name: "main",
+    can_pin: false,
+    pinned_branch_ids: [],
+    artifact_id: "plot",
+    name: "plot.png",
+    media_type: "image/png",
+    view: "image",
+    supplier: "turn",
+    current_version: "v1",
+    version_number: 1,
+    can_undo: false,
+    live: null,
+    editing_operation_id: null,
+    can_comment: true,
+  };
+  let served;
+  const stateServed = new Promise((resolve) => (served = resolve));
+  const { page } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(drawn)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path !== "/api/projects/p/artifacts/plot/state") return respond(path, ...rest);
+        served();
+        return { json: state };
+      };
+    },
+  });
+  await coach(page);
+  await page.locator(".paper-coach .chat-inline-artifact").waitFor();
+  await stateServed;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  const comment = page.getByRole("button", { name: /^(Comment on a part|Done commenting)$/ });
+  assert.equal(await comment.count(), 0);
 });

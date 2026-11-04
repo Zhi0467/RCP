@@ -285,7 +285,7 @@ _CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
     "work_auto": _CLAUDE_AGENT_TOOLS,
     "orchestrate": _CLAUDE_AGENT_TOOLS,
     "scratch_patch": _CLAUDE_AGENT_TOOLS,
-    "paper_suggest": ("Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"),
+    "paper_suggest": _CLAUDE_AGENT_TOOLS,
     "session_summary": (),
 }
 
@@ -595,6 +595,7 @@ class ClaudeProfile(ProviderProfile):
                     "--settings",
                     json.dumps(settings, separators=(",", ":")),
                     "--allowedTools",
+                    "Bash",
                     "Read",
                     "Glob",
                     "Grep",
@@ -823,6 +824,7 @@ def _claude_paper_settings(
             "disableAutoMode": "disable",
             "disableBypassPermissionsMode": "disable",
             "allow": [
+                "Bash",
                 "Read",
                 "Glob",
                 "Grep",

@@ -487,3 +487,102 @@ def test_refused_queue_row_never_starts_and_stops_blocking(tmp_path: Path) -> No
     ]
     deferred = store.defer_agent_thread_queue_item(waiting.queue_id)
     assert store.defer_agent_thread_queue_item(waiting.queue_id) == deferred
+
+
+def _insert_watcher(
+    store: AppStore,
+    watcher_id: str,
+    *,
+    project_id: str,
+    chat_id: str,
+    episode_id: str | None = None,
+    status: str = "active",
+) -> None:
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
+            "origin_task_kind, chat_id, episode_id, execution_host, check_command, "
+            "log_path, cwd, continuation_json, status, created_at) "
+            "VALUES (?, ?, 'origin', 'project_chat', ?, ?, '', 'true', '/tmp/log', "
+            "'/tmp', '{}', ?, ?)",
+            (watcher_id, project_id, chat_id, episode_id, status, store.now()),
+        )
+
+
+def test_thread_projection_reports_failure_and_its_own_live_watchers(tmp_path: Path) -> None:
+    """A failed latest turn is its own state until a retry starts; only a live watcher that the
+    thread itself owns counts as watching it."""
+    from rcp.runs.agent_threads import thread_projections
+    from tests.test_storage import _task_record
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.upsert_project(_project("project"))
+    [thread] = [
+        row
+        for row in store.ensure_agent_threads("member", ["project"], default_names=("Pip",))
+        if row.kind == "project"
+    ]
+
+    def projected() -> dict:
+        return thread_projections(store, [thread])[0]
+
+    idle = projected()
+    assert (idle["live_state"], idle["live_label"], idle["watching"]) == ("idle", None, 0)
+    for watcher_id, episode_id, status in [
+        ("own", None, "active"),
+        ("degraded", None, "degraded"),
+        ("settled", None, "completed"),
+        ("episode", "episode", "active"),
+    ]:
+        _insert_watcher(
+            store,
+            watcher_id,
+            project_id="project",
+            chat_id=thread.thread_id,
+            episode_id=episode_id,
+            status=status,
+        )
+    watched = projected()
+    assert (watched["live_state"], watched["watching"]) == ("idle", 2)
+    assert watched["live_label"]
+
+    labels = {}
+    for operation_id, failure_kind, error in [
+        ("auth", "provider_auth", "You've hit your limit"),
+        ("auth-plain", "provider_auth", "boom"),
+        ("limit", None, "You've hit your limit"),
+        ("other", None, "boom"),
+    ]:
+        now = store.now()
+        store.create_agent_task(
+            _task_record(
+                now,
+                operation_id=operation_id,
+                project_id="project",
+                kind="project_chat",
+                request={"chat_id": thread.thread_id},
+            )
+        )
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='failed', finished_at=?, error=?, failure_kind=? "
+                "WHERE operation_id=?",
+                (now, error, failure_kind, operation_id),
+            )
+        row = projected()
+        assert (row["live_state"], row["latest_operation_id"]) == ("failed", operation_id)
+        labels[operation_id] = row["live_label"]
+    assert labels["auth"] == labels["auth-plain"]
+    assert len({labels["auth"], labels["limit"], labels["other"], watched["live_label"]}) == 4
+
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="retry",
+            project_id="project",
+            kind="project_chat",
+            parent_operation_id="other",
+            request={"chat_id": thread.thread_id},
+        )
+    )
+    assert projected()["live_state"] == "queued"

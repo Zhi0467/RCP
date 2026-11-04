@@ -148,6 +148,50 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
         assert payload["debug_receipts"]
 
 
+def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(manifest, tmp_path):
+    from rcp.storage import AgentTaskRecord
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.services.store
+    project_id = app.state.default_project_id
+
+    def seed(kind, minute, status="succeeded", **fields):
+        at = f"2026-11-03T10:{minute:02d}:00+00:00"
+        return store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=str(uuid.uuid4()),
+                project_id=project_id,
+                kind=kind,
+                status=status,
+                created_at=at,
+                updated_at=at,
+                status_message=status,
+                **fields,
+            )
+        ).operation_id
+
+    answered = seed("paper_coach", 0, request={"message": "Review"}, native_session_id="s1")
+    running = seed("paper_coach", 1, "running", request={"message": "Fix", "session_id": "s1"})
+    seed("paper_coach", 2, request={"message": "Other"}, native_session_id="s2")
+    switched = seed(
+        "paper_coach",
+        3,
+        request={"message": "Switch", "previous_session_id": "s1"},
+        native_session_id="s3",
+    )
+    after = seed("paper_coach", 4, request={"message": "More", "session_id": "s3"})
+    for minute in range(5, 30):
+        seed("refresh", minute, request={})
+    client = signed_in_client(app)
+    prefix = f"/api/projects/{project_id}/tasks"
+    assert {task["kind"] for task in client.get(prefix).json()} == {"refresh"}
+    session = client.get(prefix, params={"paper_session": "s1"})
+    assert session.status_code == 200
+    assert [task["operation_id"] for task in session.json()] == [running, answered]
+    conversation = client.get(prefix, params={"paper_session": "s3"}).json()
+    assert [task["operation_id"] for task in conversation] == [after, switched, running, answered]
+
+
 def test_coach_admission_claims_inputs_only_after_scope_validation(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())

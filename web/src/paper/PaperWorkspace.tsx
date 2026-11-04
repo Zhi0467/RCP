@@ -25,21 +25,28 @@ import {
   unsentPaperDocuments,
   type PaperDocument,
 } from "./paperDocuments";
-import { carryPaperSelection, PaperEditor } from "./PaperEditor";
+import { carryPaperSelection, changeFocus, PaperEditor, type PaperFocus } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
 import { usePaperSplit } from "./usePaperSplit";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
-import { PaperCoach } from "./PaperCoach";
+import { PaperCoach, type CoachOpening } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
-import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
-import { resolvePreviewSelection, type PreviewDirectComment } from "./previewComments";
+import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
+import {
+  previewSourceSpot,
+  resolvePreviewSelection,
+  type PreviewDirectComment,
+} from "./previewComments";
 import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
 
-/** Route snapshots retain selection only; IndexedDB owns all document content. */
+/** Route snapshots retain where the member was; IndexedDB owns all document content. */
 export interface PaperEditorState {
   fileId?: string;
+  view?: "write" | "preview" | "coach";
+  right?: "preview" | "coach";
+  coach?: CoachOpening;
 }
 interface Props {
   apiBase: string;
@@ -51,6 +58,7 @@ interface Props {
   onStartTask: StartAgentTask;
 }
 const FOLD_KEY = "rcp:paper-files-folded";
+const openedLinks = new WeakSet<object>();
 export function PaperWorkspace({
   apiBase,
   project,
@@ -72,8 +80,7 @@ export function PaperWorkspace({
   // created. A listed file or a link records the current revision, a create its receipt's.
   const [selection, setSelection] = useState<{ id: string | null; existsAt: number }>(() => ({
     id:
-      requestedFileId?.fileId ??
-      new URLSearchParams(window.location.hash.split("?")[1]).get("paper_file") ??
+      (requestedFileId && !openedLinks.has(requestedFileId) ? requestedFileId.fileId : null) ??
       editorState?.fileId ??
       null,
     existsAt: -1,
@@ -86,12 +93,24 @@ export function PaperWorkspace({
     [],
   );
   useEffect(() => {
-    if (requestedFileId?.fileId) setSelected(requestedFileId.fileId);
+    if (!requestedFileId || openedLinks.has(requestedFileId)) return;
+    openedLinks.add(requestedFileId);
+    if (requestedFileId.fileId) setSelected(requestedFileId.fileId);
   }, [requestedFileId, setSelected]);
+  const remembered = useRef<PaperEditorState>({ ...editorState });
+  const remember = useCallback(
+    (part: PaperEditorState) => {
+      remembered.current = { ...remembered.current, ...part };
+      onEditorStateChange?.(remembered.current);
+    },
+    [onEditorStateChange],
+  );
   const [folded, setFolded] = useState(() => readPref(FOLD_KEY) === "true");
   const [filesOpen, setFilesOpen] = useState(false);
-  const [view, setView] = useState<"write" | "preview" | "coach">("write");
-  const [right, setRight] = useState<"preview" | "coach">("preview");
+  const [view, setView] = useState(editorState?.view ?? "write");
+  const [right, setRight] = useState(editorState?.right ?? "preview");
+  useEffect(() => remember({ view, right }), [view, right, remember]);
+  const rememberCoach = useCallback((coach: CoachOpening) => remember({ coach }), [remember]);
   const [phone, setPhone] = useState(() => window.matchMedia("(max-width: 700px)").matches);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 700px)");
@@ -108,7 +127,7 @@ export function PaperWorkspace({
     line: 1,
   });
   const [history, setHistory] = useState(false);
-  const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
+  const [focus, setFocus] = useState<PaperFocus | null>(null);
   const [actionError, setActionError] = useState<{
     error: string;
     retry: () => Promise<void>;
@@ -327,7 +346,7 @@ export function PaperWorkspace({
   useEffect(() => {
     // A pending selection waits for the tree; a gone one hands the URL to the shown file.
     if (!file || (selected && selected !== file.file_id && !gone)) return;
-    onEditorStateChange?.({ fileId: file.file_id });
+    remember({ fileId: file.file_id });
     const [route, query] = window.location.hash.split("?");
     const params = new URLSearchParams(query);
     params.set("paper_file", file.file_id);
@@ -336,7 +355,7 @@ export function PaperWorkspace({
       "",
       `${window.location.pathname}${window.location.search}${route || "#"}?${params}`,
     );
-  }, [file, selected, gone, onEditorStateChange]);
+  }, [file, selected, gone, remember]);
   const perform = async (action: () => Promise<void>) => {
     setActionError(null);
     try {
@@ -378,10 +397,15 @@ export function PaperWorkspace({
     if (next !== "write") setRight(next);
     else focusEditor();
   };
-  const locate = (change: PaperChange) => {
-    setSelected(change.file_id);
-    setFocusChange(change);
+  const locate = (next: PaperFocus) => {
+    setSelected(next.file_id);
+    setFocus(next);
     setView("write");
+  };
+  const locateSource = (event: React.MouseEvent) => {
+    const spot = previewSourceSpot(event.target as Element, window.getSelection(), event.clientY);
+    const source = spot && tree?.files.find((item) => item.path === spot.path);
+    if (spot && source) locate({ kind: "source", file_id: source.file_id, spot });
   };
   const previewActive = right === "preview" && (!phone || view === "preview");
   // Mounted on first view, then kept while hidden so its PDF and position survive.
@@ -521,7 +545,7 @@ export function PaperWorkspace({
               maxBytes={tree?.max_doc_bytes}
               format={file!.format}
               changes={changeFeed.changes}
-              focusChange={focusChange}
+              focus={focus}
               onDecide={(id, action) => void perform(() => act(id, action))}
               onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
@@ -567,6 +591,7 @@ export function PaperWorkspace({
           hidden={right !== "preview"}
           ref={previewPane}
           tabIndex={-1}
+          onDoubleClick={locateSource}
         >
           {previewShown &&
             file &&
@@ -614,7 +639,7 @@ export function PaperWorkspace({
                 refresh();
               }
             }}
-            onLocate={locate}
+            onLocate={(change) => locate(changeFocus(change))}
             toolbar={(phone ? view : right) === "coach" ? panelBar : null}
             comments={comments}
             submitting={coachSubmitting}
@@ -623,6 +648,8 @@ export function PaperWorkspace({
             setError={setCoachError}
             transcriptRef={coachTranscript}
             textarea={coachMessage}
+            opening={editorState?.coach}
+            onOpening={rememberCoach}
           />
         </div>
       </aside>

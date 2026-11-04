@@ -1331,7 +1331,7 @@ def test_claude_coach_command_scopes_edits() -> None:
     assert command[command.index("--permission-mode") + 1] == "dontAsk"
     assert "acceptEdits" not in command
     assert "Edit(//stage/changes/**)" in command
-    assert "Task" not in command[command.index("--tools") + 1].split(",")
+    assert "Bash" in command[command.index("--tools") + 1].split(",")
     assert command[command.index("--resume") + 1] == "paper-session"
 
 

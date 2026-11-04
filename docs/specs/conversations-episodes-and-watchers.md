@@ -77,6 +77,34 @@ Space thread's own, and a tap there acts in its project. The Space prompt
 raises a card when one fits, hands off a decision no card kind covers, and
 never describes a card that `ask` did not return.
 
+**The Space relay shows what runs and what asks the member.** It covers
+Experiment and Auto-research episodes in the member's projects, whoever started
+them, the member's own project threads, and questions from shared project chats.
+Another member's private thread never shows. Two surfaces carry it, and neither
+adds verbs:
+
+- **The Running list**, beside Wakes in the Space thread's header, has one row
+  per run or agent and no controls; a row only opens its run or thread.
+  Episode rows are the Space Runs rows that are not completed or archived; the
+  [Runs projection](#runs-projection) stays the only owner of their health
+  text, and an Auto-research child has no row of its own. A thread row shows
+  while its `live_state` is `needs_you`, `running`, `queued`, `paused` or
+  `failed`, or while it owns a live (active or degraded) watcher. Watching is a
+  state of the row that owns the watcher, never a row. A thread whose latest
+  turn failed, with no retry or resume of it started, is `failed`; failures and
+  pauses are list states, not dock cards, and the member acts on them through
+  the Space agent's verbs or by opening the row.
+- **The dock** also relays the plain questions the member may answer: pending
+  questions with no card that `question_recipients`
+  ([`storage/notifications.py`](../../src/rcp/storage/notifications.py)) gives
+  the member. An answer goes through the ordinary project answer route, which
+  checks membership, the private owner, write admission and continuation, so an
+  ended episode's answer still offers Add turns.
+
+Both reads refresh on the member's `agent_cards` version, which never moves on
+another member's private work
+([fields](api-web-and-desktop-projections.md#agent-thread-api)).
+
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
 task, usage, chat display, read, pin, browser, session-context, artifact and
@@ -276,7 +304,10 @@ silently; new episodes notify on their first eligible observation, even if they
 ended between passes or during downtime.
 
 Each question creation produces one durable **Needs you** event, linked to its
-chat or episode. Delivery is independent of episode health; a health change
+chat or episode. `question_recipients` names who a question asks: a private
+thread's owner, otherwise every live project member. The event reaches those
+members' devices under their device and preference filters, and the Space dock
+relays by the same function. Delivery is independent of episode health; a health change
 caused by the question adds no second push. Dismissal, wakes and reauthorization
 do not recreate the event.
 
@@ -615,7 +646,9 @@ runtime. No hint line or separate steering control is shown. While steering,
 mode is locked to the running turn; the next-turn selection returns afterwards.
 Unsupported runtimes leave that next-turn toggle available. Episode workers use
 orchestrator mail instead. Steers persist as human messages with delivered,
-refused or unknown receipts. Reload never infers acknowledgement from reply text
+refused or unknown receipts. The Paper coach steers the same way; with no
+transcript, its steers live in `paper_coach_steers` and reach the web on its
+task rows. Reload never infers acknowledgement from reply text
 or resends input. [Provider steering](providers-and-containment.md#live-human-steering)
 owns transport races and placement.
 
@@ -640,8 +673,14 @@ target, or the saved Paper: the whole tree or one file, each file its own
 attachment within the attachment count and size limits. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
-They share attachment caps and add no roots or target authority. Prompts list
-them separately from uploads and editable comments. Ordinary node/project
+They share attachment caps and add no target authority. An attached saved
+artifact is also the agent's to change: every attempt's turn start writes the
+attached version to its tracked file, a write root for that turn, and refuses the
+turn when it cannot. A changed file publishes as the artifact's next version at
+turn end, so Undo restores it; when a newer version arrived meanwhile, the change
+becomes a separate artifact instead. Only a change settles an outcome; an
+untouched one stays as it was. Prompts list editable artifacts
+separately from read-only references and uploads. Ordinary node/project
 Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
 

@@ -841,8 +841,26 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
     if not attachments:
         return ""
     lines = []
-    references = [item for item in attachments if isinstance(item.get("reference"), dict)]
+    editable = [item for item in attachments if isinstance(item.get("edit_path"), str)]
+    if editable:
+        lines.extend(
+            [
+                "Saved artifacts the human attached to this turn:",
+                "When the human asks to change one, change its file in place, keeping its name; "
+                "its bytes when the turn ends become that artifact's next version. Something "
+                "different goes in a new file in this turn's directory.",
+            ]
+        )
+        for item in editable:
+            lines.append(f"- `{item['name']}` ({item['media_type']}): `{item['edit_path']}`")
+    references = [
+        item
+        for item in attachments
+        if isinstance(item.get("reference"), dict) and "edit_path" not in item
+    ]
     if references:
+        if lines:
+            lines.append("")
         lines.extend(
             [
                 "Project references for this turn (read-only):",
@@ -1607,7 +1625,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v8"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v9"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1667,9 +1685,8 @@ Authorship contract:
   the snapshot, or `moves.json`, so do not mention them.
 - All output is validated together and presented for review, or applied by RCP under the human's
   saved Apply-directly choice. You have no direct paper-write authority.
-- Read with native file-reading tools. Where your provider reads files only through its shell,
-  use read-only commands such as `cat`, `ls`, and `sed -n`. Run no other command except the exact
-  protected graph-history client below. Write with native Edit/Write tools.
+- You have a shell. Run whatever commands the request needs, such as converting or rendering
+  figures, and write their outputs into the changes folder like any other file.
 - Do not write anywhere outside the named changes folder, including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.
 - The paper is a shared draft, not canonical graph truth. Distinguish its claims

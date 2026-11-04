@@ -1813,6 +1813,7 @@ async function serveCards(page, served) {
           (view) => threadId === null || view.thread_id === threadId,
         ),
         asked_cards: threadId === null ? served.asked : [],
+        questions: threadId === null ? (served.questions ?? []) : [],
       },
     });
   });
@@ -2229,6 +2230,257 @@ test("Pip's own card for a branch Proposal names the branch and decides in its d
   });
 });
 
+test("Pip's dock relays a project question with its origin and time, and answering it removes the card", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      const relayed = {
+        ...card,
+        question_id: "q-relay",
+        owner_kind: "episode",
+        owner_id: "e7",
+        operation_id: "op-e7",
+        question: "Which learning rate should the next sweep use?",
+        choices: ["3e-4", "1e-4"],
+        created_at: ago(60 * 30),
+        card: null,
+        project_id: "p2",
+        project_name: "Tokenizer ablations",
+        source_label: "byte-level sweep",
+      };
+      const served = {
+        proposals: [],
+        asked: [{ ...card, project_name: "Sparse attention" }],
+        questions: [relayed],
+      };
+      await serveCards(page, served);
+      await page.route("**/api/projects/p2/questions/q-relay/answer", (route) => {
+        served.questions = [];
+        writes.push({
+          path: new URL(route.request().url()).pathname,
+          ...route.request().postDataJSON(),
+        });
+        return route.fulfill({ json: { ...relayed, state: "answered" } });
+      });
+
+      await page.goto(`${base}#/agent/space`);
+      const dock = page.getByRole("region", { name: "Pip" }).locator(".approval-dock");
+      await dock.waitFor();
+      const asked = dock.locator(".approval-card[data-state='pending']");
+      assert.equal(
+        await asked.locator("time.card-asked").getAttribute("datetime"),
+        card.created_at,
+      );
+      await dock.getByRole("button", { name: "Next card" }).click();
+      const question = dock.locator(".question-card[data-question-id='q-relay']");
+      await question.waitFor();
+      assert.equal(
+        await question.locator(".question-origin .entity-chip.project").getAttribute("href"),
+        "#/projects/p2",
+      );
+      assert.ok(
+        (await question.locator(".question-origin").textContent()).includes("byte-level sweep"),
+      );
+      assert.equal(
+        await question.locator("time.card-asked").getAttribute("datetime"),
+        relayed.created_at,
+      );
+      const box = await question.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `pip-dock-question-${width}`);
+
+      await question.getByRole("button", { name: "3e-4" }).click();
+      await question.waitFor({ state: "detached" });
+      assert.deepEqual(writes.at(-1), {
+        path: "/api/projects/p2/questions/q-relay/answer",
+        answer: "",
+        choices: ["3e-4"],
+      });
+      assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 1);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("Pip's Running button counts what needs the member and each row opens its run", async () => {
+  await withFixture(async (browser, base) => {
+    const rows = [
+      {
+        kind: "thread",
+        id: "moss",
+        project_id: "p1",
+        project_name: "Sparse attention",
+        title: "Moss",
+        needs_you: true,
+        label: "Asked you a question",
+        watching: 0,
+        at: ago(3),
+        link: "#/agent/moss",
+      },
+      {
+        kind: "experiment_loop",
+        id: "e1",
+        project_id: "p1",
+        project_name: "Sparse attention",
+        title: "sa-v3-64k context run with the long warmup schedule and doubled batch",
+        needs_you: true,
+        label: "Failed",
+        watching: 0,
+        at: ago(20),
+        link: "#/projects/p1/targets/main/episode/e1",
+      },
+      {
+        kind: "auto_research",
+        id: "e2",
+        project_id: "p2",
+        project_name: "Tokenizer ablations",
+        title: "Byte-level study",
+        needs_you: false,
+        label: "Running",
+        watching: 2,
+        at: ago(1),
+        link: "#/projects/p2/targets/main/episode/e2",
+      },
+      {
+        kind: "thread",
+        id: "biscuit",
+        project_id: "p2",
+        project_name: "Tokenizer ablations",
+        title: "Biscuit",
+        needs_you: false,
+        label: "Working",
+        watching: 0,
+        at: ago(2),
+        link: "#/agent/biscuit",
+      },
+      {
+        kind: "experiment_loop",
+        id: "e3",
+        project_id: "p3",
+        project_name: "Long-context eval",
+        title: "needle-128k",
+        needs_you: false,
+        label: "Running",
+        watching: 0,
+        at: ago(40),
+        link: "#/projects/p3/targets/main/episode/e3",
+      },
+    ];
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      let running = { rows: [], needs: 0, total: 0 };
+      let failures = 0;
+      await page.route("**/api/agent-threads/running", (route) =>
+        failures-- > 0
+          ? route.fulfill({ status: 503, json: {} })
+          : route.fulfill({ json: running }),
+      );
+      const pip = page.getByRole("region", { name: "Pip" });
+      const button = pip.getByRole("button", { name: /^Running/ });
+
+      const idle = page.waitForResponse(/\/api\/agent-threads\/running$/);
+      await page.goto(`${base}#/agent/space`);
+      await idle;
+      await pip.locator(".chat-composer").waitFor();
+      await page.waitForTimeout(100);
+      assert.equal(await button.count(), 0);
+
+      running = { rows, needs: 2, total: 5 };
+      failures = 1;
+      const refused = page.waitForResponse((response) => response.status() === 503);
+      await page.evaluate(() => (window.agentCardsVersion = "2"));
+      await refused;
+      await button.waitFor();
+      assert.equal((await button.textContent()).trim(), "2 / 5");
+      const header = await pip
+        .locator(".thread-header-tools")
+        .evaluate((tools) => [...tools.children].map((child) => child.getAttribute("title")));
+      assert.ok(header.indexOf("Running") < header.indexOf("Wakes"));
+      await button.click();
+      const popover = page.getByRole("dialog", { name: "Running" });
+      const shown = popover.locator(".running-row");
+      assert.equal(await shown.count(), rows.length);
+      for (const [index, row] of rows.entries()) {
+        const entry = shown.nth(index);
+        assert.equal(await entry.locator("strong").textContent(), row.title);
+        assert.equal(await entry.getAttribute("href"), row.link);
+        assert.equal(await entry.locator("time").getAttribute("datetime"), row.at);
+        assert.equal(await entry.locator("[data-deferred]").count(), row.needs_you ? 1 : 0);
+      }
+      const divided = await popover.evaluate((panel) => {
+        const divider = panel.querySelectorAll(".running-divider");
+        return [divider.length, divider[0]?.previousElementSibling?.getAttribute("href")];
+      });
+      assert.deepEqual(divided, [1, rows[1].link]);
+      const box = await popover.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `pip-running-${width}`);
+
+      await shown.nth(3).click();
+      await page.getByRole("region", { name: "Biscuit" }).waitFor();
+      assert.equal(await page.evaluate(() => location.hash), "#/agent/biscuit");
+      assert.equal(await popover.count(), 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("a Running read that a version overtakes is read again", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage();
+    await mockApi(page, []);
+    let running = { rows: [], needs: 0, total: 0 };
+    let reads = 0;
+    await page.route("**/api/agent-threads/running", async (route) => {
+      reads += 1;
+      const snapshot = running;
+      if (reads === 1) {
+        running = {
+          rows: [
+            {
+              kind: "thread",
+              id: "moss",
+              project_id: "p1",
+              project_name: "Sparse attention",
+              title: "Moss",
+              needs_you: true,
+              label: "Asked you a question",
+              watching: 0,
+              at: ago(3),
+              link: "#/agent/moss",
+            },
+          ],
+          needs: 1,
+          total: 1,
+        };
+        await page.evaluate(() => (window.agentCardsVersion = "2"));
+        await page.waitForTimeout(1500);
+      }
+      await route.fulfill({ json: snapshot });
+    });
+    await page.goto(`${base}#/agent/space`);
+    const pip = page.getByRole("region", { name: "Pip" });
+    await pip.getByRole("button", { name: /^Running/ }).waitFor();
+    assert.equal(reads, 2);
+    await page.close();
+  });
+});
+
 test("only the newest card read counts, and a stale read never revives a decided card", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
@@ -2393,9 +2645,12 @@ test("waiting turns show one line each above the composer; remove and dismiss le
       await rows.nth(1).getByRole("button", { name: "Dismiss" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 1);
       assert.deepEqual(served.deleted, ["q1", "q2"]);
-      assert.equal(
-        await moss.getByRole("textbox", { name: "Message" }).inputValue(),
-        `${refusedText}\n\ndraft`,
+      await page.waitForFunction(
+        ([field, expected]) => field.value === expected,
+        [
+          await moss.getByRole("textbox", { name: "Message" }).elementHandle(),
+          `${refusedText}\n\ndraft`,
+        ],
       );
       assert.deepEqual(errors, []);
       await page.close();

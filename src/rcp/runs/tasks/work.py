@@ -137,7 +137,11 @@ from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
 )
-from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
+from rcp.runs.session_artifacts import (
+    publish_session_artifacts,
+    run_edits,
+    sync_session_artifacts,
+)
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
@@ -828,10 +832,12 @@ async def _stage_work_turn(
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
     ) -> StagedArtifactAccess:
-        edit_path = (
-            sync_session_artifacts(execution, request, artifact_directory, layout.remote_stage)
+        edit_paths = (
+            sync_session_artifacts(
+                execution, run_edits(execution, request), artifact_directory, layout.remote_stage
+            )
             if execution is not None
-            else None
+            else {}
         )
         artifact_context = stage_artifact_context(
             service,
@@ -839,10 +845,11 @@ async def _stage_work_turn(
             execution,
             local_stage=layout.local_stage,
             remote_stage=layout.remote_stage,
-            edit_path=edit_path,
+            edit_paths=edit_paths,
         )
         return StagedArtifactAccess(
             pointer=artifact_context.pointer if artifact_context is not None else None,
+            edit_paths=edit_paths,
         )
 
     def select_skills(request: RunRequest) -> tuple[SkillSelection, RunRequest]:
@@ -2562,7 +2569,7 @@ def _finalize_work_artifacts(
         artifacts = []
     return publish_session_artifacts(
         turn.execution,
-        turn.request,
+        run_edits(turn.execution, turn.request),
         Path(str(turn.artifact_directory)),
         turn.remote_stage,
         artifacts=artifacts,

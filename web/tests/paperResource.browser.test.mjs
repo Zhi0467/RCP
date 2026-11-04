@@ -932,3 +932,72 @@ test("the editor/preview divider resizes within bounds, persists, and is absent 
   assert.equal(await handle.isVisible(), false);
   assert.deepEqual(errors, []);
 });
+
+test("double-clicking a word in the preview puts the editor on that word", async (t) => {
+  const text = "# Title\n\nFirst sentence here.\nThe cat sat. The cat ran.";
+  const room = new Room();
+  room.doc.getText("text").delete(0, 5);
+  room.doc.getText("text").insert(0, text);
+  for (const width of [1280, 390]) {
+    const { page, errors } = await openPaper(t, { room, initialText: text, width });
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    const paragraph = page.locator(".paper-markdown p", { hasText: "The cat ran" });
+    await paragraph.waitFor();
+    const point = await paragraph.evaluate((element) => {
+      const node = element.firstChild;
+      const range = document.createRange();
+      const at = node.data.lastIndexOf("cat");
+      range.setStart(node, at);
+      range.setEnd(node, at + 3);
+      const box = range.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+    await page.mouse.dblclick(point.x, point.y);
+    await page.waitForFunction(() =>
+      document.querySelector(".paper-position")?.textContent.includes("Ln 4, Col 21"),
+    );
+    assert.equal(await page.evaluate(() => window.getSelection().toString()), "cat");
+    assert.ok(await page.locator(".cm-content").isVisible());
+    assert.deepEqual(errors, []);
+  }
+});
+
+test("returning to Paper reopens the file, cursor and panel left there", async (t) => {
+  const text = "one\ntwo\nthree\nfour";
+  const { page, errors } = await openPaper(t, {
+    room: new Room(text),
+    initialText: text,
+    configure: secondFile,
+  });
+  await page.evaluate(() => {
+    window.location.hash = "#/projects/p/paper?paper_file=f2";
+  });
+  await page.waitForFunction(
+    () => document.querySelector(".paper-path")?.textContent === "second.md",
+  );
+  await page.getByRole("button", { name: "intro.md", exact: true }).click();
+  await page.waitForFunction(() => window.location.hash.includes("paper_file=f1"));
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("ControlOrMeta+End");
+  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
+  await page.clock.install();
+  await page.evaluate(() => {
+    window.history.replaceState(null, "", "#/projects/p/graph");
+    window.paperTab.leave();
+  });
+  await page.clock.runFor(31_000);
+  await page.evaluate(() => window.paperTab.back());
+  await page.waitForFunction(editorMatches, text);
+  assert.equal(await page.locator(".paper-path").textContent(), "intro.md");
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-position")?.textContent.includes("Ln 4, Col 5"),
+  );
+  assert.equal(
+    await page
+      .getByRole("group", { name: "Paper panel" })
+      .getByRole("button", { name: "Coach", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  assert.deepEqual(errors, []);
+});

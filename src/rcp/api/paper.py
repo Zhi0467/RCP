@@ -260,14 +260,15 @@ async def raw_file(
         file, data = await live.raw_file(project_id, file_id, revision)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
-    raster = {
+    images = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".webp": "image/webp",
+        ".svg": "image/svg+xml",
     }
-    media_type = raster.get(PurePosixPath(file.path).suffix.lower())
+    media_type = images.get(PurePosixPath(file.path).suffix.lower())
     disposition = "inline" if media_type else "attachment"
     return Response(
         data,
@@ -275,7 +276,7 @@ async def raw_file(
         headers={
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(PurePosixPath(file.path).name)}",
-            "Content-Security-Policy": "sandbox; default-src 'none'",
+            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
         },
     )
 

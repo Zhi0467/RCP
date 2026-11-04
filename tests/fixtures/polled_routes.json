@@ -3,6 +3,7 @@
     {"method": "POST", "path": "/api/resource-watermarks", "json": {"client_id": "polled-routes", "open": [{"project_id": "{project_id}", "current_ref": "main", "resources": []}], "due": ["{project_id}"], "agent_threads": true, "agent_cards": true}},
     {"method": "GET", "path": "/api/agent-threads"},
     {"method": "GET", "path": "/api/agent-threads/cards"},
+    {"method": "GET", "path": "/api/agent-threads/running"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/transcript"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/tasks/{operation_id}"},
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/schedules"},

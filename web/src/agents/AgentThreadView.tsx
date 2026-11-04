@@ -53,7 +53,8 @@ import {
   useAgentWindowLines,
   type PendingAgentWindowTurn,
 } from "../agentWindow/useAgentWindowLines";
-import { useAgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
+import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
+import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
 import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
 import {
   projectAgentWindowEndpoints,
@@ -85,9 +86,11 @@ import {
   ApprovalCardStack,
   askedCardKey,
   proposalCardKey,
+  questionCardKey,
   useAgentCards,
   type StackCard,
 } from "./ApprovalCardStack";
+import { RunningPopover } from "./RunningPopover";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -789,12 +792,7 @@ export function AgentThreadView({
     () => lines.transcript.filter((line) => !line.running),
     [lines.transcript],
   );
-  const { shouldStickToBottomRef: followRef, handleChatScroll } = useAgentWindowScroll(
-    endpoints.scopeKey,
-    linesRef,
-    lines.transcript,
-    questions,
-  );
+  const scroll = useRef<AgentWindowScroll>(null);
   const refreshTask = async (taskId: string) => {
     const task = await endpoints.loadTask(taskId);
     setTurnTasks((current) => new Map(current).set(taskId, task));
@@ -1003,14 +1001,16 @@ export function AgentThreadView({
     void Promise.all(wanted.map((id) => owner.loadTask(id).catch(() => null))).then((tasks) => {
       const settled = tasks.filter((task): task is AgentTask => Boolean(task?.settled));
       if (!settled.length) return;
-      readerAnchor.current = followRef.current ? null : topRow(linesRef.current);
+      readerAnchor.current = scroll.current?.shouldStickToBottomRef.current
+        ? null
+        : topRow(linesRef.current);
       setTurnTasks((known) => {
         const next = new Map(known);
         for (const task of settled) next.set(task.operation_id, task);
         return next;
       });
     });
-  }, [nearTurns, historyTurnIds, turnTasks, latestId, followRef]);
+  }, [nearTurns, historyTurnIds, turnTasks, latestId]);
 
   // Reading marks the thread read through the turn its reloaded transcript shows.
   const newest = view?.finishedAt ?? null;
@@ -1059,7 +1059,7 @@ export function AgentThreadView({
       pending.clearAttachments();
       comments.discard(sentComments);
       if (isCurrent(target.thread_id)) {
-        followRef.current = true;
+        scroll.current?.follow();
         await refresh();
       }
       if (draft.get() === pending.draft) {
@@ -1236,6 +1236,11 @@ export function AgentThreadView({
       ? [
           ...cards.proposals.map((view) => proposalStackCard(view, true)),
           ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
+          ...cards.questions.map((question): StackCard => ({
+            kind: "question",
+            key: questionCardKey(question),
+            question,
+          })),
         ]
       : [];
 
@@ -1342,6 +1347,7 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
+          {thread.kind === "space" && <RunningPopover />}
           <WakesPopover
             thread={thread}
             schedules={schedules}
@@ -1369,11 +1375,12 @@ export function AgentThreadView({
           </OverflowMenu>
         </div>
       </header>
-      <div
-        className="node-chat-lines"
-        aria-live="polite"
-        ref={linesRef}
-        onScroll={handleChatScroll}
+      <AgentWindowLines
+        scrollKey={endpoints.scopeKey}
+        linesRef={linesRef}
+        transcript={lines.transcript}
+        questions={questions}
+        scroll={scroll}
       >
         {messages === null && !shownLoadError && (
           <div className="node-chat-line meta" role="status">
@@ -1418,6 +1425,7 @@ export function AgentThreadView({
               ]}
               onDecided={cards.markDecided}
               onResolved={cards.markResolved}
+              onAnswered={cards.markAnswered}
               onChanged={cardsChanged}
             />
           )}
@@ -1546,7 +1554,7 @@ export function AgentThreadView({
             {shownNotice}
           </div>
         )}
-      </div>
+      </AgentWindowLines>
       {dockCards.length > 0 && (
         <div className="approval-dock">
           <ApprovalCardStack
@@ -1554,6 +1562,7 @@ export function AgentThreadView({
             cards={dockCards}
             onDecided={cards.markDecided}
             onResolved={cards.markResolved}
+            onAnswered={cards.markAnswered}
             onChanged={cardsChanged}
           />
         </div>

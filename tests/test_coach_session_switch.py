@@ -103,6 +103,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
         current.reasoning,
     )
     assert admitted.session_id is None
+    assert admitted.previous_session_id == off_base.native_session_id
     assert admitted.run_on == service.manifest.base_machine
 
 

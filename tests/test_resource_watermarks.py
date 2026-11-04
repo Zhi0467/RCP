@@ -450,18 +450,21 @@ def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkey
         )
     store.ensure_agent_threads(endpoint.member, [endpoint.forbidden], default_names=("Pip",))
     store.ensure_agent_threads(endpoint.other_member, [idle], default_names=("Pip",))
+    seated = heartbeat()
     endpoint.catalog.projects[idle] = "idle-moved"
     endpoint.catalog.projects[endpoint.forbidden] = "forbidden-moved"
-    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+    assert heartbeat()["agent_cards"] == seated["agent_cards"]
 
     store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=True)
     archived = heartbeat()
-    assert archived["agent_cards"] != committed["agent_cards"]
+    assert archived["agent_cards"] != seated["agent_cards"]
     endpoint.catalog.projects[endpoint.project] = "published-3"
     assert heartbeat()["agent_cards"] == archived["agent_cards"]
     store.set_chat_archived(endpoint.project, opened.thread_id, endpoint.member, archived=False)
+    shown = heartbeat()
     endpoint.catalog.projects[endpoint.project] = "published-2"
-    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+    assert heartbeat()["agent_cards"] != shown["agent_cards"]
+    shown = heartbeat()
 
     with store.connection() as connection:
         connection.execute(
@@ -469,21 +472,90 @@ def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkey
             (endpoint.now.isoformat(), endpoint.project),
         )
     retired = heartbeat()
-    assert retired["agent_cards"] != committed["agent_cards"]
+    assert retired["agent_cards"] != shown["agent_cards"]
     with store.connection() as connection:
         connection.execute(
             "UPDATE projects SET retired_at=NULL WHERE project_id=?", (endpoint.project,)
         )
-    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+    assert heartbeat()["agent_cards"] == shown["agent_cards"]
 
     store.close_agent_thread(opened.thread_id, reason="test")
     closed = heartbeat()
-    assert closed["agent_cards"] != committed["agent_cards"]
+    assert closed["agent_cards"] != shown["agent_cards"]
+    endpoint.catalog.projects[endpoint.project] = "published-4"
+    assert heartbeat()["agent_cards"] == closed["agent_cards"]
     store.ensure_agent_threads(endpoint.member, [endpoint.project], default_names=("Pip",))
-    assert heartbeat()["agent_cards"] == committed["agent_cards"]
+    reopened = heartbeat()
+    endpoint.catalog.projects[endpoint.project] = "published-5"
+    assert heartbeat()["agent_cards"] != reopened["agent_cards"]
 
+    current = heartbeat()
     monkeypatch.setattr(watermarks, "_PROCESS_EPOCH", "restarted")
-    assert heartbeat()["agent_cards"] != committed["agent_cards"]
+    assert heartbeat()["agent_cards"] != current["agent_cards"]
+
+
+def test_agent_cards_follow_the_members_questions_and_watchers_not_private_work(endpoint):
+    from tests.test_agent_threads_storage import _insert_watcher
+    from tests.test_api_questions import _question
+    from tests.test_storage import _task_record
+
+    store = endpoint.store
+    body = {"client_id": "agent-cards", "open": [], "due": [], "agent_cards": True}
+
+    def version() -> str:
+        response = endpoint.client.post("/api/resource-watermarks", json=body)
+        assert response.status_code == 200, response.text
+        return response.json()["agent_cards"]["version"]
+
+    start = version()
+    shared = _question(store, endpoint.project, owner_id="shared", key="shared")
+    asked = version()
+    assert asked != start
+    _question(store, endpoint.forbidden, owner_id="shared", key="elsewhere")
+    assert version() == asked
+    store.set_chat_archived(endpoint.project, "shared", endpoint.member, archived=True)
+    assert version() != asked
+    store.set_chat_archived(endpoint.project, "shared", endpoint.member, archived=False)
+    assert version() == asked
+
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO project_members(project_id, user_id, seated_at) VALUES(?, ?, ?)",
+            (endpoint.project, endpoint.other_member, endpoint.now.isoformat()),
+        )
+    other = next(
+        thread
+        for thread in store.ensure_agent_threads(
+            endpoint.other_member, [endpoint.project], default_names=("Pip",)
+        )
+        if thread.kind == "project"
+    )
+    seated = version()
+    _question(store, endpoint.project, owner_id=other.thread_id, key="private")
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="private-turn",
+            project_id=endpoint.project,
+            kind="project_chat",
+            request={"chat_id": other.thread_id},
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='succeeded', finished_at=? WHERE operation_id=?",
+            (store.now(), "private-turn"),
+        )
+    assert version() == seated
+
+    _insert_watcher(store, "watch", project_id=endpoint.project, chat_id="shared")
+    watched = version()
+    assert watched != seated
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE questions SET state='dismissed' WHERE question_id=?", (shared.question_id,)
+        )
+    assert version() != watched
 
 
 def test_local_main_commit_moves_agent_cards_not_agent_threads(manifest, tmp_path):
