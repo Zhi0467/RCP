@@ -1,20 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import {
-  History,
-  ListChecks,
-  LoaderCircle,
-  MessageCirclePlus,
-  RotateCcw,
-  Send,
-  Square,
-  Zap,
-} from "lucide-react";
+import { History, ListChecks, MessageCirclePlus, RotateCcw, Send, Square, Zap } from "lucide-react";
 import {
   coachConversation,
   coachSteersAfterPrompts,
   isActiveTask,
   type TaskTranscriptLine,
 } from "../agents/agentTasks";
+import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
+import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
 import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
 import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
@@ -215,14 +208,8 @@ export function PaperCoach({
     return [...byId.values()];
   }, [sessionTasks, receivedSteers]);
   const lines = useAgentWindowLines({ messages: steers, tasks: sessionTasks });
-  // The red edge and its icon carry failures and pauses.
-  const transcript = useMemo(
-    () =>
-      coachSteersAfterPrompts(lines.transcript).filter(
-        (line) => line.role !== "error" && line.role !== "meta",
-      ),
-    [lines.transcript],
-  );
+  const transcript = useMemo(() => coachSteersAfterPrompts(lines.transcript), [lines.transcript]);
+  const scroll = useRef<AgentWindowScroll>(null);
   const endpoints = useMemo(
     () => projectAgentWindowEndpoints(project.id, `paper-coach:${openedSession ?? ""}`),
     [project.id, openedSession],
@@ -255,6 +242,7 @@ export function PaperCoach({
     if (!text || composer.staged || submitting || !task.steer_turn_id) return;
     if (!comments.requireComplete()) return;
     const sent = comments.annotations;
+    scroll.current?.follow();
     setSubmitting(true);
     setError(null);
     try {
@@ -283,6 +271,7 @@ export function PaperCoach({
     if (!comments.requireComplete()) return;
     const sent = comments.annotations;
     composer.closeMenu();
+    scroll.current?.follow();
     setSubmitting(true);
     setError(null);
     try {
@@ -311,9 +300,7 @@ export function PaperCoach({
   };
   // One UUID per attempt, so a repeated click replays the same retry admission.
   const retryKeys = useRef(new Map<string, string>());
-  const retry = async (task: AgentTask) => {
-    // A paused or interrupted turn continues in its own session; a failed one retries.
-    const action = task.can_resume ? "resume" : "retry";
+  const continueTask = async (task: AgentTask, action: "resume" | "retry") => {
     setSubmitting(true);
     setError(null);
     const attempt = `${task.operation_id}:${task.attempt}:${action}`;
@@ -347,25 +334,6 @@ export function PaperCoach({
       setError(String(cause));
     }
   };
-  const retryButton = (task: AgentTask) => (
-    <button
-      className="icon-button compact paper-reply-retry"
-      aria-label={task.can_resume ? "Resume coach reply" : "Retry coach reply"}
-      title={task.error || undefined}
-      disabled={submitting || !(task.can_retry || task.can_resume)}
-      onClick={() => void retry(task)}
-    >
-      <RotateCcw size={15} />
-    </button>
-  );
-  // A resumed or retried turn continues in a child task; only the newest attempt shows.
-  const continued = new Set(sessionTasks.flatMap((task) => task.parent_operation_id ?? []));
-  // Failed, stopped, or cut off by a restart: each shows its edge and a way forward.
-  const stuck = (task: AgentTask | undefined): task is AgentTask =>
-    !!task &&
-    !continued.has(task.operation_id) &&
-    !isActiveTask(task) &&
-    (task.failed || task.can_resume || task.can_retry);
   const cards = (taskId: string) => (
     <PaperChanges
       apiBase={apiBase}
@@ -375,7 +343,7 @@ export function PaperCoach({
       onLocate={onLocate}
     />
   );
-  // Each turn's cards, and its edge when stuck, follow its last reply.
+  // Each turn's cards follow its last reply.
   const lastReplies = new Map(
     transcript.filter((line) => line.role === "agent").map((line) => [line.taskId, line.lineId]),
   );
@@ -448,10 +416,12 @@ export function PaperCoach({
           ))}
         </div>
       )}
-      <div
-        className="node-chat-lines paper-coach-transcript"
-        aria-live="polite"
-        ref={transcriptRef}
+      <AgentWindowLines
+        scrollKey={endpoints.scopeKey}
+        linesRef={transcriptRef}
+        transcript={transcript}
+        questions={NO_QUESTIONS}
+        scroll={scroll}
       >
         <AgentWindowTranscript
           transcript={transcript}
@@ -465,31 +435,18 @@ export function PaperCoach({
           latestGraphReceiptLineIds={lines.latestGraphReceiptLineIds}
           showModes={false}
           submitting={submitting}
-          agentProgress={() => null}
-          lineClassName={(line) =>
-            stuck(replyTask(line)) ? `${line.role} paper-failure` : line.role
-          }
+          onResumeTask={(task) => void continueTask(task, "resume")}
+          onRetryTask={(task) => void continueTask(task, "retry")}
           lineTrail={(line) => {
             const task = replyTask(line);
-            return (
-              task && (
-                <>
-                  {stuck(task) && retryButton(task)}
-                  {cards(task.operation_id)}
-                </>
-              )
-            );
+            return task && cards(task.operation_id);
           }}
           footer={
             <>
               {sessionTasks
                 .filter((task) => !lastReplies.has(task.operation_id))
                 .map((task) => (
-                  <div
-                    key={task.operation_id}
-                    className={`node-chat-line agent${stuck(task) ? " paper-failure bare" : ""}`}
-                  >
-                    {stuck(task) && retryButton(task)}
+                  <div key={task.operation_id} className="node-chat-line agent">
                     {cards(task.operation_id)}
                   </div>
                 ))}
@@ -502,11 +459,10 @@ export function PaperCoach({
                   onLocate={onLocate}
                 />
               )}
-              {activeTask && <LoaderCircle size={16} className="spin" aria-label="Coach running" />}
             </>
           }
         />
-      </div>
+      </AgentWindowLines>
       <ChatComposer
         hint={
           <ProviderSwitchHint

@@ -13,23 +13,6 @@
 .paper-coach .node-chat-line.agent:empty {
   display: none;
 }
-.paper-coach .node-chat-line.paper-failure {
-  padding-right: 42px;
-}
-.paper-reply-retry {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-}
-/* A turn that failed before any reply is just its edge and its icon. */
-.paper-coach .node-chat-line.bare {
-  display: flex;
-  justify-content: flex-end;
-  padding: 6px;
-}
-.paper-coach .node-chat-line.bare .paper-reply-retry {
-  position: static;
-}
 .paper-agent-popover,
 .paper-session-list {
   background: var(--aqua-surface, var(--sheet));

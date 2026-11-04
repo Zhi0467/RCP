@@ -4,7 +4,8 @@ import {
   type PendingAgentWindowTurn,
 } from "../agentWindow/useAgentWindowLines";
 import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
-import { useAgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
+import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
+import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
 import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatOriginLink } from "./ChatBranchPicker";
@@ -442,12 +443,7 @@ export function NodeChat({
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
-  const { shouldStickToBottomRef, restoreTopRef, handleChatScroll } = useAgentWindowScroll(
-    endpoints.scopeKey,
-    chatLinesRef,
-    transcript,
-    questionState.questions,
-  );
+  const scroll = useRef<AgentWindowScroll>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
   const [watchersOpen, setWatchersOpen] = useState(false);
@@ -1020,8 +1016,7 @@ export function NodeChat({
     // Files and artifact selections are staged for a new turn; a steer carries text only.
     if (!text || composer.staged || artifactContext || submitting || !task.steer_turn_id) return;
     if (dictating) stopDictation(true);
-    shouldStickToBottomRef.current = true;
-    restoreTopRef.current = null;
+    scroll.current?.follow();
     const request = {
       message_id: crypto.randomUUID(),
       attempt: task.attempt,
@@ -1138,8 +1133,7 @@ export function NodeChat({
   const submitTurn = async (turn: PendingChatTurn) => {
     if (!canCompose) return;
     const pending = { ...turn, error: undefined };
-    shouldStickToBottomRef.current = true;
-    restoreTopRef.current = null;
+    scroll.current?.follow();
     setPendingTurn(pending);
     setSubmitError(null);
     setSubmitting(true);
@@ -1369,11 +1363,12 @@ export function NodeChat({
           })}
         </section>
       )}
-      <div
-        className="node-chat-lines"
-        aria-live="polite"
-        onScroll={handleChatScroll}
-        ref={chatLinesRef}
+      <AgentWindowLines
+        scrollKey={endpoints.scopeKey}
+        linesRef={chatLinesRef}
+        transcript={transcript}
+        questions={questionState.questions}
+        scroll={scroll}
       >
         {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
         <AgentWindowTranscript
@@ -1434,7 +1429,7 @@ export function NodeChat({
             />
           ))}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
-      </div>
+      </AgentWindowLines>
       {archived ? (
         <div className="chat-composer" role="status">
           <button className="button compact" type="button" onClick={onRestore}>

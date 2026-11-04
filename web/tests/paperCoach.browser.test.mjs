@@ -298,7 +298,7 @@ test("on a touch phone Return writes a new line and a tap outside closes chat hi
   assert.equal(await message.inputValue(), "one\ntwo");
   await page.getByRole("button", { name: "Coach chat history" }).tap();
   await page.locator(".paper-session-list").waitFor();
-  await page.locator(".paper-coach-transcript").tap();
+  await page.locator(".paper-coach .node-chat-lines").tap();
   await page.locator(".paper-session-list").waitFor({ state: "detached" });
 });
 
@@ -704,5 +704,75 @@ test("a coach session's turns show though the project task list no longer carrie
     "Review the introduction",
     "Check the claims",
   ]);
+  assert.deepEqual(errors, []);
+});
+
+test("the coach reopens where the reader left it, as every agent window does", async (t) => {
+  const turns = Array.from({ length: 12 }, (_, index) => ({
+    ...turn,
+    operation_id: `t${index}`,
+    request: { message: `Question ${index}`, session_id: "s1" },
+    result: { messages: [`Answer ${index}. `.repeat(40)] },
+    created_at: new Date(Date.UTC(2026, 10, 3, 10, index)).toISOString(),
+    updated_at: new Date(Date.UTC(2026, 10, 3, 10, index)).toISOString(),
+  }));
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: ${JSON.stringify(turns)}, started: [] };`,
+  });
+  const lines = page.locator(".paper-coach .node-chat-lines");
+  await coach(page);
+  await page.waitForFunction(() => {
+    const element = document.querySelector(".paper-coach .node-chat-lines");
+    return element && element.scrollTop > 0;
+  });
+  assert.ok(
+    await lines.evaluate(
+      (element) => element.scrollHeight - element.clientHeight - element.scrollTop < 2,
+    ),
+  );
+  await lines.evaluate((element) => {
+    element.scrollTop = 200;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  await coach(page);
+  await page.waitForFunction(
+    () => document.querySelector(".paper-coach .node-chat-lines")?.scrollTop === 200,
+  );
+  assert.deepEqual(errors, []);
+});
+
+test("a failed coach turn shows the shared error line, whose Retry starts the turn again", async (t) => {
+  const failed = {
+    ...turn,
+    operation_id: "t9",
+    result: null,
+    failed: true,
+    settled: true,
+    error: "The provider quit.",
+    can_retry: true,
+    can_resume: false,
+  };
+  const retries = [];
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(failed)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body, ...rest) => {
+        if (path !== "/api/projects/p/tasks/t9/retry") return respond(path, method, body, ...rest);
+        retries.push(body);
+        return { json: { ...turn, operation_id: "t10", parent_operation_id: "t9", active: true } };
+      };
+    },
+  });
+  await coach(page);
+  const line = page.locator(".paper-coach .node-chat-line.error");
+  assert.equal(await line.locator(".node-chat-text").textContent(), failed.error);
+  await Promise.all([
+    page.waitForResponse(/\/tasks\/t9\/retry$/),
+    line.getByRole("button", { name: "Retry" }).click(),
+  ]);
+  assert.equal(retries.length, 1);
+  await fits(page);
   assert.deepEqual(errors, []);
 });

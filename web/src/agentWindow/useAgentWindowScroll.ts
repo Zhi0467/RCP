@@ -67,5 +67,12 @@ export function useAgentWindowScroll(
     else chatScrollPositions.set(scrollKey, element.scrollTop);
   };
 
-  return { shouldStickToBottomRef, restoreTopRef, handleChatScroll };
+  const follow = () => {
+    shouldStickToBottomRef.current = true;
+    restoreTopRef.current = null;
+  };
+
+  return { shouldStickToBottomRef, restoreTopRef, handleChatScroll, follow };
 }
+
+export type AgentWindowScroll = ReturnType<typeof useAgentWindowScroll>;
