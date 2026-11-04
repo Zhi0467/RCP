@@ -15,7 +15,6 @@ from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.machine_upgrade import is_legacy_provisioning_payload, read_legacy_provisioning_request
 from rcp.policies import transfer as transfer_policy
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
@@ -3741,6 +3740,11 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 "completed_at": row["completed_at"],
                 "cancelled_at": row["cancelled_at"],
             }
+            from rcp.machine_upgrade import (
+                is_legacy_provisioning_payload,
+                read_legacy_provisioning_request,
+            )
+
             if is_legacy_provisioning_payload(payload):
                 record = read_legacy_provisioning_request(
                     payload, _space_cards(connection).values()
