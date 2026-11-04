@@ -2441,6 +2441,7 @@ def create_app(
     app.state.machine_power_started = False
     app.state.client_event_limiter = ClientEventLimiter()
     app.state.reconcile_question_answers = reconcile_question_answers
+    app.state.reconcile_thread_handoffs = reconcile_thread_handoffs
     app.state.sync_coordinator = sync_coordinator
     app.state.watcher_poller = watcher_poller
     app.state.consolidation_poller = consolidation_poller
