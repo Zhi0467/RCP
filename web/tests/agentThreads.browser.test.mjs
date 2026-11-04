@@ -2326,7 +2326,7 @@ test("Pip's Running button counts what needs the member and each row opens its r
         link: "#/agent/moss",
       },
       {
-        kind: "experiment",
+        kind: "experiment_loop",
         id: "e1",
         project_id: "p1",
         project_name: "Sparse attention",
@@ -2362,7 +2362,7 @@ test("Pip's Running button counts what needs the member and each row opens its r
         link: "#/agent/biscuit",
       },
       {
-        kind: "experiment",
+        kind: "experiment_loop",
         id: "e3",
         project_id: "p3",
         project_name: "Long-context eval",
@@ -2437,6 +2437,46 @@ test("Pip's Running button counts what needs the member and each row opens its r
       assert.deepEqual(errors, []);
       await page.close();
     }
+  });
+});
+
+test("a Running read that a version overtakes is read again", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage();
+    await mockApi(page, []);
+    let running = { rows: [], needs: 0, total: 0 };
+    let reads = 0;
+    await page.route("**/api/agent-threads/running", async (route) => {
+      reads += 1;
+      const snapshot = running;
+      if (reads === 1) {
+        running = {
+          rows: [
+            {
+              kind: "thread",
+              id: "moss",
+              project_id: "p1",
+              project_name: "Sparse attention",
+              title: "Moss",
+              needs_you: true,
+              label: "Asked you a question",
+              watching: 0,
+              at: ago(3),
+              link: "#/agent/moss",
+            },
+          ],
+          needs: 1,
+          total: 1,
+        };
+        await page.waitForTimeout(1500);
+      }
+      await route.fulfill({ json: snapshot });
+    });
+    await page.goto(`${base}#/agent/space`);
+    const pip = page.getByRole("region", { name: "Pip" });
+    await pip.getByRole("button", { name: /^Running/ }).waitFor();
+    assert.equal(reads, 2);
+    await page.close();
   });
 });
 

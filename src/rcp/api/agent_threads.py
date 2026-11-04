@@ -46,6 +46,7 @@ from rcp.api.dependencies import project_write_admission
 from rcp.api.index import (
     DisplayCacheDependency,
     ExperimentOperationLockDependency,
+    SpaceRunMode,
     episode_title,
     space_run_entries,
 )
@@ -271,7 +272,7 @@ def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> l
 
 
 class RunningRow(BaseModel):
-    kind: Literal["experiment", "auto_research", "thread"]
+    kind: SpaceRunMode | Literal["thread"]
     id: str
     project_id: str
     project_name: str
@@ -321,7 +322,7 @@ def running_list(
     watching = episode_watching(store, [entry.episode_id for entry in episodes])
     rows = [
         RunningRow(
-            kind="experiment" if entry.mode == "experiment_loop" else "auto_research",
+            kind=entry.mode,
             id=entry.episode_id,
             project_id=entry.project_id,
             project_name=entry.project_name,

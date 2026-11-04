@@ -81,11 +81,11 @@ def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
     ]
 
 
-def test_paper_coach_edits_only_changes_and_has_no_shell():
+def test_paper_coach_edits_only_changes_and_has_a_shell():
     command, permission = _launch(_request("paper_suggest"))
     assert "rev-parse" in command[2]
     assert permission["edit"] == {"*": "deny", "stage/changes/**": "allow"}
-    assert "bash" not in permission
+    assert permission["bash"] == "allow"
     assert permission["external_directory"] == "allow"
 
 

@@ -9,7 +9,7 @@ import { sinceLabel } from "./agentThreadModel";
 import { loadRunningList } from "./agentThreadsApi";
 
 const KIND_LABEL: Record<RunningRowKind, string> = {
-  experiment: "Experiment",
+  experiment_loop: "Experiment",
   auto_research: "Auto-research",
   thread: "Your agent",
 };
@@ -33,7 +33,7 @@ function useRunningList(): RunningList | null {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let wanted: string | null = null;
     let read: string | null | undefined;
-    const stale = () => read === undefined || (read !== null && read !== wanted);
+    const stale = () => read === undefined || read !== wanted;
     const later = (ms: number) => {
       if (stopped || loading || timer !== null || !stale()) return;
       timer = setTimeout(load, Math.max(0, ms));
@@ -48,7 +48,7 @@ function useRunningList(): RunningList | null {
           loading = false;
           if (stopped) return;
           failures = 0;
-          read = version ?? wanted;
+          read = version;
           setList(next);
           later(RUNNING_READ_GAP_MS);
         },
@@ -60,8 +60,8 @@ function useRunningList(): RunningList | null {
       );
     };
     const unwatch = scheduler.watchAgentCards((version) => {
+      if (read === null && wanted === null) read = version;
       wanted = version;
-      if (read === null) read = version;
       later(lastRead + RUNNING_READ_GAP_MS - Date.now());
     });
     later(0);

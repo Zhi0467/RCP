@@ -4292,7 +4292,7 @@ export interface AgentCardList {
   questions?: RelayedQuestion[];
 }
 
-export type RunningRowKind = "experiment" | "auto_research" | "thread";
+export type RunningRowKind = "experiment_loop" | "auto_research" | "thread";
 
 /** One run or project agent of the member's, as the Space thread's Running list shows it. */
 export interface RunningRow {

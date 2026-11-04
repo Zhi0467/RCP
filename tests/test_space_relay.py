@@ -104,7 +104,7 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
 
     quiet = running()
     assert {(row["kind"], row["id"]) for row in quiet["rows"]} == {
-        ("experiment", current_episode),
+        ("experiment_loop", current_episode),
         ("auto_research", parent.episode_id),
     }
     assert (quiet["total"], quiet["needs"]) == (
@@ -147,7 +147,7 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
         entry = runs[episode_id]
         target = GraphTargetRef.model_validate(entry["graph_target"]).key
         assert rows[episode_id] == {
-            "kind": "experiment" if entry["mode"] == "experiment_loop" else "auto_research",
+            "kind": entry["mode"],
             "id": episode_id,
             "project_id": project_id,
             "project_name": entry["project_name"],
