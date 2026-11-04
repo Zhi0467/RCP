@@ -192,3 +192,8 @@ cards. It is built by the exact base source `a83fbf50` from
 gained queued member messages (storage migration 75), ending at migration 74
 after schedule pending fires. It is built by the exact base source `351ef3ff`
 from `pre-schedule-pending-fires-v39-a83fbf5`.
+
+`pre-coach-steers-v41-911af57` retains the last shape before the Paper coach
+stored its steered messages (storage migration 76), ending at migration 75
+after the thread queue. It is built by the exact base source `911af577` from
+`pre-thread-queue-v40-351ef3f`.
