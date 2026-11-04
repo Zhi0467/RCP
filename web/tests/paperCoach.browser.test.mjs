@@ -84,7 +84,12 @@ test("card refusals have a visible edge and dismiss; transient failures retry", 
 });
 
 test("summary refusals expose one dismiss action and a red edge", async (t) => {
-  const { page, context } = await open(t, { cards: [{ ...card, state: "applied" }] });
+  const { page, context } = await open(t, {
+    cards: [
+      { ...card, state: "applied" },
+      { ...card, change_id: "c2", group_id: "g2", state: "applied" },
+    ],
+  });
   await context.route("**/changes/undo-all", (route) => route.fulfill({ status: 409, json: {} }));
   await coach(page);
   await page.getByRole("button", { name: "Undo all", exact: true }).click();
@@ -104,8 +109,17 @@ test("outdated cards can be rejected", async (t) => {
   assert.ok(posts.some((post) => post.path.endsWith("/g1/reject")));
 });
 
-test("accepted cards offer task-level undo", async (t) => {
-  const { page, posts } = await open(t, { cards: [{ ...card, state: "accepted" }] });
+test("one change undoes on its own row; two or more add a task-level undo", async (t) => {
+  const one = await open(t, { cards: [{ ...card, state: "accepted" }] });
+  await coach(one.page);
+  await one.page.getByRole("button", { name: "Undo change", exact: true }).waitFor();
+  assert.equal(await one.page.locator(".paper-change-summary").count(), 0);
+  const { page, posts } = await open(t, {
+    cards: [
+      { ...card, state: "accepted" },
+      { ...card, change_id: "c2", group_id: "g2", state: "accepted" },
+    ],
+  });
   await coach(page);
   const response = page.waitForResponse((response) => response.url().endsWith("/undo-all"));
   await page.getByRole("button", { name: "Undo all", exact: true }).click();
