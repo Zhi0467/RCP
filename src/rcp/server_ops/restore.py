@@ -51,7 +51,18 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Agent tables (v68-73), schedule pending fires (v74): fresh, fixtures, in-place upgrades.
+        # Agent tables (v68-73), pending fires (v74), thread queue (v75): fresh, fixtures, in place.
+        "27ff1ba3fa4e398b5499a974de1441c3733407102b7a69ad9865cdcc17ec68c4",
+        "2b4c6f31acbbd6293609fdebf1d37430cb359cceb0fef7dde4f3c9a27dd689b2",
+        "38e2f490c84de9cec607e6b60678ae42cffd1d7db22e1bc777c76b83ca02fc63",
+        "635befb4027891edc486276c0b625c36795e5edd34d9c8b20804ff8d7026b933",
+        "7a7e3e7079a25e4eb43773faa2aeea178d65565585520673bf5f0c98c1433015",
+        "8ac9554efc0a77c5c6594f04f09785991903dd21b7bb03220397a38821e3f975",
+        "8dc4212104c22c9a8c229eeb44b35b0222949a3642d97f7c4416e76dcb98232b",
+        "9e20e9f284f1e9f71f4009017076f251d5e9d9263af0ab80dbb4acf21f640de2",
+        "a351d61f1ec79dbd21cae3cf94708c5e253f428687df5b90eeffc09a9cfa1017",
+        "e7a6a89c914abc71cdf035a885a3272a0f570b6d03e091ab7129bdd3f6d53b24",
+        "fb581971ef7f118e9c111f961b22f7136adfd941cfe05f41623d7ba9c0e38342",
         "06648185128e17b509fb431adbb5cb6b4b2b5e452a9710c3f1b91a863bc026c9",
         "2486a78010708a6af3d6f1d948cd9718bc5ab25a25bd997c6850f0f87005a03c",
         "2a619610a827a8d9f255f8260c809c414a32144557914f4b30a7976046b9c679",

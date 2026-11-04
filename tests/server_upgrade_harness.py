@@ -130,6 +130,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "a83fbf50ce8858724101138044cf14207c636e6e",
         "172b17851606cf10728a8ef9b95d7fbf63d2edf26ccdab4ed44909db9ba56ff1",
     ),
+    "pre-thread-queue-v40-351ef3f": (
+        "351ef3ffe0b83ed572a128b7b4cc5e4a05ac0b37",
+        "08e8c24de3c49836f723cf3672de1490f7dd1f889808109a1302cf1a8ce8d7cd",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",

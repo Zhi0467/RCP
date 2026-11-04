@@ -187,3 +187,8 @@ schedules gained pending fires (storage migration 74), ending at migration 73
 after file-backed memory, agent threads, handoffs, schedules, and approval
 cards. It is built by the exact base source `a83fbf50` from
 `pre-memory-files-v38-603edb0`.
+
+`pre-thread-queue-v40-351ef3f` retains the last shape before project threads
+gained queued member messages (storage migration 75), ending at migration 74
+after schedule pending fires. It is built by the exact base source `351ef3ff`
+from `pre-schedule-pending-fires-v39-a83fbf5`.
