@@ -2564,6 +2564,8 @@ export interface AgentTask {
   steer_turn_id: string | null;
   /** Bumped by each queued steer and each final steer receipt; a change means new chat history. */
   steer_revision?: number;
+  /** A Paper coach turn's steered messages, which it has no transcript to hold. */
+  steers?: ChatMessage[];
   //: What sending into this running attempt does, worded by the runtime that
   //: owns the behaviour: Codex app-server injects into the turn, Claude
   //: stream-json queues a follow-up turn. The composer renders this verbatim.

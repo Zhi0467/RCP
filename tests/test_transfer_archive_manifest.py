@@ -94,6 +94,7 @@ PROJECT_LINKED_TABLES = {
     "chat_browser_preferences",
     "browser_owners",
     "browser_turn_status",
+    "paper_coach_steers",
     "chat_pins",
     "chat_reads",
     "chat_session_contexts",

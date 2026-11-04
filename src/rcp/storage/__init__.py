@@ -39,6 +39,7 @@ from rcp.storage.models import *  # noqa: F401,F403
 from rcp.storage.models import __all__ as _model_names
 from rcp.storage.notifications import NotificationStoreMixin
 from rcp.storage.owner_auth import OwnerAuthStoreMixin
+from rcp.storage.paper_coach_steers import PaperCoachSteerStoreMixin
 from rcp.storage.project_groups import ProjectGroupStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin
@@ -63,6 +64,7 @@ class AppStore(
     AgentThreadStoreMixin,
     AgentSchedulesStoreMixin,
     ApprovalCardStoreMixin,
+    PaperCoachSteerStoreMixin,
     ResearchViewStoreMixin,
     BranchNameStoreMixin,
     ClientRequestStoreMixin,

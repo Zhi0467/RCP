@@ -17,6 +17,7 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         "approval_cards",
         "agent_handoffs",
         "agent_thread_queue",
+        "paper_coach_steers",
         "space_turn_project_bindings",
         "memory_migrations",
         "memory_deletions",

@@ -422,7 +422,7 @@ test("a sent coach turn shows its files and the session's context", async (t) =>
     });
     await coach(page);
     await page
-      .locator(".paper-coach .chat-human-message .chat-input-attachment", { hasText: "notes.md" })
+      .locator(".paper-coach .node-chat-line.human .chat-input-attachment", { hasText: "notes.md" })
       .waitFor();
     await page.locator(".paper-panel-tools").getByRole("button", { name: "Context" }).waitFor();
     await fits(page);
@@ -570,4 +570,103 @@ test("a new selection in the HTML page keeps the typed comment and its own mark"
   await post("Third words");
   await page.getByText("Third words").first().waitFor();
   assert.equal(await comment.inputValue(), "half written");
+});
+
+const running = {
+  ...turn,
+  operation_id: "t2",
+  request: { message: "Check the claims", session_id: "s1" },
+  result: null,
+  active: true,
+  can_pause: true,
+  steer_visible: true,
+  can_steer: true,
+  steer_turn_id: "turn-1",
+  steer_action_label: "Steer",
+  steer_unavailable_reason: null,
+  steers: [],
+};
+const steerMessage = (body, operation_id) => ({
+  message_id: body.message_id,
+  operation_id,
+  role: "user",
+  text: body.message,
+  timestamp: new Date(Date.now() + 1000).toISOString(),
+  trigger: "human",
+  attachments: [],
+  steering: { attempt: 1, turn_id: "turn-1", status: "delivered", label: "Delivered" },
+});
+
+test("a running coach turn takes a steer from the composer beside Stop", async (t) => {
+  const steers = [];
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}, ${JSON.stringify(running)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body, ...rest) => {
+        if (path !== "/api/projects/p/tasks/t2/steer") return respond(path, method, body, ...rest);
+        steers.push(body);
+        return { json: steerMessage(body, "t2") };
+      };
+    },
+  });
+  await coach(page);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  await page.getByRole("textbox", { name: "Message" }).fill("Focus on section 2.");
+  await page.getByRole("button", { name: "Steer", exact: true }).click();
+  const steered = page.locator(".paper-coach .node-chat-line.human", {
+    has: page.locator(".chat-steering-receipt"),
+  });
+  await steered.waitFor();
+  assert.equal(steers.length, 1);
+  const { message_id, ...request } = steers[0];
+  assert.match(message_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(request, {
+    attempt: 1,
+    expected_turn_id: "turn-1",
+    message: "Focus on section 2.",
+  });
+  assert.equal(await steered.locator(".node-chat-text").textContent(), "Focus on section 2.");
+  assert.equal(await steered.evaluate((line) => line.previousElementSibling.dataset.taskId), "t2");
+  assert.equal(await page.getByRole("textbox", { name: "Message" }).inputValue(), "");
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  await fits(page);
+  assert.deepEqual(errors, []);
+});
+
+test("a settled turn's steers sit between its prompt and reply; an unsteerable turn disables Send", async (t) => {
+  const steered = {
+    ...turn,
+    steers: [steerMessage({ message_id: "m1", message: "Shorter, please." }, "t1")],
+  };
+  const unsteerable = {
+    ...running,
+    can_steer: false,
+    steer_turn_id: null,
+    steer_unavailable_reason: "This runtime cannot be steered.",
+  };
+  const { page } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(steered)}, ${JSON.stringify(unsteerable)}], started: [] };`,
+  });
+  await coach(page);
+  const lines = page.locator(".paper-coach .node-chat-line[data-task-id=t1]");
+  await lines.nth(2).waitFor();
+  assert.deepEqual(
+    await lines.evaluateAll((items) =>
+      items.map((line) => [
+        line.classList.contains("human"),
+        Boolean(line.querySelector(".chat-steering-receipt")),
+      ]),
+    ),
+    [
+      [true, false],
+      [true, true],
+      [false, false],
+    ],
+  );
+  const send = page.getByRole("button", { name: "Send coach message" });
+  await page.getByRole("textbox", { name: "Message" }).fill("More.");
+  assert.equal(await send.isDisabled(), true);
+  assert.equal(await send.getAttribute("title"), unsteerable.steer_unavailable_reason);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
 });

@@ -615,7 +615,9 @@ runtime. No hint line or separate steering control is shown. While steering,
 mode is locked to the running turn; the next-turn selection returns afterwards.
 Unsupported runtimes leave that next-turn toggle available. Episode workers use
 orchestrator mail instead. Steers persist as human messages with delivered,
-refused or unknown receipts. Reload never infers acknowledgement from reply text
+refused or unknown receipts. The Paper coach steers the same way; with no
+transcript, its steers live in `paper_coach_steers` and reach the web on its
+task rows. Reload never infers acknowledgement from reply text
 or resends input. [Provider steering](providers-and-containment.md#live-human-steering)
 owns transport races and placement.
 

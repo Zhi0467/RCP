@@ -1119,6 +1119,7 @@ NOT_LIFECYCLE: dict[str, str] = {
     "notification_web_push_subscriptions": "device subscription identity",
     "owner_credentials": "singleton owner secret hash",
     "paper_blobs": "content-addressed bodies",
+    "paper_coach_steers": "steer receipts; delivery settles an unknown receipt once",
     "paper_doc_states": "compacted document cache",
     "paper_drafts": "legacy draft content",
     "paper_files": "file tree rows; deleted_at is a tombstone",

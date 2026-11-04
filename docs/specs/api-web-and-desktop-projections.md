@@ -1646,6 +1646,11 @@ ids. Admission re-resolves and binds atomically; a client hint cannot pin a new
 ordinary turn to a superseded session. Artifact comments keep their artifact's
 ownership checks while following the chat's current session profile.
 
+Paper coach task responses include `steers`, the turn's steered messages in the
+`ChatMessage` shape a chat transcript gives them, oldest first. The coach has no
+transcript, so `paper_coach_steers` holds them; a project transfer leaves them
+behind with its source turns.
+
 Read state is stored per user on the server, so it survives a reload, a closed
 app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
 the acting user's markers, one finish time per chat, plus a `baseline`: the
