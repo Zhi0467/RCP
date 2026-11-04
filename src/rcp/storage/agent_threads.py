@@ -103,6 +103,7 @@ class AgentThreadQueueRecord(BaseModel):
     message: str
     attachment_set_id: str | None = None
     attachment_client_id: str | None = None
+    attachment_count: int = 0
     created_at: str
     operation_id: str | None = None
     refusal_reason: str | None = None
@@ -168,7 +169,8 @@ def migrate_agent_thread_queue(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE agent_thread_queue (
         queue_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL, message TEXT NOT NULL,
-        attachment_set_id TEXT, attachment_client_id TEXT, created_at TEXT NOT NULL,
+        attachment_set_id TEXT, attachment_client_id TEXT,
+        attachment_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
         operation_id TEXT, refusal_reason TEXT, deferred_at TEXT,
         UNIQUE(thread_id, idempotency_key))""")
     connection.execute("""CREATE INDEX agent_thread_queue_pending ON agent_thread_queue(thread_id, created_at)
@@ -467,6 +469,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
         message: str,
         attachment_set_id: str | None = None,
         attachment_client_id: str | None = None,
+        attachment_count: int = 0,
     ) -> AgentThreadQueueRecord:
         """Store one member message for the thread's next free turn; a replayed key returns it."""
         from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
@@ -494,11 +497,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 message=message,
                 attachment_set_id=attachment_set_id,
                 attachment_client_id=attachment_client_id,
+                attachment_count=attachment_count,
                 created_at=self.now(),
             )
             connection.execute(
                 "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
-                "attachment_set_id,attachment_client_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                "attachment_set_id,attachment_client_id,attachment_count,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (
                     record.queue_id,
                     thread_id,
@@ -507,6 +512,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     message,
                     attachment_set_id,
                     attachment_client_id,
+                    attachment_count,
                     record.created_at,
                 ),
             )

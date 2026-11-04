@@ -435,6 +435,8 @@ def test_queued_message_with_a_file_starts_as_the_members_turn_after_the_running
         assert launcher.started.wait(10)
         queued = queue("Queued follow-up", upload(b"queued-file-marker"))
         assert queued["operation_id"] is None
+        (waiting,) = client.get(base).json()["items"]
+        assert waiting["attachment_count"] == 1
         dropped_files = upload(b"dropped-file-marker")
         dropped = queue("Never mind", dropped_files)
         assert client.delete(f"{base}/{dropped['queue_id']}").status_code == 200

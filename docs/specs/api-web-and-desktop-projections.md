@@ -2339,7 +2339,8 @@ another message, and 409 for a closed or archived thread or a thread holding
 removes an unstarted or refused message; a started one is 409. `GET` returns
 `{items}` ordered by readiness: `{kind: "handoff", handoff_id, message,
 source_agent_name, ready_at}` for pending handoffs whose Space turn succeeded,
-and `{kind: "message", queue_id, message, created_at, refusal_reason}`.
+and `{kind: "message", queue_id, message, created_at, refusal_reason,
+attachment_count}`.
 
 Chat transcripts and the Space transcript stamp each message's `shown_at`
 (`stamp_shown_at` in `api/chats.py`). A member message shows its turn's first

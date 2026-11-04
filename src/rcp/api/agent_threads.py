@@ -541,7 +541,7 @@ def _queue_new_message(
     operation_id = queued_turn_operation_id(queue_id)
     client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
     try:
-        _, batch = claim_turn_attachments(
+        claimed, batch = claim_turn_attachments(
             store,
             catalog,
             attachment_store,
@@ -567,6 +567,7 @@ def _queue_new_message(
             message=body.message,
             attachment_set_id=batch,
             attachment_client_id=client_id,
+            attachment_count=len(claimed.attachments),
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
@@ -629,6 +630,7 @@ def thread_queue(
             "message": row.message,
             "created_at": row.created_at,
             "refusal_reason": row.refusal_reason,
+            "attachment_count": row.attachment_count,
         }
         for row in store.agent_thread_queue(thread.thread_id)
     )
