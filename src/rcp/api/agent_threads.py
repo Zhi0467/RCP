@@ -582,7 +582,6 @@ def remove_queued_message(
     request: Request,
     *,
     store: StoreDependency,
-    catalog: CatalogDependency,
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
 ):
@@ -594,7 +593,8 @@ def remove_queued_message(
     removed = store.delete_agent_thread_queue_item(queue_id)
     if removed is None:
         raise HTTPException(status_code=409, detail="This message already started")
-    release_queued_files(attachment_store, removed)
+    if removed.refusal_reason is None:
+        release_queued_files(attachment_store, removed)
     return {"queue_id": queue_id}
 
 
