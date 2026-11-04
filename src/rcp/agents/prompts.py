@@ -543,7 +543,7 @@ _EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a wa
 - Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
   `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
   work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
-- RCP saves `cancel_command` with the watcher and runs it only when a human clicks Cancel, on the
+- RCP saves `cancel_command` with the watcher and runs it only on an explicit Cancel, on the
   same execution machine and in the same `cwd`. Omit it when you cannot provide a reliable command
   for cancelling exactly that work. Stopping continuation does not run it.
 - After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.

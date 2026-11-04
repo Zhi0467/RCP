@@ -167,7 +167,7 @@ class WorkComputeCommands:
         )
         helper = (
             "A long-lived process such as a dashboard uses the ordinary launch and its watcher; "
-            "the human stops it with Cancel. "
+            "Cancel stops it. "
             "For work that must outlive this agent turn, use the process launch helper: "
             f"`{launch_command}`. Copy its returned watcher object into watch.json's external list "
             "before ending the turn while that work is running. The helper provides check_command, "
