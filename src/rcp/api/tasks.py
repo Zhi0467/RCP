@@ -74,6 +74,7 @@ from rcp.runs.steering import (
     chat_steer_action_label,
     chat_steering_state,
     chat_steering_visible,
+    coach_steer_message,
     finish_chat_steer,
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
@@ -275,6 +276,11 @@ def _agent_task_response(
                 cache[key] = _current_chat_session_id(store, record.project_id, *key)
             session_id = cache[key]
         response["current_chat_session_id"] = session_id
+    if record.kind == "paper_coach":
+        response["steers"] = [
+            coach_steer_message(row).model_dump(mode="json")
+            for row in store.paper_coach_steers(record.operation_id)
+        ]
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),

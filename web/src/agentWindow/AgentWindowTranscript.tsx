@@ -62,6 +62,8 @@ interface Props {
   /** A window that shows browser loss once elsewhere keeps it off each turn. */
   browserNotices?: boolean;
   agentProgress?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
+  /** What the owner ends a line with, such as the cards its turn produced. */
+  lineTrail?: (line: TaskTranscriptLine) => ReactNode;
   footer?: ReactNode;
   showModes?: boolean;
   nodes?: Readonly<Record<string, GraphNode>>;
@@ -107,6 +109,7 @@ export function AgentWindowTranscript({
   triggerChip = watcherChip,
   browserNotices = true,
   agentProgress,
+  lineTrail,
   footer,
   showModes = true,
   nodes = NO_NODES,
@@ -405,6 +408,7 @@ export function AgentWindowTranscript({
                   )}
                 </div>
               )}
+              {lineTrail?.(line)}
               {shownAt && line.trigger !== "schedule" && (
                 <time className="chat-line-time" dateTime={shownAt.toISOString()}>
                   {localClock(shownAt)}

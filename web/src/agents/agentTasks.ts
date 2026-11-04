@@ -186,6 +186,19 @@ export function coachConversation(
   };
 }
 
+/** A coach reply carries its turn's launch time rather than a transcript's, so each
+ *  steer is placed after its turn's prompt instead of after the reply. */
+export function coachSteersAfterPrompts(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {
+  const prompt = (line: TaskTranscriptLine) => line.role === "human" && !line.steering;
+  const prompted = new Set(lines.filter(prompt).map((line) => line.taskId));
+  const placed = lines.filter((line) => line.steering && prompted.has(line.taskId));
+  return lines
+    .filter((line) => !placed.includes(line))
+    .flatMap((line) =>
+      prompt(line) ? [line, ...placed.filter((steer) => steer.taskId === line.taskId)] : [line],
+    );
+}
+
 export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
   const continuedTaskIds = new Set(
     tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),

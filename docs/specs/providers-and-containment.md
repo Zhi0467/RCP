@@ -987,7 +987,8 @@ state workspace.
 
 ### Live human steering
 
-Steering addresses RCP's live process for one exact ordinary Discuss/Work attempt.
+Steering addresses RCP's live process for one exact ordinary Discuss/Work or
+Paper coach attempt.
 It cannot select a newer attempt, start work or target an episode worker. Agent
 mail uses its own channel. Input retains the attempt's mode, scope, target and
 budget; [chat records](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)

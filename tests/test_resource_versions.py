@@ -275,6 +275,7 @@ _EXEMPT_TABLES = {
     "paper_change_groups": "coach cards",
     "paper_changes": "coach cards",
     "paper_change_receipts": "receipt",
+    "paper_coach_steers": "steer receipt; task rows carry it with steer_revision",
 }
 
 
