@@ -932,3 +932,32 @@ test("the editor/preview divider resizes within bounds, persists, and is absent 
   assert.equal(await handle.isVisible(), false);
   assert.deepEqual(errors, []);
 });
+
+test("double-clicking a word in the preview puts the editor on that word", async (t) => {
+  const text = "# Title\n\nFirst sentence here.\nThe cat sat. The cat ran.";
+  const room = new Room();
+  room.doc.getText("text").delete(0, 5);
+  room.doc.getText("text").insert(0, text);
+  for (const width of [1280, 390]) {
+    const { page, errors } = await openPaper(t, { room, initialText: text, width });
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    const paragraph = page.locator(".paper-markdown p", { hasText: "The cat ran" });
+    await paragraph.waitFor();
+    const point = await paragraph.evaluate((element) => {
+      const node = element.firstChild;
+      const range = document.createRange();
+      const at = node.data.lastIndexOf("cat");
+      range.setStart(node, at);
+      range.setEnd(node, at + 3);
+      const box = range.getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    });
+    await page.mouse.dblclick(point.x, point.y);
+    await page.waitForFunction(() =>
+      document.querySelector(".paper-position")?.textContent.includes("Ln 4, Col 21"),
+    );
+    assert.equal(await page.evaluate(() => window.getSelection().toString()), "cat");
+    assert.ok(await page.locator(".cm-content").isVisible());
+    assert.deepEqual(errors, []);
+  }
+});

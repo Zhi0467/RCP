@@ -192,3 +192,87 @@ function markdownWhere(host: HTMLElement, start: Element, end: Element) {
 function linesWhere(path: string, from: number, to: number) {
   return to > from ? `${path}, lines ${from}-${to}` : `${path}, line ${from}`;
 }
+
+/** A double-clicked preview point in its source: the file, the lines it renders from, and
+ * which occurrence of the clicked word within those lines it is. */
+export interface PreviewSourceSpot {
+  path: string;
+  from: number;
+  to: number;
+  word: string;
+  occurrence: number;
+}
+
+/** Where a double-click on the preview points in the source, from the same marks comments use. */
+export function previewSourceSpot(
+  target: Element,
+  selection: Selection | null,
+  clientY: number,
+): PreviewSourceSpot | null {
+  const host = target.closest<HTMLElement>("[data-paper-path]");
+  if (!host) return null;
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  const word = range?.toString().trim() ?? "";
+  const page = target.closest<HTMLElement>(".paper-pdf-page[data-page]");
+  if (page) {
+    const map = synctexMaps.get(host);
+    const points = Number(page.dataset.points);
+    if (!map || !points || !page.clientWidth) return null;
+    const y = ((clientY - page.getBoundingClientRect().top) * points) / page.clientWidth;
+    const source = synctexSource(map, Number(page.dataset.page), y);
+    return source && { path: source.path, from: source.line, to: source.line, word, occurrence: 0 };
+  }
+  const path = host.dataset.paperPath!;
+  if (!range || !host.contains(range.startContainer)) return null;
+  if (host.tagName === "PRE") {
+    const lines = textBefore(host, range).split("\n");
+    return {
+      path,
+      from: lines.length,
+      to: lines.length,
+      word,
+      occurrence: count(lines.at(-1)!, word),
+    };
+  }
+  const block = target.closest<HTMLElement>("[data-line-start]");
+  if (!block || !host.contains(block)) return null;
+  return {
+    path,
+    from: Number(block.dataset.lineStart),
+    to: Number(block.dataset.lineEnd),
+    word,
+    occurrence: count(textBefore(block, range), word),
+  };
+}
+
+function textBefore(container: Node, range: Range) {
+  const before = document.createRange();
+  before.setStart(container, 0);
+  before.setEnd(range.startContainer, range.startOffset);
+  return before.toString();
+}
+
+function count(text: string, word: string) {
+  return word ? text.split(word).length - 1 : 0;
+}
+
+/** The source range a spot names: its word's occurrence within its lines, else the first
+ * line's start. Markup the preview hides can shift occurrences, so a missing occurrence
+ * falls back to the word's last appearance in those lines. */
+export function sourceSpotRange(
+  text: string,
+  spot: PreviewSourceSpot,
+): { from: number; to: number } {
+  const lines = text.split("\n");
+  const first = Math.min(Math.max(spot.from, 1), lines.length);
+  const start = lines.slice(0, first - 1).reduce((sum, line) => sum + line.length + 1, 0);
+  const span = lines.slice(first - 1, Math.max(spot.to, first)).join("\n");
+  let at = -1;
+  for (let seen = 0; spot.word && seen <= spot.occurrence; seen++) {
+    const next = span.indexOf(spot.word, at + 1);
+    if (next < 0) break;
+    at = next;
+  }
+  if (at < 0) return { from: start, to: start };
+  return { from: start + at, to: start + at + spot.word.length };
+}

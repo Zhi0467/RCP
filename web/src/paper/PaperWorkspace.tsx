@@ -25,7 +25,7 @@ import {
   unsentPaperDocuments,
   type PaperDocument,
 } from "./paperDocuments";
-import { carryPaperSelection, PaperEditor } from "./PaperEditor";
+import { carryPaperSelection, changeFocus, PaperEditor, type PaperFocus } from "./PaperEditor";
 import { PaperFiles } from "./PaperFiles";
 import { usePaperSplit } from "./usePaperSplit";
 import { ResizeHandle } from "../ui/ResizeHandle";
@@ -33,8 +33,12 @@ import { PaperPreview } from "./PaperPreview";
 import { PaperCoach } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
-import { usePaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
-import { resolvePreviewSelection, type PreviewDirectComment } from "./previewComments";
+import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
+import {
+  previewSourceSpot,
+  resolvePreviewSelection,
+  type PreviewDirectComment,
+} from "./previewComments";
 import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
 
 /** Route snapshots retain selection only; IndexedDB owns all document content. */
@@ -108,7 +112,7 @@ export function PaperWorkspace({
     line: 1,
   });
   const [history, setHistory] = useState(false);
-  const [focusChange, setFocusChange] = useState<PaperChange | null>(null);
+  const [focus, setFocus] = useState<PaperFocus | null>(null);
   const [actionError, setActionError] = useState<{
     error: string;
     retry: () => Promise<void>;
@@ -378,10 +382,15 @@ export function PaperWorkspace({
     if (next !== "write") setRight(next);
     else focusEditor();
   };
-  const locate = (change: PaperChange) => {
-    setSelected(change.file_id);
-    setFocusChange(change);
+  const locate = (next: PaperFocus) => {
+    setSelected(next.file_id);
+    setFocus(next);
     setView("write");
+  };
+  const locateSource = (event: React.MouseEvent) => {
+    const spot = previewSourceSpot(event.target as Element, window.getSelection(), event.clientY);
+    const source = spot && tree?.files.find((item) => item.path === spot.path);
+    if (spot && source) locate({ kind: "source", file_id: source.file_id, spot });
   };
   const previewActive = right === "preview" && (!phone || view === "preview");
   // Mounted on first view, then kept while hidden so its PDF and position survive.
@@ -521,7 +530,7 @@ export function PaperWorkspace({
               maxBytes={tree?.max_doc_bytes}
               format={file!.format}
               changes={changeFeed.changes}
-              focusChange={focusChange}
+              focus={focus}
               onDecide={(id, action) => void perform(() => act(id, action))}
               onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
@@ -567,6 +576,7 @@ export function PaperWorkspace({
           hidden={right !== "preview"}
           ref={previewPane}
           tabIndex={-1}
+          onDoubleClick={locateSource}
         >
           {previewShown &&
             file &&
@@ -614,7 +624,7 @@ export function PaperWorkspace({
                 refresh();
               }
             }}
-            onLocate={locate}
+            onLocate={(change) => locate(changeFocus(change))}
             toolbar={(phone ? view : right) === "coach" ? panelBar : null}
             comments={comments}
             submitting={coachSubmitting}

@@ -12,6 +12,7 @@ import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import { paperDocumentKey, type PaperDocument, type PaperDocumentKey } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
+import { sourceSpotRange, type PreviewSourceSpot } from "./previewComments";
 
 class SuggestionWidget extends WidgetType {
   constructor(
@@ -85,12 +86,21 @@ function settleCursorLine(
   return () => clearTimeout(timer);
 }
 
+/** Where the editor moves when asked: a change card's anchor, or a spot double-clicked in the preview. */
+export type PaperFocus =
+  | { kind: "change"; file_id: string; change: PaperChange }
+  | { kind: "source"; file_id: string; spot: PreviewSourceSpot };
+
+export function changeFocus(change: PaperChange): PaperFocus {
+  return { kind: "change", file_id: change.file_id, change };
+}
+
 export function PaperEditor({
   owner,
   format,
   changes,
   onDecide,
-  focusChange,
+  focus,
   maxBytes,
   onCursorLine,
 }: {
@@ -99,7 +109,7 @@ export function PaperEditor({
   format: string;
   changes: PaperChange[];
   onDecide: (id: string, action: "accept" | "reject") => void;
-  focusChange: PaperChange | null;
+  focus: PaperFocus | null;
   /** The cursor's line once it settles, for a preview that follows it. */
   onCursorLine?: (line: number) => void;
 }) {
@@ -333,32 +343,35 @@ export function PaperEditor({
     });
   }, [pending, owner, text, anchors]);
 
-  const locate = (change: PaperChange | undefined) => {
+  const focusRange = (target: PaperFocus) => {
+    if (target.kind === "source") return sourceSpotRange(text, target.spot);
+    const anchor = anchors.get(target.change);
+    const range = anchor && resolvePaperAnchor(anchor, target.change, owner.text);
+    return range ? { from: range.from, to: range.from } : null;
+  };
+  const locate = (target: PaperFocus) => {
     const editor = view.current;
-    if (!editor || !change) return false;
-    const anchor = anchors.get(change);
-    const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
-    if (!range) return false;
-    const { from } = range;
+    const range = editor && focusRange(target);
+    if (!editor || !range) return false;
     editor.dispatch({
-      selection: { anchor: from },
-      effects: EditorView.scrollIntoView(from, { y: "center" }),
+      selection: { anchor: range.from, head: range.to },
+      effects: EditorView.scrollIntoView(range.from, { y: "center" }),
     });
     editor.focus();
     return true;
   };
-  const located = useRef<{ owner: PaperDocument; change: PaperChange } | null>(null);
+  const located = useRef<{ owner: PaperDocument; focus: PaperFocus } | null>(null);
   useEffect(() => {
     if (
-      !focusChange ||
-      focusChange.file_id !== owner.key.file ||
+      !focus ||
+      focus.file_id !== owner.key.file ||
       !text ||
-      (located.current?.owner === owner && located.current.change === focusChange)
+      (located.current?.owner === owner && located.current.focus === focus)
     )
       return;
-    if (locate(focusChange)) located.current = { owner, change: focusChange };
+    if (locate(focus)) located.current = { owner, focus };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- locate is recreated each render; text arriving is the trigger
-  }, [focusChange, owner, text]);
+  }, [focus, owner, text]);
   const words = useMemo(() => text.trim().split(/\s+/).filter(Boolean).length, [text]);
   return (
     <>
@@ -379,7 +392,7 @@ export function PaperEditor({
               onClick={() => {
                 const next = (currentStep - 1 + pending.length) % pending.length;
                 setStep(next);
-                locate(pending[next]);
+                locate(changeFocus(pending[next]));
               }}
             >
               <ChevronLeft size={14} />
@@ -390,7 +403,7 @@ export function PaperEditor({
               onClick={() => {
                 const next = (currentStep + 1) % pending.length;
                 setStep(next);
-                locate(pending[next]);
+                locate(changeFocus(pending[next]));
               }}
             >
               <ChevronRight size={14} />

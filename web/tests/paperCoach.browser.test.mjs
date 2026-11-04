@@ -199,7 +199,7 @@ test("oversized UTF-8 edits leave the document editable and synchronized", async
             maxBytes: 9,
             format: "markdown",
             changes: [],
-            focusChange: null,
+            focus: null,
             onDecide: () => {},
           })
         : null;

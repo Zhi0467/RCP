@@ -98,7 +98,10 @@ LaTeX compiles with SyncTeX; the backend parses it beside the result into each
 tree file's first PDF page and height per source line, bounded in `limits.py`.
 After each compile and when the cursor settles, the PDF scrolls to the open
 file's line, so a section opens at its own page rather than page 1. Typst and a
-LaTeX file outside the map keep the per-root remembered scroll. The preview's actions
+LaTeX file outside the map keep the per-root remembered scroll. The reverse holds
+too: double-clicking a word in a Markdown, plain-text, or mapped LaTeX preview opens
+its source file in the editor with that word selected, found within the lines the
+clicked block renders from. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
