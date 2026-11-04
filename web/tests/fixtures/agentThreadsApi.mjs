@@ -263,7 +263,9 @@ export async function mockApi(page, writes) {
       writes.push({ method, path, body: request.postData() && JSON.parse(request.postData()) });
     }
     if (path === "/api/agent-threads") return json({ threads: threads.map(withAgent) });
-    if (path === "/api/agent-threads/cards") return json({ proposal_cards: [], asked_cards: [] });
+    if (path === "/api/agent-threads/cards")
+      return json({ proposal_cards: [], asked_cards: [], questions: [] });
+    if (path === "/api/agent-threads/running") return json({ rows: [], needs: 0, total: 0 });
     if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path) && method === "GET")
       return json({ items: [] });
     if (/^\/api\/agent-threads\/[^/]+\/agent$/.test(path) && method === "POST") {

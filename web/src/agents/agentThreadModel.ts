@@ -190,6 +190,15 @@ export function localClock(at: Date): string {
   return clock(String(at.getHours()), String(at.getMinutes()));
 }
 
+/** When a card was asked: its clock time today, else with its date, and the year when it differs. */
+export function askedLabel(timestamp: string, now: Date): string {
+  const at = new Date(timestamp);
+  const time = localClock(at);
+  if (localDay(at) === localDay(now)) return time;
+  const year = at.getFullYear() === now.getFullYear() ? "" : ` ${at.getFullYear()}`;
+  return `${at.getDate()} ${MONTHS[at.getMonth()]}${year} ${time}`;
+}
+
 /** A thread's time divider: today, yesterday, else the weekday and date, with a different year. */
 export function timeDividerLabel(at: Date, now: Date): string {
   const time = localClock(at);

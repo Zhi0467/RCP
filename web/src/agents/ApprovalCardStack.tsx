@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Files } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import type {
   AgentCardList,
@@ -6,7 +6,9 @@ import type {
   ApprovalCardResult,
   AskedApprovalCardView,
   ProposalCardView,
+  RelayedQuestion,
 } from "../core/types";
+import { QuestionCard } from "../chat/QuestionCard";
 import { retryBackoffMs } from "../core/resourceStore";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
 import { readAgentCards } from "./agentThreadsApi";
@@ -22,7 +24,8 @@ export type StackCard =
       decided: Decision | null;
       showProject: boolean;
     }
-  | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null };
+  | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null }
+  | { kind: "question"; key: string; question: RelayedQuestion };
 
 /**
  * Where a stack stands: its card order, the front card, whether Later folded it,
@@ -36,6 +39,10 @@ export function proposalCardKey(view: ProposalCardView): string {
 
 export function askedCardKey(question: AgentQuestion): string {
   return `asked:${question.question_id}`;
+}
+
+export function questionCardKey(question: RelayedQuestion): string {
+  return `question:${question.question_id}`;
 }
 
 /** Surviving cards keep their order, new cards join at the back, settled ones drop. */
@@ -78,12 +85,14 @@ export function ApprovalCardStack({
   cards,
   onDecided,
   onResolved,
+  onAnswered,
   onChanged,
 }: {
   stackKey: string;
   cards: StackCard[];
   onDecided: (view: ProposalCardView, status: Decision) => void;
   onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
+  onAnswered: (question: RelayedQuestion) => void;
   onChanged: () => void;
 }) {
   const [, redraw] = useReducer((count: number) => count + 1, 0);
@@ -116,7 +125,31 @@ export function ApprovalCardStack({
   };
   const front = open.find((card) => card.key === order[index]);
   const render = (card: StackCard, onLater?: () => void) =>
-    card.kind === "proposal" ? (
+    card.kind === "question" ? (
+      <QuestionCard
+        key={card.key}
+        question={card.question}
+        apiBase={`/api/projects/${encodeURIComponent(card.question.project_id)}`}
+        origin={
+          <span className="question-origin">
+            <a
+              className="entity-chip project"
+              href={`#/projects/${encodeURIComponent(card.question.project_id)}`}
+            >
+              <Files size={11} aria-hidden="true" />
+              {card.question.project_name}
+            </a>
+            <span title={card.question.source_label}>{card.question.source_label}</span>
+          </span>
+        }
+        onResolved={() => {
+          focusNext.current = "front";
+          onAnswered(card.question);
+          onChanged();
+        }}
+        onLater={onLater}
+      />
+    ) : card.kind === "proposal" ? (
       <ProposalApprovalCard
         key={card.key}
         view={card.view}
@@ -205,13 +238,15 @@ type Kept = { changes: number } & (
  * revision moves, and after each tap. A card decided here keeps its settled line
  * through the open-card version change its own tap causes, and drops at a fetch
  * after a later change that no longer lists it. Only the newest fetch's answer counts.
- * A failed read hides the cards and backs off before reading again.
+ * A failed read hides the cards and backs off before reading again. An answered
+ * question leaves at once and stays gone until a read no longer lists it.
  */
 export function useAgentCards(threadId: string | null, revision: string | null) {
   const version = useAgentCardsVersion();
   const scope = threadId ?? "";
   const [loaded, setLoaded] = useState<{ scope: string; list: AgentCardList | null } | null>(null);
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
+  const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const latest = useRef(0);
   const versionChanges = useRef(0);
   const failures = useRef(0);
@@ -241,6 +276,13 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
       );
       return next.size === known.size ? known : next;
     });
+    if (list) {
+      const listed = new Set((list.questions ?? []).map((question) => question.question_id));
+      setAnswered((known) => {
+        const next = new Set([...known].filter((id) => listed.has(id)));
+        return next.size === known.size ? known : next;
+      });
+    }
   }, [scope]);
   const shownVersion = useRef(version);
   useEffect(() => {
@@ -310,9 +352,24 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         : [],
     ),
   ];
+  const questions = (list?.questions ?? []).filter(
+    (question) => !answered.has(question.question_id),
+  );
+  const markAnswered = useCallback((question: RelayedQuestion) => {
+    setAnswered((known) => new Set(known).add(question.question_id));
+  }, []);
   const decisionOf = (view: ProposalCardView): Decision | null => {
     const entry = kept.get(proposalCardKey(view));
     return entry?.kind === "proposal" ? entry.status : null;
   };
-  return { proposals, asked, decisionOf, markDecided, markResolved, refetch };
+  return {
+    proposals,
+    asked,
+    questions,
+    decisionOf,
+    markDecided,
+    markResolved,
+    markAnswered,
+    refetch,
+  };
 }
