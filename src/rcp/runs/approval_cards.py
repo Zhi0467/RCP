@@ -150,6 +150,25 @@ def proposal_graph(service: ProjectService, action: ProposalAction) -> ProjectSe
         raise ValueError("branch_not_found") from exc
 
 
+def _asking_thread(
+    store: AppStore,
+    origin: QuestionOrigin,
+    member: AuthorizedHuman | None,
+    action: ApprovalAction,
+) -> AgentThreadRecord | None:
+    """The member's open thread that asks, when its grant covers this action's kind and project."""
+    thread = store.agent_thread(origin.owner_id) if origin.owner_kind == "chat" else None
+    if (
+        member is None
+        or thread is None
+        or thread.closed_at is not None
+        or thread.user_id != member.user_id
+    ):
+        return None
+    allowed = action.kind in THREAD_CARD_KINDS[thread.kind]
+    return thread if allowed and card_project_allowed(store, thread, action.project_id) else None
+
+
 def approval_card_for_ask(
     store: AppStore,
     request: AskCommandRequest,
@@ -164,16 +183,8 @@ def approval_card_for_ask(
     """
     action = request.arguments.action
     assert action is not None
-    thread = store.agent_thread(origin.owner_id) if origin.owner_kind == "chat" else None
-    if (
-        service is None
-        or member is None
-        or thread is None
-        or thread.closed_at is not None
-        or thread.user_id != member.user_id
-        or action.kind not in THREAD_CARD_KINDS[thread.kind]
-        or not card_project_allowed(store, thread, action.project_id)
-    ):
+    thread = _asking_thread(store, origin, member, action)
+    if service is None or member is None or thread is None:
         raise ValueError("approval_requires_own_thread")
     previous = next(
         (
