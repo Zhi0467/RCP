@@ -62,10 +62,10 @@ A repeated action may remain idempotent even when its control is hidden.
 The [invariant registry](../../AGENTS.md#stable-invariants) owns protected human
 authority. The profile and action rules below implement its bounded exceptions.
 
-The member's authenticated page and an ordinary Work chat starting a requested
-Experiment count as human authorization only under the
+The member's authenticated page and an ordinary Work chat controlling a requested
+Experiment or Auto-research episode count as human authorization only under the
 [member-page](conversations-episodes-and-watchers.md#native-chat-context) and
-[Work-started Experiment](conversations-episodes-and-watchers.md#work-started-experiments)
+[Work-started episode](conversations-episodes-and-watchers.md#work-started-episodes)
 contracts. Neither a voice confirmation preference nor a provider session widens
 those contracts.
 
@@ -283,8 +283,10 @@ Patches through the transition manager and Apply gate.
 ## Private-thread approval cards
 
 A member's private agent threads act for that member. Ordinary acts run without
-a tap: Patches, Experiment starts, compute, Bulletin posts, schedules and
-handoffs, and stopping the Experiments and watchers the thread started. Each records its turn's operation and authorizer as any Work turn
+a tap: Patches, compute, Bulletin posts, schedules and handoffs, starting the
+Experiments and Auto-research the member asks for, and the
+[episode controls](conversations-episodes-and-watchers.md#work-started-episodes)
+and watcher stops for what the thread started. Each records its turn's operation and authorizer as any Work turn
 does. Projections derive
 [`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
 origin operation's thread; nothing new enters a Patch, so replay is unchanged.
@@ -317,8 +319,12 @@ card usage and the ask handler accepts an action only from that value, while the
 thread is still open. The action names that thread's project and supplies no choices or multiple selection; RCP offers
 Approve and Decline. The action models live in
 [`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
-repository truth membership, Auto-research authorization, graph-branch merge,
-and episode merge. Plain question answers never authorize these actions. A
+repository truth membership, graph-branch merge, and episode merge. The model
+also keeps Auto-research authorization, which a new ask refuses with
+`auto_research_uses_episode_verb` because the member's Work chat now starts
+Auto-research with its `episode` verb. Stored Auto-research cards still render,
+settle on a tap through the human Start, and settle after a restart from their
+request receipt. Plain question answers never authorize these actions. A
 `merge` command from a thread holding this grant is refused with
 `approval_card_required`, whose message names the merge card, so the agent asks
 instead of telling the member to merge by hand.
@@ -328,14 +334,13 @@ pins the action and live facts under one SHA-256: pending non-stale Proposal
 content, repository identity and current membership, the resolved Auto-research
 profile, or the merge source head and preview. The preview already pins main's
 value of every field the source changed, and the merge plans against live main,
-so an unrelated main commit leaves a merge card current. Ask refuses an
-Auto-research card whose provider is not ready, and an action whose target does
-not exist or no longer applies (for example `branch_not_found`,
+so an unrelated main commit leaves a merge card current. Ask refuses an action
+whose target does not exist or no longer applies (for example `branch_not_found`,
 `approval_target_not_found`, `proposal_not_pending_or_stale`, or
 `truth_scope_unchanged`). Reusing an ask key
 requires the same action and question; it does not refresh the presented pins.
-The agent's usage renders each action kind and its fields from the action models,
-and the meaning of each outcome. It also says the member already gets a card for
+The agent's usage renders each askable action kind and its fields from the action
+models, and the meaning of each outcome. It also says the member already gets a card for
 every Proposal this thread raised, so the agent asks for a Proposal card only
 when the member names one this thread did not raise. Ask refuses a Proposal card
 for one this thread raised with `proposal_card_shown`. Another thread may still

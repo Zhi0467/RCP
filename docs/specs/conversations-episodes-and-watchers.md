@@ -764,50 +764,83 @@ Only the newest unresolved task in the newest same-target episode may Resume or
 Retry operationally. Patch-only repair may reflect completed work, never repeat
 effects or reopen an old episode.
 
-### Work-started Experiments
+### Work-started episodes
 
-A member's ordinary Work chat, including its wakes, may start an Experiment with
-`episode --kick-off-experiment --node <id> --goal-file <file>`, as that member's
-Run would: the turn's authorizer authorizes the episode, and it runs on the chat's
-own graph target. Experiment turns, Auto-research child Work, consolidation and
-artifact edits do not get the verb. A human Run, this command and an orchestrator
-kickoff share one readiness rule, so the node must already be on the graph and
-ready. `--invocation-limit` may shorten the episode but never exceed the node's
-limit, and the goal file is required. Provider, model and effort are the agent's
-pick from the ready profiles, otherwise Settings. The episode id derives from the
-turn and the command key, so Resume or Retry replays the same episode. The episode
-records the starting turn, and Runs shows **Started from** that chat.
+A member's ordinary Work chat, including its wakes, may start, steer, extend and
+stop the Experiments and Auto-research episodes that member asks for, as the
+member's own Runs controls would. The turn's authorizer authorizes each act.
+Experiment turns, Auto-research child Work, consolidation and artifact edits do
+not get the `episode` verb, and an orchestrator that names a member-only action
+is refused with `episode_action_not_granted`.
 
-The prompt starts one only when the member asks, after auditing the Experiment and
-its neighbors. When the audit finds something to fix, the agent writes the fix and
-does not start, because its Patch lands only after the turn. After a start it arms
-a node-status watcher on the Experiment's closed statuses.
+**Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
+<file>` runs on the chat's own graph target. A human Run, this command and an
+orchestrator kickoff share one readiness rule, so the node must already be on the
+graph and ready. `--invocation-limit` may shorten the episode but never exceed
+the node's limit, and the goal file is required. Provider, model and effort are
+the agent's pick from the ready profiles, otherwise Settings. The prompt starts
+one only when the member asks, after auditing the Experiment and its neighbors.
+When the audit finds something to fix, the agent writes the fix and does not
+start, because its Patch lands only after the turn. After a start it arms a
+node-status watcher on the Experiment's closed statuses.
 
-The same turns may run `episode --resume <episode-id>` on an episode that paused
-for its human, when the member says what it waited for is done or asks to resume
-it. The resume starts only after the turn succeeds: the paused episode usually
-resumes this chat's own session, and the turn's Patch, such as a resolved
-Blocker, lands at its end. It continues with the unused turns, authorized by the
-turn's member; a failure is recorded on the turn and **Resume** stays offered.
-A paused Experiment tells its human to reply in its chat once the pause is
-resolved, and an Experiment-node chat's loop status carries the episode's ending.
+**Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
+--invocation-limit <n>` starts a new episode on a new branch from main, through
+the same start function as **Start** in Runs. It takes the fields the retired
+Auto-research card carried: the goal as the starting instruction, the turn
+budget, `--code-worktree on|off`, `--worktree-repository`, `--branch-name`, and
+the orchestrator's provider, model and effort. It first checks the orchestrator
+provider's readiness for the member, as the card's ask did, and refuses with the
+same codes (`provider_not_ready`, `machine_not_found`, `branch_name_taken`,
+`branch_name_invalid`). A chat on a graph branch is refused with
+`auto_research_starts_from_main`.
 
-The same turns may run `episode --stop <episode-id>` on an episode this chat
-started: its root names a turn of this chat as **Started from**, directly or
-through the episode it continues. The stop is the member's graceful **Stop** in
-Runs, recorded with initiator `agent:<operation-id>`, and it acts at once rather
-than after the turn: it changes no graph, and a fence that waited for the turn's
-Patch would let the loop spend more turns meanwhile. Any other episode, whether
-another chat's, a human Run's or an Auto-research child's, is refused with
-`episode_not_started_here`; the member stops those in Runs. To change and rerun
-an Experiment the agent stops it, fixes it in its Patch, and starts a new episode
-in a later turn once it shows stopped.
+Both starts derive the episode id from the turn's oldest attempt and the command
+key, so Resume or Retry replays the same episode, and record a receipt on the
+turn. The episode's root request names the starting turn, so Runs shows
+**Started from** that chat.
 
-**Why:** the member's Work message is the authorization a Run click would be, and
-the node's limit, which only a visible graph edit changes, still bounds the spend.
-An Experiment turn starting another would chain episodes nobody authorized. A
-member's own chat acts for that member, so it may stop what it started, and only
-that.
+**Controls.** The chat controls only an episode it started: its root names a
+turn of this chat as **Started from**, directly or through the episode it
+continues. Any other episode, whether another chat's, a human start's or an
+Auto-research child's, is refused with `episode_not_started_here`; the member
+uses Runs for those. Each control reaches the function behind the member's
+button, under the same admission, and keeps that route's refusal codes.
+
+- `episode --stop <id>` is the graceful **Stop**, recorded with initiator
+  `agent:<operation-id>`. It acts at once rather than after the turn: it changes
+  no graph, and a fence that waited for the turn's Patch would let the episode
+  spend more turns meanwhile.
+- `episode --pause <id>` and `episode --resume <id>` pause or resume the
+  episode's current turn, only when its Runs card offers that control. A resumed
+  turn continues in its saved session.
+- `episode --resume <id>` on an Experiment that ended to wait for its human
+  continues it with its unused turns, when the member says what it waited for is
+  done or asks to resume it. That resume starts only after the turn succeeds:
+  the episode usually resumes this chat's own session, and the turn's Patch, such
+  as a resolved Blocker, lands at its end. A failure is recorded on the turn and
+  **Resume** stays offered. A paused Experiment tells its human to reply in its
+  chat once the pause is resolved, and an Experiment-node chat's loop status
+  carries the episode's ending.
+- `episode --add-turns <id> --invocation-limit <n>` is **Add N turns** on an
+  ended episode of either mode. The continuation keeps the branch, code worktree
+  and session, so it is how the chat restarts an episode on the same branch.
+- `episode --message <id> --body-file <file>` is the member's message to an
+  Auto-research orchestrator. An ended orchestrator needs `--invocation-limit`,
+  which continues it with that message.
+
+Add-turns and message requests derive their request ids from the turn and key,
+so a replay returns the same continuation or message. Pause and resume record a
+receipt, so a replay answers with the turn they already controlled. To change
+and rerun an Experiment, the agent stops it, fixes it in its Patch, and starts a
+new episode in a later turn once it shows stopped.
+
+**Why:** the member's Work message is the authorization a Runs click would be.
+An Experiment node's limit, which only a visible graph edit changes, still bounds
+its spend, and an Auto-research budget is the member's stated turn count. An
+Experiment turn starting another would chain episodes nobody authorized. A
+member's own chat acts for that member, so it may control what it started, and
+only that. Merges stay approval cards.
 
 ## Experiment-loop graph authority
 
