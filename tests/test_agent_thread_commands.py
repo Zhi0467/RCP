@@ -169,7 +169,7 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
     assert handler(ask, identity).status == "invalid"
     usages = space_command_usages(handler.allowed_verbs)
     assert {usage.split()[0] for usage in usages} == handler.allowed_verbs
-    assert "ask" not in handler.allowed_verbs and "handoff" in handler.allowed_verbs
+    assert handler.allowed_verbs == {"ask", "handoff", "projects", "schedule"}
     assert {usage.split()[0] for usage in space_command_usages(frozenset({"handoff"}))} == {
         "handoff"
     }

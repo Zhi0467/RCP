@@ -74,7 +74,7 @@ from rcp.runs.agent_threads import (
     thread_projections,
     thread_scope_id,
 )
-from rcp.runs.approval_cards import ProposalCardView, proposal_cards
+from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
 from rcp.runs.artifact_edit_admission import artifact_comment_message
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
@@ -86,7 +86,7 @@ from rcp.service import (
     read_space_chat_transcript,
 )
 from rcp.service_connections import ConnectionError
-from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import (
     AgentThreadQueueFull,
     AgentThreadQueueRecord,
@@ -149,14 +149,7 @@ def _card_threads(store: AppStore, user_id: str, thread_id: str | None) -> list[
         threads = [
             thread for thread in store.agent_threads(user_id) if thread.project_id in projects
         ]
-    return [
-        thread
-        for thread in threads
-        if thread.kind == "project"
-        and thread.project_id is not None
-        and thread.closed_at is None
-        and not store.chat_archived(thread.project_id, thread.thread_id)
-    ]
+    return [thread for thread in threads if draws_proposal_cards(store, thread)]
 
 
 @router.get("/api/agent-threads/cards")
@@ -169,7 +162,8 @@ def agent_thread_cards(
     identity_access: IdentityDependency,
 ):
     """Open approval cards of the member's project threads: Proposal cards drawn from each
-    project's local display snapshot, and asked cards from the question list.
+    project's local display snapshot, and asked cards from the question list. A member-wide
+    read, Pip's dock, also lists the cards the Space thread asked.
 
     A member-wide read skips a project whose snapshot cannot be read; a named thread's
     unreadable project is a 503.
@@ -193,30 +187,40 @@ def agent_thread_cards(
             logger.warning("Cards skipped project %s: %s", project_id, exc)
         else:
             drawn.extend(proposal_cards(store, project, state, threads))
-        asked.extend(_asked_cards(store, project, threads))
+        asked.extend(_asked_cards(store, project_id, threads, user_id))
+    if thread_id is None:
+        space = [
+            thread
+            for thread in store.agent_threads(user_id)
+            if thread.kind == "space" and thread.closed_at is None
+        ]
+        asked.extend(_asked_cards(store, store.space_id, space, user_id))
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     asked.sort(key=lambda row: row["created_at"], reverse=True)
     return {"proposal_cards": drawn, "asked_cards": asked}
 
 
 def _asked_cards(
-    store: AppStore, project: ProjectRecord, threads: list[AgentThreadRecord]
+    store: AppStore, scope_id: str, threads: list[AgentThreadRecord], user_id: str
 ) -> list[dict[str, Any]]:
-    """The answerable pending card questions of these threads, naming their project."""
+    """The answerable pending card questions of these threads under `scope_id`, each naming
+    the project its action acts on, and only while the member still belongs to it."""
     asked = []
     for thread in threads:
         pending = [
             question
             for question in store.list_questions(
-                project_id=project.project_id, owner_kind="chat", owner_id=thread.thread_id
+                project_id=scope_id, owner_kind="chat", owner_id=thread.thread_id
             )
             if question.state == "pending"
         ]
-        asked.extend(
-            {**row.model_dump(mode="json"), "project_name": project.name}
-            for row in _serialize_all(store, pending)
-            if row.card is not None and row.can_answer
-        )
+        for row in _serialize_all(store, pending):
+            if row.card is None or not row.can_answer:
+                continue
+            project_id = row.card["action"]["project_id"]
+            project = store.project(project_id)
+            if project is not None and store.is_project_member(project_id, user_id):
+                asked.append({**row.model_dump(mode="json"), "project_name": project.name})
     return asked
 
 

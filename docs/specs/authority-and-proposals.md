@@ -308,17 +308,30 @@ card". A Proposal that another tap or the Inbox decided first, including one tha
 moved the graph mid-decide, answers `proposal_not_pending`; any other moved graph
 answers `graph_changed`. A tap starts no agent turn. Graph watchers armed on the
 Proposal fire as after any human Sync.
-Proposals raised by a Space turn, a node chat or an Experiment get no card and stay in the
-Inbox, because no member project thread raised them.
+Proposals raised by a Space turn, a node chat, an Experiment or a scheduled
+consolidation get no derived card, because no member project thread raised them;
+the member's Space thread can still ask one.
 
-A private project thread may attach a strict action to `ask`. Work resolves
-this grant once with its verbs (`approval_card_member`); the prompt shows the
-card usage and the ask handler accepts an action only from that value, while the
-thread is still open. The action names that thread's project and supplies no choices or multiple selection; RCP offers
-Approve and Decline. The action models live in
+A member's private thread, project or Space, may attach a strict action to
+`ask`. Work and the Space handler resolve this grant once with their verbs
+(`approval_card_member`); the prompt shows the card usage and the ask handler
+accepts an action only from that value, while the thread is still open. Which
+action kinds and projects a thread may ask is one rule: `THREAD_CARD_KINDS` and
+`card_project_allowed` in
+[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py), and the usage
+renders the same set. A project thread's action names its own project and may
+be any kind. The Space thread's names any project the member belongs to and may
+be a Proposal judgment, truth membership, a branch merge or an episode merge:
+everything an Inbox, branch view or Settings decision takes, so the member never
+has to open the project to decide. An Auto-research start needs its project's
+launch profile, so the Space thread hands it off. A project outside the member's
+set is refused before it is opened. The action supplies no choices or multiple
+selection; RCP offers Approve and Decline. The action models live in
 [`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
 repository truth membership, Auto-research authorization, graph-branch merge,
-and episode merge. Plain question answers never authorize these actions. A
+and episode merge. A Proposal judgment names an optional `branch_id`: without
+it the Proposal is on main, with it on that graph branch (`proposal_graph`).
+A stored action from before `branch_id` existed reads as main. Plain question answers never authorize these actions. A
 `merge` command from a thread holding this grant is refused with
 `approval_card_required`, whose message names the merge card, so the agent asks
 instead of telling the member to merge by hand.
@@ -334,24 +347,38 @@ not exist or no longer applies (for example `branch_not_found`,
 `approval_target_not_found`, `proposal_not_pending_or_stale`, or
 `truth_scope_unchanged`). Reusing an ask key
 requires the same action and question; it does not refresh the presented pins.
-The agent's usage renders each action kind and its fields from the action models,
-and the meaning of each outcome. It also says the member already gets a card for
-every Proposal this thread raised, so the agent asks for a Proposal card only
-when the member names one this thread did not raise. Ask refuses a Proposal card
-for one this thread raised with `proposal_card_shown`. Another thread may still
-ask for the same Proposal, so the Space thread's dock can show both cards; deciding either settles
-the other on its next refresh or tap. The question snapshot shows each card's
-action and its result.
+The agent's usage renders each granted action kind and its fields from the action
+models, and the meaning of each outcome. Ask refuses a main Proposal card whose
+derived card the asking thread's dock already draws, with `proposal_card_shown`:
+in a project thread, one this thread raised; in the Space thread, one any of the
+member's open project threads raised. Another project thread may still ask for
+the same Proposal, so the Space thread's dock can show both cards; deciding
+either settles the other on its next refresh or tap. The project thread's
+question snapshot shows each card's action and its result.
 
-Only the thread's member can resolve a card. The tap checks membership, claims
-once, compares the presented hash and live pins, and invokes the existing human
+The Space thread's card question is owned by the Space thread under the space
+id, as its other bookkeeping rows are; its action names the real project. Its
+origin binds the turn's provider, native session and stage, and binds no write
+scope because a Space turn may have no writable project
+(`SPACE_QUESTION_CAPABILITY`). No answer resumes a Space session: the agent reads
+the outcome by repeating the same ask while it waits, or with the same key in a
+later turn. Its card shows in the Space thread's dock through the member-wide
+card list, only while the member still belongs to the action's project. The
+Space prompt raises a card when one fits and never describes one that `ask` did
+not return, because a Space agent that could only point at a dock once invented
+a card that did not exist.
+
+Only the thread's member can resolve a card. The tap checks membership in the
+action's project, claims once, compares the presented hash and live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
 A tap settles `stale` only when the presented hash or the live pins no longer
 match, their target is gone, or the merge handler reports changed heads; it
 executes nothing and uses the card up. A mismatched presented hash settles
-`stale` even for Decline. A Proposal card's Sync appends only at the graph revision its
-live pins were read from, so the append lock rechecks them in the transition
+`stale` even for Decline. A Proposal card decides through the Inbox's own Sync
+(`sync_graph`) on the Proposal's graph, main or its branch, so a branch Proposal
+gets the branch's edit admission and pins its branch content. That Sync appends
+only at the graph revision its live pins were read from, so the append lock rechecks them in the transition
 that decides it; if any write moved the graph in between, nothing is decided.
 That, a closed admission, an
 unavailable writer or base, or a handler `503` releases the claim and returns

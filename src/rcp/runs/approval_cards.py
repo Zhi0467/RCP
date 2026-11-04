@@ -24,6 +24,7 @@ from rcp.core.models import AuthorizedHuman, GraphState, Proposal
 from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
+from rcp.limits import ASK_MAX_ATTEMPTS, COMMAND_CLIENT_WAIT_SECONDS
 from rcp.runs.shared import turn_first_attempt
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AppStore
@@ -87,12 +88,66 @@ def proposal_cards(
 
 
 def approval_card_member(store: AppStore, task: AgentTaskRecord) -> AuthorizedHuman | None:
-    """The member whose own Work turn in their open private project thread may ask a card.
+    """The member whose own Work turn in their open private thread, project or Space, may ask
+    a card.
 
-    Work resolves it once with its verbs; the prompt and the ask handler read that value.
+    Work and the Space handler resolve it once with their verbs; the prompt and the ask
+    handler read that value.
     """
-    thread = bound_thread(store, task) if task.kind == "project_chat" else None
+    thread = bound_thread(store, task)
     return task.authorized_by if thread is not None and thread.closed_at is None else None
+
+
+_ACTION_MODELS: tuple[type[BaseModel], ...] = get_args(get_args(ApprovalAction)[0])
+
+
+def _action_kind(model: type[BaseModel]) -> str:
+    return get_args(model.model_fields["kind"].annotation)[0]
+
+
+THREAD_CARD_KINDS: dict[str, frozenset[str]] = {
+    "project": frozenset(_action_kind(model) for model in _ACTION_MODELS),
+    "space": frozenset({"proposal", "truth_scope", "merge_branch", "merge_episode"}),
+}
+
+
+def card_project_allowed(store: AppStore, thread: AgentThreadRecord, project_id: str) -> bool:
+    """A project thread's card names its own project; a Space thread's any of its member's."""
+    if thread.kind == "project":
+        return project_id == thread.project_id
+    return store.is_project_member(project_id, thread.user_id)
+
+
+def draws_proposal_cards(store: AppStore, thread: AgentThreadRecord) -> bool:
+    """Whether the member's docks draw this thread's Proposal cards: an open, shown project
+    thread."""
+    return (
+        thread.kind == "project"
+        and thread.project_id is not None
+        and thread.closed_at is None
+        and not store.chat_archived(thread.project_id, thread.thread_id)
+    )
+
+
+def _proposal_card_drawn(
+    store: AppStore, asker: AgentThreadRecord, raiser: AgentThreadRecord
+) -> bool:
+    """A project thread's dock draws its own raised Proposals; Pip's dock draws every one."""
+    if asker.kind == "project":
+        return raiser.thread_id == asker.thread_id
+    return raiser.user_id == asker.user_id and draws_proposal_cards(store, raiser)
+
+
+def proposal_graph(service: ProjectService, action: ProposalAction) -> ProjectService:
+    """The graph a Proposal action decides on: live main, or the graph branch it names."""
+    if action.branch_id is None:
+        return service
+    try:
+        return service.for_graph_target(
+            GraphTargetRef(kind="branch", branch_id=action.branch_id), initialize=False
+        )
+    except (KeyError, ValueError, FileNotFoundError) as exc:
+        raise ValueError("branch_not_found") from exc
 
 
 def approval_card_for_ask(
@@ -102,10 +157,10 @@ def approval_card_for_ask(
     service: ProjectService | None,
     member: AuthorizedHuman | None,
 ) -> dict[str, Any]:
-    """The card a member's own private project thread asks for; any other asker is refused.
+    """The card a member's own open private thread asks for; any other asker is refused.
 
-    `member` is the turn's resolved `approval_card_member`. A repeated key keeps the
-    pins it first presented.
+    `member` is the turn's resolved `approval_card_member` and `service` the action's
+    project. A repeated key keeps the pins it first presented.
     """
     action = request.arguments.action
     assert action is not None
@@ -116,9 +171,10 @@ def approval_card_for_ask(
         or thread is None
         or thread.closed_at is not None
         or thread.user_id != member.user_id
-        or action.project_id != origin.project_id
+        or action.kind not in THREAD_CARD_KINDS[thread.kind]
+        or not card_project_allowed(store, thread, action.project_id)
     ):
-        raise ValueError("approval_requires_own_project_thread")
+        raise ValueError("approval_requires_own_thread")
     previous = next(
         (
             item
@@ -130,10 +186,10 @@ def approval_card_for_ask(
         None,
     )
     existing = store.approval_card(previous.question_id) if previous else None
-    if existing is None and action.kind == "proposal":
+    if existing is None and action.kind == "proposal" and action.branch_id is None:
         proposal = service.history.state().proposals.get(action.proposal_id)
         raised = raising_turn(store, proposal) if proposal is not None else None
-        if raised is not None and raised[1].thread_id == thread.thread_id:
+        if raised is not None and _proposal_card_drawn(store, thread, raised[1]):
             raise ValueError(PROPOSAL_CARD_SHOWN)
     try:
         pinned = (
@@ -182,12 +238,16 @@ def committed_receipt(
 
 
 def _graph_receipt(service: ProjectService, action: dict[str, Any]) -> dict[str, Any] | None:
-    state = service.history.state()
     if action["kind"] == "proposal":
         decision = ProposalAction.model_validate(action)
-        proposal = state.proposals.get(decision.proposal_id)
+        try:
+            graph = proposal_graph(service, decision)
+        except ValueError:
+            return None
+        proposal = graph.history.state().proposals.get(decision.proposal_id)
         decided = proposal is not None and proposal.status == decision.decision
         return {"proposal_id": decision.proposal_id} if decided else None
+    state = service.history.state()
     return {} if (action["alias"] in state.project_truth_scope) == action["writable"] else None
 
 
@@ -251,21 +311,53 @@ def _action_usage(model: type[BaseModel]) -> str:
     return f"{kind} ({', '.join(fields)})"
 
 
-def approval_card_usage(client: str) -> str:
-    models = get_args(get_args(ApprovalAction)[0])
+def _card_contract(thread_kind: str) -> str:
+    """The action kinds this thread kind's grant accepts and what a card's tap means."""
+    kinds = THREAD_CARD_KINDS[thread_kind]
     outcomes = "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
     return (
+        "Do not supply choices or multiple; RCP creates Approve and Decline controls. "
+        "Action kind is "
+        + "; ".join(
+            _action_usage(model) for model in _ACTION_MODELS if _action_kind(model) in kinds
+        )
+        + ". A proposal pending on a graph branch names that branch_id; one on main omits it. "
+        "Only the member's card tap executes the action; a plain answer grants no authority. "
+        f"Outcomes: {outcomes}"
+    )
+
+
+def approval_card_usage(client: str) -> str:
+    return (
         f"Protected actions in this private project thread use {client} ask --key <key> "
-        "--question <reason> --action '<JSON>'. Do not supply choices or multiple; "
-        "RCP creates Approve and Decline controls. Action kind is "
-        + "; ".join(_action_usage(model) for model in models)
-        + ". Every action includes this thread's project_id. The member already gets a card "
+        "--question <reason> --action '<JSON>'. "
+        + _card_contract("project")
+        + " Every action includes this thread's project_id. The member already gets a card "
         "for every Proposal this thread's turns raise once it is pending on main, so never "
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
-        "Proposal this thread did not raise. Only the member's card tap "
-        "executes the action; a plain answer grants no authority. The question snapshot "
-        f"shows each card's action and result. Outcomes: {outcomes}"
+        "Proposal this thread did not raise. The question snapshot shows each card's action "
+        "and result."
+    )
+
+
+def space_card_usage() -> str:
+    """The Space thread's ask, rendered from the grant its handler enforces."""
+    return (
+        "ask --key <key> --question <reason> --action '<JSON>' (raises an approval card in "
+        "this thread's dock. When the member wants to decide, approve or merge something that "
+        "would otherwise need a project's Inbox, branch view or Settings, raise its card here "
+        "and never send them into the project. Every action names the project_id of one of "
+        "the member's projects. "
+        + _card_contract("space")
+        + f" A main Proposal one of the member's project threads raised already has its card "
+        f"in this dock; that ask is refused with {PROPOSAL_CARD_SHOWN}, so point the member to "
+        "it. A decision no action kind covers is handed off to the project thread, or say "
+        "plainly that it cannot be done here. Never say a card exists unless ask returned its "
+        f"question_id. A call waits up to {COMMAND_CLIENT_WAIT_SECONDS:g} seconds; repeat the "
+        f"exact same call to keep waiting. After attempt {ASK_MAX_ATTEMPTS} with no answer, end "
+        "your turn: the card stays in the dock and the tap still runs it, and the same call in "
+        "a later turn reads its outcome.)"
     )
 
 
@@ -304,10 +396,11 @@ def approval_pins(
 ) -> dict[str, Any]:
     """Pin content and authority-relevant facts, excluding volatile probe timestamps.
 
-    Graph pins read `state` when given, so a caller pairs them with that state's revision.
+    Graph pins read `state` when given, so a caller pairs them with that state's revision;
+    a Proposal's state is its `proposal_graph`.
     """
     if action.kind == "proposal":
-        return _proposal_pins(state or service.history.state(), action)
+        return _proposal_pins(state or proposal_graph(service, action).history.state(), action)
     if action.kind == "truth_scope":
         return _truth_scope_pins(service, state or service.history.state(), action)
     if action.kind == "auto_research":

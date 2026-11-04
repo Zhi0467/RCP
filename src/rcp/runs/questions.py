@@ -35,9 +35,10 @@ from rcp.runs.work_experiment_commands import (
     work_experiment_allowed,
 )
 from rcp.runs.work_watcher_commands import handle_work_watcher_command
-from rcp.storage import AppStore
-from rcp.storage.agent_threads import bound_thread
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.question_models import (
+    SPACE_QUESTION_CAPABILITY,
     QuestionArgumentConflict,
     QuestionOrigin,
     QuestionRecord,
@@ -238,6 +239,54 @@ def question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
         capability=authority.task_contract,
         write_scope_fingerprint=task.write_scope_fingerprint,
         graph_target=task.graph_target,
+    )
+
+
+def handle_space_ask(
+    store: AppStore,
+    request: AskCommandRequest,
+    task: AgentTaskRecord,
+    thread: AgentThreadRecord,
+    service: ProjectService | None,
+) -> CommandResponse:
+    """A Space turn asks only approval cards, owned by its thread under the Space scope.
+
+    The origin is resolved from the turn's own record. No answer resumes a Space session,
+    so the origin binds no write scope; the same key in a later turn reads the outcome.
+    """
+    from rcp.runs.approval_cards import approval_card_member
+
+    if request.arguments.action is None:
+        return _refuse(request, "A Space ask raises an approval card; add --action.")
+    if not task.native_session_id or not task.stage_root:
+        return _refuse(
+            request, "The asking turn has no complete native session and authority binding yet."
+        )
+    try:
+        origin = QuestionOrigin.model_validate(
+            {
+                "owner_kind": "chat",
+                "project_id": store.space_id,
+                "owner_id": thread.thread_id,
+                "operation_id": task.operation_id,
+                "provider": task.request.get("provider"),
+                "native_session_id": task.native_session_id,
+                "stage_root": task.stage_root,
+                "stage_host": task.stage_host,
+                "capability": SPACE_QUESTION_CAPABILITY,
+                "write_scope_fingerprint": task.write_scope_fingerprint,
+                "graph_target": task.graph_target,
+            }
+        )
+        origin = _reused_origin(store, origin, request)
+    except ValueError as exc:
+        return _refuse(request, str(exc))
+    return handle_ask(
+        store,
+        request,
+        origin,
+        service=service,
+        approval_card_member=approval_card_member(store, task),
     )
 
 

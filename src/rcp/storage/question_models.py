@@ -17,6 +17,8 @@ from rcp.limits import (
 )
 from rcp.providers import ProviderId
 
+SPACE_QUESTION_CAPABILITY = "space"
+
 
 class QuestionArgumentConflict(ValueError):
     """An owner reused a question key with different arguments."""
@@ -52,7 +54,7 @@ class QuestionOrigin(BaseModel):
         if self.capability == "discuss":
             if self.write_scope_fingerprint is not None:
                 raise ValueError("Discuss questions cannot carry a write scope fingerprint")
-        elif self.write_scope_fingerprint is None:
+        elif self.write_scope_fingerprint is None and self.capability != SPACE_QUESTION_CAPABILITY:
             raise ValueError("Question capability requires a write scope fingerprint")
         return self
 
