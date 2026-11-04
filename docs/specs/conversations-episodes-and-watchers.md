@@ -816,7 +816,11 @@ turn of this chat as **Started from**, directly or through the episode it
 continues. Any other episode, whether another chat's, a human start's or an
 Auto-research child's, is refused with `episode_not_started_here`; the member
 uses Runs for those. Each control reaches the function behind the member's
-button, under the same admission, and keeps that route's refusal codes.
+button, under the same admission, and keeps that route's refusal codes. Stop,
+pause, resume, message and add turns act on the chain's current episode, because
+the agent usually knows only the id it started; a replayed add turns returns the
+continuation its request id already made. Resuming an Experiment that ended to
+wait for its human is also open to the chat the Experiment runs in, as before.
 
 - `episode --stop <id>` is the graceful **Stop**, recorded with initiator
   `agent:<operation-id>`. It acts at once rather than after the turn: it changes

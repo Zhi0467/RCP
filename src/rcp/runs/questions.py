@@ -278,7 +278,7 @@ def handle_space_ask(
                 "graph_target": task.graph_target,
             }
         )
-        origin = _reused_origin(store, origin, request)
+        origin = _reused_origin(store, origin, request, bound=False)
     except ValueError as exc:
         return _refuse(request, str(exc))
     return handle_ask(
@@ -632,9 +632,13 @@ def _refuse(request: CommandRequest, message: str, code: str | None = None) -> C
 
 
 def _reused_origin(
-    store: AppStore, origin: QuestionOrigin, request: AskCommandRequest
+    store: AppStore, origin: QuestionOrigin, request: AskCommandRequest, *, bound: bool = True
 ) -> QuestionOrigin:
-    """Keys survive turns and episode continuation, keeping their first origin."""
+    """Keys survive turns and episode continuation, keeping their first origin.
+
+    An unbound origin's answer resumes no session, so a later session of the same
+    owner may read it.
+    """
     owner_ids = (
         store.experiment_question_owner_ids(origin.owner_id)
         if origin.owner_kind == "episode"
@@ -653,9 +657,9 @@ def _reused_origin(
         )
         if previous is None:
             continue
-        if previous.origin.model_dump(include=_QUESTION_BINDING_FIELDS) != origin.model_dump(
+        if bound and previous.origin.model_dump(
             include=_QUESTION_BINDING_FIELDS
-        ):
+        ) != origin.model_dump(include=_QUESTION_BINDING_FIELDS):
             raise ValueError("question_origin_binding_unavailable")
         return previous.origin
     return origin

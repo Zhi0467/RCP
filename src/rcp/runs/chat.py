@@ -95,7 +95,11 @@ from rcp.storage import (
     AppStore,
     Artifact,
 )
-from rcp.storage.question_models import QuestionRecord, question_followup_operation_id
+from rcp.storage.question_models import (
+    SPACE_QUESTION_CAPABILITY,
+    QuestionRecord,
+    question_followup_operation_id,
+)
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -1729,6 +1733,8 @@ def reconcile_chat_question_answers(
     """
     statuses = {}
     for question in store.questions_needing_chat_reconciliation(project_id=project_id):
+        if question.origin.capability == SPACE_QUESTION_CAPABILITY:
+            continue
         origin_task = store.agent_task(question.origin.operation_id)
         if origin_task is not None and origin_task.kind not in {"node_chat", "project_chat"}:
             continue

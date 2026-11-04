@@ -364,11 +364,11 @@ question snapshot shows each card's action and its result.
 
 The Space thread's card question is owned by the Space thread under the space
 id, as its other bookkeeping rows are; its action names the real project. Its
-origin binds the turn's provider, native session and stage, and binds no write
-scope because a Space turn may have no writable project
-(`SPACE_QUESTION_CAPABILITY`). No answer resumes a Space session: the agent reads
-the outcome by repeating the same ask while it waits, or with the same key in a
-later turn. Its card shows in the Space thread's dock through the member-wide
+origin binds no write scope because a Space turn may have no writable project
+(`SPACE_QUESTION_CAPABILITY`). No answer resumes a Space session, so a reused key
+skips the session binding check: the agent reads the outcome by repeating the same
+ask while it waits, or with the same key from a later turn or session. Chat
+answer reconciliation skips these questions for the same reason. Its card shows in the Space thread's dock through the member-wide
 card list, only while the member still belongs to the action's project. The
 Space prompt raises a card when one fits and never describes one that `ask` did
 not return, because a Space agent that could only point at a dock once invented

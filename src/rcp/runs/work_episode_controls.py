@@ -247,21 +247,24 @@ def stop_own_episode(
         return owned
     controls, act = owned
     store = execution.store
-    episode = store.episode(episode_id)
-    assert episode is not None
+    from rcp.api.episode_routes import _newest_chain_member
+
+    started = store.episode(episode_id)
+    assert started is not None
+    episode = _newest_chain_member(store, started)
 
     def stop() -> CommandResponse:
         if episode.stop_requested_at is None:
             controls.stop(act)
             store.record_agent_task_event(
-                execution.operation_id, f"Episode {episode_id} is stopping."
+                execution.operation_id, f"Episode {episode.episode_id} is stopping."
             )
-        current = store.episode(episode_id)
+        current = store.episode(episode.episode_id)
         assert current is not None
         return _ok(
             request,
             disposition="stopped" if current.status == "stopped" else "stopping",
-            episode_id=episode_id,
+            episode_id=current.episode_id,
             status=current.status,
         )
 

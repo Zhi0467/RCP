@@ -1328,7 +1328,7 @@ def test_ask_refuses_a_card_for_a_proposal_this_thread_raised(questions_api):
     assert ask(PROPOSAL)["action"]["proposal_id"] == PROPOSAL
 
 
-def _space_turn(questions_api):
+def _space_turn(questions_api, operation_id="space-turn", session="space-session"):
     """A running turn of the member's Space thread with its session and stage, and its handler."""
     from rcp.runs.agent_thread_commands import ThreadCommandHandler
     from tests.helpers import authorized_human
@@ -1344,26 +1344,26 @@ def _space_turn(questions_api):
     store.create_agent_task(
         _task_record(
             store.now(),
-            operation_id="space-turn",
+            operation_id=operation_id,
             project_id=store.space_id,
             kind="space_chat",
             status="running",
             authorized_by=member,
             request={"chat_id": space.thread_id, "mode": "work", "provider": "codex"},
-            native_session_id="space-session",
-            stage_root="/space-stage",
+            native_session_id=session,
+            stage_root=f"/{session}-stage",
         )
     )
-    return ThreadCommandHandler(store, app.state.catalog, "space-turn")
+    return ThreadCommandHandler(store, app.state.catalog, operation_id)
 
 
-def _space_ask(handler, action, key="card"):
+def _space_ask(handler, action, key="card", operation_id="space-turn"):
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from tests.test_ask_protocol import ask_request
 
     arguments = {"question": "Decide?", **({"action": action} if action else {})}
     request = ask_request(idempotency_key=key, arguments=arguments)
-    return handler(request, CommandTurnIdentity(None, "space-turn", "turn", "broker"))
+    return handler(request, CommandTurnIdentity(None, operation_id, "turn", "broker"))
 
 
 def _tap(client, store, question_id, decision="approve"):
@@ -1393,6 +1393,19 @@ def test_a_space_ask_raises_a_card_in_pips_dock_that_decides_the_proposal(
     assert tapped.json()["outcome"] == "approved", tapped.text
     assert service.history.state().proposals[PROPOSAL].status == "approved"
     assert _space_ask(handler, approve_action(project_id, PROPOSAL)).result["state"] == "answered"
+
+
+def test_a_later_space_session_reads_the_card_an_earlier_one_asked(questions_api, monkeypatch):
+    app, client, store, project_id = questions_api
+    file_proposal(app.state.catalog.open(project_id))
+    action = approve_action(project_id, PROPOSAL)
+    question_id = _space_ask(_space_turn(questions_api), action).result["question_id"]
+    bounded_admission_lock(monkeypatch)
+    assert _tap(client, store, question_id).json()["outcome"] == "approved"
+    store.fail_agent_task("space-turn", "Ended.")
+    later = _space_turn(questions_api, operation_id="space-later", session="later-session")
+    read = _space_ask(later, action, operation_id="space-later")
+    assert (read.result["question_id"], read.result["state"]) == (question_id, "answered")
 
 
 def test_a_space_ask_carries_any_inbox_card_kind_for_a_member_project_only(
@@ -1500,3 +1513,10 @@ def test_an_old_proposal_card_row_without_a_branch_settles_on_main(questions_api
         reopened, service_for=app.state.catalog.open, claimed_before=reopened.now()
     )
     assert reopened.approval_card(question.question_id)["result"]["outcome"] == "approved"
+
+
+def test_a_main_proposal_action_stores_what_it_stored_before_branches():
+    from rcp.approval_actions import ProposalAction
+
+    action = ProposalAction(kind="proposal", project_id="p", proposal_id="x", decision="approved")
+    assert "branch_id" not in action.model_dump(mode="json")

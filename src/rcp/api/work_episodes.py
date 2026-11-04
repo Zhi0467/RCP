@@ -174,7 +174,7 @@ class MemberEpisodeControls:
         episode, _ = self._episode(act)
         try:
             stop_episode_as(
-                episode,
+                _newest_chain_member(self.tasks().store, episode),
                 initiated_by=f"agent:{act.source_operation_id}",
                 catalog=self.catalog,
                 background_tasks=self.tasks(),
@@ -208,6 +208,11 @@ class MemberEpisodeControls:
         self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str
     ) -> EpisodeRecord:
         episode, authorizer = self._episode(act)
+        store = self.tasks().store
+        while (newer := store.episode_continuation(episode.episode_id)) is not None:
+            if newer.continuation_request_id == request_id:
+                return newer
+            episode = newer
         with self._admitted(episode.project_id, authorizer):
             try:
                 continuation, _ = continue_episode_once(

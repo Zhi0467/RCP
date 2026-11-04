@@ -24,6 +24,7 @@ from rcp.runs.experiment_admission import (
     WorkExperimentStart,
 )
 from rcp.runs.work_episode_controls import (
+    chat_started_episode,
     control_own_turn,
     handle_work_auto_research_kickoff,
     handle_work_episode_controls,
@@ -161,7 +162,16 @@ def _schedule_work_experiment_resume(
     )
     if refusal is not None:
         return CommandResponse(request_id=request.request_id, status="invalid", message=refusal)
-    assert episode is not None
+    assert episode is not None and task is not None
+    root = store.agent_task(episode.root_operation_id) if episode.root_operation_id else None
+    runs_here = root is not None and root.request.get("chat_id") == task.request.get("chat_id")
+    if not (runs_here or chat_started_episode(store, task, episode.episode_id)):
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message="This chat may control only an episode it started; tell the human to use Runs.",
+            result={"code": "episode_not_started_here"},
+        )
     request_id = turn_keyed_id(turn_lineage(execution), "resume", request.idempotency_key)
     store.record_agent_task_receipt(
         execution.operation_id,
