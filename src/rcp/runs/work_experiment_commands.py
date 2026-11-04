@@ -1,13 +1,12 @@
-"""A Work turn starting or resuming an Experiment its human asked for, as their Run would."""
+"""A Work turn's ``episode`` command: Experiments its human asked for, and episode controls."""
 
 from __future__ import annotations
 
-import hashlib
 import json
-import uuid
 from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import (
+    AutoResearchKickoffArguments,
     CommandResponse,
     EpisodeCommandRequest,
     EpisodeControlArguments,
@@ -15,22 +14,30 @@ from rcp.agents.command_protocol import (
 )
 from rcp.agents.staged_command_client import (
     EPISODE_RESUME,
-    EPISODE_STOP,
     episode_control_usage,
     experiment_kickoff_usage,
 )
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
-from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentResumer,
     WorkExperimentStart,
-    WorkExperimentStop,
+)
+from rcp.runs.work_episode_controls import (
+    control_own_turn,
+    handle_work_auto_research_kickoff,
+    handle_work_episode_controls,
+    intent_sha256,
+    previous_receipt,
+    read_workspace_text,
+    stop_own_episode,
+    turn_keyed_id,
+    turn_lineage,
 )
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
-    from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
+    from rcp.storage import AppStore, EpisodeRecord
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
 _RECEIPT = "work_experiment_kickoff"
@@ -112,93 +119,25 @@ def handle_work_episode_command(
     mailbox: RunStageMailbox | None,
     request: EpisodeCommandRequest,
 ) -> CommandResponse:
-    """Route a Work turn's ``episode`` command to kickoff, resume or stop."""
+    """Route a Work turn's ``episode`` command to its kickoff or control.
+
+    Resume of an Experiment that ended to wait for its human continues it with
+    its unused turns; resume of a live episode resumes its paused turn.
+    """
 
     arguments = request.arguments
-    if isinstance(arguments, EpisodeControlArguments):
-        if arguments.action == "stop":
-            return _stop_own_experiment(execution, request, arguments)
-        return _schedule_work_experiment_resume(execution, request, arguments)
-    return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
-
-
-def chat_started_episode(store: AppStore, task: AgentTaskRecord, episode_id: str) -> bool:
-    """Whether a Work turn of ``task``'s chat started this episode or the one it continues.
-
-    A continuation, whether this chat's resume or the member's Add N turns, runs
-    the same Experiment the chat started, so it stays the chat's to stop.
-    """
-
-    chat_id = task.request.get("chat_id")
-    current = store.episode(episode_id)
-    seen: set[str] = set()
-    while current is not None and current.episode_id not in seen:
-        if current.project_id != task.project_id:
-            return False
-        seen.add(current.episode_id)
-        if current.continues_episode_id is None:
-            started = store.episode_started_from_chat(current.episode_id)
-            return bool(chat_id) and started is not None and started.chat_id == chat_id
-        current = store.episode(current.continues_episode_id)
-    return False
-
-
-def _stop_own_experiment(
-    execution: AgentTaskExecution,
-    request: EpisodeCommandRequest,
-    arguments: EpisodeControlArguments,
-) -> CommandResponse:
-    """Stop an Experiment this chat started, now, as the member's Stop would.
-
-    Stop is a graceful fence that changes no graph, so it does not wait for this
-    turn's Patch: the running Experiment turn finishes and nothing continues it.
-    """
-
-    def refuse(message: str, code: str) -> CommandResponse:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message=message,
-            result={"code": code},
-        )
-
-    store = execution.store
-    task = store.agent_task(execution.operation_id)
-    if task is None or execution.experiment_stopper is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="Experiment stop is unavailable for this turn.",
-        )
-    if not chat_started_episode(store, task, arguments.episode_id):
-        return refuse(
-            "This chat may stop only an Experiment it started.", "episode_not_started_here"
-        )
-    episode = store.episode(arguments.episode_id)
-    assert episode is not None
-    if episode.stop_requested_at is None:
-        try:
-            execution.experiment_stopper(
-                WorkExperimentStop(
-                    source_operation_id=execution.operation_id, episode_id=episode.episode_id
-                )
-            )
-        except ValueError as exc:
-            return refuse(str(exc), "episode_not_stoppable")
-        store.record_agent_task_event(
-            execution.operation_id, f"Experiment episode {episode.episode_id} is stopping."
-        )
-    episode = store.episode(arguments.episode_id)
-    assert episode is not None
-    return CommandResponse(
-        request_id=request.request_id,
-        status="ok",
-        result={
-            "disposition": "stopped" if episode.status == "stopped" else "stopping",
-            "episode_id": episode.episode_id,
-            "status": episode.status,
-        },
-    )
+    if isinstance(arguments, ExperimentKickoffArguments):
+        return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
+    if isinstance(arguments, AutoResearchKickoffArguments):
+        return handle_work_auto_research_kickoff(execution, mailbox, request, arguments)
+    if not isinstance(arguments, EpisodeControlArguments):
+        return handle_work_episode_controls(execution, mailbox, request, arguments)
+    if arguments.action == "stop":
+        return stop_own_episode(execution, request, arguments.episode_id)
+    episode = execution.store.episode(arguments.episode_id)
+    if episode is not None and (episode.mode == "auto_research" or episode.ending is None):
+        return control_own_turn(execution, request, arguments.episode_id, "resume")
+    return _schedule_work_experiment_resume(execution, request, arguments)
 
 
 def _schedule_work_experiment_resume(
@@ -212,8 +151,6 @@ def _schedule_work_experiment_resume(
     and this turn's Patch lands only when the turn ends, so nothing starts now.
     """
 
-    from rcp.runs.tasks.compute_commands import compute_recovery_lineage
-
     store = execution.store
     task = store.agent_task(execution.operation_id)
     episode = store.episode(arguments.episode_id)
@@ -225,13 +162,7 @@ def _schedule_work_experiment_resume(
     if refusal is not None:
         return CommandResponse(request_id=request.request_id, status="invalid", message=refusal)
     assert episode is not None
-    lineage = compute_recovery_lineage(
-        store, execution.operation_id, continuation=execution.continuation
-    )
-    # The oldest attempt names the turn, so a Resume or Retry replays the same continuation.
-    request_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:work:{lineage[-1]}:resume:{request.idempotency_key}")
-    )
+    request_id = turn_keyed_id(turn_lineage(execution), "resume", request.idempotency_key)
     store.record_agent_task_receipt(
         execution.operation_id,
         _RESUME_RECEIPT,
@@ -306,41 +237,15 @@ def _handle_work_experiment_kickoff(
             message="Experiment kickoff is unavailable for this turn.",
         )
     try:
-        goal = mailbox.read_text(arguments.goal_file, max_bytes=AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES)
-    except FileNotFoundError:
-        return refuse(f"Goal file {arguments.goal_file!r} does not exist in this turn's workspace.")
+        goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
     except ValueError as exc:
         return refuse(str(exc))
-    if not goal.strip():
-        return refuse(f"Goal file {arguments.goal_file!r} must not be blank.")
-
-    from rcp.runs.tasks.compute_commands import compute_recovery_lineage
 
     store = execution.store
-    lineage = compute_recovery_lineage(
-        store, execution.operation_id, continuation=execution.continuation
-    )
-    # The oldest attempt names the turn, so a Resume or Retry replays the same episode.
-    episode_id = str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:work:{lineage[-1]}:episode:{request.idempotency_key}")
-    )
-    intent = hashlib.sha256(
-        json.dumps(
-            {**arguments.model_dump(mode="json"), "goal": goal},
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-    ).hexdigest()
-    previous = next(
-        (
-            receipt.payload
-            for operation_id in lineage
-            for receipt in store.agent_task_receipts_by_category(operation_id, _RECEIPT)
-            if receipt.payload.get("episode_id") == episode_id
-        ),
-        None,
-    )
+    lineage = turn_lineage(execution)
+    episode_id = turn_keyed_id(lineage, "episode", request.idempotency_key)
+    intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
+    previous = previous_receipt(store, lineage, _RECEIPT, episode_id=episode_id)
     if previous is not None and previous.get("intent_sha256") != intent:
         return refuse("This key already started a different Experiment; use a new key.")
     episode = store.episode(episode_id)
@@ -395,17 +300,10 @@ def _handle_work_experiment_kickoff(
 
 
 def work_experiment_command_usage(client: str, profile_choices: str) -> str:
-    """The kickoff, resume and stop usage a Work turn renders when it is granted ``episode``."""
+    """The Experiment kickoff and human-pause resume usage of a Work turn granted ``episode``."""
 
     closed = json.dumps(sorted(CLOSED_EXPERIMENT_STATUSES))
     return (
-        "Experiment stop: when the human asks you to stop an Experiment this chat started, "
-        f"run `{client} {episode_control_usage(EPISODE_STOP)}` with the episode_id from its "
-        "kickoff or this chat's loop status. It stops now and gracefully: the running "
-        "Experiment turn finishes, then nothing continues it. You may stop only episodes this "
-        "chat started; tell the human to use Stop in Runs for any other. To change an "
-        "Experiment and run it again, stop it, fix the Experiment in your Patch, and start a "
-        "new episode in a later turn once the loop status shows it stopped.\n"
         'Experiment resume: when this chat\'s loop status shows ending "human_pause", that '
         "episode stopped to wait for its human. If the human's message says what it waited "
         'for is done ("done" counts) or asks to continue, resolve what it waited for in your '
@@ -413,7 +311,9 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         f"`{client} {episode_control_usage(EPISODE_RESUME)}` with the loop status's "
         "episode_id. Never tell the human to press a button for it: the episode resumes its "
         "own session with its unused turns once this reply ends, after your Patch lands. Say "
-        "so in your reply.\n"
+        "so in your reply. To change an Experiment and run it again, stop it, fix the "
+        "Experiment in your Patch, and start a new episode in a later turn once the loop "
+        "status shows it stopped.\n"
         "Experiment kickoff starts a new episode: only when the human asks you to run or start "
         "an Experiment (in a chat on that Experiment, 'run it' counts) and no paused episode "
         "should resume instead. Otherwise suggest one in your reply. "

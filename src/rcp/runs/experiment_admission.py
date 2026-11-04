@@ -234,17 +234,6 @@ class WorkExperimentResume:
 WorkExperimentResumer = Callable[[WorkExperimentResume], EpisodeRecord]
 
 
-@dataclass(frozen=True)
-class WorkExperimentStop:
-    """An Experiment episode a Work turn stops for the human whose chat started it."""
-
-    source_operation_id: str
-    episode_id: str
-
-
-WorkExperimentStopper = Callable[[WorkExperimentStop], None]
-
-
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
 

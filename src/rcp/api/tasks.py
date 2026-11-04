@@ -1024,9 +1024,17 @@ def pause_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    return pause_task_as(record, background_tasks).model_dump(mode="json")
+
+
+def pause_task_as(
+    record: AgentTaskRecord, background_tasks: BackgroundAgentTasks
+) -> AgentTaskRecord:
+    """Pause one visible running turn, as Pause does; raises the HTTP refusal."""
+
     _reject_history_only_control(record)
     try:
-        return background_tasks.pause(operation_id).model_dump(mode="json")
+        return background_tasks.pause(record.operation_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1070,35 +1078,60 @@ def resume_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
-            try:
-                with _task_preparation_service(service) as reader:
-                    experiment_admission.require_current(reader, previous.request)
-                    validated, skills = _validate_stored_task_request(
-                        reader, previous.kind, previous.request
-                    )
-                with _chat_recovery_admission(service, store, previous):
-                    if isinstance(validated, CoachRequest) and previous.request.get(
-                        "run_on"
-                    ) not in (None, validated.run_on):
-                        # A move to the base is a fresh attempt, including its stored session
-                        # and stage; Retry already owns that recovery transition.
-                        return background_tasks.retry(
-                            operation_id,
-                            run_on=validated.run_on,
-                            skills=skills,
-                            authorized_by=authorized_by,
-                        ).model_dump(mode="json")
-                    return background_tasks.resume(
-                        operation_id,
-                        skills=skills,
-                        authorized_by=authorized_by,
-                    ).model_dump(mode="json")
-            except (OSError, StateUnavailable) as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return resume_task_as(
+                previous,
+                authorized_by,
+                catalog=catalog,
+                background_tasks=background_tasks,
+                experiment_admission=experiment_admission,
+            ).model_dump(mode="json")
     except ClientRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def resume_task_as(
+    previous: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    *,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    experiment_admission: ExperimentAdmission,
+) -> AgentTaskRecord:
+    """Resume one paused turn in its saved session, as Resume does; raises the HTTP refusal.
+
+    The caller holds the project's write admission.
+    """
+
+    store = background_tasks.store
+    operation_id = previous.operation_id
+    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
+    try:
+        with _task_preparation_service(service) as reader:
+            experiment_admission.require_current(reader, previous.request)
+            validated, skills = _validate_stored_task_request(
+                reader, previous.kind, previous.request
+            )
+        with _chat_recovery_admission(service, store, previous):
+            if isinstance(validated, CoachRequest) and previous.request.get("run_on") not in (
+                None,
+                validated.run_on,
+            ):
+                # A move to the base is a fresh attempt, including its stored session
+                # and stage; Retry already owns that recovery transition.
+                return background_tasks.retry(
+                    operation_id,
+                    run_on=validated.run_on,
+                    skills=skills,
+                    authorized_by=authorized_by,
+                )
+            return background_tasks.resume(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+            )
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

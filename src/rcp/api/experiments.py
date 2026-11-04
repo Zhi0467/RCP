@@ -37,7 +37,6 @@ from rcp.runs.experiment_admission import (
     ExperimentNotReady,
     WorkExperimentResume,
     WorkExperimentStart,
-    WorkExperimentStop,
     experiment_control,
     experiment_operational_state,
     start_experiment_continuation,
@@ -316,34 +315,6 @@ def resume_work_experiment(
                 catalog=catalog,
                 store=store,
                 background_tasks=tasks,
-            )
-        except HTTPException as exc:
-            raise ValueError(str(exc.detail)) from exc
-
-
-def stop_work_experiment(
-    catalog: ProjectCatalog,
-    store: AppStore,
-    operation_lock: KeyedLocks,
-    stop: WorkExperimentStop,
-) -> None:
-    """Stop the Experiment a Work turn's ``episode --stop`` names, as Stop in Runs would.
-
-    The command handler has already established that the turn's chat started it.
-    """
-
-    source = store.agent_task(stop.source_operation_id)
-    episode = store.episode(stop.episode_id)
-    if source is None or episode is None or episode.project_id != source.project_id:
-        raise ValueError("No such episode in this project.")
-    with operation_lock(source.project_id):
-        try:
-            stop_bound_experiment_episode(
-                source.project_id,
-                episode,
-                store=store,
-                catalog=catalog,
-                initiated_by=f"agent:{stop.source_operation_id}",
             )
         except HTTPException as exc:
             raise ValueError(str(exc.detail)) from exc
@@ -656,5 +627,4 @@ __all__ = [
     "stop_bound_experiment_episode",
     "stop_experiment_loop",
     "stop_experiment_watchers",
-    "stop_work_experiment",
 ]

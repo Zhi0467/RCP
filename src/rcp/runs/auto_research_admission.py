@@ -2014,12 +2014,13 @@ def auto_research_child_profile_choices(
     service: ProjectService,
     providers: tuple[str, ...] = PROVIDER_IDS,
     *,
-    kind: Literal["node_chat", "project_chat"] = "node_chat",
+    kind: Literal["node_chat", "project_chat", "orchestrator"] = "node_chat",
     member_id: str | None = None,
 ) -> ChildProfileChoices:
     """The provider profiles an orchestrator may name for a child, by provider.
 
-    A child runs on its seat's Work profile machine. A provider is listed when its
+    A child runs on its seat's Work profile machine; a member's Work chat starting
+    Auto-research reads the orchestrator's the same way. A provider is listed when its
     readiness there is installed, authenticated, and Work-launchable, with each
     catalog model id and that model's effort choices. Readiness not yet cached is
     probed once, so a provider never checked on this machine is still offered.
@@ -2043,6 +2044,33 @@ def auto_research_child_profile_choices(
             continue
         choices[provider] = {model.id: list(model.reasoning) for model in readiness.models}
     return choices
+
+
+def require_auto_research_provider_ready(
+    service: ProjectService, request: AutoResearchStartRequest, *, member_id: str
+) -> None:
+    """Refuse a new start whose orchestrator cannot launch for this member.
+
+    Raises ``machine_not_found``, ``auto_research_profile_unavailable``, or
+    ``provider_not_ready: <why>``. The launch rechecks readiness itself.
+    """
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("auto_research_profile_unavailable")
+    machine = service.manifest.machine_map.get(request.run_on)
+    if machine is None:
+        raise ValueError("machine_not_found")
+    readiness = service.launcher.member_readiness(
+        request.provider,
+        host=machine.host,
+        binary=service.launcher.provider_binary(request.provider, machine.host),
+        member_id=member_id,
+        refresh=True,
+    )
+    if not readiness.installed or not readiness.authenticated:
+        raise ValueError(f"provider_not_ready: {readiness.reason or request.provider}")
+    if problem := work_like_launch_problem(readiness):
+        raise ValueError(f"provider_not_ready: {problem}")
 
 
 def auto_research_child_seat_profile_choices(

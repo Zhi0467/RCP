@@ -1137,6 +1137,34 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
         assert audited.status == expected_status
 
 
+def test_an_orchestrator_cannot_use_a_members_episode_actions(tmp_path) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, auto_research, root)
+    dispatcher = _dispatcher(store, effects.bundle())
+
+    for index, arguments in enumerate(
+        (
+            {"action": "kick_off_auto_research", "goal_file": "goal.md", "invocation_limit": 2},
+            {"action": "pause", "episode_id": auto_research.episode_id},
+            {"action": "add_turns", "episode_id": auto_research.episode_id, "invocation_limit": 2},
+        )
+    ):
+        response = dispatcher.dispatch(
+            root.operation_id,
+            _request(
+                EpisodeCommandRequest,
+                request_id=f"{index + 6}" * 32,
+                verb="episode",
+                idempotency_key=f"member-action-{index}",
+                arguments=arguments,
+            ),
+        )
+        assert (response.status, response.result["code"]) == (
+            "invalid",
+            "episode_action_not_granted",
+        )
+
+
 def test_stop_intent_fences_new_mutating_commands_before_effect_execution(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     _worker(store, auto_research, root, "active-worker")

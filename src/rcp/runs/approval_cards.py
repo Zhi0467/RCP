@@ -9,7 +9,6 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from rcp.agents.command_protocol import AskCommandRequest
-from rcp.agents.launcher import work_like_launch_problem
 from rcp.approval_actions import (
     ApprovalAction,
     ApprovalOutcome,
@@ -33,6 +32,9 @@ from rcp.storage.question_models import QuestionOrigin
 from rcp.transport.state import StateUnavailable
 
 PROPOSAL_CARD_SHOWN = "proposal_card_shown"
+AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
+RETIRED_ASK_ACTIONS: frozenset[str] = frozenset({"auto_research"})
+"""Action kinds a new ask refuses; their stored cards still render and settle."""
 
 
 class ProposalCardView(BaseModel):
@@ -130,15 +132,15 @@ def approval_card_for_ask(
         None,
     )
     existing = store.approval_card(previous.question_id) if previous else None
+    if existing is None and action.kind in RETIRED_ASK_ACTIONS:
+        raise ValueError(AUTO_RESEARCH_USES_EPISODE)
     if existing is None and action.kind == "proposal":
         proposal = service.history.state().proposals.get(action.proposal_id)
         raised = raising_turn(store, proposal) if proposal is not None else None
         if raised is not None and raised[1].thread_id == thread.thread_id:
             raise ValueError(PROPOSAL_CARD_SHOWN)
     try:
-        pinned = (
-            existing["pinned"] if existing else approval_card_pins(service, store, action, member)
-        )
+        pinned = existing["pinned"] if existing else approval_pins(service, store, action, member)
     except KeyError as exc:
         raise ValueError("approval_target_not_found") from exc
     return {"action": action.model_dump(mode="json"), "pinned": pinned}
@@ -251,8 +253,17 @@ def _action_usage(model: type[BaseModel]) -> str:
     return f"{kind} ({', '.join(fields)})"
 
 
+def askable_approval_actions() -> tuple[type[BaseModel], ...]:
+    """The action models a new card may carry, in their union order."""
+    return tuple(
+        model
+        for model in get_args(get_args(ApprovalAction)[0])
+        if get_args(model.model_fields["kind"].annotation)[0] not in RETIRED_ASK_ACTIONS
+    )
+
+
 def approval_card_usage(client: str) -> str:
-    models = get_args(get_args(ApprovalAction)[0])
+    models = askable_approval_actions()
     outcomes = "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
     return (
         f"Protected actions in this private project thread use {client} ask --key <key> "
@@ -263,35 +274,12 @@ def approval_card_usage(client: str) -> str:
         "for every Proposal this thread's turns raise once it is pending on main, so never "
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
-        "Proposal this thread did not raise. Only the member's card tap "
+        "Proposal this thread did not raise. Start Auto-research with the episode command, "
+        f"never a card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. "
+        "Only the member's card tap "
         "executes the action; a plain answer grants no authority. The question snapshot "
         f"shows each card's action and result. Outcomes: {outcomes}"
     )
-
-
-def approval_card_pins(
-    service: ProjectService, store: AppStore, action: ApprovalAction, human: AuthorizedHuman
-) -> dict[str, Any]:
-    """Pins for a new card, refused at ask when its launch could not start."""
-    pinned = approval_pins(service, store, action, human)
-    if action.kind == "auto_research":
-        profile = pinned["profile"]
-        try:
-            machine = service.manifest.machine_map[profile["run_on"]]
-        except KeyError as exc:
-            raise ValueError("machine_not_found") from exc
-        readiness = service.launcher.member_readiness(
-            profile["provider"],
-            host=machine.host,
-            binary=service.launcher.provider_binary(profile["provider"], machine.host),
-            member_id=human.user_id,
-            refresh=True,
-        )
-        if not readiness.installed or not readiness.authenticated:
-            raise ValueError(f"provider_not_ready: {readiness.reason or profile['provider']}")
-        if problem := work_like_launch_problem(readiness):
-            raise ValueError(f"provider_not_ready: {problem}")
-    return pinned
 
 
 def approval_pins(
