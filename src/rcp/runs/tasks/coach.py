@@ -148,22 +148,22 @@ def _resolve_coach_launch(
         reasoning=request.reasoning or (previous.reasoning if previous else None),
         run_on=base_machine,
     )
+    switched = (
+        existing is not None
+        and native_session_profile_reason(
+            {"provider": existing.provider, "run_on": existing.execution_machine},
+            {"provider": profile.provider, "run_on": profile.run_on},
+        )
+        != "current_session"
+    )
     resolved = request.model_copy(
         update={
             "provider": profile.provider,
             "model": profile.model or None,
             "reasoning": profile.reasoning,
             "run_on": profile.run_on,
-            "session_id": (
-                None
-                if existing is not None
-                and native_session_profile_reason(
-                    {"provider": existing.provider, "run_on": existing.execution_machine},
-                    {"provider": profile.provider, "run_on": profile.run_on},
-                )
-                != "current_session"
-                else request.session_id
-            ),
+            "session_id": None if switched else request.session_id,
+            "previous_session_id": request.session_id if switched else None,
         }
     )
     result = service.resolve_skill_request(resolved)

@@ -1017,6 +1017,17 @@ test("a coach conversation follows a provider switch into its fresh session and 
     ]).tasks.map((item) => item.operation_id),
     ["earlier", "switched", "next"],
   );
+
+  const recorded = {
+    ...settled,
+    request: { ...settled.request, previous_session_id: "codex-session" },
+  };
+  assert.deepEqual(
+    coachConversation([earlier, other, recorded, next], "claude-session", []).tasks.map(
+      (item) => item.operation_id,
+    ),
+    ["earlier", "switched", "next"],
+  );
 });
 
 test("a retry shows its turn's member message once, from the attempt that recorded it", () => {

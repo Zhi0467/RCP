@@ -3170,20 +3170,32 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return [self._agent_task_record(row) for row in rows]
 
     def paper_session_tasks(self, project_id: str, session_id: str) -> list[AgentTaskRecord]:
-        """Every visible coach turn of one writing session, newest first.
+        """Every visible coach turn of one coach conversation, newest first.
 
-        The project list keeps only its newest tasks, so a busy project would
-        otherwise push a running coach turn and its session's history out of view.
+        A conversation is a writing session plus the sessions it continued across
+        provider or machine switches, as each switch turn's ``previous_session_id``
+        records. The project list keeps only its newest tasks, so a busy project
+        would otherwise push a running coach turn and its history out of view.
         """
         with self.connection() as connection:
             rows = connection.execute(
                 """
+                WITH RECURSIVE chain(session) AS (
+                    SELECT :session
+                    UNION
+                    SELECT json_extract(graph_runs.request_json, '$.previous_session_id')
+                    FROM graph_runs JOIN chain ON graph_runs.native_session_id = chain.session
+                    WHERE graph_runs.project_id = :project AND graph_runs.kind = 'paper_coach'
+                      AND json_extract(graph_runs.request_json, '$.previous_session_id')
+                          IS NOT NULL
+                )
                 SELECT graph_runs.*, 0 AS recovery_abandoned FROM graph_runs
-                WHERE project_id = ? AND kind = 'paper_coach' AND visible = 1
-                  AND (native_session_id = ? OR json_extract(request_json, '$.session_id') = ?)
+                WHERE project_id = :project AND kind = 'paper_coach' AND visible = 1
+                  AND (native_session_id IN (SELECT session FROM chain)
+                       OR json_extract(request_json, '$.session_id') IN (SELECT session FROM chain))
                 ORDER BY created_at DESC, operation_id DESC
                 """,
-                (project_id, session_id, session_id),
+                {"project": project_id, "session": session_id},
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

@@ -231,8 +231,10 @@ route with `nosniff`. From RCP attaches all saved paper or files selected by sta
 id. The coach shares chat's composer, transcript, attachments, comments, and
 editable agent picker. It renders through the same agent window as chat, so it
 keeps the reader's position, shows live progress, and offers Resume and Retry as
-chat does; only its change cards are its own. Provider changes announce a fresh session. History and
-New chat sit at the end of Paper's view-switch row without adding a phone row.
+chat does; only its change cards are its own. Provider changes announce a fresh
+session, and the conversation stays one, as chat's does, after a reload too.
+History and New chat sit at the end of Paper's view-switch row without adding a
+phone row.
 The coach has no direct paper, Patch, approval, or graph-promotion authority.
 [Containment](providers-and-containment.md) remains fixed regardless of transcripts
 or skills.

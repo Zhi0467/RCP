@@ -170,6 +170,16 @@ export function coachConversation(
         .map((task) => task.native_session_id),
     ].filter(Boolean),
   );
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const task of coach) {
+      const previous = textValue(task.request.previous_session_id);
+      if (previous && sessions.has(task.native_session_id ?? null) && !sessions.has(previous)) {
+        sessions.add(previous);
+        grew = true;
+      }
+    }
+  }
   const shown = coach
     .filter(
       (task) =>

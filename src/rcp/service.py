@@ -1169,6 +1169,7 @@ class CoachRequest(BaseModel):
     reasoning: str | None = None
     run_on: str | None = None
     session_id: str | None = None
+    previous_session_id: str | None = None
     workflow_ids: list[str] | None = None
     skill_ids: list[str] | None = None
     invoked_workflow_ids: list[str] = Field(default_factory=list)
