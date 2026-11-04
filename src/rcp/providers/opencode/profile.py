@@ -441,10 +441,7 @@ def _permission(
     if capability == "paper_suggest":
         changes = _paper_changes_root(write_dirs)
         base["edit"] = {"*": "deny", _root_pattern(str(changes)): "allow"}
-        # The owner dispatches only history reads; the client cannot be replaced.
-        if invocation_gate is not None and invocation_gate.client_path is not None:
-            client = shlex.join(invocation_gate.client_executable_argv())
-            base["bash"] = {"*": "deny", f"{client} *": "allow"}
+        base["bash"] = "allow"
         return base
     if scope is not None:
         allowed, denied = scope.writable_roots, scope.protected_write_paths

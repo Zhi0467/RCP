@@ -168,7 +168,7 @@
   "src/rcp/providers/codex/profile.py": {"comment": 43},
   "src/rcp/providers/codex/remote.py": {"comment": 21},
   "src/rcp/providers/live_status.py": {"comment": 1},
-  "src/rcp/providers/opencode/profile.py": {"comment": 43},
+  "src/rcp/providers/opencode/profile.py": {"comment": 42},
   "src/rcp/providers/opencode/remote.py": {"comment": 4},
   "src/rcp/providers/session_format.py": {"comment": 5},
   "src/rcp/providers/turn_fence.py": {"comment": 8},

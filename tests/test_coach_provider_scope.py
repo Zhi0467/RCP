@@ -19,7 +19,9 @@ from rcp.providers import ProviderTurnRequest, profile_for
     ],
 )
 @pytest.mark.parametrize("session_id", [None, "native-session"])
-def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, session_id):
+def test_coach_writes_only_its_changes_and_scratch_and_has_a_shell(
+    tmp_path, provider, runtime, session_id
+):
     changes = tmp_path / "changes"
     request = ProviderTurnRequest(
         prompt="Review",
@@ -46,8 +48,12 @@ def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, ses
         assert config["default_permissions"] == "rcp_paper"
         fs = config["permissions"]["rcp_paper"]["filesystem"]
         assert fs[":root"] == "read"
-        assert {p for p, mode in fs.items() if mode == "write"} == {str(changes)}
-        assert ":workspace_roots" not in fs and ":tmpdir" not in fs and ":slash_tmp" not in fs
+        assert {p for p, mode in fs.items() if mode == "write"} == {
+            str(changes),
+            ":tmpdir",
+            ":slash_tmp",
+        }
+        assert ":workspace_roots" not in fs
         if runtime.endswith("stdio.v1"):
             turn.receive_line(json.dumps({"id": 1, "result": {}}))
             step = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
@@ -74,7 +80,7 @@ def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, ses
         assert turn.command[turn.command.index("--permission-mode") + 1] == "dontAsk"
         assert turn.command[turn.command.index("--setting-sources") + 1] == ""
         settings = json.loads(turn.command[turn.command.index("--settings") + 1])
-        assert "Bash" not in settings["permissions"]["allow"]
+        assert "Bash" in settings["permissions"]["allow"]
         assert [p for p in settings["permissions"]["allow"] if p.startswith("Edit(")] == [
             f"Edit(//{str(changes).lstrip('/')}/**)"
         ]
@@ -82,7 +88,7 @@ def test_coach_changes_are_the_only_write_grant(tmp_path, provider, runtime, ses
         config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
         permissions = next(iter(config["agent"].values()))["permission"]
         assert permissions["edit"] == {"*": "deny", f"{str(changes).strip('/')}/**": "allow"}
-        assert "bash" not in permissions
+        assert permissions["bash"] == "allow"
     with pytest.raises(ValueError):
         profile.runtime(runtime).turn(replace(request, write_dirs=[]))
     with pytest.raises(ValueError):

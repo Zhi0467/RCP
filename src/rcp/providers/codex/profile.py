@@ -593,7 +593,7 @@ def _codex_paper_permission_profile(
     return (
         'permissions={rcp_paper={filesystem={":root"="read",'
         + json.dumps(str(changes))
-        + '="write"'
+        + '="write",":tmpdir"="write",":slash_tmp"="write"'
         + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )
