@@ -756,6 +756,44 @@ test("the coach reopens where the reader left it, as every agent window does", a
   assert.deepEqual(errors, []);
 });
 
+test("returning to Paper reopens the coach chat picked from history", async (t) => {
+  const newer = {
+    ...turn,
+    operation_id: "t2",
+    native_session_id: "s2",
+    request: { message: "Tighten the abstract", session_id: null },
+  };
+  const session = (id, title) => ({
+    provider: "codex",
+    native_session_id: id,
+    execution_machine: "local",
+    title,
+    model: "",
+    created_at: turn.created_at,
+  });
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: ${JSON.stringify([newer, turn])}, started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions")
+          ? { json: [session("s2", "Abstract"), session("s1", "Introduction")] }
+          : respond(path, ...rest);
+    },
+  });
+  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  await coach(page);
+  await page.getByText("Tighten the abstract").waitFor();
+  await page.getByRole("button", { name: "Coach chat history" }).click();
+  await page.getByRole("button", { name: "Introduction", exact: true }).click();
+  await page.getByText("Review the introduction").waitFor();
+  await page.evaluate(() => window.paperTab.leave());
+  await page.evaluate(() => window.paperTab.back());
+  await page.getByText("Review the introduction").waitFor();
+  assert.deepEqual(await prompts.allTextContents(), ["Review the introduction"]);
+  assert.deepEqual(errors, []);
+});
+
 test("a failed coach turn shows the shared error line, whose Retry starts the turn again", async (t) => {
   const failed = {
     ...turn,

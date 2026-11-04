@@ -54,6 +54,11 @@ function sessionConfig(session: WritingSession, baseMachine: string): AgentRunCo
   };
 }
 
+export interface CoachOpening {
+  sessionId: string | null;
+  fresh: boolean;
+}
+
 export function PaperCoach({
   apiBase,
   project,
@@ -71,6 +76,8 @@ export function PaperCoach({
   setError,
   transcriptRef,
   textarea,
+  opening,
+  onOpening,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
@@ -90,11 +97,13 @@ export function PaperCoach({
   setError: (value: string | null) => void;
   transcriptRef: RefObject<HTMLDivElement | null>;
   textarea: RefObject<HTMLTextAreaElement | null>;
+  opening?: CoachOpening;
+  onOpening: (opening: CoachOpening) => void;
 }) {
   const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [fresh, setFresh] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(opening?.sessionId ?? null);
+  const [fresh, setFresh] = useState(opening?.fresh ?? false);
   // Turns started here, kept from admission until the task list carries them.
   const [started, setStarted] = useState<AgentTask[]>([]);
   // The human's pick for the next turns, kept while the same conversation stays open.
@@ -182,6 +191,11 @@ export function PaperCoach({
   );
   // The session the next turn resumes: the newest turn's, as in chat.
   const currentSessionId = conversation.sessionId;
+  const openedAt = openedSession ?? currentSessionId;
+  useEffect(
+    () => onOpening(openedAt ? { sessionId: openedAt, fresh: false } : { sessionId: null, fresh }),
+    [openedAt, fresh, onOpening],
+  );
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );

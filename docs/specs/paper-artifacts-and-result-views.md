@@ -90,6 +90,10 @@ different request cancels the project's older request and shows Retry. Previous
 PDFs remain readable within retention. An uploaded PDF renders in the in-app PDF
 viewer, with Download in the panel header and area comments, but without SyncTeX.
 
+Returning to Paper reopens what the member left there: the open file with its
+cursor and scroll, the Preview or Coach panel, and the coach chat they were in.
+A link opens its file once, so it never overrides a later choice.
+
 Preview selects the one compile root that reaches the open file. A LaTeX file
 with its own `\documentclass` is its own root, so the file the user is in
 compiles even when another root inputs it. If no root or multiple roots qualify,
