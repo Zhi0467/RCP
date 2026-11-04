@@ -448,6 +448,14 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
         )
+    if "watcher" in verbs:
+        from rcp.runs.work_watcher_commands import work_watcher_command_usage
+
+        instructions.append(
+            work_watcher_command_usage(
+                client or turn.patch_inputs.validator_staged.client_command()
+            )
+        )
     if "episode" in verbs:
         authorizer = (
             turn.execution.store.agent_task_authorizer(turn.execution.operation_id)

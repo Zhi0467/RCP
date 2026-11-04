@@ -62,6 +62,7 @@ CommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
+    "watcher",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -84,6 +85,7 @@ MutatingCommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
+    "watcher",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -107,6 +109,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "bulletin",
         "name",
         "flag",
+        "watcher",
     }
 )
 
@@ -774,6 +777,24 @@ class ScheduleCommandRequest(_CommandRequest):
         return self
 
 
+class WatcherArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["list", "stop", "cancel"]
+    watcher_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def id_matches_action(self) -> WatcherArguments:
+        if (self.action == "list") != (self.watcher_id is None):
+            raise ValueError("watcher stop and cancel name one watcher id; list names none")
+        return self
+
+
+class WatcherCommandRequest(_CommandRequest):
+    verb: Literal["watcher"]
+    arguments: WatcherArguments
+
+
 class FlagCommandRequest(_CommandRequest):
     verb: Literal["flag"]
     arguments: FlagArguments
@@ -833,7 +854,8 @@ CommandRequest: TypeAlias = Annotated[
     | ScheduleCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
-    | FlagCommandRequest,
+    | FlagCommandRequest
+    | WatcherCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)

@@ -1056,6 +1056,8 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             "--source",
             "repo-a/result.txt:4",
         ),
+        ("watcher", "--list"),
+        ("watcher", "--cancel", "watcher-1"),
     ]
 
     stop = asyncio.Event()
@@ -1093,6 +1095,12 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "finish",
         "name",
         "flag",
+        "watcher",
+        "watcher",
+    ]
+    assert [arguments for verb, arguments in seen if verb == "watcher"] == [
+        {"action": "list", "watcher_id": None},
+        {"action": "cancel", "watcher_id": "watcher-1"},
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}

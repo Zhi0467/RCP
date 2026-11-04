@@ -284,7 +284,7 @@ Patches through the transition manager and Apply gate.
 
 A member's private agent threads act for that member. Ordinary acts run without
 a tap: Patches, Experiment starts, compute, Bulletin posts, schedules and
-handoffs. Each records its turn's operation and authorizer as any Work turn
+handoffs, and stopping the Experiments and watchers the thread started. Each records its turn's operation and authorizer as any Work turn
 does. Projections derive
 [`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
 origin operation's thread; nothing new enters a Patch, so replay is unchanged.

@@ -792,9 +792,22 @@ turn's member; a failure is recorded on the turn and **Resume** stays offered.
 A paused Experiment tells its human to reply in its chat once the pause is
 resolved, and an Experiment-node chat's loop status carries the episode's ending.
 
+The same turns may run `episode --stop <episode-id>` on an episode this chat
+started: its root names a turn of this chat as **Started from**, directly or
+through the episode it continues. The stop is the member's graceful **Stop** in
+Runs, recorded with initiator `agent:<operation-id>`, and it acts at once rather
+than after the turn: it changes no graph, and a fence that waited for the turn's
+Patch would let the loop spend more turns meanwhile. Any other episode, whether
+another chat's, a human Run's or an Auto-research child's, is refused with
+`episode_not_started_here`; the member stops those in Runs. To change and rerun
+an Experiment the agent stops it, fixes it in its Patch, and starts a new episode
+in a later turn once it shows stopped.
+
 **Why:** the member's Work message is the authorization a Run click would be, and
 the node's limit, which only a visible graph edit changes, still bounds the spend.
-An Experiment turn starting another would chain episodes nobody authorized.
+An Experiment turn starting another would chain episodes nobody authorized. A
+member's own chat acts for that member, so it may stop what it started, and only
+that.
 
 ## Experiment-loop graph authority
 
@@ -960,8 +973,8 @@ an observer to retire; and an Experiment graph condition runs no job, so this
 control is not its answer. A live condition can therefore still hold an ended
 episode shut.
 
-An optional saved `cancel_command` runs only on a human Cancel request, after a
-fresh check confirms active work. Exact registered helper recovery follows the
+An optional saved `cancel_command` runs only on a member's Cancel request, from
+Runs or that member's own chat, after a fresh check confirms active work. Exact registered helper recovery follows the
 [human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract),
 including lost work without an exit receipt. It uses the recorded execution host and cwd,
 and never changes the watcher into a separate cancelled lifecycle. A successful
@@ -969,6 +982,15 @@ command is an attributed request; observation still determines completion.
 Stop fences continuation and leaves the action available for still-live work.
 Cancellation failures permit explicit retry. Transfer and offline restore
 remove executable actions; ordinary restart preserves them.
+
+A member's ordinary Work chat, the same turns that may start an Experiment, holds
+the `watcher` verb over the watchers its own Work turns armed for the chat: the
+chat id, project and Work continuation match. `watcher --list` shows the live
+ones. `watcher --stop <id>` retires one under the same storage rule as the
+human's stop, recorded as stopped by `agent`. `watcher --cancel <id>` is the
+member's Cancel, attributed to that member, under the same write admission. An
+Experiment loop's watcher wakes its episode, not the chat, so it is refused with
+`watcher_not_armed_here` like another chat's; it stops with that episode.
 
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.

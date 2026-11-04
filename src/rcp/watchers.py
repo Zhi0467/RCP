@@ -154,6 +154,7 @@ class WatcherCheckResult(BaseModel):
 WatcherCheckRunner = Callable[[WatchSpec, str, float], WatcherCheckResult]
 WatcherCompletionCallback = Callable[[list[WatcherRecord]], None]
 WatcherPollCompletedCallback = Callable[[], None]
+WatcherCanceller = Callable[[str, str, str], WatcherRecord]
 GraphWatcherTargetResolver = Callable[[GraphWatcherRecord], GraphTargetRef]
 
 
