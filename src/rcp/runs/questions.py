@@ -359,6 +359,8 @@ class WorkCommandHandler:
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         graph_history = isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
         if request.verb not in self.allowed_verbs:
+            if request.verb in _CARD_ROUTES and self.approval_card_member is not None:
+                return _refuse(request, _CARD_ROUTES[request.verb], "approval_card_required")
             return _not_granted(request, graph_history)
         if request.verb == "projects":
             return self._projects(request, identity)
@@ -541,6 +543,12 @@ _QUESTION_BINDING_FIELDS = {
     "capability",
     "write_scope_fingerprint",
     "graph_target",
+}
+
+
+_CARD_ROUTES: dict[str, str] = {
+    "merge": "Only the member merges a branch. Use ask with a merge_branch or merge_episode "
+    "action; the member's Approve tap runs the merge.",
 }
 
 

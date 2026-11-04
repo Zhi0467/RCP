@@ -85,7 +85,9 @@ launch, once per turn: a Resume or Retry keeps its first attempt's record. A
 reply with no outcome file is not stated, as in project Work.
 
 `handoff` passes a Space request to the same member's project thread, with that
-member's authority. It is not mail. The verb records the request and returns at
+member's authority. It is not mail. Its usage lists the project thread's
+capabilities from `thread_capabilities("project")`, so the Space agent knows
+what a handoff can ask for. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
 that turn's own Patch lands first. A Space turn that ends without succeeding
 (Stopped, paused, failed, interrupted, or missing) cancels its pending handoffs
