@@ -88,6 +88,7 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "agent_schedules",
         "approval_cards",
         "agent_handoffs",
+        "agent_thread_queue",
         "provider_skill_inventories",
         "provider_login_states",
         "provider_login_assignments",

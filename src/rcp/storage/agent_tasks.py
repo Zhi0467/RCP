@@ -262,6 +262,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         continuation_cause: str = "fresh",
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
+        queue_id: str | None = None,
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
@@ -272,16 +273,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
         try:
             with self.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                from rcp.storage.agent_threads import claim_handoff_turn
+                from rcp.storage.agent_threads import claim_handoff_turn, claim_queued_turn
 
                 if claim_handoff_turn(
                     connection, record, handoff_id=handoff_id, handoff_wake_id=handoff_wake_id
-                ):
+                ) or claim_queued_turn(connection, record, queue_id):
                     existing = connection.execute(
                         "SELECT * FROM graph_runs WHERE operation_id=?", (record.operation_id,)
                     ).fetchone()
                     if existing is None:
-                        raise ValueError("Handoff claim lost its task")
+                        raise ValueError("Thread claim lost its task")
                     return self._agent_task_record(existing)
                 if continuation_cause == "fresh":
                     self._require_project_accepts_new_work(connection, record.project_id)

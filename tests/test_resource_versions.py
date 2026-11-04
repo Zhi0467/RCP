@@ -217,6 +217,7 @@ _EXEMPT_TABLES = {
     "agent_schedules": "private schedule state; thread views poll directly",
     "approval_cards": "question-owned action; questions invalidate resolution",
     "agent_handoffs": "durable delivery",
+    "agent_thread_queue": "member queue; the agent_threads rail invalidates it",
     "space_turn_project_bindings": "admitted authority",
     "memory_migrations": "migration",
     "memory_deletions": "cleanup receipt",

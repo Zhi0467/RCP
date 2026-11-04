@@ -346,3 +346,124 @@ def test_thread_list_reads_a_fixed_number_of_statements_and_writes_nothing(
     assert by_project["project-2"]["project_name"] == "project-2"
     assert by_project[None]["project_name"] is None
     assert all(row["agent_name"] and row["browser_requested"] for row in rows)
+
+
+def _queue_world(tmp_path: Path):
+    from tests.helpers import authorized_human
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    actor = authorized_human(store)
+    thread = next(
+        row
+        for row in store.ensure_agent_threads(actor.user_id, ["project"], default_names=("Pip",))
+        if row.kind == "project"
+    )
+    return store, actor, thread
+
+
+def _queued(store: AppStore, thread, key: str, message: str):
+    return store.queue_agent_thread_message(
+        queue_id=key + "-row",
+        thread_id=thread.thread_id,
+        user_id=thread.user_id,
+        idempotency_key=key,
+        message=message,
+    )
+
+
+def _queued_turn(store: AppStore, actor, thread, row, operation_id: str):
+    from rcp.service import RunRequest
+    from tests.test_storage import _task_record
+
+    return _task_record(
+        store.now(),
+        operation_id=operation_id,
+        kind="project_chat",
+        authorized_by=actor,
+        request=RunRequest(
+            chat_scope="project", chat_id=thread.thread_id, mode="work", message=row.message
+        ).model_dump(mode="json"),
+    )
+
+
+def test_queue_insert_is_idempotent_and_refuses_a_reused_key(tmp_path: Path) -> None:
+    import pytest
+
+    from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
+    from rcp.storage.agent_threads import AgentThreadQueueFull
+
+    store, _actor, thread = _queue_world(tmp_path)
+    first = _queued(store, thread, "key", "Next, check the logs")
+    assert _queued(store, thread, "key", "Next, check the logs") == first
+    with pytest.raises(ValueError):
+        _queued(store, thread, "key", "Something else")
+    assert store.agent_thread_queue(thread.thread_id) == [first]
+    for index in range(1, AGENT_THREAD_QUEUE_MAX_ITEMS):
+        _queued(store, thread, f"key-{index}", "More")
+    with pytest.raises(AgentThreadQueueFull):
+        _queued(store, thread, "one-too-many", "More")
+
+
+def test_queued_turn_claim_is_fifo_once_and_never_for_a_removed_row(tmp_path: Path) -> None:
+    import threading
+
+    import pytest
+
+    store, actor, thread = _queue_world(tmp_path)
+    older = _queued(store, thread, "older", "First")
+    newer = _queued(store, thread, "newer", "Second")
+    assert [row.queue_id for row in store.pending_agent_thread_queue()] == [older.queue_id]
+    with pytest.raises(ValueError):
+        store.create_agent_task(
+            _queued_turn(store, actor, thread, newer, "newer-turn"), queue_id=newer.queue_id
+        )
+    turn = _queued_turn(store, actor, thread, older, "older-turn")
+    results: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def drain() -> None:
+        barrier.wait()
+        results.append(store.create_agent_task(turn, queue_id=older.queue_id).operation_id)
+
+    workers = [threading.Thread(target=drain) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert results == ["older-turn", "older-turn"]
+    assert [task.operation_id for task in store.agent_tasks("project")] == ["older-turn"]
+    with pytest.raises(ValueError):
+        store.create_agent_task(
+            turn.model_copy(update={"operation_id": "another"}), queue_id=older.queue_id
+        )
+    assert store.delete_agent_thread_queue_item(older.queue_id) is None
+    assert store.delete_agent_thread_queue_item(newer.queue_id) == newer
+    store.complete_agent_task("older-turn", applied_revision=None, result={})
+    with pytest.raises(ValueError):
+        store.create_agent_task(
+            _queued_turn(store, actor, thread, newer, "newer-turn"), queue_id=newer.queue_id
+        )
+    assert store.agent_task("newer-turn") is None
+
+
+def test_refused_queue_row_never_starts_and_stops_blocking(tmp_path: Path) -> None:
+    import pytest
+
+    store, actor, thread = _queue_world(tmp_path)
+    refused = _queued(store, thread, "refused", "First")
+    waiting = _queued(store, thread, "waiting", "Second")
+    assert store.refuse_agent_thread_queue_item(refused.queue_id, "thread_closed") is not None
+    assert store.refuse_agent_thread_queue_item(refused.queue_id, "later") is None
+    with pytest.raises(ValueError):
+        store.create_agent_task(
+            _queued_turn(store, actor, thread, refused, "refused-turn"),
+            queue_id=refused.queue_id,
+        )
+    assert [row.queue_id for row in store.pending_agent_thread_queue()] == [waiting.queue_id]
+    listed = store.agent_thread_queue(thread.thread_id)
+    assert [(row.queue_id, row.refusal_reason) for row in listed] == [
+        (refused.queue_id, "thread_closed"),
+        (waiting.queue_id, None),
+    ]
+    deferred = store.defer_agent_thread_queue_item(waiting.queue_id)
+    assert store.defer_agent_thread_queue_item(waiting.queue_id) == deferred
