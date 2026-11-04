@@ -45,7 +45,12 @@ A request with `agent_cards: true` also gets `agent_cards: {version}`, a digest
 of the epoch, the member, and each `(project_id, graph:main generation)` pair
 for the member's open project threads (not closed, not archived, project not
 retired). The generation is the workspace's in-memory token, so the read opens
-no project. Card fetches key on this version and on the `agent_threads` version,
+no project. The digest also covers the member's own `agent_threads` counter,
+each member project's `episodes` and `watchers` counters, and the open
+questions the member can see in those projects and the Space. That set is read
+directly because the project `questions` counter also moves on another
+member's private-thread question; `tasks.status` is left out for the same
+reason. Card fetches and the Running list key on this version and on the `agent_threads` version,
 so a finished turn brings its new cards and a main commit clears decided ones.
 Graph generations stay out of the `agent_threads` version because that version
 reloads the open thread's transcript, questions and task. A remote project's
@@ -2289,10 +2294,16 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `GET /api/agent-threads` returns the acting member's lazily created Space and
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_finished_at`, `last_activity_at`, `live_state`,
-`latest_operation_id`, `browser_requested`, `capabilities`, and `agent` (the
-thread's saved agent pick, or null). The Space
+`live_label`, `watching`, `latest_operation_id`, `browser_requested`,
+`capabilities`, and `agent` (the thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
-paused or `needs_you` (an open question or card). `latest_operation_id` names
+paused, `failed` (the latest turn failed and no retry or resume of it started)
+or `needs_you` (an open question or card). `watching` counts the active or
+degraded watchers the thread armed itself; an episode's watchers are the
+episode's. `live_label` is the state's short text for the Running list, null
+when idle without watchers; a failure reads as a sign-in need when its
+`failure_kind` is `provider_auth`, else as a session limit when
+`classify_terminal_error` says so. `latest_operation_id` names
 the newest visible turn, so a view can follow a project turn whose member
 message reaches the transcript only when it settles. A thread's turns are the
 tasks of its own kind (`space_chat` or `project_chat`); an Experiment it started
@@ -2318,6 +2329,30 @@ questions the member can answer, including claimed ones, with `project_name`,
 newest first. State comes from each project's local display snapshot, so no
 remote read happens. A member-wide read skips and logs a project whose state
 cannot be read; for a named thread that failure is 503.
+
+The member-wide read, and only it, also returns `questions`: across every
+member project, the pending questions with no card that `question_recipients`
+gives the member, newest first. Each row is the question serialization plus
+`project_id`, `project_name`, `source_label` (the episode's Space Runs title,
+or the chat or thread title, null when the chat has none) and
+`answer_continues` computed as the episode question list computes it.
+Answers use `POST /api/projects/{project_id}/questions/{question_id}/answer`.
+
+`GET /api/agent-threads/running` returns `{rows, needs, total}` for the
+acting member ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
+Each row has `kind` (`experiment`, `auto_research` or `thread`), `id`,
+`project_id`, `project_name`, `title`, `needs_you`, `label`, `watching`, `at`
+and `link`. Episode rows come from `space_run_entries` in
+[`api/index.py`](../../src/rcp/api/index.py), the builder `/api/space/runs`
+also calls: `title`, `label` (`health_label`) and `at` (`last_activity_at`) are
+that row's, `needs_you` is `run_section == "actionable"`, and `link` is
+`#/projects/{project_id}/targets/{target_key}/episode/{episode_id}`. Thread
+rows come from the thread projection: `title` is `agent_name`, `label` is
+`live_label`, `at` is the latest turn's `updated_at`, `needs_you` holds for
+`needs_you`, `paused` and `failed`, and `link` is `#/agent/{thread_id}`.
+`watching` counts the row's own active or degraded watchers. Rows that need
+the member come first, each group newest `at` first. `needs` and `total` are
+counted before the list is cut to `SPACE_RUNNING_MAX_ROWS`.
 
 Thread title, read and browser routes under `/api/agent-threads/{id}`
 require ownership; another member gets 404. The transcript route there serves

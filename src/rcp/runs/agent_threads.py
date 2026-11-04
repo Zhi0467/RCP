@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from rcp.providers import classify_terminal_error
 from rcp.runs.agent_thread_commands import thread_capabilities
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 
 if TYPE_CHECKING:
+    import sqlite3
     from collections.abc import Awaitable, Callable, Sequence
     from pathlib import Path
 
@@ -22,6 +24,9 @@ if TYPE_CHECKING:
     from rcp.service import ChatMessage, ProjectService, RunRequest
     from rcp.storage import AgentTaskRecord
     from rcp.transport.run_stage import RemoteRunStage
+
+
+_LIVE_WATCHER = "status IN ('active', 'degraded')"
 
 
 def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
@@ -63,12 +68,22 @@ def thread_projections(
             for row in connection.execute(
                 f"WITH th(scope, thread, kind) AS (VALUES {pairs}) "
                 "SELECT th.scope, th.thread, r.operation_id, r.status, r.updated_at, "
+                "r.error, r.failure_kind, "
                 # Finished as `AgentTaskRecord.finished` defines it: a paused turn has not.
                 f"(SELECT MAX(finished_at) {turns} "
                 "AND status IN ('succeeded', 'failed', 'interrupted')) AS last_finished_at "
                 "FROM th LEFT JOIN graph_runs r ON r.operation_id = "
                 f"(SELECT operation_id {turns} ORDER BY created_at DESC, operation_id DESC LIMIT 1)",
                 keys,
+            )
+        }
+        watching = {
+            (row["project_id"], row["chat_id"]): row["watching"]
+            for row in connection.execute(
+                "SELECT project_id, chat_id, COUNT(*) AS watching FROM watchers "
+                f"WHERE chat_id IN ({ids}) AND episode_id IS NULL AND worker_id IS NULL "
+                f"AND {_LIVE_WATCHER} GROUP BY project_id, chat_id",
+                thread_ids,
             )
         }
         baseline = connection.execute(
@@ -132,7 +147,9 @@ def thread_projections(
                 "running": "running",
                 "pausing": "running",
                 "paused": "paused",
+                "failed": "failed",
             }.get(task["status"], "idle")
+        watchers = watching.get((scope, thread_id), 0)
         project_name = project_names.get(thread.project_id) if thread.project_id else None
         if thread.project_id and project_name is None:
             # An alias or retired id resolves through the store's own rule.
@@ -152,6 +169,8 @@ def thread_projections(
                 "last_finished_at": finished,
                 "last_activity_at": task["updated_at"],
                 "live_state": state,
+                "live_label": _live_label(state, task, watchers),
+                "watching": watchers,
                 # A running turn's member message reaches the transcript only when it settles.
                 "latest_operation_id": task["operation_id"],
                 "browser_requested": browser.get((scope, thread_id), False),
@@ -162,6 +181,40 @@ def thread_projections(
             }
         )
     return rows
+
+
+def _live_label(state: str, task: sqlite3.Row, watchers: int) -> str | None:
+    """The thread's short state text in the Space Running list."""
+    if state == "failed":
+        if task["failure_kind"] == "provider_auth":
+            return "Sign-in needed"
+        if classify_terminal_error(task["error"] or "") == "session_limit":
+            return "Session limit"
+        return "Failed"
+    if state == "idle":
+        return "Watching" if watchers else None
+    return {
+        "needs_you": "Asked you a question",
+        "running": "Working",
+        "queued": "Working",
+        "paused": "Paused",
+    }.get(state)
+
+
+def episode_watching(store: AppStore, episode_ids: Sequence[str]) -> dict[str, int]:
+    """Each episode's live watchers, counted by the same rule as a thread's."""
+    if not episode_ids:
+        return {}
+    with store.connection() as connection:
+        return {
+            row["episode_id"]: row["watching"]
+            for row in connection.execute(
+                "SELECT episode_id, COUNT(*) AS watching FROM watchers "
+                f"WHERE episode_id IN ({','.join('?' for _ in episode_ids)}) "
+                f"AND {_LIVE_WATCHER} GROUP BY episode_id",
+                list(episode_ids),
+            )
+        }
 
 
 def thread_history_seed(service: ProjectService, request: RunRequest) -> str:

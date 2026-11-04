@@ -436,9 +436,7 @@ class NotificationSender:
                     created_at=row["finished_at"],
                 )
                 notice["deep_link"] = f"#/agent/{quote(row['thread_id'], safe='')}"
-                self.store.enqueue_notification(
-                    connection, recipient_user_id=row["user_id"], **notice
-                )
+                self.store.enqueue_notification(connection, recipients={row["user_id"]}, **notice)
 
     def _recheck_questions(self, project: ProjectRecord) -> None:
         for question_id in self.store.unobserved_notification_questions(project.project_id):

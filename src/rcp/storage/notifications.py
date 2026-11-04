@@ -6,14 +6,18 @@ import hmac
 import json
 import sqlite3
 import uuid
+from collections.abc import Collection
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
+from rcp.policies.project import is_member
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
+from rcp.storage.question_models import QuestionRecord
+from rcp.storage.questions import _question_record
 
 NOTIFICATION_DEFAULTS = {
     "proposal": True,
@@ -71,6 +75,32 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def question_recipients(connection: sqlite3.Connection, question: QuestionRecord) -> set[str]:
+    """Who a question asks: a private thread's owner, otherwise every live project member."""
+    origin = question.origin
+    if origin.owner_kind == "chat":
+        owner = connection.execute(
+            "SELECT user_id FROM agent_threads WHERE thread_id=?", (origin.owner_id,)
+        ).fetchone()
+        if owner is not None:
+            return {owner["user_id"]}
+    return {
+        row["user_id"]
+        for row in connection.execute(
+            "SELECT member.user_id, project.retired_at, user.removal_started_at "
+            "FROM project_members AS member "
+            "JOIN projects AS project ON project.project_id = member.project_id "
+            "JOIN space_users AS user ON user.user_id = member.user_id "
+            "WHERE member.project_id = ?",
+            (origin.project_id,),
+        )
+        if is_member(
+            project_retired=row["retired_at"] is not None,
+            member_removing=row["removal_started_at"] is not None,
+        )
+    }
+
+
 def migrate_question_notifications(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS notification_question_events "
@@ -114,7 +144,7 @@ class NotificationStoreMixin(StoreMixinBase):
                     (notification["item_id"],),
                 ).fetchone()
             ):
-                self.enqueue_notification(connection, recipient_user_id=user_id, **notification)
+                self.enqueue_notification(connection, recipients={user_id}, **notification)
             return bool(observed)
 
     def unobserved_consolidation_notifications(
@@ -205,16 +235,13 @@ class NotificationStoreMixin(StoreMixinBase):
                 "INSERT OR IGNORE INTO notification_question_events VALUES (?,?)",
                 (question_id, self.now()),
             ).rowcount
-            if inserted and notification is not None:
-                owner = connection.execute(
-                    """SELECT t.user_id FROM questions q
-                    JOIN agent_threads t ON t.thread_id=q.owner_id
-                    WHERE q.question_id=? AND q.owner_kind='chat'""",
-                    (question_id,),
-                ).fetchone()
+            question = connection.execute(
+                "SELECT * FROM questions WHERE question_id=?", (question_id,)
+            ).fetchone()
+            if inserted and notification is not None and question is not None:
                 self.enqueue_notification(
                     connection,
-                    recipient_user_id=owner["user_id"] if owner else None,
+                    recipients=question_recipients(connection, _question_record(question)),
                     **notification,
                 )
             return bool(inserted)
@@ -638,7 +665,7 @@ class NotificationStoreMixin(StoreMixinBase):
         created_at: str | None = None,
         observed_health: str | None = None,
         observed_blocked_reason: str | None = None,
-        recipient_user_id: str | None = None,
+        recipients: Collection[str] | None = None,
     ) -> None:
         if kind not in NOTIFICATION_DEFAULTS:
             raise ValueError("invalid notification kind")
@@ -646,7 +673,7 @@ class NotificationStoreMixin(StoreMixinBase):
             return
         now = created_at or self.now()
         for device in connection.execute("SELECT * FROM notification_devices").fetchall():
-            if recipient_user_id is not None and device["user_id"] != recipient_user_id:
+            if recipients is not None and device["user_id"] not in recipients:
                 continue
             if self._notification_device_active(connection, device) and self._notification_allowed(
                 connection, device, project_id, kind

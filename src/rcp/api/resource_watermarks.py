@@ -199,17 +199,64 @@ def _card_projects(connection: sqlite3.Connection, user_id: str) -> list[str]:
     ]
 
 
+def _agent_cards_counters(connection: sqlite3.Connection, user_id: str) -> list[object]:
+    """What the dock and the Running list read, without another member's private work.
+
+    The member's own thread rail, each member project's episode and watcher counters, and
+    the open questions the member can see. The project `questions` counter also moves on
+    another member's private-thread question, so the visible open set is read instead.
+    """
+    rail = connection.execute(
+        "SELECT generation FROM resource_versions "
+        "WHERE scope='' AND resource='agent_threads' AND entity=?",
+        (f"member:{user_id}",),
+    ).fetchone()
+    members = (
+        "SELECT member.project_id FROM project_members AS member "
+        "JOIN projects AS project ON project.project_id = member.project_id "
+        "AND project.retired_at IS NULL WHERE member.user_id = :user"
+    )
+    generations = connection.execute(
+        "SELECT version.scope, version.resource, version.generation FROM resource_versions "
+        f"AS version WHERE version.scope IN ({members}) "
+        "AND version.resource IN ('episodes', 'watchers') AND version.entity = '' "
+        "ORDER BY version.scope, version.resource",
+        {"user": user_id},
+    ).fetchall()
+    questions = connection.execute(
+        "SELECT question.project_id, question.question_id, question.withdrawn_readonly "
+        "FROM questions AS question "
+        f"WHERE question.project_id IN ({members} "
+        "UNION SELECT space_id FROM space_identity WHERE singleton = 1) "
+        "AND question.state = 'pending' AND NOT EXISTS ("
+        "SELECT 1 FROM agent_threads AS thread WHERE question.owner_kind = 'chat' "
+        "AND thread.thread_id = question.owner_id AND thread.user_id != :user) "
+        "ORDER BY question.question_id",
+        {"user": user_id},
+    ).fetchall()
+    return [
+        rail[0] if rail else 0,
+        [list(row) for row in generations],
+        [list(row) for row in questions],
+    ]
+
+
 def _agent_cards_version(
-    catalog: ProjectCatalog, epoch: str, user_id: str, project_ids: list[str]
+    catalog: ProjectCatalog,
+    epoch: str,
+    user_id: str,
+    project_ids: list[str],
+    counters: list[object],
 ) -> AgentCardsVersion:
-    """Moves when any of these projects' main graph commits; reads only in-memory tokens."""
+    """Moves with the member's dock and Running counters, and when a shown thread's project
+    main graph commits; the graph part reads only in-memory tokens."""
     generations = [
         [project_id, catalog.content_generations(project_id, {"graph:main"})["graph:main"]]
         for project_id in project_ids
     ]
     return AgentCardsVersion(
         version=hashlib.sha256(
-            json.dumps([epoch, user_id, "agent_cards", generations]).encode()
+            json.dumps([epoch, user_id, "agent_cards", generations, counters]).encode()
         ).hexdigest()
     )
 
@@ -269,6 +316,9 @@ def resource_watermarks(
                 ).hexdigest()
             )
         card_projects = _card_projects(connection, member.user_id) if body.agent_cards else None
+        card_counters = (
+            _agent_cards_counters(connection, member.user_id) if body.agent_cards else []
+        )
         due = list(dict.fromkeys(body.due))
         keys = [
             (requested_id, aliases[requested_id], key)
@@ -348,7 +398,7 @@ def resource_watermarks(
             else set()
         )
     agent_cards = (
-        _agent_cards_version(catalog, epoch, member.user_id, card_projects)
+        _agent_cards_version(catalog, epoch, member.user_id, card_projects, card_counters)
         if card_projects is not None
         else None
     )

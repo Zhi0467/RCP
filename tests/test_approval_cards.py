@@ -397,6 +397,70 @@ def test_private_question_push_has_only_owner_recipient(tmp_path):
     ]
 
 
+def test_question_recipients_are_the_push_targets(tmp_path):
+    """A private thread's question reaches its owner; a shared chat's or an episode's reaches
+    every live member, and push sends to exactly those members' devices."""
+    from types import SimpleNamespace
+
+    from rcp.notifications import NotificationSender
+    from rcp.server_ops.maintenance import RuntimeAdmissionGate
+    from rcp.storage.notifications import question_recipients
+    from tests.test_episode_api_serialization import _project
+
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "db", "Team")
+    owner, token = store.enroll_team_member(bootstrap, "Owner")
+    _, code = store.create_team_invitation(owner.user_id)
+    other, other_token = store.enroll_team_member(code, "Other")
+    _, code = store.create_team_invitation(owner.user_id)
+    outsider, outsider_token = store.enroll_team_member(code, "Outsider")
+    _project(store)
+    devices = {}
+    for member, credential in [(owner, token), (other, other_token), (outsider, outsider_token)]:
+        if member is not outsider:
+            store.seat_project_member("project", member.user_id)
+        store.create_team_session(credential)
+        session = store.team_sessions(member.user_id)[0]
+        devices[member.user_id] = store.register_notification_device(
+            member.user_id, session_id=session.session_id
+        )["device_id"]
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES ('private',?,'project','project',?)",
+            (owner.user_id, store.now()),
+        )
+    questions = {
+        "thread": api_fixtures._question(store, "project", owner_id="private", key="thread"),
+        "shared": api_fixtures._question(store, "project", owner_id="shared", key="shared"),
+        "episode": api_fixtures._question(
+            store, "project", owner_kind="episode", owner_id="episode", key="episode"
+        ),
+    }
+    with store.connection() as connection:
+        recipients = {
+            name: question_recipients(connection, question) for name, question in questions.items()
+        }
+    assert recipients == {
+        "thread": {owner.user_id},
+        "shared": {owner.user_id, other.user_id},
+        "episode": {owner.user_id, other.user_id},
+    }
+    NotificationSender(
+        store,
+        cast(
+            ProjectCatalog,
+            SimpleNamespace(open=lambda _: (_ for _ in ()).throw(OSError("offline"))),
+        ),
+        admission=RuntimeAdmissionGate(),
+    ).run_pass()
+    sent = {(row["device_id"], row["item_id"]) for row in store.notification_outbox()}
+    assert sent == {
+        (devices[user_id], questions[name].question_id)
+        for name, users in recipients.items()
+        for user_id in users
+    }
+
+
 def test_expired_tap_is_single_use(questions_api):
     app, client, store, project_id = questions_api
     question, card = api_card(questions_api)
@@ -1098,7 +1162,8 @@ def test_space_closed_and_archived_threads_have_no_cards(questions_api):
     assert client.get(f"/api/agent-threads/cards?thread_id={space.thread_id}").json() == empty
     store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=True)
     assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty
-    assert client.get("/api/agent-threads/cards").json() == empty
+    member_wide = client.get("/api/agent-threads/cards").json()
+    assert {key: member_wide[key] for key in empty} == empty
     store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=False)
     store.close_agent_thread("private", reason="access_lost")
     assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty

@@ -8,7 +8,8 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -42,7 +43,13 @@ from rcp.api.chats import (
     transcript_tasks,
 )
 from rcp.api.dependencies import project_write_admission
-from rcp.api.questions import _serialize_all
+from rcp.api.index import (
+    DisplayCacheDependency,
+    ExperimentOperationLockDependency,
+    episode_title,
+    space_run_entries,
+)
+from rcp.api.questions import _answer_continues, _newest_episode, _serialize, _serialize_all
 from rcp.api.tasks import (
     BackgroundTasksDependency,
     RetryAgentTaskRequest,
@@ -62,7 +69,11 @@ from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectRe
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import ReplayHalted
-from rcp.limits import AGENT_THREAD_QUEUE_MAX_CHARS, CHAT_ATTACHMENT_MAX_COUNT
+from rcp.limits import (
+    AGENT_THREAD_QUEUE_MAX_CHARS,
+    CHAT_ATTACHMENT_MAX_COUNT,
+    SPACE_RUNNING_MAX_ROWS,
+)
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
@@ -70,6 +81,7 @@ from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_thread_queue import queued_turn_operation_id, release_queued_files
 from rcp.runs.agent_threads import (
+    episode_watching,
     task_owner,
     thread_projection,
     thread_projections,
@@ -95,7 +107,8 @@ from rcp.storage.agent_threads import (
     private_artifact_owner,
     thread_binds_task,
 )
-from rcp.storage.chat_names import ChatNameError
+from rcp.storage.chat_names import ChatNameError, chat_titles
+from rcp.storage.notifications import question_recipients
 from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
@@ -189,16 +202,158 @@ def agent_thread_cards(
         else:
             drawn.extend(proposal_cards(store, project, state, threads))
         asked.extend(_asked_cards(store, project_id, threads, user_id))
-    if thread_id is None:
-        space = [
-            thread
-            for thread in store.agent_threads(user_id)
-            if thread.kind == "space" and thread.closed_at is None
-        ]
-        asked.extend(_asked_cards(store, store.space_id, space, user_id))
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
+    if thread_id is not None:
+        asked.sort(key=lambda row: row["created_at"], reverse=True)
+        return {"proposal_cards": drawn, "asked_cards": asked}
+    space = [
+        thread
+        for thread in store.agent_threads(user_id)
+        if thread.kind == "space" and thread.closed_at is None
+    ]
+    asked.extend(_asked_cards(store, store.space_id, space, user_id))
     asked.sort(key=lambda row: row["created_at"], reverse=True)
-    return {"proposal_cards": drawn, "asked_cards": asked}
+    return {
+        "proposal_cards": drawn,
+        "asked_cards": asked,
+        "questions": _dock_questions(store, catalog, user_id),
+    }
+
+
+def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> list[dict[str, Any]]:
+    """Pending card-less questions of the member's projects that `question_recipients` gives
+    this member, each naming its project and source, and whether answering adds turns."""
+    rows = []
+    for project_id in sorted(store.member_project_ids(user_id)):
+        project = store.project(project_id)
+        if project is None:
+            continue
+        pending = store.list_questions(project_id=project_id, open_only=True)
+        cards = store.approval_cards([question.question_id for question in pending])
+        with store.connection() as connection:
+            asked = [
+                question
+                for question in pending
+                if question.question_id not in cards
+                and user_id in question_recipients(connection, question)
+            ]
+            chats = chat_titles(
+                connection,
+                project_id,
+                [item.origin.owner_id for item in asked if item.origin.owner_kind == "chat"],
+            )
+        for question in asked:
+            episode = _newest_episode(store, question)
+            row = _serialize(store, question, continues=_answer_continues(store, question, episode))
+            rows.append(
+                {
+                    **row.model_dump(mode="json"),
+                    "project_id": project_id,
+                    "project_name": project.name,
+                    "source_label": (
+                        chats.get(question.origin.owner_id)
+                        if question.origin.owner_kind == "chat"
+                        else episode_title(catalog, episode)
+                        if episode is not None
+                        else None
+                    ),
+                }
+            )
+    rows.sort(key=lambda row: row["created_at"], reverse=True)
+    return rows
+
+
+class RunningRow(BaseModel):
+    kind: Literal["experiment", "auto_research", "thread"]
+    id: str
+    project_id: str
+    project_name: str
+    title: str
+    needs_you: bool
+    label: str
+    watching: int
+    at: str | None
+    link: str
+
+
+class RunningList(BaseModel):
+    rows: list[RunningRow]
+    needs: int
+    total: int
+
+
+_RUNNING_THREAD_STATES = frozenset({"needs_you", "running", "queued", "paused", "failed"})
+_THREAD_NEEDS_YOU_STATES = frozenset({"needs_you", "paused", "failed"})
+
+
+@router.get("/api/agent-threads/running", response_model=RunningList)
+def running_list(
+    request: Request,
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    project_display_cache: DisplayCacheDependency,
+    identity_access: IdentityDependency,
+    experiment_operation_lock: ExperimentOperationLockDependency,
+) -> RunningList:
+    """What runs in the member's projects: live Experiment and Auto-research episodes, whoever
+    started them, and the member's own project threads that work, wait, failed, or watch.
+    Rows that need the member come first, each group newest first."""
+    user_id = identity_access.acting_user(request).user_id
+    episodes = [
+        entry
+        for entry in space_run_entries(
+            user_id,
+            catalog=catalog,
+            project_display_cache=project_display_cache,
+            store=store,
+            experiment_operation_lock=experiment_operation_lock,
+        )
+        if entry.run_section != "completed" and not entry.archived
+    ]
+    watching = episode_watching(store, [entry.episode_id for entry in episodes])
+    rows = [
+        RunningRow(
+            kind="experiment" if entry.mode == "experiment_loop" else "auto_research",
+            id=entry.episode_id,
+            project_id=entry.project_id,
+            project_name=entry.project_name,
+            title=entry.title,
+            needs_you=entry.run_section == "actionable",
+            label=entry.health_label,
+            watching=watching.get(entry.episode_id, 0),
+            at=entry.last_activity_at,
+            link=f"#/projects/{quote(entry.project_id, safe='')}"
+            f"/targets/{quote(entry.graph_target.key, safe='')}"
+            f"/episode/{quote(entry.episode_id, safe='')}",
+        )
+        for entry in episodes
+    ]
+    for thread in thread_projections(store, _card_threads(store, user_id, None)):
+        state = thread["live_state"]
+        if state not in _RUNNING_THREAD_STATES and not thread["watching"]:
+            continue
+        rows.append(
+            RunningRow(
+                kind="thread",
+                id=str(thread["thread_id"]),
+                project_id=str(thread["project_id"]),
+                project_name=str(thread["project_name"]),
+                title=str(thread["agent_name"]),
+                needs_you=state in _THREAD_NEEDS_YOU_STATES,
+                label=str(thread["live_label"]),
+                watching=cast(int, thread["watching"]),
+                at=cast(str | None, thread["last_activity_at"]),
+                link=f"#/agent/{quote(str(thread['thread_id']), safe='')}",
+            )
+        )
+    rows.sort(key=lambda row: row.at or "", reverse=True)
+    rows.sort(key=lambda row: not row.needs_you)
+    return RunningList(
+        rows=rows[:SPACE_RUNNING_MAX_ROWS],
+        needs=sum(row.needs_you for row in rows),
+        total=len(rows),
+    )
 
 
 def _asked_cards(

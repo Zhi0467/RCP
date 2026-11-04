@@ -77,6 +77,34 @@ Space thread's own, and a tap there acts in its project. The Space prompt
 raises a card when one fits, hands off a decision no card kind covers, and
 never describes a card that `ask` did not return.
 
+**The Space relay shows what runs and what asks the member.** It covers
+Experiment and Auto-research episodes in the member's projects, whoever started
+them, the member's own project threads, and questions from shared project chats.
+Another member's private thread never shows. Two surfaces carry it, and neither
+adds verbs:
+
+- **The Running list**, beside Wakes in the Space thread's header, has one row
+  per run or agent and no controls; a row only opens its run or thread.
+  Episode rows are the Space Runs rows that are not completed or archived; the
+  [Runs projection](#runs-projection) stays the only owner of their health
+  text, and an Auto-research child has no row of its own. A thread row shows
+  while its `live_state` is `needs_you`, `running`, `queued`, `paused` or
+  `failed`, or while it owns a live (active or degraded) watcher. Watching is a
+  state of the row that owns the watcher, never a row. A thread whose latest
+  turn failed, with no retry or resume of it started, is `failed`; failures and
+  pauses are list states, not dock cards, and the member acts on them through
+  the Space agent's verbs or by opening the row.
+- **The dock** also relays the plain questions the member may answer: pending
+  questions with no card that `question_recipients`
+  ([`storage/notifications.py`](../../src/rcp/storage/notifications.py)) gives
+  the member. An answer goes through the ordinary project answer route, which
+  checks membership, the private owner, write admission and continuation, so an
+  ended episode's answer still offers Add turns.
+
+Both reads refresh on the member's `agent_cards` version, which never moves on
+another member's private work
+([fields](api-web-and-desktop-projections.md#agent-thread-api)).
+
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
 task, usage, chat display, read, pin, browser, session-context, artifact and
@@ -276,7 +304,10 @@ silently; new episodes notify on their first eligible observation, even if they
 ended between passes or during downtime.
 
 Each question creation produces one durable **Needs you** event, linked to its
-chat or episode. Delivery is independent of episode health; a health change
+chat or episode. `question_recipients` names who a question asks: a private
+thread's owner, otherwise every live project member. The event reaches those
+members' devices under their device and preference filters, and the Space dock
+relays by the same function. Delivery is independent of episode health; a health change
 caused by the question adds no second push. Dismissal, wakes and reauthorization
 do not recreate the event.
 

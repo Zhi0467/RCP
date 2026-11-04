@@ -571,7 +571,26 @@ def space_runs(
 ) -> list[SpaceRunIndexEntryResponse]:
     """Publish current, recent, and explicitly archived visible-space parents."""
 
-    visible = store.member_project_ids(identity_access.acting_user(request).user_id)
+    return space_run_entries(
+        identity_access.acting_user(request).user_id,
+        catalog=catalog,
+        project_display_cache=project_display_cache,
+        store=store,
+        experiment_operation_lock=experiment_operation_lock,
+    )
+
+
+def space_run_entries(
+    user_id: str,
+    *,
+    catalog: ProjectCatalog,
+    project_display_cache: ProjectDisplayCache,
+    store: AppStore,
+    experiment_operation_lock: KeyedLocks,
+) -> list[SpaceRunIndexEntryResponse]:
+    """The member's Space Runs rows, newest first; the one owner of episode health text."""
+
+    visible = store.member_project_ids(user_id)
     records = {
         record.project_id: record for record in store.projects() if record.project_id in visible
     }
@@ -1233,6 +1252,17 @@ def read_skill_package(kind: str, package_id: str) -> dict[str, object]:
     return {**package.catalog_entry(), "body": body}
 
 
+def episode_title(catalog: ProjectCatalog, episode: EpisodeRecord) -> str:
+    """An episode's Space Runs title, read from the cached main display without a project open.
+    A node only a branch holds falls back to its id."""
+    if episode.mode == "auto_research":
+        return "Auto-research"
+    _status, cached = catalog.cached_snapshot_status(episode.project_id)
+    main_state = _cached_graph_state(cached)
+    node = experiment_node(main_state, episode.control_node_id) if main_state else None
+    return node.title if node is not None else episode.control_node_id or "Experiment history"
+
+
 def _cached_graph_state(snapshot: dict[str, object] | None) -> GraphState | None:
     if snapshot is None:
         return None
@@ -1258,6 +1288,7 @@ __all__ = [
     "clear_all_rebuildable_caches",
     "create_project",
     "delete_project",
+    "episode_title",
     "experiment_episodes",
     "membership_router",
     "preflight_project",
@@ -1267,5 +1298,6 @@ __all__ = [
     "read_skill_package",
     "register_project",
     "router",
+    "space_run_entries",
     "space_users",
 ]
