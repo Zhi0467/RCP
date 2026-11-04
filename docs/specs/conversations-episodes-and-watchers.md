@@ -120,7 +120,21 @@ message as `handoff_report` for display. The Space thread shows only the agent a
 status; the reply stays in the project thread that wrote it. Content is omitted
 once the member has left the project.
 
-A thread wakes on a member message from the composer, voice or a handoff, and on
+A member can queue a message, with files and project references, on their own
+project thread instead of steering it. `agent_thread_queue` keeps it until the
+thread is free; a Space thread has no queue. Queueing claims the files for the
+queued turn's derived operation id, so they stay staged. The handoff drain then
+starts each free thread's oldest queued message, after its handoff deliveries;
+each kind is first in, first out, and a paused turn makes both wait. The turn is
+the member's own ordinary message, with `trigger: "human"` and no `source`,
+authorized from their current Space user record. The insert transaction claims
+the message (`claim_queued_turn`), so a replayed or racing drain reuses one task
+and a removed message never starts. A missing, closed or archived thread, a lost
+project membership, a removed member or a blank display name refuses it for
+good, as do the transient-refusal timeout and any other admission error. Removing
+or refusing a message releases its files. A started message leaves the queue.
+
+A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
 project thread also wakes on its own watch file through conversation watchers
 and on a resolved approval card through question answer delivery. The Space
