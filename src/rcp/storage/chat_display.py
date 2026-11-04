@@ -437,7 +437,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
         return row is not None
 
     @staticmethod
-    def _chat_turn_refusal(
+    def chat_turn_refusal_in(
         connection: sqlite3.Connection, project_id: str, chat_id: str
     ) -> str | None:
         """One quiet-conversation rule, including admission's write transaction."""
@@ -461,7 +461,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
 
     def chat_turn_refusal(self, project_id: str, chat_id: str) -> str | None:
         with self.connection() as connection:
-            return self._chat_turn_refusal(connection, project_id, chat_id)
+            return self.chat_turn_refusal_in(connection, project_id, chat_id)
 
     def _agent_task_turn_refusal(
         self, connection: sqlite3.Connection, record: AgentTaskRecord
@@ -477,7 +477,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                 else record.request.get("actor_operation_id") or record.operation_id
             )
         return (
-            self._chat_turn_refusal(connection, record.project_id, chat_id)
+            self.chat_turn_refusal_in(connection, record.project_id, chat_id)
             if isinstance(chat_id, str) and chat_id
             else None
         )

@@ -513,6 +513,10 @@ def test_agent_cards_follow_the_members_questions_and_watchers_not_private_work(
     assert asked != start
     _question(store, endpoint.forbidden, owner_id="shared", key="elsewhere")
     assert version() == asked
+    store.set_chat_archived(endpoint.project, "shared", endpoint.member, archived=True)
+    assert version() != asked
+    store.set_chat_archived(endpoint.project, "shared", endpoint.member, archived=False)
+    assert version() == asked
 
     with store.connection() as connection:
         connection.execute(

@@ -224,8 +224,8 @@ def _agent_cards_counters(connection: sqlite3.Connection, user_id: str) -> list[
         {"user": user_id},
     ).fetchall()
     questions = connection.execute(
-        "SELECT question.project_id, question.question_id, question.withdrawn_readonly "
-        "FROM questions AS question "
+        "SELECT question.project_id, question.question_id, question.withdrawn_readonly, "
+        "question.owner_kind, question.owner_id FROM questions AS question "
         f"WHERE question.project_id IN ({members} "
         "UNION SELECT space_id FROM space_identity WHERE singleton = 1) "
         "AND question.state = 'pending' AND NOT EXISTS ("
@@ -237,7 +237,16 @@ def _agent_cards_counters(connection: sqlite3.Connection, user_id: str) -> list[
     return [
         rail[0] if rail else 0,
         [list(row) for row in generations],
-        [list(row) for row in questions],
+        [
+            [
+                project_id,
+                question_id,
+                withdrawn,
+                owner_kind == "chat"
+                and AppStore.chat_turn_refusal_in(connection, project_id, owner_id),
+            ]
+            for project_id, question_id, withdrawn, owner_kind, owner_id in questions
+        ],
     ]
 
 

@@ -47,7 +47,8 @@ for the member's open project threads (not closed, not archived, project not
 retired). The generation is the workspace's in-memory token, so the read opens
 no project. The digest also covers the member's own `agent_threads` counter,
 each member project's `episodes` and `watchers` counters, and the open
-questions the member can see in those projects and the Space. That set is read
+questions the member can see in those projects and the Space, with whether
+each asking chat still admits turns. That set is read
 directly because the project `questions` counter also moves on another
 member's private-thread question; `tasks.status` is left out for the same
 reason. Card fetches and the Running list key on this version and on the `agent_threads` version,
