@@ -611,6 +611,7 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
             user_id=user,
             idempotency_key="key",
             message="Next",
+            request_sha256="sha",
             created_at=now,
         ),
         "project_members": dict(project_id="new-project", user_id=user, seated_at=now),
