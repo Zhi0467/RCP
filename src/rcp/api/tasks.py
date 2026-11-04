@@ -60,7 +60,6 @@ from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
-from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
@@ -80,6 +79,7 @@ from rcp.runs.steering import (
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
+from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -485,38 +485,15 @@ def start_ordinary_task(
         if kind in {"node_chat", "project_chat", "paper_coach"}:
             assert isinstance(request, (RunRequest, CoachRequest))
             require_attachment_pair(request.attachment_set_id, request.attachment_client_id)
-            if request.attachment_set_id or request.references:
-                attachment_scope_id = (
-                    request.attachment_scope_id
-                    if isinstance(request, CoachRequest)
-                    else request.chat_id
-                )
-                if attachment_scope_id is None:
-                    raise ValueError("Attachments and references require an attachment scope.")
-                claimed = attachment_store.claim(
-                    project_id=project_id,
-                    chat_id=attachment_scope_id,
-                    client_id=request.attachment_client_id,
-                    attachment_set_id=request.attachment_set_id,
-                    operation_id=operation_id,
-                    reference_files=resolve_project_references(
-                        store,
-                        catalog,
-                        project_id,
-                        request.references,
-                        viewer_id=authorized_by.user_id,
-                    ),
-                )
-                claimed_batch = claimed.attachment_batch_id
-                request = request.model_copy(
-                    update={
-                        "attachment_set_id": None,
-                        "attachment_client_id": None,
-                        "attachment_batch_id": claimed.attachment_batch_id,
-                        "attachments": claimed.attachments,
-                        "references": [],
-                    }
-                )
+            request, claimed_batch = claim_turn_attachments(
+                store,
+                catalog,
+                attachment_store,
+                project_id,
+                request,
+                operation_id=operation_id,
+                viewer_id=authorized_by.user_id,
+            )
         comment = (
             request.artifact_context
             if isinstance(request, RunRequest) and request.artifact_edit is None

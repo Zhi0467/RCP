@@ -729,6 +729,7 @@ class BackgroundAgentTasks:
         operation_id: str | None = None,
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
+        queue_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
@@ -790,6 +791,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             handoff_id=handoff_id,
             handoff_wake_id=handoff_wake_id,
+            queue_id=queue_id,
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
@@ -1558,6 +1560,7 @@ class BackgroundAgentTasks:
         operation_id: str | None = None,
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
+        queue_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
@@ -1819,6 +1822,7 @@ class BackgroundAgentTasks:
                     continuation_cause=continuation,
                     handoff_id=handoff_id,
                     handoff_wake_id=handoff_wake_id,
+                    queue_id=queue_id,
                 )
         if claim_graph_repair_parent:
             assert parent is not None

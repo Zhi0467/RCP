@@ -475,12 +475,15 @@ def dispatch_thread_handoffs(
     *,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> list[str]:
-    """Drain eligible deliveries and settlement wakes at startup and after each turn.
+    """Drain eligible deliveries and settlement wakes, then queued messages, at startup
+    and after each turn.
 
     Claims and tasks commit in the same SQLite transaction. Queued tasks are the
     durable source of the user-message append; ordinary turn replay appends once.
     One bad row never blocks the others.
     """
+    from rcp.runs.agent_thread_queue import dispatch_thread_queue
+
     admitted: list[str] = []
     for handoff in store.pending_agent_handoffs():
         try:
@@ -497,7 +500,9 @@ def dispatch_thread_handoffs(
                 admitted.append(operation_id)
         except Exception:
             logger.exception("Handoff %s Space wake failed", handoff.handoff_id)
-    return admitted
+    return admitted + dispatch_thread_queue(
+        store, catalog, background, project_admission=project_admission
+    )
 
 
 def _settle_delivered_handoffs(

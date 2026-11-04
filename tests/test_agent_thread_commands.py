@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -558,6 +559,166 @@ def test_pending_handoff_delivers_on_settle_then_wakes_space_once(
                 (handoff.handoff_id,),
             ).fetchone()
         ) == (turn.operation_id, wake.operation_id)
+
+
+def _queue_world(manifest, tmp_path: Path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from rcp.runs.agent_thread_commands import dispatch_thread_handoffs
+    from tests.helpers import authorized_human, create_named_app
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    background = app.state.background_tasks
+    store, catalog = background.store, app.state.catalog
+    actor = authorized_human(store)
+    project_id = app.state.default_project_id
+    threads = store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
+    monkeypatch.setattr(background, "admit_provider_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(background, "_spawn_record", lambda record, request, **kwargs: record)
+    world = SimpleNamespace(
+        app=app,
+        background=background,
+        store=store,
+        actor=actor,
+        project_id=project_id,
+        space=next(row for row in threads if row.kind == "space"),
+        thread=next(row for row in threads if row.kind == "project"),
+    )
+    world.drain = lambda: dispatch_thread_handoffs(
+        store, catalog, background, project_admission=lambda _: nullcontext()
+    )
+    world.queue = lambda key, message: store.queue_agent_thread_message(
+        queue_id=str(uuid.uuid4()),
+        thread_id=world.thread.thread_id,
+        user_id=actor.user_id,
+        idempotency_key=key,
+        message=message,
+    )
+    return world
+
+
+def _finish(store, operation_id: str) -> None:
+    store.mark_agent_task_running(operation_id)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+
+
+def test_handoffs_start_before_queued_messages_and_each_kind_is_fifo(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from rcp.service import RunRequest
+    from tests.test_storage import _task_record
+
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store = world.store
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="source",
+            project_id=store.space_id,
+            kind="space_chat",
+            status="succeeded",
+            authorized_by=world.actor,
+            request=RunRequest(
+                chat_scope="project", chat_id=world.space.thread_id, mode="work"
+            ).model_dump(mode="json"),
+        )
+    )
+    first = world.queue("first", "First")
+    second = world.queue("second", "Second")
+    store.create_agent_handoff(
+        source_thread_id=world.space.thread_id,
+        source_operation_id="source",
+        idempotency_key="handoff",
+        target_thread_id=world.thread.thread_id,
+        message="From Space",
+    )
+    (delivered,) = world.drain()
+    assert store.agent_task(delivered).request["source"] == "handoff"
+    assert store.agent_thread_queue_item(first.queue_id).operation_id is None
+    _finish(store, delivered)
+    world.drain()
+    started = store.agent_thread_queue_item(first.queue_id).operation_id
+    turn = store.agent_task(started)
+    assert turn is not None and turn.kind == "project_chat"
+    assert turn.request["message"] == "First"
+    assert turn.request["trigger"] == "human" and "source" not in turn.request
+    assert turn.authorized_by.user_id == world.actor.user_id
+    assert turn.authorized_by.display_name == world.actor.display_name
+    assert store.agent_thread_queue_item(second.queue_id).operation_id is None
+    _finish(store, started)
+    world.drain()
+    assert store.agent_task(store.agent_thread_queue_item(second.queue_id).operation_id)
+
+
+@pytest.mark.parametrize(
+    "case", ["paused", "closed", "not_member", "removed", "blank_name", "deferred"]
+)
+def test_queued_message_waits_on_pause_and_is_refused_for_good(
+    manifest, tmp_path: Path, monkeypatch, case
+) -> None:
+    from datetime import datetime, timedelta
+
+    from rcp.limits import AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+    from rcp.runs.provider_login import MachineDependenciesMissing
+    from rcp.service import RunRequest
+    from tests.test_storage import _task_record
+
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store, user_id = world.store, world.actor.user_id
+    queued = world.queue("key", "Next")
+    with store.connection() as connection:
+        if case == "closed":
+            store.close_agent_thread(world.thread.thread_id, reason="access_lost")
+        elif case == "not_member":
+            connection.execute("DELETE FROM project_members WHERE user_id=?", (user_id,))
+        elif case == "removed":
+            connection.execute(
+                "UPDATE space_users SET removal_started_at=? WHERE user_id=?",
+                (store.now(), user_id),
+            )
+        elif case == "blank_name":
+            connection.execute(
+                "UPDATE space_users SET display_name=NULL WHERE user_id=?", (user_id,)
+            )
+    if case == "paused":
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="paused",
+                project_id=world.project_id,
+                kind="project_chat",
+                status="paused",
+                native_session_id="native",
+                authorized_by=world.actor,
+                request=RunRequest(
+                    chat_scope="project", chat_id=world.thread.thread_id, mode="work"
+                ).model_dump(mode="json"),
+            )
+        )
+        assert world.drain() == [] and world.drain() == []
+        row = store.agent_thread_queue_item(queued.queue_id)
+        assert (row.operation_id, row.refusal_reason, row.deferred_at) == (None, None, None)
+        return
+    if case == "deferred":
+
+        def missing(scope, *args, **kwargs):
+            raise MachineDependenciesMissing("codex is missing")
+
+        monkeypatch.setattr(world.background, "admit_provider_task", missing)
+        assert world.drain() == [] and world.drain() == []
+        row = store.agent_thread_queue_item(queued.queue_id)
+        assert row.deferred_at is not None and row.refusal_reason is None
+        later = datetime.fromisoformat(store.now()) + timedelta(
+            seconds=AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+        )
+        monkeypatch.setattr(store, "now", lambda: later.isoformat())
+    assert world.drain() == []
+    row = store.agent_thread_queue_item(queued.queue_id)
+    assert row.operation_id is None and row.refusal_reason
+    if case == "deferred":
+        assert row.refusal_reason.startswith("delivery_timed_out")
+    assert store.agent_tasks(world.project_id) == []
 
 
 def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_path: Path) -> None:
