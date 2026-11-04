@@ -9,7 +9,6 @@ from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
 
 from rcp.agents.command_protocol import AskCommandRequest
-from rcp.agents.launcher import work_like_launch_problem
 from rcp.approval_actions import (
     ApprovalAction,
     ApprovalOutcome,
@@ -34,6 +33,8 @@ from rcp.storage.question_models import QuestionOrigin
 from rcp.transport.state import StateUnavailable
 
 PROPOSAL_CARD_SHOWN = "proposal_card_shown"
+AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
+"""A new Auto-research ask's refusal; stored Auto-research cards still render and settle."""
 
 
 class ProposalCardView(BaseModel):
@@ -106,7 +107,7 @@ def _action_kind(model: type[BaseModel]) -> str:
 
 
 THREAD_CARD_KINDS: dict[str, frozenset[str]] = {
-    "project": frozenset(_action_kind(model) for model in _ACTION_MODELS),
+    "project": frozenset(_action_kind(model) for model in _ACTION_MODELS) - {"auto_research"},
     "space": frozenset({"proposal", "truth_scope", "merge_branch", "merge_episode"}),
 }
 
@@ -155,6 +156,8 @@ def _asking_thread(
     origin: QuestionOrigin,
     member: AuthorizedHuman | None,
     action: ApprovalAction,
+    *,
+    replay: bool,
 ) -> AgentThreadRecord | None:
     """The member's open thread that asks, when its grant covers this action's kind and project."""
     thread = store.agent_thread(origin.owner_id) if origin.owner_kind == "chat" else None
@@ -165,7 +168,7 @@ def _asking_thread(
         or thread.user_id != member.user_id
     ):
         return None
-    allowed = action.kind in THREAD_CARD_KINDS[thread.kind]
+    allowed = replay or action.kind in THREAD_CARD_KINDS[thread.kind]
     return thread if allowed and card_project_allowed(store, thread, action.project_id) else None
 
 
@@ -183,9 +186,6 @@ def approval_card_for_ask(
     """
     action = request.arguments.action
     assert action is not None
-    thread = _asking_thread(store, origin, member, action)
-    if service is None or member is None or thread is None:
-        raise ValueError("approval_requires_own_thread")
     previous = next(
         (
             item
@@ -197,15 +197,18 @@ def approval_card_for_ask(
         None,
     )
     existing = store.approval_card(previous.question_id) if previous else None
+    if existing is None and action.kind == "auto_research":
+        raise ValueError(AUTO_RESEARCH_USES_EPISODE)
+    thread = _asking_thread(store, origin, member, action, replay=existing is not None)
+    if service is None or member is None or thread is None:
+        raise ValueError("approval_requires_own_thread")
     if existing is None and action.kind == "proposal" and action.branch_id is None:
         proposal = service.history.state().proposals.get(action.proposal_id)
         raised = raising_turn(store, proposal) if proposal is not None else None
         if raised is not None and _proposal_card_drawn(store, thread, raised[1]):
             raise ValueError(PROPOSAL_CARD_SHOWN)
     try:
-        pinned = (
-            existing["pinned"] if existing else approval_card_pins(service, store, action, member)
-        )
+        pinned = existing["pinned"] if existing else approval_pins(service, store, action, member)
     except KeyError as exc:
         raise ValueError("approval_target_not_found") from exc
     return {"action": action.model_dump(mode="json"), "pinned": pinned}
@@ -347,8 +350,9 @@ def approval_card_usage(client: str) -> str:
         "for every Proposal this thread's turns raise once it is pending on main, so never "
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
-        "Proposal this thread did not raise. The question snapshot shows each card's action "
-        "and result."
+        "Proposal this thread did not raise. Start Auto-research with the episode command, "
+        f"never a card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. "
+        "The question snapshot shows each card's action and result."
     )
 
 
@@ -370,31 +374,6 @@ def space_card_usage() -> str:
         "your turn: the card stays in the dock and the tap still runs it, and the same call in "
         "a later turn reads its outcome.)"
     )
-
-
-def approval_card_pins(
-    service: ProjectService, store: AppStore, action: ApprovalAction, human: AuthorizedHuman
-) -> dict[str, Any]:
-    """Pins for a new card, refused at ask when its launch could not start."""
-    pinned = approval_pins(service, store, action, human)
-    if action.kind == "auto_research":
-        profile = pinned["profile"]
-        try:
-            machine = service.manifest.machine_map[profile["run_on"]]
-        except KeyError as exc:
-            raise ValueError("machine_not_found") from exc
-        readiness = service.launcher.member_readiness(
-            profile["provider"],
-            host=machine.host,
-            binary=service.launcher.provider_binary(profile["provider"], machine.host),
-            member_id=human.user_id,
-            refresh=True,
-        )
-        if not readiness.installed or not readiness.authenticated:
-            raise ValueError(f"provider_not_ready: {readiness.reason or profile['provider']}")
-        if problem := work_like_launch_problem(readiness):
-            raise ValueError(f"provider_not_ready: {problem}")
-    return pinned
 
 
 def approval_pins(

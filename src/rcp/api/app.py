@@ -64,7 +64,6 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.api.experiments import (
     resume_work_experiment,
     start_work_experiment,
-    stop_work_experiment,
 )
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
@@ -102,6 +101,7 @@ from rcp.api.update_notice import router as update_notice_router
 from rcp.api.voice import router as voice_router
 from rcp.api.voice import thread_router as voice_thread_router
 from rcp.api.watchers import router as watchers_router
+from rcp.api.work_episodes import MemberEpisodeControls
 from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
@@ -173,7 +173,6 @@ from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentStart,
-    WorkExperimentStop,
     reconcile_reserved_experiment_branch_roots,
 )
 from rcp.runs.experiment_loop import (
@@ -1254,9 +1253,6 @@ def create_app(
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
 
-    def stop_experiment_from_work(stop: WorkExperimentStop) -> None:
-        stop_work_experiment(catalog, store, experiment_operation_lock, stop)
-
     def cancel_watcher_from_work(
         project_id: str, watcher_id: str, requested_by: str
     ) -> WatcherRecord:
@@ -1277,7 +1273,9 @@ def create_app(
         dependency_checker=dependency_checker,
         experiment_starter=start_experiment_from_work,
         experiment_resumer=resume_experiment_from_work,
-        experiment_stopper=stop_experiment_from_work,
+        episode_controls=MemberEpisodeControls(
+            catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
+        ),
         watcher_canceller=cancel_watcher_from_work,
     )
 

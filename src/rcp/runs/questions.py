@@ -380,8 +380,8 @@ WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
     "projects": "Reads your other projects when you ask",
     "launch": _JOBS_CAPABILITY,
     "watcher": _JOBS_CAPABILITY,
-    "episode": "Starts and stops experiments you ask for and watches them",
-    "ask": "Asks your approval to start Auto-research on a branch or merge one",
+    "episode": "Starts, pauses, steers, extends and stops experiments and Auto-research you ask for",
+    "ask": "Asks your approval to merge a branch",
     "schedule": "Schedules reminders and weekly catch-ups",
     "bulletin": "Talks with other agents on the project Bulletin",
     "name": None,
@@ -584,7 +584,7 @@ _BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]
     ),
     EpisodeCommandRequest: (
         WorkCommandHandler._episode,
-        "Experiment commands require this Work turn's broker authority.",
+        "Episode commands require this Work turn's broker authority.",
         None,
     ),
     WatcherCommandRequest: (

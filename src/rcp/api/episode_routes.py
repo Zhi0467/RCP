@@ -513,21 +513,14 @@ def start_episode(
                 return _serialize_accepted(store, project_id, episode, catalog=catalog)
             service = get_project_writer(catalog, project_id)
             try:
-                start_request = _resolved_auto_research_start_request(
-                    service, body, store=store, project_id=project_id
-                )
-                service.history.require_writable()
-                graph_base_head = service.history.head_ref()
-                episode, _ = start_auto_research(
-                    background_tasks,
+                episode = start_auto_research_episode(
                     project_id,
-                    start_request,
-                    authorized_by=authorized_by,
-                    graph_base_head=graph_base_head,
-                    ensure_graph_target=partial(
-                        ensure_episode_graph_target,
-                        catalog=catalog,
+                    _resolved_auto_research_start_request(
+                        service, body, store=store, project_id=project_id
                     ),
+                    authorized_by=authorized_by,
+                    catalog=catalog,
+                    background_tasks=background_tasks,
                 )
                 return _serialize_accepted(
                     store,
@@ -549,6 +542,35 @@ def start_episode(
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def start_auto_research_episode(
+    project_id: str,
+    start_request: AutoResearchStartRequest,
+    *,
+    authorized_by: AuthorizedHuman,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    episode_id: str | None = None,
+) -> EpisodeRecord:
+    """Start one resolved Auto-research episode on a new branch from main's head.
+
+    The human Start, its approval card, and a member's Work chat all start here.
+    The caller holds the project's write admission.
+    """
+
+    service = get_project_writer(catalog, project_id)
+    service.history.require_writable()
+    episode, _ = start_auto_research(
+        background_tasks,
+        project_id,
+        start_request,
+        authorized_by=authorized_by,
+        graph_base_head=service.history.head_ref(),
+        ensure_graph_target=partial(ensure_episode_graph_target, catalog=catalog),
+        episode_id=episode_id,
+    )
+    return episode
 
 
 @router.post(
@@ -602,25 +624,13 @@ def stop_episode(
 ) -> EpisodeResponse:
     actor = identity_access.require_patch_capable_identity(request)
     episode = _episode_for_http(store, catalog, project_id, episode_id)
-    if episode.mode == "auto_research":
-        try:
-            stop_auto_research(
-                background_tasks, episode.episode_id, initiated_by=f"human:{actor.user_id}"
-            )
-            settle_auto_research_stop(store, episode.episode_id)
-        except EpisodeNotRunning as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-    elif episode.mode == "experiment_loop":
-        with experiment_operation_lock(project_id):
-            stop_bound_experiment_episode(
-                project_id,
-                episode,
-                store=store,
-                catalog=catalog,
-                initiated_by=f"human:{actor.user_id}",
-            )
-    else:
-        raise HTTPException(status_code=409, detail="This episode cannot be stopped.")
+    stop_episode_as(
+        episode,
+        initiated_by=f"human:{actor.user_id}",
+        catalog=catalog,
+        background_tasks=background_tasks,
+        operation_lock=experiment_operation_lock,
+    )
     current = store.episode(episode.episode_id)
     if current is None:
         raise RuntimeError("The stopped episode could not be reloaded.")
@@ -630,6 +640,36 @@ def stop_episode(
         current,
         catalog=catalog,
     )
+
+
+def stop_episode_as(
+    episode: EpisodeRecord,
+    *,
+    initiated_by: str,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    operation_lock: KeyedLocks,
+) -> None:
+    """Stop one episode gracefully, as its mode's Stop does; raises the HTTP refusal."""
+
+    store = background_tasks.store
+    if episode.mode == "auto_research":
+        try:
+            stop_auto_research(background_tasks, episode.episode_id, initiated_by=initiated_by)
+            settle_auto_research_stop(store, episode.episode_id)
+        except EpisodeNotRunning as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    elif episode.mode == "experiment_loop":
+        with operation_lock(episode.project_id):
+            stop_bound_experiment_episode(
+                episode.project_id,
+                episode,
+                store=store,
+                catalog=catalog,
+                initiated_by=initiated_by,
+            )
+    else:
+        raise HTTPException(status_code=409, detail="This episode cannot be stopped.")
 
 
 def _merge_refusal(exc: ValueError) -> dict:
@@ -862,15 +902,40 @@ def continue_episode(
 
     authorized_by = identity_access.require_patch_capable_identity(request)
     source = _episode_for_http(store, catalog, project_id, episode_id)
-    if source.status not in {"completed", "failed", "needs_action", "stopped"}:
+    continuation, replayed = continue_episode_once(
+        source,
+        body,
+        authorized_by=authorized_by,
+        catalog=catalog,
+        background_tasks=background_tasks,
+    )
+    accepted = _serialize_accepted(store, project_id, continuation, catalog=catalog)
+    if replayed:
+        return JSONResponse(status_code=200, content=accepted.model_dump(mode="json"))
+    return accepted
+
+
+def continue_episode_once(
+    source: EpisodeRecord,
+    body: ContinueEpisodeBody,
+    *,
+    authorized_by: AuthorizedHuman,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+) -> tuple[EpisodeRecord, bool]:
+    """Continue an ended episode, or replay the continuation this request id made.
+
+    Returns the continuation and whether it was a replay. Raises the HTTP refusal.
+    """
+
+    store = background_tasks.store
+    if source.status not in _ENDED_EPISODE_STATUSES:
         raise HTTPException(status_code=409, detail="Only an ended episode can be continued.")
     existing = store.episode_continuation(source.episode_id)
     if existing is not None:
         if existing.continuation_request_id != body.request_id:
             raise HTTPException(status_code=409, detail="This episode has already been continued.")
-        # A committed continuation is replayed as is; no fresh write is admitted.
-        replayed = _serialize_accepted(store, project_id, existing, catalog=catalog)
-        return JSONResponse(status_code=200, content=replayed.model_dump(mode="json"))
+        return existing, True
     continuation = continue_ended_episode(
         source,
         invocation_ceiling=body.invocation_ceiling,
@@ -880,12 +945,7 @@ def continue_episode(
         store=store,
         background_tasks=background_tasks,
     )
-    return _serialize_accepted(
-        store,
-        project_id,
-        continuation,
-        catalog=catalog,
-    )
+    return continuation, False
 
 
 def continue_ended_episode(
@@ -1011,6 +1071,29 @@ def send_episode_message(
 ) -> AutoResearchMessageRecord:
     authorized_by = identity_access.require_patch_capable_identity(request)
     episode = _episode_for_http(store, catalog, project_id, episode_id)
+    return send_episode_message_as(
+        episode,
+        body,
+        authorized_by=authorized_by,
+        catalog=catalog,
+        background_tasks=background_tasks,
+    )
+
+
+def send_episode_message_as(
+    episode: EpisodeRecord,
+    body: EpisodeMessageBody,
+    *,
+    authorized_by: AuthorizedHuman,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+) -> AutoResearchMessageRecord:
+    """Mail the newest orchestrator of an Auto-research chain, continuing an ended one.
+
+    The caller holds the project's write admission. Raises the HTTP refusal.
+    """
+
+    store = background_tasks.store
     if episode.mode != "auto_research":
         raise HTTPException(status_code=409, detail="This episode has no Auto-research mail.")
     message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:{episode.project_id}:{body.request_id}"))
@@ -1059,7 +1142,7 @@ def send_episode_message(
         if episode.status in _ENDED_EPISODE_STATUSES:
             if body.invocation_ceiling is None:
                 raise _message_refusal(store, episode, body.invocation_ceiling, None)
-            get_project_writer(catalog, project_id).history.require_writable()
+            get_project_writer(catalog, episode.project_id).history.require_writable()
             episode, _ = continue_auto_research(
                 background_tasks,
                 episode,

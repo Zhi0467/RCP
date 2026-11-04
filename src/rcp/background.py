@@ -61,7 +61,6 @@ from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_admission import (
     WorkExperimentResumer,
     WorkExperimentStarter,
-    WorkExperimentStopper,
 )
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
@@ -89,6 +88,7 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.work_episode_controls import WorkEpisodeControls
 from rcp.runs.work_experiment_commands import start_scheduled_experiment_resumes
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
@@ -298,7 +298,7 @@ class AgentTaskExecution:
     #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
     #: the app provides it, a bare engine (tests) leaves the verb unavailable.
     experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
-    experiment_stopper: WorkExperimentStopper | None = field(default=None, repr=False)
+    episode_controls: WorkEpisodeControls | None = field(default=None, repr=False)
     watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
     @property
@@ -437,12 +437,12 @@ class BackgroundAgentTasks:
         dependency_checker: DependencyChecker | None = None,
         experiment_starter: WorkExperimentStarter | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
-        experiment_stopper: WorkExperimentStopper | None = None,
+        episode_controls: WorkEpisodeControls | None = None,
         watcher_canceller: WatcherCanceller | None = None,
     ) -> None:
         self.store = store
         self.experiment_starter = experiment_starter
-        self.experiment_stopper = experiment_stopper
+        self.episode_controls = episode_controls
         self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
         # once that turn has succeeded.
@@ -2313,7 +2313,7 @@ class BackgroundAgentTasks:
             ),
             admission=self.runtime_admission_gate,
             experiment_starter=self.experiment_starter,
-            experiment_stopper=self.experiment_stopper,
+            episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
         awaiting_remote_result = False
@@ -2670,7 +2670,7 @@ class BackgroundAgentTasks:
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
             experiment_starter=self.experiment_starter,
-            experiment_stopper=self.experiment_stopper,
+            episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
 

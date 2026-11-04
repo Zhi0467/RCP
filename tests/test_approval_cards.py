@@ -778,14 +778,15 @@ def test_usage_names_every_action_field_and_outcome():
         space_card_usage,
     )
 
-    usage = approval_card_usage("rcp")
-    for model in get_args(get_args(ApprovalAction)[0]):
-        assert all(name in usage for name in model.model_fields)
-    assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
-    space = space_card_usage()
+    usage, space = approval_card_usage("rcp"), space_card_usage()
     for model in get_args(get_args(ApprovalAction)[0]):
         kind = get_args(model.model_fields["kind"].annotation)[0]
+        assert (f"{kind} (" in usage) == (kind in THREAD_CARD_KINDS["project"])
         assert (f"{kind} (" in space) == (kind in THREAD_CARD_KINDS["space"])
+        if kind in THREAD_CARD_KINDS["project"]:
+            assert all(name in usage for name in model.model_fields)
+    assert "auto_research" not in THREAD_CARD_KINDS["project"]
+    assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
 
 
 @pytest.mark.parametrize(
@@ -823,18 +824,13 @@ def test_handler_outcomes_map_to_card_results(raised, expected):
     ("installed", "authenticated", "problem", "refused"),
     [(True, True, None, False), (True, False, None, True), (True, True, "sandbox", True)],
 )
-def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
-    monkeypatch, installed, authenticated, problem, refused
+def test_auto_research_start_refuses_a_provider_that_cannot_launch(
+    installed, authenticated, problem, refused
 ):
     from types import SimpleNamespace
 
-    from rcp.approval_actions import AutoResearchAction
-    from rcp.runs import approval_cards
+    from rcp.runs.auto_research_admission import require_auto_research_provider_ready
 
-    profile = {"provider": "codex", "run_on": "local"}
-    monkeypatch.setattr(
-        approval_cards, "approval_pins", lambda *args, **kwargs: {"profile": profile}
-    )
     readiness = SimpleNamespace(
         installed=installed,
         authenticated=authenticated,
@@ -849,15 +845,32 @@ def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
             provider_binary=lambda *args: "codex",
         ),
     )
-    action = AutoResearchAction(kind="auto_research", project_id="p", invocation_ceiling=1)
-    human = SimpleNamespace(user_id="alex")
+    request = SimpleNamespace(provider="codex", run_on="local")
     if refused:
         with pytest.raises(ValueError, match="provider_not_ready"):
-            approval_cards.approval_card_pins(service, None, action, human)  # type: ignore[arg-type]
+            require_auto_research_provider_ready(service, request, member_id="alex")  # type: ignore[arg-type]
     else:
-        assert approval_cards.approval_card_pins(service, None, action, human) == {  # type: ignore[arg-type]
-            "profile": profile
-        }
+        require_auto_research_provider_ready(service, request, member_id="alex")  # type: ignore[arg-type]
+
+
+def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(questions_api):
+    from rcp.runs.approval_cards import AUTO_RESEARCH_USES_EPISODE, approval_card_for_ask
+    from tests.helpers import authorized_human
+    from tests.test_ask_protocol import ask_request
+
+    app, _client, store, project_id = questions_api
+    action = {"kind": "auto_research", "project_id": project_id, "invocation_ceiling": 2}
+    question, stored = api_card(questions_api, action)
+    service = app.state.catalog.open(project_id)
+    member = authorized_human(app)
+
+    def ask(key):
+        request = ask_request(idempotency_key=key, arguments={"question": "Go?", "action": action})
+        return approval_card_for_ask(store, request, question.origin, service, member)
+
+    with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_EPISODE):
+        ask("new")
+    assert ask("card")["pinned"] == stored["pinned"]
 
 
 def test_request_receipts_need_their_durable_row(store):

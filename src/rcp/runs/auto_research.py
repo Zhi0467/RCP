@@ -17,13 +17,13 @@ from rcp.agents.command_protocol import (
     ApplyArguments,
     ApplyCommandRequest,
     AskCommandRequest,
+    AutoResearchKickoffArguments,
     BranchArguments,
     BranchCommandRequest,
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
     CommandVerb,
-    EpisodeArguments,
     EpisodeCommandRequest,
     EpisodeControlArguments,
     ExperimentKickoffArguments,
@@ -45,6 +45,7 @@ from rcp.agents.command_protocol import (
     ValidateArguments,
     WatchGraphArguments,
     WatchGraphCommandRequest,
+    WorkEpisodeControlArguments,
     command_requires_idempotency_key,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
@@ -113,6 +114,9 @@ class AutoResearchStartRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
+    started_from_operation_id: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def normalize_starting_instruction(self) -> AutoResearchStartRequest:
@@ -133,6 +137,9 @@ class AutoResearchRunRequest(BaseModel):
     runs it. Whether a turn continues its saved session belongs to admission and
     launch, which read the actor binding; the request shape must not also decide
     it, or an orchestrator recovery that legitimately starts clean is refused.
+
+    ``started_from_operation_id`` names the member's Work turn that started the
+    episode; the root carries it, so the episode belongs to that turn's chat.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -161,6 +168,9 @@ class AutoResearchRunRequest(BaseModel):
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
     resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
     resolved_skill_packages: list[SkillReference] | None = None
+    started_from_operation_id: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def role_fields_are_coherent(self) -> AutoResearchRunRequest:
@@ -816,7 +826,7 @@ AutoResearchFinishCommand = Callable[
     [AutoResearchCommandContext, str], AutoResearchCommandEffectResult
 ]
 AutoResearchEpisodeCommand = Callable[
-    [AutoResearchCommandContext, EpisodeArguments, str],
+    [AutoResearchCommandContext, ExperimentKickoffArguments | EpisodeControlArguments, str],
     AutoResearchCommandEffectResult,
 ]
 AutoResearchInboxCommand = Callable[
@@ -1029,6 +1039,16 @@ class AutoResearchCommandDispatcher:
 
         if isinstance(request, AskCommandRequest):
             return self._dispatch_ask(context, request)
+
+        if isinstance(request, EpisodeCommandRequest) and isinstance(
+            request.arguments, (AutoResearchKickoffArguments, WorkEpisodeControlArguments)
+        ):
+            return CommandResponse(
+                request_id=request.request_id,
+                status="invalid",
+                message="Only a member's Work chat may use that episode action.",
+                result={"code": "episode_action_not_granted"},
+            )
 
         planned_worker_id = (
             auto_research_planned_effect_id(
@@ -2375,6 +2395,9 @@ class AutoResearchCommandDispatcher:
             return self.effects.watch_graph(context, request.arguments, planned_watcher_id)
         if request.verb == "episode":
             assert isinstance(request, EpisodeCommandRequest)
+            assert isinstance(
+                request.arguments, (ExperimentKickoffArguments, EpisodeControlArguments)
+            )
             assert planned_episode_effect_id is not None
             return self.effects.episode(
                 context,

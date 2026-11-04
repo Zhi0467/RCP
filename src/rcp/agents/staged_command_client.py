@@ -73,6 +73,18 @@ CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
 KICKOFF_NODE = ("node", "--node", "<node-id>")
 KICKOFF_GOAL = ("goal_file", "--goal-file", "<filename>")
 KICKOFF_LIMIT = ("invocation_limit", "--invocation-limit", "<positive-int>")
+AUTO_RESEARCH_CODE_WORKTREE = ("code_worktree", "--code-worktree", "on|off")
+AUTO_RESEARCH_WORKTREE_REPOSITORY = (
+    "worktree_repository",
+    "--worktree-repository",
+    "<repository>",
+)
+AUTO_RESEARCH_BRANCH_NAME = ("branch_name", "--branch-name", "<branch-name>")
+AUTO_RESEARCH_OPTIONS = (
+    AUTO_RESEARCH_CODE_WORKTREE,
+    AUTO_RESEARCH_WORKTREE_REPOSITORY,
+    AUTO_RESEARCH_BRANCH_NAME,
+)
 # Parser enforcement and every usage renderer share these option records.
 KEY_OPTION = ("key", "--key", "<key>")
 MERGE_SOURCE = ("branch_id", "<branch-id>")
@@ -92,6 +104,11 @@ PROJECTS_SHOW = ("project_id", "<project-id>")
 HANDOFF_MESSAGE = ("message_file", "<message-file>")
 EPISODE_STOP = ("stop", "--stop", "<episode-id>")
 EPISODE_RESUME = ("resume", "--resume", "<episode-id>")
+EPISODE_PAUSE = ("pause", "--pause", "<episode-id>")
+EPISODE_ADD_TURNS = ("add_turns", "--add-turns", "<episode-id>")
+EPISODE_MESSAGE = ("message", "--message", "<episode-id>")
+EPISODE_BODY = ("body_file", "--body-file", "<filename>")
+EPISODE_CONTROLS = (EPISODE_STOP, EPISODE_RESUME, EPISODE_PAUSE, EPISODE_ADD_TURNS, EPISODE_MESSAGE)
 WATCHER_LIST = ("list", "--list", None)
 WATCHER_STOP = ("stop", "--stop", "<watcher-id>")
 WATCHER_CANCEL = ("cancel", "--cancel", "<watcher-id>")
@@ -112,8 +129,15 @@ def _option_usage(option):
     return f"{flag} {value}" if value else flag
 
 
-def episode_control_usage(option):
-    return f"episode {_option_usage(KEY_OPTION)} {_option_usage(option)}"
+def episode_control_usage(option, *, required=(), optional=()):
+    parts = [
+        "episode",
+        _option_usage(KEY_OPTION),
+        _option_usage(option),
+        *(_option_usage(item) for item in required),
+        *(f"[{_option_usage(item)}]" for item in optional),
+    ]
+    return " ".join(parts)
 
 
 def watcher_usages():
@@ -193,6 +217,19 @@ def experiment_kickoff_usage(*, goal_required, child_targets):
         *([child_target_usage()] if child_targets else []),
         goal if goal_required else f"[{goal}]",
         f"[{limit_flag} {limit_value}]",
+        *(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS),
+    ]
+    return " ".join(parts)
+
+
+def auto_research_kickoff_usage():
+    """The ``--kick-off-auto-research`` arguments a member's Work chat may use."""
+
+    parts = [
+        f"episode {_option_usage(KEY_OPTION)} --kick-off-auto-research",
+        _option_usage(KICKOFF_GOAL),
+        _option_usage(KICKOFF_LIMIT),
+        *(f"[{_option_usage(option)}]" for option in AUTO_RESEARCH_OPTIONS),
         *(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS),
     ]
     return " ".join(parts)
@@ -470,11 +507,14 @@ def _parser():
     episode.add_argument("--key", required=True)
     episode_action = episode.add_mutually_exclusive_group(required=True)
     episode_action.add_argument("--kick-off-experiment", action="store_true")
-    for dest, flag, value in (EPISODE_STOP, EPISODE_RESUME):
+    episode_action.add_argument("--kick-off-auto-research", action="store_true")
+    for dest, flag, value in EPISODE_CONTROLS:
         episode_action.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument(KICKOFF_NODE[1])
     episode.add_argument(KICKOFF_GOAL[1])
     episode.add_argument(KICKOFF_LIMIT[1], type=int)
+    for dest, flag, value in (*AUTO_RESEARCH_OPTIONS, EPISODE_BODY):
+        episode.add_argument(flag, dest=dest, metavar=value)
     _add_profile_pick_arguments(episode)
     _add_child_target_arguments(episode)
 
@@ -766,15 +806,48 @@ def _request_arguments(namespace, workspace):
             "reason": _nonblank(namespace.reason, "watch reason"),
         }
     elif verb == "episode":
-        if namespace.kick_off_experiment:
-            if namespace.stop is not None or namespace.resume is not None:
-                raise ClientInputError("episode action is ambiguous")
+        invocation_limit = namespace.invocation_limit
+        if invocation_limit is not None and invocation_limit <= 0:
+            raise ClientInputError("invocation limit must be a positive integer")
+        if not namespace.kick_off_auto_research:
+            for dest, flag, _ in AUTO_RESEARCH_OPTIONS:
+                if getattr(namespace, dest) is not None:
+                    raise ClientInputError(f"{flag} is available only for Auto-research kickoff")
+        kickoff = namespace.kick_off_auto_research or namespace.kick_off_experiment
+        if kickoff and namespace.body_file is not None:
+            raise ClientInputError("--body-file is available only for --message")
+        if namespace.kick_off_auto_research:
+            if namespace.node is not None:
+                raise ClientInputError("--node is available only for Experiment kickoff")
+            for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
+                if getattr(namespace, dest) is not None:
+                    raise ClientInputError(f"{flag} is available only for Experiment kickoff")
+            if namespace.goal_file is None:
+                raise ClientInputError("Auto-research kickoff requires --goal-file")
+            if invocation_limit is None:
+                raise ClientInputError("Auto-research kickoff requires --invocation-limit")
+            code_worktree = namespace.code_worktree
+            if code_worktree not in (None, "on", "off"):
+                raise ClientInputError("--code-worktree takes on or off")
+            arguments = {
+                "action": "kick_off_auto_research",
+                "goal_file": _keyed_command_file(workspace, namespace.goal_file, "goal file"),
+                "invocation_limit": invocation_limit,
+                **({} if code_worktree is None else {"code_worktree": code_worktree == "on"}),
+                **{
+                    dest: _nonblank(getattr(namespace, dest), flag)
+                    for dest, flag, _ in (
+                        AUTO_RESEARCH_WORKTREE_REPOSITORY,
+                        AUTO_RESEARCH_BRANCH_NAME,
+                    )
+                    if getattr(namespace, dest) is not None
+                },
+                **_profile_pick(namespace),
+            }
+        elif namespace.kick_off_experiment:
             node_id = namespace.node
             if node_id is None:
                 raise ClientInputError("Experiment kickoff requires --node")
-            invocation_limit = namespace.invocation_limit
-            if invocation_limit is not None and invocation_limit <= 0:
-                raise ClientInputError("invocation limit must be a positive integer")
             goal_file = namespace.goal_file
             if goal_file is not None:
                 goal_file = _keyed_command_file(workspace, goal_file, "goal file")
@@ -790,30 +863,41 @@ def _request_arguments(namespace, workspace):
             if namespace.node is not None:
                 raise ClientInputError("--node is available only for Experiment kickoff")
             if namespace.goal_file is not None:
-                raise ClientInputError("--goal-file is available only for Experiment kickoff")
-            if namespace.invocation_limit is not None:
-                raise ClientInputError(
-                    "--invocation-limit is available only for Experiment kickoff"
-                )
+                raise ClientInputError("--goal-file is available only for kickoff")
             for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
                 if getattr(namespace, dest) is not None:
                     raise ClientInputError(f"{flag} is available only for Experiment kickoff")
             for dest, flag in _PROFILE_PICK_FLAGS:
                 if getattr(namespace, dest) is not None:
-                    raise ClientInputError(
-                        f"{flag} is available only for spawn and Experiment kickoff"
-                    )
-            if namespace.stop is not None:
-                action = "stop"
-                episode_id = namespace.stop
-            elif namespace.resume is not None:
-                action = "resume"
-                episode_id = namespace.resume
-            else:
+                    raise ClientInputError(f"{flag} is available only for spawn and kickoff")
+            action, _, _ = next(
+                (
+                    option
+                    for option in EPISODE_CONTROLS
+                    if getattr(namespace, option[0]) is not None
+                ),
+                (None, None, None),
+            )
+            if action is None:
                 raise ClientInputError("episode action is required")
+            if invocation_limit is not None and action not in ("add_turns", "message"):
+                raise ClientInputError(
+                    "--invocation-limit is available only for kickoff, --add-turns, and --message"
+                )
+            if action == "add_turns" and invocation_limit is None:
+                raise ClientInputError("--add-turns requires --invocation-limit")
+            body_file = namespace.body_file
+            if (action == "message") != (body_file is not None):
+                raise ClientInputError("--body-file goes with --message, and --message needs it")
             arguments = {
                 "action": action,
-                "episode_id": _nonblank(episode_id, "episode id"),
+                "episode_id": _nonblank(getattr(namespace, action), "episode id"),
+                **({} if invocation_limit is None else {"invocation_limit": invocation_limit}),
+                **(
+                    {}
+                    if body_file is None
+                    else {"body_file": _keyed_command_file(workspace, body_file, "body file")}
+                ),
             }
     elif verb == "inbox":
         if namespace.harvest:
