@@ -2241,3 +2241,250 @@ test("only the newest card read counts, and a stale read never revives a decided
     await page.close();
   });
 });
+
+const queuedMessage = (id, text, extra = {}) => ({
+  kind: "message",
+  queue_id: id,
+  message: text,
+  created_at: ago(1),
+  refusal_reason: null,
+  ...extra,
+});
+
+/** Moss's queue routes as the backend answers them, recording each write. */
+async function serveQueue(page, served) {
+  await page.route(/\/api\/agent-threads\/moss\/queue(?:\/[^/]+)?$/, (route) => {
+    const request = route.request();
+    const id = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-1));
+    if (request.method() === "GET") return route.fulfill({ json: { items: served.items } });
+    if (request.method() === "DELETE") {
+      served.deleted.push(id);
+      served.items = served.items.filter((item) => item.queue_id !== id);
+      return route.fulfill({ status: 204 });
+    }
+    const body = request.postDataJSON();
+    if (served.refuse) {
+      served.refuse = false;
+      served.refusedKey = request.headers()["idempotency-key"];
+      return route.fulfill({ status: 500, json: { detail: "down" } });
+    }
+    const queueId = `queued-${served.posted.length}`;
+    served.posted.push({ key: request.headers()["idempotency-key"], body });
+    served.items = [...served.items, queuedMessage(queueId, body.message)];
+    return route.fulfill({ status: 202, json: { queue_id: queueId, operation_id: null } });
+  });
+}
+
+/** Moves the agent-thread watermark, so the open thread reloads. */
+async function moveWatermark(page) {
+  await page.evaluate(() => {
+    window.agentThreadsVersion = String(Number(window.agentThreadsVersion ?? "1") + 1);
+  });
+}
+
+test("waiting turns show one line each above the composer; remove and dismiss leave smoothly", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      const refusedText = "Rerun the 64k sweep with the fixed tokenizer and compare every head";
+      const served = {
+        items: [
+          {
+            kind: "handoff",
+            handoff_id: "h1",
+            message: "Check whether the warmup run finished and report its final loss in detail",
+            source_agent_name: "Pip",
+            ready_at: ago(3),
+          },
+          queuedMessage("q1", "Then plot the loss curve against the 8k baseline", {
+            attachment_count: 2,
+          }),
+          queuedMessage("q2", refusedText, { refusal_reason: "thread_closed" }),
+        ],
+        posted: [],
+        deleted: [],
+      };
+      await serveQueue(page, served);
+
+      await page.goto(`${base}#/agent/moss`);
+      const moss = page.getByRole("region", { name: "Moss" });
+      const queue = moss.locator(".thread-queue");
+      const rows = queue.locator(".thread-queue-row");
+      await rows.nth(2).waitFor();
+      assert.equal(await rows.count(), 3);
+      assert.equal(await rows.nth(0).locator(".chat-turn-trigger.handoff").count(), 1);
+      assert.ok((await rows.nth(0).textContent()).includes("Pip"));
+      assert.equal(await rows.nth(1).getByRole("button", { name: "Remove" }).count(), 1);
+      assert.equal(await rows.nth(0).getByRole("button").count(), 0);
+      assert.equal(await rows.nth(2).getAttribute("data-refused"), "");
+      const queueBox = await queue.boundingBox();
+      const composer = await moss.locator(".chat-composer").boundingBox();
+      assert.ok(queueBox.y + queueBox.height <= composer.y + 1);
+      assert.ok(Math.abs(queueBox.x - composer.x) <= 1);
+      assert.ok(Math.abs(queueBox.width - composer.width) <= 1);
+      for (const row of await rows.all()) {
+        const box = await row.boundingBox();
+        assert.ok(box.height <= 50, `row height ${box.height}`);
+        for (const button of await row.getByRole("button").all()) {
+          const target = await button.boundingBox();
+          if (width === 390) assert.ok(target.height >= 44 && target.width >= 44);
+        }
+      }
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await page.waitForTimeout(300);
+      await shoot(page, `thread-queue-${width}`);
+
+      await rows.nth(1).getByRole("button", { name: "Remove" }).click();
+      await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 2);
+      assert.deepEqual(served.deleted, ["q1"]);
+
+      await moss.getByRole("textbox", { name: "Message" }).fill("draft");
+      await rows.nth(1).getByRole("button", { name: "Dismiss" }).click();
+      await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 1);
+      assert.deepEqual(served.deleted, ["q1", "q2"]);
+      assert.equal(
+        await moss.getByRole("textbox", { name: "Message" }).inputValue(),
+        `${refusedText}\n\ndraft`,
+      );
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("Enter steers a steerable text-only run and otherwise queues behind the turn or the queue", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const writes = [];
+    await mockApi(page, writes);
+    const served = { items: [], posted: [], deleted: [] };
+    await serveQueue(page, served);
+    const running = {
+      ...settled("op-moss"),
+      active: true,
+      settled: false,
+      finished: false,
+      attempt: 1,
+      can_steer: true,
+      steer_visible: true,
+      steer_turn_id: "turn-1",
+      status_message: "Working",
+    };
+    let task = running;
+    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    const steers = [];
+    await page.route("**/api/projects/p1/tasks/op-moss/steer", (route) => {
+      const body = route.request().postDataJSON();
+      steers.push(body);
+      return route.fulfill({ json: message(body.message_id, "user", body.message, "op-moss") });
+    });
+    await page.route(/\/attachments$/, (route) =>
+      route.fulfill({
+        json: {
+          attachment_set_id: "set-1",
+          attachment: {
+            attachment_id: "file-1",
+            name: "notes.txt",
+            media_type: "text/plain",
+            size: 5,
+            expires_at: new Date(now + 86400_000).toISOString(),
+          },
+        },
+      }),
+    );
+
+    await page.goto(`${base}#/agent/moss`);
+    const moss = page.getByRole("region", { name: "Moss" });
+    const box = moss.getByRole("textbox", { name: "Message" });
+    const rows = moss.locator(".thread-queue-row");
+    await moss.locator(".agent-turn-live").waitFor();
+    await moss.getByRole("button", { name: "Queue", exact: true }).waitFor();
+    await shoot(page, "thread-steer-1440");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await shoot(page, "thread-steer-390");
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await box.fill("Use the 8k baseline");
+    await box.press("Enter");
+    await page.waitForFunction(
+      () => document.querySelector('textarea[aria-label="Message"]').value === "",
+    );
+    assert.deepEqual(
+      steers.map((steer) => steer.message),
+      ["Use the 8k baseline"],
+    );
+    assert.equal(served.posted.length, 0);
+
+    await moss
+      .locator('input[type="file"]')
+      .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
+    await moss.locator(".chat-attachment-chip.ready").waitFor();
+    await box.fill("Read this next");
+    await box.press("Enter");
+    await rows.first().waitFor();
+    assert.equal(steers.length, 1);
+    assert.equal(served.posted[0].body.message, "Read this next");
+    assert.equal(served.posted[0].body.attachment_set_id, "set-1");
+    assert.equal(typeof served.posted[0].body.attachment_client_id, "string");
+    assert.equal(typeof served.posted[0].key, "string");
+    assert.equal(await box.inputValue(), "");
+    assert.equal(await moss.locator(".chat-attachment-chip").count(), 0);
+
+    task = { ...running, can_steer: false, steer_turn_id: null };
+    await moveWatermark(page);
+    await page.waitForFunction(
+      () => !document.querySelector('.chat-send-actions button[aria-label="Steer"]'),
+    );
+    served.refuse = true;
+    await box.fill("Then plot it");
+    await box.press("Enter");
+    await moss.locator(".chat-composer [role='alert']").waitFor();
+    assert.equal(await box.inputValue(), "Then plot it");
+    assert.equal(await moss.locator(".node-chat-line.unsent").count(), 0);
+    await box.press("Enter");
+    await rows.nth(1).waitFor();
+    assert.equal(steers.length, 1);
+    assert.deepEqual(served.posted[1].body, { message: "Then plot it" });
+    assert.equal(served.posted[1].key, served.refusedKey);
+
+    task = settled("op-moss");
+    await moveWatermark(page);
+    await moss.locator(".agent-turn-live").waitFor({ state: "detached" });
+    await box.fill("And summarize");
+    await box.press("Enter");
+    await rows.nth(2).waitFor();
+    assert.deepEqual(served.posted[2].body, { message: "And summarize" });
+    assert.equal(
+      writes.filter((write) => write.path === "/api/projects/p1/tasks/project_chat").length,
+      0,
+    );
+
+    served.items = [];
+    await moveWatermark(page);
+    await rows.first().waitFor({ state: "detached" });
+    await moss.getByRole("button", { name: "Send", exact: true }).waitFor();
+    assert.equal(await moss.getByRole("button", { name: "Queue", exact: true }).count(), 0);
+
+    await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
+      route.fulfill({ json: { ...running, operation_id: "op-space" } }),
+    );
+    await page.evaluate(() => {
+      location.hash = "#/agent/space";
+    });
+    const pip = page.getByRole("region", { name: "Pip" });
+    await pip.locator(".agent-turn-live").waitFor();
+    await pip.getByRole("button", { name: "Steer", exact: true }).waitFor();
+    assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
+    assert.equal(await pip.locator(".thread-queue").count(), 0);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+});

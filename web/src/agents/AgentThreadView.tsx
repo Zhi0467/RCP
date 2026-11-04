@@ -3,9 +3,11 @@ import {
   ChevronRight,
   GitPullRequestArrow,
   Hourglass,
+  ListPlus,
   LoaderCircle,
   Mic,
   MicOff,
+  Paperclip,
   Pause,
   Play,
   RotateCcw,
@@ -69,6 +71,7 @@ import type {
   AgentSchedule,
   AgentTask,
   AgentThread,
+  AgentThreadQueueItem,
   ChatMessage,
   AgentThreadTurnRequest,
   ProjectSnapshot,
@@ -106,10 +109,13 @@ import {
 import {
   cancelThreadSchedule,
   enableThreadSchedule,
+  loadThreadQueue,
   loadThreadQuestions,
   loadThreadSchedules,
   loadThreadTranscript,
   markThreadRead,
+  queueThreadTurn,
+  removeQueuedTurn,
   renameThread,
   sendThreadTurn,
   setThreadAgent,
@@ -125,6 +131,7 @@ const NO_QUESTIONS: AgentQuestion[] = [];
 const NO_SCHEDULES: AgentSchedule[] = [];
 const NO_WATCHERS: WatcherRecord[] = [];
 const NO_MESSAGES: ChatMessage[] = [];
+const NO_QUEUE: AgentThreadQueueItem[] = [];
 
 /** A turn's detail loads once its row comes this close to the view. */
 const TURN_DETAIL_MARGIN = "600px 0px";
@@ -276,6 +283,107 @@ function HandoffResult({
         </span>
       </div>
     </div>
+  );
+}
+
+type QueuedMessage = Extract<AgentThreadQueueItem, { kind: "message" }>;
+
+/**
+ * What waits for the thread, one line each, above the composer. A removed or
+ * dismissed line collapses first, then deletes; a failed delete brings it back.
+ */
+function ThreadQueue({
+  items,
+  onRemove,
+}: {
+  items: readonly AgentThreadQueueItem[];
+  /** Deletes the row; a dismissed refusal also returns its text to the draft. */
+  onRemove: (item: QueuedMessage, dismissed: boolean) => Promise<void>;
+}) {
+  const [leaving, setLeaving] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+  const [gone, setGone] = useState<ReadonlySet<string>>(() => new Set());
+  const shown = items.filter((item) => item.kind === "handoff" || !gone.has(item.queue_id));
+  if (!shown.length) return null;
+  const forget = (id: string) => {
+    setGone((known) => new Set([...known].filter((item) => item !== id)));
+    setLeaving((known) => new Map([...known].filter(([item]) => item !== id)));
+  };
+  const left = (item: QueuedMessage) => {
+    setGone((known) => new Set(known).add(item.queue_id));
+    onRemove(item, leaving.get(item.queue_id) ?? false).catch(() => forget(item.queue_id));
+  };
+  return (
+    <ol className="thread-queue">
+      {shown.map((item) => {
+        if (item.kind === "handoff")
+          return (
+            <li className="thread-queue-row" key={`handoff:${item.handoff_id}`}>
+              <span className="chat-turn-trigger handoff">Handoff</span>
+              <strong>{item.source_agent_name}</strong>
+              <span className="thread-queue-text" title={item.message}>
+                {item.message}
+              </span>
+            </li>
+          );
+        const reason = item.refusal_reason?.replaceAll("_", " ");
+        const files = item.attachment_count ?? 0;
+        return (
+          <li
+            className="thread-queue-row"
+            key={item.queue_id}
+            data-refused={reason ? "" : undefined}
+            data-leaving={leaving.has(item.queue_id) ? "" : undefined}
+            onAnimationEnd={(event) => {
+              if (
+                event.target === event.currentTarget &&
+                event.animationName === "thread-queue-leave"
+              )
+                left(item);
+            }}
+          >
+            {reason ? (
+              <TriangleAlert className="thread-queue-mark" size={13} aria-hidden="true" />
+            ) : (
+              <Hourglass className="thread-queue-mark" size={12} aria-hidden="true" />
+            )}
+            <span
+              className="thread-queue-text"
+              title={reason ? `${reason}\n${item.message}` : item.message}
+            >
+              {reason && <span className="thread-queue-reason">{reason}</span>}
+              {item.message}
+            </span>
+            {files > 0 && (
+              <span className="thread-queue-files" aria-label={`${files} files`}>
+                <Paperclip size={12} aria-hidden="true" />
+                {files}
+              </span>
+            )}
+            {reason ? (
+              <button
+                className="button compact secondary"
+                type="button"
+                disabled={leaving.has(item.queue_id)}
+                onClick={() => setLeaving((known) => new Map(known).set(item.queue_id, true))}
+              >
+                Dismiss
+              </button>
+            ) : (
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Remove"
+                title="Remove"
+                disabled={leaving.has(item.queue_id)}
+                onClick={() => setLeaving((known) => new Map(known).set(item.queue_id, false))}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -510,6 +618,7 @@ type LoadedThread = {
   messages: ChatMessage[];
   questions: AgentQuestion[];
   latest: AgentTask | null;
+  queue: AgentThreadQueueItem[];
   /** The finish of the thread's newest turn when this transcript was read. */
   finishedAt: string | null;
 };
@@ -521,6 +630,8 @@ type PendingThreadTurn = PendingAgentWindowTurn & {
   annotations: StagedChatAnnotation[];
   clearAttachments: () => void;
   steering?: { taskId: string; request: SteerRequest };
+  /** Waits in the thread's queue instead of starting; it never shows as a transcript line. */
+  queue?: true;
 };
 
 /** The shared draft survives a thread switch along with its pending request. */
@@ -664,10 +775,12 @@ export function AgentThreadView({
       current = false;
     };
   }, [unlinked]);
+  const pending = composer.sending?.queue ? null : composer.sending;
+  const inFlight = Boolean(composer.sending && !composer.error);
   const lines = useAgentWindowLines({
     messages: messages ?? NO_MESSAGES,
     tasks,
-    pendingTurn: composer.sending,
+    pendingTurn: pending,
     parents: lineage,
   });
   // The live row carries a running turn's progress, so a wake's placeholder, which has
@@ -716,9 +829,10 @@ export function AgentThreadView({
     const fresh = () =>
       threadRef.current.thread_id === current.thread_id && seq > refreshSeq.current.shown;
     try {
-      const [transcript, asked] = await Promise.all([
+      const [transcript, asked, waiting] = await Promise.all([
         loadThreadTranscript(current),
         loadThreadQuestions(current),
+        loadThreadQueue(current).catch(() => null),
       ]);
       const sent = sentTurn.current;
       // A running project turn writes its member message only when it settles.
@@ -736,12 +850,14 @@ export function AgentThreadView({
           messages: unchanged(previous?.messages, transcript.messages),
           questions: unchanged(previous?.questions, asked),
           latest: unchanged(previous?.latest, latestTask),
+          queue: unchanged(previous?.queue, waiting?.items ?? previous?.queue ?? NO_QUEUE),
           finishedAt: current.last_finished_at,
         };
         return previous &&
           next.messages === previous.messages &&
           next.questions === previous.questions &&
           next.latest === previous.latest &&
+          next.queue === previous.queue &&
           next.finishedAt === previous.finishedAt
           ? known
           : new Map(known).set(current.thread_id, next);
@@ -930,12 +1046,15 @@ export function AgentThreadView({
       if (pending.steering) {
         await endpoints.steer(pending.steering.taskId, pending.steering.request);
       } else {
-        const { operation_id } = await sendThreadTurn(target, pending.request, pending.requestId);
-        sentTurn.current = {
-          threadId: target.thread_id,
-          operationId: operation_id,
-          after: target.latest_operation_id,
-        };
+        const { operation_id } = pending.queue
+          ? await queueThreadTurn(target, pending.request, pending.requestId)
+          : await sendThreadTurn(target, pending.request, pending.requestId);
+        if (operation_id)
+          sentTurn.current = {
+            threadId: target.thread_id,
+            operationId: operation_id,
+            after: target.latest_operation_id,
+          };
       }
       pending.clearAttachments();
       comments.discard(sentComments);
@@ -962,38 +1081,75 @@ export function AgentThreadView({
       : null;
   // A paused turn holds the conversation until it is resumed or retried.
   const pausedTask = latest?.paused && latest.can_resume ? latest : null;
+  const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
+  const queue = view?.queue ?? NO_QUEUE;
+  const queues = thread.kind === "project";
+  const queueable =
+    queues &&
+    Boolean(
+      latest?.active || queue.some((item) => item.kind === "handoff" || !item.refusal_reason),
+    );
   const sendBlocked = Boolean(
-    pausedTask || (latest?.active && (!steeringTask || attachments.staged || artifactContext)),
+    pausedTask || (queueable ? artifactContext : latest?.active && !steerable),
   );
+  const action = steerable ? "Steer" : queueable ? "Queue" : "Send";
   // A disabled Send says why on hover.
-  const sendReason =
-    composer.sending && !composer.error
-      ? "Sending"
-      : sendBlocked
-        ? pausedTask
-          ? "Resume or retry the last turn first"
+  const sendReason = inFlight
+    ? "Sending"
+    : sendBlocked
+      ? pausedTask
+        ? "Resume or retry the last turn first"
+        : queueable
+          ? "Comments wait until this thread is idle"
           : steeringTask
             ? "Attachments and comments wait until this turn ends"
             : "Wait until this turn ends"
-        : attachments.unready
-          ? "Attachments are still uploading"
-          : !comments.complete
-            ? "Finish the comment first"
-            : !(draftSendable || artifactContext)
-              ? "Write a message"
-              : undefined;
-  const submit = () => {
+      : attachments.unready
+        ? "Attachments are still uploading"
+        : !comments.complete
+          ? "Finish the comment first"
+          : !(draftSendable || artifactContext)
+            ? "Write a message"
+            : undefined;
+  /** Takes the composer's action; the Queue beside Steer queues instead, and a requeue after a failure reuses its key. */
+  const submit = (queueing = action === "Queue") => {
     const text = assembleChatTurn(draft.get(), comments.annotations);
     if (
       sendBlocked ||
       !(text || artifactContext) ||
       attachments.unready ||
-      (composer.sending && !composer.error) ||
+      inFlight ||
       !comments.requireComplete()
     )
       return;
     const fields = attachments.turnFields();
-    const requestId = crypto.randomUUID();
+    const request: AgentThreadTurnRequest = {
+      message: text,
+      ...(thread.project_id
+        ? fields
+        : {
+            ...(fields.attachment_set_id
+              ? {
+                  attachment_set_id: fields.attachment_set_id,
+                  attachment_client_id: fields.attachment_client_id,
+                }
+              : {}),
+          }),
+      ...(artifactContext ? { artifact_context: artifactContext } : {}),
+      ...(config
+        ? {
+            provider: config.provider,
+            ...(config.model ? { model: config.model } : {}),
+            ...(config.reasoning ? { reasoning: config.reasoning } : {}),
+          }
+        : {}),
+      timezone: browserTimezone(),
+    };
+    const failed = composer.error && composer.sending?.queue ? composer.sending : null;
+    const requestId =
+      queueing && failed && JSON.stringify(failed.request) === JSON.stringify(request)
+        ? failed.requestId
+        : crypto.randomUUID();
     void send({
       clientId: requestId,
       requestId,
@@ -1004,41 +1160,21 @@ export function AgentThreadView({
       attachments: attachments.ready,
       annotations: comments.annotations,
       clearAttachments: attachments.clear,
-      ...(steeringTask
+      ...(queueing ? { queue: true as const } : {}),
+      ...(steerable && !queueing
         ? {
             steering: {
-              taskId: steeringTask.operation_id,
+              taskId: steerable.operation_id,
               request: {
                 message_id: requestId,
-                attempt: steeringTask.attempt,
-                expected_turn_id: steeringTask.steer_turn_id!,
+                attempt: steerable.attempt,
+                expected_turn_id: steerable.steer_turn_id!,
                 message: text,
               },
             },
           }
         : {}),
-      request: {
-        message: text,
-        ...(thread.project_id
-          ? fields
-          : {
-              ...(fields.attachment_set_id
-                ? {
-                    attachment_set_id: fields.attachment_set_id,
-                    attachment_client_id: fields.attachment_client_id,
-                  }
-                : {}),
-            }),
-        ...(artifactContext ? { artifact_context: artifactContext } : {}),
-        ...(config
-          ? {
-              provider: config.provider,
-              ...(config.model ? { model: config.model } : {}),
-              ...(config.reasoning ? { reasoning: config.reasoning } : {}),
-            }
-          : {}),
-        timezone: browserTimezone(),
-      },
+      request,
     });
   };
 
@@ -1056,6 +1192,20 @@ export function AgentThreadView({
       setControlBusy(false);
       if (isCurrent(target.thread_id)) void refresh();
     }
+  };
+  const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
+    const target = thread;
+    const targetDraft = draft;
+    setNotice(null);
+    try {
+      await removeQueuedTurn(target, item.queue_id);
+    } catch (failure) {
+      if (isCurrent(target.thread_id))
+        setNotice({ threadId: target.thread_id, text: errorMessage(failure) });
+      throw failure;
+    }
+    if (dismissed) targetDraft.set([item.message, targetDraft.get()].filter(Boolean).join("\n\n"));
+    if (isCurrent(target.thread_id)) void refresh();
   };
   // Each menu action replaces the last notice: it clears as the action starts.
   const act = (threadId: string, run: () => Promise<unknown>) => {
@@ -1112,7 +1262,6 @@ export function AgentThreadView({
 
   const voiceHere = voice?.phase !== "idle" && voice?.thread?.thread_id === thread.thread_id;
   const voiceBusy = voice !== null && voice.phase !== "idle";
-  const pending = composer.sending;
   const failedTask =
     latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
   // A failed turn's error row carries its Retry; a stop with no error row shows it here.
@@ -1409,13 +1558,12 @@ export function AgentThreadView({
           />
         </div>
       )}
+      <ThreadQueue key={thread.thread_id} items={queue} onRemove={removeQueued} />
       <ChatComposer
         mode="work"
         composer={attachments}
         comments={comments}
-        addDisabled={
-          attachments.full || attachments.preparing || Boolean(pending && !composer.error)
-        }
+        addDisabled={attachments.full || attachments.preparing || inFlight}
         field={
           <ThreadTextarea
             draft={draft}
@@ -1458,16 +1606,30 @@ export function AgentThreadView({
                 )}
               </button>
             )}
+            {queues && action === "Steer" && (
+              <button
+                className="icon-button chat-queue-button"
+                type="button"
+                aria-label="Queue"
+                title={sendReason ?? "Queue"}
+                disabled={sendReason !== undefined}
+                onClick={() => submit(true)}
+              >
+                <ListPlus size={16} />
+              </button>
+            )}
             <button
               className="icon-button primary chat-send-button"
               type="button"
-              aria-label="Send"
-              title={sendReason}
+              aria-label={action}
+              title={sendReason ?? (action === "Send" ? undefined : action)}
               disabled={sendReason !== undefined}
-              onClick={submit}
+              onClick={() => submit()}
             >
-              {pending && !composer.error ? (
+              {inFlight ? (
                 <LoaderCircle className="spin" size={16} />
+              ) : action === "Queue" ? (
+                <ListPlus size={16} />
               ) : (
                 <Send size={16} />
               )}
