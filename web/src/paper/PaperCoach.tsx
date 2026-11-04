@@ -211,7 +211,10 @@ export function PaperCoach({
   const transcript = useMemo(() => coachSteersAfterPrompts(lines.transcript), [lines.transcript]);
   const scroll = useRef<AgentWindowScroll>(null);
   const endpoints = useMemo(
-    () => projectAgentWindowEndpoints(project.id, `paper-coach:${openedSession ?? ""}`),
+    () => ({
+      ...projectAgentWindowEndpoints(project.id, `paper-coach:${openedSession ?? ""}`),
+      canCommentArtifacts: false,
+    }),
     [project.id, openedSession],
   );
   const agentPicker = useAgentConfigPicker({

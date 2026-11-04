@@ -776,3 +776,59 @@ test("a failed coach turn shows the shared error line, whose Retry starts the tu
   await fits(page);
   assert.deepEqual(errors, []);
 });
+
+test("a coach turn's artifact offers no comment, since a coach turn carries no artifact context", async (t) => {
+  const plot = {
+    artifact_id: "plot",
+    name: "plot.png",
+    view: "image",
+    media_type: "image/png",
+    size_bytes: 64,
+    available: true,
+    unavailable_reason: null,
+    can_open: true,
+    can_download: true,
+    can_keep: true,
+    can_discuss: true,
+  };
+  const drawn = {
+    ...turn,
+    result: { messages: ["![plot](/scratch/turns/t1/artifacts/plot.png)"], artifacts: [plot] },
+  };
+  const state = {
+    pin_branch_id: null,
+    pin_branch_name: "main",
+    can_pin: false,
+    pinned_branch_ids: [],
+    artifact_id: "plot",
+    name: "plot.png",
+    media_type: "image/png",
+    view: "image",
+    supplier: "turn",
+    current_version: "v1",
+    version_number: 1,
+    can_undo: false,
+    live: null,
+    editing_operation_id: null,
+    can_comment: true,
+  };
+  let served;
+  const stateServed = new Promise((resolve) => (served = resolve));
+  const { page } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(drawn)}], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path !== "/api/projects/p/artifacts/plot/state") return respond(path, ...rest);
+        served();
+        return { json: state };
+      };
+    },
+  });
+  await coach(page);
+  await page.locator(".paper-coach .chat-inline-artifact").waitFor();
+  await stateServed;
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  const comment = page.getByRole("button", { name: /^(Comment on a part|Done commenting)$/ });
+  assert.equal(await comment.count(), 0);
+});

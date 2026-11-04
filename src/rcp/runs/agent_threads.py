@@ -211,7 +211,7 @@ def episode_watching(store: AppStore, episode_ids: Sequence[str]) -> dict[str, i
             for row in connection.execute(
                 "SELECT episode_id, COUNT(*) AS watching FROM watchers "
                 f"WHERE episode_id IN ({','.join('?' for _ in episode_ids)}) "
-                f"AND {_LIVE_WATCHER} GROUP BY episode_id",
+                f"AND worker_id IS NULL AND {_LIVE_WATCHER} GROUP BY episode_id",
                 list(episode_ids),
             )
         }
