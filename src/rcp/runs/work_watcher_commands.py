@@ -10,7 +10,7 @@ from rcp.storage import GraphWatcherRecord, StoredWatcherRecord, WatcherRecord
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
-    from rcp.storage import AgentTaskRecord
+    from rcp.storage import AgentTaskRecord, AppStore
 
 
 def chat_armed_watcher(task: AgentTaskRecord, watcher: StoredWatcherRecord) -> bool:
@@ -35,60 +35,38 @@ def handle_work_watcher_command(
 ) -> CommandResponse:
     """List this chat's live watchers, or stop or cancel one of them now."""
 
-    def refuse(message: str, code: str) -> CommandResponse:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message=message,
-            result={"code": code},
-        )
-
     store = execution.store
     task = store.agent_task(execution.operation_id)
     if task is None or task.authorized_by is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="Watcher control is unavailable for this turn.",
-        )
+        return _unavailable(request, "Watcher control is unavailable for this turn.")
     arguments = request.arguments
     if arguments.action == "list":
-        live = [
-            _summary(watcher)
-            for watcher in store.watchers(
-                task.project_id, chat_id=str(task.request.get("chat_id") or "")
-            )
-            if chat_armed_watcher(task, watcher)
-            and watcher.status in {"active", "degraded"}
-            and not watcher.notified
-        ]
+        live = [_summary(watcher) for watcher in _live_chat_watchers(store, task)]
         return CommandResponse(
             request_id=request.request_id, status="ok", result={"watchers": live}
         )
     assert arguments.watcher_id is not None
     watcher = store.watcher(arguments.watcher_id)
     if watcher is None or not chat_armed_watcher(task, watcher):
-        return refuse("This chat may control only watchers it armed.", "watcher_not_armed_here")
+        return _refuse(
+            request, "This chat may control only watchers it armed.", "watcher_not_armed_here"
+        )
     if arguments.action == "stop":
         try:
             (watcher,) = store.stop_watchers(
                 task.project_id, [watcher.watcher_id], observing_only=True, stopped_by="agent"
             )
         except (KeyError, ValueError) as exc:
-            return refuse(str(exc), "watcher_not_stoppable")
+            return _refuse(request, str(exc), "watcher_not_stoppable")
     else:
         if execution.watcher_canceller is None:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="unavailable",
-                message="Watcher cancel is unavailable for this turn.",
-            )
+            return _unavailable(request, "Watcher cancel is unavailable for this turn.")
         try:
             watcher = execution.watcher_canceller(
                 task.project_id, watcher.watcher_id, task.authorized_by.user_id
             )
         except (KeyError, ValueError) as exc:
-            return refuse(str(exc), "watcher_not_cancellable")
+            return _refuse(request, str(exc), "watcher_not_cancellable")
         if watcher.cancel_error:
             return CommandResponse(
                 request_id=request.request_id,
@@ -101,6 +79,28 @@ def handle_work_watcher_command(
         f"Watcher {watcher.watcher_id} {arguments.action}: {watcher.status}.",
     )
     return CommandResponse(request_id=request.request_id, status="ok", result=_summary(watcher))
+
+
+def _live_chat_watchers(store: AppStore, task: AgentTaskRecord) -> list[StoredWatcherRecord]:
+    return [
+        watcher
+        for watcher in store.watchers(
+            task.project_id, chat_id=str(task.request.get("chat_id") or "")
+        )
+        if chat_armed_watcher(task, watcher)
+        and watcher.status in {"active", "degraded"}
+        and not watcher.notified
+    ]
+
+
+def _refuse(request: WatcherCommandRequest, message: str, code: str) -> CommandResponse:
+    return CommandResponse(
+        request_id=request.request_id, status="invalid", message=message, result={"code": code}
+    )
+
+
+def _unavailable(request: WatcherCommandRequest, message: str) -> CommandResponse:
+    return CommandResponse(request_id=request.request_id, status="unavailable", message=message)
 
 
 def _summary(watcher: StoredWatcherRecord) -> dict[str, object]:
