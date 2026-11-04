@@ -130,7 +130,7 @@ def _stage(app, request, execution, workspace):
         execution,
         local_stage=workspace.parent,
         remote_stage=None,
-        edit_path=sync_session_artifacts(execution, request, directory, None),
+        edit_paths=sync_session_artifacts(execution, request, directory, None),
     )
     return directory, staged
 
@@ -570,7 +570,7 @@ def test_turn_start_resyncs_only_an_untouched_tracked_file(manifest, tmp_path, c
     tracked.write_bytes(b"<p>agent</p>" if changed else b"<p>original</p>")
     plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
     directory = workspace / "turns" / "next" / "artifacts"
-    assert sync_session_artifacts(execution, plain, directory, None) is None
+    assert sync_session_artifacts(execution, plain, directory, None) == {}
     assert tracked.read_bytes() == (b"<p>agent</p>" if changed else b"<p>base</p>")
     store.undo_artifact(source.artifact_id)
     sync_session_artifacts(execution, plain, directory, None)

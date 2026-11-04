@@ -508,6 +508,7 @@ async def _open_space_turn(
         request.attachments,
         local_stage=stage,
         remote_stage=None,
+        edit_paths={},
     )
     # Catalog-wide: it loads every project's manifest, so the turn reads it once.
     inventory = owner.catalog.repository_ownership_inventory()

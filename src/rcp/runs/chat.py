@@ -1003,11 +1003,11 @@ def stage_artifact_context(
     *,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
-    edit_path: str | None,
+    edit_paths: dict[str, str],
 ) -> StagedArtifactContext | None:
     """Stage the commented version and bounded human selection context.
 
-    The prompt points at `edit_path`, the artifact's tracked file, which turn start
+    The prompt points at the artifact's tracked file in `edit_paths`, which turn start
     re-synced to the same version; this read-only copy carries the selection crops.
     """
 
@@ -1021,6 +1021,7 @@ def stage_artifact_context(
     if current is None or origin is None or origin.project_id != current.project_id:
         raise ValueError("The artifact context origin is unavailable.")
     comment = commented_artifact(execution, request)
+    edit_path = edit_paths.get(comment.artifact_id) if comment is not None else None
     if comment is None or edit_path is None:
         raise ValueError("An artifact comment requires its tracked file.")
     artifact = execution.store.artifact(comment.artifact_id)

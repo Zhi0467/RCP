@@ -57,6 +57,7 @@ from rcp.runs.recorded_settlement import (
     refuse_recorded_session_mismatch,
 )
 from rcp.runs.recorded_turn import decode_recorded_turn
+from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
@@ -250,6 +251,7 @@ class _CoachStage(BaseModel):
     stage_host: str
     stage_root: str
     workspace: str
+    edit_dirs: list[str] = Field(default_factory=list)
 
 
 class _CoachRound(BaseModel):
@@ -273,7 +275,7 @@ def _coach_round_contracts(store: AppStore, operation_id: str) -> list[str]:
 
 
 def _record_coach_round(
-    execution: AgentTaskExecution, workspace: Path, current: _CoachRound
+    execution: AgentTaskExecution, workspace: Path, current: _CoachRound, edit_dirs: list[Path]
 ) -> None:
     """Write down this round before its provider starts, so a dropped link can settle it."""
 
@@ -282,6 +284,7 @@ def _record_coach_round(
         stage_host=execution.stage_host or "",
         stage_root=execution.stage_root or "",
         workspace=str(workspace),
+        edit_dirs=[str(path) for path in edit_dirs],
     ).model_dump_json()
     store.record_agent_task_contract(
         execution.operation_id,
@@ -445,7 +448,7 @@ async def finalize_recorded_coach_result(
         recorded,
         replace(
             provider_turn_request(workspace, recorded, capability="paper_suggest"),
-            write_dirs=[workspace / last.changes],
+            write_dirs=[workspace / last.changes, *map(Path, retained.edit_dirs)],
         ),
     )
     refusal = refuse_recorded_session_mismatch(execution, outcome, verdict, request.session_id)
@@ -474,10 +477,35 @@ async def finalize_recorded_coach_result(
         return
     event = await collect_round(service, execution, request, last, workspace, remote_stage)
     if event is None:
+        for frame in _publish_coach_artifacts(service, request, execution, workspace, remote_stage):
+            yield frame
         await _finish_coach_turn(service, request, _task_token(execution))
         commit_prepared_graph_observation(execution, service, native_session_id=outcome.session_id)
         event = AgentEvent(event="done")
     yield _sse(event)
+
+
+def _coach_artifact_directory(workspace: Path, token: str) -> Path:
+    return workspace / "turns" / token / "artifacts"
+
+
+def _publish_coach_artifacts(
+    service: ProjectService,
+    request: CoachRequest,
+    execution: AgentTaskExecution,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> list[str]:
+    """Publish each attached artifact the coach changed in place as its next version."""
+    published = publish_session_artifacts(
+        execution,
+        request,
+        _coach_artifact_directory(workspace, _task_token(execution)),
+        remote_stage,
+        artifacts=[],
+        service=service,
+    )
+    return [_sse(AgentEvent(event="artifact", artifact=artifact)) for artifact in published]
 
 
 def _coach_stopped(execution: AgentTaskExecution) -> bool:
@@ -567,6 +595,7 @@ class _CoachLaunch:
     history: StagedCommandMailbox
     graph_read_scope: GraphReadScope
     provider_outcome: _ProviderOutcome
+    edit_dirs: list[Path]
 
 
 class _CoachResult(Enum):
@@ -900,12 +929,17 @@ async def _prepare_coach_launch(
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories
         ]
+        edit_paths = sync_session_artifacts(
+            execution, request, _coach_artifact_directory(workspace, token), remote_stage
+        )
+        edit_dirs = list(dict.fromkeys(Path(path).parent for path in edit_paths.values()))
         attachment_pointers, attachment_dirs = stage_turn_attachments(
             data_dir,
             request.attachment_batch_id,
             request.attachments,
             local_stage=input_stage,
             remote_stage=remote_stage,
+            edit_paths=edit_paths,
         )
         read_dirs.extend(directory for directory in attachment_dirs if directory not in read_dirs)
         inputs = _CoachTurnInputs(
@@ -1021,6 +1055,7 @@ async def _prepare_coach_launch(
         history_staged,
         graph_read_scope,
         _ProviderOutcome(session_id=request.session_id),
+        edit_dirs,
     )
 
 
@@ -1047,7 +1082,7 @@ async def _run_rounds(
             yield _CoachResult.PAUSED
             return
         if stages.remote is not None:
-            _record_coach_round(execution, stages.workspace, current)
+            _record_coach_round(execution, stages.workspace, current, launch.edit_dirs)
         async with aclosing(
             _stream_agent_events(
                 launcher,
@@ -1060,7 +1095,7 @@ async def _run_rounds(
                 session_id=outcome.session_id,
                 required_session_id=outcome.session_id,
                 read_dirs=launch.read_dirs,
-                write_dirs=[stages.workspace / current.changes],
+                write_dirs=[stages.workspace / current.changes, *launch.edit_dirs],
                 write_scope=None,
                 capability="paper_suggest",
                 invocation_gate=launch.history.invocation_gate,
@@ -1198,6 +1233,10 @@ async def _stream_coach(
                 else:
                     yield frame
         if result == _CoachResult.DONE:
+            for frame in _publish_coach_artifacts(
+                service, request, execution, stages.workspace, stages.remote
+            ):
+                yield frame
             await _finish_coach_turn(service, request, _task_token(execution))
             yield _sse(AgentEvent(event="done"))
         elif result == _CoachResult.PAUSED:

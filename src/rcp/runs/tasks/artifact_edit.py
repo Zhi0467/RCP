@@ -165,7 +165,7 @@ async def stream_artifact_edit_run(
         execution,
         local_stage=local,
         remote_stage=remote,
-        edit_path=sync_session_artifacts(execution, request, directory, remote),
+        edit_paths=sync_session_artifacts(execution, request, directory, remote),
     )
     assert attachment is not None
     prompt = compose(

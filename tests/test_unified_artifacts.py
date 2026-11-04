@@ -170,7 +170,11 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
         execution,
         local_stage=None,
         remote_stage=FakeRemoteRunStage(),
-        edit_path="/remote/revision-stage/turns/source/artifacts/remote.html",
+        edit_paths={
+            revision_request.artifact_context.artifact_id: (
+                "/remote/revision-stage/turns/source/artifacts/remote.html"
+            )
+        },
     )
 
     assert staged is not None
@@ -467,7 +471,7 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
         execution,
         local_stage=tmp_path / "stage-9e3c1a7b-2f4d-4b8e-8c6a-1d2e3f4a5b6c",
         remote_stage=None,
-        edit_path=str(tmp_path / "tracked.png"),
+        edit_paths={turn.artifact_context.artifact_id: str(tmp_path / "tracked.png")},
     )
 
     assert staged is not None
@@ -508,7 +512,7 @@ def test_report_context_stages_its_current_version(manifest, tmp_path):
         execution,
         local_stage=tmp_path / "comment-stage",
         remote_stage=None,
-        edit_path=str(tmp_path / "tracked.html"),
+        edit_paths={request.artifact_context.artifact_id: str(tmp_path / "tracked.html")},
     )
     assert staged is not None
     (copy,) = (tmp_path / "comment-stage" / "inputs").glob(f"*/{staged.pointer['name']}")

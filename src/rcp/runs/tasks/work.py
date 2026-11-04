@@ -828,10 +828,10 @@ async def _stage_work_turn(
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
     ) -> StagedArtifactAccess:
-        edit_path = (
+        edit_paths = (
             sync_session_artifacts(execution, request, artifact_directory, layout.remote_stage)
             if execution is not None
-            else None
+            else {}
         )
         artifact_context = stage_artifact_context(
             service,
@@ -839,10 +839,11 @@ async def _stage_work_turn(
             execution,
             local_stage=layout.local_stage,
             remote_stage=layout.remote_stage,
-            edit_path=edit_path,
+            edit_paths=edit_paths,
         )
         return StagedArtifactAccess(
             pointer=artifact_context.pointer if artifact_context is not None else None,
+            edit_paths=edit_paths,
         )
 
     def select_skills(request: RunRequest) -> tuple[SkillSelection, RunRequest]:

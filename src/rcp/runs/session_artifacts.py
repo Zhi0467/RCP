@@ -7,7 +7,9 @@ agent has not changed to the version the human sees; turn end publishes a change
 one as the next version. Versions are artifact storage, never graph authority.
 
 A comment is an ordinary turn's `artifact_context`: its artifact is tracked like any
-other, and its first attempt edits the version the comment was drawn on.
+other, and its first attempt edits the version the comment was drawn on. A saved
+artifact the human attached is edited the same way from the version they attached,
+but settles an outcome only when the agent changed it.
 
 A turn never tracks a file on another stage. An edit in a new session runs on a
 fresh stage: it writes the commented artifact there for that one turn and publishes
@@ -32,7 +34,7 @@ from rcp.artifacts import (
 from rcp.background import AgentTaskExecution
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, RUN_STAGE_RETENTION_DAYS
 from rcp.regular_file_reader import RegularFileTooLargeError
-from rcp.service import ProjectService, RunRequest
+from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.storage import AgentTaskReceiptRecord, AppStore, Artifact, ArtifactVersionConflict
 from rcp.storage.artifact_models import ArtifactOperationConflict, ArtifactVersion
 from rcp.storage.artifacts import ArtifactByteLimitError, ArtifactDeleted
@@ -58,26 +60,50 @@ class _Tracked:
 
 
 @dataclass(frozen=True)
-class CommentedArtifact:
+class EditedArtifact:
     artifact_id: str
-    # The version the comment was drawn on, for its first attempt only: a retry or
-    # resume edits the current version, so a pruned base never refuses it.
+    # The version the comment was drawn on, or the one attached, for the first attempt
+    # only: a retry or resume edits the current version, so a pruned base never refuses it.
     base_version: str | None
+    commented: bool
+
+
+def _first_attempt(execution: AgentTaskExecution) -> bool:
+    task = execution.store.agent_task(execution.operation_id)
+    return task is not None and task.parent_operation_id is None
 
 
 def commented_artifact(
-    execution: AgentTaskExecution, request: RunRequest
-) -> CommentedArtifact | None:
+    execution: AgentTaskExecution, request: RunRequest | CoachRequest
+) -> EditedArtifact | None:
     """The artifact a turn comments on; an origin edit, or older record, names it in its edit."""
+    if isinstance(request, CoachRequest):
+        return None
     edit, context = request.artifact_edit, request.artifact_context
     if edit is not None:
         first = execution.operation_id == edit.operation_id
-        return CommentedArtifact(edit.artifact_id, edit.base_version if first else None)
+        return EditedArtifact(edit.artifact_id, edit.base_version if first else None, True)
     if context is None:
         return None
-    task = execution.store.agent_task(execution.operation_id)
-    first = task is not None and task.parent_operation_id is None
-    return CommentedArtifact(context.artifact_id, context.base_version if first else None)
+    first = _first_attempt(execution)
+    return EditedArtifact(context.artifact_id, context.base_version if first else None, True)
+
+
+def edited_artifacts(
+    execution: AgentTaskExecution, request: RunRequest | CoachRequest
+) -> dict[str, EditedArtifact]:
+    """The commented artifact and every saved artifact the human attached to the turn."""
+    comment = commented_artifact(execution, request)
+    edits = {comment.artifact_id: comment} if comment is not None else {}
+    first = _first_attempt(execution)
+    for attachment in request.attachments:
+        reference = attachment.reference
+        if reference is not None and reference.kind == "artifact":
+            edits.setdefault(
+                reference.source_id,
+                EditedArtifact(reference.source_id, reference.version if first else None, False),
+            )
+    return edits
 
 
 def _trackable(artifact: Artifact) -> bool:
@@ -97,7 +123,9 @@ def _parts(directory: Path | PurePosixPath) -> tuple[Path | PurePosixPath, str]:
     return directory.parents[2], directory.parent.name
 
 
-def _tracked(execution: AgentTaskExecution, request: RunRequest, scope_id: str) -> list[_Tracked]:
+def _tracked(
+    execution: AgentTaskExecution, request: RunRequest | CoachRequest, scope_id: str
+) -> list[_Tracked]:
     store = execution.store
     task = store.agent_task(execution.operation_id)
     if task is None:
@@ -114,13 +142,19 @@ def _tracked(execution: AgentTaskExecution, request: RunRequest, scope_id: str) 
         # This turn's own folder belongs to discovery.
         if artifact.supplier_id != scope_id and _trackable(artifact)
     ]
-    comment = commented_artifact(execution, request)
-    if comment is not None and all(
-        item.artifact.artifact_id != comment.artifact_id for item in found
-    ):
-        artifact = store.artifact(comment.artifact_id)
+    for edit in edited_artifacts(execution, request).values():
+        if any(item.artifact.artifact_id == edit.artifact_id for item in found):
+            continue
+        artifact = store.artifact(edit.artifact_id)
         if artifact is None or not _trackable(artifact):
-            raise ValueError("The commented artifact is unavailable.")
+            if edit.commented:
+                raise ValueError("The commented artifact is unavailable.")
+            continue
+        path = (artifact.supplier_id, artifact.source_name)
+        if not edit.commented and any(
+            (item.artifact.supplier_id, item.artifact.source_name) == path for item in found
+        ):
+            continue
         origin = store.agent_task(artifact.origin_operation_id or "")
         # A kept or reported artifact of this very stage is still its own file.
         own = (
@@ -189,22 +223,23 @@ _CHANGED_WHILE_PREPARED = (
 
 def sync_session_artifacts(
     execution: AgentTaskExecution,
-    request: RunRequest,
+    request: RunRequest | CoachRequest,
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
-) -> str | None:
+) -> dict[str, str]:
     """At turn start, give every untouched tracked file the version the human sees.
 
-    A comment's artifact gets the version the comment was drawn on, written back
+    A commented or attached artifact gets the version the human saw, written back
     even when its file is gone or dirty; a retry keeps its failed attempt's bytes and
-    otherwise gets the current version. Returns that file's path for the turn's prompt.
+    otherwise gets the current version. Returns those files' paths for the turn's
+    prompt, by artifact id; only the comment's file must be ready.
     """
     workspace, scope_id = _parts(directory)
     store = execution.store
-    comment = commented_artifact(execution, request)
+    edits = edited_artifacts(execution, request)
     tracked = _tracked(execution, request, scope_id)
     if not tracked:
-        return None
+        return {}
     try:
         digests = _digests(workspace, remote, tracked)
     except Exception:
@@ -213,85 +248,89 @@ def sync_session_artifacts(
             "Earlier artifacts of this session could not be checked before the turn.",
             level="warning",
         )
-        # Only the commented file must be checked; the others wait for a later turn.
-        tracked = [
-            item
-            for item in tracked
-            if comment is not None and item.artifact.artifact_id == comment.artifact_id
-        ]
+        # Only the edited files must be checked; the others wait for a later turn.
+        tracked = [item for item in tracked if item.artifact.artifact_id in edits]
         if not tracked:
-            return None
+            return {}
         digests = _digests(workspace, remote, tracked)
-    path = None
+    paths: dict[str, str] = {}
     for item in tracked:
-        commented = comment is not None and item.artifact.artifact_id == comment.artifact_id
-        # A fresh comment edits the version it was drawn on; only a retry of the
-        # same comment keeps the bytes its failed attempt left.
-        base = comment.base_version if comment is not None and commented else None
-        fresh_comment = base is not None
-        if commented:
-            path = _tracked_path(workspace, item.artifact)
+        edit = edits.get(item.artifact.artifact_id)
+        commented = edit is not None and edit.commented
+        # A fresh edit starts from the version the human saw; only a retry of the
+        # same turn keeps the bytes its failed attempt left.
+        base = edit.base_version if edit is not None else None
         found = digests.get((item.artifact.supplier_id, item.artifact.source_name))
-        if not commented and found is None:
+        if edit is None and found is None:
             continue
-        with store.artifact_lock(item.artifact.artifact_id):
-            artifact = store.artifact(item.artifact.artifact_id)
-            if artifact is None:
-                if commented:
-                    raise ValueError("The commented artifact is unavailable.")
-                continue
-            target = base or artifact.current_version
-            try:
-                target_sha = _version_sha(store, artifact.artifact_id, target)
-                data = store.read_artifact_bytes(artifact.artifact_id, target)
-            except KeyError as exc:
-                if commented:
-                    raise ValueError(
-                        "The selected artifact version is no longer available. "
-                        "Send the comment again."
-                    ) from exc
-                continue
-            except (OSError, ValueError):
-                if commented:
-                    raise
-                store.record_agent_task_event(
-                    execution.operation_id,
-                    f"{artifact.source_name} could not be restored before the turn.",
-                    level="warning",
-                )
-                continue
-            if not item.durable:
-                if fresh_comment or found is None:
-                    written = _write(workspace, remote, artifact, found[0] if found else "", data)
-                    if fresh_comment and not written:
-                        raise ValueError(_CHANGED_WHILE_PREPARED)
-                continue
-            synced = store.synced_artifact_digest(artifact)
-            if (
-                found is not None
-                and not fresh_comment
-                and (found[0] != synced or target_sha == synced)
-            ):
-                continue  # The agent's change, which turn end settles; or already current.
-            if found is not None and found[0] == target_sha:
-                store.record_artifact_sync(artifact.artifact_id, target_sha)
-                continue
-            try:
+        if not _sync_one(execution, workspace, remote, item, found, base, commented):
+            continue
+        if edit is not None:
+            paths[item.artifact.artifact_id] = _tracked_path(workspace, item.artifact)
+    return paths
+
+
+def _sync_one(
+    execution: AgentTaskExecution,
+    workspace: Path | PurePosixPath,
+    remote: RemoteRunStage | None,
+    item: _Tracked,
+    found: tuple[str, int] | None,
+    base: str | None,
+    commented: bool,
+) -> bool:
+    """Write one tracked file's version; False when it could not be made ready."""
+    store = execution.store
+    fresh = base is not None
+
+    def unready(error: Exception | None = None) -> bool:
+        if commented:
+            raise error or ValueError(_CHANGED_WHILE_PREPARED)
+        if error is not None:
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"{item.artifact.source_name} could not be restored before the turn.",
+                level="warning",
+            )
+        return False
+
+    with store.artifact_lock(item.artifact.artifact_id):
+        artifact = store.artifact(item.artifact.artifact_id)
+        if artifact is None:
+            return unready(ValueError("The commented artifact is unavailable."))
+        target = base or artifact.current_version
+        try:
+            target_sha = _version_sha(store, artifact.artifact_id, target)
+            data = store.read_artifact_bytes(artifact.artifact_id, target)
+        except KeyError as exc:
+            missing = ValueError(
+                "The selected artifact version is no longer available. Send the comment again."
+            )
+            missing.__cause__ = exc
+            return unready(missing)
+        except (OSError, ValueError) as exc:
+            return unready(exc)
+        if not item.durable:
+            if fresh or found is None:
                 written = _write(workspace, remote, artifact, found[0] if found else "", data)
-            except Exception:
-                if commented:
-                    raise
-                store.record_agent_task_event(
-                    execution.operation_id,
-                    f"{artifact.source_name} could not be restored before the turn.",
-                    level="warning",
-                )
-                continue
-            if written:
-                store.record_artifact_sync(artifact.artifact_id, target_sha)
-            elif fresh_comment:
-                raise ValueError(_CHANGED_WHILE_PREPARED)
-    return path
+                if fresh and not written:
+                    return unready()
+            return True
+        synced = store.synced_artifact_digest(artifact)
+        if found is not None and not fresh and (found[0] != synced or target_sha == synced):
+            return True  # The agent's change, which turn end settles; or already current.
+        if found is not None and found[0] == target_sha:
+            store.record_artifact_sync(artifact.artifact_id, target_sha)
+            return True
+        try:
+            written = _write(workspace, remote, artifact, found[0] if found else "", data)
+        except Exception as exc:
+            return unready(exc)
+        if written:
+            store.record_artifact_sync(artifact.artifact_id, target_sha)
+        elif fresh:
+            return unready()
+        return True
 
 
 def _record(
@@ -307,7 +346,7 @@ def _record(
 
 def publish_session_artifacts(
     execution: AgentTaskExecution | None,
-    request: RunRequest,
+    request: RunRequest | CoachRequest,
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     *,
@@ -335,7 +374,9 @@ def publish_session_artifacts(
 
 
 def _settle_one_turn_edit(
-    execution: AgentTaskExecution, request: RunRequest, directory: Path | PurePosixPath
+    execution: AgentTaskExecution,
+    request: RunRequest | CoachRequest,
+    directory: Path | PurePosixPath,
 ) -> None:
     comment = commented_artifact(execution, request)
     if comment is None:
@@ -362,14 +403,14 @@ def _settle_one_turn_edit(
 
 def _publish(
     execution: AgentTaskExecution,
-    request: RunRequest,
+    request: RunRequest | CoachRequest,
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     service: ProjectService,
 ) -> list[AgentArtifactDescriptor]:
     workspace, scope_id = _parts(directory)
     store = execution.store
-    comment = commented_artifact(execution, request)
+    edits = edited_artifacts(execution, request)
     tracked = _tracked(execution, request, scope_id)
     if not tracked:
         return []
@@ -385,7 +426,8 @@ def _publish(
         artifact = store.artifact(item.artifact.artifact_id)
         if artifact is None:
             continue
-        commented = comment is not None and artifact.artifact_id == comment.artifact_id
+        edit = edits.get(artifact.artifact_id)
+        commented = edit is not None and edit.commented
         if artifact.artifact_id in settled:
             # A replayed turn end lists what it already published.
             descriptor = settled[artifact.artifact_id].payload.get("descriptor")
@@ -400,10 +442,10 @@ def _publish(
         if item.durable:
             synced: str | None = store.synced_artifact_digest(artifact)
         else:
-            assert comment is not None
+            assert edit is not None
             try:
                 synced = _version_sha(
-                    store, artifact.artifact_id, comment.base_version or artifact.current_version
+                    store, artifact.artifact_id, edit.base_version or artifact.current_version
                 )
             except KeyError:
                 synced = None  # A pruned base: any change is a conflict.
@@ -411,8 +453,8 @@ def _publish(
         if (
             not item.durable
             and found is not None
-            and comment is not None
-            and comment.base_version is None
+            and edit is not None
+            and edit.base_version is None
             and found[0] == _version_sha(store, artifact.artifact_id, artifact.current_version)
         ):
             # A retry that lost its one-turn file restored the current version;

@@ -795,10 +795,10 @@ async def stream_discuss_run(
                 label=skill_bundle_label(skill_selection),
                 reuse_existing=True,
             )
-            edit_path = (
+            edit_paths = (
                 sync_session_artifacts(execution, request, artifact_directory, remote_stage)
                 if execution is not None
-                else None
+                else {}
             )
             artifact_context_pointer = stage_artifact_context(
                 service,
@@ -806,7 +806,7 @@ async def stream_discuss_run(
                 execution,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                edit_path=edit_path,
+                edit_paths=edit_paths,
             )
             read_dirs = _chat_read_dirs(
                 context,
@@ -823,6 +823,7 @@ async def stream_discuss_run(
                 request.attachments,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
+                edit_paths=edit_paths,
             )
             if artifact_context_pointer is not None:
                 attachment_pointers.append(artifact_context_pointer.pointer)

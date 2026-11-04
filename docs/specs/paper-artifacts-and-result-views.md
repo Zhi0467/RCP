@@ -595,8 +595,10 @@ cards. Unregistered paths fail. Prompts render this same contract.
 ## Temporary chat inputs versus outputs
 
 Inputs are claimed by a turn and never offered for later download. Project
-artifact and paper references are immutable admission copies. Their sources
-remain unchanged. Outputs come only from the exact turn directory. Keep changes
+artifact and paper references are immutable admission copies. A paper or node
+source remains unchanged; a saved artifact changes only through its tracked file,
+published as its next version
+([owner](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)). Outputs come only from the exact turn directory. Keep changes
 retention, not type or authority. Neither inputs nor outputs are canonical provenance.
 
 ## Glossary presentation

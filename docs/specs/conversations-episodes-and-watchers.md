@@ -673,8 +673,12 @@ target, or the saved Paper: the whole tree or one file, each file its own
 attachment within the attachment count and size limits. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
-They share attachment caps and add no roots or target authority. Prompts list
-them separately from uploads and editable comments. Ordinary node/project
+They share attachment caps and add no target authority. An attached saved
+artifact is also the agent's to change: turn start writes the attached version to
+its tracked file, a write root for that turn, and a changed file publishes as the
+artifact's next version at turn end, so Undo restores it. Only a change settles an
+outcome; an untouched one stays as it was. Prompts list editable artifacts
+separately from read-only references and uploads. Ordinary node/project
 Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
 

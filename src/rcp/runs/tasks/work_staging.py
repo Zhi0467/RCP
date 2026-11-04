@@ -77,9 +77,10 @@ class WorkStageLayout:
 
 @dataclass(frozen=True)
 class StagedArtifactAccess:
-    """The artifact pointer an owner staged for this turn."""
+    """The artifact pointer an owner staged for this turn, and its edited files by id."""
 
     pointer: dict[str, object] | None
+    edit_paths: dict[str, str]
 
 
 async def stage_work_turn(
@@ -327,6 +328,7 @@ async def stage_work_turn(
             request.attachments,
             local_stage=local_stage,
             remote_stage=remote_stage,
+            edit_paths=artifacts.edit_paths if artifacts is not None else {},
         )
         if artifacts is not None and artifacts.pointer is not None:
             attachment_pointers.append(artifacts.pointer)
