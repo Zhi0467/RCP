@@ -318,7 +318,10 @@ thread is still open. The action names that thread's project and supplies no cho
 Approve and Decline. The action models live in
 [`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
 repository truth membership, Auto-research authorization, graph-branch merge,
-and episode merge. Plain question answers never authorize these actions.
+and episode merge. Plain question answers never authorize these actions. A
+`merge` command from a thread holding this grant is refused with
+`approval_card_required`, whose message names the merge card, so the agent asks
+instead of telling the member to merge by hand.
 
 The question and its slim `approval_cards` row are committed together. The row
 pins the action and live facts under one SHA-256: pending non-stale Proposal

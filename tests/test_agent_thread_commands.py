@@ -745,3 +745,28 @@ def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypat
     space, project = thread_capabilities("space"), thread_capabilities("project")
     assert space and project and space != project
     assert len(set(project)) == len(project)
+
+
+def test_the_handoff_usage_names_every_project_agent_capability() -> None:
+    from rcp.runs.agent_thread_commands import _handoff_usages, thread_capabilities
+
+    (usage,) = _handoff_usages()
+    assert all(line in usage for line in thread_capabilities("project"))
+
+
+def test_a_refused_merge_in_a_member_thread_points_to_the_approval_card() -> None:
+    import uuid
+
+    from rcp.agents.command_protocol import MergeCommandRequest
+    from rcp.core.models import AuthorizedHuman
+    from rcp.runs.questions import WorkCommandHandler
+
+    request = MergeCommandRequest.model_construct(request_id=uuid.uuid4().hex, verb="merge")
+    member = AuthorizedHuman(
+        space_id=str(uuid.uuid4()), user_id=str(uuid.uuid4()), display_name="M"
+    )
+    carded = WorkCommandHandler(None, None, frozenset({"ask"}), approval_card_member=member)
+    plain = WorkCommandHandler(None, None, frozenset({"ask"}))
+    identity = None
+    assert carded(request, identity).result == {"code": "approval_card_required"}  # pyright: ignore[reportArgumentType]
+    assert plain(request, identity).result == {}  # pyright: ignore[reportArgumentType]

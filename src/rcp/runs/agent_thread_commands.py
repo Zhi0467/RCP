@@ -259,7 +259,10 @@ def _handoff_usages() -> tuple[str, ...]:
         f"{handoff_usage()} (message file up to {AGENT_HANDOFF_MAX_CHARS} characters; "
         "a pick becomes the project thread's agent; the request is delivered after this "
         "turn succeeds; a later wake reports its status, failure kind and reason, and "
-        "answer, so a failed provider can be retried with another pick)",
+        "answer, so a failed provider can be retried with another pick). A project "
+        "thread's agent can do this for its member: "
+        + "; ".join(thread_capabilities("project"))
+        + ".",
     )
 
 
