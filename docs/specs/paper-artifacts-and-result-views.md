@@ -516,7 +516,9 @@ text or text from a failed turn. Retrying or resuming the same comment keeps cha
 It restores current bytes only when the file is missing. Different stages get a
 turn-relative copy that publishes at settlement but is not tracked later. Read-only
 crops remain inputs. Question answers need no extant artifact. Other tracked-file
-errors warn and defer. Only failure of the commented file refuses that comment.
+errors warn and defer. Failure of the commented file or of a saved artifact the
+human attached refuses the turn. An attached artifact restarts from its attached
+version on every attempt and records an outcome only when it changed.
 
 Settlement digests session files. Remote digest collection uses one SSH call;
 changed files require separate byte reads. Under the

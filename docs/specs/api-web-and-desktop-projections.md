@@ -627,8 +627,9 @@ repository or agent profile uses it), the space card's `compute` block, and live
 from the card and storage even when the graph snapshot is cached. Project
 Settings saves no machine settings.
 `DELETE /api/projects/{project_id}/machines/{machine_alias}` uses project write
-admission, refuses a machine a repository or agent profile uses with 422, and
-returns the project snapshot; the space card stays.
+admission, refuses with 422 only a machine a repository lives on, moves agent
+profiles that run there to the base machine, and returns the project snapshot;
+the space card stays.
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
@@ -971,7 +972,7 @@ manifest/head; Connect preserves the manifest.
 
 All requests use the same setup/review controls and
 `rcp server project provision <request-id>`. Settings submission never confirms.
-Team direct `/api/projects` registration and `/api/project-setup/{preflight,ssh-paths,create}`
+Team direct `/api/projects` registration and `/api/project-setup/{preflight,create}`
 are refused before parsing or filesystem access. Only the validated provisioning
 finalizer reaches registration. Server-only review warns code is not backed up;
 empty setup announces its first main commit and optional GitHub push. RCP collects
@@ -2336,7 +2337,8 @@ thread must be the member's own; a Space thread yields an empty response.
 first attempt and its creation time, the Proposal, `stale`, and attention's
 change lines), newest turn first. `asked_cards` are the threads' pending card
 questions the member can answer, including claimed ones, with `project_name`,
-newest first. State comes from each project's local display snapshot, so no
+newest first. The member-wide read's `asked_cards` also include the cards the
+member's open Space thread asked. State comes from each project's local display snapshot, so no
 remote read happens. A member-wide read skips and logs a project whose state
 cannot be read; for a named thread that failure is 503.
 

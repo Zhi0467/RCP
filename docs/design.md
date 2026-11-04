@@ -22,7 +22,9 @@ Episode branches, human-dispatched merges, and optional repository worktrees hav
 separate owners. See [Auto-research](specs/auto-research-and-branch-merge.md) and
 [consolidation](specs/graph-consolidation-and-lessons.md). Ordinary conversations
 hold no episode authority of their own, except that a member's Work turn may start
-or resume a ready Experiment the member asked for, as that member's Run would.
+the Experiments and Auto-research episodes the member asks for, then stop, pause,
+resume, extend or message only the episodes that chat started, as that member's
+Runs controls would.
 
 The paper workspace is human-controlled. Coach changes are reviewed or applied
 under the chat's human-authorized mode. Artifacts, reports, comments, and versions
@@ -125,8 +127,9 @@ Linux desktop packages, a hosted service, and multi-server failover.
 - Human graph editing uses preview and Sync. Artifact selection supplies
   conversation context, not an Evidence-creation or human-judgment shortcut.
 - Provider containment is not a provider-neutral hostile-process sandbox. Episode
-  Stop is graceful and never interrupts a running provider; only an explicit human
-  Pause terminates the live provider process. There is no persistent provider
+  Stop is graceful and never interrupts a running provider; only Pause terminates
+  the live provider process: a member's Pause from Runs or the member's own Work
+  chat, an orchestrator's pause or stop of its worker, or server shutdown. There is no persistent provider
   daemon. Steering uses
   the existing ordinary chat attempt.
 - [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
