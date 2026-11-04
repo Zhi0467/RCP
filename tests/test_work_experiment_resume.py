@@ -58,20 +58,21 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
         mode="work",
     )
 
-    def work_turn(operation_id: str):
+    def work_turn(operation_id: str, chat_id: str = loop.chat_id):
         now = store.now()
+        turn = request.model_copy(update={"chat_id": chat_id})
         store.create_agent_task(
             AgentTaskRecord(
                 operation_id=operation_id,
                 project_id=loop.project_id,
                 kind="node_chat",
                 status="running",
-                request=request.model_dump(mode="json"),
+                request=turn.model_dump(mode="json"),
                 created_at=now,
                 updated_at=now,
                 status_message="Working.",
                 authorized_by=loop.authorizer,
-                dispatch_authority=resolve_dispatch_authority("node_chat", request),
+                dispatch_authority=resolve_dispatch_authority("node_chat", turn),
             )
         )
         execution = AgentTaskExecution(
@@ -87,6 +88,11 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
         )
         return lambda command: handler(command, identity)
 
+    elsewhere = work_turn("work-elsewhere", chat_id="another-chat")
+    assert elsewhere(_resume(loop.episode_id, "resume")).result == {
+        "code": "episode_not_started_here"
+    }
+    store.fail_agent_task("work-elsewhere", "Refused.")
     failed = work_turn("work-failed")
     assert failed(_resume(loop.episode_id, "resume")).status == "ok"
     store.fail_agent_task("work-failed", "The provider stopped.")

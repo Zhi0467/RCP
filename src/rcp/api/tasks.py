@@ -60,7 +60,6 @@ from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
-from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
@@ -80,6 +79,7 @@ from rcp.runs.steering import (
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
+from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -485,38 +485,15 @@ def start_ordinary_task(
         if kind in {"node_chat", "project_chat", "paper_coach"}:
             assert isinstance(request, (RunRequest, CoachRequest))
             require_attachment_pair(request.attachment_set_id, request.attachment_client_id)
-            if request.attachment_set_id or request.references:
-                attachment_scope_id = (
-                    request.attachment_scope_id
-                    if isinstance(request, CoachRequest)
-                    else request.chat_id
-                )
-                if attachment_scope_id is None:
-                    raise ValueError("Attachments and references require an attachment scope.")
-                claimed = attachment_store.claim(
-                    project_id=project_id,
-                    chat_id=attachment_scope_id,
-                    client_id=request.attachment_client_id,
-                    attachment_set_id=request.attachment_set_id,
-                    operation_id=operation_id,
-                    reference_files=resolve_project_references(
-                        store,
-                        catalog,
-                        project_id,
-                        request.references,
-                        viewer_id=authorized_by.user_id,
-                    ),
-                )
-                claimed_batch = claimed.attachment_batch_id
-                request = request.model_copy(
-                    update={
-                        "attachment_set_id": None,
-                        "attachment_client_id": None,
-                        "attachment_batch_id": claimed.attachment_batch_id,
-                        "attachments": claimed.attachments,
-                        "references": [],
-                    }
-                )
+            request, claimed_batch = claim_turn_attachments(
+                store,
+                catalog,
+                attachment_store,
+                project_id,
+                request,
+                operation_id=operation_id,
+                viewer_id=authorized_by.user_id,
+            )
         comment = (
             request.artifact_context
             if isinstance(request, RunRequest) and request.artifact_edit is None
@@ -1047,9 +1024,17 @@ def pause_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    return pause_task_as(record, background_tasks).model_dump(mode="json")
+
+
+def pause_task_as(
+    record: AgentTaskRecord, background_tasks: BackgroundAgentTasks
+) -> AgentTaskRecord:
+    """Pause one visible running turn, as Pause does; raises the HTTP refusal."""
+
     _reject_history_only_control(record)
     try:
-        return background_tasks.pause(operation_id).model_dump(mode="json")
+        return background_tasks.pause(record.operation_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1093,35 +1078,60 @@ def resume_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
-            try:
-                with _task_preparation_service(service) as reader:
-                    experiment_admission.require_current(reader, previous.request)
-                    validated, skills = _validate_stored_task_request(
-                        reader, previous.kind, previous.request
-                    )
-                with _chat_recovery_admission(service, store, previous):
-                    if isinstance(validated, CoachRequest) and previous.request.get(
-                        "run_on"
-                    ) not in (None, validated.run_on):
-                        # A move to the base is a fresh attempt, including its stored session
-                        # and stage; Retry already owns that recovery transition.
-                        return background_tasks.retry(
-                            operation_id,
-                            run_on=validated.run_on,
-                            skills=skills,
-                            authorized_by=authorized_by,
-                        ).model_dump(mode="json")
-                    return background_tasks.resume(
-                        operation_id,
-                        skills=skills,
-                        authorized_by=authorized_by,
-                    ).model_dump(mode="json")
-            except (OSError, StateUnavailable) as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return resume_task_as(
+                previous,
+                authorized_by,
+                catalog=catalog,
+                background_tasks=background_tasks,
+                experiment_admission=experiment_admission,
+            ).model_dump(mode="json")
     except ClientRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def resume_task_as(
+    previous: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    *,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    experiment_admission: ExperimentAdmission,
+) -> AgentTaskRecord:
+    """Resume one paused turn in its saved session, as Resume does; raises the HTTP refusal.
+
+    The caller holds the project's write admission.
+    """
+
+    store = background_tasks.store
+    operation_id = previous.operation_id
+    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
+    try:
+        with _task_preparation_service(service) as reader:
+            experiment_admission.require_current(reader, previous.request)
+            validated, skills = _validate_stored_task_request(
+                reader, previous.kind, previous.request
+            )
+        with _chat_recovery_admission(service, store, previous):
+            if isinstance(validated, CoachRequest) and previous.request.get("run_on") not in (
+                None,
+                validated.run_on,
+            ):
+                # A move to the base is a fresh attempt, including its stored session
+                # and stage; Retry already owns that recovery transition.
+                return background_tasks.retry(
+                    operation_id,
+                    run_on=validated.run_on,
+                    skills=skills,
+                    authorized_by=authorized_by,
+                )
+            return background_tasks.resume(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+            )
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

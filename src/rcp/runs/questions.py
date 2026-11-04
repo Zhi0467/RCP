@@ -22,6 +22,7 @@ from rcp.agents.command_protocol import (
     GraphLogCommandRequest,
     NameCommandRequest,
     ScheduleCommandRequest,
+    WatcherCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import AuthorizedHuman
@@ -30,11 +31,14 @@ from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.work_experiment_commands import (
     handle_work_episode_command,
+    member_work_chat_turn,
     work_experiment_allowed,
 )
-from rcp.storage import AppStore
-from rcp.storage.agent_threads import bound_thread
+from rcp.runs.work_watcher_commands import handle_work_watcher_command
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.question_models import (
+    SPACE_QUESTION_CAPABILITY,
     QuestionArgumentConflict,
     QuestionOrigin,
     QuestionRecord,
@@ -238,6 +242,54 @@ def question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
     )
 
 
+def handle_space_ask(
+    store: AppStore,
+    request: AskCommandRequest,
+    task: AgentTaskRecord,
+    thread: AgentThreadRecord,
+    service: ProjectService | None,
+) -> CommandResponse:
+    """A Space turn asks only approval cards, owned by its thread under the Space scope.
+
+    The origin is resolved from the turn's own record. No answer resumes a Space session,
+    so the origin binds no write scope; the same key in a later turn reads the outcome.
+    """
+    from rcp.runs.approval_cards import approval_card_member
+
+    if request.arguments.action is None:
+        return _refuse(request, "A Space ask raises an approval card; add --action.")
+    if not task.native_session_id or not task.stage_root:
+        return _refuse(
+            request, "The asking turn has no complete native session and authority binding yet."
+        )
+    try:
+        origin = QuestionOrigin.model_validate(
+            {
+                "owner_kind": "chat",
+                "project_id": store.space_id,
+                "owner_id": thread.thread_id,
+                "operation_id": task.operation_id,
+                "provider": task.request.get("provider"),
+                "native_session_id": task.native_session_id,
+                "stage_root": task.stage_root,
+                "stage_host": task.stage_host,
+                "capability": SPACE_QUESTION_CAPABILITY,
+                "write_scope_fingerprint": task.write_scope_fingerprint,
+                "graph_target": task.graph_target,
+            }
+        )
+        origin = _reused_origin(store, origin, request, bound=False)
+    except ValueError as exc:
+        return _refuse(request, str(exc))
+    return handle_ask(
+        store,
+        request,
+        origin,
+        service=service,
+        approval_card_member=approval_card_member(store, task),
+    )
+
+
 def require_question_origin_binding(
     execution: AgentTaskExecution,
     request: RunRequest,
@@ -316,6 +368,8 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
         record_settled_question_receipts(store, operation_id)
 
 
+_JOBS_CAPABILITY = "Runs and stops jobs on the project's machines and pings you when they end"
+
 #: The welcome line for each verb `work_command_handler` may grant a member's
 #: project thread turn; None marks a verb with no member-facing capability.
 #: Its keys are exactly that grant with every gate open, which a test enforces.
@@ -324,9 +378,10 @@ WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
     "graph_log": "Answers questions about the graph and records results in it",
     "validate": "Answers questions about the graph and records results in it",
     "projects": "Reads your other projects when you ask",
-    "launch": "Runs jobs on the project's machines and pings you when they end",
-    "episode": "Starts experiments you ask for and watches them",
-    "ask": "Asks your approval to start Auto-research on a branch or merge one",
+    "launch": _JOBS_CAPABILITY,
+    "watcher": _JOBS_CAPABILITY,
+    "episode": "Starts, pauses, steers, extends and stops experiments and Auto-research you ask for",
+    "ask": "Asks your approval to merge a branch",
     "schedule": "Schedules reminders and weekly catch-ups",
     "bulletin": "Talks with other agents on the project Bulletin",
     "name": None,
@@ -359,6 +414,8 @@ class WorkCommandHandler:
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         graph_history = isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
         if request.verb not in self.allowed_verbs:
+            if request.verb in _CARD_ROUTES and self.approval_card_member is not None:
+                return _refuse(request, _CARD_ROUTES[request.verb], "approval_card_required")
             return _not_granted(request, graph_history)
         if request.verb == "projects":
             return self._projects(request, identity)
@@ -464,6 +521,11 @@ class WorkCommandHandler:
     ) -> CommandResponse:
         return handle_work_episode_command(execution, self.mailbox, request)
 
+    def _watcher(
+        self, execution: AgentTaskExecution, request: WatcherCommandRequest
+    ) -> CommandResponse:
+        return handle_work_watcher_command(execution, request)
+
     def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
         try:
             current = question_origin(execution)
@@ -522,7 +584,12 @@ _BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]
     ),
     EpisodeCommandRequest: (
         WorkCommandHandler._episode,
-        "Experiment commands require this Work turn's broker authority.",
+        "Episode commands require this Work turn's broker authority.",
+        None,
+    ),
+    WatcherCommandRequest: (
+        WorkCommandHandler._watcher,
+        "Watcher control requires this Work turn's broker authority.",
         None,
     ),
     AskCommandRequest: (
@@ -544,6 +611,12 @@ _QUESTION_BINDING_FIELDS = {
 }
 
 
+_CARD_ROUTES: dict[str, str] = {
+    "merge": "Only the member merges a branch. Use ask with a merge_branch or merge_episode "
+    "action; the member's Approve tap runs the merge.",
+}
+
+
 def _not_granted(request: CommandRequest, graph_history: bool) -> CommandResponse:
     code = "graph_history_verb_not_granted" if graph_history else None
     return _refuse(request, "This turn does not authorize that command.", code)
@@ -559,9 +632,13 @@ def _refuse(request: CommandRequest, message: str, code: str | None = None) -> C
 
 
 def _reused_origin(
-    store: AppStore, origin: QuestionOrigin, request: AskCommandRequest
+    store: AppStore, origin: QuestionOrigin, request: AskCommandRequest, *, bound: bool = True
 ) -> QuestionOrigin:
-    """Keys survive turns and episode continuation, keeping their first origin."""
+    """Keys survive turns and episode continuation, keeping their first origin.
+
+    An unbound origin's answer resumes no session, so a later session of the same
+    owner may read it.
+    """
     owner_ids = (
         store.experiment_question_owner_ids(origin.owner_id)
         if origin.owner_kind == "episode"
@@ -580,9 +657,9 @@ def _reused_origin(
         )
         if previous is None:
             continue
-        if previous.origin.model_dump(include=_QUESTION_BINDING_FIELDS) != origin.model_dump(
+        if bound and previous.origin.model_dump(
             include=_QUESTION_BINDING_FIELDS
-        ):
+        ) != origin.model_dump(include=_QUESTION_BINDING_FIELDS):
             raise ValueError("question_origin_binding_unavailable")
         return previous.origin
     return origin
@@ -715,6 +792,8 @@ def work_command_handler(
         card_member = approval_card_member(execution.store, task) if task else None
     if work_experiment_allowed(execution):
         verbs.add("episode")
+    if member_work_chat_turn(execution):
+        verbs.add("watcher")
     return WorkCommandHandler(
         execution,
         compute_commands,

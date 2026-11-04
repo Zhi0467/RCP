@@ -1,4 +1,4 @@
-"""Private thread identities, durable handoffs and Space-turn project bindings."""
+"""Private thread identities, durable handoffs, queued messages and Space-turn project bindings."""
 
 from __future__ import annotations
 
@@ -95,6 +95,27 @@ class AgentHandoffRecord(BaseModel):
     refusal_reason: str | None = None
 
 
+class AgentThreadQueueRecord(BaseModel):
+    queue_id: str
+    thread_id: str
+    user_id: str
+    idempotency_key: str
+    message: str
+    attachment_set_id: str | None = None
+    attachment_client_id: str | None = None
+    attachment_count: int = 0
+    request_sha256: str
+    created_at: str
+    operation_id: str | None = None
+    refusal_reason: str | None = None
+    deferred_at: str | None = None
+    removed_at: str | None = None
+
+
+class AgentThreadQueueFull(Exception):
+    """The thread already holds its limit of unstarted queued messages."""
+
+
 def _unused_name(names: tuple[str, ...], used: set[str]) -> str:
     """The first unused seeded name, then numbered suffixes."""
     suffix = 1
@@ -144,6 +165,19 @@ def migrate_agent_handoffs(connection: sqlite3.Connection) -> None:
         "agent_handoffs",
         "SELECT user_id FROM agent_threads WHERE thread_id=ROW.target_thread_id",
     )
+
+
+def migrate_agent_thread_queue(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE agent_thread_queue (
+        queue_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL, message TEXT NOT NULL,
+        attachment_set_id TEXT, attachment_client_id TEXT,
+        attachment_count INTEGER NOT NULL DEFAULT 0, request_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL, operation_id TEXT, refusal_reason TEXT, deferred_at TEXT,
+        removed_at TEXT, UNIQUE(thread_id, idempotency_key))""")
+    connection.execute("""CREATE INDEX agent_thread_queue_pending ON agent_thread_queue(thread_id, created_at)
+        WHERE operation_id IS NULL AND refusal_reason IS NULL AND removed_at IS NULL""")
+    install_agent_thread_version(connection, "agent_thread_queue", "ROW.user_id")
 
 
 def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
@@ -427,6 +461,151 @@ class AgentThreadStoreMixin(StoreMixinBase):
             ).fetchone()
         return AgentHandoffRecord.model_validate(dict(row)) if row is not None else None
 
+    def queue_agent_thread_message(
+        self,
+        *,
+        queue_id: str,
+        thread_id: str,
+        user_id: str,
+        idempotency_key: str,
+        message: str,
+        attachment_set_id: str | None = None,
+        attachment_client_id: str | None = None,
+        attachment_count: int = 0,
+        request_sha256: str,
+    ) -> AgentThreadQueueRecord:
+        """Store one member message for the thread's next free turn; a replayed key returns it.
+
+        A removed message keeps its key, so a late retry of its request finds it removed.
+        """
+        from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = _queue_row_for_key(connection, thread_id, idempotency_key)
+            if existing is not None:
+                if (existing.user_id, existing.request_sha256) != (user_id, request_sha256):
+                    raise ValueError("Queue idempotency key reused with a different request")
+                return existing
+            waiting = connection.execute(
+                "SELECT count(*) FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
+                "AND removed_at IS NULL",
+                (thread_id,),
+            ).fetchone()[0]
+            if waiting >= AGENT_THREAD_QUEUE_MAX_ITEMS:
+                raise AgentThreadQueueFull(
+                    f"This thread already has {AGENT_THREAD_QUEUE_MAX_ITEMS} queued messages"
+                )
+            record = AgentThreadQueueRecord(
+                queue_id=queue_id,
+                thread_id=thread_id,
+                user_id=user_id,
+                idempotency_key=idempotency_key,
+                message=message,
+                attachment_set_id=attachment_set_id,
+                attachment_client_id=attachment_client_id,
+                attachment_count=attachment_count,
+                request_sha256=request_sha256,
+                created_at=self.now(),
+            )
+            connection.execute(
+                "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
+                "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    record.queue_id,
+                    thread_id,
+                    user_id,
+                    idempotency_key,
+                    message,
+                    attachment_set_id,
+                    attachment_client_id,
+                    attachment_count,
+                    request_sha256,
+                    record.created_at,
+                ),
+            )
+            return record
+
+    def agent_thread_queue_for_key(
+        self, thread_id: str, idempotency_key: str
+    ) -> AgentThreadQueueRecord | None:
+        with self.connection() as connection:
+            return _queue_row_for_key(connection, thread_id, idempotency_key)
+
+    def agent_thread_queue_item(self, queue_id: str) -> AgentThreadQueueRecord | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_thread_queue WHERE queue_id=?", (queue_id,)
+            ).fetchone()
+        return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
+
+    def agent_thread_queue(self, thread_id: str) -> list[AgentThreadQueueRecord]:
+        """The thread's unstarted messages, waiting or refused, oldest first."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
+                "AND removed_at IS NULL ORDER BY created_at,queue_id",
+                (thread_id,),
+            ).fetchall()
+        return [AgentThreadQueueRecord.model_validate(dict(row)) for row in rows]
+
+    def pending_agent_thread_queue(self) -> list[AgentThreadQueueRecord]:
+        """Each thread's oldest message that is neither started nor refused."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM agent_thread_queue q WHERE operation_id IS NULL "
+                "AND refusal_reason IS NULL AND removed_at IS NULL AND NOT EXISTS "
+                "(SELECT 1 FROM agent_thread_queue o WHERE o.thread_id=q.thread_id "
+                "AND o.operation_id IS NULL AND o.refusal_reason IS NULL AND o.removed_at IS NULL "
+                "AND (o.created_at,o.queue_id) < (q.created_at,q.queue_id)) "
+                "ORDER BY created_at,queue_id"
+            ).fetchall()
+        return [AgentThreadQueueRecord.model_validate(dict(row)) for row in rows]
+
+    def remove_agent_thread_queue_item(self, queue_id: str) -> AgentThreadQueueRecord | None:
+        """Mark an unstarted message removed; None when it is missing, removed or started."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "UPDATE agent_thread_queue SET removed_at=? WHERE queue_id=? "
+                "AND operation_id IS NULL AND removed_at IS NULL RETURNING *",
+                (self.now(), queue_id),
+            ).fetchone()
+        return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
+
+    def refuse_agent_thread_queue_item(
+        self, queue_id: str, reason: str
+    ) -> AgentThreadQueueRecord | None:
+        """Refuse a waiting message for good; None when it already started or was refused."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "UPDATE agent_thread_queue SET refusal_reason=? WHERE queue_id=? "
+                "AND operation_id IS NULL AND refusal_reason IS NULL AND removed_at IS NULL "
+                "RETURNING *",
+                (reason, queue_id),
+            ).fetchone()
+        return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
+
+    def clear_agent_thread_queue_deferral(self, queue_id: str) -> None:
+        """A busy thread is ordinary waiting, so the delivery timeout restarts when it frees."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_thread_queue SET deferred_at=NULL WHERE queue_id=? AND operation_id IS NULL",
+                (queue_id,),
+            )
+
+    def defer_agent_thread_queue_item(self, queue_id: str) -> str:
+        """Note a transiently refused start; return when deferral first began."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "UPDATE agent_thread_queue SET deferred_at=coalesce(deferred_at,?) "
+                "WHERE queue_id=? RETURNING deferred_at",
+                (self.now(), queue_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(queue_id)
+        return str(row[0])
+
 
 def agent_thread_attribution(
     connection: sqlite3.Connection, operation_id: str | None
@@ -477,6 +656,80 @@ def claim_handoff_turn(
         f"UPDATE agent_handoffs SET {column}=? WHERE handoff_id=?", (record.operation_id, selected)
     )
     return False
+
+
+def _queue_row_for_key(
+    connection: sqlite3.Connection, thread_id: str, idempotency_key: str
+) -> AgentThreadQueueRecord | None:
+    row = connection.execute(
+        "SELECT * FROM agent_thread_queue WHERE thread_id=? AND idempotency_key=?",
+        (thread_id, idempotency_key),
+    ).fetchone()
+    return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
+
+
+def claim_queued_turn(
+    connection: sqlite3.Connection, record: AgentTaskRecord, queue_id: str | None
+) -> bool:
+    """Bind a queued message to the exact task its transaction inserts.
+
+    Returns True when this task already claimed it, so a replayed or racing
+    drain reuses the task. A removed, refused or out-of-order message raises.
+    """
+    if queue_id is None:
+        return False
+    row = connection.execute(
+        "SELECT * FROM agent_thread_queue WHERE queue_id=?", (queue_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Queued message not found")
+    if row["removed_at"] is not None:
+        raise ValueError("Queued message was removed")
+    if row["refusal_reason"] is not None:
+        raise ValueError("Queued message was refused")
+    if row["operation_id"] is not None:
+        if row["operation_id"] != record.operation_id:
+            raise ValueError("Queued message was already claimed")
+        return True
+    _require_queued_turn(connection, row, record)
+    older = connection.execute(
+        "SELECT 1 FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
+        "AND refusal_reason IS NULL AND removed_at IS NULL AND (created_at,queue_id) < (?,?) "
+        "LIMIT 1",
+        (row["thread_id"], row["created_at"], queue_id),
+    ).fetchone()
+    if older is not None:
+        raise ValueError("An older queued message of this thread starts first")
+    connection.execute(
+        "UPDATE agent_thread_queue SET operation_id=? WHERE queue_id=?",
+        (record.operation_id, queue_id),
+    )
+    return False
+
+
+def _require_queued_turn(
+    connection: sqlite3.Connection, row: sqlite3.Row, record: AgentTaskRecord
+) -> None:
+    """The turn is the member's own ordinary Work turn on the open thread, with this text and files."""
+    thread = connection.execute(
+        "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (row["thread_id"],)
+    ).fetchone()
+    space_id = connection.execute(
+        "SELECT space_id FROM space_identity WHERE singleton=1"
+    ).fetchone()[0]
+    request = record.request
+    if (
+        thread is None
+        or thread["kind"] != "project"
+        or thread["user_id"] != row["user_id"]
+        or not thread_binds_task(AgentThreadRecord.model_validate(dict(thread)), record, space_id)
+        or request.get("mode") != "work"
+        or request.get("trigger", "human") != "human"
+        or request.get("source") is not None
+        or request.get("message") != row["message"]
+        or request.get("attachment_batch_id") != row["attachment_set_id"]
+    ):
+        raise ValueError("Queued turn changed its member, thread or request")
 
 
 def _require_handoff_turn(

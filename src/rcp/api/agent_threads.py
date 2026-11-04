@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections import defaultdict
@@ -57,24 +58,28 @@ from rcp.api.tasks import (
 )
 from rcp.artifact_comments import COMMENTABLE_MEDIA_TYPES, supports_comments
 from rcp.artifact_views import ViewerPresentation
-from rcp.attachments import ChatAttachmentUpload
+from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import ReplayHalted
+from rcp.limits import AGENT_THREAD_QUEUE_MAX_CHARS, CHAT_ATTACHMENT_MAX_COUNT
+from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
+from rcp.runs.agent_thread_queue import queued_turn_operation_id, release_queued_files
 from rcp.runs.agent_threads import (
     task_owner,
     thread_projection,
     thread_projections,
     thread_scope_id,
 )
-from rcp.runs.approval_cards import ProposalCardView, proposal_cards
+from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
 from rcp.runs.artifact_edit_admission import artifact_comment_message
 from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
+from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
     ArtifactContextRequest,
     ChatTranscript,
@@ -82,8 +87,10 @@ from rcp.service import (
     read_space_chat_transcript,
 )
 from rcp.service_connections import ConnectionError
-from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import (
+    AgentThreadQueueFull,
+    AgentThreadQueueRecord,
     AgentThreadRecord,
     private_artifact_owner,
     thread_binds_task,
@@ -143,14 +150,7 @@ def _card_threads(store: AppStore, user_id: str, thread_id: str | None) -> list[
         threads = [
             thread for thread in store.agent_threads(user_id) if thread.project_id in projects
         ]
-    return [
-        thread
-        for thread in threads
-        if thread.kind == "project"
-        and thread.project_id is not None
-        and thread.closed_at is None
-        and not store.chat_archived(thread.project_id, thread.thread_id)
-    ]
+    return [thread for thread in threads if draws_proposal_cards(store, thread)]
 
 
 @router.get("/api/agent-threads/cards")
@@ -163,7 +163,8 @@ def agent_thread_cards(
     identity_access: IdentityDependency,
 ):
     """Open approval cards of the member's project threads: Proposal cards drawn from each
-    project's local display snapshot, and asked cards from the question list.
+    project's local display snapshot, and asked cards from the question list. A member-wide
+    read, Pip's dock, also lists the cards the Space thread asked.
 
     A member-wide read skips a project whose snapshot cannot be read; a named thread's
     unreadable project is a 503.
@@ -187,30 +188,40 @@ def agent_thread_cards(
             logger.warning("Cards skipped project %s: %s", project_id, exc)
         else:
             drawn.extend(proposal_cards(store, project, state, threads))
-        asked.extend(_asked_cards(store, project, threads))
+        asked.extend(_asked_cards(store, project_id, threads, user_id))
+    if thread_id is None:
+        space = [
+            thread
+            for thread in store.agent_threads(user_id)
+            if thread.kind == "space" and thread.closed_at is None
+        ]
+        asked.extend(_asked_cards(store, store.space_id, space, user_id))
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     asked.sort(key=lambda row: row["created_at"], reverse=True)
     return {"proposal_cards": drawn, "asked_cards": asked}
 
 
 def _asked_cards(
-    store: AppStore, project: ProjectRecord, threads: list[AgentThreadRecord]
+    store: AppStore, scope_id: str, threads: list[AgentThreadRecord], user_id: str
 ) -> list[dict[str, Any]]:
-    """The answerable pending card questions of these threads, naming their project."""
+    """The answerable pending card questions of these threads under `scope_id`, each naming
+    the project its action acts on, and only while the member still belongs to it."""
     asked = []
     for thread in threads:
         pending = [
             question
             for question in store.list_questions(
-                project_id=project.project_id, owner_kind="chat", owner_id=thread.thread_id
+                project_id=scope_id, owner_kind="chat", owner_id=thread.thread_id
             )
             if question.state == "pending"
         ]
-        asked.extend(
-            {**row.model_dump(mode="json"), "project_name": project.name}
-            for row in _serialize_all(store, pending)
-            if row.card is not None and row.can_answer
-        )
+        for row in _serialize_all(store, pending):
+            if row.card is None or not row.can_answer:
+                continue
+            project_id = row.card["action"]["project_id"]
+            project = store.project(project_id)
+            if project is not None and store.is_project_member(project_id, user_id):
+                asked.append({**row.model_dump(mode="json"), "project_name": project.name})
     return asked
 
 
@@ -459,6 +470,184 @@ def remove_space_attachment(
     return remove_attachment(
         attachment_store, store.space_id, thread_id, attachment_id, client_id, attachment_set_id
     )
+
+
+def owned_project_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
+    thread = owned_thread(store, thread_id, user_id)
+    if thread.kind != "project" or thread.project_id is None:
+        raise HTTPException(status_code=404, detail="Project thread not found")
+    return thread
+
+
+class QueuedMessageBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    message: str = Field(default="", max_length=AGENT_THREAD_QUEUE_MAX_CHARS)
+    attachment_set_id: str | None = Field(default=None, min_length=1)
+    attachment_client_id: str | None = Field(default=None, min_length=1)
+    references: list[ProjectReferenceSelector] = Field(
+        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
+    )
+
+    @model_validator(mode="after")
+    def validate_content(self) -> Self:
+        require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
+        if not (self.message.strip() or self.attachment_set_id or self.references):
+            raise ValueError("A queued message needs text or files")
+        return self
+
+    def request_sha256(self) -> str:
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+
+@router.post("/api/agent-threads/{thread_id}/queue", status_code=202)
+def queue_thread_message(
+    thread_id: str,
+    body: QueuedMessageBody,
+    request: Request,
+    idempotency_key: Annotated[UUID4, Header()],
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+    attachment_store: AttachmentStoreDependency,
+):
+    """Keep the member's message until the thread is free, then run one drain pass for it."""
+    authorized = identity_access.require_patch_capable_identity(request)
+    thread = owned_project_thread(store, thread_id, authorized.user_id)
+    assert thread.project_id is not None
+    key = str(idempotency_key)
+    with project_write_admission(thread.project_id, request) as project_id:
+        if refusal := store.chat_turn_refusal(project_id, thread_id):
+            raise HTTPException(status_code=409, detail=refusal)
+        queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
+            store, catalog, attachment_store, thread, project_id, body, key
+        )
+    if queued.request_sha256 != body.request_sha256():
+        raise HTTPException(status_code=422, detail="The key was used for another message")
+    request.app.state.reconcile_thread_handoffs()
+    current = store.agent_thread_queue_item(queued.queue_id)
+    return {
+        "queue_id": queued.queue_id,
+        "operation_id": current.operation_id if current is not None else None,
+    }
+
+
+def _queue_new_message(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    attachment_store: ChatAttachmentStore,
+    thread: AgentThreadRecord,
+    project_id: str,
+    body: QueuedMessageBody,
+    key: str,
+) -> AgentThreadQueueRecord:
+    """Claim the files for the queued turn's own id, then store the row, or release them."""
+    queue_id = str(uuid.uuid4())
+    operation_id = queued_turn_operation_id(queue_id)
+    client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
+    try:
+        claimed, batch = claim_turn_attachments(
+            store,
+            catalog,
+            attachment_store,
+            project_id,
+            RunRequest(
+                chat_id=thread.thread_id,
+                chat_scope="project",
+                attachment_set_id=body.attachment_set_id,
+                attachment_client_id=client_id,
+                references=body.references,
+            ),
+            operation_id=operation_id,
+            viewer_id=thread.user_id,
+        )
+    except ValueError as exc:
+        if (raced := store.agent_thread_queue_for_key(thread.thread_id, key)) is not None:
+            return raced
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        queued = store.queue_agent_thread_message(
+            queue_id=queue_id,
+            thread_id=thread.thread_id,
+            user_id=thread.user_id,
+            idempotency_key=key,
+            message=body.message,
+            attachment_set_id=batch,
+            attachment_client_id=client_id,
+            attachment_count=len(claimed.attachments),
+            request_sha256=body.request_sha256(),
+        )
+    except (AgentThreadQueueFull, ValueError) as exc:
+        if batch is not None:
+            attachment_store.release(batch, operation_id)
+        status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if queued.queue_id != queue_id and batch is not None:
+        attachment_store.release(batch, operation_id)
+    return queued
+
+
+@router.delete("/api/agent-threads/{thread_id}/queue/{queue_id}")
+def remove_queued_message(
+    thread_id: str,
+    queue_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    attachment_store: AttachmentStoreDependency,
+):
+    """Remove the member's unstarted or refused message; a started one stays."""
+    thread = owned_project_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    row = store.agent_thread_queue_item(queue_id)
+    if row is None or row.thread_id != thread.thread_id or row.removed_at is not None:
+        raise HTTPException(status_code=404, detail="Queued message not found")
+    removed = store.remove_agent_thread_queue_item(queue_id)
+    if removed is None:
+        raise HTTPException(status_code=409, detail="This message already started")
+    if removed.refusal_reason is None:
+        release_queued_files(attachment_store, removed)
+    return {"queue_id": queue_id}
+
+
+@router.get("/api/agent-threads/{thread_id}/queue")
+def thread_queue(
+    thread_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+):
+    """What waits for the thread: ready handoffs and the member's messages, by readiness."""
+    thread = owned_project_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    items: list[dict[str, object]] = []
+    for handoff in store.pending_agent_handoffs(thread_id):
+        source = store.agent_task(handoff.source_operation_id)
+        if source is None or source.status != "succeeded":
+            continue
+        items.append(
+            {
+                "kind": "handoff",
+                "handoff_id": handoff.handoff_id,
+                "message": handoff.message,
+                "source_agent_name": store.chat_name(store.space_id, handoff.source_thread_id, ""),
+                "ready_at": source.finished_at or handoff.created_at,
+            }
+        )
+    items.extend(
+        {
+            "kind": "message",
+            "queue_id": row.queue_id,
+            "message": row.message,
+            "created_at": row.created_at,
+            "refusal_reason": row.refusal_reason,
+            "attachment_count": row.attachment_count,
+        }
+        for row in store.agent_thread_queue(thread.thread_id)
+    )
+    items.sort(key=lambda item: str(item.get("ready_at") or item.get("created_at")))
+    return {"items": items}
 
 
 class SpaceTurnBody(BaseModel):

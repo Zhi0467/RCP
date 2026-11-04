@@ -772,11 +772,20 @@ def test_usage_names_every_action_field_and_outcome():
     from typing import get_args
 
     from rcp.approval_actions import ApprovalAction, ApprovalOutcome
-    from rcp.runs.approval_cards import approval_card_usage
+    from rcp.runs.approval_cards import (
+        THREAD_CARD_KINDS,
+        approval_card_usage,
+        space_card_usage,
+    )
 
-    usage = approval_card_usage("rcp")
+    usage, space = approval_card_usage("rcp"), space_card_usage()
     for model in get_args(get_args(ApprovalAction)[0]):
-        assert all(name in usage for name in model.model_fields)
+        kind = get_args(model.model_fields["kind"].annotation)[0]
+        assert (f"{kind} (" in usage) == (kind in THREAD_CARD_KINDS["project"])
+        assert (f"{kind} (" in space) == (kind in THREAD_CARD_KINDS["space"])
+        if kind in THREAD_CARD_KINDS["project"]:
+            assert all(name in usage for name in model.model_fields)
+    assert "auto_research" not in THREAD_CARD_KINDS["project"]
     assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
 
 
@@ -815,18 +824,13 @@ def test_handler_outcomes_map_to_card_results(raised, expected):
     ("installed", "authenticated", "problem", "refused"),
     [(True, True, None, False), (True, False, None, True), (True, True, "sandbox", True)],
 )
-def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
-    monkeypatch, installed, authenticated, problem, refused
+def test_auto_research_start_refuses_a_provider_that_cannot_launch(
+    installed, authenticated, problem, refused
 ):
     from types import SimpleNamespace
 
-    from rcp.approval_actions import AutoResearchAction
-    from rcp.runs import approval_cards
+    from rcp.runs.auto_research_admission import require_auto_research_provider_ready
 
-    profile = {"provider": "codex", "run_on": "local"}
-    monkeypatch.setattr(
-        approval_cards, "approval_pins", lambda *args, **kwargs: {"profile": profile}
-    )
     readiness = SimpleNamespace(
         installed=installed,
         authenticated=authenticated,
@@ -841,15 +845,32 @@ def test_ask_refuses_an_auto_research_card_whose_provider_cannot_launch(
             provider_binary=lambda *args: "codex",
         ),
     )
-    action = AutoResearchAction(kind="auto_research", project_id="p", invocation_ceiling=1)
-    human = SimpleNamespace(user_id="alex")
+    request = SimpleNamespace(provider="codex", run_on="local")
     if refused:
         with pytest.raises(ValueError, match="provider_not_ready"):
-            approval_cards.approval_card_pins(service, None, action, human)  # type: ignore[arg-type]
+            require_auto_research_provider_ready(service, request, member_id="alex")  # type: ignore[arg-type]
     else:
-        assert approval_cards.approval_card_pins(service, None, action, human) == {  # type: ignore[arg-type]
-            "profile": profile
-        }
+        require_auto_research_provider_ready(service, request, member_id="alex")  # type: ignore[arg-type]
+
+
+def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(questions_api):
+    from rcp.runs.approval_cards import AUTO_RESEARCH_USES_EPISODE, approval_card_for_ask
+    from tests.helpers import authorized_human
+    from tests.test_ask_protocol import ask_request
+
+    app, _client, store, project_id = questions_api
+    action = {"kind": "auto_research", "project_id": project_id, "invocation_ceiling": 2}
+    question, stored = api_card(questions_api, action)
+    service = app.state.catalog.open(project_id)
+    member = authorized_human(app)
+
+    def ask(key):
+        request = ask_request(idempotency_key=key, arguments={"question": "Go?", "action": action})
+        return approval_card_for_ask(store, request, question.origin, service, member)
+
+    with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_EPISODE):
+        ask("new")
+    assert ask("card")["pinned"] == stored["pinned"]
 
 
 def test_request_receipts_need_their_durable_row(store):
@@ -1305,3 +1326,197 @@ def test_ask_refuses_a_card_for_a_proposal_this_thread_raised(questions_api):
         ask("prop/raised/first")
     assert ask("prop/raised/other")["action"]["proposal_id"] == "prop/raised/other"
     assert ask(PROPOSAL)["action"]["proposal_id"] == PROPOSAL
+
+
+def _space_turn(questions_api, operation_id="space-turn", session="space-session"):
+    """A running turn of the member's Space thread with its session and stage, and its handler."""
+    from rcp.runs.agent_thread_commands import ThreadCommandHandler
+    from tests.helpers import authorized_human
+    from tests.test_storage import _task_record
+
+    app, _client, store, _project_id = questions_api
+    member = authorized_human(app)
+    space = next(
+        thread
+        for thread in store.ensure_agent_threads(member.user_id, [], default_names=("Pip",))
+        if thread.kind == "space"
+    )
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id=operation_id,
+            project_id=store.space_id,
+            kind="space_chat",
+            status="running",
+            authorized_by=member,
+            request={"chat_id": space.thread_id, "mode": "work", "provider": "codex"},
+            native_session_id=session,
+            stage_root=f"/{session}-stage",
+        )
+    )
+    return ThreadCommandHandler(store, app.state.catalog, operation_id)
+
+
+def _space_ask(handler, action, key="card", operation_id="space-turn"):
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from tests.test_ask_protocol import ask_request
+
+    arguments = {"question": "Decide?", **({"action": action} if action else {})}
+    request = ask_request(idempotency_key=key, arguments=arguments)
+    return handler(request, CommandTurnIdentity(None, operation_id, "turn", "broker"))
+
+
+def _tap(client, store, question_id, decision="approve"):
+    card = store.approval_card(question_id)
+    return client.post(
+        f"/api/approval-cards/{question_id}",
+        json={"decision": decision, "pinned_sha256": card["pinned_sha256"]},
+    )
+
+
+def test_a_space_ask_raises_a_card_in_pips_dock_that_decides_the_proposal(
+    questions_api, monkeypatch
+):
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    handler = _space_turn(questions_api)
+    asked = _space_ask(handler, approve_action(project_id, PROPOSAL))
+    assert asked.status == "ok", asked.message
+    question_id = asked.result["question_id"]
+    dock = client.get("/api/agent-threads/cards").json()["asked_cards"]
+    assert [(row["question_id"], row["project_name"]) for row in dock] == [
+        (question_id, store.project(project_id).name)
+    ]
+    bounded_admission_lock(monkeypatch)
+    tapped = _tap(client, store, question_id)
+    assert tapped.json()["outcome"] == "approved", tapped.text
+    assert service.history.state().proposals[PROPOSAL].status == "approved"
+    assert _space_ask(handler, approve_action(project_id, PROPOSAL)).result["state"] == "answered"
+
+
+def test_a_later_space_session_reads_the_card_an_earlier_one_asked(questions_api, monkeypatch):
+    app, client, store, project_id = questions_api
+    file_proposal(app.state.catalog.open(project_id))
+    action = approve_action(project_id, PROPOSAL)
+    question_id = _space_ask(_space_turn(questions_api), action).result["question_id"]
+    bounded_admission_lock(monkeypatch)
+    assert _tap(client, store, question_id).json()["outcome"] == "approved"
+    store.fail_agent_task("space-turn", "Ended.")
+    later = _space_turn(questions_api, operation_id="space-later", session="later-session")
+    read = _space_ask(later, action, operation_id="space-later")
+    assert (read.result["question_id"], read.result["state"]) == (question_id, "answered")
+
+
+def test_a_space_ask_carries_any_inbox_card_kind_for_a_member_project_only(
+    questions_api, monkeypatch
+):
+    app, _client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    writable = "repo-b" in service.history.state().project_truth_scope
+    truth = {"kind": "truth_scope", "project_id": project_id, "alias": "repo-b"}
+    handler = _space_turn(questions_api)
+    created = _space_ask(handler, {**truth, "writable": not writable})
+    assert created.status == "ok", created.message
+    assert store.approval_card(created.result["question_id"])["kind"] == "truth_scope"
+    opened = []
+    monkeypatch.setattr(app.state.catalog, "open_execution", opened.append)
+    refused = [
+        _space_ask(handler, {**truth, "project_id": "not-a-member", "writable": True}, "other"),
+        _space_ask(
+            handler, {"kind": "auto_research", "project_id": project_id, "invocation_ceiling": 1}
+        ),
+        _space_ask(handler, None, "plain"),
+    ]
+    assert [response.status for response in refused] == ["invalid"] * 3
+    assert opened == [project_id]
+
+
+def test_a_space_ask_is_refused_for_a_proposal_card_its_dock_already_draws(questions_api):
+    _app, _client, _store, project_id = questions_api
+    _raised_proposals(questions_api)
+    handler = _space_turn(questions_api)
+    drawn = _space_ask(handler, approve_action(project_id, "prop/raised/first"))
+    assert (drawn.status, drawn.message) == ("invalid", "proposal_card_shown")
+    other = _space_ask(handler, approve_action(project_id, "prop/raised/other"), "other")
+    assert other.status == "ok", other.message
+
+
+def _branch_with_proposal(questions_api) -> str:
+    """A graph branch forked from main while main's Proposal is pending."""
+    from rcp.core.models import GraphBranchMetadata
+    from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+    from tests.helpers import authorized_human
+
+    app, _client, _store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    base = service.history.head_ref()
+    branch_id = str(uuid4())
+    service.history.create_branch(
+        GraphBranchMetadata(
+            branch_id=branch_id,
+            episode_id=branch_id,
+            project_id=project_id,
+            base_head=base,
+            head=GraphHeadRef(
+                target=GraphTargetRef(kind="branch", branch_id=branch_id),
+                revision=base.revision,
+                transition_id=base.transition_id,
+            ),
+            authorized_by=authorized_human(app),
+        )
+    )
+    return branch_id
+
+
+@pytest.mark.parametrize("decided_first", [False, True])
+def test_a_branch_proposal_card_decides_it_on_its_branch(questions_api, monkeypatch, decided_first):
+    from rcp.core.transition_models import GraphTargetRef
+
+    app, client, store, project_id = questions_api
+    branch_id = _branch_with_proposal(questions_api)
+    main = app.state.catalog.open(project_id)
+    branch = main.for_graph_target(GraphTargetRef(kind="branch", branch_id=branch_id))
+    action = {**approve_action(project_id, PROPOSAL), "branch_id": branch_id}
+    question, card = real_card(questions_api, action)
+    assert card["pinned"]["proposal"]["id"] == PROPOSAL
+    bounded_admission_lock(monkeypatch)
+    if decided_first:
+        inbox = client.post(
+            f"/api/projects/{project_id}/sync",
+            params={"branch_id": branch_id},
+            json={
+                "base_revision": branch.history.state().revision,
+                "proposals": [{"proposal_id": PROPOSAL, "decision": "rejected"}],
+            },
+        )
+        assert inbox.status_code == 200, inbox.text
+    tapped = _tap(client, store, question.question_id)
+    assert tapped.json()["outcome"] == ("stale" if decided_first else "approved"), tapped.text
+    expected = "rejected" if decided_first else "approved"
+    assert branch.history.state().proposals[PROPOSAL].status == expected
+    assert main.history.state().proposals[PROPOSAL].status == "pending"
+
+
+def test_an_old_proposal_card_row_without_a_branch_settles_on_main(questions_api):
+    """A row stored before `branch_id` existed parses and settles from main's status."""
+    app, client, store, project_id = questions_api
+    service = app.state.catalog.open(project_id)
+    file_proposal(service)
+    question, card = real_card(questions_api, approve_action(project_id, PROPOSAL))
+    assert "branch_id" not in card["action"]
+    assert store.claim_approval_card(question.question_id)
+    assert _decide(client, project_id, PROPOSAL).status_code == 200
+    reopened = AppStore(store.path)
+    settle_interrupted_approval_cards(
+        reopened, service_for=app.state.catalog.open, claimed_before=reopened.now()
+    )
+    assert reopened.approval_card(question.question_id)["result"]["outcome"] == "approved"
+
+
+def test_a_main_proposal_action_stores_what_it_stored_before_branches():
+    from rcp.approval_actions import ProposalAction
+
+    action = ProposalAction(kind="proposal", project_id="p", proposal_id="x", decision="approved")
+    assert "branch_id" not in action.model_dump(mode="json")

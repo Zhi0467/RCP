@@ -398,6 +398,37 @@ test("the coach stages answer comments and files as chat does and sends them wit
   assert.equal(await waiting.count(), 0);
 });
 
+test("a sent coach turn shows its files and the session's context", async (t) => {
+  const sent = {
+    ...turn,
+    request: {
+      ...turn.request,
+      attachments: [
+        {
+          attachment_id: "a1",
+          name: "notes.md",
+          media_type: "text/markdown",
+          size: 5,
+          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+        },
+      ],
+    },
+    agent_status: { context_tokens: 40_000, context_window: 200_000 },
+  };
+  for (const width of [1280, 390]) {
+    const { page } = await open(t, {
+      width,
+      init: `window.paperCoachFixture = { tasks: [${JSON.stringify(sent)}], started: [] };`,
+    });
+    await coach(page);
+    await page
+      .locator(".paper-coach .chat-human-message .chat-input-attachment", { hasText: "notes.md" })
+      .waitFor();
+    await page.locator(".paper-panel-tools").getByRole("button", { name: "Context" }).waitFor();
+    await fits(page);
+  }
+});
+
 test("a coach turn carrying only a project reference names its attachment scope", async (t) => {
   const { page } = await open(t, {
     width: 1280,

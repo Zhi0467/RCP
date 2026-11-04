@@ -62,22 +62,27 @@ when a thread is missing, closed or archived.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base
-are both on the backend's machine (`same_machine`). Experiments, compute `launch`, watch files, questions and
-approval cards belong to the member's own project thread, reached through
+are both on the backend's machine (`same_machine`). Experiments, compute `launch`, watch files and plain
+questions belong to the member's own project thread, reached through
 `handoff`. The verbs each client receives enforce this; the
 [Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
-owns them. **Why:** questions, watchers, episodes and notifications are keyed
-by project, so they always carry a real project id. Every open
-[approval card](authority-and-proposals.md#private-thread-approval-cards) from
-the member's open project threads also shows in a dock above the Space thread's
-composer, and a tap there acts in its project. The Space prompt points the
-member to that dock.
+owns them. **Why:** watchers, episodes and notifications are keyed by project,
+so they always carry a real project id. The one exception is the
+[approval card](authority-and-proposals.md#private-thread-approval-cards): the
+Space thread asks one itself for any decision a project's Inbox, branch view or
+Settings would take, so the member decides everything from one place. Its
+action names the real project. Every open card from the member's open project
+threads also shows in the dock above the Space thread's composer, beside the
+Space thread's own, and a tap there acts in its project. The Space prompt
+raises a card when one fits, hands off a decision no card kind covers, and
+never describes a card that `ask` did not return.
 
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
 task, usage, chat display, read, pin, browser, session-context, artifact and
-client-request rows. Questions, watchers, episodes and notifications never
-carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
+client-request rows, and in the Space thread's own approval-card questions,
+whose action names the project. Other questions, watchers, episodes and
+notifications never carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
 resolves a task row to its project service or Space owner for recovery, Stop,
 Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
 branch and starts no episodes. A Space turn records the member's message at
@@ -85,7 +90,9 @@ launch, once per turn: a Resume or Retry keeps its first attempt's record. A
 reply with no outcome file is not stated, as in project Work.
 
 `handoff` passes a Space request to the same member's project thread, with that
-member's authority. It is not mail. The verb records the request and returns at
+member's authority. It is not mail. Its usage lists the project thread's
+capabilities from `thread_capabilities("project")`, so the Space agent knows
+what a handoff can ask for. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
 that turn's own Patch lands first. A Space turn that ends without succeeding
 (Stopped, paused, failed, interrupted, or missing) cancels its pending handoffs
@@ -120,7 +127,29 @@ message as `handoff_report` for display. The Space thread shows only the agent a
 status; the reply stays in the project thread that wrote it. Content is omitted
 once the member has left the project.
 
-A thread wakes on a member message from the composer, voice or a handoff, and on
+A member can queue a message, with files and project references, on their own
+project thread instead of steering it. `agent_thread_queue` keeps it until the
+thread is free; a Space thread has no queue. Queueing claims the files for the
+queued turn's derived operation id, so they stay staged. The handoff drain then
+starts each free thread's oldest queued message, after its handoff deliveries;
+each kind is first in, first out, and a paused turn makes both wait. The turn is
+the member's own ordinary message, with `trigger: "human"` and no `source`,
+authorized from their current Space user record. The insert transaction claims
+the message (`claim_queued_turn`), so a replayed or racing drain reuses one task
+and a removed message never starts. A missing, closed or archived thread, a lost
+project membership, a removed member or a blank display name refuses it for
+good, as do the transient-refusal timeout and any other admission error. An
+admission error while another turn now holds the thread is not a refusal: the
+message waits, because that turn won a race the queue never meant to lose. A
+busy thread clears a message's transient deferral, so the timeout counts only
+time the thread was free. Leaving a project runs the drain, so the closed thread
+refuses its messages rather than starting them on a later rejoin. Removing or
+refusing a message releases its files. A started message leaves the queue.
+The idempotency key binds the whole request by its SHA-256, so a replay with
+other text, files or references is refused. A removed message keeps its row as
+removed, so a late retry of its request finds it removed and queues nothing.
+
+A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
 project thread also wakes on its own watch file through conversation watchers
 and on a resolved approval card through question answer delivery. The Space
@@ -536,8 +565,9 @@ owns idempotency, allowed verbs and acknowledgement. Answers never change author
 Private-thread questions belong only to the thread's member. Their Needs you
 push targets that member; list, answer and dismiss refuse other members. Creation
 and settlement emit no project-wide digest event for a private-thread question. An
-`ask` action creates a single-use approval card in its project thread. A
-Proposal the thread's own turn raised needs no ask: its card is derived. The
+`ask` action creates a single-use approval card in its thread, project or
+Space. A Proposal a project thread's own turn raised needs no ask: its card is
+derived. The
 [authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
 both kinds, the pinned action and tap admission. A derived Proposal card has no
 answer to deliver; the agent reads the Proposal's status from graph state. Ordinary answer and dismiss refuse card questions; card settlement
@@ -748,37 +778,87 @@ Only the newest unresolved task in the newest same-target episode may Resume or
 Retry operationally. Patch-only repair may reflect completed work, never repeat
 effects or reopen an old episode.
 
-### Work-started Experiments
+### Work-started episodes
 
-A member's ordinary Work chat, including its wakes, may start an Experiment with
-`episode --kick-off-experiment --node <id> --goal-file <file>`, as that member's
-Run would: the turn's authorizer authorizes the episode, and it runs on the chat's
-own graph target. Experiment turns, Auto-research child Work, consolidation and
-artifact edits do not get the verb. A human Run, this command and an orchestrator
-kickoff share one readiness rule, so the node must already be on the graph and
-ready. `--invocation-limit` may shorten the episode but never exceed the node's
-limit, and the goal file is required. Provider, model and effort are the agent's
-pick from the ready profiles, otherwise Settings. The episode id derives from the
-turn and the command key, so Resume or Retry replays the same episode. The episode
-records the starting turn, and Runs shows **Started from** that chat.
+A member's ordinary Work chat, including its wakes, may start, steer, extend and
+stop the Experiments and Auto-research episodes that member asks for, as the
+member's own Runs controls would. The turn's authorizer authorizes each act.
+Experiment turns, Auto-research child Work, consolidation and artifact edits do
+not get the `episode` verb, and an orchestrator that names a member-only action
+is refused with `episode_action_not_granted`.
 
-The prompt starts one only when the member asks, after auditing the Experiment and
-its neighbors. When the audit finds something to fix, the agent writes the fix and
-does not start, because its Patch lands only after the turn. After a start it arms
-a node-status watcher on the Experiment's closed statuses.
+**Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
+<file>` runs on the chat's own graph target. A human Run, this command and an
+orchestrator kickoff share one readiness rule, so the node must already be on the
+graph and ready. `--invocation-limit` may shorten the episode but never exceed
+the node's limit, and the goal file is required. Provider, model and effort are
+the agent's pick from the ready profiles, otherwise Settings. The prompt starts
+one only when the member asks, after auditing the Experiment and its neighbors.
+When the audit finds something to fix, the agent writes the fix and does not
+start, because its Patch lands only after the turn. After a start it arms a
+node-status watcher on the Experiment's closed statuses.
 
-The same turns may run `episode --resume <episode-id>` on an episode that paused
-for its human, when the member says what it waited for is done or asks to resume
-it. The resume starts only after the turn succeeds: the paused episode usually
-resumes this chat's own session, and the turn's Patch, such as a resolved
-Blocker, lands at its end. It continues with the unused turns, authorized by the
-turn's member; a failure is recorded on the turn and **Resume** stays offered.
-A paused Experiment tells its human to reply in its chat once the pause is
-resolved, and an Experiment-node chat's loop status carries the episode's ending.
+**Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
+--invocation-limit <n>` starts a new episode on a new branch from main, through
+the same start function as **Start** in Runs. It takes the fields the retired
+Auto-research card carried: the goal as the starting instruction, the turn
+budget, `--code-worktree on|off`, `--worktree-repository`, `--branch-name`, and
+the orchestrator's provider, model and effort. It first checks the orchestrator
+provider's readiness for the member, as the card's ask did, and refuses with the
+same codes (`provider_not_ready`, `machine_not_found`, `branch_name_taken`,
+`branch_name_invalid`). A chat on a graph branch is refused with
+`auto_research_starts_from_main`.
 
-**Why:** the member's Work message is the authorization a Run click would be, and
-the node's limit, which only a visible graph edit changes, still bounds the spend.
-An Experiment turn starting another would chain episodes nobody authorized.
+Both starts derive the episode id from the turn's oldest attempt and the command
+key, so Resume or Retry replays the same episode, and record a receipt on the
+turn. The episode's root request names the starting turn, so Runs shows
+**Started from** that chat.
+
+**Controls.** The chat controls only an episode it started: its root names a
+turn of this chat as **Started from**, directly or through the episode it
+continues. Any other episode, whether another chat's, a human start's or an
+Auto-research child's, is refused with `episode_not_started_here`; the member
+uses Runs for those. Each control reaches the function behind the member's
+button, under the same admission, and keeps that route's refusal codes. Stop,
+pause, resume, message and add turns act on the chain's current episode, because
+the agent usually knows only the id it started; a replayed add turns returns the
+continuation its request id already made. Resuming an Experiment that ended to
+wait for its human is also open to the chat the Experiment runs in, as before.
+
+- `episode --stop <id>` is the graceful **Stop**, recorded with initiator
+  `agent:<operation-id>`. It acts at once rather than after the turn: it changes
+  no graph, and a fence that waited for the turn's Patch would let the episode
+  spend more turns meanwhile.
+- `episode --pause <id>` and `episode --resume <id>` pause or resume the
+  episode's current turn, only when its Runs card offers that control. A resumed
+  turn continues in its saved session.
+- `episode --resume <id>` on an Experiment that ended to wait for its human
+  continues it with its unused turns, when the member says what it waited for is
+  done or asks to resume it. That resume starts only after the turn succeeds:
+  the episode usually resumes this chat's own session, and the turn's Patch, such
+  as a resolved Blocker, lands at its end. A failure is recorded on the turn and
+  **Resume** stays offered. A paused Experiment tells its human to reply in its
+  chat once the pause is resolved, and an Experiment-node chat's loop status
+  carries the episode's ending.
+- `episode --add-turns <id> --invocation-limit <n>` is **Add N turns** on an
+  ended episode of either mode. The continuation keeps the branch, code worktree
+  and session, so it is how the chat restarts an episode on the same branch.
+- `episode --message <id> --body-file <file>` is the member's message to an
+  Auto-research orchestrator. An ended orchestrator needs `--invocation-limit`,
+  which continues it with that message.
+
+Add-turns and message requests derive their request ids from the turn and key,
+so a replay returns the same continuation or message. Pause and resume record a
+receipt, so a replay answers with the turn they already controlled. To change
+and rerun an Experiment, the agent stops it, fixes it in its Patch, and starts a
+new episode in a later turn once it shows stopped.
+
+**Why:** the member's Work message is the authorization a Runs click would be.
+An Experiment node's limit, which only a visible graph edit changes, still bounds
+its spend, and an Auto-research budget is the member's stated turn count. An
+Experiment turn starting another would chain episodes nobody authorized. A
+member's own chat acts for that member, so it may control what it started, and
+only that. Merges stay approval cards.
 
 ## Experiment-loop graph authority
 
@@ -944,8 +1024,8 @@ an observer to retire; and an Experiment graph condition runs no job, so this
 control is not its answer. A live condition can therefore still hold an ended
 episode shut.
 
-An optional saved `cancel_command` runs only on a human Cancel request, after a
-fresh check confirms active work. Exact registered helper recovery follows the
+An optional saved `cancel_command` runs only on a member's Cancel request, from
+Runs or that member's own chat, after a fresh check confirms active work. Exact registered helper recovery follows the
 [human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract),
 including lost work without an exit receipt. It uses the recorded execution host and cwd,
 and never changes the watcher into a separate cancelled lifecycle. A successful
@@ -953,6 +1033,15 @@ command is an attributed request; observation still determines completion.
 Stop fences continuation and leaves the action available for still-live work.
 Cancellation failures permit explicit retry. Transfer and offline restore
 remove executable actions; ordinary restart preserves them.
+
+A member's ordinary Work chat, the same turns that may start an Experiment, holds
+the `watcher` verb over the watchers its own Work turns armed for the chat: the
+chat id, project and Work continuation match. `watcher --list` shows the live
+ones. `watcher --stop <id>` retires one under the same storage rule as the
+human's stop, recorded as stopped by `agent`. `watcher --cancel <id>` is the
+member's Cancel, attributed to that member, under the same write admission. An
+Experiment loop's watcher wakes its episode, not the chat, so it is refused with
+`watcher_not_armed_here` like another chat's; it stops with that episode.
 
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.

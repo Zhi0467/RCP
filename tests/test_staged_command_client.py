@@ -458,6 +458,10 @@ async def test_apply_accepts_only_this_workspace_patch_json(tmp_path) -> None:
         ("retry", "worker-1", "--key", "retry-once"),
         ("episode", "--key", "episode-once", "--stop", "episode-1", "--provider", "codex"),
         ("episode", "--key", "episode-once", "--resume", "episode-1", "--effort", "high"),
+        ("episode", "--key", "episode-once", "--add-turns", "episode-1"),
+        ("episode", "--key", "episode-once", "--pause", "episode-1", "--invocation-limit", "2"),
+        ("episode", "--key", "episode-once", "--message", "episode-1"),
+        ("episode", "--key", "episode-once", "--kick-off-auto-research", "--goal-file", "g.md"),
         ("resume", "--key", "resume-once", "worker-1", "--model", "gpt-5"),
         (
             "episode",
@@ -1039,6 +1043,39 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ),
         ("episode", "--stop", "episode-1", "--key", "k-episode-stop"),
         ("episode", "--resume", "episode-1", "--key", "k-episode-resume"),
+        (
+            "episode",
+            "--kick-off-auto-research",
+            "--goal-file",
+            str(goal),
+            "--invocation-limit",
+            "4",
+            "--code-worktree",
+            "off",
+            "--branch-name",
+            "warmup",
+            "--key",
+            "k-auto-start",
+        ),
+        ("episode", "--pause", "episode-1", "--key", "k-episode-pause"),
+        (
+            "episode",
+            "--add-turns",
+            "episode-1",
+            "--invocation-limit",
+            "2",
+            "--key",
+            "k-episode-turns",
+        ),
+        (
+            "episode",
+            "--message",
+            "episode-1",
+            "--body-file",
+            str(goal),
+            "--key",
+            "k-episode-message",
+        ),
         ("inbox", "--harvest", "--key", "k-inbox-harvest"),
         ("inbox", "--clear", "--key", "k-inbox-clear"),
         ("finish", "--key", "k-finish"),
@@ -1056,6 +1093,8 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             "--source",
             "repo-a/result.txt:4",
         ),
+        ("watcher", "--list"),
+        ("watcher", "--cancel", "watcher-1"),
     ]
 
     stop = asyncio.Event()
@@ -1088,11 +1127,21 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "episode",
         "episode",
         "episode",
+        "episode",
+        "episode",
+        "episode",
+        "episode",
         "inbox",
         "inbox",
         "finish",
         "name",
         "flag",
+        "watcher",
+        "watcher",
+    ]
+    assert [arguments for verb, arguments in seen if verb == "watcher"] == [
+        {"action": "list", "watcher_id": None},
+        {"action": "cancel", "watcher_id": "watcher-1"},
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}
@@ -1117,6 +1166,29 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "goal_file": "experiment-goal.md",
         "invocation_limit": 3,
         "provider": "claude",
+    }
+    controls = {
+        arguments["action"]: arguments
+        for verb, arguments in seen
+        if verb == "episode" and arguments["action"] != "kick_off_experiment"
+    }
+    assert controls["kick_off_auto_research"] == {
+        "action": "kick_off_auto_research",
+        "goal_file": "experiment-goal.md",
+        "invocation_limit": 4,
+        "code_worktree": False,
+        "branch_name": "warmup",
+    }
+    assert controls["pause"] == {"action": "pause", "episode_id": "episode-1"}
+    assert controls["add_turns"] == {
+        "action": "add_turns",
+        "episode_id": "episode-1",
+        "invocation_limit": 2,
+    }
+    assert controls["message"] == {
+        "action": "message",
+        "episode_id": "episode-1",
+        "body_file": "experiment-goal.md",
     }
 
 

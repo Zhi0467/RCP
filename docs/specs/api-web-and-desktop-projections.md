@@ -2325,6 +2325,23 @@ only the Space thread. A project thread otherwise uses the ordinary project chat
 task and question routes. Its Send must be
 `project_chat` Work on main; anything else returns 422.
 
+A project thread's waiting work lives at `/api/agent-threads/{thread_id}/queue`;
+a Space or unowned thread gets 404
+([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
+`POST` takes the project send's `{message, attachment_set_id?,
+attachment_client_id?, references?}` with a UUID4 `Idempotency-Key`, needs a
+patch-capable identity and the project's write admission, and returns 202
+`{queue_id, operation_id}`. It runs one drain pass, so `operation_id` is set
+when that pass started the turn. It returns 422 for no text and no files, text
+over `AGENT_THREAD_QUEUE_MAX_CHARS`, unclaimable files, or a key reused with
+another message, and 409 for a closed or archived thread or a thread holding
+`AGENT_THREAD_QUEUE_MAX_ITEMS` unstarted messages. `DELETE .../queue/{queue_id}`
+removes an unstarted or refused message; a started one is 409. `GET` returns
+`{items}` ordered by readiness: `{kind: "handoff", handoff_id, message,
+source_agent_name, ready_at}` for pending handoffs whose Space turn succeeded,
+and `{kind: "message", queue_id, message, created_at, refusal_reason,
+attachment_count}`.
+
 Chat transcripts and the Space transcript stamp each message's `shown_at`
 (`stamp_shown_at` in `api/chats.py`). A member message shows its turn's first
 attempt's `created_at`, so a Retry keeps the original send time. A reply shows

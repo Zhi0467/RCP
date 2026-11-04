@@ -140,7 +140,8 @@ export function approvalCardTitle(card: ApprovalCard): string {
       const proposal = card.pinned.proposal as { title?: unknown } | undefined;
       const title =
         typeof proposal?.title === "string" && proposal.title.trim() ? proposal.title : null;
-      return title ? `${verb} Proposal: ${title}?` : `${verb} this Proposal?`;
+      const where = action.branch_id ? ` on branch ${action.branch_id}` : "";
+      return title ? `${verb} Proposal${where}: ${title}?` : `${verb} this Proposal${where}?`;
     }
     case "truth_scope":
       return action.writable

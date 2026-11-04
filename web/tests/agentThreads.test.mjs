@@ -26,7 +26,10 @@ import {
 import {
   decideProposalCard,
   readAgentCards,
+  loadThreadQueue,
   loadThreadQuestions,
+  queueThreadTurn,
+  removeQueuedTurn,
   loadThreadTranscript,
   loadThreadWatchers,
   stopThreadWatcher,
@@ -314,6 +317,55 @@ test("project threads use the chat routes and the Space thread uses its own", as
   assert.equal(threadTasksPath(space), "/api/agent-threads/space/tasks");
 });
 
+test("a project thread queues the send body under its key, reads and removes its queue", async () => {
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push({
+      path,
+      method: init?.method ?? "GET",
+      key: init?.headers?.["Idempotency-Key"],
+      body: init?.body && JSON.parse(init.body),
+    });
+    return path.endsWith("/queue") && !init ? { items: [] } : { queue_id: "q", operation_id: null };
+  };
+  const project = thread({ thread_id: "chat 1" });
+  const turn = {
+    message: "Next",
+    attachment_set_id: "set",
+    attachment_client_id: "client",
+    attachment_scope_id: "chat 1",
+    references: [{ kind: "node", node_id: "n" }],
+    artifact_context: null,
+    provider: "claude",
+    model: "opus",
+    timezone: "UTC",
+  };
+  assert.deepEqual(await loadThreadQueue(project, request), { items: [] });
+  assert.deepEqual(await queueThreadTurn(project, turn, "key", request), {
+    queue_id: "q",
+    operation_id: null,
+  });
+  await removeQueuedTurn(project, "q 1", request);
+  assert.deepEqual(await loadThreadQueue(space, request), { items: [] });
+  assert.deepEqual(
+    calls.map(({ method, path }) => `${method} ${path}`),
+    [
+      "GET /api/agent-threads/chat%201/queue",
+      "POST /api/agent-threads/chat%201/queue",
+      "DELETE /api/agent-threads/chat%201/queue/q%201",
+    ],
+  );
+  assert.equal(calls[1].key, "key");
+  assert.deepEqual(calls[1].body, {
+    message: "Next",
+    attachment_set_id: "set",
+    attachment_client_id: "client",
+    references: [{ kind: "node", node_id: "n" }],
+  });
+  await queueThreadTurn(project, { message: "Plain", timezone: "UTC" }, "other", request);
+  assert.deepEqual(calls.at(-1).body, { message: "Plain" });
+});
+
 const renderServer = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
@@ -381,6 +433,10 @@ test("the header names the pinned Proposal's title", () => {
     ),
   );
   assert.ok(!approvalCardTitle(card({})).includes("H2 standing"));
+  const onBranch = card({ proposal: { title: "H2 standing" } });
+  onBranch.action.branch_id = "branch-7";
+  assert.ok(approvalCardTitle(onBranch).includes("branch-7"));
+  assert.ok(!named.includes("branch"));
 });
 
 test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {

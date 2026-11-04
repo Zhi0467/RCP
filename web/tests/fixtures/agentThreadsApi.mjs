@@ -264,6 +264,8 @@ export async function mockApi(page, writes) {
     }
     if (path === "/api/agent-threads") return json({ threads: threads.map(withAgent) });
     if (path === "/api/agent-threads/cards") return json({ proposal_cards: [], asked_cards: [] });
+    if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path) && method === "GET")
+      return json({ items: [] });
     if (/^\/api\/agent-threads\/[^/]+\/agent$/.test(path) && method === "POST") {
       const id = path.split("/").at(-2);
       agents.set(id, JSON.parse(request.postData()));

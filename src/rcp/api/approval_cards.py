@@ -28,7 +28,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.projects import ProjectCatalog
-from rcp.runs.approval_cards import approval_pins, approved_receipt
+from rcp.runs.approval_cards import approval_pins, approved_receipt, proposal_graph
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
@@ -66,7 +66,8 @@ def _sync_proposal(
     service: ProjectService,
     pinned_revision: int,
 ) -> dict[str, Any]:
-    """Decide the Proposal through the Inbox Sync, appending only at `pinned_revision`."""
+    """Decide the Proposal through the Inbox Sync of its graph, main or the branch it names,
+    appending only at `pinned_revision`."""
     from rcp.api.sync import sync_graph
     from rcp.service import GraphSyncRequest
 
@@ -76,10 +77,11 @@ def _sync_proposal(
             GraphSyncRequest.model_validate(
                 {
                     "base_revision": pinned_revision,
-                    "proposals": [action.model_dump(exclude={"kind", "project_id"})],
+                    "proposals": [action.model_dump(exclude={"kind", "project_id", "branch_id"})],
                 }
             ),
             request,
+            branch_id=action.branch_id,
             catalog=catalog,
             store=store,
             identity_access=identity_access,
@@ -87,7 +89,8 @@ def _sync_proposal(
             watcher_delivery=get_watcher_delivery(request),
         )
     except HTTPException as exc:
-        if exc.status_code == 409 and service.history.state().revision != pinned_revision:
+        graph = proposal_graph(service, action)
+        if exc.status_code == 409 and graph.history.state().revision != pinned_revision:
             raise _NotNow(409, {"code": "graph_changed"}) from exc
         raise
 
@@ -204,7 +207,8 @@ def _resolve(
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
         try:
-            state = service.history.state()
+            graph = proposal_graph(service, action) if action.kind == "proposal" else service
+            state = graph.history.state()
             pinned_revision = state.revision
             pinned = approval_pins(service, store, action, human, state=state)
         except (KeyError, ValueError):
@@ -274,9 +278,14 @@ def _run(execute: Callable[[], object], request_id: str) -> dict[str, Any]:
 
 
 def decide_proposal(
-    request: Request, project_id: str, proposal_id: str, decision: Literal["approved", "rejected"]
+    request: Request,
+    project_id: str,
+    proposal_id: str,
+    decision: Literal["approved", "rejected"],
+    branch_id: str | None = None,
 ) -> dict[str, Any]:
-    """Decide one pending, fresh main Proposal as the member, at the revision it was read.
+    """Decide one pending, fresh Proposal of main or `branch_id` as the member, at the
+    revision it was read.
 
     Authority is the patch-capable member, project membership and write admission,
     the same as an Inbox decision. A Proposal's content never changes under its id
@@ -293,11 +302,12 @@ def decide_proposal(
         proposal_id=proposal_id,
         decision=decision,
         reason=_DECISION_REASONS[decision],
+        branch_id=branch_id,
     )
     try:
         with ExitStack() as admission:
             service = _admit(admission, action, request, store, catalog)
-            revision = _decidable_revision(service, proposal_id)
+            graph, revision = _decidable_revision(service, action)
             try:
                 synced = _sync_proposal(
                     action, request, store, catalog, identity_access, service, revision
@@ -308,7 +318,7 @@ def decide_proposal(
                 raise _NotNow(422, str(exc)) from exc
             except _NotNow as exc:
                 if exc.detail == {"code": "graph_changed"} and not _still_pending(
-                    service, proposal_id
+                    graph, proposal_id
                 ):
                     raise _NotNow(409, {"code": "proposal_not_pending"}) from exc
                 raise
@@ -317,18 +327,24 @@ def decide_proposal(
     return {"proposal_id": proposal_id, "status": synced["proposals"][proposal_id]["status"]}
 
 
-def _decidable_revision(service: ProjectService, proposal_id: str) -> int:
-    """The revision a card decision appends at, once the Proposal is pending and fresh there."""
+def _decidable_revision(
+    service: ProjectService, action: ProposalAction
+) -> tuple[ProjectService, int]:
+    """The Proposal's graph and the revision a card decision appends at, once the Proposal
+    is pending and fresh there."""
     try:
-        state = service.history.state()
+        graph = proposal_graph(service, action)
+        state = graph.history.state()
+    except ValueError as exc:
+        raise _NotNow(404, "Proposal not found") from exc
     except (StateUnavailable, ReplayHalted, OSError) as exc:
         raise _NotNow(503, str(exc)) from exc
-    proposal = state.proposals.get(proposal_id)
+    proposal = state.proposals.get(action.proposal_id)
     if proposal is None:
         raise _NotNow(404, "Proposal not found")
     if proposal.status != "pending" or proposal_is_stale(state, proposal):
         raise _NotNow(409, {"code": "proposal_not_pending"})
-    return state.revision
+    return graph, state.revision
 
 
 def _still_pending(service: ProjectService, proposal_id: str) -> bool:
@@ -345,14 +361,17 @@ def decide_proposal_card(
 
 def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any]:
     """Reject the Proposal a declined approve card named, or say why it stays pending."""
-    action = card["action"]
+    action = ProposalAction.model_validate(card["action"])
     try:
-        decide_proposal(request, action["project_id"], action["proposal_id"], "rejected")
+        decide_proposal(
+            request, action.project_id, action.proposal_id, "rejected", action.branch_id
+        )
     except HTTPException as exc:
         if exc.detail != {"code": "proposal_not_pending"}:
             return {"rejected": False, "reason": _reason(exc.detail)}
         catalog = get_catalog(request)
-        if _still_pending(catalog.open(action["project_id"]), action["proposal_id"]):
+        graph = proposal_graph(catalog.open(action.project_id), action)
+        if _still_pending(graph, action.proposal_id):
             return {
                 "rejected": False,
                 "reason": "The Proposal is out of date; decide it in the Inbox.",
@@ -364,6 +383,8 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
 def _owned_card(
     store: AppStore, question_id: str, request: Request, human: AuthorizedHuman
 ) -> tuple[QuestionRecord, dict[str, Any]]:
+    """The member's own thread's card. Membership is checked on the action's project: a
+    project thread's card names its own project, and a Space thread's any of the member's."""
     question = store.get_question(question_id)
     if (
         question is None
@@ -371,12 +392,12 @@ def _owned_card(
         or store.private_chat_owner(question.origin.owner_id) != human.user_id
     ):
         raise HTTPException(status_code=404, detail="Question not found")
-    require_project_membership(question.origin.project_id, request)
     if refusal := store.chat_turn_refusal(question.origin.project_id, question.origin.owner_id):
         raise HTTPException(status_code=409, detail={"code": refusal})
     card = store.approval_card(question_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Approval card not found")
+    require_project_membership(card["action"]["project_id"], request)
     return question, card
 
 

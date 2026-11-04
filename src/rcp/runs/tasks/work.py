@@ -209,6 +209,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
+from rcp.runs.work_episode_controls import work_episode_control_usage
 from rcp.runs.work_experiment_commands import work_experiment_command_usage
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
@@ -448,20 +449,38 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
         )
+    if "watcher" in verbs:
+        from rcp.runs.work_watcher_commands import work_watcher_command_usage
+
+        instructions.append(
+            work_watcher_command_usage(
+                client or turn.patch_inputs.validator_staged.client_command()
+            )
+        )
     if "episode" in verbs:
         authorizer = (
             turn.execution.store.agent_task_authorizer(turn.execution.operation_id)
             if turn.execution is not None
             else None
         )
+        member_id = authorizer.user_id if authorizer else None
+        episode_client = client or turn.patch_inputs.validator_staged.client_command()
         instructions.append(
             work_experiment_command_usage(
-                client or turn.patch_inputs.validator_staged.client_command(),
+                episode_client,
                 render_child_profile_choices(
                     auto_research_child_profile_choices(
-                        turn.service,
-                        kind="node_chat",
-                        member_id=authorizer.user_id if authorizer else None,
+                        turn.service, kind="node_chat", member_id=member_id
+                    )
+                ),
+            )
+        )
+        instructions.append(
+            work_episode_control_usage(
+                episode_client,
+                render_child_profile_choices(
+                    auto_research_child_profile_choices(
+                        turn.service, kind="orchestrator", member_id=member_id
                     )
                 ),
             )

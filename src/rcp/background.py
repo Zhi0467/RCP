@@ -58,7 +58,10 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
-from rcp.runs.experiment_admission import WorkExperimentResumer, WorkExperimentStarter
+from rcp.runs.experiment_admission import (
+    WorkExperimentResumer,
+    WorkExperimentStarter,
+)
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
     preflight_experiment_episode_recovery,
@@ -85,6 +88,7 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
+from rcp.runs.work_episode_controls import WorkEpisodeControls
 from rcp.runs.work_experiment_commands import start_scheduled_experiment_resumes
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
@@ -109,6 +113,7 @@ from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
+from rcp.watchers import WatcherCanceller
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +298,8 @@ class AgentTaskExecution:
     #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
     #: the app provides it, a bare engine (tests) leaves the verb unavailable.
     experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
+    episode_controls: WorkEpisodeControls | None = field(default=None, repr=False)
+    watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -430,9 +437,13 @@ class BackgroundAgentTasks:
         dependency_checker: DependencyChecker | None = None,
         experiment_starter: WorkExperimentStarter | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
+        episode_controls: WorkEpisodeControls | None = None,
+        watcher_canceller: WatcherCanceller | None = None,
     ) -> None:
         self.store = store
         self.experiment_starter = experiment_starter
+        self.episode_controls = episode_controls
+        self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
         # once that turn has succeeded.
         self.experiment_resumer = experiment_resumer
@@ -729,6 +740,7 @@ class BackgroundAgentTasks:
         operation_id: str | None = None,
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
+        queue_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         stage_host: str | None = None,
         stage_root: str | None = None,
@@ -790,6 +802,7 @@ class BackgroundAgentTasks:
             operation_id=operation_id,
             handoff_id=handoff_id,
             handoff_wake_id=handoff_wake_id,
+            queue_id=queue_id,
             authorized_by=authorized_by,
             stage_host=stage_host,
             stage_root=stage_root,
@@ -1558,6 +1571,7 @@ class BackgroundAgentTasks:
         operation_id: str | None = None,
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
+        queue_id: str | None = None,
         authorized_by: AuthorizedHuman | None = None,
         auto_research_mail_delivery: PendingAutoResearchMail | None = None,
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
@@ -1819,6 +1833,7 @@ class BackgroundAgentTasks:
                     continuation_cause=continuation,
                     handoff_id=handoff_id,
                     handoff_wake_id=handoff_wake_id,
+                    queue_id=queue_id,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -2298,6 +2313,8 @@ class BackgroundAgentTasks:
             ),
             admission=self.runtime_admission_gate,
             experiment_starter=self.experiment_starter,
+            episode_controls=self.episode_controls,
+            watcher_canceller=self.watcher_canceller,
         )
         awaiting_remote_result = False
         try:
@@ -2653,6 +2670,8 @@ class BackgroundAgentTasks:
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
             experiment_starter=self.experiment_starter,
+            episode_controls=self.episode_controls,
+            watcher_canceller=self.watcher_canceller,
         )
 
     def _settle_stale_detached_mailboxes(self) -> bool:

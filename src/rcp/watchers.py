@@ -154,6 +154,7 @@ class WatcherCheckResult(BaseModel):
 WatcherCheckRunner = Callable[[WatchSpec, str, float], WatcherCheckResult]
 WatcherCompletionCallback = Callable[[list[WatcherRecord]], None]
 WatcherPollCompletedCallback = Callable[[], None]
+WatcherCanceller = Callable[[str, str, str], WatcherRecord]
 GraphWatcherTargetResolver = Callable[[GraphWatcherRecord], GraphTargetRef]
 
 
@@ -546,11 +547,20 @@ class _TaskExecution(Protocol):
 
 
 class _EpisodeWakePreflight(Protocol):
-    readiness: str
-    diagnostic: str | None
-    session_id: str | None
-    stage_host: str | None
-    stage_root: str | None
+    @property
+    def readiness(self) -> str: ...
+
+    @property
+    def diagnostic(self) -> str | None: ...
+
+    @property
+    def session_id(self) -> str | None: ...
+
+    @property
+    def stage_host(self) -> str | None: ...
+
+    @property
+    def stage_root(self) -> str | None: ...
 
 
 class _ExperimentInvocationAdmission(Protocol):

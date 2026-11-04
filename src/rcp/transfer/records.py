@@ -501,6 +501,9 @@ class TransferAutoResearchRequestHistory(_StrictTransferRecord):
     instruction: str | None = Field(default=None, max_length=16_000)
     control_node_id: str | None = None
     wake_cause: Literal["watcher", "graph_condition", "message", "lifecycle"] | None = None
+    started_from_operation_id: str | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     workflow_ids: tuple[str, ...] = ()
     skill_ids: tuple[str, ...] = ()
     invoked_workflow_ids: tuple[str, ...] = ()
@@ -584,6 +587,7 @@ def capture_task_request_history(
             instruction=_optional_string(request.get("instruction")),
             control_node_id=_optional_string(request.get("control_node_id")),
             wake_cause=request.get("wake_cause"),
+            started_from_operation_id=_optional_string(request.get("started_from_operation_id")),
         )
     if kind == "episode_report":
         return TransferEpisodeReportRequestHistory(

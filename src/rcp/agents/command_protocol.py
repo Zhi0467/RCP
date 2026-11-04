@@ -62,6 +62,7 @@ CommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
+    "watcher",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -84,6 +85,7 @@ MutatingCommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
+    "watcher",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -107,6 +109,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "bulletin",
         "name",
         "flag",
+        "watcher",
     }
 )
 
@@ -416,10 +419,33 @@ class ExperimentKickoffArguments(_ChildTargetArguments):
         return stripped
 
 
-class EpisodeControlArguments(BaseModel):
+class AutoResearchKickoffArguments(BaseModel):
+    """A member's Work chat starting the Auto-research episode they asked for."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    action: Literal["stop", "resume"]
+    action: Literal["kick_off_auto_research"]
+    goal_file: str = Field(min_length=1, max_length=255, pattern=_SAFE_WORKSPACE_FILENAME)
+    invocation_limit: int = Field(gt=0)
+    code_worktree: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    worktree_repository: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    branch_name: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: str | None = Field(
+        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
+    )
+    reasoning: str | None = Field(
+        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
+    )
+
+
+class _EpisodeTargetArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     episode_id: str = Field(min_length=1, max_length=200)
 
     @field_validator("episode_id")
@@ -431,8 +457,43 @@ class EpisodeControlArguments(BaseModel):
         return stripped
 
 
+class EpisodeControlArguments(_EpisodeTargetArguments):
+    action: Literal["stop", "resume"]
+
+
+class WorkEpisodeControlArguments(_EpisodeTargetArguments):
+    """A member's Work chat pausing, extending, or messaging an episode it started.
+
+    ``add_turns`` names its turns. ``message`` names its body file and, for an
+    ended Auto-research orchestrator, the turns its reply may spend.
+    """
+
+    action: Literal["pause", "add_turns", "message"]
+    invocation_limit: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
+    body_file: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        pattern=_SAFE_WORKSPACE_FILENAME,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def action_options(self) -> WorkEpisodeControlArguments:
+        if self.action == "add_turns" and self.invocation_limit is None:
+            raise ValueError("add_turns requires an invocation limit")
+        if self.action == "pause" and self.invocation_limit is not None:
+            raise ValueError("pause takes no invocation limit")
+        if (self.action == "message") != (self.body_file is not None):
+            raise ValueError("message, and only message, takes a body file")
+        return self
+
+
 EpisodeArguments: TypeAlias = Annotated[
-    ExperimentKickoffArguments | EpisodeControlArguments,
+    ExperimentKickoffArguments
+    | AutoResearchKickoffArguments
+    | EpisodeControlArguments
+    | WorkEpisodeControlArguments,
     Field(discriminator="action"),
 ]
 
@@ -774,6 +835,24 @@ class ScheduleCommandRequest(_CommandRequest):
         return self
 
 
+class WatcherArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["list", "stop", "cancel"]
+    watcher_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def id_matches_action(self) -> WatcherArguments:
+        if (self.action == "list") != (self.watcher_id is None):
+            raise ValueError("watcher stop and cancel name one watcher id; list names none")
+        return self
+
+
+class WatcherCommandRequest(_CommandRequest):
+    verb: Literal["watcher"]
+    arguments: WatcherArguments
+
+
 class FlagCommandRequest(_CommandRequest):
     verb: Literal["flag"]
     arguments: FlagArguments
@@ -833,7 +912,8 @@ CommandRequest: TypeAlias = Annotated[
     | ScheduleCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
-    | FlagCommandRequest,
+    | FlagCommandRequest
+    | WatcherCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)

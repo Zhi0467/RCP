@@ -1856,8 +1856,11 @@ projects the provider can write its own stage but the graph-write fingerprint
 is NULL. A changed admitted project set is recorded on the turn and does not
 change the thread's native-session identity.
 
-The top-level client grants `projects`, `handoff` and `schedule`; it has no
-`ask`. Each project client has its own authenticated mailbox. It grants its
+The top-level client grants `projects`, `handoff`, `schedule` and `ask`. Its
+`ask` takes only an approval-card action of a kind in `THREAD_CARD_KINDS["space"]`
+for one of the member's projects
+([owner](authority-and-proposals.md#private-thread-approval-cards)); a plain
+question is refused. Each project client has its own authenticated mailbox. It grants its
 `GraphReadScope.verbs` plus `bulletin`, and a writer also grants `validate`. Only
 a writer posts to the Bulletin; a read-only client reads it. The
 mailbox allowlist, the handler guard and the rendered usage all read that one set.
@@ -1867,10 +1870,9 @@ servers remain off. The prompt lists the protocol's mutating verbs that no clien
 of the turn grants, so the list follows enforcement. Work that needs one of
 them, a project memory note, or a change the graph authority contract withholds
 from agents goes to that project's own thread through `handoff`, with the
-project, node ids and exact request. The project thread runs what its own
-grants allow and raises an approval card for what needs the member. The Space
-agent relays the answer when the handoff settles. Only the member's tap on a card
-is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
+project, node ids and exact request, unless an approval card covers it: then
+the Space thread asks that card itself. The Space agent relays a handoff's
+answer when it settles. Only the member's tap on a card is theirs. No verb creates a project, so the member adds projects from Cards. The top-level usage text renders
 from the same resolved verbs the handler enforces.
 The prompt renders one write boundary from the composite scope. The provider
 receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without

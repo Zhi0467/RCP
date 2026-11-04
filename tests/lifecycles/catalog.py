@@ -76,6 +76,7 @@ from rcp.server_ops.restore import (
     prepare_restore,
 )
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.agent_threads import AgentThreadStoreMixin, claim_queued_turn
 from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifacts import ArtifactStoreMixin, insert_artifact
 from rcp.storage.auto_research import AutoResearchStoreMixin, migrate_legacy_auto_research
@@ -963,6 +964,40 @@ EVIDENCE_FLAG = Entry(
     ),
 )
 
+AGENT_THREAD_QUEUE = Entry(
+    name="agent thread queue",
+    status="operation_id",
+    tables=frozenset({"agent_thread_queue"}),
+    writers=(
+        AgentThreadStoreMixin.queue_agent_thread_message,
+        AgentThreadStoreMixin.remove_agent_thread_queue_item,
+        AgentThreadStoreMixin.refuse_agent_thread_queue_item,
+        AgentThreadStoreMixin.defer_agent_thread_queue_item,
+        AgentThreadStoreMixin.clear_agent_thread_queue_deferral,
+        claim_queued_turn,
+        _remove_member_agent_data,
+        ProjectStoreMixin.delete_project_records,
+        RestoreDetachmentStoreMixin.detach_restored_lifecycle,
+    ),
+    rules=(
+        Rule(
+            "fifo_once",
+            "A thread's oldest waiting message starts once, as one task, after its handoffs.",
+            "code guard at claim_queued_turn",
+        ),
+        Rule(
+            "removed_and_refused_never_start",
+            "A removed or refused message never starts, and a replay of its key queues nothing.",
+            "conversations spec: Private agent threads",
+        ),
+        Rule(
+            "busy_waits",
+            "A busy thread is waiting, not a transient refusal, so it never times a message out.",
+            "conversations spec: Private agent threads",
+        ),
+    ),
+)
+
 NOTIFICATION_DELIVERY = Entry(
     name="notification delivery",
     status="last_status",
@@ -1028,6 +1063,7 @@ ENTRIES = (
     RESTORE,
     PROJECT_DELETION,
     EVIDENCE_FLAG,
+    AGENT_THREAD_QUEUE,
     NOTIFICATION_DELIVERY,
 )
 

@@ -832,6 +832,10 @@ class ProjectStoreMixin(StoreMixinBase):
                     f"OR source_thread_id IN {project_threads}",
                     (project_id, project_id),
                 ).rowcount
+                counts["agent_thread_queue"] = connection.execute(
+                    f"DELETE FROM agent_thread_queue WHERE thread_id IN {project_threads}",
+                    (project_id,),
+                ).rowcount
                 counts["agent_schedules"] = connection.execute(
                     f"DELETE FROM agent_schedules WHERE thread_id IN {project_threads}",
                     (project_id,),

@@ -4128,6 +4128,30 @@ export interface AgentThreadTurnRequest {
   timezone: string;
 }
 
+/** One waiting item of a project thread, in the order it became ready. */
+export type AgentThreadQueueItem =
+  | {
+      kind: "handoff";
+      handoff_id: string;
+      message: string;
+      source_agent_name: string;
+      ready_at: string;
+    }
+  | {
+      kind: "message";
+      queue_id: string;
+      message: string;
+      created_at: string;
+      /** Set once the queued turn can never start; Dismiss deletes it. */
+      refusal_reason: string | null;
+      attachment_count?: number;
+    };
+
+/** `GET /api/agent-threads/{thread_id}/queue`. */
+export interface AgentThreadQueue {
+  items: AgentThreadQueueItem[];
+}
+
 export type AgentScheduleState = "active" | "paused" | "cancelled" | "disabled" | "done";
 
 export interface AgentSchedule {
@@ -4178,6 +4202,8 @@ export type ApprovalCardAction =
       proposal_id: string;
       decision: "approved" | "rejected";
       reason?: string | null;
+      /** The graph branch the Proposal is pending on; absent or null for main. */
+      branch_id?: string | null;
     }
   | { kind: "truth_scope"; project_id: string; alias: string; writable: boolean }
   | {

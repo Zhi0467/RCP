@@ -258,6 +258,7 @@ def leave_project(
     for thread in store.agent_threads(leaving.user_id):
         if thread.project_id == canonical:
             store.close_agent_thread(thread.thread_id, reason="access_lost")
+    request.app.state.reconcile_thread_handoffs()
     return Response(status_code=204)
 
 

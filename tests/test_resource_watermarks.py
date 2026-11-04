@@ -523,6 +523,7 @@ def test_local_main_commit_moves_agent_cards_not_agent_threads(manifest, tmp_pat
         ("questions", "state='answered',answer='Yes'"),
         ("approval_cards", "running_since='later'"),
         ("agent_handoffs", "target_operation_id='delivered'"),
+        ("agent_thread_queue", "operation_id='started'"),
         ("project_members", "seated_by='admin'"),
     ],
 )
@@ -604,6 +605,15 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
             message="Check",
             created_at=now,
         ),
+        "agent_thread_queue": dict(
+            queue_id="queued",
+            thread_id=thread_id,
+            user_id=user,
+            idempotency_key="key",
+            message="Next",
+            request_sha256="sha",
+            created_at=now,
+        ),
         "project_members": dict(project_id="new-project", user_id=user, seated_at=now),
     }
 
@@ -647,7 +657,11 @@ def test_agent_thread_versions_follow_only_the_owner(endpoint, kind, owner, tabl
             entity = f"member:{member}"
             assert (after[entity] > before[entity]) == (member == user and action != "noop")
         assert "" not in after
-        if owner is None and table not in {"agent_threads", "project_members"}:
+        if owner is None and table not in {
+            "agent_threads",
+            "project_members",
+            "agent_thread_queue",
+        }:
             assert after == before
     if table == "chat_reads" and owner is not None:
         before = versions()

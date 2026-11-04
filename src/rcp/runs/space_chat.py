@@ -717,7 +717,7 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v3"
+SPACE_MASTER_POLICY = "space-master-v4"
 
 
 def render_space_prompt(
@@ -1008,15 +1008,17 @@ def space_limits_section(
     if not scope.memory_roots:
         lines.append("No memory folder is writable here.")
     lines.append(
-        "Work that needs a command this turn lacks, a project memory note, or a change "
-        "the graph authority contract withholds from agents belongs to that project's own "
-        "thread. Do not tell the member it is theirs to do. Hand it off with `handoff`, "
-        "naming the project, the node ids and exactly what to run or change. The project "
-        "thread runs what its commands allow and raises an approval card for what needs "
-        "the member. Its answer comes back here when the handoff settles; relay it. Only "
-        "the member's own tap on an approval card is theirs. Every open card from the "
-        "member's project threads also shows in the dock above this thread's composer; "
-        "point the member there. This thread cannot raise cards itself."
+        "A decision only the member can make, such as deciding a Proposal, changing "
+        "repository truth membership or merging a branch, is raised here as an approval "
+        "card with `ask` when its action kind exists; the member taps it in this thread's "
+        "dock. Other work that needs a command this turn lacks, a project memory note, or a "
+        "change the graph authority contract withholds from agents belongs to that "
+        "project's own thread. Do not tell the member it is theirs to do. Hand it off with "
+        "`handoff`, naming the project, the node ids and exactly what to run or change. Its "
+        "answer comes back here when the handoff settles; relay it. Open cards from the "
+        "member's project threads also show in this dock. A card exists only when `ask` "
+        "returned its question_id or the member's dock already shows it; never describe "
+        "one otherwise."
     )
     return "What this turn routes elsewhere:\n" + "\n".join(f"- {line}" for line in lines)
 

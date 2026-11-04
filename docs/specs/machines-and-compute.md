@@ -178,7 +178,10 @@ shell watcher, a fresh saved check first observes already-ended work or records 
 cannot run. Otherwise, an atomic claim records the actor and time. The saved
 command then executes on its host, in its working directory, through the bounded
 shell.
-Concurrent requests share the claim.
+Concurrent requests share the claim. A member's Work chat runs the same request
+for a watcher that chat armed with `watcher --cancel`
+([thread control](conversations-episodes-and-watchers.md#external-observation)),
+attributed to that member.
 
 An exact registered helper watcher can also recover a lost job whose ordinary
 check lacks a valid exit receipt. Matching requires the project, host, origin,

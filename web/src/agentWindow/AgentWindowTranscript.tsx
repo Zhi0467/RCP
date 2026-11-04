@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { File, History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
+import { History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
 import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
 import {
   isActiveTask,
@@ -23,12 +23,10 @@ import type {
 import type { GlossaryIndex } from "../graph/glossary";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
-import { ReferenceChip } from "../core/ReferenceChip";
-import { sourceReference } from "../core/projectReferences";
 import { BrowserTurnNotice } from "../core/BrowserControls";
 import { ArtifactCommentQuotes, artifactCommentLead } from "../chat/ArtifactCommentQuotes";
 import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
-import { formatBytes } from "../chat/composerAttachments";
+import { SentAttachments } from "../chat/SentAttachments";
 import { CompactionDivider } from "../chat/AgentStatusStrip";
 import { compactionAnchors } from "../chat/agentStatusModel";
 import { questionTranscript } from "../chat/questions";
@@ -312,46 +310,11 @@ export function AgentWindowTranscript({
                         {line.steering.reason && <span>{line.steering.reason}</span>}
                       </div>
                     )}
-                    {line.attachments?.some((attachment) => attachment.reference) && (
-                      <div className="chat-input-references">
-                        {line.attachments.map((attachment) =>
-                          attachment.reference ? (
-                            <ReferenceChip
-                              key={attachment.attachment_id}
-                              projectId={endpoints.projectId!}
-                              reference={{
-                                ...sourceReference(attachment.reference),
-                                label: attachment.name,
-                              }}
-                              version={
-                                attachment.reference.graph_head
-                                  ? `r${attachment.reference.graph_head.revision}`
-                                  : attachment.reference.version?.slice(0, 7)
-                              }
-                            />
-                          ) : null,
-                        )}
-                      </div>
-                    )}
-                    {line.attachments?.map((attachment) => {
-                      if (attachment.reference) return null;
-                      const expired = Date.parse(attachment.expires_at) <= expiryClock;
-                      return (
-                        <div
-                          className={`chat-input-attachment${expired ? " expired" : ""}`}
-                          key={attachment.attachment_id}
-                        >
-                          <File size={14} />
-                          <span>
-                            <strong>{attachment.name}</strong>
-                            <small>
-                              {attachment.media_type} · {formatBytes(attachment.size)}
-                            </small>
-                          </span>
-                          {expired && <em>Expired</em>}
-                        </div>
-                      );
-                    })}
+                    <SentAttachments
+                      attachments={line.attachments}
+                      projectId={endpoints.projectId!}
+                      now={expiryClock}
+                    />
                     {agentProgress ? (
                       agentProgress(line, task)
                     ) : pausedLineTask ? (

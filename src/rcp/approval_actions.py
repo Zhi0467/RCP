@@ -43,6 +43,9 @@ class ProposalAction(ProjectAction):
     proposal_id: str = Field(min_length=1)
     decision: Literal["approved", "rejected"]
     reason: str | None = None
+    branch_id: str | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None
+    )
 
 
 class TruthScopeAction(ProjectAction):

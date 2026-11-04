@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
+    AskCommandRequest,
     CommandRequest,
     CommandResponse,
     HandoffCommandRequest,
@@ -192,6 +193,23 @@ class ThreadCommandHandler:
             raise ValueError("Project schedules use the project Work handler")
         return handle_schedule(self.store, self.operation_id, request)
 
+    def ask(self, request, task, thread) -> CommandResponse:
+        """A card for one of the member's projects; any other project is never opened, so
+        its refusal reveals nothing."""
+        from rcp.runs.approval_cards import card_project_allowed
+        from rcp.runs.questions import handle_space_ask
+
+        assert isinstance(request, AskCommandRequest)
+        if thread.kind != "space" or task.kind != "space_chat":
+            raise ValueError("Project questions use the project Work handler")
+        action = request.arguments.action
+        service = (
+            self.catalog.open_execution(action.project_id)
+            if action is not None and card_project_allowed(self.store, thread, action.project_id)
+            else None
+        )
+        return handle_space_ask(self.store, request, task, thread, service)
+
     def handoff(self, request, task, thread) -> dict[str, object]:
         assert isinstance(request, HandoffCommandRequest)
         project_id = request.arguments.project_id
@@ -259,7 +277,10 @@ def _handoff_usages() -> tuple[str, ...]:
         f"{handoff_usage()} (message file up to {AGENT_HANDOFF_MAX_CHARS} characters; "
         "a pick becomes the project thread's agent; the request is delivered after this "
         "turn succeeds; a later wake reports its status, failure kind and reason, and "
-        "answer, so a failed provider can be retried with another pick)",
+        "answer, so a failed provider can be retried with another pick). A project "
+        "thread's agent can do this for its member: "
+        + "; ".join(thread_capabilities("project"))
+        + ".",
     )
 
 
@@ -267,6 +288,12 @@ def _projects_usages() -> tuple[str, ...]:
     from rcp.agents.staged_command_client import projects_usages
 
     return projects_usages()
+
+
+def _ask_usages() -> tuple[str, ...]:
+    from rcp.runs.approval_cards import space_card_usage
+
+    return (space_card_usage(),)
 
 
 def _schedule_usages() -> tuple[str, ...]:
@@ -287,6 +314,11 @@ _THREAD_VERBS: dict[str, _ThreadVerb] = {
     ),
     "schedule": _ThreadVerb(
         ThreadCommandHandler.schedule, _schedule_usages, "Schedules reminders and weekly catch-ups"
+    ),
+    "ask": _ThreadVerb(
+        ThreadCommandHandler.ask,
+        _ask_usages,
+        "Brings any project's approvals and merges here for your tap",
     ),
 }
 
@@ -475,12 +507,15 @@ def dispatch_thread_handoffs(
     *,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> list[str]:
-    """Drain eligible deliveries and settlement wakes at startup and after each turn.
+    """Drain eligible deliveries and settlement wakes, then queued messages, at startup
+    and after each turn.
 
     Claims and tasks commit in the same SQLite transaction. Queued tasks are the
     durable source of the user-message append; ordinary turn replay appends once.
     One bad row never blocks the others.
     """
+    from rcp.runs.agent_thread_queue import dispatch_thread_queue
+
     admitted: list[str] = []
     for handoff in store.pending_agent_handoffs():
         try:
@@ -497,7 +532,9 @@ def dispatch_thread_handoffs(
                 admitted.append(operation_id)
         except Exception:
             logger.exception("Handoff %s Space wake failed", handoff.handoff_id)
-    return admitted
+    return admitted + dispatch_thread_queue(
+        store, catalog, background, project_admission=project_admission
+    )
 
 
 def _settle_delivered_handoffs(

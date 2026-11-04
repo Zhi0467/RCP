@@ -99,8 +99,8 @@ spec, and executable test, not this registry.
    truth membership, authorize episodes, or dispatch branch merges. A member's own page,
    including an agent the member runs there, counts as that human
    ([why](docs/specs/conversations-episodes-and-watchers.md#native-chat-context)).
-   So does the member's ordinary Work chat starting an Experiment they asked for
-   ([why](docs/specs/conversations-episodes-and-watchers.md#work-started-experiments)).
+   So does their Work chat starting, steering, extending, or stopping an episode they asked for
+   ([why](docs/specs/conversations-episodes-and-watchers.md#work-started-episodes)).
    The Auto-research orchestrator is the one explicit exception: on its branch and the
    forks its lineage owns it may choose Decisions, set ordinary belief standing, and
    merge a fork back into its owned source. A human-dispatched merge into main inherits
