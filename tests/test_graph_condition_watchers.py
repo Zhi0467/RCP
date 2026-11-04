@@ -433,7 +433,7 @@ def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watch
     def active_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
         return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
 
-    def arm(origin: str, chat_id: str = "chat") -> list[str]:
+    def arm(origin: str, chat_id: str = "chat", *, reuse_live: bool = True) -> list[str]:
         binding = _binding().model_copy(update={"origin_operation_id": origin, "chat_id": chat_id})
         armed = arm_watchers(
             store,
@@ -442,6 +442,7 @@ def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watch
             graph_conditions=[condition],
             state=_state(),
             watcher_ids=[f"{origin}-{chat_id}-0", f"{origin}-{chat_id}-1"],
+            reuse_live=reuse_live,
             check_runner=active_check,
         )
         return [record.watcher_id for record in armed]
@@ -451,14 +452,18 @@ def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watch
     assert arm("turn-2") == first
     assert len(store.watchers("project")) == 2
 
+    keyed = arm("command-1", reuse_live=False)
+    assert keyed == ["command-1-chat-0", "command-1-chat-1"]
+    store.stop_watchers("project", keyed)
+
     other_chat = arm("turn-3", chat_id="other")
     assert set(other_chat).isdisjoint(first)
-    assert len(store.watchers("project")) == 4
+    assert len(store.watchers("project")) == 6
 
     store.stop_watchers("project", first)
     rearmed = arm("turn-4")
     assert set(rearmed).isdisjoint(first)
-    assert len(store.watchers("project", chat_id="chat")) == 4
+    assert len(store.watchers("project", chat_id="chat")) == 6
 
 
 def test_supplied_watcher_ids_follow_external_then_graph_order(store) -> None:

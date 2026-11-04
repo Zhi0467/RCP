@@ -1708,6 +1708,7 @@ async def _validate_watch_deliverable(
             graph_conditions=graph_conditions,
             state=graph_state,
             watcher_ids=watcher_ids,
+            reuse_live=True,
         )
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))

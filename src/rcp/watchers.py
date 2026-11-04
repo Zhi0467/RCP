@@ -1329,10 +1329,16 @@ def arm_watchers(
     graph_conditions: list[GraphCondition] | None = None,
     state: GraphState | None = None,
     watcher_ids: list[str] | None = None,
+    reuse_live: bool = False,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
 ) -> list[StoredWatcherRecord]:
-    """Validate one mixed handoff and persist all of it, or persist none of it."""
+    """Validate one mixed handoff and persist all of it, or persist none of it.
+
+    ``reuse_live`` lets a conversation's re-armed condition resolve to its identical
+    live watcher. Keyed effects leave it off: their recovery finds a watcher only
+    under its planned id.
+    """
 
     conditions = list(graph_conditions or [])
     if not specs and not conditions:
@@ -1350,7 +1356,9 @@ def arm_watchers(
         if len(watcher_ids) != len(set(watcher_ids)):
             raise ValueError("watcher_ids must be unique")
         resolved_watcher_ids = list(watcher_ids)
-    twins = _active_twins(store, specs, conditions, binding)
+    twins = (
+        _active_twins(store, specs, conditions, binding) if reuse_live else [None] * watcher_count
+    )
     existing = [store.watcher(watcher_id) for watcher_id in resolved_watcher_ids]
     if any(item is not None for item in existing):
         if any(item is None and twin is None for item, twin in zip(existing, twins, strict=True)):
