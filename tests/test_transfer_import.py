@@ -14,6 +14,7 @@ import pytest
 from rcp.agents import AgentLauncher
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperLive, PaperOp
 from rcp.projects import ProjectCatalog
 from rcp.providers import configured_runtime_id
@@ -30,6 +31,7 @@ from rcp.storage import (
     ProjectTransferSourceConfiguration,
 )
 from rcp.storage import models as storage_models
+from rcp.storage import provisioning as storage_provisioning
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
 from rcp.transfer import (
     TRANSFER_ARCHIVE_CODEC,
@@ -48,6 +50,7 @@ from rcp.transfer.project_files import (
     capture_project_transfer_files,
     transfer_project_file_payload,
 )
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 from rcp.transfer.repository_git import capture_repository_bundle
 from rcp.transfer.source import seal_transfer_archive
 
@@ -78,7 +81,7 @@ def _target_actor(store: AppStore) -> AuthorizedHuman:
 
 
 def _source_configuration(
-    service, *, include_local_commits=False, record_schema_version=1
+    service, *, include_local_commits=False
 ) -> ProjectTransferSourceConfiguration:
     manifest = service.history.manifest
     repositories = tuple(
@@ -87,7 +90,6 @@ def _source_configuration(
             repository=parse_github_repository_ref(
                 f"git@github.com:Example/{repository.alias}.git"
             ),
-            machine_alias=repository.machine,
             source_commit=(
                 _git(Path(repository.path), "rev-parse", "HEAD") if include_local_commits else None
             ),
@@ -100,13 +102,12 @@ def _source_configuration(
         supported_archive_codecs=(
             "rcp-transfer-v2" if include_local_commits else TRANSFER_ARCHIVE_CODEC,
         ),
-        machine_aliases=tuple(sorted(manifest.machine_map)),
         repositories=repositories,
         state_repository=manifest.state.repository,
         project_truth_scope=tuple(manifest.project.truth_scope),
         default_run_truth_scope=tuple(manifest.agent.default_run_truth_scope),
         source_manifest_sha256=hashlib.sha256(manifest.path.read_bytes()).hexdigest(),
-        record_schema_version=record_schema_version if record_schema_version != 1 else None,
+        record_schema_version=TRANSFER_RECORD_SCHEMA_VERSION,
     )
 
 
@@ -119,25 +120,21 @@ def _prepare_target_request(
     central_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setattr(
-        storage_models,
-        "DEFAULT_SERVER_LAYOUT",
-        SimpleNamespace(service_account="rcp", projects_root=central_root),
-    )
+    layout = SimpleNamespace(service_account="rcp", projects_root=central_root)
+    monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
+    monkeypatch.setattr(storage_provisioning, "DEFAULT_SERVER_LAYOUT", layout)
+    target.ensure_space_machines([("", "rcp", "Server")])
     machines = [
         ProjectProvisioningMachineIntent(
-            alias=alias,
-            location="local",
-            os_account="rcp",
+            machine_id=BACKEND_MACHINE_ID,
             central_root=str(central_root),
         )
-        for alias in source.machine_aliases
     ]
     repositories = [
         ProjectProvisioningRepositoryIntent(
             alias=item.alias,
             repository=item.repository,
-            machine_alias=item.machine_alias,
+            machine_id=BACKEND_MACHINE_ID,
         )
         for item in source.repositories
     ]
@@ -148,7 +145,7 @@ def _prepare_target_request(
             runtime_id="codex:exec",
             model="gpt-test",
             reasoning="medium",
-            machine_alias=source.machine_aliases[0],
+            machine_id=BACKEND_MACHINE_ID,
         )
         for profile in AGENT_EXECUTION_PROFILES
     ]
@@ -331,7 +328,6 @@ def _archive_fixture(
     source_configuration = _source_configuration(
         service,
         include_local_commits=include_local_commits,
-        record_schema_version=source.project_transfer_record_schema_version(records.project_id),
     )
     source_request = source.create_source_project_transfer_request(
         project_id=records.project_id,
@@ -860,7 +856,7 @@ def test_deleted_report_transfers_as_tombstone(manifest, tmp_path, monkeypatch):
     capture = parse_transfer_project_file_payload(
         (fixture["archive_root"] / "records/project.jsonl").read_bytes()
     )
-    assert capture.records.schema_version == 6
+    assert capture.records.schema_version == TRANSFER_RECORD_SCHEMA_VERSION
     for changes in (
         {"schema_version": 4},
         {"html": "<h1>Report</h1>"},
@@ -908,48 +904,3 @@ def test_deleted_report_transfers_as_tombstone(manifest, tmp_path, monkeypatch):
             ),
             data=b"<h1>Report</h1>",
         )
-
-
-def test_record_v4_still_admitted(manifest, tmp_path, monkeypatch):
-    from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
-    from rcp.project_transfer import capture_project_transfer_source
-    from rcp.transfer.project_files import (
-        parse_transfer_project_file_payload,
-        transfer_project_file_payload,
-    )
-    from rcp.transfer.records import TransferRecordBundle
-
-    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, deleted_report=False)
-    payload = (fixture["archive_root"] / "records/project.jsonl").read_bytes()
-    capture = parse_transfer_project_file_payload(payload)
-    legacy = capture.records.model_dump(mode="python")
-    legacy["schema_version"] = 4
-    branches = {branch["branch_id"]: branch for branch in legacy.pop("branches")}
-    for episode in legacy["episodes"]:
-        branch = branches.get(episode["episode_id"])
-        if branch is not None:
-            episode["branch_name"] = branch["name"]
-            episode["reserved_branch_names"] = branch["reserved_names"]
-    capture = capture.model_copy(update={"records": TransferRecordBundle.model_validate(legacy)})
-    payload = transfer_project_file_payload(capture)
-    capture = parse_transfer_project_file_payload(payload)
-    assert capture.records.schema_version == 4
-    assert b'"deleted_at"' not in payload
-    report = capture.records.episodes[0].report
-    assert report is not None
-    monkeypatch.setattr("rcp.project_transfer._repository_origin", lambda **kw: None)
-    monkeypatch.setattr("rcp.project_transfer._repository_revision", lambda **kw: "a" * 40)
-    configuration, _ = capture_project_transfer_source(
-        fixture["service"],
-        record_schema_version=4,
-    )
-    request = ProjectTransferSourceConfigurationRequest.model_validate_json(
-        configuration.model_dump_json()
-    )
-    assert request.storage_model().record_schema_version == 4
-
-    invalid = json.loads(payload)
-    invalid["records"]["schema_version"] = 5
-    invalid["records"]["episodes"][0]["report"]["deleted_at"] = report.created_at
-    with pytest.raises(ValueError):
-        parse_transfer_project_file_payload(json.dumps(invalid).encode())

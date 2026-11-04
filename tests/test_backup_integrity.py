@@ -4,11 +4,11 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
+from rcp.machine_upgrade import read_backup_archive_manifest
 from rcp.server_ops.backup_integrity import (
     canonical_backup_manifest_bytes,
     database_schema_sha256,
 )
-from rcp.server_ops.backup_models import BackupArchiveManifest
 from rcp.storage import AppStore
 
 _HISTORICAL_MANIFEST = (
@@ -28,7 +28,7 @@ _HISTORICAL_MANIFEST = (
 
 
 def test_historical_backup_manifest_keeps_its_canonical_bytes_and_digest() -> None:
-    manifest = BackupArchiveManifest.model_validate_json(_HISTORICAL_MANIFEST)
+    manifest = read_backup_archive_manifest(_HISTORICAL_MANIFEST)
 
     assert canonical_backup_manifest_bytes(manifest) == _HISTORICAL_MANIFEST
     assert hashlib.sha256(_HISTORICAL_MANIFEST).hexdigest() == (
@@ -50,4 +50,4 @@ def test_database_schema_digest_is_shared_by_live_and_immutable_readers(
         immutable_digest = database_schema_sha256(immutable)
 
     assert live_digest == immutable_digest
-    assert live_digest == "97a3996d8d4276c99190244ad8a7bde1e2946cffb94970af0d1d998534c43fd5"
+    assert live_digest == "5bc239ef3bbdf34eeb0ba8123bba10d88559eece98d5bd57cdb0cf2e92bdf0f8"

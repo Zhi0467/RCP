@@ -13,6 +13,7 @@ from rcp.transfer.project_files import (
     transfer_project_file_payload,
 )
 from rcp.transfer.records import (
+    TRANSFER_RECORD_SCHEMA_VERSION,
     TransferEpisodeArchiveRecord,
     TransferEpisodeInvocation,
     TransferEpisodeRecord,
@@ -229,7 +230,6 @@ def _rich_capture(fixture: dict[str, object], *, with_report: bool = False):
         tasks = (*tasks, report_task)
     records = operational.records.model_copy(
         update={
-            "schema_version": 2,
             "tasks": tasks,
             "watchers": (watcher,),
             "episodes": (episode,),
@@ -238,33 +238,34 @@ def _rich_capture(fixture: dict[str, object], *, with_report: bool = False):
     return operational.model_copy(update={"records": records})
 
 
-@pytest.mark.parametrize("record_schema_version", [1, 2])
+@pytest.mark.parametrize("archived", [False, True])
 @pytest.mark.parametrize("with_report", [False, True])
 def test_storage_import_inserts_full_inert_history_and_receipt(
     manifest,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    record_schema_version: int,
+    archived: bool,
     with_report: bool,
 ) -> None:
-    fixture = _archive_fixture(
-        manifest, tmp_path, monkeypatch, include_episode_archive=record_schema_version == 2
-    )
+    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, include_episode_archive=archived)
     capture = _rich_capture(fixture, with_report=with_report)
+    if not archived:
+        records = capture.records.model_copy(
+            update={
+                "episodes": tuple(
+                    episode.model_copy(update={"archive": None})
+                    for episode in capture.records.episodes
+                )
+            }
+        )
+        capture = capture.model_copy(update={"records": records})
     payload = transfer_project_file_payload(capture)
-    if record_schema_version == 1:
-        document = json.loads(payload)
-        document["records"]["schema_version"] = 1
-        with pytest.raises(ValueError, match="operational records are invalid"):
-            parse_transfer_project_file_payload(json.dumps(document).encode())
-        for episode in document["records"]["episodes"]:
-            episode.pop("archive")
-        payload = (
-            json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
-        ).encode()
+    previous = json.loads(payload)
+    previous["records"]["schema_version"] = TRANSFER_RECORD_SCHEMA_VERSION - 1
+    with pytest.raises(ValueError):
+        parse_transfer_project_file_payload(json.dumps(previous).encode())
     capture = parse_transfer_project_file_payload(payload)
     assert transfer_project_file_payload(capture) == payload
-    assert capture.records.schema_version == record_schema_version
     archive = fixture["archive"]
     target = fixture["target"]
     configuration = fixture["configuration"]
@@ -313,9 +314,9 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
             ).fetchone()
         assert target._transfer_episode_report(row).artifact_id == stored_report.artifact_id
     assert target.episode_archive_states(capture.project_id)[episode.episode_id].archived == (
-        record_schema_version == 2
+        archived
     )
-    if record_schema_version == 2:
+    if archived:
         assert episode.archive is not None
         assert target.space_user(episode.archive.archived_by.user_id) is None
         with target.connection() as connection:
@@ -337,7 +338,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         ).fetchone()
         assert task_row["history_only"] == 1
         assert task_row["native_session_id"] is None
-        assert task_row["stage_host"] is None
+        assert task_row["stage_machine_id"] is None
         assert (
             connection.execute(
                 "SELECT COUNT(*) FROM graph_run_events WHERE operation_id = ?",
@@ -350,7 +351,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
             (capture.records.watchers[0].watcher_id,),
         ).fetchone()
         assert watcher_row["next_check_at"] is None
-        assert watcher_row["execution_host"] == ""
+        assert watcher_row["machine_id"] == ""
         assert watcher_row["worker_id"] == "history-child-worker"
         assert watcher_row["cancel_requested_by"] == "source-human"
         assert watcher_row["cancel_requested_at"] == capture.records.watchers[0].cancel_requested_at
@@ -368,13 +369,13 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
             (capture.records.episodes[0].episode_id,),
         ).fetchone()
         assert experiment_row["native_session_id"] is None
-        assert experiment_row["execution_host"] == "history-only"
+        assert experiment_row["machine_id"] == ""
         wrapup_row = connection.execute(
             "SELECT * FROM episode_wrapups WHERE episode_id = ?",
             (capture.records.episodes[0].episode_id,),
         ).fetchone()
         assert wrapup_row["native_session_id"] is None
-        assert wrapup_row["execution_host"] == "history-only"
+        assert wrapup_row["machine_id"] == ""
     imported_view = target.artifact(capture.artifacts[0].artifact_id)
     assert imported_view is not None
     assert imported_view.kept_at is not None
@@ -395,54 +396,6 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     )
     assert complete.status == "complete"
     assert complete.publication_sha256 == "b" * 64
-
-
-@pytest.mark.parametrize("prepared_schema_version", [1, 2])
-def test_storage_import_rejects_record_schema_not_negotiated_before_release(
-    manifest, tmp_path, monkeypatch, prepared_schema_version
-):
-    fixture = _archive_fixture(
-        manifest,
-        tmp_path,
-        monkeypatch,
-        include_episode_archive=prepared_schema_version == 2,
-    )
-    capture = _rich_capture(fixture)
-    if prepared_schema_version == 2:
-        records = capture.records.model_copy(
-            update={
-                "schema_version": 1,
-                "episodes": tuple(
-                    episode.model_copy(update={"archive": None})
-                    for episode in capture.records.episodes
-                ),
-            }
-        )
-        capture = capture.model_copy(update={"records": records})
-    target = fixture["target"]
-    archive = fixture["archive"]
-    configuration = fixture["configuration"]
-    html = {
-        view.kept_filename: (
-            fixture["archive_root"] / "result-views" / view.kept_filename
-        ).read_text()
-        for view in capture.kept_result_views
-    }
-    with pytest.raises(ValueError, match="record schema does not match target preparation"):
-        target.begin_project_transfer_import(
-            archive.target_request_id,
-            archive_manifest_sha256=archive.sha256(),
-            target_manifest_sha256=configuration.receipt.target_manifest_sha256,
-            operational_payload_sha256=hashlib.sha256(
-                transfer_project_file_payload(capture)
-            ).hexdigest(),
-            target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
-            capture=capture,
-            kept_result_view_html=html,
-        )
-    assert target.project_transfer_import(archive.target_request_id) is None
-    assert target.episodes(archive.project_id) == []
-    assert target.agent_tasks(archive.project_id) == []
 
 
 @pytest.mark.parametrize("damage", [None, "expiry", "allocation"])

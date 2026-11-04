@@ -208,7 +208,9 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
         _git(repository, "remote", "remove", "origin")
     bundled = include or server_only
     service = app.state.catalog.open(project)
-    config, graph_head = capture_project_transfer_source(service, include_local_commits=include)
+    config, graph_head = capture_project_transfer_source(
+        service, source, include_local_commits=include
+    )
     target_data = tmp_path / "team"
     target = AppStore(target_data / "rcp.sqlite3", space_kind="team")
     target_actor = _actor(target, "Alice")
@@ -317,8 +319,8 @@ def test_export_and_import_restore_opted_revision_without_publishing_git(
 
 
 def test_legacy_configuration_digest_does_not_gain_null_commit(tmp_path):
-    app, _store, _actor_value, project, _repository, _base = _source(tmp_path)
-    configuration, _head = capture_project_transfer_source(app.state.catalog.open(project))
+    app, store, _actor_value, project, _repository, _base = _source(tmp_path)
+    configuration, _head = capture_project_transfer_source(app.state.catalog.open(project), store)
     old_payload = configuration.model_dump(mode="json")
     assert all("source_commit" not in repo for repo in old_payload["repositories"])
     restored = ProjectTransferSourceConfiguration.model_validate_json(json.dumps(old_payload))
@@ -331,7 +333,9 @@ def test_legacy_configuration_digest_does_not_gain_null_commit(tmp_path):
 def test_git_head_drift_refuses_the_reviewed_source_boundary(tmp_path):
     app, store, _actor_value, project, repository, _base = _source(tmp_path)
     service = app.state.catalog.open(project)
-    configuration, graph_head = capture_project_transfer_source(service, include_local_commits=True)
+    configuration, graph_head = capture_project_transfer_source(
+        service, store, include_local_commits=True
+    )
     request = SimpleNamespace(source_configuration=configuration, project_id=project)
     _require_reviewed_source_unchanged(store, service, request)
     _commit(repository, "changed after review")
@@ -341,9 +345,10 @@ def test_git_head_drift_refuses_the_reviewed_source_boundary(tmp_path):
 
 
 def test_commit_choice_requires_new_codec(tmp_path):
-    app, _store, _actor_value, project, _repository, _base = _source(tmp_path)
+    app, store, _actor_value, project, _repository, _base = _source(tmp_path)
     configuration, _head = capture_project_transfer_source(
         app.state.catalog.open(project),
+        store,
         include_local_commits=True,
     )
     payload = configuration.model_dump(mode="json")
@@ -379,7 +384,7 @@ def test_git_bundle_requires_new_codec_and_envelope():
 
 def test_mixed_sources_require_only_server_only_bundle(tmp_path):
     app, store, _actor_value, project, repository, head = _source(tmp_path)
-    github, _ = capture_project_transfer_source(app.state.catalog.open(project))
+    github, _ = capture_project_transfer_source(app.state.catalog.open(project), store)
     _git(repository, "remote", "remove", "origin")
     body = dict(
         request_id=str(uuid.uuid4()),

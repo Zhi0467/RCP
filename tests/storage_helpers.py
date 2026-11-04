@@ -35,6 +35,15 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
     if any(
+        row[1] == "state_machine_id" for row in connection.execute("PRAGMA table_info(projects)")
+    ):
+        connection.execute("ALTER TABLE projects DROP COLUMN state_machine_id")
+        connection.execute("ALTER TABLE projects DROP COLUMN machine_ids_pending")
+        connection.execute("ALTER TABLE projects RENAME COLUMN state_path TO state_location")
+        connection.execute(
+            "ALTER TABLE projects ADD COLUMN state_remote INTEGER NOT NULL DEFAULT 0"
+        )
+    if any(
         row[1] == "origin_flag_id"
         for row in connection.execute("PRAGMA table_info(evidence_flags)")
     ):
@@ -46,7 +55,7 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE provider_login_states RENAME TO new_provider_login_states")
         AppStore._migrate_provider_login_states(connection)
         connection.execute(
-            "INSERT INTO provider_login_states SELECT provider,host,state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states WHERE login_id=''"
+            "INSERT INTO provider_login_states SELECT provider,COALESCE((SELECT host FROM space_machines m WHERE m.machine_id=n.machine_id),''),state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states n WHERE login_id=''"
         )
         connection.execute("DROP TABLE new_provider_login_states")
         connection.execute("DROP TABLE provider_readiness_snapshots")

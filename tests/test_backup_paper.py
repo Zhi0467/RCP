@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import pwd
 import sqlite3
 import zlib
 
@@ -187,6 +189,7 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
     (paper / "published.md").write_text("older published tree")
     data_dir = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Paper backup")
+    store.ensure_space_machines([("", pwd.getpwuid(os.geteuid()).pw_name, "Backend")])
     seed = _database()
     try:
         figure = _saved_paper(seed, monkeypatch, project_id=project_id)

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.server_ops.backup import _write_deterministic_archive, build_archive_manifest
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
@@ -26,6 +27,9 @@ from tests.test_backup_capture import _metadata
 def corpus(tmp_path, monkeypatch):
     root = tmp_path
     use_captured_layout(monkeypatch, root)
+    monkeypatch.setattr(
+        "rcp.storage.provisioning.DEFAULT_SERVER_LAYOUT", storage_models.DEFAULT_SERVER_LAYOUT
+    )
     state = seed_real_use_corpus(root / "sk-learn-exps", root / "projects")
     return root, state
 

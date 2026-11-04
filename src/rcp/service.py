@@ -1450,6 +1450,7 @@ class ProjectService:
         self.indexer = ConversationIndexer(
             manifest,
             cache_root,
+            machine_cards=self.launcher.machine_cards,
             app_chat_origin=app_chat_origin,
         )
         self._index_lock = threading.Lock()

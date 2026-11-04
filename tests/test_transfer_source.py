@@ -48,9 +48,7 @@ def _released_source(
     if archived_episode:
         episode_id = _ended_episode(source, project_id, source_actor)
         source.set_episode_archived(project_id, episode_id, source_actor.user_id, archived=True)
-    configuration, source_head = capture_project_transfer_source(
-        service, record_schema_version=source.project_transfer_record_schema_version(project_id)
-    )
+    configuration, source_head = capture_project_transfer_source(service, source)
 
     target = AppStore(tmp_path / "team" / "rcp.sqlite3", space_kind="team")
     target_actor = _actor(target, "Alice")
@@ -141,7 +139,6 @@ def test_confirmed_source_transfer_closes_paused_attempt_without_losing_history(
 
     completed = advance_source_project_transfer(source, app.state.catalog, request.request_id)
     assert completed.phase == "archive_bound"
-    assert completed.source_configuration.record_schema_version == (2 if archived_episode else None)
     assert bool(source.archived_episodes(request.project_id)) == archived_episode
     after = source.agent_task(operation_id)
     assert before is not None and after is not None
@@ -209,7 +206,9 @@ def test_source_settlement_preserves_paused_tasks_while_an_episode_is_live(tmp_p
     episode = source.create_episode(
         _episode(source, str(uuid.uuid4()), project_id=request.project_id)
     )
-    configuration, _ = capture_project_transfer_source(app.state.catalog.open(request.project_id))
+    configuration, _ = capture_project_transfer_source(
+        app.state.catalog.open(request.project_id), source
+    )
     source.record_source_project_transfer_release(
         request.request_id,
         released_by=_actor(source, "Z"),
@@ -400,7 +399,7 @@ def test_source_transfer_refuses_configuration_drift_before_home_patch(tmp_path:
     project = source.project(request.project_id)
     assert project is not None
     _set_origin(
-        Path(project.state_location).parent,
+        Path(project.state_path).parent,
         "https://github.com/openai/another.git",
     )
 

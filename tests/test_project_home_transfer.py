@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from pydantic import ValidationError
 
-from rcp.config import MachineConfig, load_manifest
+from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman, GraphState, Patch, ProjectHomeTransfer
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager, ProjectIdentityConflict
@@ -123,8 +123,9 @@ def test_home_transfer_moves_only_the_derived_home_and_preserves_both_actors(man
         expected_space_id=TARGET_SPACE_ID,
         write_authority=unchecked_write_authority(),
     )
-    target.add_machine(MachineConfig(alias="gpu", host="gpu.example"))
-    assert "gpu" in load_manifest(manifest.path).machine_map
+    gpu = "a" * 32
+    target.add_machine(gpu)
+    assert gpu in load_manifest(manifest.path).machines
 
 
 def test_old_transition_hash_replays_without_the_new_optional_field(manifest) -> None:

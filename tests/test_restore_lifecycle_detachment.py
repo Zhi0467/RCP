@@ -11,6 +11,7 @@ from rcp.config import Manifest
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -23,7 +24,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import signed_in_client
 
 RESTORE_DIAGNOSTIC = "This work was stopped because RCP restored an older snapshot."
@@ -111,7 +112,7 @@ def _watcher_continuation() -> WatcherContinuation:
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="server",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo"],
     )
 
@@ -525,30 +526,35 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "app.sqlite3")
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="").machine_id
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     store.mark_provider_login_verified(
-        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID), member_id="member", detail="ok"
+        LoginKey("claude", gpu, MACHINE_LOGIN_ID), member_id="member", detail="ok"
     )
     store.mark_provider_login_signed_out(
-        LoginKey("claude", "", MACHINE_LOGIN_ID),
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         member_id="member",
         source="sign_out",
         detail="Signed out.",
     )
     store.save_provider_readiness_snapshot(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         ProviderReadinessSnapshotRecord(
             provider="codex",
-            host="",
+            machine_id=BACKEND_MACHINE_ID,
             binary="/usr/local/bin/codex",
             version="codex-cli 1.0.0",
             readiness_json="{}",
             probed_at=store.now(),
         ),
     )
-    signed_out_before = store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    signed_out_before = store.provider_login_state(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    )
 
     store.detach_restored_lifecycle(
         diagnostic=RESTORE_DIAGNOSTIC,
@@ -556,14 +562,17 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
         detached_at=store.now(),
     )
 
-    for provider, host in (("codex", ""), ("claude", "gpu.example")):
-        state = store.provider_login_state(LoginKey(provider, host, MACHINE_LOGIN_ID))
+    for provider, machine_id in (("codex", BACKEND_MACHINE_ID), ("claude", gpu)):
+        state = store.provider_login_state(LoginKey(provider, machine_id, MACHINE_LOGIN_ID))
         assert state.state == "signed_out" and state.source == "restore"
         assert state.generation == 2 and state.changed_by is None
-    assert store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID)) == signed_out_before
+    assert (
+        store.provider_login_state(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+        == signed_out_before
+    )
     assert (
         store.provider_readiness_snapshot(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), "/usr/local/bin/codex"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), "/usr/local/bin/codex"
         )
         is None
     )
@@ -574,8 +583,8 @@ def test_restore_drops_pending_memory_cleanup_for_live_paths(tmp_path: Path) -> 
     live_state = str(tmp_path / "live" / ".research")
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO memory_deletions VALUES (?, ?, ?, ?)",
-            ("deleted-project", live_state, "{}", None),
+            "INSERT INTO memory_deletions VALUES (?, ?, ?, ?, ?)",
+            ("deleted-project", BACKEND_MACHINE_ID, live_state, "{}", None),
         )
 
     store.detach_restored_lifecycle(

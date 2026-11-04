@@ -6,6 +6,7 @@ import uuid
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -59,7 +60,7 @@ def _experiment_task(
             "control_completion_criteria": [],
             "watcher_ids": [],
             "provider": "codex",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "chat_id": f"{episode_id}-chat",
         },
         created_at=now,
@@ -92,10 +93,9 @@ def _start_experiment(
         project_id="project",
         control_node_id=control_node_id,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=f"{episode_id}-native-session",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=f"/tmp/{episode_id}-stage",
         chat_id=f"{episode_id}-chat",
         operation_id=root.operation_id,
@@ -133,10 +133,9 @@ def _begin_wrapup(
         concluding_operation_id=f"{episode_id}-root",
         allocation_operation_id=allocation_operation_id,
         provider="codex",
-        run_on="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=f"{episode_id}-report-session",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=f"/tmp/{episode_id}-report-stage",
         skill_id="episode-report",
         skill_version="1",
@@ -154,7 +153,7 @@ def _begin_wrapup(
         episode_id=episode_id,
         kind="episode_report",
         status="queued",
-        request={"provider": "codex", "run_on": "laptop", "execution_host": ""},
+        request={"provider": "codex", "run_on": BACKEND_MACHINE_ID},
         created_at=now,
         updated_at=now,
         status_message="Wrapping up visualization and report",
@@ -265,11 +264,11 @@ def test_restore_helpers_detach_tasks_experiments_and_reports_idempotently(tmp_p
         connection.execute(
             """
             INSERT INTO writing_sessions (
-                native_session_id, provider, runtime_id, execution_machine,
+                native_session_id, provider, runtime_id, machine_id,
                 project_id, title, model, reasoning, created_at, last_resumed_at,
                 introduction_hash_examined, graph_revision_examined,
                 research_md_hash_examined
-            ) VALUES (?, 'codex', '', 'laptop', 'project', 'Restore', '', 'medium',
+            ) VALUES (?, 'codex', '', 'backend', 'project', 'Restore', '', 'medium',
                       ?, ?, '', 0, '')
             """,
             (f"{active.episode_id}-native-session", now, now),
@@ -344,7 +343,7 @@ def test_restore_helpers_detach_tasks_experiments_and_reports_idempotently(tmp_p
         assert wrapup.state == "skipped"
         assert wrapup.ending == "stopped"
         assert wrapup.native_session_id is None
-        assert wrapup.stage_host is None
+        assert wrapup.stage_machine_id is None
         assert wrapup.stage_root is None
     wrapping_attempt = store.episode_report_attempt(wrapping_attempt_id)
     assert wrapping_attempt is not None
@@ -366,7 +365,7 @@ def test_restore_helpers_detach_tasks_experiments_and_reports_idempotently(tmp_p
         assert connection.execute("SELECT COUNT(*) FROM writing_sessions").fetchone()[0] == 0
         state_rows = connection.execute(
             """
-            SELECT episode_id, native_session_id, stage_host, stage_root
+            SELECT episode_id, native_session_id, stage_machine_id, stage_root
             FROM experiment_episode_state ORDER BY episode_id
             """
         ).fetchall()

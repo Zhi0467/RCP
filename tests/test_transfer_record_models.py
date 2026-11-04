@@ -35,6 +35,7 @@ from rcp.transfer.records import (
     TransferEpisodeInvocation,
     TransferEpisodeRecord,
     TransferEpisodeWrapup,
+    TransferGraphBranchRecord,
     TransferJsonDocument,
     TransferLocalId,
     TransferPaperCoachRequestHistory,
@@ -270,7 +271,6 @@ def test_real_task_requests_project_to_typed_history_without_resume_bindings() -
                 model="gpt-5.6-sol",
                 reasoning="high",
                 run_on="source-gpu",
-                execution_host="source.example",
                 session_id="native-report",
             ).model_dump(mode="json"),
         ),
@@ -490,7 +490,19 @@ def test_lifecycle_notice_requires_completed_delivery_and_acknowledgement() -> N
         )
 
 
-def test_graph_archive_state_transfers_only_in_record_schema_three(tmp_path: Path) -> None:
+def _branch(branch_id: str, name: str) -> TransferGraphBranchRecord:
+    return TransferGraphBranchRecord(
+        branch_id=branch_id,
+        owner_episode_id=branch_id,
+        parent_head=TransferGraphHead(revision=4, transition_id="c" * 64),
+        created_by=SOURCE_USER_ID,
+        created_at=NOW,
+        name=name,
+        reserved_names=(name,),
+    )
+
+
+def test_graph_archive_state_transfers(tmp_path: Path) -> None:
     from rcp.storage import AppStore
 
     episode_id = "66666666-6666-4666-8666-666666666666"
@@ -511,73 +523,20 @@ def test_graph_archive_state_transfers_only_in_record_schema_three(tmp_path: Pat
         auto_research=TransferAutoResearchHistory(created_at=NOW, updated_at=NOW),
         graph_archived=True,
     )
-    bundle = {"project_id": PROJECT_ID, "attributions": (), "tasks": (), "watchers": ()}
-    with pytest.raises(ValidationError, match="schema version 3"):
-        TransferRecordBundle(**bundle, schema_version=2, episodes=(archived,))
-    plain = archived.model_copy(update={"graph_archived": False})
-    older = TransferRecordBundle(**bundle, schema_version=2, episodes=(plain,))
-    assert "graph_archived" not in older.model_dump(mode="json")["episodes"][0]
-    records = TransferRecordBundle(**bundle, schema_version=3, episodes=(archived,))
+    records = TransferRecordBundle(
+        project_id=PROJECT_ID,
+        attributions=(),
+        tasks=(),
+        watchers=(),
+        episodes=(archived,),
+        branches=(_branch(episode_id, "archived-branch"),),
+    )
     store = AppStore(tmp_path / "rcp.sqlite3")
     with store.connection() as connection:
         store._insert_transfer_episodes(connection, records, {})
     state = store.episode_isolation_state(PROJECT_ID, episode_id)
     assert state.graph_archived and state.status == "ready"
     assert store.episode_isolation(PROJECT_ID, episode_id).worktree is None
-
-
-def test_branch_names_transfer_with_reservations_and_preserve_older_payloads(
-    tmp_path: Path,
-) -> None:
-    episode_id = "66666666-6666-4666-8666-666666666666"
-    episode = TransferEpisodeRecord(
-        episode_id=episode_id,
-        mode="auto_research",
-        graph_target=TransferGraphTarget(kind="branch", branch_id=episode_id),
-        graph_base_head=TransferGraphHead(revision=4, transition_id="c" * 64),
-        status="completed",
-        invocation_ceiling=5,
-        invocations_used=0,
-        ending="completed",
-        wrapup_state="not_started",
-        report_attempts_used=0,
-        created_at=NOW,
-        updated_at=NOW,
-        ended_at=NOW,
-        auto_research=TransferAutoResearchHistory(created_at=NOW, updated_at=NOW),
-    )
-    bundle = {"project_id": PROJECT_ID, "attributions": (), "tasks": (), "watchers": ()}
-    old = TransferRecordBundle(**bundle, schema_version=3, episodes=(episode,))
-    payload = old.model_dump_json()
-    assert "branch_name" not in payload
-    assert TransferRecordBundle.model_validate_json(payload).model_dump_json() == payload
-    named = episode.model_copy(
-        update={"branch_name": "new-name", "reserved_branch_names": ("new-name", "old-name")}
-    )
-    with pytest.raises(ValidationError, match="schema version 4"):
-        TransferRecordBundle(**bundle, schema_version=3, episodes=(named,))
-    records = TransferRecordBundle(**bundle, schema_version=4, episodes=(named,))
-    store = AppStore(tmp_path / "source.sqlite3")
-    target = AppStore(tmp_path / "target.sqlite3")
-    with store.connection() as connection:
-        store._insert_transfer_episodes(connection, records, {})
-        exported = store._transfer_episodes(connection, PROJECT_ID, ())
-    assert exported == records.episodes
-    assert store.project_transfer_record_schema_version(PROJECT_ID) == 6
-    backup_path = tmp_path / "backup.sqlite3"
-    store.online_snapshot(backup_path)
-    backup = AppStore.open_read_only_snapshot(backup_path)
-    try:
-        with backup.connection() as connection:
-            assert backup._transfer_episodes(connection, PROJECT_ID, ()) == exported
-    finally:
-        backup.close()
-    restored = TransferRecordBundle.model_validate_json(
-        TransferRecordBundle(**bundle, schema_version=4, episodes=exported).model_dump_json()
-    )
-    with target.connection() as connection:
-        target._insert_transfer_episodes(connection, restored, {})
-        assert target._transfer_episodes(connection, PROJECT_ID, ()) == exported
 
 
 def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() -> None:

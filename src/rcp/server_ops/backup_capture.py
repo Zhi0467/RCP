@@ -618,6 +618,7 @@ def inspect_snapshot_project_inventory(
         requests = snapshot_store.completed_project_provisioning_requests(record.project_id)
         registration = inspect_backup_project_registration(
             record,
+            store=snapshot_store,
             data_dir=data_dir,
             provisioning_requests=requests,
         )

@@ -21,6 +21,7 @@ from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import inspect_backup_project_registration
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.backup_checkout import verify_checkout_identities
@@ -107,6 +108,7 @@ def _prepare_data(
         space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
     )
     repository_ref = parse_github_repository_ref("git@github.com:qualification/fixture.git")
+    store.ensure_space_machines([("", account, "Server")])
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authority,
@@ -116,15 +118,12 @@ def _prepare_data(
         default_run_truth_scope=["paper"],
         machines=[
             ProjectProvisioningMachineIntent(
-                alias="server",
-                location="local",
-                os_account=account,
-                central_root=str(projects_root),
+                machine_id=BACKEND_MACHINE_ID, central_root=str(projects_root)
             )
         ],
         repositories=[
             ProjectProvisioningRepositoryIntent(
-                alias="paper", repository=repository_ref, machine_alias="server"
+                alias="paper", repository=repository_ref, machine_id=BACKEND_MACHINE_ID
             )
         ],
         provider_checks=[
@@ -134,7 +133,7 @@ def _prepare_data(
                 runtime_id="codex:exec",
                 model="qualification",
                 reasoning="medium",
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
             for profile in AGENT_EXECUTION_PROFILES
         ],
@@ -242,10 +241,13 @@ def _prepare_data(
     assert project is not None
     registration = inspect_backup_project_registration(
         project,
+        store=store,
         data_dir=data_dir,
         provisioning_requests=store.completed_project_provisioning_requests(project.project_id),
     )
-    verify_checkout_identities(registration.recovery)
+    verify_checkout_identities(
+        registration.recovery, {card.machine_id: card for card in store.space_machines()}
+    )
     assert registration.workspace.backup_canonical_source_plan().complete
     history = HistoryManager(registration.manifest, **_HISTORY_AUTHORITY)
     history.append(
@@ -475,7 +477,7 @@ def _prepare_data(
         provider="codex",
         model="qualification",
         reasoning="medium",
-        run_on="server",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["paper"],
         chat_scope="project",
         chat_id=chat_id,
@@ -495,7 +497,7 @@ def _prepare_data(
             status_message="Paused fixture",
             authorized_by=authority,
             dispatch_authority=resolve_dispatch_authority("project_chat", run),
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
     )

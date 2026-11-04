@@ -8,8 +8,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from rcp.config import MachineConfig, load_manifest
+from rcp.config import load_manifest
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import (
     complete_restored_project_publication,
     inspect_backup_project_registration,
@@ -38,6 +39,8 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Backup lab")
     record, request = _completed_registration(tmp_path, unused_machine=True)
     account = pwd.getpwuid(os.geteuid()).pw_name
+    store.ensure_space_machines([("", account, "Backend")])
+    unused = request.machines[1].machine_id
     root = tmp_path / "projects"
     repository = root / record.project_id / "repositories" / "paper"
     commit = _initialize_git_repository(repository)
@@ -49,25 +52,18 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     values["target_space_id"] = store.space_id
     values["authorized_by"]["space_id"] = store.space_id
     values["machines"][0].update(
-        location="local",
-        host="",
-        os_account=account,
-        central_root=str(root),
-        resolved_central_root=str(root),
+        machine_id=BACKEND_MACHINE_ID, central_root=str(root), resolved_central_root=str(root)
     )
-    values["machines"][1].update(
-        location="local",
-        host="",
-        os_account=account,
-        central_root=str(root),
+    values["machines"][1].update(central_root=str(root))
+    values["repositories"][0].update(
+        machine_id=BACKEND_MACHINE_ID, intended_path=str(repository), resolved_path=str(repository)
     )
-    values["repositories"][0].update(intended_path=str(repository), resolved_path=str(repository))
     values["repositories"][0]["git_check"].update(
         commit=commit,
         deploy_key_label=f"rcp:{store.space_id}:{record.project_id}:paper",
     )
     for check in values["provider_checks"]:
-        check["execution_account"] = account
+        check.update(machine_id=BACKEND_MACHINE_ID, execution_account=account)
     draft = ProjectProvisioningRequestRecord.model_validate(values)
     values["final_review_digest"] = project_provisioning_review_digest(draft)
     request = ProjectProvisioningRequestRecord.model_validate(values)
@@ -79,17 +75,16 @@ def test_capture_and_restore_preserve_machine_without_checkout(
         manifest, expected_space_id=store.space_id, write_authority=unchecked_write_authority()
     )
     history.claim_project_identity("created", project_id=record.project_id)
+    added = store.create_space_machine(name="added", host="added.example", os_account="alice")
     if added_after_setup:
-        manifest = history.add_machine(
-            MachineConfig(alias="added", host="gpu.example", os_account="alice")
-        )
+        manifest = history.add_machine(added.machine_id)
     original_head = history.head_ref()
     record = record.model_copy(
         update={
             "home_space_id": store.space_id,
             "locator": str(manifest_path),
-            "state_location": str(manifest.research_dir),
-            "state_remote": False,
+            "state_machine_id": BACKEND_MACHINE_ID,
+            "state_path": str(manifest.research_dir),
         }
     )
     store.upsert_project(record)
@@ -106,13 +101,13 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     (capture,) = files.receipt.projects
     assert capture.status == "captured"
     assert capture.recovery is not None
-    expected_roots = {"worker": str(root), "unused": None}
+    expected_roots = {BACKEND_MACHINE_ID: str(root), unused: None}
     if added_after_setup:
-        expected_roots["added"] = None
+        expected_roots[added.machine_id] = None
     assert {
-        item.alias: item.resolved_central_root for item in capture.recovery.machines
+        item.machine_id: item.resolved_central_root for item in capture.recovery.machines
     } == expected_roots
-    assert {item.alias for item in capture.recovery.configuration.machines} == set(expected_roots)
+    assert set(capture.recovery.configuration.machines) == set(expected_roots)
     assert all(item.group == "canonical" for item in capture.files)
 
     restored_data = tmp_path / "restored-data"
@@ -154,9 +149,10 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     )
     assert published.reachable and published.error is None
     assert owners.history.head_ref() == original_head
-    assert load_manifest(published.locator).machine_map == manifest.machine_map
+    assert load_manifest(published.locator).machines == manifest.machines
     recovered = inspect_backup_project_registration(
         published,
+        store=restored_store,
         data_dir=restored_data,
         provisioning_requests=restored_store.completed_project_provisioning_requests(
             record.project_id
