@@ -147,6 +147,7 @@ def thread_projections(
                 "running": "running",
                 "pausing": "running",
                 "paused": "paused",
+                "interrupted": "paused",
                 "failed": "failed",
             }.get(task["status"], "idle")
         watchers = watching.get((scope, thread_id), 0)

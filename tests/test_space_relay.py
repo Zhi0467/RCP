@@ -178,6 +178,7 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
         ("working", "running", None, None, False),
         ("waiting", "queued", None, None, False),
         ("held", "paused", None, None, True),
+        ("stopped", "interrupted", None, None, True),
         ("signed-out", "failed", "provider_auth", "You've hit your limit", True),
         ("limited", "failed", None, "You've hit your limit", True),
         ("broken", "failed", None, "boom", True),
@@ -195,6 +196,7 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
         assert (row["needs_you"], row["at"]) == (needs_you, at)
         labels[operation_id] = row["label"]
     assert labels["working"] == labels["waiting"]
+    assert labels["stopped"] == labels["held"]
     assert len({labels[key] for key in ("working", "held", "signed-out", "limited", "broken")}) == 5
     _question(store, project_id, owner_id=thread_id, key="own")
     asked = running()
