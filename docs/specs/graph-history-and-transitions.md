@@ -114,7 +114,8 @@ It never silently does nothing.
 
 Supersede and merge set the project type's retirement field to `superseded`
 (`validity` for Evidence, `status` for other base types). Supersede adds a
-`supersedes` edge when a replacement is supplied; merge adds `duplicate_of`.
+`supersedes` edge from the retired node to its replacement when one is supplied;
+merge adds `duplicate_of` from the duplicate to the canonical node.
 They retain nodes and edges. Outside an approval, retirement
 returns the retired node's standing to asserted. Removal deletes incident edges too.
 Research rendering omits retired Evidence. Historical `set_coverage` decodes with

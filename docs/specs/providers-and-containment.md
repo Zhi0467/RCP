@@ -986,8 +986,9 @@ state workspace.
 
 ### Live human steering
 
-Steering addresses RCP's live process for one exact ordinary Discuss/Work or
-Paper coach attempt.
+Steering addresses RCP's live process for one exact ordinary Discuss/Work,
+Space-thread, or Paper coach attempt. Space-thread turns steer through
+`POST /api/agent-threads/{thread_id}/tasks/{operation_id}/steer`.
 It cannot select a newer attempt, start work or target an episode worker. Agent
 mail uses its own channel. Input retains the attempt's mode, scope, target and
 budget; [chat records](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input)

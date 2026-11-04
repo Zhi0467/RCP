@@ -548,8 +548,10 @@ team `DELETE` itself requires protocol 2 or newer.
 ## Bulletin operational storage
 
 Migration 57 owns target-local Bulletin posts, command receipts, member read
-cursors, and durable mention-notification observations. Posts retain their
-original agent roster actor id across turns, parsed mentions, edit timestamps,
+cursors, and durable mention-notification observations; migration 59 renamed
+Experiment authors and mentions from `episode:<root>` to `chat:<chat_id>` once
+and reinstalled the Bulletin triggers. Posts otherwise retain their original
+agent roster actor id across turns, parsed mentions, edit timestamps,
 and soft-delete timestamps. Artifact links are not stored: each read resolves the
 text's `<artifact:ID>` tokens against the project's readable artifacts (the
 artifact store's one availability rule), so a token naming no readable artifact of
@@ -573,7 +575,8 @@ turns, `worker:<worker_id>` for child Work conversations, and
 edits and later human turns. Repeated experiment episodes in one chat share one actor,
 so the Bulletin roster and Agents board identify the same agents. Archived
 conversations and seated Auto-research workers without board conversations are
-excluded. Historical posts retain their recorded actor ids. Only eligible
+excluded. Historical posts retain their recorded actor ids, apart from that
+migration 59 rename. Only eligible
 ordinary chats, Experiment conversations, child Work chats, and orchestrator
 chains hold the once-only `name` command; seated workers and Graph consolidation
 do not. The [launch contract](providers-and-containment.md#bulletin-commands-and-context)
