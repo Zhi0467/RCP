@@ -138,8 +138,13 @@ authorized from their current Space user record. The insert transaction claims
 the message (`claim_queued_turn`), so a replayed or racing drain reuses one task
 and a removed message never starts. A missing, closed or archived thread, a lost
 project membership, a removed member or a blank display name refuses it for
-good, as do the transient-refusal timeout and any other admission error. Removing
-or refusing a message releases its files. A started message leaves the queue.
+good, as do the transient-refusal timeout and any other admission error. An
+admission error while another turn now holds the thread is not a refusal: the
+message waits, because that turn won a race the queue never meant to lose. A
+busy thread clears a message's transient deferral, so the timeout counts only
+time the thread was free. Leaving a project runs the drain, so the closed thread
+refuses its messages rather than starting them on a later rejoin. Removing or
+refusing a message releases its files. A started message leaves the queue.
 
 A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A

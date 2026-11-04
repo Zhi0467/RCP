@@ -476,7 +476,15 @@ A failed turn shows its error once, in the message column, with Retry.
 A member's Stop reads Stopped, with Resume and Retry, in the same column, on
 one rounded row shaped like the failed turn's. Send stays off until the stopped
 turn is resumed or retried. A
-Resume or Retry continues its turn, so the member's message shows once. The
+Resume or Retry continues its turn, so the member's message shows once. In a
+project thread, what waits for the next turn shows as one-line rows above the
+composer, oldest first: a ready handoff with its chip and Space agent, each
+queued message with Remove, and a refused one with its reason and Dismiss,
+which puts its text back in the draft. Rows grow in and collapse out. While a
+running turn can be steered and nothing is staged, Enter steers and Queue sits
+beside it; with an active turn or waiting rows otherwise, Enter queues, so a new
+message never jumps the line. A message with files queues because a steer
+carries text only. A Space thread keeps steer-or-wait. The
 thread's reading column is a step wider than a board chat's, and the composer
 matches it. A provider pick moves to that provider's first model; a provider
 that declares its models lists them before any probe.
