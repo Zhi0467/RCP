@@ -145,6 +145,9 @@ busy thread clears a message's transient deferral, so the timeout counts only
 time the thread was free. Leaving a project runs the drain, so the closed thread
 refuses its messages rather than starting them on a later rejoin. Removing or
 refusing a message releases its files. A started message leaves the queue.
+The idempotency key binds the whole request by its SHA-256, so a replay with
+other text, files or references is refused. A removed message keeps its row as
+removed, so a late retry of its request finds it removed and queues nothing.
 
 A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A

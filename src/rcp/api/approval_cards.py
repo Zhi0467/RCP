@@ -369,7 +369,8 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
     except HTTPException as exc:
         if exc.detail != {"code": "proposal_not_pending"}:
             return {"rejected": False, "reason": _reason(exc.detail)}
-        graph = proposal_graph(get_catalog(request).open(action.project_id), action)
+        catalog = get_catalog(request)
+        graph = proposal_graph(catalog.open(action.project_id), action)
         if _still_pending(graph, action.proposal_id):
             return {
                 "rejected": False,

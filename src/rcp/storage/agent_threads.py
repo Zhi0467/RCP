@@ -104,10 +104,12 @@ class AgentThreadQueueRecord(BaseModel):
     attachment_set_id: str | None = None
     attachment_client_id: str | None = None
     attachment_count: int = 0
+    request_sha256: str
     created_at: str
     operation_id: str | None = None
     refusal_reason: str | None = None
     deferred_at: str | None = None
+    removed_at: str | None = None
 
 
 class AgentThreadQueueFull(Exception):
@@ -170,11 +172,11 @@ def migrate_agent_thread_queue(connection: sqlite3.Connection) -> None:
         queue_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL, message TEXT NOT NULL,
         attachment_set_id TEXT, attachment_client_id TEXT,
-        attachment_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-        operation_id TEXT, refusal_reason TEXT, deferred_at TEXT,
-        UNIQUE(thread_id, idempotency_key))""")
+        attachment_count INTEGER NOT NULL DEFAULT 0, request_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL, operation_id TEXT, refusal_reason TEXT, deferred_at TEXT,
+        removed_at TEXT, UNIQUE(thread_id, idempotency_key))""")
     connection.execute("""CREATE INDEX agent_thread_queue_pending ON agent_thread_queue(thread_id, created_at)
-        WHERE operation_id IS NULL AND refusal_reason IS NULL""")
+        WHERE operation_id IS NULL AND refusal_reason IS NULL AND removed_at IS NULL""")
     install_agent_thread_version(connection, "agent_thread_queue", "ROW.user_id")
 
 
@@ -470,19 +472,24 @@ class AgentThreadStoreMixin(StoreMixinBase):
         attachment_set_id: str | None = None,
         attachment_client_id: str | None = None,
         attachment_count: int = 0,
+        request_sha256: str,
     ) -> AgentThreadQueueRecord:
-        """Store one member message for the thread's next free turn; a replayed key returns it."""
+        """Store one member message for the thread's next free turn; a replayed key returns it.
+
+        A removed message keeps its key, so a late retry of its request finds it removed.
+        """
         from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             existing = _queue_row_for_key(connection, thread_id, idempotency_key)
             if existing is not None:
-                if (existing.user_id, existing.message) != (user_id, message):
-                    raise ValueError("Queue idempotency key reused with a different message")
+                if (existing.user_id, existing.request_sha256) != (user_id, request_sha256):
+                    raise ValueError("Queue idempotency key reused with a different request")
                 return existing
             waiting = connection.execute(
-                "SELECT count(*) FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL",
+                "SELECT count(*) FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
+                "AND removed_at IS NULL",
                 (thread_id,),
             ).fetchone()[0]
             if waiting >= AGENT_THREAD_QUEUE_MAX_ITEMS:
@@ -498,12 +505,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 attachment_set_id=attachment_set_id,
                 attachment_client_id=attachment_client_id,
                 attachment_count=attachment_count,
+                request_sha256=request_sha256,
                 created_at=self.now(),
             )
             connection.execute(
                 "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
-                "attachment_set_id,attachment_client_id,attachment_count,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+                "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.queue_id,
                     thread_id,
@@ -513,6 +521,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     attachment_set_id,
                     attachment_client_id,
                     attachment_count,
+                    request_sha256,
                     record.created_at,
                 ),
             )
@@ -536,7 +545,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
-                "ORDER BY created_at,queue_id",
+                "AND removed_at IS NULL ORDER BY created_at,queue_id",
                 (thread_id,),
             ).fetchall()
         return [AgentThreadQueueRecord.model_validate(dict(row)) for row in rows]
@@ -546,20 +555,21 @@ class AgentThreadStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM agent_thread_queue q WHERE operation_id IS NULL "
-                "AND refusal_reason IS NULL AND NOT EXISTS (SELECT 1 FROM agent_thread_queue o "
-                "WHERE o.thread_id=q.thread_id AND o.operation_id IS NULL "
-                "AND o.refusal_reason IS NULL AND (o.created_at,o.queue_id) < (q.created_at,q.queue_id)) "
+                "AND refusal_reason IS NULL AND removed_at IS NULL AND NOT EXISTS "
+                "(SELECT 1 FROM agent_thread_queue o WHERE o.thread_id=q.thread_id "
+                "AND o.operation_id IS NULL AND o.refusal_reason IS NULL AND o.removed_at IS NULL "
+                "AND (o.created_at,o.queue_id) < (q.created_at,q.queue_id)) "
                 "ORDER BY created_at,queue_id"
             ).fetchall()
         return [AgentThreadQueueRecord.model_validate(dict(row)) for row in rows]
 
-    def delete_agent_thread_queue_item(self, queue_id: str) -> AgentThreadQueueRecord | None:
-        """Remove an unstarted message; None when it is missing or its turn already started."""
+    def remove_agent_thread_queue_item(self, queue_id: str) -> AgentThreadQueueRecord | None:
+        """Mark an unstarted message removed; None when it is missing, removed or started."""
         with self.connection() as connection:
             row = connection.execute(
-                "DELETE FROM agent_thread_queue WHERE queue_id=? AND operation_id IS NULL "
-                "RETURNING *",
-                (queue_id,),
+                "UPDATE agent_thread_queue SET removed_at=? WHERE queue_id=? "
+                "AND operation_id IS NULL AND removed_at IS NULL RETURNING *",
+                (self.now(), queue_id),
             ).fetchone()
         return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
 
@@ -570,7 +580,8 @@ class AgentThreadStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             row = connection.execute(
                 "UPDATE agent_thread_queue SET refusal_reason=? WHERE queue_id=? "
-                "AND operation_id IS NULL AND refusal_reason IS NULL RETURNING *",
+                "AND operation_id IS NULL AND refusal_reason IS NULL AND removed_at IS NULL "
+                "RETURNING *",
                 (reason, queue_id),
             ).fetchone()
         return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
@@ -672,6 +683,8 @@ def claim_queued_turn(
     ).fetchone()
     if row is None:
         raise ValueError("Queued message not found")
+    if row["removed_at"] is not None:
+        raise ValueError("Queued message was removed")
     if row["refusal_reason"] is not None:
         raise ValueError("Queued message was refused")
     if row["operation_id"] is not None:
@@ -681,7 +694,8 @@ def claim_queued_turn(
     _require_queued_turn(connection, row, record)
     older = connection.execute(
         "SELECT 1 FROM agent_thread_queue WHERE thread_id=? AND operation_id IS NULL "
-        "AND refusal_reason IS NULL AND (created_at,queue_id) < (?,?) LIMIT 1",
+        "AND refusal_reason IS NULL AND removed_at IS NULL AND (created_at,queue_id) < (?,?) "
+        "LIMIT 1",
         (row["thread_id"], row["created_at"], queue_id),
     ).fetchone()
     if older is not None:

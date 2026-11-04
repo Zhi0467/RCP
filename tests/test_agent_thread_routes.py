@@ -969,6 +969,16 @@ def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_
         assert queued.json()["operation_id"] is None
         assert post("Then check the logs", key).json() == queued.json()
         assert post("Another message", key).status_code == 422
+        with_files = client.post(
+            base,
+            json={
+                "message": "Then check the logs",
+                "attachment_set_id": "other-set",
+                "attachment_client_id": "other-client",
+            },
+            headers={"Idempotency-Key": key},
+        )
+        assert with_files.status_code == 422
         listed = client.get(base).json()["items"]
         assert [(item["kind"], item["queue_id"]) for item in listed] == [
             ("message", queued.json()["queue_id"])
@@ -980,6 +990,13 @@ def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_
             removed = client.delete(f"{base}/{response.json()['queue_id']}")
             assert removed.status_code == 200, removed.text
         assert client.delete(f"{base}/{extra[0].json()['queue_id']}").status_code == 404
+        removed_key = str(uuid.uuid4())
+        removed = post("Removed before it ran", removed_key)
+        assert client.delete(f"{base}/{removed.json()['queue_id']}").status_code == 200
+        assert post("Removed before it ran", removed_key).json() == removed.json()
+        assert [item["queue_id"] for item in client.get(base).json()["items"]] == [
+            queued.json()["queue_id"]
+        ]
         store.complete_agent_task("busy", applied_revision=None, result={})
         later = post("Now go")
         assert later.status_code == 202, later.text
@@ -1035,6 +1052,7 @@ def test_queue_lists_ready_handoffs_by_readiness_with_the_space_agent_name(manif
             user_id=actor.user_id,
             idempotency_key="key",
             message="Mine",
+            request_sha256="sha",
         )
         store.complete_agent_task("done-source", applied_revision=None, result={})
         handoff("running-source")

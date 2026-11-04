@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections import defaultdict
@@ -495,6 +496,9 @@ class QueuedMessageBody(BaseModel):
             raise ValueError("A queued message needs text or files")
         return self
 
+    def request_sha256(self) -> str:
+        return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
 
 @router.post("/api/agent-threads/{thread_id}/queue", status_code=202)
 def queue_thread_message(
@@ -516,13 +520,11 @@ def queue_thread_message(
     with project_write_admission(thread.project_id, request) as project_id:
         if refusal := store.chat_turn_refusal(project_id, thread_id):
             raise HTTPException(status_code=409, detail=refusal)
-        queued = store.agent_thread_queue_for_key(thread_id, key)
-        if queued is not None and queued.message != body.message:
-            raise HTTPException(status_code=422, detail="The key was used for another message")
-        if queued is None:
-            queued = _queue_new_message(
-                store, catalog, attachment_store, thread, project_id, body, key
-            )
+        queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
+            store, catalog, attachment_store, thread, project_id, body, key
+        )
+    if queued.request_sha256 != body.request_sha256():
+        raise HTTPException(status_code=422, detail="The key was used for another message")
     request.app.state.reconcile_thread_handoffs()
     current = store.agent_thread_queue_item(queued.queue_id)
     return {
@@ -574,6 +576,7 @@ def _queue_new_message(
             attachment_set_id=batch,
             attachment_client_id=client_id,
             attachment_count=len(claimed.attachments),
+            request_sha256=body.request_sha256(),
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
@@ -598,9 +601,9 @@ def remove_queued_message(
     """Remove the member's unstarted or refused message; a started one stays."""
     thread = owned_project_thread(store, thread_id, identity_access.acting_user(request).user_id)
     row = store.agent_thread_queue_item(queue_id)
-    if row is None or row.thread_id != thread.thread_id:
+    if row is None or row.thread_id != thread.thread_id or row.removed_at is not None:
         raise HTTPException(status_code=404, detail="Queued message not found")
-    removed = store.delete_agent_thread_queue_item(queue_id)
+    removed = store.remove_agent_thread_queue_item(queue_id)
     if removed is None:
         raise HTTPException(status_code=409, detail="This message already started")
     if removed.refusal_reason is None:

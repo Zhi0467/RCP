@@ -594,6 +594,7 @@ def _queue_world(manifest, tmp_path: Path, monkeypatch):
         user_id=actor.user_id,
         idempotency_key=key,
         message=message,
+        request_sha256=message,
     )
     return world
 
@@ -741,6 +742,7 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
         user_id=member.user_id,
         idempotency_key="key",
         message="Next",
+        request_sha256="sha",
     )
     with store.connection() as connection:
         connection.execute(

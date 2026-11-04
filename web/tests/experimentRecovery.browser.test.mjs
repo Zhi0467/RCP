@@ -432,6 +432,9 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         await page.route("**/api/agent-threads/own-thread/schedules", (route) =>
           route.fulfill({ json: { schedules: [] } }),
         );
+        await page.route("**/api/agent-threads/own-thread/queue", (route) =>
+          route.fulfill({ json: { items: [] } }),
+        );
         await page.route("**/api/projects/demo/chats/own-thread", (route) =>
           route.fulfill({
             json: {

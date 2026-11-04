@@ -112,7 +112,7 @@ def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_pat
             )
         for queue_id, started in (("waiting", None), ("started", "queued-turn")):
             connection.execute(
-                "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,created_at,operation_id) VALUES(?,'target','member',?,'message',?,?)",
+                "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,request_sha256,created_at,operation_id) VALUES(?,'target','member',?,'message','sha',?,?)",
                 (queue_id, queue_id, now, started),
             )
         for project_id in ("captured", "uncaptured", "remote-project"):
@@ -175,6 +175,7 @@ def test_project_deletion_clears_agent_state_and_reregistration_names_a_fresh_th
         user_id="member",
         idempotency_key="key",
         message="Next",
+        request_sha256="sha",
     )
     now = store.now()
     with store.connection() as connection:
@@ -384,6 +385,7 @@ def _queued(store: AppStore, thread, key: str, message: str):
         user_id=thread.user_id,
         idempotency_key=key,
         message=message,
+        request_sha256=message,
     )
 
 
@@ -452,8 +454,10 @@ def test_queued_turn_claim_is_fifo_once_and_never_for_a_removed_row(tmp_path: Pa
         store.create_agent_task(
             turn.model_copy(update={"operation_id": "another"}), queue_id=older.queue_id
         )
-    assert store.delete_agent_thread_queue_item(older.queue_id) is None
-    assert store.delete_agent_thread_queue_item(newer.queue_id) == newer
+    assert store.remove_agent_thread_queue_item(older.queue_id) is None
+    removed = store.remove_agent_thread_queue_item(newer.queue_id)
+    assert removed is not None and removed.removed_at is not None
+    assert removed.model_copy(update={"removed_at": None}) == newer
     store.complete_agent_task("older-turn", applied_revision=None, result={})
     with pytest.raises(ValueError):
         store.create_agent_task(
