@@ -23,8 +23,8 @@ separate owners. See [Auto-research](specs/auto-research-and-branch-merge.md) an
 [consolidation](specs/graph-consolidation-and-lessons.md). Ordinary conversations
 hold no episode authority of their own, except that a member's Work turn may start
 the Experiments and Auto-research episodes the member asks for, then stop, pause,
-resume, extend or message only the episodes that chat started, as that member's
-Runs controls would.
+resume or extend only the episodes that chat started, and message the Auto-research
+ones, as that member's Runs controls would.
 
 The paper workspace is human-controlled. Coach changes are reviewed or applied
 under the chat's human-authorized mode. Artifacts, reports, comments, and versions
