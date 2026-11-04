@@ -30,6 +30,8 @@ import type {
 import { taskRetryRequestBody } from "../taskRecovery";
 import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
+import { AgentStatusStrip } from "../chat/AgentStatusStrip";
+import { SentAttachments } from "../chat/SentAttachments";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
@@ -301,6 +303,7 @@ export function PaperCoach({
       {panelTools(
         toolbar,
         <>
+          <AgentStatusStrip tasks={sessionTasks} />
           <button
             ref={historyButton}
             className="icon-button compact"
@@ -391,6 +394,11 @@ export function PaperCoach({
                 ) : (
                   <div className="chat-human-message">
                     <span className="node-chat-text">{line.text}</span>
+                    <SentAttachments
+                      attachments={line.attachments}
+                      projectId={project.id}
+                      now={Date.now()}
+                    />
                   </div>
                 )}
                 {lastAnswer && stuck(task) && retryButton(task)}
