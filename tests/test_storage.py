@@ -2233,6 +2233,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "approval_cards": 0,
         "questions": 1,
         "agent_handoffs": 0,
+        "agent_thread_queue": 0,
         "agent_schedules": 0,
         "space_turn_project_bindings": 0,
         "agent_threads": 0,

@@ -574,6 +574,13 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
         idempotency_key="key",
         message="Pending",
     )
+    store.queue_agent_thread_message(
+        queue_id="queued",
+        thread_id=target.thread_id,
+        user_id=member.user_id,
+        idempotency_key="key",
+        message="Next",
+    )
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('schedule',?,'source','key','0 9 * * *','UTC','note','active',?)",
@@ -588,6 +595,7 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
     assert not store.pending_agent_handoffs()
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM agent_schedules").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM agent_thread_queue").fetchone()[0] == 0
     assert store.agent_thread(target.thread_id) is not None
 
 

@@ -94,6 +94,7 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
             # Undelivered handoffs would launch project turns on the restored host,
             # and a delivered one would wake its Space thread once it settles.
             connection.execute("DELETE FROM agent_handoffs WHERE target_operation_id IS NULL")
+            connection.execute("DELETE FROM agent_thread_queue WHERE operation_id IS NULL")
             connection.execute(
                 "UPDATE agent_handoffs SET notified_operation_id=target_operation_id "
                 "WHERE notified_operation_id IS NULL"

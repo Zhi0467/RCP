@@ -110,6 +110,11 @@ def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_pat
                 "INSERT INTO agent_handoffs(handoff_id,source_thread_id,source_operation_id,idempotency_key,target_thread_id,message,created_at,target_operation_id,settled_at) VALUES(?,'source','op',?,'target','message',?,?,?)",
                 (handoff_id, handoff_id, now, delivered, delivered and now),
             )
+        for queue_id, started in (("waiting", None), ("started", "queued-turn")):
+            connection.execute(
+                "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,created_at,operation_id) VALUES(?,'target','member',?,'message',?,?)",
+                (queue_id, queue_id, now, started),
+            )
         for project_id in ("captured", "uncaptured", "remote-project"):
             connection.execute("INSERT INTO memory_migrations VALUES (?,?,0)", (project_id, now))
     store.detach_restored_lifecycle(
@@ -133,6 +138,9 @@ def test_restore_detaches_schedules_cards_handoffs_and_uncaptured_memory(tmp_pat
         assert [
             row[0] for row in connection.execute("SELECT project_id FROM memory_migrations")
         ] == ["captured"]
+        assert [
+            row[0] for row in connection.execute("SELECT queue_id FROM agent_thread_queue")
+        ] == ["started"]
 
 
 def _project(project_id: str, *, remote: bool = False) -> ProjectRecord:
@@ -161,6 +169,13 @@ def test_project_deletion_clears_agent_state_and_reregistration_names_a_fresh_th
         target_thread_id=thread.thread_id,
         message="Please check",
     )
+    store.queue_agent_thread_message(
+        queue_id="queued",
+        thread_id=thread.thread_id,
+        user_id="member",
+        idempotency_key="key",
+        message="Next",
+    )
     now = store.now()
     with store.connection() as connection:
         connection.execute(
@@ -179,10 +194,11 @@ def test_project_deletion_clears_agent_state_and_reregistration_names_a_fresh_th
         connection.execute(
             "INSERT INTO space_turn_project_bindings VALUES('turn','project','{}','scope','{}')"
         )
-    store.delete_project_records("project")
+    assert store.delete_project_records("project")["agent_thread_queue"] == 1
     with store.connection() as connection:
         for table in (
             "agent_handoffs",
+            "agent_thread_queue",
             "agent_schedules",
             "approval_cards",
             "space_turn_project_bindings",
