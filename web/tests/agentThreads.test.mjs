@@ -433,6 +433,10 @@ test("the header names the pinned Proposal's title", () => {
     ),
   );
   assert.ok(!approvalCardTitle(card({})).includes("H2 standing"));
+  const onBranch = card({ proposal: { title: "H2 standing" } });
+  onBranch.action.branch_id = "branch-7";
+  assert.ok(approvalCardTitle(onBranch).includes("branch-7"));
+  assert.ok(!named.includes("branch"));
 });
 
 test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {

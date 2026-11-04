@@ -167,7 +167,7 @@ export function controlThreadTask(
   });
 }
 
-/** A Space thread never asks plainly and has no cards, so it has no question route. */
+/** A Space thread never asks plainly and its cards come with the dock's card list, so it has no question route. */
 export async function loadThreadQuestions(
   thread: AgentThread,
   request: Request = api,

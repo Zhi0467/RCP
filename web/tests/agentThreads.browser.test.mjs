@@ -2183,6 +2183,52 @@ test("Pip docks every open card above its composer, decides them in place, and h
   });
 });
 
+test("Pip's own card for a branch Proposal names the branch and decides in its dock", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      const branchId = "early-probe-60";
+      const own = {
+        ...card,
+        owner_id: "space",
+        operation_id: "op-space",
+        capability: "space",
+        project_name: "Sparse attention",
+        card: {
+          ...card.card,
+          action: { ...card.card.action, branch_id: branchId },
+        },
+      };
+      const served = { proposals: [], asked: [own] };
+      await serveCards(page, served);
+      await page.route("**/api/approval-cards/q1", (route) => {
+        served.asked = [];
+        writes.push(route.request().postDataJSON());
+        return route.fulfill({ json: { outcome: "approved" } });
+      });
+
+      await page.goto(`${base}#/agent/space`);
+      const dock = page.getByRole("region", { name: "Pip" }).locator(".approval-dock");
+      await dock.waitFor();
+      const shown = dock.locator(".approval-card[data-state='pending']");
+      assert.ok((await shown.getAttribute("aria-label")).includes(branchId));
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `pip-branch-card-${width}`);
+      await dock.getByRole("button", { name: "Approve" }).click();
+      await dock.locator(".approval-card[data-state='approved']").waitFor();
+      assert.deepEqual(writes.at(-1), { decision: "approve", pinned_sha256: "sha-1" });
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
 test("only the newest card read counts, and a stale read never revives a decided card", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

@@ -4202,6 +4202,8 @@ export type ApprovalCardAction =
       proposal_id: string;
       decision: "approved" | "rejected";
       reason?: string | null;
+      /** The graph branch the Proposal is pending on; absent or null for main. */
+      branch_id?: string | null;
     }
   | { kind: "truth_scope"; project_id: string; alias: string; writable: boolean }
   | {
