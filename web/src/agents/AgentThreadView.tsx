@@ -85,9 +85,11 @@ import {
   ApprovalCardStack,
   askedCardKey,
   proposalCardKey,
+  questionCardKey,
   useAgentCards,
   type StackCard,
 } from "./ApprovalCardStack";
+import { RunningPopover } from "./RunningPopover";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -1236,6 +1238,11 @@ export function AgentThreadView({
       ? [
           ...cards.proposals.map((view) => proposalStackCard(view, true)),
           ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
+          ...cards.questions.map((question): StackCard => ({
+            kind: "question",
+            key: questionCardKey(question),
+            question,
+          })),
         ]
       : [];
 
@@ -1342,6 +1349,7 @@ export function AgentThreadView({
           )}
         </div>
         <div className="thread-header-tools">
+          {thread.kind === "space" && <RunningPopover />}
           <WakesPopover
             thread={thread}
             schedules={schedules}
@@ -1418,6 +1426,7 @@ export function AgentThreadView({
               ]}
               onDecided={cards.markDecided}
               onResolved={cards.markResolved}
+              onAnswered={cards.markAnswered}
               onChanged={cardsChanged}
             />
           )}
@@ -1554,6 +1563,7 @@ export function AgentThreadView({
             cards={dockCards}
             onDecided={cards.markDecided}
             onResolved={cards.markResolved}
+            onAnswered={cards.markAnswered}
             onChanged={cardsChanged}
           />
         </div>

@@ -531,8 +531,15 @@ after a later change that no longer lists it, or when the member leaves the
 thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
 and can still be sent back with Later. A failed card fetch hides the cards and
 leaves the transcript as it is. The Space thread docks one stack above its composer, hidden when empty:
-Proposal cards first, then asked cards, each naming its project. Docked cards
-stay reachable where inline ones would scroll away.
+Proposal cards first, then asked cards, then plain questions relayed from the
+member's projects, each naming its project. A relayed question also names the
+run or chat that asked, and an answer removes it. Docked cards
+stay reachable where inline ones would scroll away. Every question and approval
+card shows when it was asked: the clock time, with the date when not today.
+Left of Wakes, the Space thread header holds a Running button, present only
+while something runs, that reads needs-you over total. Its popover lists the
+rows that need the member, a divider, then the rest. Each row shows its title,
+project and kind, state and time, and only opens its run or thread.
 Transcript lines show their time only on hover or keyboard focus within the
 row, and on touch a tap on the line toggles it, except on a link, control or
 chip, or when it selects text. Nothing else in the row moves. A schedule wake's

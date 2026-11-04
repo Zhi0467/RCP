@@ -4088,7 +4088,7 @@ export interface ViaAgent {
 export type AgentThreadKind = "space" | "project";
 
 export type AgentThreadLiveState =
-  "idle" | "queued" | "running" | "paused" | "needs_you" | "closed";
+  "idle" | "queued" | "running" | "paused" | "needs_you" | "failed" | "closed";
 
 /** One of the member's private agent threads; the Space thread lists first. */
 export interface AgentThread {
@@ -4274,10 +4274,44 @@ export interface ProposalCardView {
 
 export type AskedApprovalCardView = AgentQuestion & { project_name: string };
 
+/** A plain question from one of the member's projects, relayed to the Space dock. */
+export type RelayedQuestion = AgentQuestion & {
+  project_id: string;
+  project_name: string;
+  /** The episode, chat or thread that asked. */
+  source_label: string;
+};
+
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
 export interface AgentCardList {
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
+  /** The member-wide read only. */
+  questions?: RelayedQuestion[];
+}
+
+export type RunningRowKind = "experiment" | "auto_research" | "thread";
+
+/** One run or project agent of the member's, as the Space thread's Running list shows it. */
+export interface RunningRow {
+  kind: RunningRowKind;
+  id: string;
+  project_id: string;
+  project_name: string;
+  title: string;
+  needs_you: boolean;
+  label: string;
+  watching: number;
+  at: string;
+  /** The app hash that opens the run or thread. */
+  link: string;
+}
+
+/** `GET /api/agent-threads/running`: needs-you rows first; counts are taken before the cut. */
+export interface RunningList {
+  rows: RunningRow[];
+  needs: number;
+  total: number;
 }
 
 export interface ProposalCardDecisionResult {

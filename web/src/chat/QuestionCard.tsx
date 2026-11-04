@@ -1,19 +1,34 @@
-import { useId, useRef, useState } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import { answerQuestion, dismissQuestion } from "../core/api";
+import { askedLabel } from "../agents/agentThreadModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { canSubmitQuestion, questionIsOpen, toggleQuestionChoice } from "./questions";
 import type { AgentQuestion } from "../core/types";
+
+/** When a card was asked, at the end of its header. */
+export function AskedTime({ at }: { at: string }) {
+  return (
+    <time className="card-asked" dateTime={at}>
+      {askedLabel(at, new Date())}
+    </time>
+  );
+}
 
 export function QuestionCard({
   question,
   apiBase,
   onResolved,
   continueChat = false,
+  origin,
+  onLater,
 }: {
   question: AgentQuestion;
   apiBase: string;
   onResolved: () => void;
   continueChat?: boolean;
+  /** Where a relayed question came from, after its state. */
+  origin?: ReactNode;
+  onLater?: () => void;
 }) {
   const labelId = useId();
   const [text, setText] = useState("");
@@ -63,6 +78,7 @@ export function QuestionCard({
   return (
     <section
       className="question-card"
+      tabIndex={-1}
       aria-labelledby={labelId}
       data-question-id={question.question_id}
       data-agent-waiting={open && question.agent_waiting}
@@ -80,6 +96,13 @@ export function QuestionCard({
                 ? "Answered"
                 : "Dismissed"}
         </span>
+        {origin}
+        <AskedTime at={question.created_at} />
+        {open && onLater && (
+          <button className="approval-later" type="button" onClick={onLater}>
+            Later
+          </button>
+        )}
         {open && (
           <button
             className="question-dismiss"
