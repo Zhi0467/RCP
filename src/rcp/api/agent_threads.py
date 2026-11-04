@@ -557,9 +557,11 @@ def _queue_new_message(
             viewer_id=thread.user_id,
         )
     except ValueError as exc:
+        if (raced := store.agent_thread_queue_for_key(thread.thread_id, key)) is not None:
+            return raced
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
-        return store.queue_agent_thread_message(
+        queued = store.queue_agent_thread_message(
             queue_id=queue_id,
             thread_id=thread.thread_id,
             user_id=thread.user_id,
@@ -574,6 +576,9 @@ def _queue_new_message(
             attachment_store.release(batch, operation_id)
         status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
+    if queued.queue_id != queue_id and batch is not None:
+        attachment_store.release(batch, operation_id)
+    return queued
 
 
 @router.delete("/api/agent-threads/{thread_id}/queue/{queue_id}")

@@ -940,3 +940,44 @@ def test_a_refused_merge_in_a_member_thread_points_to_the_approval_card() -> Non
     identity = None
     assert carded(request, identity).result == {"code": "approval_card_required"}  # pyright: ignore[reportArgumentType]
     assert plain(request, identity).result == {}  # pyright: ignore[reportArgumentType]
+
+
+def test_a_queued_message_waits_out_a_racing_turn_and_its_deferral_restarts(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from rcp.runs.provider_login import MachineDependenciesMissing
+    from rcp.service import RunRequest
+    from tests.test_storage import _task_record
+
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store = world.store
+    queued = world.queue("key", "Next")
+
+    def missing(*args, **kwargs):
+        raise MachineDependenciesMissing("codex is missing")
+
+    def racing_turn(*args, **kwargs):
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="racer",
+                project_id=world.project_id,
+                kind="project_chat",
+                status="running",
+                authorized_by=world.actor,
+                request=RunRequest(
+                    chat_scope="project", chat_id=world.thread.thread_id, mode="work"
+                ).model_dump(mode="json"),
+            )
+        )
+        raise ValueError("This conversation already has an active or paused turn.")
+
+    monkeypatch.setattr(world.background, "admit_provider_task", missing)
+    world.drain()
+    assert store.agent_thread_queue_item(queued.queue_id).deferred_at is not None
+    monkeypatch.setattr(world.background, "admit_provider_task", racing_turn)
+    assert world.drain() == []
+    row = store.agent_thread_queue_item(queued.queue_id)
+    assert (row.operation_id, row.refusal_reason) == (None, None)
+    world.drain()
+    assert store.agent_thread_queue_item(queued.queue_id).deferred_at is None

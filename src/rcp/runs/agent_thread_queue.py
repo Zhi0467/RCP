@@ -79,6 +79,8 @@ def admit_queued_message(
         _refuse(store, catalog, row, ready)
         return None
     if ready is None:
+        if row.deferred_at is not None:
+            store.clear_agent_thread_queue_deferral(row.queue_id)
         return None
     assert thread is not None
     try:
@@ -91,7 +93,10 @@ def admit_queued_message(
         else:
             logger.warning("Queued message %s start deferred: %s", row.queue_id, exc)
     except (ValueError, KeyError) as exc:
-        _refuse(store, catalog, row, str(exc) or type(exc).__name__)
+        if _thread_busy(store, thread):
+            logger.warning("Queued message %s waits: another turn took the thread", row.queue_id)
+        else:
+            _refuse(store, catalog, row, str(exc) or type(exc).__name__)
     return None
 
 
@@ -99,7 +104,12 @@ def _queue_ready(
     store: AppStore, thread: AgentThreadRecord | None, row: AgentThreadQueueRecord
 ) -> AuthorizedHuman | str | None:
     """The member to start as, a final refusal reason, or None while the thread is busy."""
-    if thread is None or thread.project_id is None or thread.user_id != row.user_id:
+    if (
+        thread is None
+        or thread.closed_at
+        or thread.project_id is None
+        or thread.user_id != row.user_id
+    ):
         return "thread_closed"
     if refusal := store.chat_turn_refusal(thread.project_id, thread.thread_id):
         return refusal

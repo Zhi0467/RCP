@@ -575,6 +575,14 @@ class AgentThreadStoreMixin(StoreMixinBase):
             ).fetchone()
         return AgentThreadQueueRecord.model_validate(dict(row)) if row is not None else None
 
+    def clear_agent_thread_queue_deferral(self, queue_id: str) -> None:
+        """A busy thread is ordinary waiting, so the delivery timeout restarts when it frees."""
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE agent_thread_queue SET deferred_at=NULL WHERE queue_id=? AND operation_id IS NULL",
+                (queue_id,),
+            )
+
     def defer_agent_thread_queue_item(self, queue_id: str) -> str:
         """Note a transiently refused start; return when deferral first began."""
         with self.connection() as connection:
