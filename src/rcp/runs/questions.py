@@ -22,6 +22,7 @@ from rcp.agents.command_protocol import (
     GraphLogCommandRequest,
     NameCommandRequest,
     ScheduleCommandRequest,
+    WatcherCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import AuthorizedHuman
@@ -30,8 +31,10 @@ from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.work_experiment_commands import (
     handle_work_episode_command,
+    member_work_chat_turn,
     work_experiment_allowed,
 )
+from rcp.runs.work_watcher_commands import handle_work_watcher_command
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import bound_thread
 from rcp.storage.question_models import (
@@ -316,6 +319,8 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
         record_settled_question_receipts(store, operation_id)
 
 
+_JOBS_CAPABILITY = "Runs and stops jobs on the project's machines and pings you when they end"
+
 #: The welcome line for each verb `work_command_handler` may grant a member's
 #: project thread turn; None marks a verb with no member-facing capability.
 #: Its keys are exactly that grant with every gate open, which a test enforces.
@@ -324,8 +329,9 @@ WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
     "graph_log": "Answers questions about the graph and records results in it",
     "validate": "Answers questions about the graph and records results in it",
     "projects": "Reads your other projects when you ask",
-    "launch": "Runs jobs on the project's machines and pings you when they end",
-    "episode": "Starts experiments you ask for and watches them",
+    "launch": _JOBS_CAPABILITY,
+    "watcher": _JOBS_CAPABILITY,
+    "episode": "Starts and stops experiments you ask for and watches them",
     "ask": "Asks your approval to start Auto-research on a branch or merge one",
     "schedule": "Schedules reminders and weekly catch-ups",
     "bulletin": "Talks with other agents on the project Bulletin",
@@ -464,6 +470,11 @@ class WorkCommandHandler:
     ) -> CommandResponse:
         return handle_work_episode_command(execution, self.mailbox, request)
 
+    def _watcher(
+        self, execution: AgentTaskExecution, request: WatcherCommandRequest
+    ) -> CommandResponse:
+        return handle_work_watcher_command(execution, request)
+
     def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
         try:
             current = question_origin(execution)
@@ -523,6 +534,11 @@ _BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]
     EpisodeCommandRequest: (
         WorkCommandHandler._episode,
         "Experiment commands require this Work turn's broker authority.",
+        None,
+    ),
+    WatcherCommandRequest: (
+        WorkCommandHandler._watcher,
+        "Watcher control requires this Work turn's broker authority.",
         None,
     ),
     AskCommandRequest: (
@@ -715,6 +731,8 @@ def work_command_handler(
         card_member = approval_card_member(execution.store, task) if task else None
     if work_experiment_allowed(execution):
         verbs.add("episode")
+    if member_work_chat_turn(execution):
+        verbs.add("watcher")
     return WorkCommandHandler(
         execution,
         compute_commands,

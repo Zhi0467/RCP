@@ -61,7 +61,11 @@ from rcp.api.episodes import (
     serialize_episode,
 )
 from rcp.api.experiment_controls import _experiment_control_response
-from rcp.api.experiments import resume_work_experiment, start_work_experiment
+from rcp.api.experiments import (
+    resume_work_experiment,
+    start_work_experiment,
+    stop_work_experiment,
+)
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
@@ -169,6 +173,7 @@ from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentStart,
+    WorkExperimentStop,
     reconcile_reserved_experiment_branch_roots,
 )
 from rcp.runs.experiment_loop import (
@@ -262,6 +267,7 @@ from rcp.storage import (
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
+    WatcherRecord,
 )
 from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
 from rcp.sync_coordinator import SyncCoordinator
@@ -1248,6 +1254,16 @@ def create_app(
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
 
+    def stop_experiment_from_work(stop: WorkExperimentStop) -> None:
+        stop_work_experiment(catalog, store, experiment_operation_lock, stop)
+
+    def cancel_watcher_from_work(
+        project_id: str, watcher_id: str, requested_by: str
+    ) -> WatcherRecord:
+        with experiment_operation_lock(project_id):
+            store.require_project_accepts_new_work(project_id)
+            return watcher_poller.cancel(project_id, watcher_id, requested_by)
+
     # One per process: admission and the machine card share its cache.
     dependency_checker = DependencyChecker(space_kind=lambda: store.space_kind)
     background_tasks = BackgroundAgentTasks(
@@ -1261,6 +1277,8 @@ def create_app(
         dependency_checker=dependency_checker,
         experiment_starter=start_experiment_from_work,
         experiment_resumer=resume_experiment_from_work,
+        experiment_stopper=stop_experiment_from_work,
+        watcher_canceller=cancel_watcher_from_work,
     )
 
     @contextmanager

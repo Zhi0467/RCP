@@ -870,8 +870,9 @@ class WatcherStoreMixin(StoreMixinBase):
         watcher_ids: list[str],
         *,
         observing_only: bool = False,
+        stopped_by: Literal["human", "agent"] = "human",
     ) -> list[StoredWatcherRecord]:
-        """Release watchers the human has given up on.
+        """Release watchers the human, or their thread's agent, has given up on.
 
         A stopped watcher leaves the polling set and can never wake a turn. RCP
         never decides this for itself — a check that cannot answer is reported,
@@ -965,13 +966,13 @@ class WatcherStoreMixin(StoreMixinBase):
                 f"""
                 UPDATE watchers
                 SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = COALESCE(stopped_by, 'human'),
+                    stopped_by = COALESCE(stopped_by, ?),
                     stopped_at = COALESCE(stopped_at, ?)
                 WHERE project_id = ? AND watcher_id IN ({placeholders})
                   AND status IN ({stoppable})
                   AND notification_operation_id IS NULL
                 """,
-                (self.now(), project_id, *ids),
+                (stopped_by, self.now(), project_id, *ids),
             )
         stopped: list[StoredWatcherRecord] = []
         for watcher_id in ids:

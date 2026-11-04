@@ -728,6 +728,7 @@ def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypat
     monkeypatch.setattr(approval_cards, "approval_card_member", lambda *_: None)
     monkeypatch.setattr(questions, "work_ask_authorized", lambda _: True)
     monkeypatch.setattr(questions, "work_experiment_allowed", lambda _: True)
+    monkeypatch.setattr(questions, "member_work_chat_turn", lambda _: True)
     compute = SimpleNamespace(
         allowed_verbs=WorkComputeCommands.allowed_verbs.fget(
             SimpleNamespace(helper_backend=object())

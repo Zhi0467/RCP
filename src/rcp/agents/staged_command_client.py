@@ -43,6 +43,7 @@ _MUTATING = frozenset(
         "bulletin",
         "name",
         "flag",
+        "watcher",
         "apply",
         "spawn",
         "merge",
@@ -89,6 +90,12 @@ BULLETIN_BODY = ("body_file", "<body-file>")
 NAME_VALUE = ("name", "<name>")
 PROJECTS_SHOW = ("project_id", "<project-id>")
 HANDOFF_MESSAGE = ("message_file", "<message-file>")
+EPISODE_STOP = ("stop", "--stop", "<episode-id>")
+EPISODE_RESUME = ("resume", "--resume", "<episode-id>")
+WATCHER_LIST = ("list", "--list", None)
+WATCHER_STOP = ("stop", "--stop", "<watcher-id>")
+WATCHER_CANCEL = ("cancel", "--cancel", "<watcher-id>")
+WATCHER_ACTIONS = (WATCHER_LIST, WATCHER_STOP, WATCHER_CANCEL)
 
 
 def handoff_usage():
@@ -103,6 +110,14 @@ def projects_usages():
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
+
+
+def episode_control_usage(option):
+    return f"episode {_option_usage(KEY_OPTION)} {_option_usage(option)}"
+
+
+def watcher_usages():
+    return tuple(f"watcher {_option_usage(option)}" for option in WATCHER_ACTIONS)
 
 
 def merge_usage():
@@ -378,6 +393,14 @@ def _parser():
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
+    watcher = subparsers.add_parser("watcher")
+    watcher_action = watcher.add_mutually_exclusive_group(required=True)
+    for dest, flag, value in WATCHER_ACTIONS:
+        if value is None:
+            watcher_action.add_argument(flag, dest=dest, action="store_true")
+        else:
+            watcher_action.add_argument(flag, dest=dest, metavar=value)
+
     schedule = subparsers.add_parser("schedule")
     schedule.add_argument("action", choices=("add", "list", *SCHEDULE_KEYED_ACTIONS))
     for dest, flag, metavar in SCHEDULE_OPTIONS:
@@ -447,8 +470,8 @@ def _parser():
     episode.add_argument("--key", required=True)
     episode_action = episode.add_mutually_exclusive_group(required=True)
     episode_action.add_argument("--kick-off-experiment", action="store_true")
-    episode_action.add_argument("--stop", metavar="EPISODE_ID")
-    episode_action.add_argument("--resume", metavar="EPISODE_ID")
+    for dest, flag, value in (EPISODE_STOP, EPISODE_RESUME):
+        episode_action.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument(KICKOFF_NODE[1])
     episode.add_argument(KICKOFF_GOAL[1])
     episode.add_argument(KICKOFF_LIMIT[1], type=int)
@@ -559,6 +582,12 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
+    if verb == "watcher":
+        if namespace.list:
+            return verb, None, {"action": "list"}
+        action = "stop" if namespace.stop is not None else "cancel"
+        watcher_id = _nonblank(getattr(namespace, action), "watcher id")
+        return verb, None, {"action": action, "watcher_id": watcher_id}
     if verb == "schedule":
         arguments = {"action": namespace.action}
         for field, flag, _ in SCHEDULE_OPTIONS[1:]:
@@ -1265,6 +1294,7 @@ def _requested_verb(argv):
             "bulletin",
             "name",
             "flag",
+            "watcher",
             "validate",
             "merge-answers",
             "graph_diff",

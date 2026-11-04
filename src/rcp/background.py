@@ -58,7 +58,11 @@ from rcp.runs.auto_research_recovery import (
 )
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
-from rcp.runs.experiment_admission import WorkExperimentResumer, WorkExperimentStarter
+from rcp.runs.experiment_admission import (
+    WorkExperimentResumer,
+    WorkExperimentStarter,
+    WorkExperimentStopper,
+)
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
     preflight_experiment_episode_recovery,
@@ -109,6 +113,7 @@ from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
+from rcp.watchers import WatcherCanceller
 
 logger = logging.getLogger(__name__)
 
@@ -293,6 +298,8 @@ class AgentTaskExecution:
     #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
     #: the app provides it, a bare engine (tests) leaves the verb unavailable.
     experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
+    experiment_stopper: WorkExperimentStopper | None = field(default=None, repr=False)
+    watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -430,9 +437,13 @@ class BackgroundAgentTasks:
         dependency_checker: DependencyChecker | None = None,
         experiment_starter: WorkExperimentStarter | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
+        experiment_stopper: WorkExperimentStopper | None = None,
+        watcher_canceller: WatcherCanceller | None = None,
     ) -> None:
         self.store = store
         self.experiment_starter = experiment_starter
+        self.experiment_stopper = experiment_stopper
+        self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
         # once that turn has succeeded.
         self.experiment_resumer = experiment_resumer
@@ -2298,6 +2309,8 @@ class BackgroundAgentTasks:
             ),
             admission=self.runtime_admission_gate,
             experiment_starter=self.experiment_starter,
+            experiment_stopper=self.experiment_stopper,
+            watcher_canceller=self.watcher_canceller,
         )
         awaiting_remote_result = False
         try:
@@ -2653,6 +2666,8 @@ class BackgroundAgentTasks:
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
             experiment_starter=self.experiment_starter,
+            experiment_stopper=self.experiment_stopper,
+            watcher_canceller=self.watcher_canceller,
         )
 
     def _settle_stale_detached_mailboxes(self) -> bool:
