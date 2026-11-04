@@ -13,6 +13,7 @@ import type {
   AgentThread,
   AgentThreadList,
   AgentThreadMemory,
+  AgentThreadQueue,
   AgentThreadTurnRequest,
   AgentThreadVoiceEntry,
   ApprovalCardDecision,
@@ -85,6 +86,43 @@ export async function sendThreadTurn(
     { retryIdentity: false },
   );
   return { operation_id: task.operation_id };
+}
+
+/** A Space thread has no queue; its sends keep today's wait. */
+export async function loadThreadQueue(
+  thread: AgentThread,
+  request: Request = api,
+): Promise<AgentThreadQueue> {
+  if (thread.kind !== "project") return { items: [] };
+  return request(`${threadPath(thread.thread_id)}/queue`);
+}
+
+/** Queues a project send's message, files and references; the request id makes a resend safe. */
+export function queueThreadTurn(
+  thread: AgentThread,
+  { message, attachment_set_id, attachment_client_id, references }: AgentThreadTurnRequest,
+  requestId: string,
+  request: Request = api,
+): Promise<{ queue_id: string; operation_id: string | null }> {
+  return request(
+    `${threadPath(thread.thread_id)}/queue`,
+    {
+      method: "POST",
+      body: JSON.stringify({ message, attachment_set_id, attachment_client_id, references }),
+      headers: { "Idempotency-Key": requestId },
+    },
+    { retryIdentity: false },
+  );
+}
+
+export function removeQueuedTurn(
+  thread: AgentThread,
+  queueId: string,
+  request: Request = api,
+): Promise<void> {
+  return request(`${threadPath(thread.thread_id)}/queue/${encodeURIComponent(queueId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function loadThreadTask(
