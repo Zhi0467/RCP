@@ -376,7 +376,7 @@ On touch phones, Return inserts a newline. Only Send sends.
 In an empty composer, Up and Down scroll the transcript; once it holds text, or
 the package menu is open, they move the caret or the highlight as before.
 
-`/` or `$` selects packages. Arrow keys highlight a package, Enter chooses it,
+`/` selects packages. Arrow keys highlight a package, Enter chooses it,
 and Escape dismisses the picker. Selections are per turn.
 Settings supplies fresh-chat defaults. Sessions retain their profile.
 Seed and Refresh have launch controls. Raw truth inputs choose the context.
