@@ -137,7 +137,11 @@ from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
 )
-from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
+from rcp.runs.session_artifacts import (
+    publish_session_artifacts,
+    run_edits,
+    sync_session_artifacts,
+)
 from rcp.runs.session_master import (
     commit_prepared_graph_observation,
     continuation_session_master,
@@ -829,7 +833,9 @@ async def _stage_work_turn(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
     ) -> StagedArtifactAccess:
         edit_paths = (
-            sync_session_artifacts(execution, request, artifact_directory, layout.remote_stage)
+            sync_session_artifacts(
+                execution, run_edits(execution, request), artifact_directory, layout.remote_stage
+            )
             if execution is not None
             else {}
         )
@@ -2563,7 +2569,7 @@ def _finalize_work_artifacts(
         artifacts = []
     return publish_session_artifacts(
         turn.execution,
-        turn.request,
+        run_edits(turn.execution, turn.request),
         Path(str(turn.artifact_directory)),
         turn.remote_stage,
         artifacts=artifacts,

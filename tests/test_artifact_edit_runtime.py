@@ -121,7 +121,7 @@ def _edit_execution(execution, request, operation_id, **changes):
 
 def _stage(app, request, execution, workspace):
     from rcp.runs.chat import _prepare_local_artifact_directory, stage_artifact_context
-    from rcp.runs.session_artifacts import sync_session_artifacts
+    from rcp.runs.session_artifacts import run_edits, sync_session_artifacts
 
     directory = _prepare_local_artifact_directory(workspace, execution.operation_id, reuse=False)
     staged = stage_artifact_context(
@@ -130,16 +130,23 @@ def _stage(app, request, execution, workspace):
         execution,
         local_stage=workspace.parent,
         remote_stage=None,
-        edit_paths=sync_session_artifacts(execution, request, directory, None),
+        edit_paths=sync_session_artifacts(
+            execution, run_edits(execution, request), directory, None
+        ),
     )
     return directory, staged
 
 
 def _finalize(app, request, execution, directory):
-    from rcp.runs.session_artifacts import publish_session_artifacts
+    from rcp.runs.session_artifacts import publish_session_artifacts, run_edits
 
     return publish_session_artifacts(
-        execution, request, directory, None, artifacts=[], service=app.state.service
+        execution,
+        run_edits(execution, request),
+        directory,
+        None,
+        artifacts=[],
+        service=app.state.service,
     )
 
 
@@ -561,7 +568,7 @@ def test_transient_publish_failure_keeps_the_change_for_a_later_turn_end(
 
 @pytest.mark.parametrize("changed", [False, True])
 def test_turn_start_resyncs_only_an_untouched_tracked_file(manifest, tmp_path, changed):
-    from rcp.runs.session_artifacts import sync_session_artifacts
+    from rcp.runs.session_artifacts import run_edits, sync_session_artifacts
 
     app, request, execution, source, workspace = _setup(manifest, tmp_path)
     store = execution.store
@@ -570,10 +577,10 @@ def test_turn_start_resyncs_only_an_untouched_tracked_file(manifest, tmp_path, c
     tracked.write_bytes(b"<p>agent</p>" if changed else b"<p>original</p>")
     plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
     directory = workspace / "turns" / "next" / "artifacts"
-    assert sync_session_artifacts(execution, plain, directory, None) == {}
+    assert sync_session_artifacts(execution, run_edits(execution, plain), directory, None) == {}
     assert tracked.read_bytes() == (b"<p>agent</p>" if changed else b"<p>base</p>")
     store.undo_artifact(source.artifact_id)
-    sync_session_artifacts(execution, plain, directory, None)
+    sync_session_artifacts(execution, run_edits(execution, plain), directory, None)
     assert tracked.read_bytes() == (b"<p>agent</p>" if changed else b"<p>original</p>")
 
 
@@ -900,7 +907,7 @@ def test_a_delete_during_settlement_is_never_read_as_a_conflict_fork(
 def test_a_rejected_oversized_file_is_restored_at_the_next_turn_start(
     manifest, tmp_path, monkeypatch
 ):
-    from rcp.runs.session_artifacts import sync_session_artifacts
+    from rcp.runs.session_artifacts import run_edits, sync_session_artifacts
 
     app, request, execution, _source, workspace, directory, staged = _staged_edit(
         manifest, tmp_path
@@ -911,7 +918,9 @@ def test_a_rejected_oversized_file_is_restored_at_the_next_turn_start(
     [receipt] = execution.store.agent_task_artifact_edit_outcomes(["edit"])["edit"]
     assert receipt.payload["reason"] == "too_large"
     plain = request.model_copy(update={"artifact_context": None, "artifact_edit": None})
-    sync_session_artifacts(execution, plain, workspace / "turns" / "next" / "artifacts", None)
+    sync_session_artifacts(
+        execution, run_edits(execution, plain), workspace / "turns" / "next" / "artifacts", None
+    )
     assert _tracked_file(staged).read_bytes() == b"<p>base</p>"
 
 

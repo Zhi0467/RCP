@@ -21,7 +21,11 @@ from rcp.runs.chat import (
 )
 from rcp.runs.recorded_settlement import absorb_recorded_events, provider_turn_request
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
-from rcp.runs.session_artifacts import publish_session_artifacts, sync_session_artifacts
+from rcp.runs.session_artifacts import (
+    publish_session_artifacts,
+    run_edits,
+    sync_session_artifacts,
+)
 from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
     _ProviderOutcome,
@@ -129,7 +133,12 @@ def _settle(service, request, execution, workspace, remote, directory, outcome) 
         execution, directory.parent.name, directory, remote, service=service
     )
     artifacts = publish_session_artifacts(
-        execution, request, directory, remote, artifacts=artifacts, service=service
+        execution,
+        run_edits(execution, request),
+        directory,
+        remote,
+        artifacts=artifacts,
+        service=service,
     )
     if edit.reply_episode_id is None:
         _append_chat_exchange(
@@ -165,7 +174,9 @@ async def stream_artifact_edit_run(
         execution,
         local_stage=local,
         remote_stage=remote,
-        edit_paths=sync_session_artifacts(execution, request, directory, remote),
+        edit_paths=sync_session_artifacts(
+            execution, run_edits(execution, request), directory, remote
+        ),
     )
     assert attachment is not None
     prompt = compose(

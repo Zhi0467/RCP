@@ -856,7 +856,7 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
     references = [
         item
         for item in attachments
-        if isinstance(item.get("reference"), dict) and item not in editable
+        if isinstance(item.get("reference"), dict) and "edit_path" not in item
     ]
     if references:
         if lines:

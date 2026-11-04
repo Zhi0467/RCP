@@ -31,10 +31,11 @@ from rcp.artifacts import (
     descriptor_for,
     read_local_regular_file,
 )
+from rcp.attachments import ChatAttachmentDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, RUN_STAGE_RETENTION_DAYS
 from rcp.regular_file_reader import RegularFileTooLargeError
-from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskReceiptRecord, AppStore, Artifact, ArtifactVersionConflict
 from rcp.storage.artifact_models import ArtifactOperationConflict, ArtifactVersion
 from rcp.storage.artifacts import ArtifactByteLimitError, ArtifactDeleted
@@ -61,9 +62,15 @@ class _Tracked:
 
 @dataclass(frozen=True)
 class EditedArtifact:
+    """An artifact this turn may change in place, from `base_version` when set.
+
+    A comment edits the version it was drawn on for its first attempt only: a retry
+    or resume edits the current version, so a pruned base never refuses it. Its
+    artifact must exist and its turn settles an outcome. An attached artifact edits
+    the attached version on every attempt and settles only a change.
+    """
+
     artifact_id: str
-    # The version the comment was drawn on, or the one attached, for the first attempt
-    # only: a retry or resume edits the current version, so a pruned base never refuses it.
     base_version: str | None
     commented: bool
 
@@ -73,12 +80,8 @@ def _first_attempt(execution: AgentTaskExecution) -> bool:
     return task is not None and task.parent_operation_id is None
 
 
-def commented_artifact(
-    execution: AgentTaskExecution, request: RunRequest | CoachRequest
-) -> EditedArtifact | None:
+def commented_artifact(execution: AgentTaskExecution, request: RunRequest) -> EditedArtifact | None:
     """The artifact a turn comments on; an origin edit, or older record, names it in its edit."""
-    if isinstance(request, CoachRequest):
-        return None
     edit, context = request.artifact_edit, request.artifact_context
     if edit is not None:
         first = execution.operation_id == edit.operation_id
@@ -90,20 +93,33 @@ def commented_artifact(
 
 
 def edited_artifacts(
-    execution: AgentTaskExecution, request: RunRequest | CoachRequest
+    execution: AgentTaskExecution,
+    comment: EditedArtifact | None,
+    attachments: list[ChatAttachmentDescriptor],
 ) -> dict[str, EditedArtifact]:
     """The commented artifact and every saved artifact the human attached to the turn."""
-    comment = commented_artifact(execution, request)
     edits = {comment.artifact_id: comment} if comment is not None else {}
-    first = _first_attempt(execution)
-    for attachment in request.attachments:
+    for attachment in attachments:
         reference = attachment.reference
         if reference is not None and reference.kind == "artifact":
             edits.setdefault(
                 reference.source_id,
-                EditedArtifact(reference.source_id, reference.version if first else None, False),
+                EditedArtifact(reference.source_id, reference.version, False),
             )
     return edits
+
+
+def run_edits(
+    execution: AgentTaskExecution | None, request: RunRequest
+) -> dict[str, EditedArtifact]:
+    """A chat turn's edited artifacts: its comment's and the saved ones it attached."""
+    if execution is None:
+        return {}
+    return edited_artifacts(execution, commented_artifact(execution, request), request.attachments)
+
+
+def turn_artifact_directory(workspace: Path | PurePosixPath, scope_id: str) -> Path | PurePosixPath:
+    return workspace / "turns" / scope_id / "artifacts"
 
 
 def _trackable(artifact: Artifact) -> bool:
@@ -124,7 +140,7 @@ def _parts(directory: Path | PurePosixPath) -> tuple[Path | PurePosixPath, str]:
 
 
 def _tracked(
-    execution: AgentTaskExecution, request: RunRequest | CoachRequest, scope_id: str
+    execution: AgentTaskExecution, edits: dict[str, EditedArtifact], scope_id: str
 ) -> list[_Tracked]:
     store = execution.store
     task = store.agent_task(execution.operation_id)
@@ -142,7 +158,7 @@ def _tracked(
         # This turn's own folder belongs to discovery.
         if artifact.supplier_id != scope_id and _trackable(artifact)
     ]
-    for edit in edited_artifacts(execution, request).values():
+    for edit in edits.values():
         if any(item.artifact.artifact_id == edit.artifact_id for item in found):
             continue
         artifact = store.artifact(edit.artifact_id)
@@ -211,33 +227,31 @@ def _version_sha(store: AppStore, artifact_id: str, version_id: str) -> str:
 
 
 def _tracked_path(workspace: Path | PurePosixPath, artifact: Artifact) -> str:
-    return str(workspace / "turns" / artifact.supplier_id / "artifacts" / artifact.source_name)
+    return str(turn_artifact_directory(workspace, artifact.supplier_id) / artifact.source_name)
 
 
-# A fresh comment's file changed between its digest and its rewrite; the agent
-# would read bytes the comment was not drawn on.
-_CHANGED_WHILE_PREPARED = (
-    "The commented artifact changed while it was prepared. Send the comment again."
-)
+# A fresh edit's file changed between its digest and its rewrite; the agent
+# would read bytes the human did not see.
+_CHANGED_WHILE_PREPARED = "The artifact changed while it was prepared. Send the message again."
 
 
 def sync_session_artifacts(
     execution: AgentTaskExecution,
-    request: RunRequest | CoachRequest,
+    edits: dict[str, EditedArtifact],
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
 ) -> dict[str, str]:
     """At turn start, give every untouched tracked file the version the human sees.
 
-    A commented or attached artifact gets the version the human saw, written back
-    even when its file is gone or dirty; a retry keeps its failed attempt's bytes and
-    otherwise gets the current version. Returns those files' paths for the turn's
-    prompt, by artifact id; only the comment's file must be ready.
+    An edited artifact gets the version the human saw, written back even when its
+    file is gone or dirty; a comment's retry keeps its failed attempt's bytes and
+    otherwise gets the current version. Returns the edited files' paths for the
+    turn's prompt, by artifact id. An edited file that cannot be made ready refuses
+    the turn; any other is left for a later turn with a warning.
     """
     workspace, scope_id = _parts(directory)
     store = execution.store
-    edits = edited_artifacts(execution, request)
-    tracked = _tracked(execution, request, scope_id)
+    tracked = _tracked(execution, edits, scope_id)
     if not tracked:
         return {}
     try:
@@ -256,14 +270,21 @@ def sync_session_artifacts(
     paths: dict[str, str] = {}
     for item in tracked:
         edit = edits.get(item.artifact.artifact_id)
-        commented = edit is not None and edit.commented
-        # A fresh edit starts from the version the human saw; only a retry of the
-        # same turn keeps the bytes its failed attempt left.
-        base = edit.base_version if edit is not None else None
         found = digests.get((item.artifact.supplier_id, item.artifact.source_name))
         if edit is None and found is None:
             continue
-        if not _sync_one(execution, workspace, remote, item, found, base, commented):
+        try:
+            # A fresh edit starts from the version the human saw; only a retry of the
+            # same turn keeps the bytes its failed attempt left.
+            _sync_one(store, workspace, remote, item, found, edit.base_version if edit else None)
+        except Exception:
+            if edit is not None:
+                raise
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"{item.artifact.source_name} could not be restored before the turn.",
+                level="warning",
+            )
             continue
         if edit is not None:
             paths[item.artifact.artifact_id] = _tracked_path(workspace, item.artifact)
@@ -271,66 +292,43 @@ def sync_session_artifacts(
 
 
 def _sync_one(
-    execution: AgentTaskExecution,
+    store: AppStore,
     workspace: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     item: _Tracked,
     found: tuple[str, int] | None,
     base: str | None,
-    commented: bool,
-) -> bool:
-    """Write one tracked file's version; False when it could not be made ready."""
-    store = execution.store
+) -> None:
+    """Write one tracked file's version; raises when it cannot be made ready."""
     fresh = base is not None
-
-    def unready(error: Exception | None = None) -> bool:
-        if commented:
-            raise error or ValueError(_CHANGED_WHILE_PREPARED)
-        if error is not None:
-            store.record_agent_task_event(
-                execution.operation_id,
-                f"{item.artifact.source_name} could not be restored before the turn.",
-                level="warning",
-            )
-        return False
-
     with store.artifact_lock(item.artifact.artifact_id):
         artifact = store.artifact(item.artifact.artifact_id)
         if artifact is None:
-            return unready(ValueError("The commented artifact is unavailable."))
+            raise ValueError("The artifact is unavailable.")
         target = base or artifact.current_version
         try:
             target_sha = _version_sha(store, artifact.artifact_id, target)
             data = store.read_artifact_bytes(artifact.artifact_id, target)
         except KeyError as exc:
-            missing = ValueError(
-                "The selected artifact version is no longer available. Send the comment again."
-            )
-            missing.__cause__ = exc
-            return unready(missing)
-        except (OSError, ValueError) as exc:
-            return unready(exc)
+            raise ValueError(
+                "The selected artifact version is no longer available. Send the message again."
+            ) from exc
         if not item.durable:
             if fresh or found is None:
                 written = _write(workspace, remote, artifact, found[0] if found else "", data)
                 if fresh and not written:
-                    return unready()
-            return True
+                    raise ValueError(_CHANGED_WHILE_PREPARED)
+            return
         synced = store.synced_artifact_digest(artifact)
         if found is not None and not fresh and (found[0] != synced or target_sha == synced):
-            return True  # The agent's change, which turn end settles; or already current.
+            return  # The agent's change, which turn end settles; or already current.
         if found is not None and found[0] == target_sha:
             store.record_artifact_sync(artifact.artifact_id, target_sha)
-            return True
-        try:
-            written = _write(workspace, remote, artifact, found[0] if found else "", data)
-        except Exception as exc:
-            return unready(exc)
-        if written:
+            return
+        if _write(workspace, remote, artifact, found[0] if found else "", data):
             store.record_artifact_sync(artifact.artifact_id, target_sha)
         elif fresh:
-            return unready()
-        return True
+            raise ValueError(_CHANGED_WHILE_PREPARED)
 
 
 def _record(
@@ -346,7 +344,7 @@ def _record(
 
 def publish_session_artifacts(
     execution: AgentTaskExecution | None,
-    request: RunRequest | CoachRequest,
+    edits: dict[str, EditedArtifact],
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     *,
@@ -362,56 +360,59 @@ def publish_session_artifacts(
     if execution is None:
         return artifacts
     try:
-        return [*artifacts, *_publish(execution, request, directory, remote, service)]
+        return [*artifacts, *_publish(execution, edits, directory, remote, service)]
     except Exception as exc:
         execution.store.record_agent_task_event(
             execution.operation_id,
             f"Changed artifacts of this session could not be published yet: {exc}",
             level="warning",
         )
-        _settle_one_turn_edit(execution, request, directory)
+        _settle_one_turn_edits(execution, edits, directory)
         return artifacts
 
 
-def _settle_one_turn_edit(
+def _settle_one_turn_edits(
     execution: AgentTaskExecution,
-    request: RunRequest | CoachRequest,
+    edits: dict[str, EditedArtifact],
     directory: Path | PurePosixPath,
 ) -> None:
-    comment = commented_artifact(execution, request)
-    if comment is None:
-        return
     store = execution.store
-    if any(
-        receipt.payload.get("artifact_id") == comment.artifact_id
+    settled = {
+        receipt.payload.get("artifact_id")
         for category in dict.fromkeys(OUTCOME_CATEGORIES.values())
         for receipt in store.agent_task_receipts_by_category(execution.operation_id, category)
-    ):
-        return
-    # Published before the failure: a replayed turn end finishes its receipt.
-    if store.artifact_operation_version(comment.artifact_id, execution.operation_id) is not None:
-        return
+    }
     try:
-        tracked = _tracked(execution, request, _parts(directory)[1])
+        durable = {
+            item.artifact.artifact_id
+            for item in _tracked(execution, edits, _parts(directory)[1])
+            if item.durable
+        }
     except ValueError:
-        tracked = []
-    if not any(
-        item.durable and item.artifact.artifact_id == comment.artifact_id for item in tracked
-    ):
-        _record(execution, "failed", comment.artifact_id, reason="unverified")
+        durable = set()
+    for edit in edits.values():
+        if (
+            not edit.commented
+            or edit.artifact_id in settled
+            or edit.artifact_id in durable
+            # Published before the failure: a replayed turn end finishes its receipt.
+            or store.artifact_operation_version(edit.artifact_id, execution.operation_id)
+            is not None
+        ):
+            continue
+        _record(execution, "failed", edit.artifact_id, reason="unverified")
 
 
 def _publish(
     execution: AgentTaskExecution,
-    request: RunRequest | CoachRequest,
+    edits: dict[str, EditedArtifact],
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     service: ProjectService,
 ) -> list[AgentArtifactDescriptor]:
     workspace, scope_id = _parts(directory)
     store = execution.store
-    edits = edited_artifacts(execution, request)
-    tracked = _tracked(execution, request, scope_id)
+    tracked = _tracked(execution, edits, scope_id)
     if not tracked:
         return []
     # Unbounded per category: a replay must see every artifact this turn settled.

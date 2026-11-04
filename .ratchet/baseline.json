@@ -226,7 +226,7 @@
   "src/rcp/runs/recorded_turn.py": {"comment": 21},
   "src/rcp/runs/remote_finalization.py": {"comment": 1},
   "src/rcp/runs/remote_reconciliation.py": {"comment": 8},
-  "src/rcp/runs/session_artifacts.py": {"comment": 35},
+  "src/rcp/runs/session_artifacts.py": {"comment": 33},
   "src/rcp/runs/session_master.py": {"comment": 2},
   "src/rcp/runs/shared.py": {"comment": 31},
   "src/rcp/runs/space_chat.py": {"comment": 15},

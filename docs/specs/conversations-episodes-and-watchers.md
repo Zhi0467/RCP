@@ -674,10 +674,12 @@ attachment within the attachment count and size limits. Drag, pasted reference l
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
 They share attachment caps and add no target authority. An attached saved
-artifact is also the agent's to change: turn start writes the attached version to
-its tracked file, a write root for that turn, and a changed file publishes as the
-artifact's next version at turn end, so Undo restores it. Only a change settles an
-outcome; an untouched one stays as it was. Prompts list editable artifacts
+artifact is also the agent's to change: every attempt's turn start writes the
+attached version to its tracked file, a write root for that turn, and refuses the
+turn when it cannot. A changed file publishes as the artifact's next version at
+turn end, so Undo restores it; when a newer version arrived meanwhile, the change
+becomes a separate artifact instead. Only a change settles an outcome; an
+untouched one stays as it was. Prompts list editable artifacts
 separately from read-only references and uploads. Ordinary node/project
 Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
