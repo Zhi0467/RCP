@@ -1642,7 +1642,9 @@ up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
 stays visible however many newer tasks exist; a failure followed by a later turn
 in the same chat does not count. Such a latest turn also stays listed for
 `AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client sees the
-terminal record.
+terminal record. With `paper_session`, the route instead returns every coach turn
+of that writing session, so a busy project cannot push the coach's running turn
+or its history out of the Paper panel.
 
 Chat task responses include `current_chat_session_id`, resolved from server task
 metadata independently of the displayed historical task. NodeChat and WebMCP

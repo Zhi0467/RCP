@@ -643,6 +643,7 @@ def agent_tasks(
     store: StoreDependency,
     background_tasks: BackgroundTasksDependency,
     branch_id: str | None = None,
+    paper_session: str | None = None,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
     target = (
@@ -651,7 +652,11 @@ def agent_tasks(
         else None
     )
     user = get_identity_access(request).acting_user(request)
-    records = store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
+    records = (
+        store.paper_session_tasks(project_id, paper_session)
+        if paper_session
+        else store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
+    )
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     edit_outcomes = store.agent_task_artifact_edit_outcomes(

@@ -2382,7 +2382,12 @@ test("Pip's Running button counts what needs the member and each row opens its r
       page.on("pageerror", (error) => errors.push(error.message));
       await mockApi(page, []);
       let running = { rows: [], needs: 0, total: 0 };
-      await page.route("**/api/agent-threads/running", (route) => route.fulfill({ json: running }));
+      let failures = 0;
+      await page.route("**/api/agent-threads/running", (route) =>
+        failures-- > 0
+          ? route.fulfill({ status: 503, json: {} })
+          : route.fulfill({ json: running }),
+      );
       const pip = page.getByRole("region", { name: "Pip" });
       const button = pip.getByRole("button", { name: /^Running/ });
 
@@ -2394,7 +2399,10 @@ test("Pip's Running button counts what needs the member and each row opens its r
       assert.equal(await button.count(), 0);
 
       running = { rows, needs: 2, total: 5 };
+      failures = 1;
+      const refused = page.waitForResponse((response) => response.status() === 503);
       await page.evaluate(() => (window.agentCardsVersion = "2"));
+      await refused;
       await button.waitFor();
       assert.equal((await button.textContent()).trim(), "2 / 5");
       const header = await pip

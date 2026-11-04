@@ -190,6 +190,7 @@ export function createPaperFixture({
         };
       if (path.endsWith("/tree")) return { json: tree };
       if (path.endsWith("/sessions")) return { json: [] };
+      if (path.endsWith("/tasks")) return { json: [] };
       if (path.endsWith("/engines"))
         return {
           json: { latex: "ready", typst: "ready", errors: { latex: null, typst: null } },

@@ -23,6 +23,20 @@ export function taskProgressProfile(projectId: string): ResourceProfile<AgentTas
   return { ...taskStatusProfile(projectId), key: key(projectId, "tasks.progress") };
 }
 
+/** Every coach turn of one writing session, outside the project list's newest-task window. */
+export function paperSessionTasksProfile(
+  projectId: string,
+  sessionId: string,
+): ResourceProfile<AgentTask[]> {
+  const query = `paper_session=${encodeURIComponent(sessionId)}`;
+  return {
+    ...taskStatusProfile(projectId),
+    key: { ...key(projectId, "tasks.progress"), query },
+    fetch: (signal) =>
+      api(`/api/projects/${encodeURIComponent(projectId)}/tasks?${query}`, { signal }),
+  };
+}
+
 export function taskResourceProfile(
   projectId: string,
   operationId: string,

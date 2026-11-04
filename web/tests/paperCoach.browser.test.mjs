@@ -670,3 +670,39 @@ test("a settled turn's steers sit between its prompt and reply; an unsteerable t
   assert.equal(await send.getAttribute("title"), unsteerable.steer_unavailable_reason);
   await page.getByRole("button", { name: "Stop coach" }).waitFor();
 });
+
+test("a coach session's turns show though the project task list no longer carries them", async (t) => {
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path === "/api/projects/p/tasks") return { json: [running, turn] };
+        if (path.endsWith("/sessions"))
+          return {
+            json: [
+              {
+                provider: "codex",
+                native_session_id: "s1",
+                execution_machine: "local",
+                project_id: "p",
+                model: "",
+                reasoning: "medium",
+                created_at: turn.created_at,
+                last_resumed_at: turn.created_at,
+              },
+            ],
+          };
+        return respond(path, ...rest);
+      };
+    },
+  });
+  await coach(page);
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  assert.deepEqual(await prompts.allTextContents(), [
+    "Review the introduction",
+    "Check the claims",
+  ]);
+  assert.deepEqual(errors, []);
+});

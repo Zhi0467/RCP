@@ -2,10 +2,11 @@ import { Activity, ChevronRight } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { RunningList, RunningRow, RunningRowKind } from "../core/types";
 import { useLayerDismiss } from "../core/useLayerDismiss";
+import { useRefreshRuntime } from "../core/useResource";
+import { retryBackoffMs } from "../core/resourceStore";
 import { useMinuteClock } from "../core/useMinuteClock";
 import { sinceLabel } from "./agentThreadModel";
 import { loadRunningList } from "./agentThreadsApi";
-import { useAgentCardsVersion } from "./useAgentThreads";
 
 const KIND_LABEL: Record<RunningRowKind, string> = {
   experiment: "Experiment",
@@ -13,28 +14,63 @@ const KIND_LABEL: Record<RunningRowKind, string> = {
   thread: "Your agent",
 };
 
+const RUNNING_READ_GAP_MS = 2000;
+
 /**
  * The Running list, read once and again whenever the open-card version moves
- * from a known value. Only the newest read counts; a failed read keeps the last list.
+ * from a known value. Reads are at least RUNNING_READ_GAP_MS apart, so a burst of
+ * moves costs one read. A version counts as read only once its list loaded; a failed
+ * read keeps the last list and retries with backoff.
  */
 function useRunningList(): RunningList | null {
-  const version = useAgentCardsVersion();
+  const { scheduler } = useRefreshRuntime();
   const [list, setList] = useState<RunningList | null>(null);
-  const latest = useRef(0);
-  const shown = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    const first = shown.current === undefined;
-    const moved = shown.current != null && shown.current !== version;
-    shown.current = version;
-    if (!first && !moved) return;
-    const mine = ++latest.current;
-    loadRunningList().then(
-      (next) => {
-        if (mine === latest.current) setList(next);
-      },
-      () => undefined,
-    );
-  }, [version]);
+    let stopped = false;
+    let loading = false;
+    let failures = 0;
+    let lastRead = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let wanted: string | null = null;
+    let read: string | null | undefined;
+    const stale = () => read === undefined || (read !== null && read !== wanted);
+    const later = (ms: number) => {
+      if (stopped || loading || timer !== null || !stale()) return;
+      timer = setTimeout(load, Math.max(0, ms));
+    };
+    const load = () => {
+      timer = null;
+      loading = true;
+      const version = wanted;
+      lastRead = Date.now();
+      loadRunningList().then(
+        (next) => {
+          loading = false;
+          if (stopped) return;
+          failures = 0;
+          read = version ?? wanted;
+          setList(next);
+          later(RUNNING_READ_GAP_MS);
+        },
+        () => {
+          loading = false;
+          failures += 1;
+          later(retryBackoffMs(failures));
+        },
+      );
+    };
+    const unwatch = scheduler.watchAgentCards((version) => {
+      wanted = version;
+      if (read === null) read = version;
+      later(lastRead + RUNNING_READ_GAP_MS - Date.now());
+    });
+    later(0);
+    return () => {
+      stopped = true;
+      if (timer !== null) clearTimeout(timer);
+      unwatch();
+    };
+  }, [scheduler]);
   return list;
 }
 

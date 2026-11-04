@@ -3169,6 +3169,24 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
+    def paper_session_tasks(self, project_id: str, session_id: str) -> list[AgentTaskRecord]:
+        """Every visible coach turn of one writing session, newest first.
+
+        The project list keeps only its newest tasks, so a busy project would
+        otherwise push a running coach turn and its session's history out of view.
+        """
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT graph_runs.*, 0 AS recovery_abandoned FROM graph_runs
+                WHERE project_id = ? AND kind = 'paper_coach' AND visible = 1
+                  AND (native_session_id = ? OR json_extract(request_json, '$.session_id') = ?)
+                ORDER BY created_at DESC, operation_id DESC
+                """,
+                (project_id, session_id, session_id),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
     def project_tasks_with_kept_artifacts(self, project_id: str) -> list[AgentTaskRecord]:
         """Retained chat outputs across complete history, without decoding unrelated tasks."""
         with self.connection() as connection:

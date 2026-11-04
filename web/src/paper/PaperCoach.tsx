@@ -25,6 +25,8 @@ import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import { api } from "../core/api";
 import { readPref, writePref } from "../core/prefStorage";
 import { useLayerDismiss } from "../core/useLayerDismiss";
+import { useResource } from "../core/useResource";
+import { paperSessionTasksProfile } from "../agents/taskResources";
 import { returnSends } from "../ui/composerKeys";
 import { useSkillPicker } from "../core/SkillPicker";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
@@ -153,7 +155,7 @@ export function PaperCoach({
     setHistoryOpen(false);
     setError(null);
   };
-  const mergedTasks = useMemo(
+  const knownTasks = useMemo(
     () => [
       ...tasks,
       ...started.filter((turn) => !tasks.some((task) => task.operation_id === turn.operation_id)),
@@ -163,11 +165,23 @@ export function PaperCoach({
   const openedSession =
     sessionId ??
     (!fresh
-      ? (mergedTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
+      ? (knownTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
           ?.native_session_id ??
         sessions[0]?.native_session_id ??
         null)
       : null);
+  const sessionRead = useResource(
+    `${project.id}:paper-coach`,
+    openedSession ? paperSessionTasksProfile(project.id, openedSession) : null,
+  );
+  const mergedTasks = useMemo(() => {
+    const byId = new Map(knownTasks.map((task) => [task.operation_id, task]));
+    for (const task of sessionRead.value ?? []) {
+      const known = byId.get(task.operation_id);
+      if (!known || known.updated_at <= task.updated_at) byId.set(task.operation_id, task);
+    }
+    return [...byId.values()];
+  }, [knownTasks, sessionRead.value]);
   const conversation = coachConversation(
     mergedTasks,
     openedSession,
