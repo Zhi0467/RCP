@@ -9,15 +9,27 @@ from pathlib import Path
 
 import pytest
 
-from rcp.config import MachineConfig
 from rcp.limits import TERMINAL_PROBE_WORKERS
+from rcp.storage.models import SpaceMachineRecord
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache, probe_remote_terminal
 from rcp.transport import remote_terminal_probe
 
 
+def _card(machine_id: str, host: str, os_account: str = "") -> SpaceMachineRecord:
+    now = "2026-01-01T00:00:00Z"
+    return SpaceMachineRecord(
+        machine_id=machine_id,
+        name=machine_id,
+        host=host,
+        os_account=os_account,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 @pytest.fixture
 def machine():
-    return MachineConfig(alias="remote", host="terminal.example")
+    return _card("remote", "terminal.example")
 
 
 @pytest.mark.parametrize(
@@ -281,13 +293,13 @@ async def test_shutdown_drops_probes_still_queued_for_a_worker():
 
     def probe(machine):
         with counted:
-            started.append(machine.alias)
+            started.append(machine.machine_id)
         running.release()
         assert release.wait(30)
         return TerminalProbe("Linux", "reachable", "Ready.")
 
     machines = [
-        MachineConfig(alias=f"remote-{index}", host=f"host-{index}.example")
+        _card(f"remote-{index}", f"host-{index}.example")
         for index in range(TERMINAL_PROBE_WORKERS * 3)
     ]
     cache = TerminalProbeCache(probe)
@@ -327,7 +339,7 @@ def test_a_machine_answering_as_another_account_is_not_offered(registered, answe
     """
     from rcp.terminals.backends import machine_capability
 
-    machine = MachineConfig(alias="remote", host="terminal.example", os_account=registered)
+    machine = _card("remote", "terminal.example", registered)
     probe = TerminalProbe("Linux", "reachable", "Ready.", 254, answered)
     capability = machine_capability(machine, probe)
     assert (capability.backend is not None) is offered

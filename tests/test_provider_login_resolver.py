@@ -9,8 +9,8 @@ import pytest
 
 from rcp.agents.provider_accounts import LoginRefusal, PreviousProviderLogin, ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import LoginKey
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey
 
 
 @pytest.fixture

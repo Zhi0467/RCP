@@ -10,8 +10,9 @@ import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 _WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
 

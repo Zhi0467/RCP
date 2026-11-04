@@ -21,13 +21,14 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
+from rcp.machine_cards import LoginKey
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
     ProviderSignInRunner,
 )
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 
 @pytest.mark.parametrize("success", [True, False])

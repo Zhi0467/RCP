@@ -25,6 +25,7 @@ from rcp.core.models import Experiment, Patch
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.loop_status import other_branch_loops
+from rcp.machine_cards import LoginKey
 from rcp.paper import PaperService
 from rcp.providers import ModelChoice
 from rcp.runs.auto_research import (
@@ -54,7 +55,6 @@ from rcp.storage import (
     AutoResearchExperimentAllowanceReached,
     ProjectRecord,
 )
-from rcp.storage.models import LoginKey
 from tests.helpers import unchecked_write_authority
 
 from .helpers import (

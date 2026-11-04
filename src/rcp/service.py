@@ -1069,7 +1069,7 @@ class ArtifactEditAdmission(BaseModel):
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_path: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     reply_episode_id: str | None = None
     episode_id: str | None = None
@@ -1102,7 +1102,7 @@ class RunRequest(BaseModel):
     # Resolved from the immutable chat origin, never accepted from HTTP clients.
     fork_session_id: str | None = None
     fork_source_cwd: str | None = None
-    fork_source_host: str | None = None
+    fork_source_machine_id: str | None = None
     # The source chat's latest turn when the first message forked; no launch reads it.
     fork_source_operation_id: str | None = None
     # The Work turn that started this Experiment episode; never accepted from HTTP clients.
@@ -1450,6 +1450,7 @@ class ProjectService:
         self.indexer = ConversationIndexer(
             manifest,
             cache_root,
+            machine_cards=self.launcher.machine_cards,
             app_chat_origin=app_chat_origin,
         )
         self._index_lock = threading.Lock()

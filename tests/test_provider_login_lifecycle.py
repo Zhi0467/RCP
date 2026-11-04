@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import LoginKey
 from rcp.runs.provider_login import (
     bound_running_count,
     reconcile_login_removals,
@@ -16,7 +17,7 @@ from rcp.runs.provider_login import (
     settle_provider_login,
 )
 from rcp.storage import AppStore, ProjectRecord
-from rcp.storage.models import EpisodeMode, EpisodeRecord, LoginKey
+from rcp.storage.models import EpisodeMode, EpisodeRecord
 
 from .helpers import fabricated_authorizer, fake_launch_admitted, write_local_test_manifest
 from .test_provider_login_resolver import _login, _task

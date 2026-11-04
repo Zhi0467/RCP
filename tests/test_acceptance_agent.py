@@ -28,8 +28,9 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.schema import parse_agent_patch_json
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import create_named_app as create_app
 from tests.helpers import signed_in_client
 

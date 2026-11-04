@@ -12,10 +12,11 @@ import uvicorn
 from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.agents import launcher as launcher_module
 from rcp.api.app import create_app
+from rcp.machine_cards import LoginKey
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task, wait_until
 from .test_provider_sign_in import _fake_codex

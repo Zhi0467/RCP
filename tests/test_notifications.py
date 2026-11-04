@@ -356,8 +356,8 @@ def test_proposal_and_reopened_attention_have_distinct_occurrences(manifest, tmp
 def test_wrapup_sign_in_changes_observation_without_changing_health(tmp_path, monkeypatch):
     from rcp.agents.provider_accounts import LoginRefusal
     from rcp.api.episodes import serialize_episode
+    from rcp.machine_cards import LoginKey
     from rcp.storage import AppStore
-    from rcp.storage.models import LoginKey
 
     from .test_episode_api_serialization import _begin_report, _branch_summary, _project
 

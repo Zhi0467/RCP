@@ -55,6 +55,7 @@ from unittest import mock
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.attachments import ChatAttachmentDescriptor
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
+from rcp.machine_cards import LoginKey
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -69,7 +70,6 @@ from rcp.storage.models import (
     AGENT_TASK_TRANSITIONS,
     MACHINE_LOGIN_ID,
     AgentTaskStatus,
-    LoginKey,
 )
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin, migrate_per_member_provider_logins

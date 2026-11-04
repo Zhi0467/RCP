@@ -104,7 +104,7 @@ def reconcile_experiment_question_answers(
                 updated_at=now,
                 status_message="Queued Experiment question answer",
                 native_session_id=origin.native_session_id,
-                stage_host=origin.stage_host,
+                stage_machine_id=origin.stage_machine_id,
                 stage_root=origin.stage_root,
                 graph_target=origin.graph_target,
                 authorized_by=episode.authorized_by,
@@ -117,7 +117,7 @@ def reconcile_experiment_question_answers(
                 record.project_id,
                 request,
                 authorized_by=record.authorized_by,
-                execution_host=(record.stage_host or "") if record.stage_root else None,
+                machine_id=record.stage_machine_id if record.stage_root else None,
             )
             admitted = store.create_experiment_question_invocation(
                 record, question_id=question.question_id, answer_revision=question.answer_revision

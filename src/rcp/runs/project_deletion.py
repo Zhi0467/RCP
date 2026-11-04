@@ -27,6 +27,7 @@ from rcp.limits import (
     PROJECT_DELETION_CANCEL_CONFIRM_INTERVAL_SECONDS,
     PROJECT_DELETION_CANCEL_CONFIRM_SECONDS,
 )
+from rcp.machine_cards import card, host_of
 from rcp.runs.membership_fence import press_episode_stop
 from rcp.server_ops.paper_lifecycle import pause_paper_project
 from rcp.storage import AppStore, EpisodeNotRunning, ProjectActiveTaskConflict
@@ -83,7 +84,7 @@ def deletion_preview(store: AppStore, project_id: str) -> ProjectDeletionPreview
     groups = [
         _group("agent task", [_task_label(task, branches) for task in work.tasks]),
         _group("run", [_episode_label(episode, branches) for episode in work.episodes]),
-        _group("compute job", [_job_label(job) for job in work.compute_jobs]),
+        _group("compute job", [_job_label(store, job) for job in work.compute_jobs]),
         _group("watcher", [], count=len(work.watchers)),
     ]
     stops = [group for group in groups if group is not None]
@@ -191,10 +192,10 @@ def _cancel_external_work(
     for job in work.compute_jobs:
         spec = WatchSpec.model_validate(helper_watch_spec(job))
         assert spec.cancel_command is not None
-        actions[(job.execution_host, spec.cwd, spec.cancel_command)] = (
+        actions[(job.machine_id, spec.cwd, spec.cancel_command)] = (
             spec,
-            job.execution_host,
-            _job_label(job),
+            host_of(store, job.machine_id),
+            _job_label(store, job),
         )
     for watcher in [*earlier_watchers, *work.watchers]:
         if not isinstance(watcher, WatcherRecord):
@@ -205,16 +206,16 @@ def _cancel_external_work(
             cwd=watcher.cwd,
             cancel_command=watcher.cancel_command,
         )
-        label = f"Watched job on {watcher.execution_host or 'this computer'}"
+        label = f"Watched job on {card(store, watcher.machine_id).name}"
         if watcher.cancel_command is None:
             uncancellable.setdefault(
-                (watcher.execution_host, watcher.cwd, watcher.check_command),
-                (spec, watcher.execution_host, label),
+                (watcher.machine_id, watcher.cwd, watcher.check_command),
+                (spec, host_of(store, watcher.machine_id), label),
             )
         else:
             actions.setdefault(
-                (watcher.execution_host, watcher.cwd, watcher.cancel_command),
-                (spec, watcher.execution_host, label),
+                (watcher.machine_id, watcher.cwd, watcher.cancel_command),
+                (spec, host_of(store, watcher.machine_id), label),
             )
     unstopped: list[str] = []
     # Without a saved cancel, RCP can only say whether the job is still running.
@@ -278,8 +279,8 @@ def _episode_label(episode: EpisodeRecord, branches: dict[str, str]) -> str:
     return mode + _branch_suffix(episode.graph_target.branch_id, branches)
 
 
-def _job_label(job: ComputeJobRecord) -> str:
-    return f"{job.label or _command_name(job.argv)} on {job.execution_machine}"
+def _job_label(store: AppStore, job: ComputeJobRecord) -> str:
+    return f"{job.label or _command_name(job.argv)} on {card(store, job.machine_id).name}"
 
 
 def _command_name(argv: list[str]) -> str:

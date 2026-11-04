@@ -17,6 +17,7 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import LoginKey
 from rcp.runs.episodes.isolation import ensure_episode_isolation
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
@@ -30,7 +31,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer, start_experiment_episode
 

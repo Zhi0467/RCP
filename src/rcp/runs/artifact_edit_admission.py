@@ -121,18 +121,15 @@ def _launch_kind_for_master_owner(
 
 def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *, verify: bool):
     """Require resumable origin facts; availability skips SSH and content hashing."""
-    available = not origin.history_only and bool(origin.native_session_id and origin.stage_root)
-    if available:
+    stage_root = origin.stage_root
+    available = not origin.history_only and bool(origin.native_session_id and stage_root)
+    if available and stage_root:
         if origin.stage_machine_id and origin.stage_machine_id != BACKEND_MACHINE_ID:
             if verify:
-                available = (
-                    RemoteRunStage(host_of(store, origin.stage_machine_id)).directory_exists(
-                        origin.stage_root
-                    )
-                    is True
-                )
+                remote = RemoteRunStage(host_of(store, origin.stage_machine_id))
+                available = remote.directory_exists(stage_root) is True
         else:
-            stage = Path(origin.stage_root)
+            stage = Path(stage_root)
             available = stage.is_absolute() and stage.is_dir() and not stage.is_symlink()
     if not available:
         raise ArtifactFreshSessionRequired(

@@ -12,6 +12,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+from rcp.machine_cards import LoginKey
 from rcp.runs.codex_resume import (
     REFUSAL,
     RETRY,
@@ -21,7 +22,6 @@ from rcp.runs.codex_resume import (
 )
 from rcp.runs.shared import _ProviderOutcome, _sse, _stream_agent_events
 from rcp.service import RunRequest
-from rcp.storage.models import LoginKey
 
 from .helpers import wait_for_task, wait_until
 from .test_background import _store

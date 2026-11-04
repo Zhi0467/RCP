@@ -61,6 +61,7 @@ from rcp.watchers import (
 if TYPE_CHECKING:
     from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
+    from rcp.storage import AppStore
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -1519,6 +1520,7 @@ def commit_experiment_episode_binding(
             ending_signal=ending_signal,
         )
     )
+    assert request.run_on is not None
     execution.store.commit_experiment_episode_turn(
         episode_id=request.control_episode_id,
         project_id=task.project_id,

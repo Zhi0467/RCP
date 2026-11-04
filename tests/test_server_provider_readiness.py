@@ -19,6 +19,7 @@ from rcp.agents.launcher import (
 )
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import LoginKey
 from rcp.providers import ModelChoice
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
@@ -42,7 +43,6 @@ from rcp.storage import (
     ProjectProvisioningRepositoryIntent,
     ProjectRecord,
 )
-from rcp.storage.models import LoginKey
 from tests.helpers import signed_in_client
 
 

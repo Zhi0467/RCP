@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents import launcher as launcher_module
+from rcp.machine_cards import LoginKey
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.shared import (
     _ProviderOutcome,
@@ -16,7 +17,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport import (
     RemoteRunStage,
     StateMissing,

@@ -7,6 +7,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research_admission import start_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
     deliver_auto_research_watcher_group,
@@ -16,7 +17,7 @@ from rcp.runs.auto_research_delivery import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AutoResearchLifecycleNoticeRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, _required_timestamp
+from rcp.storage.models import MACHINE_LOGIN_ID, _required_timestamp
 
 from .helpers import fake_launch_admitted
 from .test_auto_research_child_work_watchers import _deliver, _waiting_child

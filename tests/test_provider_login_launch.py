@@ -7,9 +7,9 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import LoginKey
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
-from rcp.storage.models import LoginKey
 
 from .test_provider_login_resolver import _limit, _login, _task
 from .test_provider_login_resolver import accounts as accounts

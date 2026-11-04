@@ -25,8 +25,9 @@ from rcp.agents.credential_gate import (
 )
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+from rcp.machine_cards import LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import wait_until
 

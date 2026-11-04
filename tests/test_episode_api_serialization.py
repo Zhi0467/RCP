@@ -18,6 +18,7 @@ from rcp.api.episodes import (
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import LoginKey
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -27,7 +28,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .episode_report_helpers import stored_report
 

@@ -11,10 +11,11 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 CLAUDE = ClaudeAuthentication()
 CLAUDE_TOKEN_VARIABLE = CLAUDE.token_variable

@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from rcp.machine_cards import LoginKey
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.storage_helpers import downgrade_resource_watermarks
 
 

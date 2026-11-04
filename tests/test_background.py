@@ -15,6 +15,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     auto_research_child_work_task,
@@ -50,7 +51,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.lifecycles.agent_task import admitted_launch_task as _admitted_launch_task
 from tests.lifecycles.agent_task import done_stream as _done_stream
 from tests.lifecycles.agent_task import seeded_store as _store

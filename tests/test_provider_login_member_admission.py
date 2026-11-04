@@ -4,10 +4,11 @@ import pytest
 
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+from rcp.machine_cards import LoginKey
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer
 

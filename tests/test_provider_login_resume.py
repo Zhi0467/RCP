@@ -21,12 +21,13 @@ from rcp.api import provider_login
 from rcp.api.dependencies import get_launcher, get_provider_sign_ins, get_store
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import agent_login_accounts
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer, record_launched_experiment_turn, wait_for_task
 from .test_auto_research_recovery import (

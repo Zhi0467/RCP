@@ -9,8 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentLauncher
+from rcp.machine_cards import LoginKey
 from rcp.providers import profile_for
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport import provider_discovery
 from rcp.transport.state import _remote_script
 

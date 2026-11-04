@@ -10,9 +10,9 @@ from rcp import provider_skills
 from rcp.agents import ProviderReadiness
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderProcessEnvironment
+from rcp.machine_cards import LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey
 
 
 @pytest.mark.parametrize("machine_usable", [False, True])

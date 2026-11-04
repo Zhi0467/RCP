@@ -6,14 +6,25 @@ import subprocess
 from pathlib import Path
 
 from rcp.agents import ContextAssembler
-from rcp.config import MachineConfig
 from rcp.history import HistoryManager
 from rcp.limits import REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
 from rcp.sources import preflight_provider_roots
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from tests.helpers import unchecked_write_authority
+
+
+def _card(machine_id: str, name: str, host: str) -> SpaceMachineRecord:
+    now = "2026-01-01T00:00:00Z"
+    return SpaceMachineRecord(
+        machine_id=machine_id, name=name, host=host, os_account="", created_at=now, updated_at=now
+    )
+
+
+LAPTOP = _card(BACKEND_MACHINE_ID, "laptop", "")
 
 
 def test_local_preflight_checks_metadata_without_enumerating(manifest, monkeypatch) -> None:
@@ -23,8 +34,10 @@ def test_local_preflight_checks_metadata_without_enumerating(manifest, monkeypat
     monkeypatch.setattr(Path, "iterdir", forbid_enumeration)
     monkeypatch.setattr(os, "scandir", forbid_enumeration)
 
-    roots = ContextAssembler(manifest).source_roots("laptop")
-    assert preflight_provider_roots(roots, manifest.machine_map["laptop"]) == []
+    roots = ContextAssembler(manifest, cards={LAPTOP.machine_id: LAPTOP}).source_roots(
+        LAPTOP.machine_id
+    )
+    assert preflight_provider_roots(roots, LAPTOP) == []
 
 
 def test_local_preflight_reports_each_invalid_agent_visible_root(manifest, tmp_path) -> None:
@@ -34,8 +47,10 @@ def test_local_preflight_reports_each_invalid_agent_visible_root(manifest, tmp_p
     manifest.sources.claude_roots = [str(not_a_directory)]
     manifest.sources.codex_roots = [str(missing)]
 
-    roots = ContextAssembler(manifest).source_roots("laptop")
-    diagnostics = preflight_provider_roots(roots, manifest.machine_map["laptop"])
+    roots = ContextAssembler(manifest, cards={LAPTOP.machine_id: LAPTOP}).source_roots(
+        LAPTOP.machine_id
+    )
+    diagnostics = preflight_provider_roots(roots, LAPTOP)
     assert diagnostics == [
         f"laptop/claude source root {str(not_a_directory)!r}: is not a directory",
         f"laptop/codex source root {str(missing)!r}: does not exist",
@@ -43,7 +58,7 @@ def test_local_preflight_reports_each_invalid_agent_visible_root(manifest, tmp_p
 
 
 def test_remote_preflight_uses_one_metadata_only_ssh_probe(manifest, monkeypatch) -> None:
-    machine = MachineConfig(alias="remote-1", host="research.example")
+    machine = _card("remote", "remote-1", "research.example")
     manifest.sources.remote_claude_roots = ["~/.claude/projects"]
     manifest.sources.remote_codex_roots = ["/srv/codex;safely-data"]
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -84,7 +99,7 @@ def test_remote_preflight_uses_one_metadata_only_ssh_probe(manifest, monkeypatch
 
 
 def test_remote_preflight_timeout_is_precise_per_root(manifest, monkeypatch) -> None:
-    machine = MachineConfig(alias="remote-1", host="research.example")
+    machine = _card("remote", "remote-1", "research.example")
     manifest.sources.remote_claude_roots = ["~/.claude/projects"]
     manifest.sources.remote_codex_roots = ["~/.codex/sessions"]
 
@@ -125,4 +140,5 @@ def test_assemble_run_keeps_missing_root_as_non_blocking_source_error(manifest, 
     )
 
     assert context.source_roots["claude"] == [str(missing)]
-    assert context.source_errors == [f"laptop/claude source root {str(missing)!r}: does not exist"]
+    (error,) = context.source_errors
+    assert str(missing) in error

@@ -111,7 +111,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         enforcement=HiddenReadStatus(status="enforced"),
     )
     if result == "signed_out":
-        from rcp.storage.models import LoginKey
+        from rcp.machine_cards import LoginKey
 
         store.mark_provider_login_signed_out(
             LoginKey("claude", "", ""), member_id=human.user_id, source="sign_out", detail="expired"

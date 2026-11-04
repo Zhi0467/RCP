@@ -11,8 +11,9 @@ import pytest
 from rcp.agents import launcher as launcher_module
 from rcp.agents.launcher import AgentLauncher, AgentProcessControl
 from rcp.config import Manifest
+from rcp.machine_cards import LoginKey
 from rcp.providers import PROVIDER_IDS
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, wait_until

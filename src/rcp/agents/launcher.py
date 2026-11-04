@@ -1119,7 +1119,7 @@ class AgentLauncher:
                 login,
                 ProviderReadinessSnapshotRecord(
                     provider=login.provider,
-                    host=host,
+                    machine_id=login.machine_id,
                     login_id=login.login_id,
                     binary=candidate,
                     version=version,
@@ -2128,10 +2128,18 @@ class AgentLauncher:
         return card(self.accounts.store, machine_id).provider_autocompact.get(provider, "")
 
     def machine_cards(self) -> dict[str, SpaceMachineRecord]:
-        """Every space machine card by id, read now; empty without a space store."""
+        """Every space machine card by id, read now; a launcher without a store has only the backend."""
 
         if self.accounts is None:
-            return {}
+            backend = SpaceMachineRecord(
+                machine_id=BACKEND_MACHINE_ID,
+                name="Backend",
+                host="",
+                os_account="",
+                created_at="",
+                updated_at="",
+            )
+            return {BACKEND_MACHINE_ID: backend}
         self.accounts.store.backend_space_machine()
         return {item.machine_id: item for item in self.accounts.store.space_machines()}
 

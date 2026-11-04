@@ -42,6 +42,7 @@ from rcp.limits import (
     COMMAND_MAILBOX_TIMEOUT_SECONDS,
     PAPER_COACH_MAX_REFRESH_ROUNDS,
 )
+from rcp.machine_cards import card
 from rcp.paper import PaperLive, PaperService, PaperSnapshot, WritingSession
 from rcp.paper.changes import InvalidChanges, get_paper_changes, read_paper_changes
 from rcp.providers import ProviderSkillReference
@@ -135,9 +136,9 @@ def _resolve_coach_launch(
             raise ValueError("That native session was not created by this Paper workspace.")
         if (
             existing is not None
-            and existing.execution_machine == base_machine
+            and existing.machine_id == base_machine
             and request.run_on is not None
-            and request.run_on != existing.execution_machine
+            and request.run_on != existing.machine_id
         ):
             raise ValueError("A resumed session cannot change execution machine.")
     previous = existing if existing and request.provider in {None, existing.provider} else None
@@ -157,8 +158,8 @@ def _resolve_coach_launch(
     switched = (
         existing is not None
         and native_session_profile_reason(
-            {"provider": existing.provider, "run_on": existing.execution_machine},
-            {"provider": profile.provider, "run_on": profile.run_on},
+            {"provider": existing.provider, "run_on": existing.machine_id},
+            {"provider": profile.provider, "run_on": base_machine},
         )
         != "current_session"
     )
@@ -167,7 +168,7 @@ def _resolve_coach_launch(
             "provider": profile.provider,
             "model": profile.model or None,
             "reasoning": profile.reasoning,
-            "run_on": profile.run_on,
+            "run_on": base_machine,
             "session_id": None if switched else request.session_id,
             "previous_session_id": request.session_id if switched else None,
         }
@@ -253,7 +254,7 @@ _COACH_ROUND_ROLE = "paper_coach_round:"
 class _CoachStage(BaseModel):
     """The exact remote stage every round of one coach turn runs in."""
 
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
     workspace: str
     edit_dirs: list[str] = Field(default_factory=list)
@@ -286,7 +287,7 @@ def _record_coach_round(
 
     store = execution.store
     stage = _CoachStage(
-        stage_host=execution.stage_host or "",
+        stage_machine_id=execution.stage_machine_id or "",
         stage_root=execution.stage_root or "",
         workspace=str(workspace),
         edit_dirs=[str(path) for path in edit_dirs],
@@ -393,7 +394,7 @@ async def _record_writing_session(
     *,
     runtime_id: str,
     native_session_id: str,
-    execution_machine: str,
+    machine_id: str,
 ) -> None:
     assert request.provider is not None  # Admission resolves the provider.
     existing = next(
@@ -406,7 +407,7 @@ async def _record_writing_session(
             provider=request.provider,
             runtime_id=runtime_id,
             native_session_id=native_session_id,
-            execution_machine=execution_machine,
+            machine_id=machine_id,
             project_id=paper.project_id,
             title=existing.title if existing else request.message[:72],
             model=request.model or "provider-default",
@@ -465,7 +466,7 @@ async def finalize_recorded_coach_result(
     _local, remote_stage, workspace = attach_retained_stage(
         execution,
         owner="Paper coach",
-        stage_host=retained.stage_host,
+        stage_machine_id=retained.stage_machine_id,
         stage_root=retained.stage_root,
         workspace=retained.workspace,
     )
@@ -494,7 +495,7 @@ async def finalize_recorded_coach_result(
             request,
             runtime_id=recorded.runtime_id,
             native_session_id=outcome.session_id,
-            execution_machine=request.run_on or "",
+            machine_id=request.run_on or "",
         )
     if outcome.failed:
         return
@@ -625,13 +626,13 @@ def _keeps_checkpoint(
     previous_machine: str | None,
     previous_session: str | None,
     request: CoachRequest,
-    profile: AgentSurfaceConfig,
+    base_machine: str,
     retrying: bool,
 ) -> bool:
     """A native checkpoint survives only on the same machine and session it was saved for."""
     return bool(
         reusing
-        and previous_machine in {None, profile.run_on}
+        and previous_machine in {None, base_machine}
         and previous_session == request.session_id
         and not (retrying and not request.session_id)
     )
@@ -648,7 +649,8 @@ def _coach_stages(
     token: str,
     reusing_checkpoint: bool,
 ) -> _CoachStages:
-    execution_host = service.manifest.machine_map[profile.run_on].host
+    machine = card(execution.store, service.manifest.base_machine)
+    execution_host = machine.host
     stage_root = _swept_stage_root(data_dir, store=execution.store)
     if reusing_checkpoint and not execution_host:
         saved_name = Path(execution.stage_root or "").name
@@ -657,7 +659,7 @@ def _coach_stages(
         local_stage = stage_root / f"paper-{token}"
         local_stage.mkdir(parents=True, exist_ok=bool(execution_host and reusing_checkpoint))
         if not execution_host:
-            execution.checkpoint_stage("", str(local_stage))
+            execution.checkpoint_stage(machine.machine_id, str(local_stage))
     # OpenCode and Claude find a native session by its working folder, so a session's
     # turns all run in the folder of the turn that started it. One session runs one
     # turn at a time, and its command mailbox owns the whole folder.
@@ -673,7 +675,7 @@ def _coach_stages(
         os.utime(workspace)
         return _CoachStages(local_stage, workspace, None)
     remote_stage = open_remote_conversation_stage(
-        execution_host, stage_name, execution, saved_stage=reusing_checkpoint
+        machine, stage_name, execution, saved_stage=reusing_checkpoint
     )
     return _CoachStages(local_stage, Path(str(remote_stage.workspace)), remote_stage)
 
@@ -861,10 +863,10 @@ async def _prepare_coach_launch(
         previous_machine=previous_machine,
         previous_session=previous_session,
         request=request,
-        profile=profile,
+        base_machine=service.manifest.base_machine,
         retrying=continuation == "retry",
     )
-    request = _pinned_to_profile(request, profile)
+    request = _pinned_to_profile(request, profile, service.manifest.base_machine)
     token = _task_token(execution)
     stages = _coach_stages(
         service,
@@ -914,7 +916,9 @@ async def _prepare_coach_launch(
         context = service.coach_context(snapshot_path)
         if remote_stage is not None:
             context = context.model_copy(
-                update=_stage_context_paths(context, service, remote_stage, profile.run_on)
+                update=_stage_context_paths(
+                    context, service, remote_stage, service.manifest.base_machine
+                )
             )
         read_dirs = _coach_repository_dirs(context, remote=remote_stage is not None)
         retry_diagnostics_path = (
@@ -1076,7 +1080,9 @@ async def _run_rounds(
     token = _task_token(execution)
     changes = get_paper_changes(service)
     execution_host = stages.remote.host if stages.remote else ""
-    provider_binary = service.launcher.provider_binary(launch.profile.provider, execution_host)
+    provider_binary = service.launcher.provider_binary(
+        launch.profile.provider, service.manifest.base_machine
+    )
     current = launch.current
     for n in range(PAPER_COACH_MAX_REFRESH_ROUNDS + 1):
         prior = launch.provider_outcome
@@ -1211,7 +1217,6 @@ async def _stream_coach(
         remote_stage=stages.remote,
         execution=execution,
         capability="paper_suggest",
-        execution_host=stages.remote.host if stages.remote else "",
         data_dir=data_dir,
         local_stage=stages.inputs,
     )
@@ -1272,7 +1277,7 @@ async def _stream_coach(
                 request,
                 runtime_id=outcome.runtime_id or execution.runtime_id,
                 native_session_id=outcome.session_id,
-                execution_machine=launch.profile.run_on,
+                machine_id=service.manifest.base_machine,
             )
     if result != _CoachResult.PENDING and outcome.completed and outcome.session_id:
         commit_prepared_graph_observation(execution, service, native_session_id=outcome.session_id)

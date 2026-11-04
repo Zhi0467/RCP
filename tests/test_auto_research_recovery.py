@@ -10,6 +10,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import LoginKey
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
@@ -25,7 +26,7 @@ from rcp.runs.auto_research_recovery import (
     reconcile_due_auto_research_recoveries,
 )
 from rcp.storage import AppStore, ProjectRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import (
     fabricated_authorizer,

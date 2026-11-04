@@ -8,11 +8,12 @@ from pathlib import Path
 import pytest
 
 import rcp.sources.indexer as source_indexer
-from rcp.agents import ContextAssembler
-from rcp.config import MachineConfig
+from rcp.agents import AgentLauncher, ContextAssembler
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.core.models import GraphState
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.service import ProjectService
 from rcp.sources import ConversationIndexer
@@ -20,8 +21,30 @@ from rcp.sources.indexer import (
     _REMOTE_INDEX_SCRIPT,
 )
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport import SSHStateWorkspace
 from tests.helpers import unchecked_write_authority
+
+
+def _card(machine_id: str, host: str) -> SpaceMachineRecord:
+    now = "2026-01-01T00:00:00Z"
+    return SpaceMachineRecord(
+        machine_id=machine_id,
+        name=machine_id,
+        host=host,
+        os_account="",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+BACKEND = _card(BACKEND_MACHINE_ID, "")
+REMOTE = _card("remote-1", "research.example")
+
+
+def _indexer(manifest, *args, **kwargs) -> ConversationIndexer:
+    cards = {card.machine_id: card for card in (BACKEND, REMOTE)}
+    return ConversationIndexer(manifest, *args, machine_cards=lambda: cards, **kwargs)
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
@@ -84,7 +107,7 @@ def test_matching_local_histories_are_fully_normalized(manifest, monkeypatch, pr
 
     monkeypatch.setattr(source_indexer, "_normalize_record", track_normalization)
 
-    session = ConversationIndexer(manifest).build().sessions[0]
+    session = _indexer(manifest).build().sessions[0]
 
     assert normalized == list(range(1, len(records) + 1))
     assert session.record_count == len(records)
@@ -127,7 +150,7 @@ def test_second_index_build_reuses_unchanged_matching_and_unmatched_metadata(
         + "\n",
         encoding="utf-8",
     )
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     first = indexer.build()
     original_open = Path.open
 
@@ -179,7 +202,7 @@ def test_changed_source_reparses_only_that_file(manifest, monkeypatch) -> None:
     unchanged = root / "unchanged.jsonl"
     write_source(changed, "changed")
     write_source(unchanged, "unchanged")
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     indexer.build()
     with changed.open("a", encoding="utf-8") as handle:
         handle.write(
@@ -228,7 +251,7 @@ def test_deleted_source_is_evicted_from_metadata_cache(manifest) -> None:
         + "\n",
         encoding="utf-8",
     )
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     assert [session.session_id for session in indexer.build().sessions] == ["deleted"]
     assert len(indexer._local_metadata_cache) == 1
 
@@ -254,7 +277,7 @@ def test_unchanged_terminal_cursor_does_not_reopen_local_source(manifest, monkey
         + "\n",
         encoding="utf-8",
     )
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     session = indexer.build().sessions[0]
     original_open = Path.open
 
@@ -290,7 +313,7 @@ def test_changed_local_source_identity_disables_terminal_cursor_shortcut(
         },
     ]
     source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     session = indexer.build().sessions[0]
     source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     normalized: list[int] = []
@@ -358,7 +381,7 @@ def test_indexes_codex_and_claude_by_embedded_cwd(manifest) -> None:
             + "\n"
         )
 
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     index = indexer.build()
 
     assert {(session.provider, session.session_id) for session in index.sessions} == {
@@ -409,7 +432,7 @@ def test_codex_custom_tool_input_is_readable(manifest) -> None:
         + "\n",
         encoding="utf-8",
     )
-    indexer = ConversationIndexer(manifest)
+    indexer = _indexer(manifest)
     session = next(
         item for item in indexer.build().sessions if item.session_id == "artifact-session"
     )
@@ -441,26 +464,24 @@ def test_app_chat_sessions_are_normalized_as_human_led_roots(manifest) -> None:
     )
 
     (chat_root / "private-member-thread.jsonl").write_text(chat_path.read_text())
-    sessions = [
-        item
-        for item in ConversationIndexer(manifest).build().sessions
-        if item.provider == "app_chat"
-    ]
+    sessions = [item for item in _indexer(manifest).build().sessions if item.provider == "app_chat"]
     assert [item.path for item in sessions] == [str(chat_path)]
     session = sessions[0]
 
     assert session.thread_source == "user"
     assert session.source_kind == "app_chat"
-    assert session.source_machine == "laptop"
+    assert session.source_machine == BACKEND_MACHINE_ID
     assert session.path == str(chat_path)
     assert session.remote_source_host is None
     assert session.remote_source_path is None
 
 
 def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkeypatch) -> None:
-    manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
+    store = AppStore(tmp_path / "app.sqlite3")
+    remote = store.create_space_machine(name="remote-1", host="research.example", os_account="")
+    manifest.machines.append(remote.machine_id)
     state_repository = manifest.repositories[0]
-    state_repository.machine = "remote-1"
+    state_repository.machine = remote.machine_id
     state_repository.path = "/remote/project"
     chat_root = manifest.research_dir / "chat"
     chat_root.mkdir()
@@ -489,12 +510,8 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
     service = ProjectService(
         manifest,
         history,
-        PaperService(
-            manifest,
-            AppStore(tmp_path / "app.sqlite3"),
-            workspace,
-            project_id="project",
-        ),
+        PaperService(manifest, store, workspace, project_id="project"),
+        launcher=AgentLauncher(accounts=ProviderAccounts.for_store(store)),
         data_dir=tmp_path / "data",
     )
     monkeypatch.setattr(
@@ -505,16 +522,16 @@ def test_chat_context_ignores_remote_indexed_app_chat(manifest, tmp_path, monkey
         ),
     )
 
-    index = service.index_snapshot(execution_machine="remote-1")
+    index = service.index_snapshot(execution_machine=remote.machine_id)
     session = next(item for item in index.sessions if item.provider == "app_chat")
 
-    assert session.key == "repo-a/remote-1/app_chat/remote-chat"
-    assert session.source_machine == "remote-1"
+    assert session.key == "repo-a/app_chat/remote-chat"
+    assert session.source_machine == remote.machine_id
     assert session.path == str(chat_path)
     assert session.remote_source_host == "research.example"
     assert session.remote_source_path == "/remote/project/.research/chat/remote-chat.jsonl"
 
-    assembler = ContextAssembler(manifest)
+    assembler = ContextAssembler(manifest, cards=service.launcher.machine_cards())
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
     on_owner = assembler.chat_context(
         state,
@@ -547,11 +564,13 @@ def test_chat_context_does_not_include_indexed_transcripts(manifest, tmp_path) -
             + "\n",
             encoding="utf-8",
         )
-    indexer = ConversationIndexer(manifest, tmp_path / "source-cache")
+    indexer = _indexer(manifest, tmp_path / "source-cache")
 
     index = indexer.build()
     assert index.sessions
-    context = ContextAssembler(manifest).chat_context(
+    context = ContextAssembler(
+        manifest, cards={card.machine_id: card for card in (BACKEND, REMOTE)}
+    ).chat_context(
         GraphState(project_truth_scope=manifest.project.truth_scope),
         graph_target=GraphTargetRef(),
     )
@@ -565,7 +584,7 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
 ) -> None:
     """Remote source indexing cannot add transcript inputs to chat."""
 
-    manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
+    manifest.machines.append(REMOTE.machine_id)
     manifest.repositories[0].machine = "remote-1"
     manifest.repositories[0].path = "/remote/project"
     local_root = Path(next(iter(manifest.sources.codex_roots)))
@@ -582,7 +601,7 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
         + "\n",
         encoding="utf-8",
     )
-    indexer = ConversationIndexer(manifest, tmp_path / "cache")
+    indexer = _indexer(manifest, tmp_path / "cache")
     monkeypatch.setattr(
         indexer,
         "_inspect_remote_root",
@@ -622,7 +641,9 @@ def test_chat_context_does_not_resolve_remote_transcript_pointers(
     index = indexer.build()
     assert index.sessions
     state = GraphState(project_truth_scope=manifest.project.truth_scope)
-    context = ContextAssembler(manifest).chat_context(state, graph_target=GraphTargetRef())
+    context = ContextAssembler(
+        manifest, cards={card.machine_id: card for card in (BACKEND, REMOTE)}
+    ).chat_context(state, graph_target=GraphTargetRef())
 
     assert "conversations" not in context.model_dump()
 
@@ -764,10 +785,10 @@ def test_remote_index_counts_claude_records_before_first_cwd(tmp_path) -> None:
 def test_remote_execution_keeps_same_machine_sources_out_of_permanent_cache(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    manifest.machines.append(MachineConfig(alias="remote-1", host="research.example"))
+    manifest.machines.append(REMOTE.machine_id)
     manifest.repositories[0].machine = "remote-1"
     manifest.repositories[0].path = "/remote/project"
-    indexer = ConversationIndexer(manifest, tmp_path / "cache")
+    indexer = _indexer(manifest, tmp_path / "cache")
 
     def inspect_remote(_host, _root, provider, _machine_alias):
         return source_indexer.RemoteConversationIndex(
@@ -824,7 +845,7 @@ def test_remote_index_preserves_unicode_line_separators(manifest, monkeypatch):
         "run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, payload, ""),
     )
-    result = ConversationIndexer(manifest)._inspect_remote_root(
+    result = _indexer(manifest)._inspect_remote_root(
         "example.invalid", "/sessions", "claude", "remote"
     )
     assert result.sessions[0]["session_id"] == text

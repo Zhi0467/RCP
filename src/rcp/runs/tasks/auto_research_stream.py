@@ -66,6 +66,7 @@ from rcp.core.research_md import render_research_md
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.loop_status import other_branch_auto_research, other_branch_loops
+from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.agent_names import resolve_agent_name_state
@@ -162,6 +163,7 @@ from rcp.storage import (
     AutoResearchLifecycleNoticeRecord,
     AutoResearchMessageRecord,
 )
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport import (
     RemoteRunStage,
     RunLockCancelled,
@@ -226,8 +228,12 @@ class _WorkerStage:
     local: Path | None
     remote: RemoteRunStage | None
     workspace: Path
-    execution_host: str
+    machine: SpaceMachineRecord
     provider_binary: str | None
+
+    @property
+    def execution_host(self) -> str:
+        return self.machine.host
 
 
 @dataclass(frozen=True)
@@ -249,7 +255,7 @@ class _AutoResearchFinalization(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
     workspace: str
     write_scope: ProjectWriteScope
@@ -297,7 +303,6 @@ async def stream_auto_research_orchestrator_run(
             remote_stage=stage.remote,
             execution=execution,
             capability="orchestrate",
-            execution_host=stage.execution_host,
             data_dir=data_dir,
             local_stage=stage.local,
         )
@@ -305,6 +310,7 @@ async def stream_auto_research_orchestrator_run(
             browser_turn(
                 turn.request,
                 workspace=stage.workspace,
+                machine_id=stage.machine.machine_id,
                 execution_host=stage.execution_host,
                 execution=execution,
                 remote_stage=stage.remote,
@@ -405,7 +411,7 @@ async def stream_auto_research_orchestrator_run(
             write_scope = _project_write_scope(
                 context,
                 service,
-                turn.request.run_on or "",
+                stage.machine,
                 local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
@@ -577,7 +583,6 @@ async def stream_auto_research_worker_run(
             remote_stage=stage.remote,
             execution=execution,
             capability="work_auto",
-            execution_host=stage.execution_host,
             data_dir=data_dir,
             local_stage=stage.local,
         )
@@ -585,6 +590,7 @@ async def stream_auto_research_worker_run(
             browser_turn(
                 turn.request,
                 workspace=stage.workspace,
+                machine_id=stage.machine.machine_id,
                 execution_host=stage.execution_host,
                 execution=execution,
                 remote_stage=stage.remote,
@@ -666,7 +672,7 @@ async def stream_auto_research_worker_run(
             write_scope = _project_write_scope(
                 context,
                 service,
-                turn.request.run_on or "",
+                stage.machine,
                 local_stage=stage.local,
                 workspace=stage.workspace,
                 remote_stage=stage.remote,
@@ -812,7 +818,7 @@ def _canonical_worker_turn(
         raise ValueError(
             "AutoResearch worker role, actor, or seat conflicts with its durable binding."
         )
-    if (execution.stage_host or "") != (binding.stage_host or ""):
+    if execution.stage_machine_id != binding.stage_machine_id:
         raise ValueError(
             "AutoResearch worker execution host conflicts with its durable actor binding."
         )
@@ -881,7 +887,7 @@ def _canonical_orchestrator_turn(
         raise ValueError(
             "AutoResearch orchestrator role, actor, or scope conflicts with its durable binding."
         )
-    if (execution.stage_host or "") != (binding.stage_host or ""):
+    if execution.stage_machine_id != binding.stage_machine_id:
         raise ValueError(
             "AutoResearch orchestrator execution host conflicts with its durable actor binding."
         )
@@ -967,7 +973,7 @@ def _is_authorized_clean_actor_retry(
     if (
         parent_request.role != request.role
         or (parent_request.actor_operation_id or parent.operation_id) != binding.actor_operation_id
-        or (parent.stage_host or "") != (binding.stage_host or "")
+        or parent.stage_machine_id != binding.stage_machine_id
         or parent.stage_root != binding.stage_root
     ):
         return False
@@ -1020,7 +1026,7 @@ def _is_authorized_clean_actor_retry(
             or prior_request.role != request.role
             or (prior_request.actor_operation_id or prior.operation_id)
             != binding.actor_operation_id
-            or (prior.stage_host or "") != (binding.stage_host or "")
+            or prior.stage_machine_id != binding.stage_machine_id
             or prior.stage_root != binding.stage_root
         ):
             return False
@@ -1157,17 +1163,17 @@ def _open_auto_research_actor_stage(
         or not request.run_on
     ):
         raise ValueError(f"AutoResearch {actor_label} has no exact pinned provider profile.")
-    machine = service.manifest.machine_map.get(request.run_on)
-    if machine is None:
-        raise ValueError(f"unknown auto_research {actor_label} execution machine: {request.run_on}")
+    machine = card(execution.store, request.run_on)
+    provider_binary = service.launcher.provider_binary(request.provider, machine.machine_id)
     if turn.binding.stage_root is not None:
+        if turn.binding.stage_machine_id != machine.machine_id:
+            raise ValueError(
+                f"AutoResearch {actor_label} saved stage has a different actor binding."
+            )
         if machine.host:
             # Accepts the new `~/.rcp/stages` root, whose home the host checks on
             # attach, and a saved legacy `/tmp` root that a later release removes.
-            if (
-                turn.binding.stage_host != machine.host
-                or remote_stage_name(turn.binding.stage_root) != stage_name
-            ):
+            if remote_stage_name(turn.binding.stage_root) != stage_name:
                 raise ValueError(
                     f"AutoResearch {actor_label} saved remote stage has a different actor binding."
                 )
@@ -1176,14 +1182,13 @@ def _open_auto_research_actor_stage(
                 local=None,
                 remote=remote,
                 workspace=Path(str(remote.workspace)),
-                execution_host=machine.host,
-                provider_binary=service.launcher.provider_binary(request.provider, machine.host),
+                machine=machine,
+                provider_binary=provider_binary,
             )
         expected_local = _swept_stage_root(data_dir, store=execution.store) / stage_name
         saved = Path(turn.binding.stage_root)
         if (
-            turn.binding.stage_host is not None
-            or saved.absolute() != expected_local.absolute()
+            saved.absolute() != expected_local.absolute()
             or saved.is_symlink()
             or not saved.is_dir()
         ):
@@ -1194,8 +1199,8 @@ def _open_auto_research_actor_stage(
             local=saved,
             remote=None,
             workspace=saved,
-            execution_host="",
-            provider_binary=service.launcher.provider_binary(request.provider, machine.host),
+            machine=machine,
+            provider_binary=provider_binary,
         )
 
     if turn.binding.native_session_id is not None or (
@@ -1208,16 +1213,16 @@ def _open_auto_research_actor_stage(
         remote = RemoteRunStage(machine.host).open(
             stage_name,
             reuse=True,
-            protected_roots=_protected_run_stage_roots(execution.store, machine.host),
+            protected_roots=_protected_run_stage_roots(execution.store, machine.machine_id),
         )
         assert remote.root is not None
-        execution.checkpoint_stage(machine.host, str(remote.root))
+        execution.checkpoint_stage(machine.machine_id, str(remote.root))
         return _WorkerStage(
             local=None,
             remote=remote,
             workspace=Path(str(remote.workspace)),
-            execution_host=machine.host,
-            provider_binary=service.launcher.provider_binary(request.provider, machine.host),
+            machine=machine,
+            provider_binary=provider_binary,
         )
     local = _swept_stage_root(data_dir, store=execution.store) / stage_name
     if os.path.lexists(local):
@@ -1225,13 +1230,13 @@ def _open_auto_research_actor_stage(
             raise ValueError(f"AutoResearch {actor_label} local stage is unsafe.")
     else:
         local.mkdir(mode=0o700, parents=True)
-    execution.checkpoint_stage("", str(local))
+    execution.checkpoint_stage(machine.machine_id, str(local))
     return _WorkerStage(
         local=local,
         remote=None,
         workspace=local,
-        execution_host="",
-        provider_binary=service.launcher.provider_binary(request.provider, machine.host),
+        machine=machine,
+        provider_binary=provider_binary,
     )
 
 
@@ -1241,7 +1246,9 @@ def _auto_research_context(
     stage: _WorkerStage,
 ) -> ChatContext:
     state = service.history.state()
-    context = ContextAssembler(service.manifest, graph_root=service.history.root).chat_context(
+    context = ContextAssembler(
+        service.manifest, cards=service.launcher.machine_cards(), graph_root=service.history.root
+    ).chat_context(
         state,
         graph_target=service.history.graph_target,
         node_id=None,
@@ -1794,7 +1801,7 @@ def _orchestrator_prompt(
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
             turn.task.project_id,
             native_session_id=session_id,
-            stage_host=turn.binding.stage_host,
+            stage_machine_id=turn.binding.stage_machine_id,
             stage_root=turn.binding.stage_root or "",
         ),
     )
@@ -2544,7 +2551,7 @@ def _record_auto_research_finalization(
     if execution.stage_root is None:
         raise ValueError("An Auto-research launch has no checkpointed stage.")
     content = _AutoResearchFinalization(
-        stage_host=stage.execution_host,
+        stage_machine_id=stage.machine.machine_id,
         stage_root=execution.stage_root,
         workspace=str(stage.workspace),
         write_scope=write_scope,
@@ -2648,19 +2655,20 @@ def resume_auto_research_command_mailbox(
     if saved is None:
         return None
     retained = _retained_finalization(execution)
-    if not retained.stage_host:
+    if retained.stage_machine_id == BACKEND_MACHINE_ID:
         _retained, stage = _retained_stage(execution)
-    elif (execution.stage_host, execution.stage_root) != (
-        retained.stage_host,
+    elif (execution.stage_machine_id, execution.stage_root) != (
+        retained.stage_machine_id,
         retained.stage_root,
     ):
         raise ValueError("The detached Auto-research mailbox belongs to another stage.")
     else:
         # Rebuilt from the binding alone: the host may be unreachable, and the
         # restored mailbox waits out an outage with its own backoff.
-        remote = RemoteRunStage(retained.stage_host)
+        machine = card(execution.store, retained.stage_machine_id)
+        remote = RemoteRunStage(machine.host)
         remote.root = PurePosixPath(retained.stage_root)
-        stage = _WorkerStage(None, remote, Path(retained.workspace), retained.stage_host, None)
+        stage = _WorkerStage(None, remote, Path(retained.workspace), machine, None)
     turn_request = (
         _canonical_orchestrator_turn(execution, request)
         if request.role == "orchestrator"
@@ -2715,11 +2723,13 @@ def _retained_stage(
     local, remote, workspace = attach_retained_stage(
         execution,
         owner="Auto-research",
-        stage_host=retained.stage_host,
+        stage_machine_id=retained.stage_machine_id,
         stage_root=retained.stage_root,
         workspace=retained.workspace,
     )
-    stage = _WorkerStage(local, remote, workspace, retained.stage_host, None)
+    stage = _WorkerStage(
+        local, remote, workspace, card(execution.store, retained.stage_machine_id), None
+    )
     return retained, stage
 
 

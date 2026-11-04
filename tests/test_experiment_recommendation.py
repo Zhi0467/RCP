@@ -6,7 +6,8 @@ import pytest
 
 from rcp.api.experiment_controls import _experiment_recommendation
 from rcp.control import ExperimentControlState, ExperimentOperationalState
-from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind, LoginKey
+from rcp.machine_cards import LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind
 
 
 def _revoked_login(

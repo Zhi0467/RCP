@@ -24,9 +24,10 @@ from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+from rcp.machine_cards import LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
 from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 
 def _command(

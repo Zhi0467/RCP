@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
+from rcp.machine_cards import LoginKey
 from rcp.providers import (
     PROVIDER_IDS,
     PROVIDERS,
@@ -24,7 +25,7 @@ from rcp.providers import (
     profile_for,
     runtime_label,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:

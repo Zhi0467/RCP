@@ -12,13 +12,14 @@ import pytest
 
 from rcp import provider_skills
 from rcp.agents import ProviderReadiness
+from rcp.machine_cards import LoginKey
 from rcp.provider_skills import (
     ProviderSkillInventoryManager,
     ProviderSkillInventorySnapshot,
 )
 from rcp.providers import ProviderSkillProbe, profile_for
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
 
 

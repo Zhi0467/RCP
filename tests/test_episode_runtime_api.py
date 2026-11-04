@@ -8,10 +8,10 @@ from rcp.api.app import _auto_research_worker_request
 from rcp.config import write_agent_settings
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import LoginKey
 from rcp.providers import ModelChoice
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
-from rcp.storage.models import LoginKey
 from tests.helpers import signed_in_client
 
 from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_for_task

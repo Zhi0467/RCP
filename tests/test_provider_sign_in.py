@@ -15,12 +15,13 @@ from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
 from rcp.agents.provider_accounts import ProviderAccounts, reset_logins_without_credentials
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import LoginKey
 from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.providers.codex.auth import CodexDeviceLogin
 from rcp.runs import provider_sign_in
 from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import wait_until
 

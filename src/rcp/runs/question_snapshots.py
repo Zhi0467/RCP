@@ -59,7 +59,7 @@ def _question_delivery_operations(
             )
             or not current.stage_root
             or current.stage_root != parent.stage_root
-            or (current.stage_host or "") != (parent.stage_host or "")
+            or current.stage_machine_id != parent.stage_machine_id
         ):
             break
         operations.add(parent.operation_id)

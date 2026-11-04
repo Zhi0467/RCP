@@ -590,7 +590,7 @@ def _resolve_work_execution(
     # Every launch, including Resume, Retry, recovery, and wakes, tells the agent
     # the project's current machines as seen from where it now runs.
     request = _pinned_to_profile(request, profile, service.manifest.base_machine)
-    machine = card(service.paper.store, request.run_on)
+    machine = card(service.paper.store, service.manifest.base_machine)
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
     shell_timeout = (
         execution.store.provider_shell_timeout_seconds(profile.provider, machine.machine_id)
@@ -599,7 +599,7 @@ def _resolve_work_execution(
     )
     return _ResolvedWorkExecution(
         request=request,
-        compute_profiles=service.machine_prompt_profiles(request.run_on),
+        compute_profiles=service.machine_prompt_profiles(machine.machine_id),
         machine=machine,
         execution_host=machine.host,
         provider_binary=service.launcher.provider_binary(profile.provider, machine.machine_id),
@@ -2764,7 +2764,7 @@ async def _stream_work_run(
                 turn.request,
                 workspace=turn.workspace,
                 execution_host=turn.execution_host,
-                machine_id=turn.request.run_on,
+                machine_id=service.manifest.base_machine,
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
@@ -2783,7 +2783,7 @@ async def _stream_work_run(
                 execution,
                 turn.request,
                 question.origin,
-                stage_machine_id=turn.request.run_on or "",
+                stage_machine_id=service.manifest.base_machine,
                 stage_root=execution.stage_root,
                 write_scope_fingerprint=turn.write_scope.fingerprint,
             )
@@ -2912,7 +2912,7 @@ async def _stream_work_graph_repair(
             run_on=request.run_on,
         )
         request = _pinned_to_profile(request, profile, service.manifest.base_machine)
-        machine = card(execution.store, request.run_on)
+        machine = card(execution.store, service.manifest.base_machine)
         execution_host = machine.host
         provider_binary = service.launcher.provider_binary(profile.provider, machine.machine_id)
         context = service.assemble_chat(request)
@@ -3034,7 +3034,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
-            compute_profiles=service.machine_prompt_profiles(request.run_on),
+            compute_profiles=service.machine_prompt_profiles(machine.machine_id),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
@@ -3334,8 +3334,9 @@ def _resume_work_command_handler(
     if not execution.stage_root:
         raise ValueError("The Work mailbox lost its stage.")
     stage = None
-    if (execution.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID:
-        stage = RemoteRunStage(host_of(execution.store, execution.stage_machine_id))
+    machine_id = execution.stage_machine_id
+    if machine_id is not None and machine_id != BACKEND_MACHINE_ID:
+        stage = RemoteRunStage(host_of(execution.store, machine_id))
         stage.root = PurePosixPath(execution.stage_root)
     mailbox = RunStageMailbox(
         Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage

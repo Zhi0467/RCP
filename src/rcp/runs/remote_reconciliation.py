@@ -33,6 +33,7 @@ from rcp.limits import (
     REMOTE_JOURNAL_IDLE_TIMEOUT_SECONDS,
     TURN_JOURNAL_MAX_BYTES,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.recorded_turn import RecordedProviderTurn, recorded_provider_turn
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
@@ -152,15 +153,16 @@ def reconcile_remote_pass(
 ) -> Reconciliation:
     """Decide what this task's outstanding remote pass is owed."""
 
-    host = record.stage_host or ""
+    machine_id = record.stage_machine_id or ""
     root = record.stage_root or ""
     passes = [
         pid_file
-        for operation_id, pid_file in store.unresolved_remote_provider_passes(host, root)
+        for operation_id, pid_file in store.unresolved_remote_provider_passes(machine_id, root)
         if operation_id == record.operation_id
     ]
-    if not host or not root or not passes:
+    if machine_id in {"", BACKEND_MACHINE_ID} or not root or not passes:
         return Reconciliation("settled", "This task has no outstanding remote pass.")
+    host = host_of(store, machine_id)
     pid_file = passes[-1]
     state = stopped(host, pid_file)
     if state is None:

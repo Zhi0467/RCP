@@ -7,7 +7,8 @@ import os
 import pytest
 
 from rcp.agents.launcher import AgentLauncher
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.machine_cards import LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 _LIVE_GATE = "RCP_RUN_PROVIDER_READINESS_LIVE"
 _HOST = "RCP_PROVIDER_READINESS_SSH_HOST"

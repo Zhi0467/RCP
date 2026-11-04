@@ -7,9 +7,10 @@ import pytest
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.api.episodes import serialize_episode
+from rcp.machine_cards import LoginKey
 from rcp.service import ProjectService, agent_login_accounts
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .test_episode_api_serialization import _auto_episode, _begin_report, _branch_summary, _project
 
