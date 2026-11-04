@@ -1329,10 +1329,16 @@ def arm_watchers(
     graph_conditions: list[GraphCondition] | None = None,
     state: GraphState | None = None,
     watcher_ids: list[str] | None = None,
+    reuse_live: bool = False,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
 ) -> list[StoredWatcherRecord]:
-    """Validate one mixed handoff and persist all of it, or persist none of it."""
+    """Validate one mixed handoff and persist all of it, or persist none of it.
+
+    ``reuse_live`` lets a conversation's re-armed condition resolve to its identical
+    live watcher. Keyed effects leave it off: their recovery finds a watcher only
+    under its planned id.
+    """
 
     conditions = list(graph_conditions or [])
     if not specs and not conditions:
@@ -1350,12 +1356,16 @@ def arm_watchers(
         if len(watcher_ids) != len(set(watcher_ids)):
             raise ValueError("watcher_ids must be unique")
         resolved_watcher_ids = list(watcher_ids)
+    twins = (
+        _active_twins(store, specs, conditions, binding) if reuse_live else [None] * watcher_count
+    )
     existing = [store.watcher(watcher_id) for watcher_id in resolved_watcher_ids]
     if any(item is not None for item in existing):
-        if any(item is None for item in existing):
+        if any(item is None and twin is None for item, twin in zip(existing, twins, strict=True)):
             raise ValueError("the watcher handoff was only partly persisted")
-        stored = [item for item in existing if item is not None]
-        for index, record in enumerate(stored):
+        for index, record in enumerate(existing):
+            if record is None:
+                continue
             expected_common = {
                 "project": (record.project_id, binding.project_id),
                 "origin operation": (
@@ -1400,29 +1410,34 @@ def arm_watchers(
                 raise ValueError(
                     "the retained watcher has a mismatched " + ", ".join(mismatched) + " binding"
                 )
-        return stored
+        return [_present(item or twin) for item, twin in zip(existing, twins, strict=True)]
     if conditions:
         if state is None:
             raise ValueError("graph watcher arming requires canonical graph state")
         validate_graph_conditions(conditions, state)
+    fresh_specs = [
+        (resolved_watcher_ids[index], spec)
+        for index, spec in enumerate(specs)
+        if twins[index] is None
+    ]
+    fresh_conditions = [
+        (resolved_watcher_ids[len(specs) + index], condition)
+        for index, condition in enumerate(conditions)
+        if twins[len(specs) + index] is None
+    ]
     results = (
         validate_watch_specs(
-            specs,
+            [spec for _, spec in fresh_specs],
             binding.execution_host,
             check_runner=check_runner,
             timeout=timeout,
         )
-        if specs
+        if fresh_specs
         else []
     )
     created_at = _now()
     records: list[StoredWatcherRecord] = []
-    for watcher_id, spec, result in zip(
-        resolved_watcher_ids[: len(specs)],
-        specs,
-        results,
-        strict=True,
-    ):
+    for (watcher_id, spec), result in zip(fresh_specs, results, strict=True):
         completed = result.state == "complete"
         records.append(
             WatcherRecord(
@@ -1449,11 +1464,7 @@ def arm_watchers(
             )
         )
     if state is not None:
-        for watcher_id, condition in zip(
-            resolved_watcher_ids[len(specs) :],
-            conditions,
-            strict=True,
-        ):
+        for watcher_id, condition in fresh_conditions:
             result = graph_condition_result(
                 condition,
                 state,
@@ -1483,7 +1494,78 @@ def arm_watchers(
                     completed_at=created_at if completed else None,
                 )
             )
-    return store.create_watchers(records)
+    created = iter(store.create_watchers(records) if records else [])
+    return [twin if twin is not None else next(created) for twin in twins]
+
+
+def _active_twins(
+    store: AppStore,
+    specs: list[WatchSpec],
+    conditions: list[GraphCondition],
+    binding: WatcherBinding,
+) -> list[StoredWatcherRecord | None]:
+    """Each requested watcher's identical live watcher in the same chat, if one exists.
+
+    A turn that re-arms a condition its chat already watches reuses that watcher
+    rather than stacking a duplicate wake on it.
+    """
+    live = [
+        record
+        for record in store.watchers(binding.project_id, chat_id=binding.chat_id)
+        if record.status in ("active", "degraded")
+        and not record.notified
+        and (
+            record.node_id,
+            record.episode_id,
+            record.worker_id,
+            record.graph_target,
+            record.execution_host,
+        )
+        == (
+            binding.node_id,
+            binding.episode_id,
+            binding.worker_id,
+            binding.graph_target,
+            binding.execution_host,
+        )
+    ]
+    taken: set[str] = set()
+
+    def twin(matches: Callable[[StoredWatcherRecord], bool]) -> StoredWatcherRecord | None:
+        found = next(
+            (record for record in live if record.watcher_id not in taken and matches(record)),
+            None,
+        )
+        if found is not None:
+            taken.add(found.watcher_id)
+        return found
+
+    return [
+        *(
+            twin(
+                lambda record, spec=spec: (
+                    isinstance(record, WatcherRecord)
+                    and (record.check_command, record.log_path, record.cwd, record.cancel_command)
+                    == (spec.check_command, spec.log_path, spec.cwd, spec.cancel_command)
+                )
+            )
+            for spec in specs
+        ),
+        *(
+            twin(
+                lambda record, condition=condition: (
+                    isinstance(record, GraphWatcherRecord) and record.condition == condition
+                )
+            )
+            for condition in conditions
+        ),
+    ]
+
+
+def _present(record: StoredWatcherRecord | None) -> StoredWatcherRecord:
+    if record is None:
+        raise ValueError("the watcher handoff was only partly persisted")
+    return record
 
 
 class WatcherPoller:
