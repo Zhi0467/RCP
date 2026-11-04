@@ -264,3 +264,12 @@ def test_dock_relays_the_members_plain_questions_and_takes_their_answers(
         response = client.post(f"{base}/{question.question_id}/answer", json={"answer": "a"})
         assert response.status_code == 200, response.text
     assert set(dock()) == {shared.question_id}
+    later = _question(store, project_id, owner_id=thread["thread_id"], key="later")
+    assert later.question_id in dock()
+    store.set_chat_archived(
+        project_id,
+        thread["thread_id"],
+        store.agent_thread(thread["thread_id"]).user_id,
+        archived=True,
+    )
+    assert set(dock()) == {shared.question_id}

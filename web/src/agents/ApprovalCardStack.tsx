@@ -139,7 +139,9 @@ export function ApprovalCardStack({
               <Files size={11} aria-hidden="true" />
               {card.question.project_name}
             </a>
-            <span title={card.question.source_label}>{card.question.source_label}</span>
+            {card.question.source_label && (
+              <span title={card.question.source_label}>{card.question.source_label}</span>
+            )}
           </span>
         }
         onResolved={() => {

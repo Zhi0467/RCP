@@ -1088,6 +1088,12 @@
   .agent-mode .landing-main {
     width: 100%;
   }
+  .approval-dock .question-header {
+    flex-wrap: wrap;
+  }
+  .approval-dock .question-origin {
+    flex: 1 1 100%;
+  }
   /* Title, toggle, settings, and account share one line; an open project tab
      wraps to its own row below them (12-operations.css), never under them. The
      shell's gutter already aligns the header with the cards. */

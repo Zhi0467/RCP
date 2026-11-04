@@ -4279,7 +4279,7 @@ export type RelayedQuestion = AgentQuestion & {
   project_id: string;
   project_name: string;
   /** The episode, chat or thread that asked. */
-  source_label: string;
+  source_label: string | null;
 };
 
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
@@ -4302,7 +4302,7 @@ export interface RunningRow {
   needs_you: boolean;
   label: string;
   watching: number;
-  at: string;
+  at: string | null;
   /** The app hash that opens the run or thread. */
   link: string;
 }

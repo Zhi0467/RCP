@@ -54,7 +54,7 @@ function RunningEntry({ row, now, onOpen }: { row: RunningRow; now: number; onOp
           {row.label}
           {watching && ` · watching ${row.watching}`}
         </span>
-        <time dateTime={row.at}>{sinceLabel(row.at, now)}</time>
+        {row.at && <time dateTime={row.at}>{sinceLabel(row.at, now)}</time>}
       </span>
       <span className="upcoming-actions" aria-hidden="true">
         <ChevronRight size={14} />

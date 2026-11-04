@@ -231,12 +231,19 @@ def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> l
         pending = store.list_questions(project_id=project_id, open_only=True)
         cards = store.approval_cards([question.question_id for question in pending])
         with store.connection() as connection:
-            asked = [
+            recipient_of = [
                 question
                 for question in pending
                 if question.question_id not in cards
                 and user_id in question_recipients(connection, question)
             ]
+        asked = [
+            question
+            for question in recipient_of
+            if question.origin.owner_kind != "chat"
+            or store.chat_turn_refusal(project_id, question.origin.owner_id) is None
+        ]
+        with store.connection() as connection:
             chats = chat_titles(
                 connection,
                 project_id,
