@@ -33,8 +33,7 @@ from rcp.transport.state import StateUnavailable
 
 PROPOSAL_CARD_SHOWN = "proposal_card_shown"
 AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
-RETIRED_ASK_ACTIONS: frozenset[str] = frozenset({"auto_research"})
-"""Action kinds a new ask refuses; their stored cards still render and settle."""
+"""A new Auto-research ask's refusal; stored Auto-research cards still render and settle."""
 
 
 class ProposalCardView(BaseModel):
@@ -132,7 +131,7 @@ def approval_card_for_ask(
         None,
     )
     existing = store.approval_card(previous.question_id) if previous else None
-    if existing is None and action.kind in RETIRED_ASK_ACTIONS:
+    if existing is None and action.kind == "auto_research":
         raise ValueError(AUTO_RESEARCH_USES_EPISODE)
     if existing is None and action.kind == "proposal":
         proposal = service.history.state().proposals.get(action.proposal_id)
@@ -256,9 +255,7 @@ def _action_usage(model: type[BaseModel]) -> str:
 def askable_approval_actions() -> tuple[type[BaseModel], ...]:
     """The action models a new card may carry, in their union order."""
     return tuple(
-        model
-        for model in get_args(get_args(ApprovalAction)[0])
-        if get_args(model.model_fields["kind"].annotation)[0] not in RETIRED_ASK_ACTIONS
+        model for model in get_args(get_args(ApprovalAction)[0]) if model is not AutoResearchAction
     )
 
 
