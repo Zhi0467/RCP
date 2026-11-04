@@ -2468,6 +2468,7 @@ test("a Running read that a version overtakes is read again", async () => {
           needs: 1,
           total: 1,
         };
+        await page.evaluate(() => (window.agentCardsVersion = "2"));
         await page.waitForTimeout(1500);
       }
       await route.fulfill({ json: snapshot });

@@ -17,10 +17,11 @@ const KIND_LABEL: Record<RunningRowKind, string> = {
 const RUNNING_READ_GAP_MS = 2000;
 
 /**
- * The Running list, read once and again whenever the open-card version moves
- * from a known value. Reads are at least RUNNING_READ_GAP_MS apart, so a burst of
- * moves costs one read. A version counts as read only once its list loaded; a failed
- * read keeps the last list and retries with backoff.
+ * The Running list, read once the open-card version is first reported and again
+ * whenever it moves. Each read records the version it started under, so a move
+ * during a read is read again. Reads are at least RUNNING_READ_GAP_MS apart, so a
+ * burst of moves costs one read; a failed read keeps the last list and retries
+ * with backoff.
  */
 function useRunningList(): RunningList | null {
   const { scheduler } = useRefreshRuntime();
@@ -33,7 +34,7 @@ function useRunningList(): RunningList | null {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let wanted: string | null = null;
     let read: string | null | undefined;
-    const stale = () => read === undefined || read !== wanted;
+    const stale = () => read !== wanted;
     const later = (ms: number) => {
       if (stopped || loading || timer !== null || !stale()) return;
       timer = setTimeout(load, Math.max(0, ms));
@@ -60,11 +61,9 @@ function useRunningList(): RunningList | null {
       );
     };
     const unwatch = scheduler.watchAgentCards((version) => {
-      if (read === null && wanted === null) read = version;
       wanted = version;
       later(lastRead + RUNNING_READ_GAP_MS - Date.now());
     });
-    later(0);
     return () => {
       stopped = true;
       if (timer !== null) clearTimeout(timer);
