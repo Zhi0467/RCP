@@ -57,6 +57,8 @@ interface CompileResult {
   synctex?: SyncTexMap;
 }
 
+const PAPER_IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
+
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
 function assetUrl(projectId: string, file: PaperFile) {
   return `${paperRawUrl(projectId, file.file_id)}?sha256=${file.sha256}`;
@@ -96,9 +98,7 @@ function PaperLink({ href = "", children }: { href?: string; children?: React.Re
 function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string }) {
   const { file, tree, projectId } = useContext(PaperMarkdownContext);
   const path = markdownPaperPath(file.path, String(src));
-  const image = tree.files.find(
-    (entry) => entry.path === path && /\.(png|jpe?g|gif|webp)$/i.test(entry.path),
-  );
+  const image = tree.files.find((entry) => entry.path === path && PAPER_IMAGE.test(entry.path));
   return image ? (
     <img src={assetUrl(projectId, image)} alt={alt} />
   ) : (
@@ -431,7 +431,7 @@ export function PaperPreview({
         <MarkdownPreview text={previewText} path={file.path} />
       </PaperMarkdownContext.Provider>
     );
-  if (file.format === "image" && /\.(png|jpe?g|gif|webp)$/i.test(file.path))
+  if (file.format === "image" && PAPER_IMAGE.test(file.path))
     return (
       <div className="paper-image-preview" data-paper-path={file.path}>
         <PaperBoxSelect onBox={onBox}>

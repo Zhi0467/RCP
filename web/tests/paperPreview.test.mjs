@@ -57,6 +57,14 @@ test("Markdown preview resolves paper references without navigating outside the 
       size: 50,
       sha256: "abc",
     };
+    const vector = {
+      file_id: "chart",
+      path: "figures/chart.svg",
+      kind: "text",
+      format: "image",
+      size: 80,
+      sha256: "def",
+    };
     const html = renderToStaticMarkup(
       createElement(PaperPreview, {
         projectId: "p",
@@ -67,14 +75,15 @@ test("Markdown preview resolves paper references without navigating outside the 
           published_revision: 2,
           publish_state: "pending",
           hold: null,
-          files: [file, image],
+          files: [file, image, vector],
         },
-        text: "![plot](../figures/result.png) [local](intro.md) [external](https://example.org/) [missing](missing.md) [unsafe](javascript:alert)",
+        text: "![plot](../figures/result.png) ![chart](../figures/chart.svg) [local](intro.md) [external](https://example.org/) [missing](missing.md) [unsafe](javascript:alert)",
         onOpenFile() {},
         active: true,
       }),
     );
     assert.match(html, /<img[^>]*src="\/api\/projects\/p\/paper\/files\/figure\/raw\?sha256=abc"/);
+    assert.match(html, /<img[^>]*src="\/api\/projects\/p\/paper\/files\/chart\/raw\?sha256=def"/);
     assert.doesNotMatch(html, /src="\.\.\/figures/);
     assert.match(html, /<a href="#">local<\/a>/);
     assert.match(

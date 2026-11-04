@@ -88,6 +88,26 @@ def test_source_uploads_are_live_text_documents(manifest, tmp_path):
             assert conn.execute("SELECT COUNT(*) FROM paper_updates").fetchone()[0] == 6
 
 
+def test_an_svg_figure_is_served_as_an_inline_image_that_cannot_run_script(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><style>rect{fill:red}</style><rect/></svg>'
+        response = client.post(
+            prefix + "/uploads",
+            data={"path": "figures/plot.svg"},
+            files={"file": ("plot.svg", svg)},
+        )
+        assert response.status_code == 200, response.text
+        raw = client.get(prefix + f"/files/{response.json()['file_ids'][0]}/raw")
+        assert raw.content == svg
+        assert raw.headers["content-type"] == "image/svg+xml"
+        assert raw.headers["content-disposition"].startswith("inline")
+        policy = raw.headers["content-security-policy"]
+        assert "sandbox" in policy
+        assert "script-src" not in policy
+
+
 def test_folder_actions_cover_every_file_under_the_folder_and_only_those(manifest, tmp_path):
     import io
     import zipfile

@@ -54,9 +54,11 @@ remain behind a red icon across reloads until recreated. Restart pauses the edit
 without unmounting it or losing typing. Refused or inaccessible unsent text remains
 downloadable. Leaving with unsent text asks first. An early connection close never
 discards it. One path rule reserves `.git` and `.publish` for editing, backup, and
-transfer. Uploaded binaries deduplicate by content hash. Text SVG and unknown text
-types preview as source; unknown binary types download. Only raster images
-display inline as images. Text HTML previews inside the agent
+transfer. Uploaded binaries deduplicate by content hash. Unknown text types
+preview as source; unknown binary types download. Raster images and SVG display
+inline as images. SVG loads only through `<img>`, where it runs no script, and
+the raw route serves every file under a sandbox policy that allows inline style
+and nothing else. Text HTML previews inside the agent
 artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
