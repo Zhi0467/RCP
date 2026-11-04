@@ -2645,9 +2645,12 @@ test("waiting turns show one line each above the composer; remove and dismiss le
       await rows.nth(1).getByRole("button", { name: "Dismiss" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 1);
       assert.deepEqual(served.deleted, ["q1", "q2"]);
-      assert.equal(
-        await moss.getByRole("textbox", { name: "Message" }).inputValue(),
-        `${refusedText}\n\ndraft`,
+      await page.waitForFunction(
+        ([field, expected]) => field.value === expected,
+        [
+          await moss.getByRole("textbox", { name: "Message" }).elementHandle(),
+          `${refusedText}\n\ndraft`,
+        ],
       );
       assert.deepEqual(errors, []);
       await page.close();
