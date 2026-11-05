@@ -3,7 +3,7 @@ id: shannon-problem-solving
 kind: skill
 label: Shannon problem-solving
 version: 1.0.0
-description: Reshape a hard, stalled, or open-ended problem with Shannon's six strategies before attacking it.
+description: Reshape a hard problem with Shannon's six strategies before attacking it. Use when starting, stuck on, or unsure about research, analysis, experiment design, or writing, or when results can't tell whether something works.
 dependencies:
 ---
 
@@ -18,9 +18,10 @@ The point is not to recite the six. It is to change the problem before attacking
 1. **Name the situation** in one line. Which of these is it?
 2. **Pick 1–2 strategies** from the routing table. Never all six; the discipline is choosing.
 3. **Apply them to the problem itself** — actually simplify it, actually restate it — not just describe doing so.
-4. **Write the notes**: at most two paragraphs covering which strategies you chose, why, and what they changed about how you see the problem.
-5. **Give the normal answer** below the notes, in whatever form the task calls for.
-6. **If the answer is still unsatisfying** (or the user comes back stuck), run another round with *different* strategies. Up to three rounds total. If three rounds haven't moved things, say so and recommend what information or experiment would.
+4. **Lead with the conclusion** you reached, in a sentence or two.
+5. **Show the thinking** right after it: a short block on how you got there, shaped by the strategies you applied. Naming the strategies or this skill is optional; the reasoning can carry them implicitly.
+6. **Give the rest of the answer** below, in whatever form the task calls for.
+7. **If the answer is still unsatisfying** (or the user comes back stuck), run another round with *different* strategies. Up to three rounds total. If three rounds haven't moved things, say so and recommend what information or experiment would.
 
 ## Routing: situation → strategy
 
@@ -83,24 +84,25 @@ Wrong pick if: nothing has been solved yet — this strategy needs a foothold.
 
 ## Output format
 
-ALWAYS use this shape:
+Use this shape:
 
 ```
-**Notes** — one or two short paragraphs:
-Situation read, strategies chosen and why, what they changed. Plain prose, no bullet-per-strategy.
+[Conclusion: the answer or finding, in a sentence or two]
 
-[Normal answer, in whatever form the task needs]
+[Thinking: one short paragraph, at most two, on how the problem was reshaped and why that led to the conclusion. Plain prose, no bullet-per-strategy.]
+
+[The rest of the answer, in whatever form the task needs]
 ```
 
-Keep the notes genuinely short. They are a window into the reasoning, not a second answer. If a strategy was tried and didn't help, one sentence saying so is useful; a paragraph defending it is not.
+Keep the thinking genuinely short. It is a window into the reasoning, not a second answer. If an angle was tried and didn't help, one sentence saying so is useful; a paragraph defending it is not.
 
 ## Things to avoid
 
 - Applying all six, or listing them as a checklist. The value is in the choice.
 - Describing a strategy instead of doing it ("one could simplify this by…" with no simplified version shown).
 - Repeating a strategy in a later round. Each round should bring a new angle.
-- Letting the notes swallow the answer. Notes ≤ 2 paragraphs; the answer gets the space.
+- Burying the conclusion under the thinking, or letting the thinking swallow the answer. Thinking ≤ 2 paragraphs; the answer gets the space.
 
 ## Worked examples
 
-See `references/examples.md` for short before/after examples across research, debugging, writing, communication, and literature search. Read it when the routing table doesn't obviously fit the task at hand, or when calibrating how long the notes should be.
+See `references/examples.md` for short before/after examples across research, debugging, writing, communication, and literature search. Read it when the routing table doesn't obviously fit the task at hand, or when calibrating how long the thinking should be.
