@@ -29,7 +29,9 @@ const row = (patch = {}) =>
 createRoot(document.getElementById("root")!).render(
   <ProviderLoginNotice
     viewerUserId="u-me"
-    onOpenSignIns={({ provider, machine_id }) => window.openedSignIns.push({ provider, machine_id })}
+    onOpenSignIns={({ provider, machine_id }) =>
+      window.openedSignIns.push({ provider, machine_id })
+    }
     states={[
       row({}),
       row({

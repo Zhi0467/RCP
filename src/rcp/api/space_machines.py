@@ -626,8 +626,8 @@ def _checked_route(
     """The card's route after this edit; a changed one must log in, its one check.
 
     The backend card is the machine RCP runs on and has no route to edit; every
-    other card has a host. A team space fills a blank account from that login,
-    as create does.
+    other card has a host. The login's account is the card's: a named one must
+    match it, and a team space fills a blank one, as create does.
     """
 
     host = machine.host if body.host is None else body.host.strip()
@@ -644,7 +644,11 @@ def _checked_route(
             status_code=422, detail={"code": "host_required", "message": "host_required"}
         )
     account = _login_account(host)
-    if not os_account and store.space_kind == "team":
+    if body.os_account and body.os_account != account:
+        raise HTTPException(
+            status_code=422, detail={"code": "account_mismatch", "message": "account_mismatch"}
+        )
+    if os_account or store.space_kind == "team":
         return host, account
     return host, os_account
 

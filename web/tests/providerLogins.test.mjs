@@ -93,7 +93,11 @@ test("API sends login ids, add and remove bodies, and the setting through their 
       ["/api/providers/codex/logins/add", "POST", { machine_id: MACHINE, kind: "shared" }],
       ["/api/providers/claude/logins/add", "POST", { machine_id: "", kind: "own" }],
       ["/api/providers/codex/logins/remove", "POST", { machine_id: MACHINE, login_id: "ana" }],
-      ["/api/providers/claude/logins/setting", "PUT", { machine_id: MACHINE, setting: "shared_then_own" }],
+      [
+        "/api/providers/claude/logins/setting",
+        "PUT",
+        { machine_id: MACHINE, setting: "shared_then_own" },
+      ],
       ["/api/providers/logins/settings", "GET", null],
       ["/api/providers/codex/logins/sign-in", "POST", { machine_id: MACHINE, login_id: "ana" }],
       ["/api/providers/codex/logins/sign-in/attempt-1", "GET", null],
@@ -104,7 +108,11 @@ test("API sends login ids, add and remove bodies, and the setting through their 
         { machine_id: MACHINE, login_id: "own-me", token: "private-value" },
       ],
       ["/api/providers/claude/logins/verify", "POST", { machine_id: MACHINE, login_id: "" }],
-      ["/api/providers/claude/logins/sign-out", "POST", { machine_id: MACHINE, login_id: "own-me" }],
+      [
+        "/api/providers/claude/logins/sign-out",
+        "POST",
+        { machine_id: MACHINE, login_id: "own-me" },
+      ],
     ]);
   } finally {
     globalThis.fetch = originalFetch;

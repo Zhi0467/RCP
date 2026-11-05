@@ -614,11 +614,6 @@
       "count": 2
     }
   },
-  "src/projects/AddProjectMachine.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "src/projects/ConsolidationInbox.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -691,7 +686,7 @@
   },
   "src/projects/ProjectSettings.tsx": {
     "rcp/no-comments": {
-      "count": 27
+      "count": 25
     }
   },
   "src/projects/ProjectSetup.tsx": {
@@ -716,7 +711,7 @@
   },
   "src/projects/SpaceSettings.tsx": {
     "rcp/no-comments": {
-      "count": 6
+      "count": 5
     }
   },
   "src/projects/TeamProjectSetup.tsx": {

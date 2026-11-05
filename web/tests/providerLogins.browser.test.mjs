@@ -229,7 +229,9 @@ const codexRows = (sign_in) => [
   }),
 ];
 const codexSettings = {
-  settings: [{ provider: "codex", machine_id: MACHINE, setting: "shared", changed_at: null, stored: true }],
+  settings: [
+    { provider: "codex", machine_id: MACHINE, setting: "shared", changed_at: null, stored: true },
+  ],
   other_member_count: 0,
 };
 

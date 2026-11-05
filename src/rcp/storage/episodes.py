@@ -2828,11 +2828,9 @@ def _migrate_campaign_wrapup(
         concluding_operation_id=concluding_operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=request.get("provider") if isinstance(request.get("provider"), str) else None,
-        machine_id=(
-            request.get("execution_host")
-            if isinstance(request.get("execution_host"), str)
-            else None
-        ),
+        machine_id=execution_host
+        if isinstance(execution_host := request.get("execution_host"), str)
+        else None,
         native_session_id=(report["native_session_id"] if report is not None else None),
         stage_machine_id=report["stage_host"] if report is not None else None,
         stage_root=stage_root,
@@ -2852,7 +2850,7 @@ def _migrate_campaign_wrapup(
     _insert_legacy_wrapup(
         connection,
         wrapup,
-        run_on=request.get("run_on") if isinstance(request.get("run_on"), str) else None,
+        run_on=run_on if isinstance(run_on := request.get("run_on"), str) else None,
     )
     if report is None:
         return

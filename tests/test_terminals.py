@@ -23,6 +23,7 @@ from rcp import __main__
 from rcp.agents.write_scope import protected_repository_paths, registered_repository_roots
 from rcp.api.terminal_projection import terminal_session_payload
 from rcp.limits import TERMINAL_IDLE_TIMEOUT_SECONDS, TERMINAL_OUTPUT_BUFFER_BYTES
+from rcp.storage import AppStore
 from rcp.terminals import (
     TerminalManager,
     TerminalSession,
@@ -177,7 +178,7 @@ async def unstarted(tmp_path, membership, monkeypatch):
         await asyncio.Event().wait()
 
     monkeypatch.setattr("rcp.terminals.manager.sweep_loop", never_sweeps)
-    manager = TerminalManager(tmp_path / "data", membership)
+    manager = TerminalManager(tmp_path / "data", membership, AppStore(tmp_path / "app.sqlite3"))
     manager.directory.mkdir(parents=True)
     yield manager
     with contextlib.suppress(TerminalUnavailable):

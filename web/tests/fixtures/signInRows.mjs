@@ -121,7 +121,13 @@ export const everyState = [
 export const settingsFor = (claude = "own_then_shared", codexSetting = "shared") => ({
   settings: [
     { provider: "claude", machine_id: MACHINE, setting: claude, changed_at: null, stored: true },
-    { provider: "codex", machine_id: MACHINE, setting: codexSetting, changed_at: null, stored: true },
+    {
+      provider: "codex",
+      machine_id: MACHINE,
+      setting: codexSetting,
+      changed_at: null,
+      stored: true,
+    },
   ],
   other_member_count: 4,
 });

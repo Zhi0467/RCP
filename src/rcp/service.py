@@ -1450,7 +1450,7 @@ class ProjectService:
         self.indexer = ConversationIndexer(
             manifest,
             cache_root,
-            machine_cards=self._machine_cards,
+            machine_cards=self.machine_cards,
             app_chat_origin=app_chat_origin,
         )
         self._index_lock = threading.Lock()
@@ -2160,7 +2160,7 @@ class ProjectService:
             )
         return {**snapshot, "provider_readiness": resolved}
 
-    def _machine_cards(self) -> dict[str, SpaceMachineRecord]:
+    def machine_cards(self) -> dict[str, SpaceMachineRecord]:
         """Every space machine card by id, read now from this project's store."""
 
         store = self.paper.store
@@ -2405,7 +2405,7 @@ class ProjectService:
 
     def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
         """Every project machine as seen from `run_on`, read from the manifest and cards now."""
-        context = machine_compute_context(self.manifest, self._machine_cards(), machine_id=run_on)
+        context = machine_compute_context(self.manifest, self.machine_cards(), machine_id=run_on)
         return [profile.model_dump(mode="json") for profile in context.active]
 
     def review_node(
@@ -3045,7 +3045,7 @@ class ProjectService:
         )
         execution_machine = self.manifest.base_machine
         assembler = ContextAssembler(
-            self.manifest, cards=self._machine_cards(), graph_root=self.history.root
+            self.manifest, cards=self.machine_cards(), graph_root=self.history.root
         )
         source_roots = assembler.source_roots(execution_machine)
         source_errors = preflight_provider_roots(
@@ -3151,7 +3151,7 @@ class ProjectService:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
         return ContextAssembler(
-            self.manifest, cards=self._machine_cards(), graph_root=self.history.root
+            self.manifest, cards=self.machine_cards(), graph_root=self.history.root
         ).chat_context(
             self.history.state(),
             graph_target=self.history.graph_target,
@@ -3228,7 +3228,7 @@ class ProjectService:
         )
 
     def coach_context(self, paper_path: Path | None = None) -> CoachContext:
-        return ContextAssembler(self.manifest, cards=self._machine_cards()).paper_pointers(
+        return ContextAssembler(self.manifest, cards=self.machine_cards()).paper_pointers(
             paper_path
         )
 

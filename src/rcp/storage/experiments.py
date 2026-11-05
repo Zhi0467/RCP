@@ -214,8 +214,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                 connection, origin.project_id, original.kind, original.request.get("chat_id")
             ):
                 return None
-            if origin.stage_machine_id and self._unresolved_remote_provider_passes(
-                connection, origin.stage_machine_id, origin.stage_root
+            origin_stage_card = origin.stage_machine_id
+            if origin_stage_card and self._unresolved_remote_provider_passes(
+                connection, origin_stage_card, origin.stage_root
             ):
                 return None
             self._require_project_accepts_new_work(connection, origin.project_id)
