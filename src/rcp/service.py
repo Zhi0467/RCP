@@ -139,7 +139,7 @@ from rcp.sources import (
 from rcp.storage import AppStore
 from rcp.storage.chat_display import chat_agent_setup
 from rcp.storage.chat_forks import ChatForkOrigin
-from rcp.storage.models import MACHINE_LOGIN_ID
+from rcp.storage.models import MACHINE_LOGIN_ID, SpaceMachineRecord
 from rcp.transport.state import SSHStateWorkspace
 from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 from rcp.turn_outcomes import TurnOutcome
@@ -1069,7 +1069,7 @@ class ArtifactEditAdmission(BaseModel):
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_path: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     reply_episode_id: str | None = None
     episode_id: str | None = None
@@ -1102,7 +1102,7 @@ class RunRequest(BaseModel):
     # Resolved from the immutable chat origin, never accepted from HTTP clients.
     fork_session_id: str | None = None
     fork_source_cwd: str | None = None
-    fork_source_host: str | None = None
+    fork_source_machine_id: str | None = None
     # The source chat's latest turn when the first message forked; no launch reads it.
     fork_source_operation_id: str | None = None
     # The Work turn that started this Experiment episode; never accepted from HTTP clients.
@@ -1450,7 +1450,7 @@ class ProjectService:
         self.indexer = ConversationIndexer(
             manifest,
             cache_root,
-            machine_cards=self.launcher.machine_cards,
+            machine_cards=self._machine_cards,
             app_chat_origin=app_chat_origin,
         )
         self._index_lock = threading.Lock()
@@ -2160,6 +2160,13 @@ class ProjectService:
             )
         return {**snapshot, "provider_readiness": resolved}
 
+    def _machine_cards(self) -> dict[str, SpaceMachineRecord]:
+        """Every space machine card by id, read now from this project's store."""
+
+        store = self.paper.store
+        store.backend_space_machine()
+        return {item.machine_id: item for item in store.space_machines()}
+
     @staticmethod
     def readiness_for(
         manifest: Manifest,
@@ -2398,9 +2405,7 @@ class ProjectService:
 
     def machine_prompt_profiles(self, run_on: str) -> list[dict[str, str]]:
         """Every project machine as seen from `run_on`, read from the manifest and cards now."""
-        context = machine_compute_context(
-            self.manifest, self.launcher.machine_cards(), machine_id=run_on
-        )
+        context = machine_compute_context(self.manifest, self._machine_cards(), machine_id=run_on)
         return [profile.model_dump(mode="json") for profile in context.active]
 
     def review_node(
@@ -3040,7 +3045,7 @@ class ProjectService:
         )
         execution_machine = self.manifest.base_machine
         assembler = ContextAssembler(
-            self.manifest, cards=self.launcher.machine_cards(), graph_root=self.history.root
+            self.manifest, cards=self._machine_cards(), graph_root=self.history.root
         )
         source_roots = assembler.source_roots(execution_machine)
         source_errors = preflight_provider_roots(
@@ -3146,7 +3151,7 @@ class ProjectService:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
         return ContextAssembler(
-            self.manifest, cards=self.launcher.machine_cards(), graph_root=self.history.root
+            self.manifest, cards=self._machine_cards(), graph_root=self.history.root
         ).chat_context(
             self.history.state(),
             graph_target=self.history.graph_target,
@@ -3223,7 +3228,7 @@ class ProjectService:
         )
 
     def coach_context(self, paper_path: Path | None = None) -> CoachContext:
-        return ContextAssembler(self.manifest, cards=self.launcher.machine_cards()).paper_pointers(
+        return ContextAssembler(self.manifest, cards=self._machine_cards()).paper_pointers(
             paper_path
         )
 

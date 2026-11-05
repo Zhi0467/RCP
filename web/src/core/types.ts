@@ -3491,13 +3491,6 @@ export interface SpaceMachineCreateRequest {
 export type MachineLoginFailureCode =
   "authentication_failed" | "host_key_unknown" | "host_key_changed" | "unreachable";
 
-export type SpaceMachineUpdateFailureCode =
-  | MachineLoginFailureCode
-  | "invalid_host"
-  | "backend_host_fixed"
-  | "host_in_use"
-  | "account_mismatch";
-
 export interface SpaceMachineUpdateRequest {
   name?: string;
   host?: string;

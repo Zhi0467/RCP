@@ -11,7 +11,7 @@
     {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}/questions"},
     {"method": "GET", "path": "/api/projects/{project_id}/tasks/{operation_id}"},
     {"method": "GET", "path": "/api/projects/{project_id}/episodes"},
-    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_alias}/browser"},
+    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_id}/browser"},
     {"method": "GET", "path": "/api/projects/{project_id}/paper/engines"},
     {"method": "GET", "path": "/api/space/runs"},
     {"method": "GET", "path": "/api/space/machines/{machine_id}/browser"},
@@ -27,7 +27,7 @@
   "allowlist": [
     {"method": "GET", "path": "/api/agent-threads/cards", "reason": "Derives Proposal cards from each member project's live main through open_display, which refreshes remote state."},
     {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}", "reason": "Opens the project through open_display, which refreshes remote state."},
-    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_alias}/browser", "reason": "Opens the project through open_display, then probes the machine's browser like the Space machine route."},
+    {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_id}/browser", "reason": "Opens the project through open_display, then probes the machine's browser like the Space machine route."},
     {"method": "GET", "path": "/api/space/machines/{machine_id}/browser", "reason": "Probes browser readiness on every call: a login shell, launchctl and node here, SSH on a remote machine."},
     {"method": "GET", "path": "/api/update-notice", "reason": "Looks up the latest release over HTTP when the cached check is stale, then runs git rev-parse in a source checkout."},
     {"method": "GET", "path": "/api/team/devices/pairings/{pairing_id}", "reason": "Reads the code inside BEGIN IMMEDIATE so it can withdraw a code whose issuer is gone."}

@@ -42,7 +42,7 @@ from rcp.config import (
 )
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
-from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, invalidate_machine
+from rcp.machine_cards import LoginKey, invalidate_machine
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
@@ -599,6 +599,10 @@ def _login_account(host: str) -> str:
 
     try:
         account = login_account(host)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail={"code": "unreachable", "message": "unreachable"}
+        ) from None
     except MachineLoginFailure as exc:
         raise HTTPException(
             status_code=422,
@@ -612,44 +616,21 @@ def _login_account(host: str) -> str:
         ) from None
 
 
-def _refused(status_code: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status_code, detail={"code": code, "message": code})
-
-
 def _checked_route(
     store: AppStore, machine: SpaceMachineRecord, body: UpdateSpaceMachineRequest
 ) -> tuple[str, str]:
-    """The card's route after this edit, in the order its checks are documented.
+    """The card's route after this edit; a changed one must log in, its one check.
 
-    The host must be an SSH destination no other card has; the backend card's
-    host is fixed. Then the account must be the one a login to the host lands
-    on, which is the only reachability check; a team space fills a blank one.
+    A team space fills a blank account from that login, as create does.
     """
 
     host = machine.host if body.host is None else body.host.strip()
     os_account = machine.os_account if body.os_account is None else body.os_account
-    backend = machine.machine_id == BACKEND_MACHINE_ID
-    if host:
-        try:
-            validate_ssh_destination(host)
-        except ValueError:
-            raise _refused(422, "invalid_host") from None
-    if backend and host:
-        raise _refused(422, "backend_host_fixed")
-    if not backend and not host:
-        raise _refused(422, "invalid_host")
-    if (host, os_account) == (machine.host, machine.os_account) or backend:
+    if (host, os_account) == (machine.host, machine.os_account):
         return host, os_account
-    if any(
-        card.host == host and card.machine_id != machine.machine_id
-        for card in store.space_machines()
-    ):
-        raise _refused(409, "host_in_use")
     account = _login_account(host)
     if not os_account and store.space_kind == "team":
         return host, account
-    if os_account and os_account != account:
-        raise _refused(422, "account_mismatch")
     return host, os_account
 
 
@@ -757,7 +738,9 @@ def update_space_machine(
             provider_paths=provider_paths,
         )
     except SpaceMachineHostInUse:
-        raise _refused(409, "host_in_use") from None
+        raise HTTPException(
+            status_code=409, detail="This space already has that machine."
+        ) from None
     if route_changed:
         invalidate_machine(
             store,

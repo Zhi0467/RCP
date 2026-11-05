@@ -15,10 +15,10 @@ from rcp.agents import ProviderReadiness
 from rcp.config import load_manifest, permissions_for
 from rcp.core.models import Patch
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
-from rcp.storage.models import LoginKey
 from rcp.transport import StateUnavailable
 from tests.helpers import resource_watermark_tokens, sign_in_async_client, signed_in_client
 
@@ -100,7 +100,7 @@ def test_project_display_boundary_completes_all_public_snapshots(manifest, tmp_p
 
     body = {
         "agent_profiles": {
-            surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+            surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
             for surface, profile in current.json()["agent_profiles"].items()
         },
     }
@@ -271,7 +271,7 @@ def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
                 log_path=str(tmp_path / "teammate.log"),
                 cwd=str(tmp_path),
                 continuation=WatcherContinuation(
-                    provider="claude", run_on="laptop", run_truth_scope=["repo-a"]
+                    provider="claude", run_on=BACKEND_MACHINE_ID, run_truth_scope=["repo-a"]
                 ),
                 created_at=now,
             )
@@ -327,7 +327,7 @@ def test_settings_watermark_signals_a_save_the_page_has_not_rendered(manifest, t
             rendered["default_auto_research_invocation_ceiling"] + 1
         ),
         "agent_profiles": {
-            surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+            surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
             for surface, profile in rendered["agent_profiles"].items()
         },
     }
@@ -426,7 +426,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert len(cached_files) == 1
     cache_path = cached_files[0]
     initial_envelope = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert initial_envelope["schema_version"] == 5
+    assert initial_envelope["schema_version"] == 6
     assert initial_envelope["canonical_patch_head"] == 1
     assert initial_envelope["project_id"] == project_id
     assert initial_envelope["snapshot"] == initial.json()
@@ -449,9 +449,7 @@ def test_project_get_creates_then_reuses_display_snapshot_without_reopening(
     assert client.get(f"/api/projects/{project_id}/cached").json() == initial.json()
 
 
-def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch(
-    manifest, tmp_path
-) -> None:
+def test_pre_identity_display_cache_and_a_branch_cache_are_rejected(manifest, tmp_path) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = signed_in_client(app)
@@ -463,12 +461,10 @@ def test_pre_branch_display_cache_decodes_as_main_and_new_cache_rejects_a_branch
     for field in ("graph_target", "graph_head", "graph_changes"):
         del envelope["snapshot"][field]
     cache_path.write_text(json.dumps(envelope))
-    restored = client.get(f"/api/projects/{project_id}/cached")
-    assert restored.status_code == 200
-    assert restored.json() == initial
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
-    envelope["schema_version"] = 5
-    envelope["snapshot"] = restored.json()
+    envelope["schema_version"] = 6
+    envelope["snapshot"] = initial
     target = {"kind": "branch", "branch_id": str(uuid.uuid4())}
     envelope["snapshot"]["graph_target"] = target
     envelope["snapshot"]["graph_head"]["target"] = target
@@ -495,7 +491,7 @@ def test_space_runs_read_a_cache_written_when_the_coach_had_its_own_machine(
     assert app.state.catalog.cached_snapshot_status(project_id)[0] == "valid"
     assert client.get("/api/space/runs").status_code == 200
     cached = client.get(f"/api/projects/{project_id}/cached").json()["agent_profiles"]
-    assert cached["paper_coach"]["run_on"] == fresh["paper_coach"]["run_on"]
+    assert cached["paper_coach"] == fresh["paper_coach"]
 
 
 def test_cached_project_backfills_a_prior_choice_the_old_cache_never_stored(
@@ -599,7 +595,7 @@ def test_cached_project_rejects_malformed_mismatched_and_oversize_files(
     legacy_snapshot["attention"].pop("decision_prior_choices")
     legacy_snapshot.pop("graph_mutation")
     legacy = {
-        "schema_version": 2,
+        "schema_version": 6,
         "project_id": project_id,
         "canonical_patch_head": 1,
         "snapshot": legacy_snapshot,
@@ -675,7 +671,7 @@ def test_cached_project_takes_this_release_rendering_of_proposal_actions(
     cache_path.write_text(
         json.dumps(
             {
-                "schema_version": 5,
+                "schema_version": 6,
                 "project_id": project_id,
                 "canonical_patch_head": 1,
                 "snapshot": snapshot,
@@ -713,7 +709,7 @@ def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
     cache_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 6,
                 "project_id": project_id,
                 "canonical_patch_head": 1,
                 "snapshot": legacy_snapshot,
@@ -922,20 +918,26 @@ def test_project_readiness_does_not_open_or_materialize_project(
     cached = client.get(f"/api/projects/{project_id}/readiness")
 
     assert response.status_code == refreshed.status_code == cached.status_code == 200
-    assert response.json()["provider_readiness"]["laptop"]["codex"]["version"] == ("codex-ready")
-    assert response.json()["providers"] == response.json()["provider_readiness"]["laptop"]
+    assert response.json()["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["version"] == (
+        "codex-ready"
+    )
+    assert response.json()["providers"] == response.json()["provider_readiness"][BACKEND_MACHINE_ID]
     assert set(response.json()["agent_profiles"]) >= {"seed", "refresh", "node_chat"}
     assert all(
         "effective_model" in profile for profile in response.json()["agent_profiles"].values()
     )
-    assert response.json()["provider_skill_inventories"]["laptop"]["codex"]["status"] == (
+    assert response.json()["provider_skill_inventories"][BACKEND_MACHINE_ID]["codex"]["status"] == (
         "unavailable"
     )
     assert set(calls) == {
         (provider, refresh) for provider in PROVIDER_IDS for refresh in (False, True)
     }
-    assert inventory_waits == [(provider, "", None) for provider in PROVIDER_IDS] * 3
-    assert sorted(skill_refreshes) == sorted((provider, "", None) for provider in PROVIDER_IDS)
+    assert (
+        inventory_waits == [(provider, BACKEND_MACHINE_ID, None) for provider in PROVIDER_IDS] * 3
+    )
+    assert sorted(skill_refreshes) == sorted(
+        (provider, BACKEND_MACHINE_ID, None) for provider in PROVIDER_IDS
+    )
     assert project_id not in app.state.catalog._services
 
 
@@ -950,9 +952,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert before["default_auto_research_invocation_ceiling"] == 10
     assert "default_campaign_invocation_ceiling" not in before
     profiles = {
-        surface: {
-            key: profile[key] for key in ("provider", "runtime", "model", "reasoning", "run_on")
-        }
+        surface: {key: profile[key] for key in ("provider", "runtime", "model", "reasoning")}
         for surface, profile in before["agent_profiles"].items()
     }
     assert set(profiles) == {
@@ -1052,7 +1052,7 @@ def test_project_settings_reject_invalid_scope_without_changing_manifest(
     before = client.get(f"/api/projects/{project_id}").json()
     content = manifest.path.read_text(encoding="utf-8")
     profiles = {
-        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
         for surface, profile in before["agent_profiles"].items()
     }
 
@@ -1111,16 +1111,21 @@ def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, t
 def test_project_readiness_exposes_cached_state_transfer_engine(manifest, tmp_path, monkeypatch):
     from rcp.transport import state_transfer
 
-    content = manifest.path.read_text()
-    manifest.path.write_text(
-        content + '\n[[machines]]\nalias = "worker"\nhost = "research.example"\n'
-    )
     engine = state_transfer.TransferEngine("tar", None, "openrsync: protocol version 29", "3.2.7")
     monkeypatch.setattr(state_transfer, "_CACHE", {"research.example": engine})
     monkeypatch.setattr(
         state_transfer, "_probe", lambda _argv: pytest.fail("readiness must not probe transfers")
     )
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    worker = app.state.catalog.store.create_space_machine(
+        name="worker", host="research.example", os_account=""
+    ).machine_id
+    assert (
+        client.post(f"/api/projects/{project_id}/machines", json={"machine_id": worker}).status_code
+        == 200
+    )
     monkeypatch.setattr(
         app.state.catalog.launcher,
         "readiness",
@@ -1128,6 +1133,6 @@ def test_project_readiness_exposes_cached_state_transfer_engine(manifest, tmp_pa
             provider=login.provider, installed=False, authenticated=False
         ),
     )
-    response = signed_in_client(app).get(f"/api/projects/{app.state.default_project_id}/readiness")
+    response = client.get(f"/api/projects/{project_id}/readiness")
     assert response.status_code == 200, response.text
-    assert response.json()["state_transfers"] == {"worker": engine.as_dict()}
+    assert response.json()["state_transfers"] == {worker: engine.as_dict()}

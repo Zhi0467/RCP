@@ -315,7 +315,7 @@ def write_local_test_manifest(directory: Path) -> Path:
     return path
 
 
-def store_test_claude_token(store: AppStore, host: str = "") -> None:
+def store_test_claude_token(store: AppStore, machine_id: str = BACKEND_MACHINE_ID) -> None:
     """Give fake Claude execution an explicit managed credential.
 
     Imported locally because release-update bases import this module with an older
@@ -326,7 +326,7 @@ def store_test_claude_token(store: AppStore, host: str = "") -> None:
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
         "claude",
-        host,
+        machine_id,
         "test-setup-token",
         member_id="fixture-member",
         now=store.now(),

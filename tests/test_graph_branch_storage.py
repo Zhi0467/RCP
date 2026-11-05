@@ -15,6 +15,7 @@ from rcp.config import load_manifest
 from rcp.core.models import BranchMergeProvenance, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.projects import fill_space_machines
 from rcp.runs.branch_merge import branch_merge_id
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.branch_names import BranchNameTaken
@@ -139,6 +140,7 @@ def test_pre55_legacy_branch_retains_replay_names_archive_and_merge(tmp_path: Pa
         )
     with chdir(copied):
         store = AppStore(database)
+        fill_space_machines(store, copied / "data")
         record = store.graph_branch(project_id, branch_id)
         assert record is not None and record.owner_episode_id == branch_id and record.archived
         assert store.branch_names(project_id)[branch_id] == fixture["legacy_branch_name"]

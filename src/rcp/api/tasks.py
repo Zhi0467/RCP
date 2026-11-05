@@ -1536,7 +1536,7 @@ def _validated_task_request(
     for field in (
         "fork_session_id",
         "fork_source_cwd",
-        "fork_source_host",
+        "fork_source_machine_id",
         "fork_source_operation_id",
     ):
         client_request.pop(field, None)

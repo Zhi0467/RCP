@@ -10,6 +10,7 @@ from rcp.api import episode_routes
 from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import ProjectService
 from rcp.storage import EpisodeRecord
 from rcp.transport import StateUnavailable
@@ -564,7 +565,7 @@ def _admit_fork_experiment(app, store, project_id, target, node_id):
 
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="node",
         chat_id=episode_id,

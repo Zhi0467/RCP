@@ -9,6 +9,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.api.episode_branches import ensure_episode_graph_target
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import reserve_auto_research
 from rcp.runs.episodes.isolation import ensure_episode_isolation
@@ -64,7 +65,7 @@ def _app_branch(manifest, tmp_path, *, include_experiment=False, owner_mode="aut
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
         ),
         authorized_by=authorized_human(app),
@@ -268,7 +269,10 @@ def _end_orchestrator(app, root, stage: Path, *, seed="resumed"):
     store = app.state.catalog.store
     stage.mkdir()
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="orchestrator-session", stage_root=str(stage)
+        root.operation_id,
+        native_session_id="orchestrator-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(stage),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     with store.connection() as connection:
@@ -311,7 +315,7 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
         "message": "What did the chain conclude?",
         "mode": "work",
         "provider": "codex",
-        "run_on": "laptop",
+        "run_on": BACKEND_MACHINE_ID,
         "run_truth_scope": ["repo-a"],
     }
     refused = client.post(url, json=payload)

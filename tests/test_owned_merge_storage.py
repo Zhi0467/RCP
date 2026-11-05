@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.branch_merge_request import BranchMergeRunRequest, MergeBinding
 from rcp.runs.graph_forks import create_graph_fork
 from rcp.storage import AgentTaskRecord
@@ -43,7 +44,7 @@ def _owned_merge(manifest, tmp_path, *, requires_agent=True):
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         mode="work",
         chat_scope="project",
