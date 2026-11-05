@@ -354,8 +354,8 @@ def publish_session_artifacts(
     """At turn end, publish each changed tracked file as its artifact's next version.
 
     Failures leave a tracked file's change in place, so a later turn end still
-    publishes it. A one-turn file has no later turn end, so its comment settles
-    as failed instead of ending without an outcome.
+    publishes it. A one-turn file has no later turn end, so its commented or
+    attached edit settles as failed instead of ending without an outcome.
     """
     if execution is None:
         return artifacts
@@ -392,8 +392,7 @@ def _settle_one_turn_edits(
         durable = set()
     for edit in edits.values():
         if (
-            not edit.commented
-            or edit.artifact_id in settled
+            edit.artifact_id in settled
             or edit.artifact_id in durable
             # Published before the failure: a replayed turn end finishes its receipt.
             or store.artifact_operation_version(edit.artifact_id, execution.operation_id)

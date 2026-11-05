@@ -862,6 +862,7 @@ def test_usage_names_every_action_field_and_outcome():
         ("plain", {"outcome": "failed", "reason": "plain"}),
         (503, None),
         ("state", None),
+        ("os", None),
     ],
 )
 def test_handler_outcomes_map_to_card_results(raised, expected):
@@ -873,6 +874,8 @@ def test_handler_outcomes_map_to_card_results(raised, expected):
     def execute():
         if raised == "state":
             raise StateUnavailable("offline")
+        if raised == "os":
+            raise OSError("disk full")
         if raised == 503:
             raise HTTPException(status_code=503, detail="offline")
         raise HTTPException(status_code=409, detail=raised)
