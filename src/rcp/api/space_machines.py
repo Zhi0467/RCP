@@ -768,6 +768,8 @@ def update_space_machine(
             project_ids=[project["project_id"] for project in projects],
             forget_display_snapshot=catalog.forget_display_snapshot,
         )
+        with _REACH_LOCK:
+            _REACH.pop((str(store.path), machine_id), None)
     for provider, path in (provider_paths or {}).items():
         for binary in {machine.provider_paths.get(provider), path} - {None}:
             catalog.launcher.invalidate_readiness(

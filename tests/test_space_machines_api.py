@@ -221,8 +221,12 @@ def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
     mismatched = client.patch(path, json={"host": "new.example", "os_account": "bob"})
     assert mismatched.status_code == 422
     assert mismatched.json()["detail"]["code"] == "account_mismatch"
+    from rcp.api import space_machines
+
+    space_machines._REACH[(str(store.path), card.machine_id)] = [{"from": "Old", "probe": {}}]
     moved = client.patch(path, json={"host": "new.example", "os_account": "carol"})
     assert moved.status_code == 200, moved.text
+    assert moved.json()["reach"] == []
     assert (moved.json()["host"], moved.json()["os_account"]) == ("new.example", "carol")
     assert logins == ["new.example", "new.example"] and invalidated == [card.machine_id]
     assert client.patch(path, json={"host": "other.example"}).status_code == 409

@@ -375,6 +375,12 @@ def _seed(connection: sqlite3.Connection) -> None:
         (NOW, json.dumps({"layout": "split-v1", "stage_host": "gpu.example", "stage_root": "/s"})),
     )
     connection.execute(
+        "INSERT INTO questions (question_id, project_id, owner_kind, owner_id, key, origin_json, "
+        "argument_hash, question, choices_json, multiple, state, created_at) "
+        "VALUES ('q', 'remote', 'chat', 'chat', 'k', ?, 'h', 'Which?', '[]', 0, 'pending', ?)",
+        (json.dumps({"stage_root": "/s", "stage_host": "gpu.example"}), NOW),
+    )
+    connection.execute(
         "INSERT INTO graph_run_receipts (operation_id, created_at, tier, category, payload_json) "
         "VALUES ('op', ?, 'diagnostic', 'remote_provider_started', ?)",
         (
@@ -482,6 +488,8 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
         ]
         assert [receipt.get("stage_machine_id") for receipt in receipts] == [GPU, GPU]
         assert all("stage_host" not in receipt for receipt in receipts)
+        origin = json.loads(connection.execute("SELECT origin_json FROM questions").fetchone()[0])
+        assert origin == {"stage_root": "/s", "stage_machine_id": GPU}
         space_request = connection.execute(
             "SELECT request_json FROM graph_runs WHERE operation_id = 'space-op'"
         ).fetchone()[0]

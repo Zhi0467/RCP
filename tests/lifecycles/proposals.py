@@ -62,6 +62,7 @@ from unittest import mock
 from rcp.approval_actions import ApprovalOutcome
 from rcp.core.models import Patch, Proposal
 from rcp.limits import APPROVAL_CARD_TTL_HOURS
+from rcp.machine_upgrade import _migrate_question_origins
 from rcp.runs.approval_cards import settle_interrupted_approval_cards
 from rcp.storage.approval_cards import ApprovalCardStoreMixin, _settle, insert_approval_card
 from rcp.storage.episodes import EpisodeStoreMixin
@@ -344,6 +345,7 @@ class Proposals:
         ExperimentStoreMixin.create_experiment_episode_with_invocation,
         ProjectStoreMixin.delete_project_records,
         RestoreDetachmentStoreMixin.detach_restored_lifecycle,
+        _migrate_question_origins,
     )
     unreached_values = {
         "dismissed": "a card question cannot be dismissed; the route refuses plain resolution",
@@ -363,6 +365,7 @@ class Proposals:
         QuestionStoreMixin.set_episode_chain_questions_withdrawn_in_connection: _EPISODE,
         QuestionStoreMixin.set_episode_questions_withdrawn: _EPISODE,
         QuestionStoreMixin.withdraw_episode_question_if_stopped: _EPISODE,
+        _migrate_question_origins: "a migration runs when a store opens, never inside an action",
         EpisodeStoreMixin._withdraw_episode_question_chain: _EPISODE,
         ExperimentStoreMixin.create_experiment_episode_with_invocation: _EPISODE,
         ProjectStoreMixin.delete_project_records: (

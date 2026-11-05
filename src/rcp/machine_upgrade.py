@@ -784,6 +784,22 @@ def _migrate_stage_receipts(connection: sqlite3.Connection, cards: _Cards) -> No
         )
 
 
+def _migrate_question_origins(connection: sqlite3.Connection, cards: _Cards) -> None:
+    if "origin_json" not in _columns(connection, "questions"):
+        return
+    rows = connection.execute(
+        "SELECT rowid, origin_json FROM questions "
+        "WHERE json_type(origin_json, '$.stage_host') IS NOT NULL"
+    ).fetchall()
+    for rowid, origin_json in rows:
+        origin = json.loads(origin_json)
+        host = origin.pop("stage_host")
+        origin["stage_machine_id"] = None if host is None else cards.id_for_host(str(host))
+        connection.execute(
+            "UPDATE questions SET origin_json = ? WHERE rowid = ?", (json.dumps(origin), rowid)
+        )
+
+
 def _migrate_artifact_edit_stages(connection: sqlite3.Connection, cards: _Cards) -> None:
     rows = connection.execute(
         "SELECT operation_id, request_json FROM graph_runs "
@@ -894,6 +910,7 @@ def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) ->
             (BACKEND_MACHINE_ID,),
         )
     _migrate_artifact_edit_stages(connection, cards)
+    _migrate_question_origins(connection, cards)
     _drop_column(connection, "episode_wrapups", "run_on")
     if "execution_machine" in _columns(connection, "experiment_episode_state"):
         connection.execute(
