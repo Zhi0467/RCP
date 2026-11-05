@@ -14,6 +14,7 @@ from pydantic import TypeAdapter
 from rcp.config import DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.policies import transfer as transfer_policy
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
@@ -23,6 +24,7 @@ from rcp.server_ops.models import (
     MessageText,
     ServerStep,
 )
+from rcp.storage import models as storage_models
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ProjectMemberRecord,
@@ -55,6 +57,7 @@ from rcp.storage.models import (
     ProjectTransferTargetAdmissionReceipt,
     ProjectTransferUploadCompleteReceipt,
     ProjectTransferUploadRecord,
+    SpaceMachineRecord,
     _canonical_uuid4,
 )
 from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
@@ -107,6 +110,13 @@ _PROJECT_TRANSFER_PHASES: frozenset[ProjectTransferPhase] = frozenset(
         "operator_action_needed",
     }
 )
+
+
+PROJECT_TRANSFER_RESTART = "This transfer began before RCP was updated. Restart the transfer."
+
+
+class ProjectTransferRestartRequired(RuntimeError):
+    """A stored transfer names machines the way an earlier transfer format did."""
 
 
 def _canonical_json(value: object) -> str:
@@ -219,6 +229,55 @@ def _verify_project_provisioning_review_digest(
         if record.final_review_digest not in {current_digest, legacy_digest}:
             raise ValueError("project provisioning final-review digest does not match its payload")
     return record
+
+
+def _space_cards(connection: sqlite3.Connection) -> dict[str, SpaceMachineRecord]:
+    from rcp.storage.space_machines import _record
+
+    return {
+        card.machine_id: card
+        for card in map(_record, connection.execute("SELECT * FROM space_machines"))
+    }
+
+
+def _require_provisioning_cards(
+    machines: list[ProjectProvisioningMachineRecord],
+    cards: dict[str, SpaceMachineRecord],
+) -> None:
+    """Every machine is a card of this space; the backend runs as rcp in the installed root.
+
+    A backend card with no account checks nothing: the backend process is the
+    installed service account.
+    """
+
+    for machine in machines:
+        card = cards.get(machine.machine_id)
+        if card is None:
+            raise ValueError("provisioning machine names no machine in this space")
+        if machine.machine_id == BACKEND_MACHINE_ID:
+            layout = storage_models.DEFAULT_SERVER_LAYOUT
+            if card.os_account not in ("", layout.service_account):
+                raise ValueError("the server-local provisioning machine must execute as rcp")
+            if machine.central_root != str(layout.projects_root):
+                raise ValueError("the server-local provisioning root is fixed by the installation")
+
+
+def _require_declared_machine_target(
+    record: ProjectProvisioningRequestRecord,
+    cards: dict[str, SpaceMachineRecord],
+) -> None:
+    """A machine operator action names the host and account of one declared card."""
+
+    target = None if record.operator_action is None else record.operator_action.target
+    if not isinstance(target, MachineTarget):
+        return
+    if not any(
+        (card := cards.get(machine.machine_id)) is not None
+        and card.os_account == target.os_account
+        and (not card.host or card.host == target.host)
+        for machine in record.machines
+    ):
+        raise ValueError("provisioning machine action must target one declared execution account")
 
 
 class ProjectProvisioningStoreMixin(StoreMixinBase):
@@ -447,16 +506,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         actual_configuration_sha256 = project_transfer_source_configuration_sha256(configuration)
         if actual_configuration_sha256 != source_configuration_sha256:
             raise ValueError("source transfer configuration digest does not match its payload")
-        if configuration.record_schema_version not in {
-            None,
-            2,
-            3,
-            4,
-            5,
-            6,
-            TRANSFER_RECORD_SCHEMA_VERSION,
-        }:
-            raise ValueError("target does not support the source transfer record schema")
+        if configuration.record_schema_version != TRANSFER_RECORD_SCHEMA_VERSION:
+            raise ValueError(PROJECT_TRANSFER_RESTART)
         if accepted_schema_generation != configuration.source_schema_generation:
             raise ValueError("target does not accept the source transfer schema")
         if accepted_archive_codec not in configuration.supported_archive_codecs:
@@ -476,7 +527,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ).fetchone()
             if provisioning_row is None:
                 raise KeyError(canonical_request_id)
-            provisioning = self._project_provisioning_record(provisioning_row)
+            provisioning = self._project_provisioning_record(provisioning_row, connection)
             if (
                 provisioning.kind != "incoming_transfer"
                 or provisioning.target_space_id != self.space_id
@@ -699,7 +750,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ).fetchone()
             if provisioning_row is None:
                 raise KeyError(canonical_request_id)
-            provisioning = self._project_provisioning_record(provisioning_row)
+            provisioning = self._project_provisioning_record(provisioning_row, connection)
             if (
                 provisioning.kind != "incoming_transfer"
                 or provisioning.status != "ready_for_review"
@@ -713,7 +764,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             resolved_paths = tuple(
                 ProjectTransferResolvedPath(
                     repository_alias=repository.alias,
-                    machine_alias=repository.machine_alias,
+                    machine_id=repository.machine_id,
                     path=repository.resolved_path,
                 )
                 for repository in sorted(
@@ -835,14 +886,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 raise ValueError("source transfer project is stale or already left this space")
             if configuration_sha256 != current.source_configuration_sha256:
                 raise ValueError("source configuration changed after transfer preparation")
-            required_record_schema = self._project_transfer_record_schema_version_in_connection(
-                connection, current.project_id
-            )
-            if required_record_schema != (configuration.record_schema_version or 1):
-                raise ValueError(
-                    "Transferable episode history changed after transfer preparation; "
-                    "prepare the transfer again before releasing the source."
-                )
+            if configuration.record_schema_version != TRANSFER_RECORD_SCHEMA_VERSION:
+                raise ValueError(PROJECT_TRANSFER_RESTART)
             admission = current.target_admission_receipt
             assert current.linked_request_id is not None
             assert current.accepted_schema_generation is not None
@@ -1270,7 +1315,9 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                         existing.provisioning_revision != expected_provisioning_revision + 1
                         or existing.provisioning_final_review_sha256 != expected_review
                         or self._activation_project_intent(existing.registered_project)
-                        != self._activation_project_intent(prepared_project)
+                        != self._activation_project_intent(
+                            self._registered_project(prepared_project, _space_cards(connection))
+                        )
                     ):
                         raise ValueError(
                             "target activation retry does not match its committed boundary"
@@ -1304,7 +1351,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if provisioning_row is None:
                     raise RuntimeError("target transfer lost its provisioning request")
-                provisioning = self._project_provisioning_record(provisioning_row)
+                provisioning = self._project_provisioning_record(provisioning_row, connection)
                 restore_reentry = self._latest_project_transfer_restore_reentry(
                     connection,
                     canonical_request_id,
@@ -1376,15 +1423,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                     raise ValueError("target activation project already has a member seat")
 
                 now = self.now()
-                registered_project = ProjectTransferRegisteredProject(
-                    project_id=prepared_project.project_id,
-                    home_space_id=current.target_space_id,
-                    locator=prepared_project.locator,
-                    name=prepared_project.name,
-                    state_location=prepared_project.state_location,
-                    state_remote=prepared_project.state_remote,
-                    revision=prepared_project.revision,
-                    registered_at=prepared_project.added_at,
+                registered_project = self._registered_project(
+                    prepared_project, _space_cards(connection)
                 )
                 first_member = ProjectMemberRecord(
                     project_id=current.project_id,
@@ -1563,7 +1603,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             ).fetchone()
             if provisioning_row is None:
                 raise RuntimeError("restored target transfer lost its provisioning request")
-            provisioning = self._project_provisioning_record(provisioning_row)
+            provisioning = self._project_provisioning_record(provisioning_row, connection)
             if (
                 provisioning.kind != "incoming_transfer"
                 or provisioning.status != "ready_for_review"
@@ -2154,9 +2194,27 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         return ProjectTransferStoreMixin._project_transfer_import_record(row)
 
     @staticmethod
-    def _activation_project_intent(
-        project: ProjectRecord | ProjectTransferRegisteredProject,
-    ) -> tuple[object, ...]:
+    def _registered_project(
+        project: ProjectRecord, cards: dict[str, SpaceMachineRecord]
+    ) -> ProjectTransferRegisteredProject:
+        """The activation receipt's project, its state location read from the state card."""
+
+        card = cards.get(project.state_machine_id)
+        if card is None:
+            raise ValueError("target activation project names no state machine in this space")
+        return ProjectTransferRegisteredProject(
+            project_id=project.project_id,
+            home_space_id=project.home_space_id or "",
+            locator=project.locator,
+            name=project.name,
+            state_location=f"{card.host}:{project.state_path}" if card.host else project.state_path,
+            state_remote=bool(card.host),
+            revision=project.revision,
+            registered_at=project.added_at,
+        )
+
+    @staticmethod
+    def _activation_project_intent(project: ProjectTransferRegisteredProject) -> tuple[object, ...]:
         return (
             project.project_id,
             project.home_space_id,
@@ -2165,7 +2223,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             project.state_location,
             project.state_remote,
             project.revision,
-            project.added_at if isinstance(project, ProjectRecord) else project.registered_at,
+            project.registered_at,
         )
 
     @staticmethod
@@ -2195,7 +2253,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         connection.execute(
             """
             INSERT INTO projects (
-                project_id, home_space_id, locator, name, state_location, state_remote,
+                project_id, home_space_id, locator, name, state_machine_id, state_path,
                 added_at, last_opened_at, revision, primary_question, attention_count,
                 last_refresh_at, reachable, error, retired_at, retired_transfer_request_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
@@ -2205,8 +2263,8 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 project.home_space_id,
                 project.locator,
                 project.name,
-                project.state_location,
-                int(project.state_remote),
+                project.state_machine_id,
+                project.state_path,
                 project.added_at,
                 project.last_opened_at,
                 project.revision,
@@ -2354,7 +2412,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         ).fetchone()
         if provisioning_row is None:
             raise RuntimeError("stored target activation lost its provisioning receipt")
-        provisioning = cls._project_provisioning_record(provisioning_row)
+        provisioning = cls._project_provisioning_record(provisioning_row, connection)
         if (
             provisioning.status != "completed"
             or provisioning.revision != receipt.provisioning_revision
@@ -2544,6 +2602,11 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         row: sqlite3.Row,
     ) -> ProjectTransferRequestRecord:
         try:
+            stored = json.loads(row["record_json"])
+            if stored["source_configuration"].get("record_schema_version") != (
+                TRANSFER_RECORD_SCHEMA_VERSION
+            ):
+                raise ProjectTransferRestartRequired(PROJECT_TRANSFER_RESTART)
             record = ProjectTransferRequestRecord.model_validate_json(row["record_json"])
             if (
                 record.request_id != row["request_id"]
@@ -2573,7 +2636,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                     record.source_release_receipt,
                 )
             return record
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as exc:
             raise RuntimeError("stored project transfer request is invalid") from exc
 
     def _updated_project_transfer_record(
@@ -2765,7 +2828,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             """
         ).fetchall()
         for row in rows:
-            current = self._project_provisioning_record(row)
+            current = self._project_provisioning_record(row, connection)
             if (
                 current.status == "operator_action_needed"
                 and current.retryable_diagnostic == normalized
@@ -2796,7 +2859,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                             "runtime_id",
                             "model",
                             "reasoning",
-                            "machine_alias",
+                            "machine_id",
                         }
                     )
                 )
@@ -2810,6 +2873,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 current.request_id,
             )
             reentry_shell = ExecutionContext(shell_account=DEFAULT_SERVER_LAYOUT.service_account)
+            card = _space_cards(connection).get(machines[0].machine_id)
             action = ServerStep(
                 number=1,
                 title="Resume restored project setup",
@@ -2819,10 +2883,12 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 ),
                 performed_by="human",
                 target=MachineTarget(
-                    host=(
-                        machines[0].host if machines[0].location == "ssh" else "replacement-server"
+                    host=card.host if card is not None and card.host else "replacement-server",
+                    os_account=(
+                        card.os_account
+                        if card is not None
+                        else DEFAULT_SERVER_LAYOUT.service_account
                     ),
-                    os_account=machines[0].os_account,
                 ),
                 phase="restore_reentry",
                 state="operator_action_needed",
@@ -3042,10 +3108,10 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             )
             for machine in machine_intents
         ]
-        machine_map = {machine.alias: machine for machine in machine_records}
+        machine_map = {machine.machine_id: machine for machine in machine_records}
         repository_records: list[ProjectProvisioningRepositoryRecord] = []
         for repository in repository_intents:
-            machine = machine_map.get(repository.machine_alias)
+            machine = machine_map.get(repository.machine_id)
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
             intended_path = (
@@ -3112,6 +3178,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 is None
             ):
                 raise ValueError("project provisioning authorizer is not a current space member")
+            _require_provisioning_cards(machine_records, _space_cards(connection))
             if existing_project:
                 if (
                     connection.execute(
@@ -3129,7 +3196,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 (canonical_request_id,),
             ).fetchone()
             if existing is not None:
-                current = self._project_provisioning_record(existing)
+                current = self._project_provisioning_record(existing, connection)
                 if self._project_provisioning_creation_payload(current) != (
                     self._project_provisioning_creation_payload(record)
                 ):
@@ -3215,7 +3282,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                         "runtime_id",
                         "model",
                         "reasoning",
-                        "machine_alias",
+                        "machine_id",
                     },
                 )
                 for check in record.provider_checks
@@ -3238,7 +3305,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
                 (canonical_request_id,),
             ).fetchone()
-        return self._project_provisioning_record(row) if row is not None else None
+            return self._project_provisioning_record(row, connection) if row is not None else None
 
     def project_provisioning_requests(
         self,
@@ -3264,7 +3331,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                     """,
                     (status,),
                 ).fetchall()
-        return [self._project_provisioning_record(row) for row in rows]
+            return [self._project_provisioning_record(row, connection) for row in rows]
 
     def completed_project_provisioning_requests(
         self,
@@ -3288,7 +3355,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 """,
                 (canonical_project_id,),
             ).fetchall()
-        return [self._project_provisioning_record(row) for row in rows]
+            return [self._project_provisioning_record(row, connection) for row in rows]
 
     def transition_project_provisioning_request(
         self,
@@ -3401,14 +3468,14 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 ).fetchone()
                 if current_row is None:
                     raise RuntimeError("project provisioning receipt lost its request")
-                return self._project_provisioning_record(current_row)
+                return self._project_provisioning_record(current_row, connection)
             current_row = connection.execute(
                 "SELECT * FROM project_provisioning_requests WHERE request_id = ?",
                 (canonical_request_id,),
             ).fetchone()
             if current_row is None:
                 raise KeyError(canonical_request_id)
-            current = self._project_provisioning_record(current_row)
+            current = self._project_provisioning_record(current_row, connection)
             if current.revision != expected_revision or current.status != expected_status:
                 raise ValueError("project provisioning request changed; reload it before retrying")
             if to_status not in _PROVISIONING_TRANSITIONS[current.status]:
@@ -3477,6 +3544,7 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             updated = _verify_project_provisioning_review_digest(
                 ProjectProvisioningRequestRecord.model_validate_json(_canonical_json(values))
             )
+            _require_declared_machine_target(updated, _space_cards(connection))
             changed = connection.execute(
                 """
                 UPDATE project_provisioning_requests
@@ -3616,7 +3684,16 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
         )
 
     @staticmethod
-    def _project_provisioning_record(row: sqlite3.Row) -> ProjectProvisioningRequestRecord:
+    def _project_provisioning_record(
+        row: sqlite3.Row, connection: sqlite3.Connection
+    ) -> ProjectProvisioningRequestRecord:
+        """Read one request; one naming machines by alias is read through the upgrade rule.
+
+        A completed or cancelled request is a frozen receipt: its stored bytes
+        keep their digest and are named by card only in memory. A ready request
+        returns to review under a digest of its new shape.
+        """
+
         try:
             project_config_json = row["project_config_json"]
             project_config = {} if project_config_json is None else json.loads(project_config_json)
@@ -3635,45 +3712,56 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
                 and not (has_review_boundary and not project_config)
             ):
                 raise ValueError("stored project provisioning configuration is invalid")
-            return _verify_project_provisioning_review_digest(
-                ProjectProvisioningRequestRecord.model_validate_json(
-                    _canonical_json(
-                        {
-                            "request_id": row["request_id"],
-                            "kind": row["kind"],
-                            "status": row["status"],
-                            "target_space_id": row["target_space_id"],
-                            "authorized_by": json.loads(row["authorized_by_json"]),
-                            "proposed_project_id": row["proposed_project_id"],
-                            # A pre-migration snapshot (backup before update)
-                            # has no column yet; only create requests existed.
-                            "target_project_id": (
-                                row["target_project_id"]
-                                if "target_project_id" in row.keys()  # noqa: SIM118 - Row iterates values
-                                else None
-                            ),
-                            **project_config,
-                            "machines": json.loads(row["machines_json"]),
-                            "repositories": json.loads(row["repositories_json"]),
-                            "provider_checks": json.loads(row["provider_checks_json"]),
-                            "retryable_diagnostic": row["retryable_diagnostic"],
-                            "operator_action": (
-                                None
-                                if row["operator_action_json"] is None
-                                else json.loads(row["operator_action_json"])
-                            ),
-                            "final_review_digest": row["final_review_digest"],
-                            "cancellation_disposition": row["cancellation_disposition"],
-                            "revision": row["revision"],
-                            "created_at": row["created_at"],
-                            "updated_at": row["updated_at"],
-                            "setup_started_at": row["setup_started_at"],
-                            "ready_at": row["ready_at"],
-                            "completed_at": row["completed_at"],
-                            "cancelled_at": row["cancelled_at"],
-                        }
-                    )
+            payload = {
+                "request_id": row["request_id"],
+                "kind": row["kind"],
+                "status": row["status"],
+                "target_space_id": row["target_space_id"],
+                "authorized_by": json.loads(row["authorized_by_json"]),
+                "proposed_project_id": row["proposed_project_id"],
+                # A pre-migration snapshot (backup before update)
+                # has no column yet; only create requests existed.
+                "target_project_id": (
+                    row["target_project_id"]
+                    if "target_project_id" in row.keys()  # noqa: SIM118 - Row iterates values
+                    else None
+                ),
+                **project_config,
+                "machines": json.loads(row["machines_json"]),
+                "repositories": json.loads(row["repositories_json"]),
+                "provider_checks": json.loads(row["provider_checks_json"]),
+                "retryable_diagnostic": row["retryable_diagnostic"],
+                "operator_action": (
+                    None
+                    if row["operator_action_json"] is None
+                    else json.loads(row["operator_action_json"])
+                ),
+                "final_review_digest": row["final_review_digest"],
+                "cancellation_disposition": row["cancellation_disposition"],
+                "revision": row["revision"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "setup_started_at": row["setup_started_at"],
+                "ready_at": row["ready_at"],
+                "completed_at": row["completed_at"],
+                "cancelled_at": row["cancelled_at"],
+            }
+            from rcp.machine_upgrade import (
+                is_legacy_provisioning_payload,
+                read_legacy_provisioning_request,
+            )
+
+            if is_legacy_provisioning_payload(payload):
+                record = read_legacy_provisioning_request(
+                    payload, _space_cards(connection).values()
                 )
+                if record.status == "ready_for_review":
+                    record = record.model_copy(
+                        update={"final_review_digest": project_provisioning_review_digest(record)}
+                    )
+                return record
+            return _verify_project_provisioning_review_digest(
+                ProjectProvisioningRequestRecord.model_validate_json(_canonical_json(payload))
             )
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise RuntimeError("stored project provisioning request is invalid") from exc
@@ -3687,7 +3775,9 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
 
 
 __all__ = [
+    "PROJECT_TRANSFER_RESTART",
     "ProjectProvisioningStoreMixin",
+    "ProjectTransferRestartRequired",
     "project_provisioning_review_digest",
     "project_transfer_receipt_sha256",
     "project_transfer_source_configuration_sha256",

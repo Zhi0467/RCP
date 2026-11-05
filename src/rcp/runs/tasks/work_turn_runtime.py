@@ -33,6 +33,7 @@ from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import HiddenReadScope, Patch
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
@@ -58,6 +59,7 @@ from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage.command_mailbox import CommandMailboxStore
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport import (
     BatchPublishFailed,
     RemoteRunStage,
@@ -254,7 +256,7 @@ class WorkTurn:
 class ResolvedWorkExecution:
     request: RunRequest
     compute_profiles: list[dict[str, str]]
-    execution_machine_alias: str
+    machine: SpaceMachineRecord
     execution_host: str
     provider_binary: str | None
     ask_wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
@@ -730,7 +732,8 @@ def restore_work_validator_mailbox(
     if (
         saved["version"] != 1
         or identity.task_id != execution.operation_id
-        or saved["host"] != execution.stage_host
+        or saved["host"]
+        != host_of(execution.store, execution.stage_machine_id or BACKEND_MACHINE_ID)
         or saved["root"] != execution.stage_root
     ):
         raise ValueError("The saved command mailbox does not belong to this task stage")

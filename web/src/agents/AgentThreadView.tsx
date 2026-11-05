@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Send,
   Square,
+  SquareStack,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import {
 import {
   AgentConfigChip,
   AgentConfigControls,
+  profileRunConfig,
   providerModels,
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
@@ -182,13 +184,8 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
         );
         const profile = readiness.agent_profiles.project_chat;
         return {
-          source: { provider_readiness: readiness.provider_readiness, machines: [] },
-          value: {
-            provider: profile.provider,
-            model: profile.model,
-            reasoning: profile.reasoning,
-            run_on: profile.run_on,
-          },
+          source: { provider_readiness: readiness.provider_readiness },
+          value: profileRunConfig(profile, readiness.run_on),
         };
       }
       // The Space thread runs on the backend's own machine, the one with no host.
@@ -203,7 +200,6 @@ function useThreadPicker(thread: AgentThread): { picker: Picker; reload: () => v
         provider_readiness: {
           [machine.machine_id]: machine.provider_readiness as Record<string, ProviderReadiness>,
         },
-        machines: [],
         registry: machine.providers,
       };
       const { model, reasoning = "" } = providerChange(
@@ -830,7 +826,7 @@ export function AgentThreadView({
       const [transcript, asked, waiting] = await Promise.all([
         loadThreadTranscript(current),
         loadThreadQuestions(current),
-        loadThreadQueue(current).catch(() => null),
+        loadThreadQueue(current),
       ]);
       const sent = sentTurn.current;
       // A running project turn writes its member message only when it settles.
@@ -848,7 +844,7 @@ export function AgentThreadView({
           messages: unchanged(previous?.messages, transcript.messages),
           questions: unchanged(previous?.questions, asked),
           latest: unchanged(previous?.latest, latestTask),
-          queue: unchanged(previous?.queue, waiting?.items ?? previous?.queue ?? NO_QUEUE),
+          queue: unchanged(previous?.queue, waiting.items),
           finishedAt: current.last_finished_at,
         };
         return previous &&
@@ -1080,7 +1076,7 @@ export function AgentThreadView({
       ? latest
       : null;
   // A paused turn holds the conversation until it is resumed or retried.
-  const pausedTask = latest?.paused && latest.can_resume ? latest : null;
+  const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
   const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
   const queue = view?.queue ?? NO_QUEUE;
   const queues = thread.kind === "project";
@@ -1591,6 +1587,16 @@ export function AgentThreadView({
         tools={null}
         actions={
           <>
+            {cards.unavailable && (
+              <span
+                className="agent-cards-unavailable"
+                role="img"
+                aria-label="Approval cards couldn't load. Retrying."
+                title="Approval cards couldn't load. Retrying."
+              >
+                <SquareStack size={16} />
+              </span>
+            )}
             {voice && (
               <button
                 className={`icon-button chat-voice-button${voiceHere ? " active" : ""}`}

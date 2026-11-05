@@ -69,8 +69,7 @@ def test_ssh_failure_action_carries_the_operator_routed_check(
 
     result = _probe_one(
         connection,
-        execution_machine="lab-mac",
-        execution_host="",
+        source=_card("lab-mac", ""),
         space_kind=space_kind,
         runner=runner,
     )
@@ -105,8 +104,7 @@ def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
 
     result = _probe_one(
         connection,
-        execution_machine="remote-agent",
-        execution_host="agent.example",
+        source=_card("remote-agent", "agent.example"),
         space_kind="personal",
         runner=runner,
     )
@@ -137,8 +135,7 @@ def test_probe_redacts_credential_shaped_remote_stderr() -> None:
 
     result = _probe_one(
         connection,
-        execution_machine="remote-agent",
-        execution_host="agent.example",
+        source=_card("remote-agent", "agent.example"),
         space_kind="personal",
         runner=runner,
     )
@@ -165,8 +162,7 @@ def test_probe_redacts_runtime_errors_from_ssh_setup(monkeypatch) -> None:
     monkeypatch.setattr("rcp.compute.ssh_arguments", fail_ssh_arguments)
     result = _probe_one(
         connection,
-        execution_machine="remote-agent",
-        execution_host="agent.example",
+        source=_card("remote-agent", "agent.example"),
         space_kind="personal",
         runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")),
     )
@@ -219,13 +215,19 @@ def test_reach_is_probed_from_every_other_agent_machine() -> None:
 
 
 def test_every_machine_the_manifest_accepts_resolves(manifest) -> None:
+    from rcp.machine_cards import BACKEND_MACHINE_ID
+
+    cards = [
+        _card(BACKEND_MACHINE_ID, ""),
+        _card("old box", "fe80::1", "alice"),
+        *(_card(f"node-{index}", f"node-{index}.example") for index in range(40)),
+    ]
     payload = manifest.model_dump(mode="python")
-    payload["machines"].extend(
-        [{"alias": "old box", "host": "fe80::1", "os_account": "alice"}]
-        + [{"alias": f"node-{index}", "host": f"node-{index}.example"} for index in range(40)]
-    )
+    payload["machines"] = [card.machine_id for card in cards]
     context = machine_compute_context(
-        Manifest.model_validate(payload), {}, execution_machine=manifest.machines[0].alias
+        Manifest.model_validate(payload),
+        {card.machine_id: card for card in cards},
+        machine_id=BACKEND_MACHINE_ID,
     )
 
     assert len(context.active) == len(payload["machines"])
@@ -236,14 +238,18 @@ def test_each_machine_carries_its_own_job_manager_into_the_prompt(manifest) -> N
     from rcp.agents.continuation_prompt import _compute_delta_section
     from rcp.agents.prompts import compute_connection_section
     from rcp.compute_jobs.job_managers import JOB_MANAGERS
+    from rcp.machine_cards import BACKEND_MACHINE_ID
 
     payload = manifest.model_dump(mode="python")
-    payload["machines"].append({"alias": "cluster", "host": "cluster.example"})
-    cards = {"cluster.example": _card("cluster", "cluster.example", job_manager="slurm")}
+    payload["machines"] = [BACKEND_MACHINE_ID, "cluster"]
+    cards = {
+        BACKEND_MACHINE_ID: _card(BACKEND_MACHINE_ID, ""),
+        "cluster": _card("cluster", "cluster.example", job_manager="slurm"),
+    }
     profiles = [
         profile.model_dump(mode="json")
         for profile in machine_compute_context(
-            Manifest.model_validate(payload), cards, execution_machine=manifest.machines[0].alias
+            Manifest.model_validate(payload), cards, machine_id=BACKEND_MACHINE_ID
         ).active
     ]
     rules = JOB_MANAGERS["slurm"].instructions

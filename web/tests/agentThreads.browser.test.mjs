@@ -959,13 +959,15 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
 
 test("a retried turn shows its message once, and a stopped one sits in the column", async () => {
   await withFixture(async (browser, base) => {
-    for (const [width, fold] of [
-      [1280, true],
-      [390, false],
+    for (const [width, fold, interrupted] of [
+      [1280, true, false],
+      [390, false, true],
     ]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       await mockApi(page, []);
-      const stopped = { ...settled("op-retry-2"), settled: false, paused: true, can_resume: true };
+      const stopped = interrupted
+        ? { ...settled("op-retry-2"), can_resume: true, can_retry: true }
+        : { ...settled("op-retry-2"), settled: false, paused: true, can_resume: true };
       const latest = { thread_id: "space", latest_operation_id: "op-retry-2" };
       await page.route("**/api/agent-threads", (route) =>
         route.fulfill({
@@ -997,6 +999,8 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
       const thread = page.getByRole("region", { name: "Pip" });
       const banner = thread.locator(".node-chat-lines > .chat-task-inline.paused");
       await banner.waitFor();
+      assert.equal(await banner.getByRole("button", { name: "Resume" }).count(), 1);
+      assert.equal(await banner.getByRole("button", { name: "Retry" }).count(), 1);
       // The retry's own copy of the message goes once its lineage reaches the first attempt.
       await page.waitForFunction(
         () => document.querySelectorAll(".agent-thread .node-chat-line.human").length === 1,
@@ -2090,9 +2094,11 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     });
     assert.ok(await moss.locator(".chat-annotatable-answer").count());
     assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
+    await moss.locator(".agent-cards-unavailable").waitFor();
     shown.fail = false;
     shown.proposals = [proposalCard("proposal/b", "H3 standing → refuted")];
     await moss.locator('.approval-card[aria-label*="H3 standing"]').waitFor({ timeout: 10_000 });
+    assert.equal(await moss.locator(".agent-cards-unavailable").count(), 0);
     await failing.close();
   });
 });
@@ -2471,12 +2477,24 @@ test("a Running read that a version overtakes is read again", async () => {
         await page.evaluate(() => (window.agentCardsVersion = "2"));
         await page.waitForTimeout(1500);
       }
+      if (failing) return route.fulfill({ status: 500, json: { detail: "down" } });
       await route.fulfill({ json: snapshot });
     });
+    let failing = false;
     await page.goto(`${base}#/agent/space`);
     const pip = page.getByRole("region", { name: "Pip" });
-    await pip.getByRole("button", { name: /^Running/ }).waitFor();
+    const button = pip.locator(".running-button");
+    await button.waitFor();
     assert.equal(reads, 2);
+    assert.equal(await button.textContent(), "1 / 1");
+
+    failing = true;
+    await page.evaluate(() => (window.agentCardsVersion = "3"));
+    await pip.locator(".running-button.stale").waitFor();
+    assert.equal(await button.textContent(), "");
+    failing = false;
+    await pip.locator(".running-button:not(.stale)").waitFor({ timeout: 15_000 });
+    assert.equal(await button.textContent(), "1 / 1");
     await page.close();
   });
 });
@@ -2554,7 +2572,10 @@ async function serveQueue(page, served) {
   await page.route(/\/api\/agent-threads\/moss\/queue(?:\/[^/]+)?$/, (route) => {
     const request = route.request();
     const id = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-1));
-    if (request.method() === "GET") return route.fulfill({ json: { items: served.items } });
+    if (request.method() === "GET")
+      return served.failRead
+        ? route.fulfill({ status: 500, json: { detail: "down" } })
+        : route.fulfill({ json: { items: served.items } });
     if (request.method() === "DELETE") {
       served.deleted.push(id);
       served.items = served.items.filter((item) => item.queue_id !== id);
@@ -2652,6 +2673,14 @@ test("waiting turns show one line each above the composer; remove and dismiss le
           `${refusedText}\n\ndraft`,
         ],
       );
+
+      served.failRead = true;
+      await moveWatermark(page);
+      const failed = moss.locator(".node-chat-line.error");
+      await failed.waitFor();
+      served.failRead = false;
+      await failed.getByRole("button", { name: "Retry" }).click();
+      await failed.waitFor({ state: "detached" });
       assert.deepEqual(errors, []);
       await page.close();
     }

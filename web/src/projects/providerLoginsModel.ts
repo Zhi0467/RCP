@@ -85,7 +85,7 @@ export function showsDeviceCode(
   );
 }
 
-/** One provider's logins on one host, split the way the Sign-ins panel draws them. */
+/** One provider's logins on one machine, split the way the Sign-ins panel draws them. */
 export interface ProviderSignIns {
   provider: string;
   label: string;
@@ -98,14 +98,14 @@ export interface ProviderSignIns {
   members: ProviderLoginAccount[];
 }
 
-export function signInsForHost(
+export function signInsForMachine(
   rows: readonly ProviderLoginAccount[],
-  host: string,
+  machineId: string,
   viewerUserId: string | null,
 ): ProviderSignIns[] {
   const byProvider = new Map<string, ProviderSignIns>();
   for (const row of rows) {
-    if (row.host !== host) continue;
+    if (row.machine_id !== machineId) continue;
     let entry = byProvider.get(row.provider);
     if (!entry) {
       entry = {
@@ -147,12 +147,12 @@ export function waitsOnOtherMember(
   return row.kind === "own" && row.owner_user_id !== viewerUserId;
 }
 
-type LoginKey = Pick<ProviderLoginState, "provider" | "host"> & { login_id: string | null };
+type LoginKey = Pick<ProviderLoginState, "provider" | "machine_id"> & { login_id: string | null };
 
-export const loginKey = (row: LoginKey) => `${row.provider}:${row.host}:${row.login_id}`;
+export const loginKey = (row: LoginKey) => `${row.provider}:${row.machine_id}:${row.login_id}`;
 
 export const sameLogin = (a: LoginKey, b: LoginKey) =>
-  a.provider === b.provider && a.host === b.host && a.login_id === b.login_id;
+  a.provider === b.provider && a.machine_id === b.machine_id && a.login_id === b.login_id;
 
 type SignOut = LoginKey & Pick<ProviderLoginState, "generation">;
 

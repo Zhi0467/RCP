@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 from PIL import Image
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
 from rcp.runs.session_master import record_session_master
 from rcp.service import RunRequest
@@ -355,10 +356,11 @@ def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
 
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    remote = store.create_space_machine(name="remote", host="remote", os_account="")
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET stage_host = 'remote' WHERE operation_id = ?",
-            (task.operation_id,),
+            "UPDATE graph_runs SET stage_machine_id = ? WHERE operation_id = ?",
+            (remote.machine_id, task.operation_id),
         )
 
     def forbidden(*args, **kwargs):
@@ -463,7 +465,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
     def capture(project_id, kind, request, **kwargs):
         started.append(request)
         assert kwargs.get("stage_root") is None
-        assert kwargs.get("stage_host") is None
+        assert kwargs.get("stage_machine_id") is None
         return task.model_copy(
             update={
                 "operation_id": kwargs["operation_id"],
@@ -480,7 +482,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
             "provider": "codex",
             "model": "gpt-5.6-codex",
             "reasoning": "high",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "artifact_context": {
                 "operation_id": task.operation_id,
                 "artifact_id": artifact.artifact_id,
@@ -495,7 +497,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         "codex",
         "gpt-5.6-codex",
         "high",
-        "laptop",
+        BACKEND_MACHINE_ID,
     )
     assert admitted.session_id is None
     assert admitted.artifact_edit is None
@@ -566,7 +568,7 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
         "resolved_provider_skills": [
             {
                 "provider": "codex",
-                "machine": "laptop",
+                "machine": BACKEND_MACHINE_ID,
                 "provider_version": "1",
                 "inventory_hash": "h",
                 "name": "stale",
@@ -723,7 +725,7 @@ def test_composer_edit_advances_current_chat_session(edit_origin, monkeypatch, p
         **_request(origin, artifact).model_dump(mode="json"),
         "chat_id": origin.request["chat_id"],
         "provider": "codex",
-        "run_on": "laptop",
+        "run_on": BACKEND_MACHINE_ID,
     }
     response = client.post(url, json=body)
     assert response.status_code == 202, response.text

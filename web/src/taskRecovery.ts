@@ -46,7 +46,7 @@ export function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): Agen
     provider: task.request.provider || profile.provider,
     model: task.request.model ?? profile.model,
     reasoning: task.request.reasoning || profile.reasoning,
-    run_on: task.request.run_on || profile.run_on,
+    run_on: task.request.run_on || project.run_on,
   };
 }
 

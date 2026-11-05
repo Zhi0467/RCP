@@ -12,7 +12,7 @@ import pytest
 
 from rcp.__main__ import main
 from rcp.migrate_cli import EXIT_MIGRATION_UNKNOWN
-from rcp.server_ops.models import ServerStepEvent
+from rcp.server_ops.models import SERVER_CLI_PROTOCOL_VERSION, ServerStepEvent
 from rcp.storage import AppStore
 
 from .server_upgrade_harness import immutable_fixture_directories, verify_fixture_integrity
@@ -437,7 +437,7 @@ def test_migrate_machine_readable_result_uses_the_server_event_shape(
     event, fields = _event_fields(output)
     assert code == 0
     assert errors == ""
-    assert event["version"] == 1
+    assert event["version"] == SERVER_CLI_PROTOCOL_VERSION
     assert event["event"] == "step"
     assert event["command"] == "migrate --check"
     assert event["step"]["state"] == "succeeded"

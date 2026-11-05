@@ -22,7 +22,7 @@ from rcp.providers import ProviderId
 from rcp.server_ops._local_primitives import canonical_uuid4
 from rcp.server_ops._local_primitives import normalized_absolute_path as absolute_path
 
-SERVER_CLI_PROTOCOL_VERSION = 1
+SERVER_CLI_PROTOCOL_VERSION = 2
 # One project plan may contain start + three steps for each of 64 repositories
 # + one check for each of 32 provider records + final review.
 SERVER_CLI_MAX_STEPS = 256
@@ -162,7 +162,7 @@ class ServerCommandRequest(_StrictModel):
     team_name: ShortText | None = None
     request_id: str | None = None
     project_id: str | None = None
-    machine_alias: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
+    machine_id: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
     compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
     provider_update_provider: ProviderId | None = None
     member_id: str | None = None
@@ -267,7 +267,7 @@ class ServerCommandRequest(_StrictModel):
             "team_name": self.team_name,
             "request_id": self.request_id,
             "project_id": self.project_id,
-            "machine_alias": self.machine_alias,
+            "machine_id": self.machine_id,
             "compute_route": self.compute_route,
             "provider_update_provider": self.provider_update_provider,
             "member_id": self.member_id,
@@ -294,7 +294,7 @@ class ServerCommandRequest(_StrictModel):
                 raise ValueError("provider check requires exactly one request or project selector")
             expected = {"request_id" if self.request_id is not None else "project_id"}
         elif self.command == "server compute probe":
-            expected = {"project_id", "machine_alias", "compute_route"}
+            expected = {"project_id", "machine_id", "compute_route"}
         elif self.command == "server provider update":
             expected = {"provider_update_provider"}
         elif self.command in {
@@ -586,7 +586,7 @@ class ServerStep(_StrictModel):
 
 
 class ServerPlanEvent(_StrictModel):
-    version: Literal[1] = SERVER_CLI_PROTOCOL_VERSION
+    version: Literal[1, 2] = SERVER_CLI_PROTOCOL_VERSION
     event: Literal["plan"] = "plan"
     command: ServerCommandName
     timestamp: datetime
@@ -609,7 +609,7 @@ class ServerPlanEvent(_StrictModel):
 
 
 class ServerStepEvent(_StrictModel):
-    version: Literal[1] = SERVER_CLI_PROTOCOL_VERSION
+    version: Literal[1, 2] = SERVER_CLI_PROTOCOL_VERSION
     event: Literal["step"] = "step"
     command: ServerCommandName
     timestamp: datetime

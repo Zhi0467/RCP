@@ -4,6 +4,7 @@ import gzip
 import sqlite3
 from pathlib import Path
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from rcp.storage.models import ProjectRecord
 from rcp.transfer.archive import inspect_transfer_table_inventory
@@ -148,10 +149,8 @@ def _project(project_id: str, *, remote: bool = False) -> ProjectRecord:
         project_id=project_id,
         locator=f"/tmp/{project_id}/research.yaml",
         name=project_id,
-        state_location=f"host:/{project_id}/.research"
-        if remote
-        else f"/tmp/{project_id}/.research",
-        state_remote=remote,
+        state_machine_id="gpu" if remote else BACKEND_MACHINE_ID,
+        state_path=f"/{project_id}/.research" if remote else f"/tmp/{project_id}/.research",
         added_at="2026-07-31T00:00:00+00:00",
     )
 
@@ -501,7 +500,7 @@ def _insert_watcher(
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, execution_host, check_command, "
+            "origin_task_kind, chat_id, episode_id, machine_id, check_command, "
             "log_path, cwd, continuation_json, status, created_at) "
             "VALUES (?, ?, 'origin', 'project_chat', ?, ?, '', 'true', '/tmp/log', "
             "'/tmp', '{}', ?, ?)",

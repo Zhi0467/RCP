@@ -246,7 +246,7 @@ def test_recovery_snapshot_carries_answers_only_through_the_same_session(
         graph_target=GraphTargetRef(),
         write_scope_fingerprint="scope" if mode == "work" else None,
         stage_root="/stage",
-        stage_host=None,
+        stage_machine_id=None,
     )
     parent = SimpleNamespace(operation_id="followup", parent_operation_id=None, **binding)
     current = SimpleNamespace(operation_id="recovery", parent_operation_id="followup", **binding)

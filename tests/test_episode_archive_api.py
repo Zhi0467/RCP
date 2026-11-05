@@ -266,6 +266,7 @@ def test_transfer_preparation_advertises_archived_history_only_when_present(
     tmp_path, archived
 ) -> None:
     from rcp.api.project_provisioning import ProjectTransferSourceConfigurationRequest
+    from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
     app = create_named_app(data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
@@ -285,10 +286,7 @@ def test_transfer_preparation_advertises_archived_history_only_when_present(
     )
     assert response.status_code == 201, response.text
     configuration = response.json()["source_configuration"]
-    if archived:
-        assert configuration["record_schema_version"] == 2
-    else:
-        assert "record_schema_version" not in configuration
+    assert configuration["record_schema_version"] == TRANSFER_RECORD_SCHEMA_VERSION
     accepted = ProjectTransferSourceConfigurationRequest.model_validate(
         configuration
     ).storage_model()

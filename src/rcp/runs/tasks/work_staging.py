@@ -22,6 +22,7 @@ from rcp.agents.group_context import build_group_context
 from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import (
     _chat_read_dirs,
     _chat_stage_name,
@@ -138,7 +139,7 @@ async def stage_work_turn(
             and not is_consolidation(execution)
         ):
             context.group_context = build_group_context(
-                service, execution.store, resolved.execution_machine_alias
+                service, execution.store, resolved.machine.machine_id
             )
         if bind_context is not None:
             context = bind_context(context)
@@ -153,7 +154,7 @@ async def stage_work_turn(
             if saved_stage:
                 stage_root = _validated_remote_chat_resume_stage(
                     execution,
-                    resolved.execution_host,
+                    resolved.machine.machine_id,
                     stage_name,
                 )
                 remote_stage = RemoteRunStage(resolved.execution_host).attach(stage_root)
@@ -164,20 +165,20 @@ async def stage_work_turn(
                     thread_owner=thread_owner,
                     protected_roots=_protected_run_stage_roots(
                         execution.store if execution is not None else None,
-                        resolved.execution_host,
+                        resolved.machine.machine_id,
                     ),
                 )
             assert remote_stage.root is not None
             if refresh_remote_stage:
                 remote_stage.touch()
             if execution is not None:
-                execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
+                execution.checkpoint_stage(resolved.machine.machine_id, str(remote_stage.root))
             context = context.model_copy(
                 update=_stage_context_paths(
                     context,
                     service,
                     remote_stage,
-                    resolved.execution_machine_alias,
+                    resolved.machine.machine_id,
                 )
             )
             workspace = Path(str(remote_stage.workspace))
@@ -199,7 +200,7 @@ async def stage_work_turn(
                 saved_stage=saved_stage,
             )
             if execution is not None:
-                execution.checkpoint_stage("", str(local_stage))
+                execution.checkpoint_stage(BACKEND_MACHINE_ID, str(local_stage))
         context = context.model_copy(
             update=stage_branch_read_context(context, service, local_stage, remote_stage)
         )
@@ -260,14 +261,14 @@ async def stage_work_turn(
                 local_stage,
                 remote_stage,
                 service,
-                resolved.execution_machine_alias,
+                resolved.machine.machine_id,
             )
 
         read_dirs = read_dirs_now() if read_dirs_before_write_scope else []
         write_scope = _project_write_scope(
             context,
             service,
-            resolved.execution_machine_alias,
+            resolved.machine,
             episode_request=request,
             local_stage=local_stage,
             workspace=workspace,

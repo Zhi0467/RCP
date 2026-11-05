@@ -44,7 +44,7 @@ class QuestionOrigin(BaseModel):
     provider: ProviderId
     native_session_id: str = Field(min_length=1)
     stage_root: str = Field(min_length=1)
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     capability: str = Field(min_length=1)
     write_scope_fingerprint: str | None = Field(default=None, min_length=1)
     graph_target: GraphTargetRef

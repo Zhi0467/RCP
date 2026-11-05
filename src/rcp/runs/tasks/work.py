@@ -64,6 +64,7 @@ from rcp.limits import (
     TURN_OUTCOME_CORRECTION_MAX_ROUNDS,
     ask_hold_seconds,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, card, host_of
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.auto_research_admission import auto_research_child_profile_choices
 from rcp.runs.browser_lifecycle import browser_turn
@@ -264,7 +265,7 @@ class _StoredWorkFinalizationContext(BaseModel):
 
     version: Literal[1] = 1
     request: RunRequest
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
     workspace: str
     run_truth_scope: list[str]
@@ -588,20 +589,20 @@ def _resolve_work_execution(
     )
     # Every launch, including Resume, Retry, recovery, and wakes, tells the agent
     # the project's current machines as seen from where it now runs.
-    request = _pinned_to_profile(request, profile)
-    execution_machine = service.manifest.machine_map[profile.run_on]
+    request = _pinned_to_profile(request, profile, service.manifest.base_machine)
+    machine = card(service.paper.store, service.manifest.base_machine)
     # Read once per turn: the ask hold, the prompt, and the provider all use this value.
     shell_timeout = (
-        execution.store.provider_shell_timeout_seconds(profile.provider, execution_machine.host)
+        execution.store.provider_shell_timeout_seconds(profile.provider, machine.machine_id)
         if execution is not None
         else None
     )
     return _ResolvedWorkExecution(
         request=request,
-        compute_profiles=service.machine_prompt_profiles(profile.run_on),
-        execution_machine_alias=execution_machine.alias,
-        execution_host=execution_machine.host,
-        provider_binary=service.launcher.provider_binary(profile.provider, execution_machine.host),
+        compute_profiles=service.machine_prompt_profiles(machine.machine_id),
+        machine=machine,
+        execution_host=machine.host,
+        provider_binary=service.launcher.provider_binary(profile.provider, machine.machine_id),
         ask_wait_seconds=ask_hold_seconds(shell_timeout),
         shell_timeout_seconds=shell_timeout,
     )
@@ -657,7 +658,7 @@ def _record_work_finalization_context(
         raise ValueError("A durable Work finalization context requires its exact task stage.")
     stored = _StoredWorkFinalizationContext(
         request=turn.request,
-        stage_host=execution.stage_host or "",
+        stage_machine_id=execution.stage_machine_id or "",
         stage_root=execution.stage_root,
         workspace=str(turn.workspace),
         run_truth_scope=list(turn.context.run_truth_scope),
@@ -734,7 +735,7 @@ def _load_work_finalization_context(
     local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
         owner=owner,
-        stage_host=stored.stage_host,
+        stage_machine_id=stored.stage_machine_id,
         stage_root=stored.stage_root,
         workspace=stored.workspace,
     )
@@ -752,6 +753,7 @@ def _load_work_finalization_context(
     experiment_resources = [
         StagedExperimentWatcherResource(
             resource=item.resource,
+            host=host_of(execution.store, item.resource.machine_id),
             watcher_state_path=item.watcher_state_path,
             watch_path=item.watch_path,
         )
@@ -777,7 +779,7 @@ def _load_work_finalization_context(
         workspace=workspace,
         local_stage=local_stage,
         remote_stage=remote_stage,
-        execution_host=stored.stage_host,
+        execution_host=host_of(execution.store, stored.stage_machine_id or BACKEND_MACHINE_ID),
         write_scope=stored.write_scope,
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
@@ -1709,7 +1711,7 @@ async def _validate_watch_deliverable(
             episode_id=origin_task.episode_id,
             worker_id=child_route.worker_id if child_route is not None else None,
             graph_target=origin_task.graph_target,
-            execution_host=turn.execution_host,
+            machine_id=turn.write_scope.machine_id,
             continuation=_watcher_continuation(turn),
         )
         graph_state = (
@@ -2737,7 +2739,6 @@ async def _stream_work_run(
             remote_stage=turn.remote_stage,
             execution=turn.execution,
             capability="work_auto",
-            execution_host=turn.execution_host,
             data_dir=data_dir,
             local_stage=turn.local_stage,
         )
@@ -2763,6 +2764,7 @@ async def _stream_work_run(
                 turn.request,
                 workspace=turn.workspace,
                 execution_host=turn.execution_host,
+                machine_id=service.manifest.base_machine,
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
@@ -2781,7 +2783,7 @@ async def _stream_work_run(
                 execution,
                 turn.request,
                 question.origin,
-                execution_host=turn.execution_host,
+                stage_machine_id=service.manifest.base_machine,
                 stage_root=execution.stage_root,
                 write_scope_fingerprint=turn.write_scope.fingerprint,
             )
@@ -2909,17 +2911,17 @@ async def _stream_work_graph_repair(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = _pinned_to_profile(request, profile)
-        execution_machine = service.manifest.machine_map[profile.run_on]
-        execution_host = execution_machine.host
-        provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
+        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
+        machine = card(execution.store, service.manifest.base_machine)
+        execution_host = machine.host
+        provider_binary = service.launcher.provider_binary(profile.provider, machine.machine_id)
         context = service.assemble_chat(request)
         # A chat comment is an ordinary turn; only the viewer's edit runs without it.
         if not (
             request.artifact_edit and request.artifact_edit.origin_bound
         ) and not is_consolidation(execution):
             context.group_context = build_group_context(
-                service, execution.store, execution_machine.alias
+                service, execution.store, machine.machine_id
             )
         if execution is not None:
             task = execution.store.agent_task(execution.operation_id)
@@ -2937,14 +2939,16 @@ async def _stream_work_graph_repair(
         local_stage: Path | None = None
         remote_stage: RemoteRunStage | None = None
         if execution_host:
-            stage_root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
+            stage_root = _validated_remote_chat_resume_stage(
+                execution, machine.machine_id, stage_name
+            )
             remote_stage = RemoteRunStage(execution_host).attach(stage_root)
             context = context.model_copy(
                 update=_stage_context_paths(
                     context,
                     service,
                     remote_stage,
-                    execution_machine.alias,
+                    machine.machine_id,
                 )
             )
             workspace = Path(str(remote_stage.workspace))
@@ -2982,7 +2986,7 @@ async def _stream_work_graph_repair(
         )
         token = _task_token(execution)
         shell_timeout = execution.store.provider_shell_timeout_seconds(
-            profile.provider, execution_host
+            profile.provider, machine.machine_id
         )
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -3010,14 +3014,14 @@ async def _stream_work_graph_repair(
             local_stage,
             remote_stage,
             service,
-            execution_machine.alias,
+            machine.machine_id,
         )
         if context.group_context is not None:
             read_dirs.extend(context.group_context.read_dirs())
         write_scope = _project_write_scope(
             context,
             service,
-            execution_machine.alias,
+            machine,
             episode_request=request,
             local_stage=local_stage,
             workspace=workspace,
@@ -3030,7 +3034,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
-            compute_profiles=service.machine_prompt_profiles(profile.run_on),
+            compute_profiles=service.machine_prompt_profiles(machine.machine_id),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
@@ -3310,11 +3314,11 @@ def _resume_work_compute_commands(
         or scope.project_id != task.project_id
         or scope.fingerprint != execution.write_scope_fingerprint
         or scope.stage_root != execution.stage_root
-        or scope.execution_host != execution.stage_host
+        or scope.machine_id != execution.stage_machine_id
         or context.manifest is None
     ):
         raise ValueError("The retained command mailbox compute scope no longer names this turn.")
-    stage = RemoteRunStage(scope.execution_host)
+    stage = RemoteRunStage(host_of(execution.store, scope.machine_id))
     stage.root = PurePosixPath(scope.stage_root)
     return WorkComputeCommands(execution, context.manifest, scope, stage, context.episode_id)
 
@@ -3330,8 +3334,9 @@ def _resume_work_command_handler(
     if not execution.stage_root:
         raise ValueError("The Work mailbox lost its stage.")
     stage = None
-    if execution.stage_host:
-        stage = RemoteRunStage(execution.stage_host)
+    machine_id = execution.stage_machine_id
+    if machine_id is not None and machine_id != BACKEND_MACHINE_ID:
+        stage = RemoteRunStage(host_of(execution.store, machine_id))
         stage.root = PurePosixPath(execution.stage_root)
     mailbox = RunStageMailbox(
         Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
@@ -3635,7 +3640,7 @@ def open_recorded_work_turn(
             execution,
             turn.request,
             question.origin,
-            execution_host=turn.execution_host,
+            stage_machine_id=execution.stage_machine_id or "",
             stage_root=execution.stage_root,
             write_scope_fingerprint=turn.write_scope.fingerprint,
         )

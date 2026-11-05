@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rcp.config import Manifest
+from rcp.machine_cards import host_of
 from rcp.storage import AppStore
 from rcp.terminals import TerminalSession
 from rcp.terminals.backends import COOPERATIVE_NOTICE
@@ -45,7 +46,7 @@ def running_repository_work(
             )
             if roots is None:
                 matches = declared
-            elif manifest.machine_map[repository.machine].host:
+            elif host_of(store, repository.machine):
                 # A remote path cannot be canonicalized from here, and the
                 # receipt carries the far side's canonical root, so a symlinked
                 # repository never matches by path. Losing the match would drop

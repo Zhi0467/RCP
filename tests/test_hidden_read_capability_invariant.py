@@ -14,6 +14,7 @@ from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
 from rcp.agents.staged_hidden_read import clean_environment
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import AgentCapability, ProviderTurnRequest, profile_for
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.codex.app_server import CodexAppServerRuntime
@@ -117,8 +118,7 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
     """
     environment = {**os.environ, "TEST_PRIVATE_TOKEN": "secret", "LAB_DATA_ROOT": "/data"}
     identity = {
-        "execution_machine": "local",
-        "execution_host": "",
+        "machine_id": BACKEND_MACHINE_ID,
         "os_account": "research",
         "account_home": str(tmp_path / "home"),
         "enforcement": HiddenReadStatus(status="enforced"),
@@ -145,13 +145,14 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
     if capability in {"work_auto", "orchestrate"}:
         write_scope = ProjectWriteScope.create(
             project_id="project",
-            execution_machine="local",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             capability=capability,
             stage_root=str(tmp_path),
             workspace_root=str(tmp_path),
             repositories=[
-                WritableRepositoryRoot(alias="repo", machine="local", path="/project/repo")
+                WritableRepositoryRoot(
+                    alias="repo", machine=BACKEND_MACHINE_ID, path="/project/repo"
+                )
             ],
             protected_write_paths=["/project/state"],
             granted_roots=["/project/outputs"],

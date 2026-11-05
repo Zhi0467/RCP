@@ -16,9 +16,9 @@ import {
 import {
   createPathEditor,
   createMachineWriteQueue,
-  projectMachineAlias,
+  machineEditRequest,
   setupMachineSelection,
-  spaceMachineForProject,
+  spaceMachineById,
   writablePathsRequest,
 } from "../src/projects/spaceMachines.ts";
 
@@ -58,7 +58,7 @@ const gpu = {
     { provider: "codex", label: "Codex", default_minutes: 2 },
   ],
   autocompact_providers: [{ provider: "claude", label: "Claude", hint: "auto or tokens" }],
-  projects: [{ project_id: projectId, project_name: "Project", alias: "gpu" }],
+  projects: [{ project_id: projectId, project_name: "Project" }],
   in_use: true,
   deletable: true,
   job_manager: "slurm",
@@ -174,10 +174,9 @@ test("the folder listing is one POST to the machine's directories endpoint", asy
   ]);
 });
 
-test("a project machine finds its space record by project and alias", () => {
-  assert.equal(spaceMachineForProject([gpu], projectId, { alias: "gpu" }), gpu);
-  assert.equal(spaceMachineForProject([gpu], projectId, { alias: "local" }), null);
-  assert.equal(spaceMachineForProject([gpu], "other", { alias: "gpu" }), null);
+test("a project machine is its space card, found by id", () => {
+  assert.equal(spaceMachineById([gpu], "m-gpu"), gpu);
+  assert.equal(spaceMachineById([gpu], "m-local"), null);
 });
 
 test("one machine card renders every section folded, with remove-from-project only when offered", () => {
@@ -195,7 +194,7 @@ test("one machine card renders every section folded, with remove-from-project on
   const html = render();
   assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
   assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
-  assert.equal(html.match(/data-machine-action="rename"/g)?.length, 1);
+  assert.equal(html.match(/data-machine-action="edit"/g)?.length, 1);
   assert.equal(html.match(/data-provider-setting="provider_autocompact"/g)?.length, 1);
   const timeoutInputs = html.match(
     /<input[^>]*data-provider-setting="provider_shell_timeout"[^>]*>/g,
@@ -236,7 +235,7 @@ test("one machine card renders every section folded, with remove-from-project on
 });
 
 function settingsProject() {
-  const profile = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
+  const profile = { provider: "codex", model: "", reasoning: "medium" };
   const metric = {
     bytes: 0,
     count: 0,
@@ -248,15 +247,13 @@ function settingsProject() {
     id: projectId,
     name: "Project",
     state_repository: "research",
-    run_on: "local",
+    run_on: "m-local",
     default_run_truth_scope: ["research"],
     default_auto_research_invocation_ceiling: 10,
-    repositories: [{ alias: "research", machine: "local", path: "/repo" }],
+    repositories: [{ alias: "research", machine: "m-local", path: "/repo" }],
     machines: [
       {
-        alias: "local",
-        host: "",
-        os_account: "",
+        machine_id: "m-local",
         compute: null,
         compute_probes: { scheduler: null, helper: null },
         removable: false,
@@ -368,8 +365,7 @@ test("the machine holding the state repository is the one tagged as the base", (
       ...project.machines,
       {
         ...project.machines[0],
-        alias: "gpu",
-        host: "gpu.example",
+        machine_id: "m-gpu",
         compute: gpuCompute,
         removable: true,
       },
@@ -394,12 +390,12 @@ test("the machine holding the state repository is the one tagged as the base", (
     return { tile, signals };
   };
   const { tile, signals } = render(null);
-  assert.match(tile("local"), /machine-tile-base/);
-  assert.doesNotMatch(tile("gpu"), /machine-tile-base/);
+  assert.match(tile("m-local"), /machine-tile-base/);
+  assert.doesNotMatch(tile("m-gpu"), /machine-tile-base/);
   // Helper jobs launch only on the base; another machine shows a jobs route only with Slurm.
-  assert.equal(signals("local"), signals("gpu") + 1);
+  assert.equal(signals("m-local"), signals("m-gpu") + 1);
   const slurm = render({ job_manager: "slurm", jobs_root: "" });
-  assert.equal(slurm.signals("gpu"), slurm.signals("local"));
+  assert.equal(slurm.signals("m-gpu"), slurm.signals("m-local"));
 });
 
 test("Space settings holds Appearance, and the identity menu no longer does", () => {
@@ -494,13 +490,14 @@ test("setup keeps the chosen card when two accounts share a host", () => {
   assert.equal(setupMachineSelection([gpu, sharedBob], "m-bob", gpu.host), gpu);
 });
 
-test("adding a machine names it from its card, numbered past taken names", () => {
-  assert.equal(projectMachineAlias("Lab cluster", ["laptop"]), "lab-cluster");
-  assert.equal(
-    projectMachineAlias("Lab cluster", ["lab-cluster", "lab-cluster-2"]),
-    "lab-cluster-3",
+test("a card edit sends only the trimmed fields that changed", () => {
+  const draft = { name: gpu.name, host: gpu.host, os_account: gpu.os_account };
+  assert.deepEqual(machineEditRequest(gpu, draft), {});
+  assert.deepEqual(machineEditRequest(gpu, { ...draft, name: " GPU 2 " }), { name: "GPU 2" });
+  assert.deepEqual(
+    machineEditRequest(gpu, { ...draft, host: "bob@gpu2.example", os_account: "" }),
+    { host: "bob@gpu2.example", os_account: "" },
   );
-  assert.ok(projectMachineAlias("x".repeat(80), ["x".repeat(48)]).length <= 48);
 });
 
 test("hidden folders serialize edits without changing defaults or writable paths", async () => {

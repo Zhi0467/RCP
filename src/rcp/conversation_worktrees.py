@@ -32,6 +32,7 @@ from rcp.core.models import (
 )
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import WORKTREE_GIT_TIMEOUT_SECONDS
+from rcp.machine_cards import host_of
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
 from rcp.transport import conversation_worktree
@@ -147,13 +148,12 @@ def validate_worktree_binding(
         or binding.chat_scope != request.chat_scope
         or binding.node_id != request.node_id
         or binding.repository_alias != repository.alias
-        or binding.machine != repository.machine
-        or binding.execution_host != service.manifest.machine_map[repository.machine].host
+        or binding.machine_id != repository.machine
     ):
         raise ValueError("The turn no longer matches its conversation worktree binding.")
     facts = worktree_command(
         store,
-        host=binding.execution_host,
+        host=host_of(store, binding.machine_id),
         operation="canonicalize",
         paths=[repository.path],
         shared_path=repository.path,
@@ -172,11 +172,11 @@ def _validate_creation_roots(
     service: ProjectService, store: AppStore, project_id: str, request: RunRequest, facts: dict
 ) -> None:
     repository = _repository(service, request)
-    host = service.manifest.machine_map[repository.machine].host
+    host = host_of(store, repository.machine)
     inventory = [
         item
         for item in service.repository_ownership_inventory(project_id=project_id)
-        if item.execution_host == host
+        if item.machine == repository.machine
     ]
     owners = [
         item
@@ -229,7 +229,7 @@ def _plan_worktree(
     **owner: str,
 ) -> dict:
     repository = _repository(service, request)
-    host = service.manifest.machine_map[repository.machine].host
+    host = host_of(store, repository.machine)
     facts = worktree_command(
         store, host=host, operation="plan", shared_path=repository.path, **owner
     )
@@ -242,8 +242,7 @@ def _plan_worktree(
     return {
         **facts,
         "repository_alias": repository.alias,
-        "machine": repository.machine,
-        "execution_host": host,
+        "machine_id": repository.machine,
     }
 
 
@@ -261,7 +260,7 @@ def plan_episode_worktree(
     owner_episode_id: str,
 ) -> EpisodeWorktreeBinding:
     repository = _repository(service, request)
-    _require_episode_git(store, service.manifest.machine_map[repository.machine].host)
+    _require_episode_git(store, host_of(store, repository.machine))
     return EpisodeWorktreeBinding(
         **_plan_worktree(
             service,
@@ -287,16 +286,12 @@ def ensure_episode_worktree(
     binding = isolation.worktree
     if binding is not None:
         repository = _repository(service, request)
-        if (
-            binding.repository_alias != repository.alias
-            or binding.machine != repository.machine
-            or binding.execution_host != service.manifest.machine_map[repository.machine].host
-        ):
+        if binding.repository_alias != repository.alias or binding.machine_id != repository.machine:
             raise ValueError("The launch no longer matches its episode worktree binding.")
-        _require_episode_git(store, binding.execution_host)
+        _require_episode_git(store, host_of(store, binding.machine_id))
         facts = worktree_command(
             store,
-            host=binding.execution_host,
+            host=host_of(store, binding.machine_id),
             operation="canonicalize",
             paths=[repository.path],
             shared_path=repository.path,
@@ -307,7 +302,7 @@ def ensure_episode_worktree(
             _validate_creation_roots(service, store, project_id, request, binding.model_dump())
         worktree_command(
             store,
-            host=binding.execution_host,
+            host=host_of(store, binding.machine_id),
             operation="create" if state.status == "creating" else "inspect",
             binding=binding,
         )
@@ -354,27 +349,29 @@ def admit_conversation_worktree(
     facts = None
     if binding.status == "creating":
         _validate_creation_roots(service, store, project_id, request, binding.model_dump())
-        worktree_command(store, host=binding.execution_host, operation="create", binding=binding)
+        worktree_command(
+            store, host=host_of(store, binding.machine_id), operation="create", binding=binding
+        )
         binding = store.set_conversation_worktree_status(
             project_id, request.chat_id, expected_status="creating", status="ready"
         )
     else:
         facts = worktree_command(
-            store, host=binding.execution_host, operation="inspect", binding=binding
+            store, host=host_of(store, binding.machine_id), operation="inspect", binding=binding
         )
     if request.worktree_integration:
         if request.mode != "work":
             raise ValueError("Integration is a Work turn.")
         if facts is None:
             facts = worktree_command(
-                store, host=binding.execution_host, operation="inspect", binding=binding
+                store, host=host_of(store, binding.machine_id), operation="inspect", binding=binding
             )
         option = _integration_option(binding, facts, request.worktree_integration)
         if option.target_branch is None and option.id != "pull_request":
             raise ValueError(option.reason or "The integration target is unavailable.")
         facts = worktree_command(
             store,
-            host=binding.execution_host,
+            host=host_of(store, binding.machine_id),
             operation="preflight",
             binding=binding,
             target_branch=option.target_branch,
@@ -499,7 +496,7 @@ def validate_conversation_worktree_execution(
         raise ValueError("The integration turn has no admitted target branch.")
     worktree_command(
         store,
-        host=binding.execution_host,
+        host=host_of(store, binding.machine_id),
         operation="preflight" if request.worktree_integration else "inspect",
         binding=binding,
         allowed_branch=allowed_branch,
@@ -571,7 +568,7 @@ def project_conversation_worktree(
             repository = _repository(service, request)
             worktree_command(
                 store,
-                host=service.manifest.machine_map[repository.machine].host,
+                host=host_of(store, repository.machine),
                 operation="plan",
                 shared_path=repository.path,
                 chat_id=request.chat_id,
@@ -588,12 +585,15 @@ def project_conversation_worktree(
         if binding.status != "ready":
             raise ValueError("Worktree creation is unfinished. Send the first Work turn again.")
         facts = worktree_command(
-            store, host=binding.execution_host, operation="inspect", binding=binding
+            store, host=host_of(store, binding.machine_id), operation="inspect", binding=binding
         )
         response.ahead_count = facts["ahead_count"]
         if inspect_removal:
             remote = worktree_command(
-                store, host=binding.execution_host, operation="remote_branch", binding=binding
+                store,
+                host=host_of(store, binding.machine_id),
+                operation="remote_branch",
+                binding=binding,
             )
             response.remote_branch_exists = remote["remote_branch_exists"]
             response.remote_branch_evidence = remote["remote_branch_reason"]
@@ -618,7 +618,7 @@ def project_conversation_worktree(
             try:
                 preflights = worktree_command(
                     store,
-                    host=binding.execution_host,
+                    host=host_of(store, binding.machine_id),
                     operation="preflight_many",
                     binding=binding,
                     target_branches=[option.target_branch for option in pending],
@@ -628,7 +628,11 @@ def project_conversation_worktree(
             else:
                 for option, outcome in zip(pending, preflights, strict=True):
                     reasons[option.id] = (
-                        str(_worktree_command_error(outcome, host=binding.execution_host))
+                        str(
+                            _worktree_command_error(
+                                outcome, host=host_of(store, binding.machine_id)
+                            )
+                        )
                         if "error" in outcome
                         else None
                     )
@@ -664,25 +668,29 @@ def remove_conversation_worktree(
             chat_id=chat_id,
             chat_scope=binding.chat_scope,
             node_id=binding.node_id,
-            run_on=binding.machine,
+            run_on=binding.machine_id,
             run_truth_scope=[binding.repository_alias],
         )
         validate_worktree_binding(service, request, binding, store)
-        worktree_command(store, host=binding.execution_host, operation="preflight", binding=binding)
+        worktree_command(
+            store, host=host_of(store, binding.machine_id), operation="preflight", binding=binding
+        )
         binding = store.set_conversation_worktree_status(
             project_id, chat_id, expected_status="ready", status="removing"
         )
     if binding.status != "removing":
         raise ValueError("Finish worktree creation before removing it.")
     try:
-        worktree_command(store, host=binding.execution_host, operation="remove", binding=binding)
+        worktree_command(
+            store, host=host_of(store, binding.machine_id), operation="remove", binding=binding
+        )
     except ValueError:
         # A failed delete which left an intact worktree must not prevent Work
         # from committing dirty files. If deletion already happened, keep the
         # durable removal intent so the next explicit Remove can finish it.
         try:
             worktree_command(
-                store, host=binding.execution_host, operation="inspect", binding=binding
+                store, host=host_of(store, binding.machine_id), operation="inspect", binding=binding
             )
         except ValueError:
             pass

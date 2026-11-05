@@ -177,10 +177,7 @@ declare const OPAQUE_SERVER_STEP_STATE: unique symbol;
 export type ServerStepState = { readonly [OPAQUE_SERVER_STEP_STATE]: "ServerStepState" };
 
 export interface ProjectProvisioningMachineRequest {
-  alias: string;
-  location: "local" | "ssh";
-  host?: string;
-  os_account: string;
+  machine_id: string;
   central_root?: string | null;
 }
 
@@ -188,7 +185,7 @@ export interface ProjectProvisioningRepositoryRequest {
   alias: string;
   source?: string | null;
   count_as_project_truth?: boolean;
-  machine_alias: string;
+  machine_id: string;
 }
 
 export interface ProjectProvisioningProviderRequest {
@@ -197,7 +194,7 @@ export interface ProjectProvisioningProviderRequest {
   runtime_id: string;
   model: string;
   reasoning: string;
-  machine_alias: string;
+  machine_id: string;
 }
 
 export interface ProjectProvisioningCreateRequest {
@@ -215,10 +212,17 @@ export interface ProjectProvisioningCreateRequest {
 export type ProjectTransferMachineIntent = ProjectProvisioningMachineRequest;
 export type ProjectTransferProviderIntent = ProjectProvisioningProviderRequest;
 
+export interface ProjectTransferTargetRepository {
+  alias: string;
+  machine_id: string;
+}
+
 export interface ProjectTransferTargetProvisioningIntent {
   name: string;
   default_auto_research_invocation_ceiling: number;
   machines: ProjectTransferMachineIntent[];
+  repositories: ProjectTransferTargetRepository[];
+  state_machine_id: string;
   provider_checks: ProjectTransferProviderIntent[];
 }
 
@@ -296,10 +300,7 @@ export interface ServerStep {
 }
 
 export interface ProjectProvisioningMachineProjection {
-  alias: string;
-  location: "local" | "ssh";
-  host: string;
-  os_account: string;
+  machine_id: string;
   intended_central_root: string | null;
   resolved_central_root: string | null;
   ready: boolean;
@@ -318,7 +319,7 @@ export interface ProjectProvisioningRepositoryProjection {
   https_clone_url: string | null;
   ssh_clone_url: string | null;
   settings_url: string | null;
-  machine_alias: string;
+  machine_id: string;
   intended_path: string | null;
   resolved_path: string | null;
   checkout_disposition: "request_created" | "reused_existing" | null;
@@ -339,7 +340,7 @@ export interface ProjectProvisioningProviderProjection {
   runtime_id: string;
   model: string;
   reasoning: string;
-  machine_alias: string;
+  machine_id: string;
   status: ProjectProvisioningCheckStatus;
   status_label: string;
   ready: boolean;
@@ -426,7 +427,6 @@ export type ProjectTransferProofState = {
 export interface ProjectTransferRepositorySource {
   alias: string;
   repository: GitHubRepositoryRef | null;
-  machine_alias: string;
   source_commit?: string;
 }
 
@@ -434,12 +434,12 @@ export interface ProjectTransferSourceConfiguration {
   source_rcp_version: string;
   source_schema_generation: number;
   supported_archive_codecs: string[];
-  machine_aliases: string[];
   repositories: ProjectTransferRepositorySource[];
   state_repository: string;
   project_truth_scope: string[];
   default_run_truth_scope: string[];
   source_manifest_sha256: string;
+  record_schema_version: number;
 }
 
 export interface ProjectTransferRepositoryBinding {
@@ -449,7 +449,7 @@ export interface ProjectTransferRepositoryBinding {
 
 export interface ProjectTransferResolvedPath {
   repository_alias: string;
-  machine_alias: string;
+  machine_id: string;
   path: string;
 }
 
@@ -813,7 +813,6 @@ export interface ExperimentSessionBinding {
   model: string | null;
   reasoning: string | null;
   run_on: string | null;
-  execution_host: string | null;
   run_truth_scope: string[] | null;
   native_session_bound: boolean;
   diagnostic: string | null;
@@ -992,7 +991,7 @@ interface WatcherDeliveryRecord {
   node_id: string | null;
   episode_id: string | null;
   graph_target: GraphTargetRef;
-  execution_host: string;
+  machine_id: string;
   continuation: WatcherContinuation;
   status: "active" | "degraded" | "completed" | "stopped";
   created_at: string;
@@ -1977,9 +1976,7 @@ export interface Repository {
 }
 
 export interface Machine {
-  alias: string;
-  host: string;
-  os_account: string;
+  machine_id: string;
   /** A read-only projection of the space machine card's compute settings. */
   compute: MachineComputeConfig | null;
   // Absent from a project cached by a version before split readiness.
@@ -1998,7 +1995,7 @@ export interface MachineComputeConfig {
 }
 
 export interface ComputeBackendProbe {
-  execution_machine: string;
+  machine_id: string;
   backend_id: string;
   state: ComputeProbeState;
   ready: boolean;
@@ -2015,10 +2012,10 @@ export type ComputeProbeState = {
   readonly [OPAQUE_COMPUTE_PROBE_STATE]: "ComputeProbeState";
 };
 
-/** Whether an agent on `execution_machine` reaches project machine `compute_id` (an alias). */
+/** Whether an agent on card `machine_id` reaches project machine `compute_id` (a card id). */
 export interface ComputeConnectionProbe {
   compute_id: string;
-  execution_machine: string;
+  machine_id: string;
   state: ComputeProbeState;
   reachable: boolean;
   diagnostic: string;
@@ -2065,12 +2062,11 @@ export interface AgentProfile {
   model: string;
   /**
    * The model the backend runs for this profile: `model`, or the head of the
-   * provider's catalog on `run_on` when `model` is empty and that catalog is
-   * known. Exported, never derived here, and refreshed with readiness.
+   * provider's catalog on the base machine when `model` is empty and that catalog
+   * is known. Exported, never derived here, and refreshed with readiness.
    */
   effective_model: string;
   reasoning: string;
-  run_on: string;
   permissions: AgentPermissions;
   /**
    * Whether a turn on this profile can ask for a Work-like capability, and so
@@ -2088,7 +2084,7 @@ export interface AgentRunConfig {
   run_on: string;
 }
 
-export interface AgentProfileSettings extends AgentRunConfig {
+export interface AgentProfileSettings extends Omit<AgentRunConfig, "run_on"> {
   runtime: string;
 }
 
@@ -2153,8 +2149,7 @@ export interface ConversationWorktreeBinding {
   chat_scope: "node" | "project";
   node_id: string | null;
   repository_alias: string;
-  machine: string;
-  execution_host: string;
+  machine_id: string;
   shared_path: string;
   worktree_path: string;
   git_common_dir: string;
@@ -2221,8 +2216,7 @@ export interface ProviderSkill {
 
 export interface ProviderSkillInventory {
   provider: ProviderId;
-  machine: string;
-  host: string;
+  machine_id: string;
   configured_binary?: string | null;
   resolved_binary?: string | null;
   provider_version?: string | null;
@@ -2541,7 +2535,7 @@ export interface AgentTask {
     reason_code: string | null;
   } | null;
   history_only: boolean;
-  stage_host?: string | null;
+  stage_machine_id?: string | null;
   stage_root?: string | null;
   graph_target: GraphTargetRef;
   estimate_seconds: number;
@@ -2669,7 +2663,7 @@ export interface EpisodeStarter {
 export interface LoopCheckout {
   kind: "shared" | "worktree";
   available: boolean;
-  execution_host: string | null;
+  machine_id: string | null;
   repository_paths: string[];
   repository_alias: string | null;
   isolation_owner_episode_id: string | null;
@@ -2696,7 +2690,7 @@ export interface LoopStatusRow {
   graph_target: GraphTargetRef;
   state: "live" | "stopped" | "completed" | "unavailable";
   started_by: LoopStarter;
-  checkout: Pick<LoopCheckout, "kind" | "execution_host" | "repository_paths">;
+  checkout: Pick<LoopCheckout, "kind" | "machine_id" | "repository_paths">;
 }
 
 export interface LoopOverlap {
@@ -3289,7 +3283,8 @@ export interface ProjectCard {
   home_space_id: string | null;
   name: string;
   locator: string;
-  state_location: string;
+  state_machine_id: string;
+  state_path: string;
   remote: boolean;
   last_opened_at?: string | null;
   revision?: number | null;
@@ -3405,9 +3400,7 @@ export interface HiddenReadKeyEvidence {
 
 export interface HiddenReadScope {
   readonly schema_generation: 1;
-  readonly execution_machine: string;
-  /** Empty denotes the backend host. */
-  readonly execution_host: string;
+  readonly machine_id: string;
   readonly os_account: string;
   /** Canonical execution-account home; locates the staged tool wrapper. */
   readonly account_home: string | null;
@@ -3483,7 +3476,10 @@ export interface ShellTimeoutProvider {
 export interface SpaceMachineProject {
   project_id: string;
   project_name: string;
-  alias: string;
+}
+
+export interface AddProjectMachineRequest {
+  machine_id: string;
 }
 
 export interface SpaceMachineCreateRequest {
@@ -3492,12 +3488,14 @@ export interface SpaceMachineCreateRequest {
   os_account: string;
 }
 
-/** Why a team server's first SSH login to a new machine failed (the create route's 422 code). */
+/** Why a team server's SSH login to a machine failed (the create and edit routes' 422 code). */
 export type MachineLoginFailureCode =
   "authentication_failed" | "host_key_unknown" | "host_key_changed" | "unreachable";
 
 export interface SpaceMachineUpdateRequest {
   name?: string;
+  host?: string;
+  os_account?: string;
   writable_paths?: string[];
   hidden_folders?: string[];
   provider_autocompact?: Record<string, string>;
@@ -3605,7 +3603,7 @@ export interface WritingSession {
   runtime_label: string;
   provider_label: string;
   native_session_id: string;
-  execution_machine: string;
+  machine_id: string;
   project_id: string;
   title?: string | null;
   model: string;
@@ -3651,14 +3649,14 @@ export interface ProjectArtifact {
 export type ProjectLoginNotice = Omit<ProviderLoginState, "login_id"> & { login_id: string | null };
 
 /**
- * One login: a provider sign-in on one host, keyed `(provider, host, login_id)`.
+ * One login: a provider sign-in on one machine, keyed `(provider, machine_id, login_id)`.
  * `login_id` "" is the machine sign-in. `detail` and `source` are null on another
  * member's own login.
  */
 export interface ProviderLoginState {
   provider: string;
   label?: string;
-  host: string;
+  machine_id: string;
   login_id: string;
   kind: "shared" | "own";
   /** Set on own logins. */
@@ -3684,10 +3682,10 @@ export interface ProviderLoginState {
 /** Which groups a member's work tries, and in what order. "Both off" has no value. */
 export type ProviderLoginSettingValue = "own" | "own_then_shared" | "shared_then_own" | "shared";
 
-/** The caller's effective setting for one `(provider, host)`. */
+/** The caller's effective setting for one `(provider, machine_id)`. */
 export interface ProviderLoginSetting {
   provider: string;
-  host: string;
+  machine_id: string;
   setting: ProviderLoginSettingValue;
   changed_at: string | null;
   /** False for the built-in default. */
@@ -3714,7 +3712,7 @@ export interface ProviderSignInStatus {
   /** The login this attempt signs in. */
   login_id: string;
   provider: string;
-  host: string;
+  machine_id: string;
   state: "pending" | "succeeded" | "failed";
   /** Present only for the member who started the attempt. */
   user_code: string | null;

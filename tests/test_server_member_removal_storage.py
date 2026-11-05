@@ -6,6 +6,7 @@ import pytest
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import MEMBER_REMOVAL_PREVIEW_MAX_ITEMS
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -35,8 +36,8 @@ def _project(store: AppStore, name: str = "Shared project") -> ProjectRecord:
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name=name,
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )
@@ -306,27 +307,37 @@ def test_provider_cleanup_fences_own_logins_and_preserves_shared_and_sessions(
 ) -> None:
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.server_ops.provider_cleanup import cleanup_member_provider_logins
-    from rcp.storage.models import LoginKey
 
     store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
     credentials = ProviderCredentialStore.for_data_dir(tmp_path)
-    own = store.add_provider_login("claude", "", member_id=bob.user_id, added_by=bob.user_id)
-    shared = store.add_provider_login("claude", "", added_by=bob.user_id)
-    codex = store.add_provider_login("codex", "", member_id=bob.user_id, added_by=bob.user_id)
+    own = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, member_id=bob.user_id, added_by=bob.user_id
+    )
+    shared = store.add_provider_login("claude", BACKEND_MACHINE_ID, added_by=bob.user_id)
+    codex = store.add_provider_login(
+        "codex", BACKEND_MACHINE_ID, member_id=bob.user_id, added_by=bob.user_id
+    )
     for row in (own, shared, codex):
         store.mark_provider_login_verified(
-            LoginKey(row.provider, row.host, row.login_id), member_id=bob.user_id, detail="ready"
+            LoginKey(row.provider, row.machine_id, row.login_id),
+            member_id=bob.user_id,
+            detail="ready",
         )
     for row in (own, shared):
         credentials.store_token(
-            "claude", "", "secret", member_id=bob.user_id, now=store.now(), login_id=row.login_id
+            "claude",
+            BACKEND_MACHINE_ID,
+            "secret",
+            member_id=bob.user_id,
+            now=store.now(),
+            login_id=row.login_id,
         )
-    home = credentials.account_dir("codex", "", codex.login_id) / "codex-home"
+    home = credentials.account_dir("codex", BACKEND_MACHINE_ID, codex.login_id) / "codex-home"
     home.mkdir(parents=True)
     (home / "auth.json").write_text("secret")
     (home / "sessions").mkdir()
     (home / "sessions" / "session.jsonl").write_text("history")
-    store.set_provider_login_setting(bob.user_id, "claude", "", "shared")
+    store.set_provider_login_setting(bob.user_id, "claude", BACKEND_MACHINE_ID, "shared")
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO provider_login_settings VALUES (?, ?, ?, ?, ?)",
@@ -335,13 +346,16 @@ def test_provider_cleanup_fences_own_logins_and_preserves_shared_and_sessions(
 
     assert cleanup_member_provider_logins(store, bob.user_id) == ()
     for row in (own, codex):
-        removed = store.provider_login_state(LoginKey(row.provider, row.host, row.login_id))
+        removed = store.provider_login_state(LoginKey(row.provider, row.machine_id, row.login_id))
         assert removed.state == "signed_out"
         assert removed.removed_at is not None
         assert removed.generation == 2
-    assert not credentials.token_path("claude", "", own.login_id).exists()
-    assert credentials.token("claude", "", shared.login_id) == "secret"
-    assert store.provider_login_state(LoginKey("claude", "", shared.login_id)).state == "signed_in"
+    assert not credentials.token_path("claude", BACKEND_MACHINE_ID, own.login_id).exists()
+    assert credentials.token("claude", BACKEND_MACHINE_ID, shared.login_id) == "secret"
+    assert (
+        store.provider_login_state(LoginKey("claude", BACKEND_MACHINE_ID, shared.login_id)).state
+        == "signed_in"
+    )
     assert not (home / "auth.json").exists()
     assert (home / "sessions" / "session.jsonl").read_text() == "history"
     with store.connection() as connection:
@@ -352,21 +366,24 @@ def test_provider_cleanup_fences_own_logins_and_preserves_shared_and_sessions(
             == 0
         )
     assert cleanup_member_provider_logins(store, bob.user_id) == ()
-    assert store.provider_login_state(LoginKey("claude", "", own.login_id)).generation == 2
+    assert (
+        store.provider_login_state(LoginKey("claude", BACKEND_MACHINE_ID, own.login_id)).generation
+        == 2
+    )
 
 
 def test_member_advance_reports_unreached_cleanup_even_on_completion(tmp_path, monkeypatch) -> None:
     import subprocess
 
     from rcp.server_ops import provider_cleanup
-    from rcp.storage.models import LoginKey
     from tests.test_server_member_removal import _team
 
     store, _alice, bob, _, _, coordinator = _team(tmp_path)
+    worker = store.create_space_machine(name="worker", host="worker.example", os_account="rcp")
     own = store.add_provider_login(
-        "codex", "worker.example", member_id=bob.user_id, added_by=bob.user_id
+        "codex", worker.machine_id, member_id=bob.user_id, added_by=bob.user_id
     )
-    key = LoginKey("codex", "worker.example", own.login_id)
+    key = LoginKey("codex", worker.machine_id, own.login_id)
     store.mark_provider_login_verified(key, member_id=bob.user_id, detail="ready")
     attempts = []
 
@@ -377,7 +394,7 @@ def test_member_advance_reports_unreached_cleanup_even_on_completion(tmp_path, m
     monkeypatch.setattr(provider_cleanup.subprocess, "run", unreachable)
     boundary = coordinator.plan(bob.user_id).snapshot.boundary_sha256
     result = coordinator.advance(bob.user_id, boundary_sha256=boundary)
-    assert result.provider_cleanup_unreached == ("worker.example",)
+    assert result.provider_cleanup_unreached == (worker.machine_id,)
     assert result.snapshot.removed_at is not None
     assert store.provider_login_state(key).removed_at is not None
     assert len(attempts) == 1
@@ -397,11 +414,11 @@ def test_pending_member_cleanup_retries_removed_login_credentials(tmp_path, monk
     import subprocess
 
     from rcp.server_ops import provider_cleanup
-    from rcp.storage.models import LoginKey
 
     store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
+    worker = store.create_space_machine(name="worker", host="worker.example", os_account="rcp")
     own = store.add_provider_login(
-        "claude", "worker.example", member_id=bob.user_id, added_by=bob.user_id
+        "claude", worker.machine_id, member_id=bob.user_id, added_by=bob.user_id
     )
     attempts = []
 
@@ -411,12 +428,12 @@ def test_pending_member_cleanup_retries_removed_login_credentials(tmp_path, monk
 
     monkeypatch.setattr(provider_cleanup.subprocess, "run", remote)
     assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == (
-        "worker.example",
+        worker.machine_id,
     )
     assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
     assert len(attempts) == 2
     assert (
-        store.provider_login_state(LoginKey("claude", "worker.example", own.login_id)).generation
+        store.provider_login_state(LoginKey("claude", worker.machine_id, own.login_id)).generation
         == 1
     )
 
@@ -428,24 +445,37 @@ def test_member_cleanup_keeps_a_credential_until_its_running_turn_ends(tmp_path)
     from rcp.server_ops import provider_cleanup
 
     store, _alice, _, _, bob, _ = _claimed_team(tmp_path)
-    own = store.add_provider_login("claude", "", member_id=bob.user_id, added_by=bob.user_id)
+    own = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, member_id=bob.user_id, added_by=bob.user_id
+    )
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
     credentials.store_token(
-        "claude", "", "token", member_id=bob.user_id, now=store.now(), login_id=own.login_id
+        "claude",
+        BACKEND_MACHINE_ID,
+        "token",
+        member_id=bob.user_id,
+        now=store.now(),
+        login_id=own.login_id,
     )
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO graph_runs(operation_id,project_id,kind,status,request_json,created_at,"
-            "updated_at,status_message,login_id) VALUES('turn','project','refresh','running',?,?,?,"
-            "'running',?)",
-            (json.dumps({"provider": "claude"}), store.now(), store.now(), own.login_id),
+            "updated_at,status_message,login_id,stage_machine_id) VALUES('turn','project','refresh',"
+            "'running',?,?,?,'running',?,?)",
+            (
+                json.dumps({"provider": "claude"}),
+                store.now(),
+                store.now(),
+                own.login_id,
+                BACKEND_MACHINE_ID,
+            ),
         )
     assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
-    assert credentials.token("claude", "", own.login_id) == "token"
+    assert credentials.token("claude", BACKEND_MACHINE_ID, own.login_id) == "token"
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status = 'completed'")
     assert provider_cleanup.cleanup_member_provider_logins(store, bob.user_id) == ()
-    assert credentials.token("claude", "", own.login_id) is None
+    assert credentials.token("claude", BACKEND_MACHINE_ID, own.login_id) is None
 
 
 @pytest.mark.parametrize(

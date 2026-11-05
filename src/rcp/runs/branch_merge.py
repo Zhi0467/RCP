@@ -85,6 +85,7 @@ from rcp.history import (
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.queries import StepRecord
 from rcp.limits import MAX_BRANCH_MERGE_REBASE_ROUNDS, PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs import merge_contract, merge_patch, merge_plan
 from rcp.runs.merge_contract import (
     MergePlanningContext,
@@ -628,8 +629,8 @@ def require_graph_only_merge_scope(
         assert stage.remote_stage.root is not None
         if scope.stage_root != str(stage.remote_stage.root):
             raise ValueError("branch merge scope does not match its remote stage")
-        if scope.execution_host != stage.remote_stage.host:
-            raise ValueError("branch merge scope does not match its execution host")
+        if scope.machine_id == BACKEND_MACHINE_ID:
+            raise ValueError("branch merge scope does not match its execution machine")
     else:
         assert stage.local_stage is not None
         if Path(scope.stage_root).resolve() != stage.local_stage.resolve():
@@ -1135,7 +1136,7 @@ async def stream_code_merge_run(
         request,
         prompt=prompt,
         contract_path=contract_path,
-        remote=bool(write_scope.execution_host),
+        remote=write_scope.machine_id != BACKEND_MACHINE_ID,
         resumed=False,
         write_scope=write_scope,
         continuation="initial",
@@ -1347,7 +1348,7 @@ def _provider_turn(
         # ProjectWriteScope; only a code merge admits repository roots.
         write_dirs=[Path(item) for item in write_scope.repository_roots],
         write_scope=write_scope,
-        execution_host=write_scope.execution_host,
+        execution_host=stage.remote_stage.host if stage.remote_stage is not None else "",
         execution=execution,
         remote_stage=stage.remote_stage,
         capability="orchestrate",
@@ -1376,7 +1377,7 @@ def _record_merge_launch(
         request,
         prompt=prompt,
         contract_path=contract_path,
-        remote=bool(write_scope.execution_host),
+        remote=write_scope.machine_id != BACKEND_MACHINE_ID,
         resumed=continuation != "initial",
         write_scope=write_scope,
         continuation=continuation,

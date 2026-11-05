@@ -17,6 +17,7 @@ from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Experiment, GraphState
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.episodes.isolation import ensure_episode_isolation
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
@@ -30,7 +31,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer, start_experiment_episode
 
@@ -232,8 +233,8 @@ def _setup_report(
             project_id=project_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=str(manifest.path.parent),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.path.parent),
             added_at=store.now(),
         )
     )
@@ -253,8 +254,7 @@ def _setup_report(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
-        execution_host="",
+        run_on="backend",
         session_id="native-session",
     )
     receipt_json, receipt_sha256 = compact_episode_receipt(
@@ -273,10 +273,9 @@ def _setup_report(
         concluding_operation_id=operational.operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=request.provider,
-        run_on=request.run_on,
-        execution_host=request.execution_host,
+        machine_id=request.run_on,
         native_session_id=request.session_id,
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
         skill_id=skill.id,
         skill_version=skill.version,
@@ -300,7 +299,7 @@ def _setup_report(
         status_message="Wrapping up visualization and report",
         parent_operation_id=operational.operation_id,
         native_session_id=request.session_id,
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
         visible=False,
         authorized_by=store.episode(episode_id).authorized_by,
@@ -324,7 +323,7 @@ def _setup_report(
         operation_id=hidden.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
     return (
@@ -351,8 +350,7 @@ def test_episode_report_request_is_strict() -> None:
                 "provider": "codex",
                 "model": "",
                 "reasoning": "medium",
-                "run_on": "laptop",
-                "execution_host": "",
+                "run_on": "backend",
                 "session_id": "native-session",
                 "graph_path": "/forbidden/graph.json",
             }
@@ -362,7 +360,7 @@ def test_episode_report_request_is_strict() -> None:
 def test_pending_episode_report_stage_is_protected_from_age_cleanup(manifest, tmp_path) -> None:
     _service, store, _request, _execution, stage = _setup_report(manifest, tmp_path)
 
-    assert store.protected_run_stage_roots("") == (str(stage),)
+    assert store.protected_run_stage_roots("backend") == (str(stage),)
 
 
 @pytest.mark.asyncio
@@ -804,7 +802,7 @@ async def test_shutdown_pause_retries_on_a_new_hidden_task_and_resumes_automatic
         operation_id=retried.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
 
@@ -851,7 +849,9 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
 async def test_report_login_failure_marks_account_and_parks_without_retry(manifest, tmp_path):
     service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
 
     class LoginFailureLauncher:
@@ -865,9 +865,7 @@ async def test_report_login_failure_marks_account_and_parks_without_retry(manife
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert launcher.calls == 1
     assert [event.event for event in events] == ["error"]
-    state = store.provider_login_state(
-        LoginKey(request.provider, request.execution_host, MACHINE_LOGIN_ID)
-    )
+    state = store.provider_login_state(LoginKey(request.provider, request.run_on, MACHINE_LOGIN_ID))
     assert state.state == "signed_out"
     assert state.source == "report"
     assert state.generation == execution.login_generation == 1
@@ -885,7 +883,10 @@ def test_signed_out_report_allocation_stays_queued_and_pending(manifest, tmp_pat
 
     _service, store, request, _execution, _stage = _setup_report(manifest, tmp_path)
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="report"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="report",
     )
     tasks = BackgroundAgentTasks(store, None)
     before = store.episode(request.episode_id)
@@ -943,7 +944,9 @@ def test_parked_report_retries_on_a_new_task_after_verify(manifest, tmp_path):
     with store.connection() as connection:
         task_count = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     restarted = start_episode_report(tasks, request.episode_id)
     assert restarted.parent_operation_id == first.operation_id
@@ -971,7 +974,7 @@ def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest,
             provider_auth=number == 2,
         )
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused",
         source="report",
@@ -980,7 +983,9 @@ def test_verified_third_auth_failure_settles_at_existing_attempt_limit(manifest,
     assert start_episode_report(tasks, request.episode_id) is None
     assert store.episode(request.episode_id).wrapup_state == "pending"
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     assert start_episode_report(tasks, request.episode_id) is None
     episode = store.episode(request.episode_id)
@@ -1014,7 +1019,10 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
 ):
     service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     launcher = _ReportLauncher([])
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
@@ -1025,7 +1033,9 @@ async def test_login_block_after_report_dispatch_spends_no_attempt_and_is_recove
     task = store.agent_task(execution.operation_id)
     assert task.failure_kind == "provider_auth"
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     queued = store.retry_episode_report_allocation(request.episode_id)
     assert queued.operation_id != execution.operation_id and queued.status == "queued"
@@ -1376,13 +1386,15 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         assert [event.event for event in events] == ["error"]
         assert store.agent_task(execution.operation_id).failure_kind == "provider_auth"
         store.mark_provider_login_verified(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="member",
+            detail="verified",
         )
         operation_id = store.retry_episode_report_allocation(request.episode_id).operation_id
         assert operation_id != execution.operation_id
 
     restarted = AgentTaskExecution(operation_id, store, AgentProcessControl())
-    restarted.stage_host = execution.stage_host
+    restarted.stage_machine_id = execution.stage_machine_id
     restarted.stage_root = execution.stage_root
     events = await _events(stream_episode_report_run(service, launcher, request, restarted))
     assert [event.event for event in events] == ["message", "done"]

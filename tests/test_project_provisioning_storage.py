@@ -13,12 +13,14 @@ from pydantic import ValidationError
 
 from rcp.api.project_provisioning import _project_provisioning_response
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
     CommandAction,
     ExternalAction,
     ExternalServiceTarget,
+    MachineTarget,
     NonsecretField,
     ServerStep,
 )
@@ -36,6 +38,7 @@ from rcp.storage.provisioning import project_provisioning_review_digest
 
 def _team_store(tmp_path: Path) -> tuple[AppStore, AuthorizedHuman]:
     store = AppStore(tmp_path / "team" / "rcp.sqlite3", space_kind="team")
+    store.ensure_space_machines([("", "rcp", "Server")])
     member = store.preprovision_team_member("Alice")
     return store, AuthorizedHuman(
         space_id=store.space_id,
@@ -46,9 +49,7 @@ def _team_store(tmp_path: Path) -> tuple[AppStore, AuthorizedHuman]:
 
 def _machine() -> ProjectProvisioningMachineIntent:
     return ProjectProvisioningMachineIntent(
-        alias="server",
-        location="local",
-        os_account="rcp",
+        machine_id=BACKEND_MACHINE_ID,
         central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
     )
 
@@ -57,7 +58,7 @@ def _repository() -> ProjectProvisioningRepositoryIntent:
     return ProjectProvisioningRepositoryIntent(
         alias="paper",
         repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
     )
 
 
@@ -68,7 +69,7 @@ def _provider() -> ProjectProvisioningProviderIntent:
         runtime_id="codex:exec",
         model="gpt-5.6-luna",
         reasoning="medium",
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
     )
 
 
@@ -268,7 +269,7 @@ def test_duplicate_repositories_machines_and_profiles_fail_before_persistence(
 ) -> None:
     store, authorizer = _team_store(tmp_path)
 
-    with pytest.raises(ValidationError, match="machine aliases"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=authorizer,
@@ -461,13 +462,7 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
         store.project_provisioning_request(request.request_id)
 
 
-@pytest.mark.parametrize("terminal_status", ["ready_for_review", "completed"])
-def test_pre_configuration_review_digest_remains_readable_after_upgrade(
-    tmp_path: Path,
-    terminal_status: str,
-) -> None:
-    store, authorizer = _team_store(tmp_path)
-    request = _create_legacy(store, authorizer)
+def _reviewed(store: AppStore, request, terminal_status: str):
     running = store.transition_project_provisioning_request(
         request.request_id,
         receipt_id="legacy-setup-started",
@@ -489,6 +484,9 @@ def test_pre_configuration_review_digest_remains_readable_after_upgrade(
         running.repositories[0].model_copy(
             update={
                 "resolved_path": running.repositories[0].intended_path,
+                "checkout_disposition": (
+                    "request_created" if running.configuration_complete else None
+                ),
                 "git_check": ProjectProvisioningGitCheckRecord(
                     status="ready",
                     commit="a" * 40,
@@ -530,6 +528,17 @@ def test_pre_configuration_review_digest_remains_readable_after_upgrade(
             repositories=terminal.repositories,
             provider_checks=terminal.provider_checks,
         )
+    return terminal
+
+
+@pytest.mark.parametrize("terminal_status", ["ready_for_review", "completed"])
+def test_pre_configuration_review_digest_remains_readable_after_upgrade(
+    tmp_path: Path,
+    terminal_status: str,
+) -> None:
+    store, authorizer = _team_store(tmp_path)
+    request = _create_legacy(store, authorizer)
+    terminal = _reviewed(store, request, terminal_status)
     legacy_payload = {
         "request_id": terminal.request_id,
         "kind": terminal.kind,
@@ -572,6 +581,160 @@ def test_pre_configuration_review_digest_remains_readable_after_upgrade(
     assert loaded.final_review_digest == legacy_digest
     assert loaded.configuration_complete is False
     assert loaded.repositories[0].checkout_disposition is None
+
+
+def _alias_review_digest(record, machines, repositories, providers) -> str:
+    payload = {
+        "request_id": record.request_id,
+        "kind": record.kind,
+        "target_space_id": record.target_space_id,
+        "authorized_by": record.authorized_by.model_dump(mode="json"),
+        "proposed_project_id": record.proposed_project_id,
+        "name": record.name,
+        "state_repository": record.state_repository,
+        "project_truth_scope": record.project_truth_scope,
+        "default_run_truth_scope": record.default_run_truth_scope,
+        "default_auto_research_invocation_ceiling": (
+            record.default_auto_research_invocation_ceiling
+        ),
+        "machines": machines,
+        "repositories": [
+            {key: value for key, value in item.items() if key != "count_as_project_truth"}
+            for item in repositories
+        ],
+        "provider_checks": providers,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("terminal_status", ["ready_for_review", "completed"])
+def test_a_request_that_names_machines_by_alias_is_read_through_the_card_for_its_host(
+    tmp_path: Path, terminal_status: str
+) -> None:
+    store, authorizer = _team_store(tmp_path)
+    terminal = _reviewed(store, _create(store, authorizer), terminal_status)
+    machines = [
+        {
+            "alias": "server",
+            "location": "local",
+            "host": "",
+            "os_account": "rcp",
+            "central_root": machine.central_root,
+            "resolved_central_root": machine.resolved_central_root,
+        }
+        for machine in terminal.machines
+    ]
+    repositories = [
+        {**item.model_dump(mode="json", exclude={"machine_id"}), "machine_alias": "server"}
+        for item in terminal.repositories
+    ]
+    providers = [
+        {**item.model_dump(mode="json", exclude={"machine_id"}), "machine_alias": "server"}
+        for item in terminal.provider_checks
+    ]
+    alias_digest = _alias_review_digest(terminal, machines, repositories, providers)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE project_provisioning_requests SET machines_json = ?, repositories_json = ?, "
+            "provider_checks_json = ?, final_review_digest = ? WHERE request_id = ?",
+            (
+                json.dumps(machines),
+                json.dumps(repositories),
+                json.dumps(providers),
+                alias_digest,
+                terminal.request_id,
+            ),
+        )
+        stored = connection.execute("SELECT * FROM project_provisioning_requests").fetchone()
+
+    loaded = store.project_provisioning_request(terminal.request_id)
+
+    assert loaded is not None
+    assert [machine.machine_id for machine in loaded.machines] == [BACKEND_MACHINE_ID]
+    assert [item.machine_id for item in loaded.repositories] == [BACKEND_MACHINE_ID]
+    assert [item.machine_id for item in loaded.provider_checks] == [BACKEND_MACHINE_ID]
+    if terminal_status == "completed":
+        assert loaded.final_review_digest == alias_digest
+    else:
+        assert loaded.final_review_digest == project_provisioning_review_digest(loaded)
+        assert loaded.final_review_digest != alias_digest
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT * FROM project_provisioning_requests").fetchone() == (
+            stored
+        )
+
+
+def test_a_request_names_only_cards_and_the_backend_card_runs_as_the_service_account(
+    tmp_path: Path,
+) -> None:
+    store, authorizer = _team_store(tmp_path)
+    remote = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    base = {
+        "kind": "create_team_project",
+        "authorized_by": authorizer,
+        "repositories": [_repository()],
+        "provider_checks": [_provider()],
+    }
+
+    with pytest.raises(ValueError):
+        store.create_project_provisioning_request(
+            **base,
+            machines=[_machine(), ProjectProvisioningMachineIntent(machine_id="f" * 32)],
+        )
+    accepted = store.create_project_provisioning_request(
+        **base,
+        machines=[
+            _machine(),
+            ProjectProvisioningMachineIntent(machine_id=remote.machine_id, central_root="/srv"),
+        ],
+    )
+    assert {machine.machine_id for machine in accepted.machines} == {
+        BACKEND_MACHINE_ID,
+        remote.machine_id,
+    }
+
+    other, other_authorizer = _team_store(tmp_path / "other")
+    other.update_space_machine(BACKEND_MACHINE_ID, os_account="alice")
+    with pytest.raises(ValueError):
+        _create(other, other_authorizer)
+
+
+def test_a_machine_action_targets_the_route_of_a_declared_card(tmp_path: Path) -> None:
+    store, authorizer = _team_store(tmp_path)
+    request = _create(store, authorizer)
+    running = store.transition_project_provisioning_request(
+        request.request_id,
+        receipt_id="setup-started",
+        phase="setup_start",
+        expected_revision=0,
+        expected_status="waiting_for_server_setup",
+        to_status="setup_in_progress",
+        machines=request.machines,
+        repositories=request.repositories,
+        provider_checks=request.provider_checks,
+    )
+    action = _operator_action(request.request_id)
+
+    def pause(receipt_id: str, os_account: str):
+        return store.transition_project_provisioning_request(
+            request.request_id,
+            receipt_id=receipt_id,
+            phase="github_grant",
+            expected_revision=1,
+            expected_status="setup_in_progress",
+            to_status="operator_action_needed",
+            machines=running.machines,
+            repositories=running.repositories,
+            provider_checks=running.provider_checks,
+            operator_action=action.model_copy(
+                update={"target": MachineTarget(host="server.example", os_account=os_account)}
+            ),
+        )
+
+    with pytest.raises(ValueError):
+        pause("undeclared-account", "root")
+    assert pause("declared-account", "rcp").status == "operator_action_needed"
 
 
 def test_operator_action_is_bound_to_the_request_and_declared_target(tmp_path: Path) -> None:
@@ -723,14 +886,11 @@ def test_secret_shaped_provider_and_path_values_never_enter_a_request(tmp_path: 
             runtime_id="github_pat_abcdefghijklmnop",
             model="gpt-5.6-luna",
             reasoning="medium",
-            machine_alias="server",
+            machine_id=BACKEND_MACHINE_ID,
         )
     with pytest.raises(ValidationError, match="credential-shaped"):
         ProjectProvisioningMachineIntent(
-            alias="remote",
-            location="ssh",
-            host="cluster",
-            os_account="alice",
+            machine_id=BACKEND_MACHINE_ID,
             central_root="/srv/github_pat_abcdefghijklmnop/projects",
         )
     with pytest.raises(ValidationError, match="credential-shaped"):
@@ -847,12 +1007,13 @@ def test_repository_contract_migration_round_trip(tmp_path: Path) -> None:
             home_space_id=store.space_id,
             locator="/srv/project/.research/manifest.toml",
             name="Project",
-            state_location="/srv/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/srv/project/.research",
             added_at=store.now(),
         )
     )
     store.seat_project_member(retained.proposed_project_id, retained.authorized_by.user_id)
+    store.ensure_space_machines([("", "rcp", "Server")])
     created = []
     for kind, source in [
         ("add_repository", None),
@@ -868,7 +1029,7 @@ def test_repository_contract_migration_round_trip(tmp_path: Path) -> None:
                     ProjectProvisioningRepositoryIntent(
                         alias="code",
                         repository=source,
-                        machine_alias="server",
+                        machine_id=BACKEND_MACHINE_ID,
                         count_as_project_truth=kind != "add_repository",
                     )
                 ],

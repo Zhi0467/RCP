@@ -31,7 +31,6 @@ from rcp.api.app import (
 from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
-from rcp.config import MachineConfig
 from rcp.core.attention import decision_awaits_choice
 from rcp.core.materialize import MaterializationResult
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
@@ -39,6 +38,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card
 from rcp.paper import WritingSession
 from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
@@ -90,7 +90,6 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.storage.models import LoginKey
 from rcp.transport import (
     BatchPublishFailed,
     RunLockCancelled,
@@ -121,6 +120,11 @@ from .helpers import (
 )
 from .helpers import wait_for_task_response as _wait_for_run
 from .paper_helpers import coach_execution, wire_saved_paper
+
+
+def _remote_card(app, host: str) -> str:
+    store = app.state.catalog.store
+    return store.create_space_machine(name=host, host=host, os_account="").machine_id
 
 
 def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
@@ -200,7 +204,7 @@ def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
 ) -> None:
     continuation = WatcherContinuation(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="work",
         skill_ids=["experiment-causality"],
@@ -266,7 +270,7 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
         cwd=str(tmp_path),
         continuation=WatcherContinuation(
             provider="claude",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
             patch_kind="work",
         ),
@@ -335,11 +339,11 @@ def test_provider_warmup_starts_after_health_is_available(app, monkeypatch) -> N
     monkeypatch.setattr(
         app.state.catalog,
         "provider_targets",
-        lambda: [("codex", "", "/opt/agents/codex")],
+        lambda: [("codex", BACKEND_MACHINE_ID, "/opt/agents/codex")],
     )
 
     def readiness(login: LoginKey, *, binary: str | None = None):
-        calls.append((login.provider, login.host, binary))
+        calls.append((login.provider, login.machine_id, binary))
         entered.set()
         assert release.wait(TASK_SETTLE_TIMEOUT)
         return ProviderReadiness(
@@ -355,7 +359,7 @@ def test_provider_warmup_starts_after_health_is_available(app, monkeypatch) -> N
         try:
             wait_for_entry(entered)
             assert client.get("/api/health/details").status_code == 200
-            assert calls == [("codex", "", "/opt/agents/codex")]
+            assert calls == [("codex", BACKEND_MACHINE_ID, "/opt/agents/codex")]
         finally:
             release.set()
 
@@ -373,20 +377,21 @@ def test_lifespan_shutdown_fences_canonical_lock_waits(manifest, tmp_path) -> No
 
 
 def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypatch) -> None:
+    remote = _remote_card(app, "research.example")
     targets = [
-        ("codex", "", "/opt/agents/codex"),
-        ("claude", "research.example", "/opt/agents/claude"),
+        ("codex", BACKEND_MACHINE_ID, "/opt/agents/codex"),
+        ("claude", remote, "/opt/agents/claude"),
     ]
     calls: list[tuple[str, str, str, str | None]] = []
     completed = threading.Event()
 
     monkeypatch.setattr(app.state.catalog, "provider_targets", lambda: targets)
 
-    def mark(provider: str, host: str, binary: str | None):
-        calls.append(("mark", provider, host, binary))
+    def mark(provider: str, machine_id: str, binary: str | None):
+        calls.append(("mark", provider, machine_id, binary))
 
     def readiness(login: LoginKey, *, binary: str | None = None):
-        calls.append(("readiness", login.provider, login.host, binary))
+        calls.append(("readiness", login.provider, login.machine_id, binary))
         return ProviderReadiness(
             provider=login.provider,
             installed=True,
@@ -396,9 +401,9 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypat
             path_state="resolved",
         )
 
-    def refresh(provider: str, host: str, binary: str | None, _readiness, *, reuse_cached):
+    def refresh(provider: str, machine_id: str, binary: str | None, _readiness, *, reuse_cached):
         assert reuse_cached is True
-        calls.append(("refresh", provider, host, binary))
+        calls.append(("refresh", provider, machine_id, binary))
         if sum(call[0] == "refresh" for call in calls) == len(targets):
             completed.set()
 
@@ -411,8 +416,8 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypat
         assert completed.wait(timeout=2)
 
     assert calls[:2] == [
-        ("mark", "codex", "", "/opt/agents/codex"),
-        ("mark", "claude", "research.example", "/opt/agents/claude"),
+        ("mark", "codex", BACKEND_MACHINE_ID, "/opt/agents/codex"),
+        ("mark", "claude", remote, "/opt/agents/claude"),
     ]
     assert sorted(call[1:] for call in calls if call[0] == "readiness") == sorted(targets)
     assert sorted(call[1:] for call in calls if call[0] == "refresh") == sorted(targets)
@@ -421,7 +426,7 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypat
 def test_project_snapshot_and_resolution_use_last_good_provider_skills(app, tmp_path) -> None:
     app.state.catalog.store.save_provider_skill_inventory_success(
         "codex",
-        "",
+        BACKEND_MACHINE_ID,
         None,
         resolved_binary="/opt/agents/codex",
         provider_version="1.2.3",
@@ -440,13 +445,13 @@ def test_project_snapshot_and_resolution_use_last_good_provider_skills(app, tmp_
     service = app.state.catalog.open(app.state.default_project_id)
 
     snapshot = service.project_snapshot()
-    inventory = snapshot["provider_skill_inventories"]["laptop"]["codex"]
+    inventory = snapshot["provider_skill_inventories"][BACKEND_MACHINE_ID]["codex"]
     assert inventory["status"] == "fresh"
     assert [skill["name"] for skill in inventory["skills"]] == ["native-review"]
 
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         invoked_provider_skill_names=["native-review"],
         resolved_provider_skills=[
             {
@@ -462,17 +467,17 @@ def test_project_snapshot_and_resolution_use_last_good_provider_skills(app, tmp_
     )
     resolved = service.resolve_skill_request(request)
     assert [skill.name for skill in resolved.resolved_provider_skills] == ["native-review"]
-    assert resolved.resolved_provider_skills[0].machine == "laptop"
+    assert resolved.resolved_provider_skills[0].machine == BACKEND_MACHINE_ID
     assert not resolved.resolved_provider_skills[0].stale
 
     app.state.catalog.store.save_provider_skill_inventory_failure(
         "codex",
-        "",
+        BACKEND_MACHINE_ID,
         None,
         diagnostic="remote probe timed out",
         updated_at="2026-08-08T00:01:00+00:00",
     )
-    stale = service.project_snapshot()["provider_skill_inventories"]["laptop"]["codex"]
+    stale = service.project_snapshot()["provider_skill_inventories"][BACKEND_MACHINE_ID]["codex"]
     assert stale["status"] == "stale"
     assert stale["diagnostic"] == "remote probe timed out"
     assert [skill["name"] for skill in stale["skills"]] == ["native-review"]
@@ -492,8 +497,8 @@ def test_remote_stage_sweep_starts_after_health_is_available(
     release = threading.Event()
 
     monkeypatch.setattr(
-        "rcp.api.app.ProjectCatalog.state_host",
-        lambda _catalog, _project_id: "research.example",
+        "rcp.api.app.host_of",
+        lambda _store, _machine_id: "research.example",
     )
 
     def blocked_sweep(_stage, **_kwargs) -> None:
@@ -578,8 +583,8 @@ def test_watcher_poll_delivery_failure_does_not_starve_later_auto_research_episo
             project_id=project_ids[1],
             locator=str(tmp_path / "second-project" / "research.yaml"),
             name="Second project",
-            state_location=str(tmp_path / "second-project" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "second-project" / ".research"),
             added_at=store.now(),
         )
     )
@@ -867,7 +872,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
 
     project = client.get(f"/api/projects/{project_id}").json()
     profiles = {
-        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
         for surface, profile in project["agent_profiles"].items()
     }
     settings = client.put(
@@ -1443,8 +1448,8 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
             home_space_id=store.space_id,
             locator=str(tmp_path / "project-b" / ".research" / "manifest.toml"),
             name="project-b",
-            state_location=str(tmp_path / "project-b" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "project-b" / ".research"),
             added_at=store.now(),
         )
     )
@@ -1932,7 +1937,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path)
         json={
             "provider": "codex",
             "run_truth_scope": ["repo-a"],
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
         },
     )
 
@@ -2242,7 +2247,7 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(app, manifest
             self.last_workspace_write = (name, content)
 
     stage = RecordingStage()
-    staged = _stage_graph_context(context, service, stage, "laptop")
+    staged = _stage_graph_context(context, service, stage, BACKEND_MACHINE_ID)
 
     repository_path = manifest.repository_map["repo-a"].path
     assert stage.files == []
@@ -2375,20 +2380,21 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tm
         def write_workspace_text(self, name: str, content: str) -> None:
             self.last_workspace_write = (name, content)
 
+    remote = _remote_card(app, "remote.example")
     remote_repository = context.repositories[0].model_copy(
-        update={"machine": "remote-1", "host": "remote.example"}
+        update={"machine": remote, "host": "remote.example"}
     )
     remote_context = context.model_copy(update={"repositories": [remote_repository]})
-    service.history.manifest.machines.append(MachineConfig(alias="remote-1", host="remote.example"))
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
+    service.history.manifest.machines.append(remote)
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = remote
 
-    staged = _stage_graph_context(remote_context, service, RecordingStage(), "remote-1")
+    staged = _stage_graph_context(remote_context, service, RecordingStage(), remote)
 
     assert staged.repositories[0].path == remote_repository.path
     assert staged.repositories[0].host == ""
 
     with pytest.raises(StateUnavailable):
-        _stage_graph_context(context, service, RecordingStage(), "remote-1")
+        _stage_graph_context(context, service, RecordingStage(), remote)
 
 
 @pytest.mark.asyncio
@@ -2412,11 +2418,9 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
             ]
         }
     )
-    service.history.manifest.machines.append(
-        MachineConfig(alias="remote-1", host="research.example")
-    )
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
-    service.history.manifest.agent.refresh.run_on = "remote-1"
+    remote = _remote_card(app, "research.example")
+    service.history.manifest.machines.append(remote)
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = remote
     monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
     monkeypatch.setattr(service, "assemble_run", lambda *_args, **_kwargs: context)
 
@@ -2490,7 +2494,7 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     request = RunRequest(
         provider="codex",
         run_truth_scope=["repo-a"],
-        run_on="remote-1",
+        run_on=remote,
     )
 
     failed_execution = _agent_task_execution(
@@ -2767,7 +2771,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
     stage.mkdir()
 
     async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _event_frame(AgentEvent(event="session", session_id="owned-session"))
         yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
 
@@ -2820,7 +2824,7 @@ def test_same_provider_unusable_session_retry_starts_clean(
     stage.mkdir()
 
     async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _event_frame(AgentEvent(event="session", session_id=session_id))
         yield _event_frame(AgentEvent(event="error", text=error))
 
@@ -3620,7 +3624,7 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
             updated_at=now,
             status_message="paused",
             native_session_id=str(uuid.uuid4()),
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(tmp_path / "paused-stage"),
         )
     )
@@ -3847,13 +3851,13 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         *,
         operation_id=None,
         authorized_by=None,
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=None,
         graph_target=None,
     ):
         assert kind == "project_chat"
         assert graph_target.kind == "main"
-        assert stage_host is None and stage_root is None
+        assert stage_machine_id is None and stage_root is None
         admitted_requests.append(request)
         now = store.now()
         return AgentTaskRecord(
@@ -3875,7 +3879,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
             "mode": "discuss",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "reasoning": "high",
             "artifact_context": {
                 "source": "task",
@@ -4326,18 +4330,19 @@ def test_local_stage_sweeper_keeps_a_settled_chat_session_stage(tmp_path) -> Non
             project_id="project",
             kind="project_chat",
             status="succeeded",
-            request={"chat_id": "chat", "provider": "codex", "run_on": "local"},
+            request={"chat_id": "chat", "provider": "codex", "run_on": BACKEND_MACHINE_ID},
             created_at=now,
             updated_at=now,
             status_message="succeeded",
             native_session_id="native-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
     )
     snapshot = json.dumps({"master_context_path": str(stage / "inputs" / "master.md")})
     store.commit_chat_session_context(
         provider="codex",
-        execution_machine="local",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="native-session",
         project_id="project",
         kind="project_chat",
@@ -5115,16 +5120,18 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
         if fault == "wrong-root"
         else str(expected)
     )
-    stored_host = "remote.example" if fault == "wrong-host" else None
+    stored_machine = (
+        _remote_card(app, "remote.example") if fault == "wrong-host" else BACKEND_MACHINE_ID
+    )
     store.checkpoint_agent_task(
         execution.operation_id,
         stage_root=stored_root,
-        stage_host=stored_host,
+        stage_machine_id=stored_machine,
     )
     stored = store.agent_task(execution.operation_id)
     assert stored is not None
     execution.stage_root = stored.stage_root
-    execution.stage_host = stored.stage_host
+    execution.stage_machine_id = stored.stage_machine_id
     launcher = FakeLauncher([AgentEvent(event="done")])
 
     frames = [
@@ -5149,25 +5156,24 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     from rcp.runs.tasks import discuss
 
     app, service = _seeded_project(manifest, tmp_path)
+    remote = _remote_card(app, "remote.example")
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
         message="Continue remotely.",
         chat_id=str(uuid.uuid4()),
         session_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
-        run_on="remote-1",
+        run_on=remote,
     )
-    context = service.assemble_chat(request.model_copy(update={"run_on": "laptop"}))
-    service.history.manifest.machines.append(MachineConfig(alias="remote-1", host="remote.example"))
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = "remote-1"
+    context = service.assemble_chat(request.model_copy(update={"run_on": BACKEND_MACHINE_ID}))
+    service.history.manifest.machines.append(remote)
+    service.history.manifest.repository_map[service.manifest.state.repository].machine = remote
     service.history.manifest.repository_map[service.manifest.state.repository].path = "/srv/project"
-    service.history.manifest.agent.node_chat.run_on = "remote-1"
-    assert "remote-1" in service.manifest.machine_map
     context = context.model_copy(
         update={
             "repositories": [
                 repository.model_copy(
-                    update={"machine": "remote-1", "host": "remote.example", "path": "/srv/project"}
+                    update={"machine": remote, "host": "remote.example", "path": "/srv/project"}
                 )
                 for repository in context.repositories
             ]
@@ -5198,14 +5204,14 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         graph_revision=1,
         attempt=2,
     )
-    profile = service.resolve_agent_profile("node_chat", run_on="remote-1")
+    profile = service.resolve_agent_profile("node_chat", run_on=remote)
     store.create_agent_task(
         AgentTaskRecord(
             operation_id="remote-session-origin",
             project_id="lineage-test",
             kind="node_chat",
             status="succeeded",
-            request=_pinned_to_profile(request, profile).model_dump(mode="json"),
+            request=_pinned_to_profile(request, profile, remote).model_dump(mode="json"),
             created_at=store.now(),
             updated_at=store.now(),
             status_message="test fixture",
@@ -5222,10 +5228,10 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     saved_root = f"/tmp/rcp-run.{stage_name}"
     store.checkpoint_agent_task(
         execution.operation_id,
-        stage_host="remote.example",
+        stage_machine_id=remote,
         stage_root=saved_root,
     )
-    execution.stage_host = "remote.example"
+    execution.stage_machine_id = remote
     execution.stage_root = saved_root
     store.record_agent_task_receipt(
         "remote-original",
@@ -5358,7 +5364,7 @@ async def test_paper_resume_launches_with_changed_model(manifest, tmp_path) -> N
         WritingSession(
             provider="codex",
             native_session_id=session_id,
-            execution_machine="laptop",
+            machine_id=BACKEND_MACHINE_ID,
             project_id=paper.project_id,
             title="Coach",
             model="gpt-pinned",
@@ -5552,7 +5558,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     }
     assert prompt_values["branches"] == []
     assert "graph_revision" not in prompt_values["current"]
-    assert [item["id"] for item in prompt_values["compute"]["active"]] == ["laptop"]
+    assert [item["id"] for item in prompt_values["compute"]["active"]] == [BACKEND_MACHINE_ID]
     inputs = master_path.parent
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("chat-patch-schema-*.json"))) == 1
@@ -5744,7 +5750,7 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
     scope = _project_write_scope(
         context,
         service,
-        "laptop",
+        card(app.state.catalog.store, BACKEND_MACHINE_ID),
         workspace=workspace,
         remote_stage=None,
         data_dir=tmp_path / "data",
@@ -5767,7 +5773,7 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
             "repositories": [
                 RepositoryPointer(
                     alias="repo-a",
-                    machine="laptop",
+                    machine=BACKEND_MACHINE_ID,
                     path=unsafe_path,
                 )
             ]
@@ -5778,7 +5784,7 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
         _project_write_scope(
             unsafe_context,
             service,
-            "laptop",
+            card(app.state.catalog.store, BACKEND_MACHINE_ID),
             workspace=workspace,
             remote_stage=None,
             data_dir=tmp_path / "data",
@@ -6843,7 +6849,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         provider="codex",
         model="episode-model",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=loop_chat_id,
         chat_scope="node",
@@ -6896,10 +6902,9 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         project_id=project_id,
         control_node_id="exp/bounded-loop",
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="episode-native-session",
-        stage_host=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage_root),
         chat_id=loop_chat_id,
         operation_id="loop-root-for-maintenance-wake",
@@ -6915,7 +6920,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         origin_task_kind="project_chat",
         chat_id=maintenance_chat_id,
         node_id="exp/bounded-loop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="true",
         log_path=str(tmp_path / "maintenance-observer.log"),
         cwd=str(tmp_path),
@@ -6972,7 +6977,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert request.provider == "codex"
     assert request.model == "episode-model"
     assert request.reasoning == "medium"
-    assert request.run_on == "laptop"
+    assert request.run_on == BACKEND_MACHINE_ID
     assert request.run_truth_scope == ["repo-a"]
     assert request.chat_id != maintenance_chat_id
     delivered = store.watcher(watcher.watcher_id)
@@ -6983,7 +6988,7 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert notification is not None
     assert notification.kind == "node_chat"
     assert notification.authorized_by == authorized_by
-    assert notification.stage_host is None
+    assert notification.stage_machine_id == BACKEND_MACHINE_ID
     assert notification.stage_root == str(stage_root)
 
 
@@ -6995,6 +7000,8 @@ def _chat_task_execution(app, request: RunRequest, operation_id: str) -> AgentTa
     kind = "node_chat" if request.chat_scope == "node" else "project_chat"
     dispatch_authority = resolve_dispatch_authority(kind, request)
     assert dispatch_authority is not None
+    if request.patch_kind == "experiment_loop" and request.run_on is None:
+        request = request.model_copy(update={"run_on": BACKEND_MACHINE_ID})
     record = AgentTaskRecord(
         operation_id=operation_id,
         project_id=project_id,
@@ -7237,7 +7244,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     authorized_by = _named_test_authorizer(store)
     old_request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=loop_chat_id,
         chat_scope="node",
@@ -7277,6 +7284,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
                 origin_task_kind="project_chat",
                 chat_id=maintenance_chat_id,
                 node_id="exp/bounded-loop",
+                machine_id=BACKEND_MACHINE_ID,
                 check_command="true",
                 log_path="/tmp/pending-loop.log",
                 cwd="/tmp",
@@ -7379,7 +7387,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.provider == "codex"
         assert request.model == ""
         assert request.reasoning == "medium"
-        assert request.run_on == "laptop"
+        assert request.run_on == BACKEND_MACHINE_ID
         assert request.run_truth_scope == writable
         assert "/tmp/pending-loop.log" not in request.message
         yield _sse(AgentEvent(event="answer", text="Inspected the pending result."))
@@ -7404,7 +7412,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["provider"] == "codex"
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
-    assert request["run_on"] == "laptop"
+    assert request["run_on"] == BACKEND_MACHINE_ID
     assert request["run_truth_scope"] == writable
     assert response.json()["kind"] == "node_chat"
     assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
@@ -7563,7 +7571,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
         node_id="exp/bounded-loop",
@@ -7619,7 +7627,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 
     continuation = WatcherContinuation(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         patch_kind="experiment_loop",
         control_node_id="exp/bounded-loop",
         control_revision=3,
@@ -7730,7 +7738,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
                 cwd="/tmp",
                 continuation=WatcherContinuation(
                     provider="codex",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     patch_kind="experiment_loop",
                     control_node_id=request.control_node_id,
                     control_revision=request.control_revision,
@@ -7757,7 +7765,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
                 cwd="/tmp",
                 continuation=WatcherContinuation(
                     provider="codex",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     patch_kind="experiment_loop",
                     control_node_id=request.control_node_id,
                     control_revision=request.control_revision,
@@ -8183,7 +8191,7 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
             origin_task_kind=stored.origin_task_kind,
             chat_id=stored.chat_id,
             node_id=stored.node_id,
-            execution_host=stored.execution_host,
+            machine_id=stored.machine_id,
             continuation=stored.continuation,
         ),
     )
@@ -8254,7 +8262,10 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
-    service.add_machine("gpu", "watcher.example", "alice")
+    card = app.state.catalog.store.create_space_machine(
+        name="gpu", host="watcher.example", os_account="alice"
+    )
+    service.add_machine(card.machine_id)
     request = RunRequest(
         chat_scope="project",
         message="Launch the detached fixture.",
@@ -8315,9 +8326,6 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
     external = next(record for record in armed if isinstance(record, WatcherRecord))
-    card = app.state.catalog.store.create_space_machine(
-        name="gpu", host="watcher.example", os_account="alice"
-    )
     app.state.catalog.store.update_space_machine(
         card.machine_id, access_hint="Use /scratch/at-wake"
     )
@@ -8508,7 +8516,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_pat
     _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
     stored_request = {
         "provider": "codex",
-        "run_on": "laptop",
+        "run_on": BACKEND_MACHINE_ID,
         "run_truth_scope": ["repo-a"],
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
@@ -8636,7 +8644,7 @@ def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     execution = _agent_task_execution(store, "refresh-correction-unchanged")
-    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on=BACKEND_MACHINE_ID)
 
     class LinkLost:
         async def stream(self, *_args, **_kwargs):
@@ -8707,7 +8715,7 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
     execution = _agent_task_execution(store, "refresh-link-lost")
-    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on="laptop")
+    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on=BACKEND_MACHINE_ID)
 
     class LinkLost:
         async def stream(self, *_args, **_kwargs):
@@ -8812,13 +8820,13 @@ def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, re
     monkeypatch.setattr(homes, "_legacy_home_idle", lambda _: True)
     store = app.state.catalog.store
     launcher = app.state.catalog.launcher
-    login = store.add_provider_login("codex", "", added_by="member")
-    key = LoginKey("codex", "", login.login_id)
+    login = store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, login.login_id)
     if removed:
         store.finish_provider_login_removal(key)
     credentials = launcher.credentials
     assert credentials is not None
-    home = credentials.account_dir("codex", "", login.login_id) / "codex-home"
+    home = credentials.account_dir("codex", BACKEND_MACHINE_ID, login.login_id) / "codex-home"
     (home / "sessions").mkdir(parents=True)
     (home / "sessions/rollout-retained.jsonl").write_text("retained rollout\n")
     (home / "session_index.jsonl").write_text('{"id":"retained"}\n')
@@ -8828,8 +8836,10 @@ def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, re
     def recovering():
         assert home.readlink() == credentials.login_home("codex", login.login_id)
         assert (home / "sessions").is_symlink()
-        other = store.add_provider_login("codex", "", added_by="member")
-        environment = CodexAuthentication().process_environment(credentials, "", other.login_id)
+        other = store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
+        environment = CodexAuthentication().process_environment(
+            credentials, BACKEND_MACHINE_ID, other.login_id, host=""
+        )
         assert environment.local_env is not None
         other_home = Path(environment.local_env["CODEX_HOME"])
         assert (other_home / "sessions/rollout-retained.jsonl").read_text() == "retained rollout\n"

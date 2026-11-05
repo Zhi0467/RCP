@@ -254,7 +254,7 @@ def _start_bound_branch_merge(
             provider=profile.provider,
             model=profile.model,
             reasoning=profile.reasoning,
-            run_on=profile.run_on,
+            run_on=service.manifest.base_machine,
             run_truth_scope=context.run_truth_scope,
             chat_scope="project",
             mode="work",

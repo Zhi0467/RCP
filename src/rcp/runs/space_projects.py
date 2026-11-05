@@ -28,6 +28,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.manager import ReplayHalted
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.regular_file_reader import read_local_regular_file
 from rcp.runs.bulletin import handle_bulletin
 from rcp.runs.graph_history_queries import handle_graph_history_command
@@ -224,7 +225,7 @@ def prepare_space_projects(
             if record is None:
                 raise KeyError(project_id)
             found.names[project_id] = record.name
-            if record.state_remote:
+            if record.state_machine_id != BACKEND_MACHINE_ID:
                 # Skipped without contacting its state host.
                 found.exclude(project_id, "state_elsewhere")
                 continue
@@ -232,7 +233,7 @@ def prepare_space_projects(
             service = owner.catalog.open_execution(project_id)
             read_scope = GraphReadScope.resolve(project_id, service.history)
             workspace = exact_stage_directory(stage, "projects", project_id)
-            machine = service.manifest.machine_map[service.manifest.base_machine]
+            machine = card(owner.store, service.manifest.base_machine)
             if machine.host:
                 found.readers.append(
                     SpaceProjectClient(
@@ -243,13 +244,13 @@ def prepare_space_projects(
                 continue
             truth = write_repositories(service.history.state())
             context = service.assemble_chat(
-                request.model_copy(update={"run_on": machine.alias, "run_truth_scope": truth})
+                request.model_copy(update={"run_on": machine.machine_id, "run_truth_scope": truth})
             )
             scope = resolve_project_write_scope(
                 manifest=service.manifest,
                 truth_scope=truth,
                 project_id=project_id,
-                execution_machine=machine.alias,
+                machine=machine,
                 capability="work_auto",
                 stage_root=str(workspace),
                 workspace_root=str(workspace),
@@ -318,7 +319,7 @@ def bind_space_projects(
         owner.store.bind_agent_task_write_scope(
             execution.operation_id,
             project_id=owner.store.space_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             fingerprint=composite.fingerprint,
         )

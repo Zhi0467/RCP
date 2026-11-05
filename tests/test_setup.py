@@ -14,6 +14,7 @@ from rcp.agents import ProviderReadiness
 from rcp.api import create_app
 from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS
 from rcp.setup import (
     MachineBrowseFailure,
@@ -28,7 +29,6 @@ from rcp.setup import (
 )
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.models import LoginKey
 from rcp.transport import StateWorkspace
 from tests.helpers import signed_in_client, unchecked_write_authority
 
@@ -308,7 +308,7 @@ def test_setup_records_discovered_provider_paths_on_the_machine_card(tmp_path) -
     class DiscoveringLauncher:
         @staticmethod
         def readiness(login: LoginKey) -> ProviderReadiness:
-            assert login.host == ""
+            assert login.machine_id == BACKEND_MACHINE_ID
             return ProviderReadiness(
                 provider=login.provider,
                 installed=True,
@@ -326,8 +326,8 @@ def test_setup_records_discovered_provider_paths_on_the_machine_card(tmp_path) -
 
     assert created.status_code == 200
     manifest = load_manifest(repository / ".research" / "manifest.toml")
-    assert manifest.machine_map["laptop"].legacy_provider_paths == {}
-    assert app.state.catalog.store.space_machine_for("").provider_paths == {
+    assert manifest.machines == [BACKEND_MACHINE_ID]
+    assert app.state.catalog.store.backend_space_machine().provider_paths == {
         provider: f"/opt/rcp-test/{provider}" for provider in PROVIDER_IDS
     }
 
@@ -726,7 +726,7 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     monkeypatch.setattr("rcp.setup._ssh", fake_ssh)
     app = create_app(data_dir=tmp_path / "data")
     app.state.setup.launcher = ReadyLauncher()
-    app.state.background_tasks.store.create_space_machine(
+    gpu = app.state.background_tasks.store.create_space_machine(
         name="GPU", host="gpu.example", os_account="carol"
     )
     request = ProjectSetupRequest.model_validate(
@@ -754,8 +754,7 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     assert preview.can_create is True
     assert preview.remote_write is True
     assert preview.canonical_location == "gpu.example:/srv/paper/.research"
-    remote = tomllib.loads(preview.manifest_preview)["machines"]
-    assert [m.get("os_account") for m in remote if m["host"]] == ["carol"]
+    assert tomllib.loads(preview.manifest_preview)["machines"] == [gpu.machine_id]
     assert ["test", "-d", "/srv/paper"] in calls
     assert ["test", "-w", "/srv/paper"] in calls
     assert not any(arguments[0] in {"mkdir", "touch", "rm"} for arguments in calls)
@@ -785,9 +784,15 @@ def test_remote_first_identity_claim_persists_manifest_for_detection_after_delet
             "execution": {"location": "ssh", "host": "gpu.example"},
         }
     )
+    app = create_app(data_dir=data_dir)
+    gpu = app.state.catalog.store.create_space_machine(
+        name="gpu.example", host="gpu.example", os_account=""
+    )
     bootstrap = data_dir / "bootstrap-manifests" / "remote-paper.toml"
     bootstrap.parent.mkdir(parents=True)
-    bootstrap.write_text(render_manifest(request), encoding="utf-8")
+    bootstrap.write_text(
+        render_manifest(request, {"gpu.example": gpu.machine_id}), encoding="utf-8"
+    )
     mirror = data_dir / "state-cache" / "remote-paper" / ".research"
     mirror.mkdir(parents=True)
     shutil.copyfile(bootstrap, mirror / "manifest.toml")
@@ -819,9 +824,8 @@ def test_remote_first_identity_claim_persists_manifest_for_detection_after_delet
     workspace = FilesystemRemoteWorkspace(mirror)
     monkeypatch.setattr(
         "rcp.projects.prepare_state_workspace",
-        lambda _bootstrap, _data_dir: (load_manifest(mirror / "manifest.toml"), workspace),
+        lambda _bootstrap, _data_dir, _store: (load_manifest(mirror / "manifest.toml"), workspace),
     )
-    app = create_app(data_dir=data_dir)
     record = app.state.catalog.register(str(bootstrap), identity_action="created")
 
     assert (remote_root / "manifest.toml").read_text(encoding="utf-8") == (
@@ -909,7 +913,7 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
     research = repository / ".research"
     research.mkdir()
     path = research / "manifest.toml"
-    rendered = render_manifest(request)
+    rendered = render_manifest(request, {"": BACKEND_MACHINE_ID})
     path.write_text(rendered, encoding="utf-8")
 
     manifest = load_manifest(path)

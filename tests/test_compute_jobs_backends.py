@@ -17,6 +17,7 @@ from rcp.compute_jobs.backends import COMPUTE_BACKENDS, ComputeBackendId, resolv
 from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 
 
 class Runner:
@@ -323,8 +324,7 @@ def test_systemd_job_writes_grants_and_keeps_covered_rcp_storage_read_only():
     data = "/home/rcp/data"
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=f"{data}/stages/s",
         workspace_root=f"{data}/stages/s/workspace",

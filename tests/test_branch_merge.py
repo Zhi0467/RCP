@@ -27,6 +27,7 @@ from rcp.core.models import (
 from rcp.core.operations import UpdateNodesOperation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import RevisionConflict
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs import branch_merge as merge_module
 from rcp.runs import merge_contract
 from rcp.runs.branch_merge import (
@@ -165,8 +166,7 @@ def _local_scope(stage: BranchMergeStage, context: BranchMergeContext) -> Projec
     assert stage.local_stage is not None
     return ProjectWriteScope.create(
         project_id=context.metadata.project_id,
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="orchestrate",
         stage_root=str(stage.local_stage),
         workspace_root=str(stage.workspace),
@@ -177,7 +177,7 @@ def _local_scope(stage: BranchMergeStage, context: BranchMergeContext) -> Projec
 
 def _branch_source_ref(*, repository: str = "repo", record: str = "record-merge") -> dict:
     return {
-        "machine": "laptop",
+        "machine": BACKEND_MACHINE_ID,
         "truth_repository": repository,
         "source": "codex",
         "session_id": "session-merge",
@@ -203,12 +203,13 @@ def test_graph_only_scope_has_no_repository_roots(tmp_path: Path) -> None:
     repo.mkdir()
     broadened = ProjectWriteScope.create(
         project_id=context.metadata.project_id,
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="orchestrate",
         stage_root=str(root),
         workspace_root=str(workspace),
-        repositories=[WritableRepositoryRoot(alias="repo", machine="laptop", path=str(repo))],
+        repositories=[
+            WritableRepositoryRoot(alias="repo", machine=BACKEND_MACHINE_ID, path=str(repo))
+        ],
         protected_write_paths=[str(tmp_path / "state" / ".research")],
     )
     with pytest.raises(ValueError, match="code merge roots"):
@@ -402,7 +403,7 @@ class _Run:
         return [
             frame
             async for frame in stream_branch_merge_run(
-                RunRequest(provider="codex", run_on="laptop"),
+                RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID),
                 object(),
                 load_context=lambda: self.context,
                 main_history=self.history,

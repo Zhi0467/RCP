@@ -35,12 +35,14 @@ export function RunDialog({
   onClose,
   onRun,
 }: Props) {
-  const [config, setConfig] = useState(() => profileRunConfig(project.agent_profiles[kind]));
+  const [config, setConfig] = useState(() =>
+    profileRunConfig(project.agent_profiles[kind], project.run_on),
+  );
   const [message, setMessage] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setConfig(initialConfig || profileRunConfig(project.agent_profiles[kind]));
+    setConfig(initialConfig || profileRunConfig(project.agent_profiles[kind], project.run_on));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the form when it opens or the project changes, not when a profile refresh arrives mid-edit
   }, [open, initialConfig, kind, project.id]);
 

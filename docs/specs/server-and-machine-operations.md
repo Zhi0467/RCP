@@ -371,7 +371,12 @@ blocking all updates. Stored-data readers enforce reader safety, not current
 writer rules or secret-redaction rules misapplied as storage validation.
 
 Pre-selection effects are fenced and local only. Remote live checks use current
-local display caches or leave projects unopened. Copied main and branch heads
+local display caches or leave projects unopened. The candidate runs the
+[machine identity rewrite](projects-spaces-and-operations.md#machine-identity-upgrade)
+for pending projects whose state is on the backend, inside its copy, then
+proves them as usual. A pending remote project stays pending and is proven only
+as recorded: its manifest is rewritten after durable selection, when rollback
+can no longer need the old one. Copied main and branch heads
 replay and must match. Remote projects open only after durable selection. Proof
 exercises API projections, replay and merge receipts, retained tasks and stages,
 imported history and startup recovery with the application lifespan. A migration
@@ -545,6 +550,14 @@ API input types. The state and exact next actions come from the backend. They
 are never inferred from files or subprocess exit. Reserving a project id grants
 no canonical identity.
 
+Requests name machines, repositories and provider checks by space card
+`machine_id`; host and account come from the card, so team setup creates cards
+first. A request written before the
+[machine identity upgrade](projects-spaces-and-operations.md#machine-identity-upgrade)
+keeps its stored bytes. It is read by verifying its stored review digest, then
+mapping its machines through the upgrade rule in memory. A ready-for-review one
+gets a fresh digest over the new shape, which completion then requires.
+
 Machine preparation resumes bounded steps for paths, keys, checkouts, readiness
 and write proof. Each step checks for a stale boundary. Empty-repository commits
 are announced before execution. Only ready-for-review readback proves
@@ -568,8 +581,15 @@ Stale or conflicting inputs cause refusal. Settings requests to add or connect
 repositories use the same review path. Their scope is owned by
 [Repository and truth scope](projects-spaces-and-operations.md#repository-and-truth-scope).
 
-Transfer links bind the source summary, compatible formats, aliases, state and
-truth provenance and manifest digest. The target rebuilds configuration without
+Transfer links bind the source summary, compatible formats, repository aliases,
+state and truth provenance and manifest digest. Source repositories carry no
+machine; the target maps each repository to one of its own cards, and the state
+machine is the state repository's card. Transfer records are format 8
+([records.py](../../src/rcp/transfer/records.py)). A transfer begun before the
+machine identity upgrade is refused with "Restart the transfer", and the desktop
+sets its saved preparation aside as `<coordinator>.v1.json` and starts clean.
+Such a request does not hold back the project's machine id upgrade.
+The target rebuilds configuration without
 source paths. Drift causes refusal before source fencing. Final desktop review
 records target admission then source release through independently authenticated
 actors. Target confirmation alone creates nothing and leaves the source
@@ -620,7 +640,7 @@ verifies its fingerprint. Old session ids or paths never grant execution
 authority.
 
 Target paths, accounts, binaries and profiles come from reviewed readiness
-proof. Historical aliases and truth provenance remain stable. Main and branches
+proof. Historical repository aliases and truth provenance remain stable. Main and branches
 replay in isolation. Episode branch authorizers bind to canonical home at the
 immutable base. Past-head forks validate against the recorded home-transfer
 chain, as owned by [history/branches.py](../../src/rcp/history/branches.py).
@@ -698,11 +718,17 @@ encrypted publication and full readback produce immutable receipts with safe,
 bounded diagnostics.
 
 Each project binds the current manifest, resolved routes and checkouts and
-public key evidence in a nonsecret recovery descriptor. The GitHub origin and
-commit must match. Server-only code is not protected. Restore initializes empty
+public key evidence in a nonsecret recovery descriptor. Backup copies RCP's own
+files and never inspects checkouts. Restore requires each checkout to still hold
+its recorded commit and ignores its remotes. **Why:** a member may move or add a
+remote, and that is not RCP's state. Server-only code is not protected. Restore initializes empty
 server-only Git history, but adopted folders must still exist with the recorded
 commit. Missing or inconsistent descriptors cannot silently become successful
-capture. Historical schema and default compatibility is enforced by the typed
+capture. Archive format 2 records each machine only as `machine_id` and
+`resolved_central_root`. Restore routes a checkout machine by the card of that
+id in the archived space database. A format-1 archive is read through the
+[upgrade rule](projects-spaces-and-operations.md#machine-identity-upgrade); a
+machine whose host has no card maps to `""` and its descriptor is refused. Historical schema and default compatibility is enforced by the typed
 readers and fixture checks.
 
 Backup accepts native X25519 age recipients and the supported upstream age

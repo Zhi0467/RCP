@@ -12,13 +12,14 @@ import pytest
 
 from rcp import provider_skills
 from rcp.agents import ProviderReadiness
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.provider_skills import (
     ProviderSkillInventoryManager,
     ProviderSkillInventorySnapshot,
 )
 from rcp.providers import ProviderSkillProbe, profile_for
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
 
 
@@ -55,8 +56,10 @@ def test_success_replaces_inventory_and_failure_preserves_it(
         return subprocess.CompletedProcess([], 0, outputs.pop(0), "")
 
     monkeypatch.setattr(provider_skills, "_run_process_group", run)
-    manager.mark_refreshing("claude", "", "/opt/claude")
-    fresh = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    manager.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
+    fresh = manager.refresh(
+        "claude", BACKEND_MACHINE_ID, "/opt/claude", _ready("claude", "/opt/claude")
+    )
 
     assert fresh.status == "fresh"
     assert [skill.name for skill in fresh.skills] == ["plugin:triage", "review"]
@@ -68,9 +71,12 @@ def test_success_replaces_inventory_and_failure_preserves_it(
         return subprocess.CompletedProcess([], 7, "", "probe unavailable")
 
     monkeypatch.setattr(provider_skills, "_run_process_group", fail)
-    manager.mark_refreshing("claude", "", "/opt/claude")
+    manager.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
     stale = manager.refresh(
-        "claude", "", "/opt/claude", _ready("claude", "/opt/claude", version="provider 1.2.4")
+        "claude",
+        BACKEND_MACHINE_ID,
+        "/opt/claude",
+        _ready("claude", "/opt/claude", version="provider 1.2.4"),
     )
 
     assert stale.status == "stale"
@@ -80,7 +86,9 @@ def test_success_replaces_inventory_and_failure_preserves_it(
     assert stale.provider_version == saved.provider_version
     assert stale.command == saved.command
     assert stale.inventory_hash == saved.inventory_hash
-    references = manager.resolve("claude", "", "/opt/claude", "laptop", ["review", "plugin:triage"])
+    references = manager.resolve(
+        "claude", BACKEND_MACHINE_ID, "/opt/claude", ["review", "plugin:triage"]
+    )
     assert [reference.name for reference in references] == ["review", "plugin:triage"]
     assert all(reference.stale for reference in references)
 
@@ -95,8 +103,10 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
         "_run_process_group",
         lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("review"), ""),
     )
-    manager.mark_refreshing("claude", "", "/opt/claude")
-    first = manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    manager.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
+    first = manager.refresh(
+        "claude", BACKEND_MACHINE_ID, "/opt/claude", _ready("claude", "/opt/claude")
+    )
     assert [skill.name for skill in first.skills] == ["review"]
 
     def never(*_args, **_kwargs):
@@ -104,9 +114,13 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
 
     monkeypatch.setattr(provider_skills, "_run_process_group", never)
     again = ProviderSkillInventoryManager(store)
-    again.mark_refreshing("claude", "", "/opt/claude")
+    again.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
     reused = again.refresh(
-        "claude", "", "/opt/claude", _ready("claude", "/opt/claude"), reuse_cached=True
+        "claude",
+        BACKEND_MACHINE_ID,
+        "/opt/claude",
+        _ready("claude", "/opt/claude"),
+        reuse_cached=True,
     )
     assert reused.status == "fresh"
     assert reused.skills == first.skills
@@ -116,17 +130,21 @@ def test_same_executable_and_version_reuse_the_inventory_without_a_probe(
         "_run_process_group",
         lambda *_a, **_k: subprocess.CompletedProcess([], 0, _claude_output("new-skill"), ""),
     )
-    refreshed = again.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+    refreshed = again.refresh(
+        "claude", BACKEND_MACHINE_ID, "/opt/claude", _ready("claude", "/opt/claude")
+    )
     assert [skill.name for skill in refreshed.skills] == ["new-skill"]
     assert refreshed.inventory_hash != first.inventory_hash
 
 
 def test_first_failure_has_no_native_skills(tmp_path: Path) -> None:
-    manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
-    manager.mark_refreshing("codex", "gpu.example", "/opt/codex")
+    store = AppStore(tmp_path / "app.sqlite3")
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="").machine_id
+    manager = ProviderSkillInventoryManager(store)
+    manager.mark_refreshing("codex", gpu, "/opt/codex")
     snapshot = manager.refresh(
         "codex",
-        "gpu.example",
+        gpu,
         "/opt/codex",
         ProviderReadiness(
             provider="codex",
@@ -148,9 +166,9 @@ def test_concurrent_refreshes_share_owner_probe_and_readiness(
     monkeypatch,
 ) -> None:
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"), timeout=1.0)
-    manager.mark_refreshing("claude", "", "/opt/claude")
+    manager.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
 
-    key = manager._key("claude", "", "/opt/claude")
+    key = manager._key("claude", BACKEND_MACHINE_ID, "/opt/claude")
     with manager._lock:
         pending = manager._pending_refreshes[key]
         pending.deadline = 0.0
@@ -193,7 +211,7 @@ def test_concurrent_refreshes_share_owner_probe_and_readiness(
         readiness: ProviderReadiness,
     ) -> None:
         try:
-            results.append(manager.refresh("claude", "", "/opt/claude", readiness))
+            results.append(manager.refresh("claude", BACKEND_MACHINE_ID, "/opt/claude", readiness))
         except Exception as exc:
             errors.append(exc)
 
@@ -250,17 +268,21 @@ def test_concurrent_refreshes_share_owner_probe_and_readiness(
 
 def test_concurrent_refresh_timeout_never_returns_refreshing(tmp_path: Path) -> None:
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"), timeout=0.0)
-    manager.mark_refreshing("claude", "", "/opt/claude")
+    manager.mark_refreshing("claude", BACKEND_MACHINE_ID, "/opt/claude")
 
     with manager._lock:
-        pending = manager._pending_refreshes[manager._key("claude", "", "/opt/claude")]
+        pending = manager._pending_refreshes[
+            manager._key("claude", BACKEND_MACHINE_ID, "/opt/claude")
+        ]
         pending.owned = True
         pending.deadline = 0.0
 
     with pytest.raises(TimeoutError):
-        manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
+        manager.refresh(
+            "claude", BACKEND_MACHINE_ID, "/opt/claude", _ready("claude", "/opt/claude")
+        )
 
-    assert manager.snapshot("claude", "", "/opt/claude", "local").status == "refreshing"
+    assert manager.snapshot("claude", BACKEND_MACHINE_ID, "/opt/claude").status == "refreshing"
 
 
 def test_codex_probe_waits_for_initialize_before_listing_skills(
@@ -325,8 +347,10 @@ def test_codex_probe_waits_for_initialize_before_listing_skills(
 
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
-    manager.mark_refreshing("codex", "", "/opt/codex")
-    snapshot = manager.refresh("codex", "", "/opt/codex", _ready("codex", "/opt/codex"))
+    manager.mark_refreshing("codex", BACKEND_MACHINE_ID, "/opt/codex")
+    snapshot = manager.refresh(
+        "codex", BACKEND_MACHINE_ID, "/opt/codex", _ready("codex", "/opt/codex")
+    )
 
     assert snapshot.status == "fresh"
     assert [skill.name for skill in snapshot.skills] == ["audit"]
@@ -355,11 +379,13 @@ def test_remote_probe_uses_existing_ssh_login_shell_path(
         return subprocess.CompletedProcess(arguments, 0, _claude_output("research"), "")
 
     monkeypatch.setattr(provider_skills, "_run_process_group", run)
-    manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
-    manager.mark_refreshing("claude", "gpu.example", "/remote/claude")
+    store = AppStore(tmp_path / "app.sqlite3")
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="").machine_id
+    manager = ProviderSkillInventoryManager(store)
+    manager.mark_refreshing("claude", gpu, "/remote/claude")
     result = manager.refresh(
         "claude",
-        "gpu.example",
+        gpu,
         "/remote/claude",
         _ready("claude", "/remote/claude"),
     )
@@ -415,10 +441,13 @@ def test_skill_probe_auth_failure_is_durable(tmp_path, monkeypatch, diagnostic, 
         "_run_process_group",
         lambda *_, **__: subprocess.CompletedProcess([], 1, "", diagnostic),
     )
-    snapshot = manager.refresh("codex", "", "/test/claude", _ready("codex", "/test/claude"))
+    snapshot = manager.refresh(
+        "codex", BACKEND_MACHINE_ID, "/test/claude", _ready("codex", "/test/claude")
+    )
     assert snapshot.status == "unavailable"
     assert (
-        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
+        == "signed_out"
     ) is blocked
 
 
@@ -460,7 +489,10 @@ def test_third_provider_owns_skill_messages_over_shared_jsonrpc_transport(tmp_pa
     monkeypatch.setitem(PROVIDERS, ThirdProvider.id, ThirdProvider())
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
     snapshot = manager.refresh(
-        ThirdProvider.id, "", sys.executable, _ready(ThirdProvider.id, sys.executable)
+        ThirdProvider.id,
+        BACKEND_MACHINE_ID,
+        sys.executable,
+        _ready(ThirdProvider.id, sys.executable),
     )
     assert snapshot.status == "fresh", snapshot.diagnostic
     assert [skill.name for skill in snapshot.skills] == ["third-skill"]
@@ -535,7 +567,7 @@ def test_one_shot_probe_keeps_output_a_provider_left_unflushed(tmp_path, monkeyp
     )
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"))
     snapshot = manager.refresh(
-        "opencode", "", "/test/opencode", _ready("opencode", "/test/opencode")
+        "opencode", BACKEND_MACHINE_ID, "/test/opencode", _ready("opencode", "/test/opencode")
     )
     assert snapshot.status == "fresh", snapshot.diagnostic
     assert len(snapshot.skills) == len(skills)
@@ -565,7 +597,7 @@ def test_one_shot_probe_timeout_kills_the_provider_and_its_children(tmp_path, mo
     manager = ProviderSkillInventoryManager(AppStore(tmp_path / "app.sqlite3"), timeout=0.1)
 
     snapshot = manager.refresh(
-        "opencode", "", "/test/opencode", _ready("opencode", "/test/opencode")
+        "opencode", BACKEND_MACHINE_ID, "/test/opencode", _ready("opencode", "/test/opencode")
     )
 
     assert snapshot.status == "unavailable"

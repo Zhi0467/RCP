@@ -379,7 +379,7 @@ def test_conversation_requests_carry_mode_and_nothing_else_authorizes_the_graph(
         "session_id": None,
         "fork_session_id": None,
         "fork_source_cwd": None,
-        "fork_source_host": None,
+        "fork_source_machine_id": None,
         "fork_source_operation_id": None,
         "mode": "work",
         "code_worktree": False,

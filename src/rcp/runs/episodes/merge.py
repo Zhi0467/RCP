@@ -29,6 +29,7 @@ from rcp.core.models import (
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.history.delta import semantic_delta, semantic_document
+from rcp.machine_cards import card, host_of
 from rcp.runs.branch_merge import (
     MAX_BRANCH_MERGE_REBASE_ROUNDS,
     branch_merge_id,
@@ -329,20 +330,19 @@ def episode_code_merge(
     if attempt is None or not attempt.code_by_agent or binding is None or not binding.worktree:
         return None
     worktree = binding.worktree
-    machine = service.manifest.machine_map[worktree.machine]
+    machine = card(store, worktree.machine_id)
     # Merge-aware: a dirty shared checkout refuses only when it holds the target.
     facts = _git(store, binding, "merge_preview", target_branch=attempt.target_branch)
-    card = store.space_machine_for(machine.host)
     return EpisodeCodeMerge(
         binding=worktree,
         attempt=attempt,
         pointer=RepositoryPointer(
             alias=worktree.repository_alias,
-            machine=worktree.machine,
+            machine=worktree.machine_id,
             host=machine.host,
             path=worktree.worktree_path,
         ),
-        machine_writable_paths=list(card.writable_paths) if card else [],
+        machine_writable_paths=list(machine.writable_paths),
         target_checked_out=bool(facts["target_checked_out"]),
     )
 
@@ -520,7 +520,7 @@ def merge_preview(
             else:
                 facts = worktree_command(
                     store,
-                    host=worktree.execution_host,
+                    host=host_of(store, worktree.machine_id),
                     operation="merge_preview",
                     binding=worktree,
                     target_branch=target_branch or worktree.starting_branch,
@@ -560,7 +560,7 @@ def _save(
 def _git(store, binding, operation, **values):
     return worktree_command(
         store,
-        host=binding.worktree.execution_host,
+        host=host_of(store, binding.worktree.machine_id),
         binding=binding.worktree,
         operation=operation,
         **values,

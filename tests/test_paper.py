@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore, ProjectRecord
 
 
@@ -13,8 +14,8 @@ def test_legacy_named_draft_is_copied_to_stable_project_id(manifest, tmp_path) -
             home_space_id=store.space_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=str(manifest.research_dir),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.research_dir),
             added_at=store.now(),
         )
     )
@@ -48,8 +49,8 @@ def test_legacy_named_draft_is_deleted_when_canonical_draft_already_wins(
             home_space_id=store.space_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=str(manifest.research_dir),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.research_dir),
             added_at=store.now(),
         )
     )

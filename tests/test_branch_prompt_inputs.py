@@ -4,12 +4,14 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
 from rcp.agents.context import ContextAssembler
 from rcp.agents.write_scope import registered_repository_roots, resolve_project_write_scope
 from rcp.core.models import EpisodeWorktreeBinding
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import _chat_read_dirs
 from rcp.runs.shared import (
     _stage_context_paths,
@@ -17,6 +19,7 @@ from rcp.runs.shared import (
     stage_branch_read_context,
 )
 from rcp.service import RunRequest
+from rcp.storage import AppStore
 from rcp.transport import RemoteRunStage
 
 from .test_branch_context import branch_services as branch_services
@@ -34,7 +37,10 @@ def test_parent_graph_is_an_immutable_execution_host_input(
     context = (
         service.assemble_chat(request)
         if kind == "chat"
-        else ContextAssembler(service.manifest).assemble(service.history.state())
+        else ContextAssembler(
+            service.manifest,
+            cards={BACKEND_MACHINE_ID: service.paper.store.backend_space_machine()},
+        ).assemble(service.history.state())
     )
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -55,7 +61,7 @@ def test_parent_graph_is_an_immutable_execution_host_input(
         )
         monkeypatch.setattr(remote_stage, "put_file", put_file)
         context = context.model_copy(
-            update=_stage_context_paths(context, service, remote_stage, "laptop")
+            update=_stage_context_paths(context, service, remote_stage, BACKEND_MACHINE_ID)
         )
     graph_path = context.graph_path
     updated = context.model_copy(
@@ -109,8 +115,7 @@ def test_branch_read_pointers_do_not_expand_worktree_write_or_include_roots(
     binding = EpisodeWorktreeBinding(
         owner_episode_id="owner",
         repository_alias="repo-a",
-        machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         shared_path=str(shared),
         worktree_path=str(worktree),
         git_common_dir=str(git_dir),
@@ -127,7 +132,7 @@ def test_branch_read_pointers_do_not_expand_worktree_write_or_include_roots(
             manifest=service.manifest,
             truth_scope=service.manifest.project.truth_scope,
             project_id="project",
-            execution_machine="laptop",
+            machine=service.paper.store.backend_space_machine(),
             capability="work_auto",
             stage_root=str(stage),
             workspace_root=str(workspace),
@@ -142,12 +147,12 @@ def test_branch_read_pointers_do_not_expand_worktree_write_or_include_roots(
         )
 
     before = scope(context)
-    includes = _chat_read_dirs(context, stage, None, service, "laptop")
+    includes = _chat_read_dirs(context, stage, None, service, BACKEND_MACHINE_ID)
     updated = context.model_copy(update=stage_branch_read_context(context, service, stage, None))
     assert scope(updated) == before
     assert str(shared) not in before.writable_roots
     assert before.repository_roots == [str(worktree)]
-    assert _chat_read_dirs(updated, stage, None, service, "laptop") == includes
+    assert _chat_read_dirs(updated, stage, None, service, BACKEND_MACHINE_ID) == includes
     assert shared not in includes
     assert updated.shared_repositories[0].path == str(shared)
 
@@ -368,10 +373,12 @@ async def test_branch_turn_prepares_hidden_reads_with_its_project_identity(
     monkeypatch.setattr(provider_environment, "prepare_hidden_read_launch", prepare)
     actual = await _prepare_hidden_read_scope(
         service,
-        RunRequest(run_on="laptop"),
+        RunRequest(run_on=BACKEND_MACHINE_ID),
         workspace=tmp_path / "stage" / "workspace",
         remote_stage=None,
-        execution=None,
+        execution=SimpleNamespace(
+            store=AppStore(tmp_path / "rcp.sqlite3"), operation_id="op", git_access=None
+        ),
         capability="work_auto",
         data_dir=tmp_path / "data",
     )

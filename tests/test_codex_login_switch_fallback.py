@@ -12,6 +12,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.codex_resume import (
     REFUSAL,
     RETRY,
@@ -21,7 +22,6 @@ from rcp.runs.codex_resume import (
 )
 from rcp.runs.shared import _ProviderOutcome, _sse, _stream_agent_events
 from rcp.service import RunRequest
-from rcp.storage.models import LoginKey
 
 from .helpers import wait_for_task, wait_until
 from .test_background import _store
@@ -52,7 +52,12 @@ async def test_refused_native_turn_records_host_transcript(
     monkeypatch.setenv("CODEX_HOME", str(home))
     session = str(uuid4())
     transcript = _rollout(home, session)
-    key = LoginKey("codex", host, "")
+    machine_id = (
+        accounts.store.create_space_machine(name="worker", host=host, os_account="").machine_id
+        if host
+        else BACKEND_MACHINE_ID
+    )
+    key = LoginKey("codex", machine_id, "")
     accounts.store.mark_provider_login_verified(key, member_id="member", detail="ok")
     _task(accounts.store, "refused", key, member=None, session=session)
     execution = AgentTaskExecution("refused", accounts.store, AgentProcessControl())
@@ -84,12 +89,12 @@ async def test_refused_native_turn_records_host_transcript(
         launched.append((prompt, kwargs))
         yield AgentEvent(event=event.event, text=event.text)
 
-    request = RunRequest(provider="codex", message="Continue", mode="discuss")
+    request = RunRequest(provider="codex", message="Continue", mode="discuss", run_on=machine_id)
     if fork:
         request = request.model_copy(
             update={
                 "fork_session_id": session,
-                "fork_source_host": host,
+                "fork_source_machine_id": machine_id,
                 "fork_source_cwd": str(tmp_path),
             }
         )
@@ -124,7 +129,7 @@ async def test_refused_native_turn_records_host_transcript(
         "reason": "login_switch",
         "native_session_id": session,
         "transcript_path": str(transcript),
-        "host": host,
+        "machine_id": machine_id,
     }
     assert bool(ssh_calls) == bool(host)
 
@@ -155,7 +160,7 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
             old_request = dict(
                 previous.request,
                 fork_session_id=session,
-                fork_source_host="",
+                fork_source_machine_id=BACKEND_MACHINE_ID,
                 fork_source_cwd=str(stage),
             )
             connection.execute(
@@ -170,7 +175,7 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
             "reason": "login_switch",
             "native_session_id": session,
             "transcript_path": str(transcript),
-            "host": "",
+            "machine_id": BACKEND_MACHINE_ID,
         },
     )
     calls = []
@@ -185,7 +190,7 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
                 "reason": "login_switch",
                 "native_session_id": session,
                 "transcript_path": str(transcript),
-                "host": "",
+                "machine_id": BACKEND_MACHINE_ID,
             },
         )
         yield _sse(AgentEvent(event="error", text="invalid_encrypted_content"))
@@ -204,7 +209,7 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     assert fresh_request.session_id is None and fresh_request.fork_session_id is None
     assert fresh_request.message == request.message
     assert fresh_request.run_truth_scope == request.run_truth_scope
-    assert json.dumps(str(transcript)) in start_context(execution, "")
+    assert json.dumps(str(transcript)) in start_context(execution, BACKEND_MACHINE_ID)
     assert start_context(execution, "other.invalid") == ""
     retry_refused_resume(tasks, previous)
     retry_refused_resume(tasks, child)
@@ -226,10 +231,17 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     ],
 )
 def test_fresh_or_unrelated_failure_never_requests_fallback(accounts, native_session, error):
-    key = LoginKey("codex", "", "")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     _task(accounts.store, "ordinary", key, session=native_session)
     execution = AgentTaskExecution("ordinary", accounts.store, AgentProcessControl())
-    record_refusal(execution, provider="codex", session_id=native_session, host="", error=error)
+    record_refusal(
+        execution,
+        provider="codex",
+        session_id=native_session,
+        machine_id=BACKEND_MACHINE_ID,
+        host="",
+        error=error,
+    )
     assert not accounts.store.agent_task_has_receipt("ordinary", REFUSAL)
 
 
@@ -249,6 +261,7 @@ def test_remote_refusal_locates_transcript_in_login_shell(accounts, monkeypatch)
         execution,
         provider="codex",
         session_id=session,
+        machine_id="worker",
         host="worker",
         error='{"code":"invalid_encrypted_content"}',
     )
@@ -268,7 +281,7 @@ def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatc
     app = create_named_app(str(_isolated_manifest(tmp_path)), data_dir=tmp_path / "data")
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id="fallback-chat",
         message="Continue the evidence review",
@@ -292,7 +305,7 @@ def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatc
             "reason": "login_switch",
             "native_session_id": session,
             "transcript_path": str(transcript),
-            "host": "",
+            "machine_id": BACKEND_MACHINE_ID,
         },
     )
     launcher = ScriptedLauncher([{}], message="Review complete")
@@ -326,7 +339,7 @@ def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatc
 
 def test_refusal_retry_respects_lineage(accounts):
     store = accounts.store
-    key = LoginKey("codex", "", "")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     for operation_id in ("first-refusal", "transport-retry", "current-refusal"):
         _task(store, operation_id, key, member=None)
     with store.connection() as connection:

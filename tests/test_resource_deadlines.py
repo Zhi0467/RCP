@@ -60,7 +60,7 @@ def test_deadlines_follow_owner_transactions_and_cross_without_writes(tmp_path, 
         )
         fields = dict(
             provider="codex",
-            host="",
+            machine_id="",
             binary="codex",
             version="v",
             readiness_json="{}",

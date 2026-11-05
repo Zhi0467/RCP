@@ -18,9 +18,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from rcp.config import load_manifest, resolve_manifest_path
+from rcp.config import resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_upgrade import load_upgraded_manifest, snapshot_cards
 from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
@@ -33,10 +35,6 @@ from rcp.server_ops.backup_capture import (
     read_immutable_backup_receipt,
     validate_backup_sqlite_snapshot,
     write_immutable_backup_receipt,
-)
-from rcp.server_ops.backup_checkout import (
-    BackupCheckoutHostUnavailable,
-    verify_checkout_identities,
 )
 from rcp.server_ops.backup_models import (
     BackupFileEntry,
@@ -63,8 +61,7 @@ from rcp.sources.imported import (
     ImportedProviderSourceStore,
 )
 from rcp.storage import AppStore
-from rcp.transport.remote_backup_checkout import CheckoutInspectionError
-from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_for_probe
+from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_on_hosts
 
 logger = logging.getLogger(__name__)
 
@@ -241,11 +238,9 @@ class BackupProjectFileCaptureCoordinator:
         data_dir: Path,
         *,
         local_project_copies: Mapping[str, Path] | None = None,
-        require_checkout_identity: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self.local_project_copies = local_project_copies or {}
-        self.require_checkout_identity = require_checkout_identity
 
     def capture(
         self,
@@ -491,30 +486,6 @@ class BackupProjectFileCaptureCoordinator:
                 inventory,
                 operation_projects=operation_projects,
             )
-        except BackupCheckoutHostUnavailable as exc:
-            discard_failed_project_capture(capture_root, project_root)
-            if _inventory_state_machine_alias(inventory) == exc.machine_alias:
-                return BackupProjectCapture(
-                    project_id=inventory.project_id,
-                    home_space_id=inventory.home_space_id,
-                    locator=inventory.locator,
-                    status="uncaptured",
-                    recovery=inventory.recovery,
-                    unavailable_kind="remote_unreachable",
-                    unavailable_reason="The configured SSH canonical state was unreachable.",
-                    unavailable_at=datetime.now(UTC),
-                    total_bytes=0,
-                )
-            return BackupProjectCapture(
-                project_id=inventory.project_id,
-                home_space_id=inventory.home_space_id,
-                locator=inventory.locator,
-                status="uncaptured",
-                unavailable_kind="capture_failure",
-                unavailable_reason="checkout_unreachable: repositories",
-                unavailable_at=datetime.now(UTC),
-                total_bytes=0,
-            )
         except StateUnavailable as exc:
             discard_failed_project_capture(capture_root, project_root)
             if _inventory_state_is_remote(inventory):
@@ -541,14 +512,11 @@ class BackupProjectFileCaptureCoordinator:
             )
         except (
             BackupProjectFileUnavailable,
-            CheckoutInspectionError,
             OSError,
             TypeError,
             ValueError,
         ) as exc:
             discard_failed_project_capture(capture_root, project_root)
-            if self.require_checkout_identity and isinstance(exc, CheckoutInspectionError):
-                raise
             # The receipt keeps only a fixed reason; this line names the cause.
             logger.warning(
                 "Backup could not capture project files for %r: %s: %s",
@@ -562,15 +530,7 @@ class BackupProjectFileCaptureCoordinator:
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_capture_failure_reason(
-                    exc,
-                    category="checkout"
-                    if isinstance(exc, CheckoutInspectionError)
-                    else "project_files",
-                    component="repositories"
-                    if isinstance(exc, CheckoutInspectionError)
-                    else ".research",
-                ),
+                unavailable_reason=_capture_failure_reason(exc, category="project_files"),
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
@@ -590,22 +550,31 @@ class BackupProjectFileCaptureCoordinator:
         copied_root = self.local_project_copies.get(inventory.project_id)
         # A locator may name the project folder or its manifest; relative
         # repository paths resolve against the live project either way.
-        manifest = (
-            load_manifest(
-                copied_root / "manifest.toml",
-                project_root=resolve_manifest_path(locator).parent.parent,
+        with (
+            closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
+            store.connection() as connection,
+        ):
+            cards = snapshot_cards(connection)
+            manifest = (
+                load_upgraded_manifest(
+                    copied_root / "manifest.toml",
+                    cards.values(),
+                    project_root=resolve_manifest_path(locator).parent.parent,
+                )
+                if copied_root is not None
+                else load_upgraded_manifest(locator, cards.values())
             )
-            if copied_root is not None
-            else load_manifest(locator)
-        )
-        if not recovery.configuration.matches_manifest(manifest):
-            raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")
-        verify_checkout_identities(recovery)
-        workspace = (
-            LocalStateWorkspace(copied_root, str(copied_root))
-            if copied_root is not None
-            else state_workspace_for_probe(manifest, self.data_dir)
-        )
+            if not recovery.configuration.matches_manifest(manifest):
+                raise BackupProjectFileUnavailable(
+                    "The project manifest changed after SQLite capture."
+                )
+            workspace = (
+                LocalStateWorkspace(copied_root, str(copied_root))
+                if copied_root is not None
+                else state_workspace_on_hosts(
+                    manifest, self.data_dir, lambda card: cards[card].host
+                )
+            )
 
         with tempfile.TemporaryDirectory(
             prefix=f".sources-{inventory.project_id}-",
@@ -739,7 +708,7 @@ class BackupProjectFileCaptureCoordinator:
 
 
 def _inventory_state_is_remote(inventory: BackupSnapshotProjectInventory) -> bool:
-    return _inventory_state_machine_alias(inventory) is not None
+    return _inventory_state_machine_id(inventory) is not None
 
 
 def _uncaptured_project(
@@ -757,20 +726,20 @@ def _uncaptured_project(
     )
 
 
-def _inventory_state_machine_alias(
+def _inventory_state_machine_id(
     inventory: BackupSnapshotProjectInventory,
 ) -> str | None:
+    """The card holding a project's canonical state, when it is not the backend."""
+
     recovery = inventory.recovery
     if recovery is None:
         return None
     configuration = recovery.configuration
     repositories = {repository.alias: repository for repository in configuration.repositories}
-    machines = {machine.alias: machine for machine in configuration.machines}
     repository = repositories.get(configuration.state_repository)
-    if repository is None:
+    if repository is None or repository.machine in {"", BACKEND_MACHINE_ID}:
         return None
-    machine = machines.get(repository.machine)
-    return machine.alias if machine is not None and machine.host else None
+    return repository.machine
 
 
 def read_backup_project_file_capture_receipt(

@@ -22,8 +22,7 @@ class ComputeJobRecord(BaseModel):
     origin_operation_id: str
     label: str | None = None
     episode_id: str | None = None
-    execution_machine: str
-    execution_host: str = ""
+    machine_id: str
     backend_id: str
     backend_handle: str
     job_root: str
@@ -80,7 +79,7 @@ class ComputeLaunchRequest(BaseModel):
 class ComputeBackendProbe(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    execution_machine: str
+    machine_id: str
     backend_id: str
     state: Literal["ready", "unavailable", "failed"]
     ready: bool

@@ -30,9 +30,10 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProviderWriteScope
 from rcp.core.models import HiddenReadScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import AgentCapability, ProviderUsage, profile_for
 from rcp.providers.browser_grant import BrowserGrant
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 ACCEPTANCE_GENERIC_WATCHER_MARKER = "[RCP acceptance: generic watchers]"
 ACCEPTANCE_SPACE_HANDOFF_MARKER = "[RCP acceptance: space handoff]"
@@ -125,7 +126,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
     ) -> ProviderReadiness:
         del binary, refresh
         profile = profile_for(login.provider)
-        if login.host:
+        if login.machine_id != BACKEND_MACHINE_ID:
             return ProviderReadiness(
                 provider=login.provider,
                 label=f"Acceptance {profile.label}",
@@ -135,7 +136,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 path_state="unreachable",
                 reason=(
                     "Acceptance-agent mode is local-only and refuses to impersonate "
-                    f"a provider on {login.host}."
+                    "a provider on another machine."
                 ),
                 models=list(profile.declared),
             )
@@ -163,7 +164,8 @@ class AcceptanceAgentLauncher(AgentLauncher):
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
         write_scope: ProviderWriteScope | None = None,
-        host: str = "",
+        machine_id: str,
+        host: str,
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
         transport_partition: str | None = None,
@@ -196,6 +198,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     read_dirs=read_dirs,
                     write_dirs=write_dirs,
                     write_scope=write_scope,
+                    machine_id=machine_id,
                     host=host,
                     control=control,
                     remote_pid_file=remote_pid_file,
@@ -259,7 +262,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
 
         if before_start is not None:
             hold = await self.credential_gate.hold(
-                login_key or LoginKey(provider, host, MACHINE_LOGIN_ID)
+                login_key or LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
             )
             try:
                 await before_start()

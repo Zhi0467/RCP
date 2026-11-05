@@ -23,6 +23,7 @@ from rcp import limits
 from rcp.core.materialize import (
     AcceptedPatchObserver,
     MaterializationResult,
+    current_cursors,
     materialize_patches_from_state,
 )
 from rcp.core.models import GraphBranchMetadata, GraphState, Patch, ReplayFailure
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from rcp.config import Manifest
     from rcp.history.manager import HistoryManager
 
-_VERSION = "graph-history-5"
+_VERSION = "graph-history-6"
 _LOGGER = logging.getLogger(__name__)
 _PATCH_NAME = re.compile(r"[0-9]{6}\.json")
 _MEMORY_LOCK = threading.RLock()
@@ -1026,7 +1027,7 @@ class ProjectHistoryEngine:
                 for op in p.ops
                 if isinstance(op, SetProjectTruthScopeOperation) and op.repository is not None
             ],
-            {k: v for p in accepted for k, v in p.processed_cursors.items()},
+            {k: v for p in accepted for k, v in current_cursors(p.processed_cursors).items()},
             patches,
         )
 

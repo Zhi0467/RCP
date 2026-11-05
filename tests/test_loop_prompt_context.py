@@ -11,6 +11,7 @@ import pytest
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
@@ -54,7 +55,7 @@ async def test_non_control_node_chat_has_no_loop_status(manifest, tmp_path, mode
             node_id="hyp/replanning-restores-plasticity",
             message="Inspect this node.",
             mode=mode,
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
         ),
     )
@@ -108,7 +109,7 @@ async def test_later_node_turn_refreshes_status_without_maintenance_authority(
         node_id=EXPERIMENT_ID,
         message="Inspect this node.",
         mode=mode if continuation == "resume" else "discuss",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
     )
     request = _resolved_graph_request(loop.service, "node_chat", request)
@@ -285,7 +286,7 @@ async def test_failed_node_status_staging_closes_the_work_mailbox(manifest, tmp_
             node_id=EXPERIMENT_ID,
             message="Inspect this node.",
             mode="work",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
         ),
     )
@@ -353,7 +354,7 @@ def test_loop_interference_prompt_uses_resolved_launch_verbs(
         chat_scope="node",
         node_id=episode.control_node_id,
         control_node_id=episode.control_node_id,
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
     )
     scope = GraphReadScope(

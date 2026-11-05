@@ -291,10 +291,18 @@ export function NodeChat({
       latestPersistedChatConfig(
         historyMessages,
         relatedTasks,
-        originRunConfig(origin, profileRunConfig(project.agent_profiles[surface])),
+        originRunConfig(origin, profileRunConfig(project.agent_profiles[surface], project.run_on)),
         agentSetup,
       ),
-    [agentSetup, historyMessages, origin, project.agent_profiles, relatedTasks, surface],
+    [
+      agentSetup,
+      historyMessages,
+      origin,
+      project.agent_profiles,
+      project.run_on,
+      relatedTasks,
+      surface,
+    ],
   );
   // The human's pick for this chat's next turns. It is keyed by chat, so another
   // chat starts from its own default; the machine always stays the derived one.

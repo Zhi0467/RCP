@@ -200,21 +200,21 @@ def test_auto_research_resumes_a_new_or_legacy_saved_remote_stage(
         "_directory_probe",
         lambda _stage, root: subprocess.CompletedProcess([], 0, "", ""),
     )
-    machine = SimpleNamespace(host="worker.example")
+    machine = SimpleNamespace(machine_id="gpu", host="worker.example")
     service = SimpleNamespace(
-        manifest=SimpleNamespace(machine_map={"gpu": machine}),
-        launcher=SimpleNamespace(provider_binary=lambda _provider, _host: None),
+        launcher=SimpleNamespace(provider_binary=lambda _provider, _machine_id: None),
     )
+    store = SimpleNamespace(space_machine={"gpu": machine}.__getitem__)
     turn = SimpleNamespace(
         request=SimpleNamespace(provider="codex", model="m", reasoning="high", run_on="gpu"),
-        binding=SimpleNamespace(stage_root=saved_root, stage_host="worker.example"),
+        binding=SimpleNamespace(stage_root=saved_root, stage_machine_id="gpu"),
     )
 
     def open_stage(stage_name: str):
         return auto_research_stream._open_auto_research_actor_stage(
             service,  # type: ignore[arg-type]
             Path("/unused"),
-            SimpleNamespace(),  # type: ignore[arg-type]
+            SimpleNamespace(store=store),  # type: ignore[arg-type]
             turn,  # type: ignore[arg-type]
             stage_name=stage_name,
             actor_label="worker",

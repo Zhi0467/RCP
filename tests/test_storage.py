@@ -21,6 +21,7 @@ from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage
 from rcp.rcp_home import rcp_temp_dir
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -293,8 +294,8 @@ def _project(project_id: str) -> ProjectRecord:
         project_id=project_id,
         locator=f"/tmp/{project_id}/research.yaml",
         name=project_id,
-        state_location=f"/tmp/{project_id}/.research",
-        state_remote=False,
+        state_machine_id=BACKEND_MACHINE_ID,
+        state_path=f"/tmp/{project_id}/.research",
         added_at="2026-07-31T00:00:00+00:00",
     )
 
@@ -312,7 +313,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             """
         ).fetchall()
     assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
-    assert migrations[-1] == (76, "paper_coach_steers_v1")
+    assert migrations[-1] == (77, "machine_identity_v1")
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -612,7 +613,7 @@ def _commit_context(store: AppStore, **fields) -> ChatSessionContextRecord:
     return store.commit_chat_session_context(
         **{
             "provider": "codex",
-            "execution_machine": "laptop",
+            "machine_id": "laptop",
             "native_session_id": "native-session",
             "project_id": "project",
             "kind": "project_chat",
@@ -1215,10 +1216,9 @@ def _create_experiment_runtime_fixture(
         project_id=project_id,
         control_node_id=control_node_id,
         provider="codex",
-        execution_machine="local",
-        execution_host="",
+        machine_id="local",
         native_session_id=f"session-{operation_id}",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=f"/tmp/{operation_id}",
         chat_id=chat_id,
         operation_id=operation_id,
@@ -1245,7 +1245,7 @@ def _create_experiment_runtime_fixture(
                     origin_task_kind="node_chat",
                     chat_id=chat_id,
                     node_id=control_node_id,
-                    execution_host="",
+                    machine_id="local",
                     check_command="true",
                     log_path=f"/tmp/{operation_id}.log",
                     cwd="/tmp",
@@ -1295,8 +1295,8 @@ def _seed_project_identity_rows(
         project_id=project_id,
         locator=f"/tmp/{label}/research.yaml",
         name=f"Project {label}",
-        state_location=f"ssh://host/{label}/.research",
-        state_remote=True,
+        state_machine_id="gpu",
+        state_path=f"/{label}/.research",
         added_at="2026-08-01T01:02:03+00:00",
         last_opened_at="2026-08-02T01:02:03+00:00",
         revision=7,
@@ -1311,7 +1311,7 @@ def _seed_project_identity_rows(
     store.record_compute_backend_probe(
         project_id,
         ComputeBackendProbe(
-            execution_machine="local",
+            machine_id="local",
             backend_id="systemd_user",
             state="ready",
             ready=True,
@@ -1334,7 +1334,7 @@ def _seed_project_identity_rows(
         connection.execute(
             """
             INSERT INTO writing_sessions (
-                native_session_id, provider, execution_machine, project_id, title, model,
+                native_session_id, provider, machine_id, project_id, title, model,
                 reasoning, created_at, last_resumed_at, introduction_hash_examined,
                 graph_revision_examined, research_md_hash_examined
             ) VALUES (?, 'codex', 'laptop', ?, 'Session title', 'model', 'high', ?, ?,
@@ -1408,8 +1408,8 @@ def _insert_destination_conflict(
                 project_id=canonical_project_id,
                 locator="/tmp/destination/research.yaml",
                 name="Destination",
-                state_location="/tmp/destination/.research",
-                state_remote=False,
+                state_machine_id=BACKEND_MACHINE_ID,
+                state_path="/tmp/destination/.research",
                 added_at="2026-08-06T01:02:03+00:00",
             )
         )
@@ -1796,9 +1796,9 @@ def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:
 def test_run_stage_protection_tracks_active_tasks_on_their_execution_host(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
-    for operation_id, status, stage_host, stage_root in (
+    for operation_id, status, stage_machine_id, stage_root in (
         ("local-active", "queued", None, "/data/run-stage/local-active"),
-        ("remote-active", "running", "gpu.example", "/tmp/rcp-run.remote-active"),
+        ("remote-active", "running", "gpu", "/tmp/rcp-run.remote-active"),
         ("local-terminal", "failed", None, "/data/run-stage/local-terminal"),
     ):
         store.create_agent_task(
@@ -1807,13 +1807,13 @@ def test_run_stage_protection_tracks_active_tasks_on_their_execution_host(tmp_pa
                 operation_id=operation_id,
                 status=status,
                 status_message=status,
-                stage_host=stage_host,
+                stage_machine_id=stage_machine_id,
                 stage_root=stage_root,
             )
         )
 
     assert store.protected_run_stage_roots("") == ("/data/run-stage/local-active",)
-    assert store.protected_run_stage_roots("gpu.example") == ("/tmp/rcp-run.remote-active",)
+    assert store.protected_run_stage_roots("gpu") == ("/tmp/rcp-run.remote-active",)
 
 
 def test_committed_chat_session_owns_its_reusable_stage_after_the_task_settles(tmp_path) -> None:
@@ -1835,7 +1835,7 @@ def test_committed_chat_session_owns_its_reusable_stage_after_the_task_settles(t
     snapshot_json, snapshot_sha256 = _snapshot("chat")
     _commit_context(
         store,
-        execution_machine="local",
+        machine_id="local",
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_sha256,
         committed_operation_id="chat-turn",
@@ -2077,23 +2077,23 @@ def test_chat_session_context_rejects_immutable_binding_conflicts(tmp_path, fiel
 
 
 @pytest.mark.parametrize(
-    ("provider", "execution_machine"),
+    ("provider", "machine_id"),
     [("claude", "laptop"), ("codex", "remote")],
 )
 def test_chat_session_context_rejects_provider_or_machine_conflicts(
-    tmp_path, provider, execution_machine
+    tmp_path, provider, machine_id
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     snapshot_json, snapshot_digest = _snapshot("first")
     _commit_context(store, snapshot_json=snapshot_json, snapshot_sha256=snapshot_digest)
 
     with pytest.raises(ValueError, match="provider or execution-machine conflict"):
-        store.chat_session_context(provider, execution_machine, "native-session")
+        store.chat_session_context(provider, machine_id, "native-session")
     with pytest.raises(ValueError, match="provider or execution-machine conflict"):
         _commit_context(
             store,
             provider=provider,
-            execution_machine=execution_machine,
+            machine_id=machine_id,
             protocol_version=2,
             snapshot_json=snapshot_json,
             snapshot_sha256=snapshot_digest,
@@ -2156,7 +2156,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
             connection.execute(
                 """
                 INSERT INTO writing_sessions (
-                    native_session_id, provider, execution_machine, project_id,
+                    native_session_id, provider, machine_id, project_id,
                     model, created_at, last_resumed_at, introduction_hash_examined,
                     graph_revision_examined, research_md_hash_examined
                 ) VALUES (?, 'provider', 'local', ?, 'model', ?, ?, 'intro', 1, 'research')
@@ -2172,7 +2172,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
             connection.execute(
                 """
                 INSERT INTO chat_session_contexts (
-                    provider, execution_machine, native_session_id, project_id,
+                    provider, machine_id, native_session_id, project_id,
                     kind, chat_id, node_id, protocol_version, snapshot_json,
                     snapshot_sha256, committed_operation_id, created_at, updated_at
                 ) VALUES ('provider', 'local', ?, ?, 'project_chat', ?, NULL, 1, ?, ?, ?, ?, ?)
@@ -3766,7 +3766,7 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
             request=request.model_dump(mode="json"),
             status_message="paused",
             native_session_id="native-session",
-            stage_host="",
+            stage_machine_id="",
             stage_root="/tmp/paused-chat",
             dispatch_authority=dispatch_authority,
         )

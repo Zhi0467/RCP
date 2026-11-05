@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
 
+from rcp.machine_cards import card
 from rcp.server_ops._local_primitives import canonical_json_bytes
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
@@ -26,7 +27,7 @@ from rcp.server_ops.git_credentials import (
     cleanup_ref_operator_step,
     deploy_key_operator_step,
 )
-from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
+from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, MachineRoute, ServerLayout
 from rcp.server_ops.models import (
     OPERATOR_SHELL,
     ExternalAction,
@@ -335,7 +336,7 @@ class ProjectProvisionCoordinator:
             "connect_repository",
         }:
             return (self._configuration_target(request),)
-        machine_map = {machine.alias: machine for machine in request.machines}
+        machine_map = {machine.machine_id: machine for machine in request.machines}
         targets: list[_ProvisionTarget] = []
 
         def add(
@@ -377,8 +378,7 @@ class ProjectProvisionCoordinator:
             identity="start",
         )
         for index, repository in enumerate(request.repositories):
-            machine = machine_map[repository.machine_alias]
-            machine_target = self._machine_target(machine)
+            machine_target = self._machine_target(self._route(machine_map[repository.machine_id]))
             if repository.repository is not None:
                 repository_target = ExternalServiceTarget(
                     service="github.com",
@@ -460,7 +460,7 @@ class ProjectProvisionCoordinator:
         for provider_index, (provider_target, profile) in enumerate(
             zip(provider_targets, request.provider_checks, strict=True)
         ):
-            machine = machine_map[profile.machine_alias]
+            machine = self._route(machine_map[profile.machine_id])
             add(
                 "provider",
                 ServerStep(
@@ -607,7 +607,7 @@ class ProjectProvisionCoordinator:
     ) -> ServerStep:
         repository = request.repositories[repository_index]
         assert repository.repository is not None  # Checked at the plan boundary.
-        machine = self._machine(request, repository.machine_alias)
+        machine = self._machine(request, repository.machine_id)
         try:
             material = self.credential_manager.prepare_key(
                 machine,
@@ -667,7 +667,7 @@ class ProjectProvisionCoordinator:
     ) -> ServerStep:
         repository = request.repositories[repository_index]
         assert repository.repository is not None  # Checked at the plan boundary.
-        machine = self._machine(request, repository.machine_alias)
+        machine = self._machine(request, repository.machine_id)
         try:
             material = self.credential_manager.prepare_key(
                 machine,
@@ -787,7 +787,7 @@ class ProjectProvisionCoordinator:
         repository = request.repositories[repository_index]
         machines = [
             machine.model_copy(update={"resolved_central_root": result.central_root})
-            if machine.alias == repository.machine_alias
+            if machine.machine_id == repository.machine_id
             else machine
             for machine in request.machines
         ]
@@ -814,7 +814,7 @@ class ProjectProvisionCoordinator:
         pending: ServerStep,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
-        machine = self._machine(request, repository.machine_alias)
+        machine = self._machine(request, repository.machine_id)
         try:
             if repository.existing_path is not None:
                 result = self.checkout_manager.adopt_existing(
@@ -868,7 +868,7 @@ class ProjectProvisionCoordinator:
         material: DeployKeyMaterial,
     ) -> ServerStep:
         repository = request.repositories[repository_index]
-        machine = self._machine(request, repository.machine_alias)
+        machine = self._machine(request, repository.machine_id)
         try:
             result = self.checkout_manager.prepare_initial(
                 machine,
@@ -975,7 +975,7 @@ class ProjectProvisionCoordinator:
             raise ProjectProvisionRefused(
                 "A repository checkout cannot run before its exact Git write proof."
             )
-        machine = self._machine(request, repository.machine_alias)
+        machine = self._machine(request, repository.machine_id)
         try:
             material = self.credential_manager.prepare_key(
                 machine,
@@ -1062,10 +1062,10 @@ class ProjectProvisionCoordinator:
                     ),
                 }
             )
-        repository_machines = {repository.machine_alias for repository in request.repositories}
+        repository_machines = {repository.machine_id for repository in request.repositories}
         if (
             any(
-                machine.alias in repository_machines and machine.resolved_central_root is None
+                machine.machine_id in repository_machines and machine.resolved_central_root is None
                 for machine in request.machines
             )
             or any(
@@ -1108,7 +1108,7 @@ class ProjectProvisionCoordinator:
     def _probe_operator_step(
         self,
         request: ProjectProvisioningRequestRecord,
-        machine: ProjectProvisioningMachineRecord,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         probe: GitWriteProbe,
         pending: ServerStep,
@@ -1167,7 +1167,7 @@ class ProjectProvisionCoordinator:
     def _checkout_operator_step(
         self,
         request: ProjectProvisioningRequestRecord,
-        machine: ProjectProvisioningMachineRecord,
+        machine: MachineRoute,
         refusal: ProjectCheckoutRefused,
         pending: ServerStep,
     ) -> ServerStep:
@@ -1361,11 +1361,18 @@ class ProjectProvisionCoordinator:
     def _machine(
         self,
         request: ProjectProvisioningRequestRecord,
-        alias: str,
-    ) -> ProjectProvisioningMachineRecord:
-        return next(machine for machine in request.machines if machine.alias == alias)
+        machine_id: str,
+    ) -> MachineRoute:
+        return self._route(
+            next(machine for machine in request.machines if machine.machine_id == machine_id)
+        )
 
-    def _machine_target(self, machine: ProjectProvisioningMachineRecord) -> MachineTarget:
+    def _route(self, machine: ProjectProvisioningMachineRecord) -> MachineRoute:
+        """The request's machine as its card routes it now."""
+
+        return MachineRoute.of(card(self.store, machine.machine_id), machine.central_root)
+
+    def _machine_target(self, machine: MachineRoute) -> MachineTarget:
         return MachineTarget(
             host=machine.host or self.local_host,
             os_account=machine.os_account,

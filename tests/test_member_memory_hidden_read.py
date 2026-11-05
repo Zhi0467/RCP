@@ -37,20 +37,25 @@ def test_thread_stages_and_member_notes_are_hidden_except_from_their_owner(owner
 
 @pytest.mark.asyncio
 async def test_thread_policy_budget_rejection_reaches_launch_owner(manifest, tmp_path, monkeypatch):
-    from rcp.agents import hidden_read
+    from rcp.agents import AgentProcessControl, hidden_read
+    from rcp.background import AgentTaskExecution
+    from rcp.machine_cards import BACKEND_MACHINE_ID
     from rcp.runs.shared import _prepare_hidden_read_scope
     from rcp.service import RunRequest
     from tests.helpers import create_named_app
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     monkeypatch.setattr(hidden_read, "HIDDEN_READ_PATH_MAX_COUNT", 1)
+    execution = AgentTaskExecution(
+        operation_id="unbound", store=app.state.catalog.store, control=AgentProcessControl()
+    )
     with pytest.raises(HiddenFolderRejected):
         await _prepare_hidden_read_scope(
             app.state.service,
-            RunRequest(provider="codex", run_on="laptop"),
+            RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID),
             workspace=tmp_path,
             remote_stage=None,
-            execution=None,
+            execution=execution,
             capability="work_auto",
             data_dir=tmp_path / "data",
         )

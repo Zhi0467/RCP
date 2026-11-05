@@ -1,17 +1,15 @@
 name = "continual-RL-plasticity-demo"
 
-[[machines]]
-alias = "laptop"
-host = ""
+machines = ["backend"]
 
 [[repositories]]
 alias = "crlp-demo-state"
-machine = "laptop"
+machine = "backend"
 path = "."
 
 [[repositories]]
 alias = "crlp-demo-secondary"
-machine = "laptop"
+machine = "backend"
 path = "../secondary-repo"
 
 [project]
@@ -27,7 +25,7 @@ default_run_truth_scope = ["crlp-demo-state"]
 provider = "codex"
 model = ""
 reasoning = "medium"
-run_on = "laptop"
+run_on = "backend"
 write_path = "protected"
 
 [agent.seed.permissions]
@@ -44,7 +42,7 @@ write_paper = false
 provider = "codex"
 model = ""
 reasoning = "medium"
-run_on = "laptop"
+run_on = "backend"
 write_path = "protected"
 
 [agent.refresh.permissions]
@@ -61,7 +59,7 @@ write_paper = false
 provider = "codex"
 model = ""
 reasoning = "medium"
-run_on = "laptop"
+run_on = "backend"
 write_path = "protected"
 
 [agent.node_chat.permissions]
@@ -78,7 +76,7 @@ write_paper = false
 provider = "codex"
 model = ""
 reasoning = "medium"
-run_on = "laptop"
+run_on = "backend"
 write_path = "protected"
 
 [agent.project_chat.permissions]
@@ -95,7 +93,7 @@ write_paper = false
 provider = "codex"
 model = "gpt-5.6-luna"
 reasoning = "medium"
-run_on = "laptop"
+run_on = "backend"
 write_path = "protected"
 
 [agent.paper_coach.permissions]

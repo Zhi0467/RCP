@@ -6,6 +6,7 @@ import json
 import uuid
 from collections.abc import Collection
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage.chat_forks import ChatForkStoreMixin
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _required_timestamp
@@ -103,8 +104,8 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
             connection.execute(
                 "DELETE FROM memory_migrations WHERE project_id NOT IN "
                 "(SELECT value FROM json_each(?)) OR project_id IN "
-                "(SELECT project_id FROM projects WHERE state_remote=1)",
-                (json.dumps(sorted(set(restored_memory_projects))),),
+                "(SELECT project_id FROM projects WHERE state_machine_id != ?)",
+                (json.dumps(sorted(set(restored_memory_projects))), BACKEND_MACHINE_ID),
             )
             connection.execute("DELETE FROM notification_devices")
             connection.execute("DELETE FROM notification_phone_pairings")

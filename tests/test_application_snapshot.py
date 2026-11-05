@@ -36,7 +36,7 @@ def test_local_recovery_stage_inventory_uses_the_task_ledger_and_ignores_remote(
     remote_view = uuid.uuid4().hex[:24]
     store = _StageLifecycleStore(
         RunStageLifecycleRecord(
-            stage_host="",
+            stage_machine_id="backend",
             stage_root=str(local),
             owner_refs=(
                 f"experiment_episode_state:{local_episode}",
@@ -46,7 +46,7 @@ def test_local_recovery_stage_inventory_uses_the_task_ledger_and_ignores_remote(
             protect_from_cleanup=True,
         ),
         RunStageLifecycleRecord(
-            stage_host="gpu.example",
+            stage_machine_id="gpu-card",
             stage_root="/tmp/rcp-run.remote-stage",
             owner_refs=(f"result_views:{remote_view}",),
             must_exist=False,
@@ -72,14 +72,14 @@ def test_local_recovery_stage_inventory_ignores_retention_swept_history(
     missing_view = data_dir / "run-stage" / "old-result-view"
     store = _StageLifecycleStore(
         RunStageLifecycleRecord(
-            stage_host="",
+            stage_machine_id="backend",
             stage_root=str(missing_task),
             owner_refs=(f"graph_runs:{uuid.uuid4()}",),
             must_exist=False,
             protect_from_cleanup=False,
         ),
         RunStageLifecycleRecord(
-            stage_host="",
+            stage_machine_id="backend",
             stage_root=str(missing_view),
             owner_refs=(f"result_views:{uuid.uuid4().hex[:24]}",),
             must_exist=False,
@@ -97,7 +97,7 @@ def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: 
     missing = data_dir / "run-stage" / "active-episode"
     store = _StageLifecycleStore(
         RunStageLifecycleRecord(
-            stage_host="",
+            stage_machine_id="backend",
             stage_root=str(missing),
             owner_refs=(f"experiment_episode_state:{episode_id}",),
             must_exist=True,
@@ -123,7 +123,7 @@ def test_thread_stage_sweep_preserves_live_stages_and_transcripts(tmp_path):
     transcript.write_text("private")
 
     class Store:
-        def protected_run_stage_roots(self, stage_host: str) -> tuple[str, ...]:
+        def protected_run_stage_roots(self, stage_machine_id: str) -> tuple[str, ...]:
             return (str(live),)
 
     _swept_stage_root(tmp_path, store=Store())

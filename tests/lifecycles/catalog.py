@@ -37,6 +37,7 @@ from rcp.core.models import (
     EpisodeIsolationState,
     GraphBranchSummary,
 )
+from rcp.machine_upgrade import _migrate_projects
 from rcp.paper.changes import ChangeGroup, PaperChanges
 from rcp.paper.live import PaperLive
 from rcp.paper.models import PaperTree
@@ -99,6 +100,8 @@ from rcp.storage.evidence_flags import (
     settle_ended_evidence_flag_addresses,
     settle_evidence_flag_address,
 )
+from rcp.storage.machine_rekey import finish_project_machine_ids
+from rcp.storage.memory import migrate_memory_deletion_machines
 from rcp.storage.models import (
     AutoResearchChildExperimentState,
     AutoResearchRecoveryStatus,
@@ -894,6 +897,9 @@ PROJECT_DELETION = Entry(
         ProjectStoreMixin.update_project_summary,
         ProjectStoreMixin.delete_project_records,
         ProjectStoreMixin.migrate_project_identity,
+        _migrate_projects,
+        finish_project_machine_ids,
+        migrate_memory_deletion_machines,
         ProjectStoreMixin.rebind_project_registration_for_restore,
         ProjectStoreMixin.complete_project_publication_for_restore,
         ProjectStoreMixin.mark_uncaptured_project_unavailable_for_restore,
@@ -1159,5 +1165,21 @@ UNKNOWN_TABLE: dict[str, str] = {
     ),
     "rcp.storage.base:AppStoreBase._rewrite_lineage_json_column": (
         "schema migration rewrites legacy lineage keys inside JSON columns"
+    ),
+    "rcp.machine_upgrade:_rekey": "schema migration renames a host or alias column to a card id",
+    "rcp.machine_upgrade:_migrate_request_hosts": (
+        "schema migration renames stored request host keys to card ids"
+    ),
+    "rcp.storage.machine_rekey:_rekey_bindings": (
+        "project open rewrites a project's binding JSON from aliases to card ids"
+    ),
+    "rcp.storage.machine_rekey:_rekey_column": (
+        "project open rewrites a project's alias column values to card ids"
+    ),
+    "rcp.storage.machine_rekey:_rekey_document": (
+        "project open rewrites a project's JSON documents from aliases to card ids"
+    ),
+    "rcp.storage.space_machines:SpaceMachineStoreMixin.clear_machine_caches": (
+        "drops readiness, skill and compute probe caches of an edited card"
     ),
 }

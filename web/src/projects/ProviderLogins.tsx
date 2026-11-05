@@ -30,7 +30,7 @@ import {
   loginKey,
   membersSignedIn,
   showsDeviceCode,
-  signInsForHost,
+  signInsForMachine,
   switchedSetting,
   trayLayout,
   type ProviderSignIns,
@@ -59,14 +59,18 @@ export interface SignInsData {
   error: string | null;
   refresh: () => Promise<void>;
   /** Writes the setting at once; the drawn value moves first and returns on failure. */
-  saveSetting: (provider: string, host: string, value: ProviderLoginSettingValue) => Promise<void>;
+  saveSetting: (
+    provider: string,
+    machineId: string,
+    value: ProviderLoginSettingValue,
+  ) => Promise<void>;
 }
 
 /**
  * Every login and the viewer's settings, loaded once for all machine cards.
  *
  * The login belongs to its machine, so the Settings page asks once and each
- * card draws the rows for its own host. Nothing here ever holds a credential.
+ * card draws the rows for its own machine. Nothing here ever holds a credential.
  */
 export function useProviderSignIns(viewerUserId: string | null): SignInsData {
   const [rows, setRows] = useState<ProviderLoginAccount[] | null>(null);
@@ -103,26 +107,28 @@ export function useProviderSignIns(viewerUserId: string | null): SignInsData {
     return () => clearInterval(timer);
   }, [followList, refresh]);
 
-  // Writes for one provider and host run one after another; the last one to
+  // Writes for one provider and machine run one after another; the last one to
   // settle decides what is shown, and a failure reloads the stored value.
   const settingWrites = useRef(new Map<string, Promise<unknown>>());
   const saveSetting = useCallback(
-    async (provider: string, host: string, value: ProviderLoginSettingValue) => {
+    async (provider: string, machineId: string, value: ProviderLoginSettingValue) => {
       const replace = (setting: ProviderLoginSettingValue) =>
         setSettings((current) =>
           current
             ? {
                 ...current,
                 settings: current.settings.map((item) =>
-                  item.provider === provider && item.host === host ? { ...item, setting } : item,
+                  item.provider === provider && item.machine_id === machineId
+                    ? { ...item, setting }
+                    : item,
                 ),
               }
             : current,
         );
-      const key = `${provider}:${host}`;
+      const key = `${provider}:${machineId}`;
       const write = (settingWrites.current.get(key) ?? Promise.resolve())
         .catch(() => undefined)
-        .then(() => saveProviderLoginSetting(provider, host, value));
+        .then(() => saveProviderLoginSetting(provider, machineId, value));
       settingWrites.current.set(key, write);
       replace(value);
       try {
@@ -141,7 +147,7 @@ export function useProviderSignIns(viewerUserId: string | null): SignInsData {
 
 interface FoldProps {
   machineName: string;
-  host: string;
+  machineId: string;
   data: SignInsData;
   viewerUserId: string | null;
   writesDisabled: boolean;
@@ -150,17 +156,17 @@ interface FoldProps {
   onLoginChanged?: () => void;
 }
 
-/** A machine card's "Sign-ins" fold: one panel per provider on this host. */
+/** A machine card's "Sign-ins" fold: one panel per provider on this machine. */
 export function SignInsFold({
   machineName,
-  host,
+  machineId,
   data,
   viewerUserId,
   writesDisabled,
   focusProvider = null,
   onLoginChanged,
 }: FoldProps) {
-  const entries = data.rows ? signInsForHost(data.rows, host, viewerUserId) : [];
+  const entries = data.rows ? signInsForMachine(data.rows, machineId, viewerUserId) : [];
   const { refresh } = data;
   const changed = useCallback(async () => {
     await refresh();
@@ -188,7 +194,7 @@ export function SignInsFold({
           <ProviderPanel
             key={entry.provider}
             entry={entry}
-            host={host}
+            machineId={machineId}
             machineName={machineName}
             data={data}
             viewerUserId={viewerUserId}
@@ -204,7 +210,7 @@ export function SignInsFold({
 
 function ProviderPanel({
   entry,
-  host,
+  machineId,
   machineName,
   data,
   viewerUserId,
@@ -213,7 +219,7 @@ function ProviderPanel({
   onChanged,
 }: {
   entry: ProviderSignIns;
-  host: string;
+  machineId: string;
   machineName: string;
   data: SignInsData;
   viewerUserId: string | null;
@@ -281,7 +287,7 @@ function ProviderPanel({
     setAdding(tray);
     setFailure(null);
     try {
-      const added = await addProviderLogin(entry.provider, host, tray);
+      const added = await addProviderLogin(entry.provider, machineId, tray);
       const methods = rows.find((row) => row.provider === entry.provider)?.sign_in_methods ?? [];
       if (!added.sign_in && methods.includes("token_entry")) setEntering(added.login_id);
       await onChanged();
@@ -337,7 +343,7 @@ function ProviderPanel({
   ) : null;
 
   const stored = data.settings?.settings.find(
-    (item) => item.provider === entry.provider && item.host === host,
+    (item) => item.provider === entry.provider && item.machine_id === machineId,
   );
   const setting = stored?.setting ?? "own";
   const layout = trayLayout(setting);
@@ -345,7 +351,7 @@ function ProviderPanel({
   const write = (value: ProviderLoginSettingValue) => {
     setFailure(null);
     data
-      .saveSetting(entry.provider, host, value)
+      .saveSetting(entry.provider, machineId, value)
       // The setting decides which login a launch uses, so readiness follows it.
       .then(onChanged)
       .catch((cause: unknown) =>
@@ -592,11 +598,11 @@ export function SignInCard({
       setBusy(null);
     }
   }
-  const { provider, host, login_id: loginId } = row;
+  const { provider, machine_id: machineId, login_id: loginId } = row;
   const startSignIn = () => {
     if (row.sign_in_methods.includes("device_code")) {
       void run("sign-in", async () =>
-        setSignIn(await startProviderSignIn(provider, host, loginId)),
+        setSignIn(await startProviderSignIn(provider, machineId, loginId)),
       );
     } else if (row.sign_in_methods.includes("token_entry")) {
       onEntering(true);
@@ -624,12 +630,12 @@ export function SignInCard({
     canVerify && {
       id: "verify",
       label: "Check sign-in",
-      act: () => void run("verify", () => verifyProviderLogin(provider, host, loginId)),
+      act: () => void run("verify", () => verifyProviderLogin(provider, machineId, loginId)),
     },
     (row.state === "signed_in" || row.token) && {
       id: "sign-out",
       label: "Sign out",
-      act: () => void run("sign-out", () => signOutProvider(provider, host, loginId)),
+      act: () => void run("sign-out", () => signOutProvider(provider, machineId, loginId)),
     },
   ].filter((item) => !!item);
   // A running sign-in, token entry or a removal has nothing else to offer until it ends.
@@ -688,7 +694,7 @@ export function SignInCard({
             const pasted = token.trim();
             if (!pasted) return;
             void run("token", async () => {
-              await saveProviderToken(provider, host, loginId, pasted);
+              await saveProviderToken(provider, machineId, loginId, pasted);
               setToken("");
               onEntering(false);
             });
@@ -802,7 +808,7 @@ export function SignInCard({
               removable={removable}
               running={row.bound_running}
               onRemove={() =>
-                void run("remove", () => removeProviderLogin(provider, host, loginId))
+                void run("remove", () => removeProviderLogin(provider, machineId, loginId))
               }
             />
           </OverflowMenu>

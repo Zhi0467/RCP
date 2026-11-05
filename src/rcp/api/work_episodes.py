@@ -31,7 +31,12 @@ from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research_admission import require_auto_research_provider_ready
 from rcp.runs.membership_fence import fence_episodes_for_departed_member
-from rcp.runs.work_episode_controls import EpisodeRefused, WorkAutoResearchStart, WorkEpisodeAct
+from rcp.runs.work_episode_controls import (
+    TURN_CONTROL_REFUSALS,
+    EpisodeRefused,
+    WorkAutoResearchStart,
+    WorkEpisodeAct,
+)
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AutoResearchMessageRecord, EpisodeRecord
 from rcp.storage.branch_names import BranchNameInvalid, BranchNameTaken
@@ -105,7 +110,7 @@ class MemberEpisodeControls:
         )
         if projected.task_control != offered or task is None:
             raise EpisodeRefused(
-                f"episode_not_{offered}able",
+                TURN_CONTROL_REFUSALS[offered],
                 f"This episode's current turn cannot {offered} now.",
             )
         return task
@@ -188,7 +193,7 @@ class MemberEpisodeControls:
         try:
             return pause_task_as(self._control_task(episode, "pause"), self.tasks())
         except HTTPException as exc:
-            raise _refused(exc, "episode_not_pausable") from exc
+            raise _refused(exc, TURN_CONTROL_REFUSALS["pause"]) from exc
 
     def resume_turn(self, act: WorkEpisodeAct) -> AgentTaskRecord:
         episode, authorizer = self._episode(act)
@@ -202,7 +207,7 @@ class MemberEpisodeControls:
                     experiment_admission=self.experiment_admission,
                 )
             except HTTPException as exc:
-                raise _refused(exc, "episode_not_resumable") from exc
+                raise _refused(exc, TURN_CONTROL_REFUSALS["resume"]) from exc
 
     def add_turns(
         self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str

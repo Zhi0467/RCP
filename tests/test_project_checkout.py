@@ -17,10 +17,11 @@ import pytest
 
 from rcp.agents.checkout_git_access import ensure_team_checkout_access
 from rcp.git_access import deploy_key_ssh_command, ensure_checkout_git_access
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops import remote_project_checkout
 from rcp.server_ops.git_credentials import DeployKeyMaterial, _run_process
 from rcp.server_ops.github import GitHubRepositoryRef
-from rcp.server_ops.layout import ServerLayout
+from rcp.server_ops.layout import MachineRoute, ServerLayout
 from rcp.server_ops.project_checkout import (
     CheckoutAccount,
     ProjectCheckoutManager,
@@ -28,7 +29,7 @@ from rcp.server_ops.project_checkout import (
     retained_research_operator_step,
 )
 from rcp.ssh_agent import agent_socket_path, agent_status
-from rcp.storage import ProjectProvisioningKind, ProjectProvisioningMachineIntent
+from rcp.storage import ProjectProvisioningKind
 
 SPACE_ID = "7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2"
 PROJECT_ID = "2ad064a6-f015-4703-a223-1d64cde75cc8"
@@ -65,10 +66,9 @@ def _layout(tmp_path: Path) -> ServerLayout:
     )
 
 
-def _machine(layout: ServerLayout) -> ProjectProvisioningMachineIntent:
-    return ProjectProvisioningMachineIntent.model_construct(
-        alias="server",
-        location="local",
+def _machine(layout: ServerLayout) -> MachineRoute:
+    return MachineRoute(
+        machine_id=BACKEND_MACHINE_ID,
         host="",
         os_account=layout.service_account,
         central_root=str(layout.projects_root),
@@ -81,7 +81,7 @@ def _material(layout: ServerLayout) -> DeployKeyMaterial:
         project_id=PROJECT_ID,
         repository_alias=ALIAS,
         repository=REPOSITORY,
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
         location="local",
         host="",
         os_account=layout.service_account,
@@ -116,10 +116,10 @@ class _CurrentAccountRunner:
 class _StaticCredentialManager:
     def inspect_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> DeployKeyMaterial:
-        assert machine.alias == material.machine_alias
+        assert machine.machine_id == material.machine_id
         return material
 
 
@@ -132,7 +132,7 @@ class _LocalOriginCheckoutManager(ProjectCheckoutManager):
 
     def _clone(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         repository_path: str,
     ) -> None:
@@ -165,7 +165,7 @@ class _LocalOriginCheckoutManager(ProjectCheckoutManager):
 
     def _git(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         argv: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
@@ -182,7 +182,7 @@ class _InheritedModeCheckoutManager(_LocalOriginCheckoutManager):
 
     def _clone(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         repository_path: str,
     ) -> None:
@@ -266,7 +266,7 @@ def _manager(
 ) -> tuple[
     _LocalOriginCheckoutManager,
     ServerLayout,
-    ProjectProvisioningMachineIntent,
+    MachineRoute,
     DeployKeyMaterial,
     _CurrentAccountRunner,
 ]:
@@ -1606,7 +1606,7 @@ def test_shipped_helper_reads_identity_from_a_batched_patch_directory(
 def test_server_only_first_commit_is_private_and_reused(tmp_path: Path, location: str) -> None:
     manager, _layout_value, machine, _key, _runner = _manager(tmp_path, tmp_path / "unused")
     if location == "ssh":
-        machine = machine.model_copy(update={"location": "ssh", "host": "fixture-host"})
+        machine = replace(machine, host="fixture-host")
 
         def ssh_runner(argv, *, timeout):
             assert "ssh" in argv

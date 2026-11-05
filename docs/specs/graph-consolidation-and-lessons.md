@@ -266,14 +266,14 @@ the move. Project deletion atomically queues memory cleanup with removal of its
 records, including any old alias folders. The browser lifecycle cleanup owner
 attempts deletion after commit and retries failures at later turn boundaries.
 An unreachable base never rolls back project deletion. A pending deletion on
-the same state location refuses the launch until cleanup succeeds, including when
+the same state card and path refuses the launch until cleanup succeeds, including when
 the same project is registered again there. A deletion owed on another base never
 blocks a launch.
 Restore keeps a project's migration marker only when the archive brought back its
 local memory folder; a remote base's marker is always dropped, and the next launch
 re-runs the create-if-absent migration.
-Remote deletion retains the resolved host/account identity at removal and checks it
-on retry. An unresolved origin or repointed alias leaves cleanup pending.
+Remote deletion keeps the state card id and path and reaches that card's
+current route on retry. A card the space no longer has leaves cleanup pending.
 Restore and candidate rehearsal drop every pending cleanup row, because those
 rows name the live host's paths.
 

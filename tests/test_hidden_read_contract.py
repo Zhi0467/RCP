@@ -28,8 +28,7 @@ from rcp.storage.models import SpaceMachineRecord
 def _scope(**changes: object) -> HiddenReadScope:
     return HiddenReadScope.model_validate(
         {
-            "execution_machine": "local",
-            "execution_host": "",
+            "machine_id": "backend",
             "os_account": "research",
             "enforcement": HiddenReadStatus(status="enforced"),
             **changes,
@@ -83,8 +82,7 @@ def test_fingerprint_is_canonical_and_covers_effective_policy() -> None:
     assert HiddenReadScope.model_validate_json(first.model_dump_json()) == first
     assert len(first.fingerprint) == 64
     variants = {
-        "execution_host": "compute.example",
-        "execution_machine": "remote",
+        "machine_id": "remote",
         "os_account": "other",
         "hidden_directories": ("/other",),
         "hidden_files": ("/other/token",),
@@ -150,8 +148,7 @@ def test_policy_bounds() -> None:
         "hidden_globs": tuple(f"/glob/{i}*" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)),
         "env_deny_list": tuple(f"ENV_{i}" for i in range(HIDDEN_READ_ENV_MAX_COUNT + 1)),
         "key_evidence": tuple(_key(f"/key/{i}") for i in range(HIDDEN_READ_KEY_MAX_COUNT + 1)),
-        "execution_machine": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
-        "execution_host": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
+        "machine_id": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
         "os_account": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
     }
     for name, value in invalid.items():

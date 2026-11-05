@@ -174,7 +174,7 @@ class EpisodeTaskResponse(BaseModel):
     parent_operation_id: str | None = None
     episode_id: str | None = None
     native_session_id: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     graph_target: GraphTargetRef
     estimate_seconds: float
@@ -431,10 +431,9 @@ def serialize_episode(
     report_login_blocked = False
     if wrapup is not None and wrapup.provider is not None:
         accounts = ProviderAccounts.for_store(store)
-        host = wrapup.execution_host or ""
         selected, _ = accounts.resolve_launch_login(
             wrapup.provider,
-            host,
+            wrapup.machine_id or "",
             episode.authorized_by.user_id if episode.authorized_by else None,
             session_id=wrapup.native_session_id,
             exclude_operation_id=wrapup.allocation_operation_id or "",

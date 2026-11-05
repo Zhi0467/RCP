@@ -30,6 +30,7 @@ from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_DIAGNOSTIC_MAX_CHARS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import (
     TEAM_PROJECT_DELETE_CONFIRMATION,
     TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
@@ -83,7 +84,7 @@ _MAX_RECEIPT_BYTES = 4 * 1024 * 1024
 _PATH_COLUMN_NAMES = frozenset(
     {
         "locator",
-        "state_location",
+        "state_path",
         "stage_root",
         "workspace_dir",
         "output_path",
@@ -120,7 +121,7 @@ class RehearsalProjectOverlay(_StrictModel):
     capture_status: Literal["captured", "remote_unreachable", "archive_uncaptured"]
     overlay_locator: str
     original_locator: str
-    original_state_location: str
+    original_state_path: str
     original_remote: bool
     original_reachable: bool | None
     original_error_sha256: str | None
@@ -369,8 +370,8 @@ def build_rehearsal_overlay(
     connection.row_factory = sqlite3.Row
     try:
         rows = connection.execute(
-            "SELECT project_id, home_space_id, locator, name, state_location, "
-            "state_remote, last_opened_at, revision, primary_question, attention_count, "
+            "SELECT project_id, home_space_id, locator, name, state_machine_id, "
+            "state_path, last_opened_at, revision, primary_question, attention_count, "
             "last_refresh_at, reachable, error FROM projects ORDER BY project_id"
         ).fetchall()
         captures = {project.project_id: project for project in project_receipt.projects}
@@ -387,7 +388,7 @@ def build_rehearsal_overlay(
                 # omitted project's file access resolve to an absent private path.
                 absent = absent_root / hashlib.sha256(project_id.encode()).hexdigest()
                 connection.execute(
-                    "UPDATE projects SET locator=?, state_location=? WHERE project_id=?",
+                    "UPDATE projects SET locator=?, state_path=? WHERE project_id=?",
                     (str(absent / "manifest.toml"), str(absent), project_id),
                 )
                 continue
@@ -401,14 +402,14 @@ def build_rehearsal_overlay(
                 capture_root=capture_root,
             )
             projects.append(project)
-            state_location = (
-                row["state_location"]
-                if bool(row["state_remote"])
+            state_path = (
+                row["state_path"]
+                if _row_state_is_remote(row)
                 else str(Path(project.overlay_locator).parent)
             )
             connection.execute(
-                "UPDATE projects SET locator = ?, state_location = ? WHERE project_id = ?",
-                (project.overlay_locator, state_location, project_id),
+                "UPDATE projects SET locator = ?, state_path = ? WHERE project_id = ?",
+                (project.overlay_locator, state_path, project_id),
             )
         _rebind_local_stage_paths(connection, absent_root)
         # Pending memory cleanup names live paths; the rehearsal never acts on it.
@@ -469,7 +470,7 @@ def _prepare_overlay_project(
     if capture.status == "uncaptured":
         if not (
             capture.unavailable_kind == "remote_unreachable"
-            and bool(row["state_remote"])
+            and _row_state_is_remote(row)
             and row["reachable"] == 0
             and row["error"]
             and _configuration_state_is_remote(capture.recovery.configuration)
@@ -553,8 +554,9 @@ def _prepare_overlay_project(
         "home_space_id": row["home_space_id"],
         "name": str(row["name"]),
         "locator": str(row["locator"]),
-        "state_location": str(row["state_location"]),
-        "remote": bool(row["state_remote"]),
+        "state_machine_id": str(row["state_machine_id"]),
+        "state_path": str(row["state_path"]),
+        "remote": _row_state_is_remote(row),
         "last_opened_at": row["last_opened_at"],
         "revision": row["revision"],
         "primary_question": row["primary_question"],
@@ -572,8 +574,8 @@ def _prepare_overlay_project(
         capture_status=capture_status,
         overlay_locator=str(manifest_path),
         original_locator=str(row["locator"]),
-        original_state_location=str(row["state_location"]),
-        original_remote=bool(row["state_remote"]),
+        original_state_path=str(row["state_path"]),
+        original_remote=_row_state_is_remote(row),
         original_reachable=(None if row["reachable"] is None else bool(row["reachable"])),
         original_error_sha256=_optional_text_sha256(row["error"]),
         expected_card_sha256=_canonical_sha256(expected_card),
@@ -590,8 +592,9 @@ def _prepare_uncaptured_archive_overlay(row: sqlite3.Row, root: Path) -> Rehears
         "home_space_id": row["home_space_id"],
         "name": str(row["name"]),
         "locator": str(row["locator"]),
-        "state_location": str(row["state_location"]),
-        "remote": bool(row["state_remote"]),
+        "state_machine_id": str(row["state_machine_id"]),
+        "state_path": str(row["state_path"]),
+        "remote": _row_state_is_remote(row),
         "last_opened_at": row["last_opened_at"],
         "revision": row["revision"],
         "primary_question": row["primary_question"],
@@ -609,8 +612,8 @@ def _prepare_uncaptured_archive_overlay(row: sqlite3.Row, root: Path) -> Rehears
         capture_status="archive_uncaptured",
         overlay_locator=str(locator),
         original_locator=str(row["locator"]),
-        original_state_location=str(row["state_location"]),
-        original_remote=bool(row["state_remote"]),
+        original_state_path=str(row["state_path"]),
+        original_remote=_row_state_is_remote(row),
         original_reachable=False,
         original_error_sha256=_optional_text_sha256(row["error"]),
         expected_card_sha256=_canonical_sha256(card),
@@ -635,14 +638,20 @@ def _expected_startup_recovery(database_path: Path) -> StartupRecoveryReadModel:
             tasks.store.close()
 
 
+def _row_state_is_remote(row: sqlite3.Row) -> bool:
+    return str(row["state_machine_id"]) != BACKEND_MACHINE_ID
+
+
+def _is_backend_machine(machine_id: object) -> bool:
+    """A row's machine is the backend's own; "" and NULL are treated as local too."""
+
+    return machine_id in {None, "", BACKEND_MACHINE_ID}
+
+
 def _configuration_state_is_remote(configuration: BackupManifestConfiguration) -> bool:
     repositories = {repository.alias: repository for repository in configuration.repositories}
-    machines = {machine.alias: machine for machine in configuration.machines}
     repository = repositories.get(configuration.state_repository)
-    if repository is None:
-        return False
-    machine = machines.get(repository.machine)
-    return bool(machine is not None and machine.host)
+    return repository is not None and not _is_backend_machine(repository.machine)
 
 
 def _render_overlay_manifest(
@@ -652,19 +661,12 @@ def _render_overlay_manifest(
 ) -> str:
     document = tomlkit.document()
     document.add("name", configuration.name)
-    machines = tomlkit.aot()
-    for item in configuration.machines:
-        machine = tomlkit.table()
-        machine.add("alias", item.alias)
-        machine.add("host", "")
-        machine.add("os_account", "")
-        machines.append(machine)
-    document.add("machines", machines)
+    document.add("machines", [BACKEND_MACHINE_ID])
     repositories = tomlkit.aot()
     for item in configuration.repositories:
         repository = tomlkit.table()
         repository.add("alias", item.alias)
-        repository.add("machine", item.machine)
+        repository.add("machine", BACKEND_MACHINE_ID)
         repository.add("path", str(repository_roots[item.alias]))
         repositories.append(repository)
     document.add("repositories", repositories)
@@ -693,7 +695,6 @@ def _render_overlay_manifest(
         profile.add("runtime", item.runtime)
         profile.add("model", item.model)
         profile.add("reasoning", item.reasoning)
-        profile.add("run_on", item.run_on)
         permissions = tomlkit.table()
         for key, value in item.permissions.model_dump(mode="json").items():
             permissions.add(key, value)
@@ -720,17 +721,17 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
     for table, columns in tables.items():
         if "stage_root" not in columns:
             continue
-        host_column = "execution_host" if table == "browser_owners" else "stage_host"
-        if host_column not in columns:
+        machine_column = "machine_id" if table == "browser_owners" else "stage_machine_id"
+        if machine_column not in columns:
             raise CandidateRehearsalRefused(
-                f"Path-bearing table {table!r} has no stage-host boundary."
+                f"Path-bearing table {table!r} has no stage-machine boundary."
             )
         rows = connection.execute(
-            f'SELECT rowid, {host_column} AS stage_host, stage_root FROM "{table}" '
+            f'SELECT rowid, {machine_column} AS stage_machine_id, stage_root FROM "{table}" '
             "WHERE stage_root IS NOT NULL AND stage_root != ''"
         ).fetchall()
         for row in rows:
-            if row["stage_host"]:
+            if not _is_backend_machine(row["stage_machine_id"]):
                 continue
             # Preserve shared-stage identity within the known-absent boundary.
             stage_key = hashlib.sha256(str(row["stage_root"]).encode("utf-8")).hexdigest()
@@ -751,9 +752,9 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                     (str(rebound / "output"), row["rowid"]),
                 )
     if "watchers" in tables:
-        rows = connection.execute("SELECT rowid, execution_host FROM watchers").fetchall()
+        rows = connection.execute("SELECT rowid, machine_id FROM watchers").fetchall()
         for row in rows:
-            if row["execution_host"]:
+            if not _is_backend_machine(row["machine_id"]):
                 continue
             rebound = absent_root / "watchers" / str(row["rowid"])
             connection.execute(
@@ -761,9 +762,9 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                 (str(rebound / "log"), str(rebound / "cwd"), row["rowid"]),
             )
     if "compute_jobs" in tables:
-        rows = connection.execute("SELECT rowid, execution_host FROM compute_jobs").fetchall()
+        rows = connection.execute("SELECT rowid, machine_id FROM compute_jobs").fetchall()
         for row in rows:
-            if row["execution_host"]:
+            if not _is_backend_machine(row["machine_id"]):
                 continue
             rebound = absent_root / "compute_jobs" / str(row["rowid"])
             connection.execute(
@@ -810,7 +811,7 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 f"Copied table {table!r} has unclassified path columns: {sorted(unexpected)}."
             )
         for column in columns.intersection(_PATH_COLUMN_NAMES):
-            if column in {"locator", "state_location"} and table not in {
+            if column in {"locator", "state_path"} and table not in {
                 "projects",
                 "memory_deletions",
             }:
@@ -848,12 +849,12 @@ def _validate_rebound_paths(
 ) -> None:
     expected = {project.project_id: project for project in projects}
     for row in connection.execute(
-        "SELECT project_id, locator, state_location, state_remote FROM projects"
+        "SELECT project_id, locator, state_machine_id, state_path FROM projects"
     ).fetchall():
         if str(row["project_id"]) in excluded_project_ids:
             if any(
                 not Path(row[key]).is_relative_to(root / "known-absent") or Path(row[key]).exists()
-                for key in ("locator", "state_location")
+                for key in ("locator", "state_path")
             ):
                 raise CandidateRehearsalRefused("An excluded project escaped its absent boundary.")
             continue
@@ -862,8 +863,8 @@ def _validate_rebound_paths(
             root
         ):
             raise CandidateRehearsalRefused("A copied project locator escaped its overlay.")
-        if not bool(row["state_remote"]):
-            state = Path(str(row["state_location"]))
+        if not _row_state_is_remote(row):
+            state = Path(str(row["state_path"]))
             if not state.is_relative_to(root):
                 raise CandidateRehearsalRefused(
                     "A copied local canonical-state pointer escaped its overlay."
@@ -872,16 +873,17 @@ def _validate_rebound_paths(
         raise CandidateRehearsalRefused("A copied pending memory cleanup survived the overlay.")
     for table, columns in _schema_columns(connection).items():
         if "stage_root" in columns:
-            host_column = "execution_host" if table == "browser_owners" else "stage_host"
+            machine_column = "machine_id" if table == "browser_owners" else "stage_machine_id"
             for row in connection.execute(
-                f'SELECT {host_column} AS stage_host, stage_root FROM "{table}" '
+                f'SELECT {machine_column} AS stage_machine_id, stage_root FROM "{table}" '
                 "WHERE stage_root IS NOT NULL AND stage_root != ''"
             ).fetchall():
-                if not row["stage_host"] and not Path(str(row["stage_root"])).is_relative_to(root):
+                local = _is_backend_machine(row["stage_machine_id"])
+                if local and not Path(str(row["stage_root"])).is_relative_to(root):
                     raise CandidateRehearsalRefused(
                         f"A copied local stage in {table!r} escaped its overlay."
                     )
-                if not row["stage_host"] and (
+                if local and (
                     Path(str(row["stage_root"])).exists()
                     or Path(str(row["stage_root"])).is_symlink()
                 ):
@@ -890,9 +892,9 @@ def _validate_rebound_paths(
                     )
         if table == "browser_owners":
             for row in connection.execute(
-                "SELECT execution_host, workspace_dir FROM browser_owners"
+                "SELECT machine_id, workspace_dir FROM browser_owners"
             ).fetchall():
-                if not row["execution_host"] and (
+                if _is_backend_machine(row["machine_id"]) and (
                     not Path(row["workspace_dir"]).is_relative_to(root)
                     or Path(row["workspace_dir"]).exists()
                     or Path(row["workspace_dir"]).is_symlink()
@@ -902,9 +904,9 @@ def _validate_rebound_paths(
                     )
         if table == "watchers":
             for row in connection.execute(
-                "SELECT execution_host, log_path, cwd FROM watchers"
+                "SELECT machine_id, log_path, cwd FROM watchers"
             ).fetchall():
-                if not row["execution_host"] and any(
+                if _is_backend_machine(row["machine_id"]) and any(
                     not Path(str(row[name])).is_relative_to(root) for name in ("log_path", "cwd")
                 ):
                     raise CandidateRehearsalRefused(
@@ -912,9 +914,9 @@ def _validate_rebound_paths(
                     )
         if table == "compute_jobs":
             for row in connection.execute(
-                "SELECT execution_host, job_root, cwd, log_path, exit_path FROM compute_jobs"
+                "SELECT machine_id, job_root, cwd, log_path, exit_path FROM compute_jobs"
             ).fetchall():
-                if not row["execution_host"] and any(
+                if _is_backend_machine(row["machine_id"]) and any(
                     not Path(str(row[name])).is_relative_to(root)
                     for name in ("job_root", "cwd", "log_path", "exit_path")
                 ):
@@ -1058,7 +1060,11 @@ async def _verify_candidate(
             log.phase = "project reads"
             for project in overlay.projects:
                 headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
-                if project.capture_status == "captured":
+                if project.capture_status == "captured" and _awaits_remote_machine_ids(
+                    app.state.catalog.store, project
+                ):
+                    results.append(_recorded_pending_project(cards[project.project_id], project))
+                elif project.capture_status == "captured":
                     results.append(await _verify_captured_project(client, project, headers, reads))
                 else:
                     results.append(_verify_unavailable_project(cards[project.project_id], project))
@@ -1409,12 +1415,30 @@ async def _verify_captured_project(
     )
 
 
+def _awaits_remote_machine_ids(store: AppStore, project: RehearsalProjectOverlay) -> bool:
+    """Whether a remote project's manifest waits for rollback authority to end."""
+
+    record = store.project(project.project_id)
+    return record is not None and record.machine_ids_pending and project.original_remote
+
+
+def _recorded_pending_project(
+    listed: dict[str, object], project: RehearsalProjectOverlay
+) -> CandidateProjectVerification:
+    return CandidateProjectVerification(
+        project_id=project.project_id,
+        status="not_replay_verified",
+        revision=None,
+        projection_sha256=_canonical_sha256(listed),
+    )
+
+
 def _verify_unavailable_project(
     listed: dict[str, object], project: RehearsalProjectOverlay
 ) -> CandidateProjectVerification:
     # Compare durable identities, not this rehearsal's copied paths.
     card = dict(listed)
-    card.update(locator=project.original_locator, state_location=project.original_state_location)
+    card.update(locator=project.original_locator, state_path=project.original_state_path)
     projection_sha256 = unavailable_card_projection_sha256(
         card, project.expected_card_sha256, team_space=True
     )
@@ -1675,7 +1699,8 @@ def _project_card_comparison(card: Mapping[str, object]) -> dict[str, object]:
         "home_space_id": card.get("home_space_id"),
         "name": card.get("name"),
         "locator": card.get("locator"),
-        "state_location": card.get("state_location"),
+        "state_machine_id": card.get("state_machine_id"),
+        "state_path": card.get("state_path"),
         "remote": card.get("remote"),
         "last_opened_at": card.get("last_opened_at"),
         "revision": card.get("revision"),

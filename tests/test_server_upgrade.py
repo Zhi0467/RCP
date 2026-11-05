@@ -17,13 +17,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 import rcp.storage.base as storage_base_module
 import rcp.storage.models as storage_models
 from rcp.api import create_app
+from rcp.background import StartupEffectFence
 from rcp.config import load_manifest
 from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.projects import fill_space_machines
 from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
 from tests.helpers import signed_in_client
@@ -167,6 +171,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (74,),
             (75,),
             (76,),
+            (77,),
         ]
 
         plan = connection.execute(
@@ -421,7 +426,7 @@ def test_release_update_from_every_published_release_validates(
     monkeypatch: pytest.MonkeyPatch,
     release_checkout: Callable[[str], Path],
 ) -> None:
-    """Every published release must migrate current and stale display caches.
+    """Every published release's data serves after update, whatever its display cache.
 
     No supported source floor is declared yet; that policy decision remains open.
 
@@ -432,8 +437,9 @@ def test_release_update_from_every_published_release_validates(
     the old release populated.
 
     Uses the candidate's preparation path, since installed releases cannot classify
-    scratch from tools newer than them. A copied cache may be stale on a real server, so
-    a current cache must equal a fresh replay.
+    scratch from tools newer than them. An older release's display cache, current or
+    stale, is retired by the cache schema, so the switched release rebuilds it from a
+    fresh replay.
     """
     from rcp.server_ops.deployment import (
         PrepareRequest,
@@ -472,23 +478,25 @@ def test_release_update_from_every_published_release_validates(
         )
     )
     assert checked["status"] == "verified"
-    live = create_app(data_dir=root / "data")
-    assert verify_live_application(
-        Path(checked["proof_path"]),
-        proof_sha256=checked["proof_sha256"],
-        background=live.state.background_tasks,
-        catalog=live.state.catalog,
-        store=live.state.background_tasks.store,
+    live = create_app(
+        data_dir=root / "data",
+        startup_effect_fence=StartupEffectFence("release update live check"),
     )
-    for card in live.state.catalog.cards():
-        status, cached = live.state.catalog.cached_snapshot_status(card["id"])
-        _service, fresh = live.state.catalog.open_snapshot(card["id"])
-        assert status == "valid" and cached is not None
-        if stale_cache:
-            assert cached["graph"]["revision"] < fresh["graph"]["revision"]
-        else:
+    with TestClient(live):
+        assert verify_live_application(
+            Path(checked["proof_path"]),
+            proof_sha256=checked["proof_sha256"],
+            background=live.state.background_tasks,
+            catalog=live.state.catalog,
+            store=live.state.background_tasks.store,
+        )
+        for card in live.state.catalog.cards():
+            _service, fresh = live.state.catalog.open_snapshot(card["id"])
+            assert live.state.services.project_display_cache.rebuild_cached_snapshot(card["id"])
+            status, cached = live.state.catalog.cached_snapshot_status(card["id"])
+            assert status == "valid" and cached is not None
             assert cached["graph"] == fresh["graph"]
-    _assert_old_branch_merge_validates(live, str(merge_branch_id))
+        _assert_old_branch_merge_validates(live, str(merge_branch_id))
 
 
 @pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
@@ -786,8 +794,12 @@ def _exercise_candidate_upgrade(
                 assert store.episode_wrapup(experiment_episode_id) is None
 
         record = store.project(project_id)
-        assert record is not None
+        assert record is not None and record.machine_ids_pending
+        fill_space_machines(store, data_dir)
+        record = store.project(project_id)
+        assert record is not None and not record.machine_ids_pending
         manifest = load_manifest(record.locator)
+        assert manifest.machines == [BACKEND_MACHINE_ID]
         replay = (
             HistoryManager(
                 manifest,

@@ -160,12 +160,12 @@ class CodexAuthentication(ProviderAuthentication):
     def credential_available(
         self,
         credentials: ProviderCredentialStore,
-        host: str,
+        machine_id: str,
         login_id: str,
         *,
         login_state: ProviderLoginStateRecord | None = None,
     ) -> bool:
-        credentials.account_dir("codex", host, login_id)
+        credentials.account_dir("codex", machine_id, login_id)
         return not login_id or (
             login_state is not None
             and login_state.state == "signed_in"
@@ -173,9 +173,9 @@ class CodexAuthentication(ProviderAuthentication):
         )
 
     def process_environment(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, host: str
     ) -> ProviderProcessEnvironment:
-        directory = credentials.account_dir("codex", host, login_id)
+        directory = credentials.account_dir("codex", machine_id, login_id)
         if not login_id:
             return ProviderProcessEnvironment()
         if not host:
@@ -236,6 +236,12 @@ class CodexAuthentication(ProviderAuthentication):
         return CodexDeviceLogin()
 
     def sign_out(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
+        self,
+        credentials: ProviderCredentialStore,
+        machine_id: str,
+        login_id: str,
+        binary: str,
+        *,
+        host: str,
     ) -> list[str]:
         return [binary, "logout"]

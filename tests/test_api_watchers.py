@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from rcp.compute_jobs import jobs
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import (
     GraphWatcherRecord,
     NodeStatusGraphCondition,
@@ -26,6 +27,7 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     now = "2026-08-12T01:00:00+00:00"
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
     watcher = WatcherRecord(
         watcher_id="manual-api-check",
         project_id=project_id,
@@ -33,13 +35,13 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
         origin_task_kind="node_chat",
         chat_id="manual-api-chat",
         node_id="exp-one",
-        execution_host="gpu.example",
+        machine_id=gpu.machine_id,
         check_command="squeue -h -j 4471 >/dev/null",
         log_path="/tmp/4471.log",
         cwd="/tmp",
         continuation=WatcherContinuation(
             provider="codex",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             patch_kind="work",
         ),
         created_at=now,
@@ -92,7 +94,9 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    continuation = WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work")
+    continuation = WatcherContinuation(
+        provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
+    )
     active = WatcherRecord(
         watcher_id="active-api-watcher",
         project_id=project_id,
@@ -163,7 +167,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
         cwd=str(tmp_path),
         continuation=WatcherContinuation(
             provider="codex",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             patch_kind="work",
         ),
         created_at="2026-08-12T01:00:00+00:00",
@@ -200,6 +204,7 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     client = signed_in_client(app)
     store = app.state.services.store
     project_id = app.state.default_project_id
+    cluster = store.create_space_machine(name="cluster", host="cluster", os_account="rcp")
     watcher = WatcherRecord(
         watcher_id="human-cancel",
         project_id=project_id,
@@ -210,8 +215,10 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
         cancel_command="scancel 331",
         log_path="/tmp/log",
         cwd="/tmp",
-        execution_host="rcp@cluster",
-        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        machine_id=cluster.machine_id,
+        continuation=WatcherContinuation(
+            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
+        ),
         created_at=store.now(),
     )
     store.create_watchers([watcher])
@@ -239,7 +246,7 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     assert payload["cancel_requested_at"] and payload["cancel_error"] is None
     assert payload["status"] == "active" and payload["can_cancel"] is False
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).json() == payload
-    assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
+    assert calls == [("scancel 331", "cluster", "/tmp")]
 
     def refuse_identity(_request):
         raise HTTPException(status_code=403, detail="Human identity required")
@@ -255,7 +262,7 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
 
     monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
     assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 409
-    assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
+    assert calls == [("scancel 331", "cluster", "/tmp")]
 
 
 @pytest.mark.parametrize(
@@ -334,7 +341,9 @@ def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manife
         check_command="true",
         log_path=str(tmp_path / "observer.log"),
         cwd=str(tmp_path),
-        continuation=WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work"),
+        continuation=WatcherContinuation(
+            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
+        ),
         created_at=store.now(),
     )
     branch_watcher = watcher.model_copy(

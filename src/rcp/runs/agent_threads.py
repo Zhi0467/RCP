@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import classify_terminal_error
 from rcp.runs.agent_thread_commands import thread_capabilities
 from rcp.runs.provider_usage import record_provider_usage
@@ -364,13 +365,21 @@ async def provider_switch_seed(
     except (OSError, StateUnavailable, ProviderDiscoveryUnavailable):
         failure = "provider_error"
     finally:
-        if source is not None and source.stage_host and source.stage_root:
+        if (
+            source is not None
+            and source.stage_machine_id
+            and source.stage_machine_id != BACKEND_MACHINE_ID
+            and source.stage_root
+        ):
             from rcp.runs.provider_process import require_remote_provider_quiescence
 
             # Closing the launcher stops the remote pass too. An unconfirmed
             # exit fences the task; it must not start a second provider process.
             await asyncio.to_thread(
-                require_remote_provider_quiescence, store, source.stage_host, source.stage_root
+                require_remote_provider_quiescence,
+                store,
+                source.stage_machine_id,
+                source.stage_root,
             )
     if execution.control.pause_requested.is_set():
         raise TaskPaused("Stopped while summarizing the previous session.")
@@ -450,14 +459,14 @@ async def prepare_project_summary_scope(
     import asyncio
     from pathlib import Path
 
+    from rcp.machine_cards import host_of
     from rcp.runs.shared import _prepare_hidden_read_scope
     from rcp.transport.run_stage import RemoteRunStage
 
     assert execution is not None and source.stage_root
+    host = host_of(execution.store, source.stage_machine_id or BACKEND_MACHINE_ID)
     remote = (
-        await asyncio.to_thread(RemoteRunStage(source.stage_host).attach, source.stage_root)
-        if source.stage_host
-        else None
+        await asyncio.to_thread(RemoteRunStage(host).attach, source.stage_root) if host else None
     )
     return await _prepare_hidden_read_scope(
         service,
@@ -468,7 +477,6 @@ async def prepare_project_summary_scope(
         capability="session_summary",
         data_dir=data_dir,
         local_stage=Path(source.stage_root) if remote is None else None,
-        execution_host=source.stage_host or "",
     )
 
 
@@ -479,7 +487,7 @@ def _source_workspace(store: AppStore, source: AgentTaskRecord) -> Path:
     from rcp.runs.chat import _local_chat_workspace_for_task
 
     assert source.stage_root
-    if source.stage_host:
+    if source.stage_machine_id and source.stage_machine_id != BACKEND_MACHINE_ID:
         return Path(source.stage_root) / "workspace"
     if source.kind == "space_chat":
         return Path(source.stage_root)
@@ -502,22 +510,23 @@ async def _summarize_thread_session(
     from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.background import TaskPaused
     from rcp.limits import AGENT_THREAD_COMPACT_MAX_BYTES
+    from rcp.machine_cards import LoginKey, host_of
     from rcp.providers import classify_terminal_error, profile_for
     from rcp.rcp_home import rcp_temp_dir
     from rcp.runs.provider_process import require_remote_provider_quiescence
-    from rcp.storage.models import LoginKey
     from rcp.transport.run_stage import run_stage_partition
 
     assert source.stage_root and source.native_session_id and request.provider
-    host = source.stage_host or ""
+    machine_id = source.stage_machine_id or BACKEND_MACHINE_ID
+    host = host_of(execution.store, machine_id)
     # A switch may not silently change the old session's sign-in as well.
     if source.login_id is None:
         raise _SessionSummaryUnavailable("sign_in")
-    login = LoginKey(request.provider, host, source.login_id)
+    login = LoginKey(request.provider, machine_id, source.login_id)
     accounts = ProviderAccounts.for_store(execution.store)
     resolved, _ = accounts.resolve_launch_login(
         request.provider,
-        host,
+        machine_id,
         source.authorized_by.user_id if source.authorized_by else None,
         session_id=source.native_session_id,
         lineage_login=login,
@@ -528,14 +537,14 @@ async def _summarize_thread_session(
     if request.provider == "opencode":
         raise _SessionSummaryUnavailable("provider_error")
     scope = await prepare_scope(request, source)
-    if scope.enforcement.status != "enforced" or scope.execution_host != host:
+    if scope.enforcement.status != "enforced" or scope.machine_id != machine_id:
         raise _SessionSummaryUnavailable("provider_error")
     workspace = _source_workspace(execution.store, source)
     if not host and (not workspace.is_dir() or workspace.is_symlink()):
         raise _SessionSummaryUnavailable("session_missing")
     if host:
         await asyncio.to_thread(
-            require_remote_provider_quiescence, execution.store, host, source.stage_root
+            require_remote_provider_quiescence, execution.store, machine_id, source.stage_root
         )
     pid_file = str(Path(source.stage_root) / f"summary-{uuid.uuid4()}.pid") if host else None
     prompt = (
@@ -573,6 +582,7 @@ async def _summarize_thread_session(
                 fork_source_cwd=str(workspace) if fork_session_id else None,
                 runtime_id=source.runtime_id,
                 login_key=login,
+                machine_id=machine_id,
                 host=host,
                 control=execution.control,
                 capability="session_summary",
@@ -580,7 +590,7 @@ async def _summarize_thread_session(
                 write_dirs=[],
                 write_scope=None,
                 hidden_read_scope=scope,
-                binary=launcher.provider_binary(request.provider, host),
+                binary=launcher.provider_binary(request.provider, machine_id),
                 operation_id=execution.operation_id,
                 remote_pid_file=pid_file,
                 transport_partition=run_stage_partition(host, source.stage_root) if host else None,
@@ -598,7 +608,7 @@ async def _summarize_thread_session(
                 if event.event == "remote_process_start":
                     execution.store.begin_remote_provider_pass(
                         execution.operation_id,
-                        host,
+                        machine_id,
                         source.stage_root,
                         event.text,
                         supervised=False,

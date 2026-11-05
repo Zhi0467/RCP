@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from rcp.limits import REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.graph import (
     _continuation_graph_context,
     _stage_graph_context,
@@ -114,7 +115,7 @@ def test_remote_graph_context_stages_only_project_owned_imports(
             context,
             service,
             stage,
-            "laptop",
+            BACKEND_MACHINE_ID,
             imported_source_inventory=inventory,
         )
 
@@ -225,6 +226,9 @@ def test_remote_prepared_context_keeps_ssh_outage_distinct_from_checkpoint_drift
     service = app.state.service
     project_id = app.state.default_project_id
     assert project_id is not None
+    remote = app.state.catalog.store.create_space_machine(
+        name="research", host="research.example", os_account=""
+    )
     now = "2026-08-31T12:00:00+00:00"
     record = AgentTaskRecord(
         operation_id="parent",
@@ -236,13 +240,16 @@ def test_remote_prepared_context_keeps_ssh_outage_distinct_from_checkpoint_drift
         updated_at=now,
         status_message="failed",
         native_session_id="native-session",
-        stage_host="research.example",
+        stage_machine_id=remote.machine_id,
         stage_root="/tmp/rcp-run.unreachable",
     )
 
     class Store:
         def agent_task(self, _operation_id):
             return record
+
+        def space_machine(self, machine_id):
+            return app.state.catalog.store.space_machine(machine_id)
 
         def record_agent_task_receipt(self, *_args, **_kwargs):
             raise AssertionError("an SSH outage must not invalidate the checkpoint")
@@ -264,10 +271,10 @@ def test_remote_prepared_context_keeps_ssh_outage_distinct_from_checkpoint_drift
             execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             imported_source_inventory=service.imported_source_inventory(
                 "refresh",
-                manifest.machine_map["laptop"],
+                BACKEND_MACHINE_ID,
             ),
         )
 
@@ -283,6 +290,9 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
     service = app.state.service
     project_id = app.state.default_project_id
     assert project_id is not None
+    remote = app.state.catalog.store.create_space_machine(
+        name="research", host="research.example", os_account=""
+    )
     inventory, _content, digest = _publish_imported_source(service, tmp_path)
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
@@ -295,7 +305,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
         context,
         service,
         stage,
-        "laptop",
+        BACKEND_MACHINE_ID,
         imported_source_inventory=inventory,
     )
     stage.finalize_inputs()
@@ -305,7 +315,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
         project_id=project_id,
         kind="refresh",
         graph_revision=staged.graph_revision,
-        execution_host="research.example",
+        machine_id=remote.machine_id,
         original_contract_path=str(stage.root / "inputs" / "task.md"),
         context=staged,
     )
@@ -321,7 +331,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
         updated_at=now,
         status_message="failed",
         native_session_id="native-session",
-        stage_host="research.example",
+        stage_machine_id=remote.machine_id,
         stage_root=str(stage.root),
     )
 
@@ -342,6 +352,9 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
 
         def agent_task(self, operation_id):
             return self.retry if operation_id == "retry" else record
+
+        def space_machine(self, machine_id):
+            return app.state.catalog.store.space_machine(machine_id)
 
         def agent_task_patch_output(self, _operation_id):
             return None
@@ -379,7 +392,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             resume_execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             imported_source_inventory=inventory,
         )
 
@@ -394,7 +407,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             retry_execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             imported_source_inventory=inventory,
         )
         assert clean_retry is not None
@@ -408,7 +421,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             clean_retry.prepared.context,
             service,
             retry_stage,
-            "laptop",
+            BACKEND_MACHINE_ID,
             imported_source_inventory=inventory,
         )
         retry_stage.finalize_inputs()
@@ -418,14 +431,14 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             project_id=project_id,
             kind="refresh",
             graph_revision=retry_context.graph_revision,
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             original_contract_path=str(retry_stage.root / "inputs" / "task.md"),
             context=retry_context,
         )
         retry_stage.finalize_inputs()
         store.retry = store.retry.model_copy(
             update={
-                "stage_host": "research.example",
+                "stage_machine_id": remote.machine_id,
                 "stage_root": str(retry_stage.root),
                 "native_session_id": "retry-native-session",
             }
@@ -444,7 +457,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             retry_resume_execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             imported_source_inventory=inventory,
         )
         assert resumed_retry.context.imported_source_roots == {
@@ -469,7 +482,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
                 resume_execution,
                 kind="refresh",
                 request=RunRequest(run_truth_scope=["repo-a"]),
-                execution_host="research.example",
+                machine_id=remote.machine_id,
                 imported_source_inventory=inventory,
             )
 
@@ -478,7 +491,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             retry_execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="research.example",
+            machine_id=remote.machine_id,
             imported_source_inventory=inventory,
         )
         assert retry is not None

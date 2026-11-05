@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from rcp.machine_cards import LoginKey
     from rcp.storage import AppStore
-    from rcp.storage.models import LoginKey
 
 
 def remove_remote_credential(login_id: str, relative_paths: tuple[str, ...]) -> None:
@@ -31,7 +31,7 @@ def remove_remote_credential(login_id: str, relative_paths: tuple[str, ...]) -> 
 
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
-    """Fence own logins, then delete credentials nothing runs on; return unreached hosts."""
+    """Fence own logins, then delete credentials nothing runs on; return unreached machine ids."""
     fence_member_provider_logins(store, member_id)
     return delete_member_provider_credentials(store, member_id)
 
@@ -49,7 +49,7 @@ def fence_member_provider_logins(store: AppStore, member_id: str) -> None:
 
 
 def delete_member_provider_credentials(store: AppStore, member_id: str) -> tuple[str, ...]:
-    """Delete fenced own credentials nothing runs on; return unreached hosts."""
+    """Delete fenced own credentials nothing runs on; return unreached machine ids."""
     from rcp.runs.provider_login import bound_running_count, delete_removed_credential
 
     # Include earlier passes' rows: their credentials may still be pending.
@@ -58,30 +58,31 @@ def delete_member_provider_credentials(store: AppStore, member_id: str) -> tuple
         # A turn already running on a fenced login keeps its credential until it ends.
         running = bool(bound_running_count(store, login))
         if not delete_removed_credential(store, login, defer=running) and not running:
-            unreached.add(login.host)
+            unreached.add(login.machine_id)
     return tuple(sorted(unreached))
 
 
 def _member_logins(store: AppStore, member_id: str) -> list[tuple[sqlite3.Row, LoginKey]]:
-    from rcp.storage.models import LoginKey
+    from rcp.machine_cards import LoginKey
 
     with store.connection() as connection:
         rows = connection.execute(
-            "SELECT provider, host, login_id, removed_at FROM provider_login_states "
+            "SELECT provider, machine_id, login_id, removed_at FROM provider_login_states "
             "WHERE member_id = ?",
             (member_id,),
         ).fetchall()
-    return [(row, LoginKey(row["provider"], row["host"], row["login_id"])) for row in rows]
+    return [(row, LoginKey(row["provider"], row["machine_id"], row["login_id"])) for row in rows]
 
 
 def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
-    """Delete only this added credential; False means its remote host was unreached.
+    """Delete only this added credential; False means its remote machine was unreached.
 
     The caller owns the durable fence. This also cleans a native credential
     written by a device attempt that completed after its login was removed.
     """
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
+    from rcp.machine_cards import host_of
     from rcp.providers import profile_for
     from rcp.transport.ssh import ssh_arguments
 
@@ -94,7 +95,11 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
     directory = credentials.account_dir(*login)
     for relative in profile.login_credential_files:
         (directory / relative).unlink(missing_ok=True)
-    if not login.host:
+    try:
+        host = host_of(store, login.machine_id)
+    except KeyError:
+        return False
+    if not host:
         for name in profile.login_home_credentials:
             (credentials.login_home(login.provider, login.login_id) / name).unlink(missing_ok=True)
         return True
@@ -104,7 +109,7 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
     )
     try:
         result = subprocess.run(
-            ssh_arguments(login.host, command),
+            ssh_arguments(host, command),
             capture_output=True,
             timeout=PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS,
             check=False,

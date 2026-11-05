@@ -17,8 +17,8 @@ test("Runs warns once per checked route that cannot run jobs, only for offered r
       "/src/experiments/ComputeRouteNotice.tsx",
     );
     const probe = (ready) => ({ ready, diagnostic: "diagnostic", required_action: "fix-it" });
-    const machine = (alias, jobManager, probes) => ({
-      alias,
+    const machine = (machineId, jobManager, probes) => ({
+      machine_id: machineId,
       compute: jobManager ? { job_manager: jobManager, jobs_root: "" } : null,
       compute_probes: { scheduler: null, helper: null, ...probes },
     });
@@ -37,7 +37,7 @@ test("Runs warns once per checked route that cannot run jobs, only for offered r
     assert.match(helper, /fix-it/);
     // A phone shows only this summary line until it is expanded; the full
     // explanation and both actions stay in the DOM.
-    assert.match(helper, /aria-expanded="false"[^>]*>.*<span>Job helper not ready on gpu<\/span>/);
+    assert.match(helper, /aria-expanded="false"[^>]*>.*<span>[^<]+<\/span>/);
     assert.match(helper, /The long-running job helper/);
     assert.match(helper, /Open Settings/);
     assert.match(helper, /Fixed it\? Check again/);

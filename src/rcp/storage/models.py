@@ -51,6 +51,7 @@ from rcp.limits import (
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import (
     ProviderId,
     ProviderSkill,
@@ -64,7 +65,6 @@ from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import (
     ExternalServiceTarget,
-    MachineTarget,
     MessageText,
     ServerStep,
     redact_server_text,
@@ -285,8 +285,8 @@ class ProjectRecord(BaseModel):
     home_space_id: str | None = None
     locator: str
     name: str
-    state_location: str
-    state_remote: bool
+    state_machine_id: str
+    state_path: str
     added_at: str
     last_opened_at: str | None = None
     revision: int | None = None
@@ -298,6 +298,7 @@ class ProjectRecord(BaseModel):
     retired_at: str | None = None
     retired_transfer_request_id: str | None = None
     group_id: str | None = None
+    machine_ids_pending: bool = False
 
     @field_validator("home_space_id")
     @classmethod
@@ -370,7 +371,7 @@ ProjectTransferProofState = Literal[
 ]
 
 _PROVISIONING_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
-_PROVISIONING_HOST = re.compile(r"[A-Za-z0-9_.@:-]{1,255}")
+_MACHINE_ID = re.compile(rf"(?:{BACKEND_MACHINE_ID}|[0-9a-f]{{32}})?")
 _PROVISIONING_ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 _PROVISIONING_RUNTIME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,127}")
 _PROVISIONING_PHASE = re.compile(r"[a-z][a-z0-9_]{0,63}")
@@ -421,53 +422,29 @@ class _StrictProvisioningModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, revalidate_instances="always")
 
 
+def _machine_id(value: str) -> str:
+    """A space card id; empty names a machine the space no longer has."""
+
+    if _MACHINE_ID.fullmatch(value) is None:
+        raise ValueError("machine id is invalid")
+    return value
+
+
 class ProjectProvisioningMachineIntent(_StrictProvisioningModel):
-    alias: str
-    location: Literal["local", "ssh"]
-    host: str = ""
-    os_account: str
+    """One space card a request places repositories on; its route lives on the card."""
+
+    machine_id: str
     central_root: str | None = None
 
-    @field_validator("alias")
+    @field_validator("machine_id")
     @classmethod
-    def validate_alias(cls, value: str) -> str:
-        if _PROVISIONING_ALIAS.fullmatch(value) is None:
-            raise ValueError("provisioning machine alias is invalid")
-        return value
-
-    @field_validator("host")
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        if value and _PROVISIONING_HOST.fullmatch(value) is None:
-            raise ValueError("provisioning SSH host is invalid")
-        if redact_server_text(value) != value:
-            raise ValueError("provisioning SSH host cannot contain credential-shaped text")
-        return value
-
-    @field_validator("os_account")
-    @classmethod
-    def validate_os_account(cls, value: str) -> str:
-        if _PROVISIONING_ACCOUNT.fullmatch(value) is None:
-            raise ValueError("provisioning operating-system account is invalid")
-        return value
+    def validate_machine_id(cls, value: str) -> str:
+        return _machine_id(value)
 
     @field_validator("central_root")
     @classmethod
     def validate_central_root(cls, value: str | None) -> str | None:
         return _optional_provisioning_path(value, label="provisioning central root")
-
-    @model_validator(mode="after")
-    def validate_location(self) -> ProjectProvisioningMachineIntent:
-        if self.location == "local":
-            if self.host:
-                raise ValueError("the server-local provisioning machine cannot name an SSH host")
-            if self.os_account != DEFAULT_SERVER_LAYOUT.service_account:
-                raise ValueError("the server-local provisioning machine must execute as rcp")
-            if self.central_root != str(DEFAULT_SERVER_LAYOUT.projects_root):
-                raise ValueError("the server-local provisioning root is fixed by the installation")
-        elif not self.host:
-            raise ValueError("an SSH provisioning machine requires a configured host")
-        return self
 
 
 class ProjectProvisioningMachineRecord(ProjectProvisioningMachineIntent):
@@ -539,7 +516,7 @@ class ProjectProvisioningGitCheckRecord(_StrictProvisioningModel):
 class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
     alias: str
     repository: GitHubRepositoryRef | None = None
-    machine_alias: str
+    machine_id: str
     count_as_project_truth: bool = True
     # An existing Git work tree adopted in place: server-only code RCP does not
     # back up. Omitted when absent so earlier records keep their exact bytes.
@@ -549,12 +526,17 @@ class ProjectProvisioningRepositoryIntent(_StrictProvisioningModel):
     def source_kind(self) -> Literal["github", "server_only"]:
         return "github" if self.repository is not None else "server_only"
 
-    @field_validator("alias", "machine_alias")
+    @field_validator("alias")
     @classmethod
     def validate_alias(cls, value: str) -> str:
         if _PROVISIONING_ALIAS.fullmatch(value) is None:
-            raise ValueError("provisioning repository or machine alias is invalid")
+            raise ValueError("provisioning repository alias is invalid")
         return value
+
+    @field_validator("machine_id")
+    @classmethod
+    def validate_machine_id(cls, value: str) -> str:
+        return _machine_id(value)
 
     @field_validator("existing_path")
     @classmethod
@@ -605,7 +587,7 @@ class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
     model: str = Field(max_length=200)
     # Empty for a model that takes no reasoning effort.
     reasoning: str = Field(max_length=80)
-    machine_alias: str
+    machine_id: str
 
     @field_validator("runtime_id")
     @classmethod
@@ -625,17 +607,17 @@ class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
             raise ValueError("provisioning provider model cannot contain credential-shaped text")
         return value
 
-    @field_validator("reasoning", "machine_alias")
+    @field_validator("reasoning")
     @classmethod
-    def validate_plain_value(cls, value: str, info: ValidationInfo) -> str:
-        pattern = (
-            _PROVISIONING_ALIAS
-            if info.field_name == "machine_alias"
-            else re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,79})?")
-        )
-        if pattern.fullmatch(value) is None:
-            raise ValueError(f"provisioning provider {info.field_name} is invalid")
+    def validate_reasoning(cls, value: str) -> str:
+        if re.fullmatch(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,79})?", value) is None:
+            raise ValueError("provisioning provider reasoning is invalid")
         return value
+
+    @field_validator("machine_id")
+    @classmethod
+    def validate_machine_id(cls, value: str) -> str:
+        return _machine_id(value)
 
 
 class ProjectProvisioningProviderCheckRecord(ProjectProvisioningProviderIntent):
@@ -810,9 +792,9 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
             raise ValueError("create provisioning cannot target an existing project")
         elif not self.provider_checks:
             raise ValueError("create provisioning requires provider checks")
-        machine_map = {machine.alias: machine for machine in self.machines}
+        machine_map = {machine.machine_id: machine for machine in self.machines}
         if len(machine_map) != len(self.machines):
-            raise ValueError("provisioning machine aliases must be unique")
+            raise ValueError("provisioning machines must be unique")
         repository_aliases = [repository.alias for repository in self.repositories]
         if len(set(repository_aliases)) != len(repository_aliases):
             raise ValueError("provisioning repository aliases must be unique")
@@ -845,7 +827,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
             if not set(self.default_run_truth_scope).issubset(set(self.project_truth_scope)):
                 raise ValueError("provisioning default run truth scope must be a project subset")
         for repository in self.repositories:
-            machine = machine_map.get(repository.machine_alias)
+            machine = machine_map.get(repository.machine_id)
             if machine is None:
                 raise ValueError("provisioning repository names an unknown machine")
             if repository.existing_path is not None:
@@ -896,7 +878,7 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
         profiles = [check.profile for check in self.provider_checks]
         if len(set(profiles)) != len(profiles):
             raise ValueError("provisioning provider profiles must be unique")
-        if any(check.machine_alias not in machine_map for check in self.provider_checks):
+        if any(check.machine_id not in machine_map for check in self.provider_checks):
             raise ValueError("provisioning provider check names an unknown machine")
         if self.status == "operator_action_needed":
             if self.operator_action is None:
@@ -938,24 +920,15 @@ class ProjectProvisioningRequestRecord(_StrictProvisioningModel):
                     raise ValueError(
                         "provisioning external action must target one declared GitHub repository"
                     )
-            elif isinstance(target, MachineTarget):
-                if not any(
-                    machine.os_account == target.os_account
-                    and (machine.location == "local" or machine.host == target.host)
-                    for machine in self.machines
-                ):
-                    raise ValueError(
-                        "provisioning machine action must target one declared execution account"
-                    )
         elif self.operator_action is not None:
             raise ValueError("only operator-action provisioning may retain an operator action")
         review_status = self.status in {"ready_for_review", "completed"}
         if review_status:
             if self.final_review_digest is None or self.ready_at is None:
                 raise ValueError("reviewable provisioning requires a digest and ready time")
-            repository_machines = {repository.machine_alias for repository in self.repositories}
+            repository_machines = {repository.machine_id for repository in self.repositories}
             if any(
-                machine.alias in repository_machines and machine.resolved_central_root is None
+                machine.machine_id in repository_machines and machine.resolved_central_root is None
                 for machine in self.machines
             ):
                 raise ValueError("reviewable provisioning requires every checkout central root")
@@ -1030,7 +1003,6 @@ class ProjectProvisioningStepReceiptRecord(_StrictProvisioningModel):
 class ProjectTransferRepositorySource(_StrictProvisioningModel):
     alias: str
     repository: GitHubRepositoryRef | None
-    machine_alias: str
     source_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
     @model_serializer(mode="wrap")
@@ -1041,11 +1013,11 @@ class ProjectTransferRepositorySource(_StrictProvisioningModel):
             payload.pop("source_commit", None)
         return payload
 
-    @field_validator("alias", "machine_alias")
+    @field_validator("alias")
     @classmethod
     def validate_alias(cls, value: str) -> str:
         if _PROVISIONING_ALIAS.fullmatch(value) is None:
-            raise ValueError("transfer repository or machine alias is invalid")
+            raise ValueError("transfer repository alias is invalid")
         return value
 
 
@@ -1053,7 +1025,6 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
     source_rcp_version: str = Field(min_length=1, max_length=120)
     source_schema_generation: int = Field(ge=1)
     supported_archive_codecs: tuple[str, ...] = Field(min_length=1, max_length=16)
-    machine_aliases: tuple[str, ...] = Field(min_length=1, max_length=32)
     repositories: tuple[ProjectTransferRepositorySource, ...] = Field(
         min_length=1,
         max_length=64,
@@ -1089,15 +1060,6 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
             _PROVISIONING_RUNTIME.fullmatch(item) is None for item in value
         ):
             raise ValueError("transfer archive codecs must be unique safe identifiers")
-        return value
-
-    @field_validator("machine_aliases")
-    @classmethod
-    def validate_machine_aliases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)) or any(
-            _PROVISIONING_ALIAS.fullmatch(alias) is None for alias in value
-        ):
-            raise ValueError("transfer machine aliases must be unique safe identifiers")
         return value
 
     @field_validator("state_repository")
@@ -1150,10 +1112,6 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
             raise ValueError("transfer repository aliases must be unique")
         if len(identities) != len(set(identities)):
             raise ValueError("one GitHub repository cannot appear twice in transfer provenance")
-        if not {repository.machine_alias for repository in self.repositories}.issubset(
-            self.machine_aliases
-        ):
-            raise ValueError("transfer repository names an unknown historical machine alias")
         alias_set = set(aliases)
         if self.state_repository not in alias_set:
             raise ValueError("transfer state repository must name a declared repository")
@@ -1181,15 +1139,20 @@ class ProjectTransferSourceConfiguration(_StrictProvisioningModel):
 
 class ProjectTransferResolvedPath(_StrictProvisioningModel):
     repository_alias: str
-    machine_alias: str
+    machine_id: str
     path: str
 
-    @field_validator("repository_alias", "machine_alias")
+    @field_validator("repository_alias")
     @classmethod
     def validate_alias(cls, value: str) -> str:
         if _PROVISIONING_ALIAS.fullmatch(value) is None:
             raise ValueError("resolved transfer alias is invalid")
         return value
+
+    @field_validator("machine_id")
+    @classmethod
+    def validate_machine_id(cls, value: str) -> str:
+        return _machine_id(value)
 
     @field_validator("path")
     @classmethod
@@ -1997,7 +1960,7 @@ class ProviderSkillInventoryRecord(BaseModel):
     """One durable last-known provider-native skill inventory."""
 
     provider: str
-    host: str
+    machine_id: str
     configured_binary: str
     resolved_binary: str | None = None
     provider_version: str | None = None
@@ -2151,7 +2114,7 @@ class ChatSessionContextRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = Field(min_length=1)
-    execution_machine: str = Field(min_length=1)
+    machine_id: str
     native_session_id: str = Field(min_length=1)
     project_id: str = Field(min_length=1)
     kind: Literal["node_chat", "project_chat", "space_chat"]
@@ -2170,7 +2133,7 @@ class RunStageLifecycleRecord(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    stage_host: str
+    stage_machine_id: str
     stage_root: str = Field(min_length=1)
     owner_refs: tuple[str, ...]
     must_exist: bool
@@ -2197,7 +2160,7 @@ class ArtifactRevisionCandidateRecord(BaseModel):
     source_operation_id: str = Field(min_length=1)
     source_artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     revision_operation_id: str = Field(min_length=1)
-    stage_host: str
+    stage_machine_id: str
     stage_root: str = Field(min_length=1)
     artifact_scope_id: str = Field(min_length=1)
     source_name: str = Field(min_length=1, max_length=255)
@@ -2265,7 +2228,7 @@ class AgentTaskRecord(BaseModel):
     #: What the provider reported live about this turn; display only.
     agent_status: AgentStatus | None = None
     history_only: bool = False
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     write_scope_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -2604,10 +2567,9 @@ class EpisodeWrapupRecord(BaseModel):
     concluding_operation_id: str | None = None
     allocation_operation_id: str | None = None
     provider: str | None = None
-    run_on: str | None = None
-    execution_host: str | None = None
+    machine_id: str | None = None
     native_session_id: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     skill_id: str | None = None
     skill_version: str | None = None
@@ -2998,7 +2960,7 @@ class AutoResearchActorBinding(BaseModel):
     control_node_id: str | None = None
     current_operation_id: str
     native_session_id: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
 
 
@@ -3047,10 +3009,9 @@ class ExperimentEpisodeRecord(BaseModel):
     control_node_id: str
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     provider: str | None = None
-    execution_machine: str | None = None
-    execution_host: str = ""
+    machine_id: str | None = None
     native_session_id: str | None = None
-    stage_host: str | None = None
+    stage_machine_id: str | None = None
     stage_root: str | None = None
     chat_id: str | None = None
     last_turn_operation_id: str | None = None
@@ -3071,7 +3032,7 @@ class ExperimentEpisodeRecord(BaseModel):
         return bool(
             self.native_session_id
             and self.provider
-            and self.execution_machine
+            and self.machine_id
             and self.stage_root
             and self.chat_id
         )
@@ -3109,7 +3070,6 @@ class ExperimentLoopRuntime(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     run_on: str | None = None
-    execution_host: str | None = None
     run_truth_scope: list[str] | None = None
     workflow_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
@@ -3359,7 +3319,7 @@ class WatcherDeliveryRecord(BaseModel):
     episode_id: str | None = None
     worker_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    execution_host: str = ""
+    machine_id: str = ""
     continuation: WatcherContinuation
     status: WatcherStatus = "active"
     created_at: str
@@ -3455,7 +3415,7 @@ class ExperimentWatcherResourceRecord(BaseModel):
     control_node_id: str
     episode_id: str
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    execution_host: str
+    machine_id: str
     wake_task_kind: Literal["node_chat"]
     wake_chat_id: str
     continuation: WatcherContinuation
@@ -3781,15 +3741,9 @@ MACHINE_LOGIN_ID = ""
 ProviderLoginSetting = Literal["own", "own_then_shared", "shared_then_own", "shared"]
 
 
-class LoginKey(NamedTuple):
-    provider: str
-    host: str
-    login_id: str
-
-
 class ProviderLoginAssignmentRecord(BaseModel):
     provider: str
-    host: str
+    machine_id: str
     login_id: str
     last_assigned_at: str | None = None
     limited_at: str | None = None
@@ -3798,7 +3752,7 @@ class ProviderLoginAssignmentRecord(BaseModel):
 class ProviderLoginSettingRecord(BaseModel):
     user_id: str
     provider: str
-    host: str
+    machine_id: str
     setting: ProviderLoginSetting
     changed_at: str = ""
 
@@ -3809,7 +3763,7 @@ class ProviderLoginStateRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str
-    host: str
+    machine_id: str
     login_id: str = MACHINE_LOGIN_ID
     member_id: str | None = None
     added_by: str | None = None
@@ -3834,12 +3788,20 @@ class ProviderReadinessSnapshotRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str
-    host: str
+    machine_id: str
     login_id: str = MACHINE_LOGIN_ID
     binary: str
     version: str
     readiness_json: str
     probed_at: str
+
+
+class SpaceMachineHostInUse(ValueError):
+    """Another card already holds this SSH host; the API answers a plain 409."""
+
+    def __init__(self, host: str) -> None:
+        super().__init__("this space already has a machine for that host")
+        self.host = host
 
 
 class SpaceMachineRecord(BaseModel):
@@ -3895,9 +3857,9 @@ class SpaceMachineRecord(BaseModel):
 
 
 __all__ = [
+    "SpaceMachineHostInUse",
     "SpaceMachineRecord",
     "MACHINE_LOGIN_ID",
-    "LoginKey",
     "ProviderLoginSetting",
     "ProviderLoginSettingRecord",
     "ProviderLoginAssignmentRecord",

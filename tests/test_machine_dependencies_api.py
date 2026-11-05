@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.core.models import DependencyStatus, MissingProgram
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from tests.helpers import create_named_app, signed_in_client
 
 
@@ -37,7 +38,7 @@ def app(manifest, tmp_path):
 def test_the_card_reads_the_checker_for_local_and_remote_machines(app) -> None:
     client = signed_in_client(app)
     machines = client.get("/api/space/machines").json()["machines"]
-    laptop = next(machine for machine in machines if machine["name"] == "laptop")
+    laptop = next(machine for machine in machines if machine["machine_id"] == BACKEND_MACHINE_ID)
     remote = client.post(
         "/api/space/machines",
         json={"name": "GPU", "host": "alice@gpu.example", "os_account": "alice"},

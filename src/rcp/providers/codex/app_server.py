@@ -16,7 +16,7 @@ from rcp.providers.base import (
     ProviderTurn,
     ProviderTurnRequest,
     ProviderUsage,
-    _paper_changes_root,
+    _paper_write_roots,
     _require_project_write_scope,
     _require_provider_version,
 )
@@ -127,7 +127,7 @@ class _CodexAppServerTurn(ProviderTurn):
                     'default_permissions="rcp_paper"',
                     "--config",
                     _codex_paper_permission_profile(
-                        _paper_changes_root(request.write_dirs), request.hidden_read_scope
+                        _paper_write_roots(request.write_dirs), request.hidden_read_scope
                     ),
                 ]
             )

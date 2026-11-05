@@ -24,11 +24,12 @@ from rcp.limits import (
     PROVIDER_SIGN_IN_TIMEOUT_SECONDS,
     PROVIDER_SIGN_OUT_TIMEOUT_SECONDS,
 )
+from rcp.machine_cards import LoginKey, card, host_of
 from rcp.provider_auth import DeviceLogin
 from rcp.providers import profile_for
 from rcp.runs.provider_login import delete_removed_credential, reconcile_login_removals
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey, ProviderLoginStateRecord
+from rcp.storage.models import MACHINE_LOGIN_ID, ProviderLoginStateRecord
 from rcp.transport.ssh import ssh_arguments
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class ProviderSignInStatus(BaseModel):
     attempt_id: str
     login_id: str = MACHINE_LOGIN_ID
     provider: str
-    host: str
+    machine_id: str
     state: Literal["pending", "succeeded", "failed"]
     user_code: str | None = None
     verification_url: str | None = None
@@ -143,7 +144,7 @@ class ProviderSignInRunner:
             self.launcher.invalidate_readiness(login)
         return True
 
-    def provider_binary(self, provider: str, host: str) -> tuple[str, set[str]]:
+    def provider_binary(self, provider: str, machine_id: str) -> tuple[str, set[str]]:
         """The executable RCP would launch on this account, and the path its card records.
 
         The account must be a space machine. The card's recorded provider path is
@@ -151,20 +152,22 @@ class ProviderSignInRunner:
         the provider on that machine, so a native install off PATH still signs in.
         """
 
-        card = self.store.space_machine_for(host) if host else None
-        if host and card is None:
-            raise ProviderLoginRefused("Unknown provider execution host.")
-        if card is not None and card.os_account:
+        try:
+            machine = card(self.store, machine_id)
+        except KeyError as exc:
+            raise ProviderLoginRefused("Unknown provider machine.") from exc
+        host = machine.host
+        if host and machine.os_account:
             # A host naming no user takes its account from SSH configuration;
             # never touch another account's provider state.
             reached = self.launcher.execution_account(host=host)
             if not reached.reachable:
                 raise ProviderLoginRefused(reached.reason or "The machine is unreachable.")
-            if reached.os_account != card.os_account:
+            if reached.os_account != machine.os_account:
                 raise ProviderLoginRefused(
-                    f"{host} reached account {reached.os_account}, not {card.os_account}."
+                    f"{host} reached account {reached.os_account}, not {machine.os_account}."
                 )
-        binary = self.store.provider_binary(provider, host)
+        binary = self.store.provider_binary(provider, machine_id)
         binaries = {binary} if binary else set()
         if binary is None:
             # Read through the module so the suite's discovery seam covers sign-in too.
@@ -196,7 +199,7 @@ class ProviderSignInRunner:
                 s
                 for s in self._sign_ins.values()
                 if s.provider == login.provider
-                and s.host == login.host
+                and s.machine_id == login.machine_id
                 and s.login_id == login.login_id
                 and s.state == "pending"
             ),
@@ -217,7 +220,7 @@ class ProviderSignInRunner:
             return
         with self._recovery_lock:
             for state in self.store.provider_login_states():
-                key = LoginKey(state.provider, state.host, state.login_id)
+                key = LoginKey(state.provider, state.machine_id, state.login_id)
                 if (
                     state.state != "signed_in"
                     or state.source != "verify"
@@ -236,7 +239,7 @@ class ProviderSignInRunner:
 
     def verify(self, login: LoginKey, *, member_id: str) -> ProviderLoginStateRecord:
         self.require_login(login, member_id=member_id)
-        binary, binaries = self.provider_binary(login.provider, login.host)
+        binary, binaries = self.provider_binary(login.provider, login.machine_id)
         with self.launcher.credential_gate.hold_blocking(login):
             try:
                 state = self._verify_locked(login, binary, binaries, member_id)
@@ -270,7 +273,7 @@ class ProviderSignInRunner:
         # Device verification must probe even a signed-out row: a newly accepted
         # device credential has not yet earned signed_in in durable storage.
         if "device_code" not in auth.methods and not auth.credential_available(
-            self.credentials, login.host, login.login_id, login_state=current
+            self.credentials, login.machine_id, login.login_id, login_state=current
         ):
             self.store.mark_provider_login_signed_out(
                 login,
@@ -282,14 +285,15 @@ class ProviderSignInRunner:
         command = profile.login_probe_command(binary)
         if command is None:
             raise ProviderLoginRefused("Verification is not supported by this provider.")
+        host = host_of(self.store, login.machine_id)
         try:
-            auth.prepare_verification(self.credentials, login.host, login.login_id)
+            auth.prepare_verification(self.credentials, login.machine_id, login.login_id, host=host)
         except ValueError as exc:
             raise ProviderLoginRefused(str(exc)) from exc
         environment = self.launcher.process_environment(login)
         current = self.store.provider_login_state(login)
         result = self.launcher._probe(
-            login.host,
+            host,
             command,
             timeout=PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
             environment=environment,
@@ -309,7 +313,7 @@ class ProviderSignInRunner:
             )
             raise ProviderLoginRefused(detail)
         self.require_login(login, member_id=member_id)
-        auth.verified(self.credentials, login.host, login.login_id, now=self.store.now())
+        auth.verified(self.credentials, login.machine_id, login.login_id, now=self.store.now())
         try:
             state = self.store.mark_provider_login_verified(
                 login,
@@ -334,7 +338,7 @@ class ProviderSignInRunner:
                 "Device sign-in is not supported by this provider.", status_code=422
             )
         # Resolved before the lock: it may probe the machine over SSH.
-        binary, _ = self.provider_binary(login.provider, login.host)
+        binary, _ = self.provider_binary(login.provider, login.machine_id)
         member = self.store.space_user(member_id)
         with self._lock:
             running = self._running(login)
@@ -345,7 +349,7 @@ class ProviderSignInRunner:
                 attempt_id=str(uuid.uuid4()),
                 login_id=login.login_id,
                 provider=login.provider,
-                host=login.host,
+                machine_id=login.machine_id,
                 state="pending",
                 started_at=self.store.now(),
                 started_by=member_id,
@@ -375,7 +379,7 @@ class ProviderSignInRunner:
             if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
                 settled.append(
                     self.store.mark_provider_login_signed_out(
-                        LoginKey(state.provider, state.host, state.login_id),
+                        LoginKey(state.provider, state.machine_id, state.login_id),
                         member_id=None,
                         source="restore",
                         detail=SIGN_IN_INTERRUPTED_DETAIL,
@@ -455,12 +459,13 @@ class ProviderSignInRunner:
         if canceled:
             raise canceled
         argv = [*environment.command_prefix, *login.command(binary)]
+        host = host_of(self.store, status.machine_id)
         arguments = (
             ssh_arguments(
-                status.host,
+                host,
                 AgentLauncher._remote_login_command(argv, prefix=environment.remote_prefix),
             )
-            if status.host
+            if host
             else argv
         )
         process = self._popen(
@@ -469,7 +474,7 @@ class ProviderSignInRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            env=environment.local_env if not status.host else None,
+            env=environment.local_env if not host else None,
         )
         with self._lock:
             # Registering and consuming settle under one lock: a cancellation
@@ -537,7 +542,7 @@ class ProviderSignInRunner:
             self._sign_ins[attempt_id] = self._sign_ins[attempt_id].model_copy(update=changes)
 
     def _run_sign_in(self, status: ProviderSignInStatus, binary: str) -> None:
-        login = LoginKey(status.provider, status.host, status.login_id)
+        login = LoginKey(status.provider, status.machine_id, status.login_id)
         auth = profile_for(login.provider).authentication
         try:
             with self.launcher.credential_gate.hold_blocking(login):
@@ -620,7 +625,7 @@ class ProviderSignInRunner:
             raise ProviderLoginRefused(
                 "Token entry is not supported by this provider.", status_code=422
             )
-        binary, binaries = self.provider_binary(login.provider, login.host)
+        binary, binaries = self.provider_binary(login.provider, login.machine_id)
         with self.launcher.credential_gate.hold_blocking(login):
             self.require_login(login, member_id=member_id)
             try:
@@ -640,7 +645,7 @@ class ProviderSignInRunner:
                 try:
                     auth.save_token(
                         self.credentials,
-                        login.host,
+                        login.machine_id,
                         login.login_id,
                         token,
                         member_id=member_id,
@@ -671,7 +676,7 @@ class ProviderSignInRunner:
             raise ProviderLoginRefused(
                 "Sign-out is not supported by this provider.", status_code=422
             )
-        binary, binaries = self.provider_binary(login.provider, login.host)
+        binary, binaries = self.provider_binary(login.provider, login.machine_id)
         with self.launcher.credential_gate.hold_blocking(login):
             self.require_login(login, member_id=member_id)
             detail = "Signed out by a member."
@@ -683,13 +688,14 @@ class ProviderSignInRunner:
             )
             self._forget_readiness(login, binaries)
             try:
+                host = host_of(self.store, login.machine_id)
                 command = profile_for(login.provider).authentication.sign_out(
-                    self.credentials, login.host, login.login_id, binary
+                    self.credentials, login.machine_id, login.login_id, binary, host=host
                 )
                 if command:
                     environment = self.launcher.process_environment(login)
                     result = self.launcher._probe(
-                        login.host,
+                        host,
                         command,
                         timeout=PROVIDER_SIGN_OUT_TIMEOUT_SECONDS,
                         environment=environment,

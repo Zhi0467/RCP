@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.resources
 import json
 import os
@@ -25,6 +24,7 @@ if TYPE_CHECKING:
     from rcp.config import Manifest
     from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope
     from rcp.providers import AgentCapability, ProviderId
+    from rcp.storage.models import SpaceMachineRecord
     from rcp.transport.run_stage import RemoteRunStage
 
 
@@ -128,12 +128,12 @@ class ProviderProcessEnvironment:
 LOGIN_HOMES = "provider-homes"
 
 
-def account_directory_name(host: str) -> str:
-    """One path-safe directory per execution account; the local account is `local`."""
+def account_directory_name(machine_id: str) -> str:
+    """One path-safe directory per space card: `machine-<machine_id>`."""
 
-    if not host:
-        return "local"
-    return "remote-" + hashlib.sha256(host.encode()).hexdigest()
+    if not machine_id or quote(machine_id, safe="") != machine_id or machine_id in {".", ".."}:
+        raise ValueError("Invalid credential machine.")
+    return f"machine-{machine_id}"
 
 
 def validate_login_id(login_id: str) -> None:
@@ -164,11 +164,11 @@ class ProviderCredentialStore:
 
         return cls(data_dir / "providers")
 
-    def account_dir(self, provider: str, host: str, login_id: str) -> Path:
+    def account_dir(self, provider: str, machine_id: str, login_id: str) -> Path:
         if provider in {"", ".", ".."}:
             raise ValueError("Invalid credential namespace.")
         validate_login_id(login_id)
-        directory = self.root / quote(provider, safe="") / account_directory_name(host)
+        directory = self.root / quote(provider, safe="") / account_directory_name(machine_id)
         return directory / "logins" / login_id if login_id else directory
 
     def login_home(self, provider: str, login_id: str) -> Path:
@@ -179,56 +179,65 @@ class ProviderCredentialStore:
         """
         if not login_id:
             raise ValueError("The machine sign-in has no added home.")
-        self.account_dir(provider, "", login_id)
+        validate_login_id(login_id)
         return self.root.parent / LOGIN_HOMES / quote(provider, safe="") / login_id
 
-    def token_path(self, provider: str, host: str, login_id: str) -> Path:
-        return self.account_dir(provider, host, login_id) / "setup-token"
+    def token_path(self, provider: str, machine_id: str, login_id: str) -> Path:
+        return self.account_dir(provider, machine_id, login_id) / "setup-token"
 
-    def token_record(self, provider: str, host: str, login_id: str) -> CredentialRecord | None:
-        path = self.account_dir(provider, host, login_id) / "setup-token.json"
+    def token_record(
+        self, provider: str, machine_id: str, login_id: str
+    ) -> CredentialRecord | None:
+        path = self.account_dir(provider, machine_id, login_id) / "setup-token.json"
         try:
             return CredentialRecord.model_validate(json.loads(path.read_text()))
         except (OSError, ValueError):
             return None
 
-    def token(self, provider: str, host: str, login_id: str) -> str | None:
+    def token(self, provider: str, machine_id: str, login_id: str) -> str | None:
         try:
-            token = self.token_path(provider, host, login_id).read_text().strip()
+            token = self.token_path(provider, machine_id, login_id).read_text().strip()
         except OSError:
             return None
         return token or None
 
     def store_token(
-        self, provider: str, host: str, token: str, *, member_id: str, now: str, login_id: str
+        self,
+        provider: str,
+        machine_id: str,
+        token: str,
+        *,
+        member_id: str,
+        now: str,
+        login_id: str,
     ) -> CredentialRecord:
-        directory = self.account_dir(provider, host, login_id)
+        directory = self.account_dir(provider, machine_id, login_id)
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-        _write_private(self.token_path(provider, host, login_id), token + "\n")
+        _write_private(self.token_path(provider, machine_id, login_id), token + "\n")
         record = CredentialRecord(pasted_at=now, pasted_by=member_id)
         _write_private(directory / "setup-token.json", record.model_dump_json(indent=2) + "\n")
         return record
 
     def mark_token_verified(
-        self, provider: str, host: str, login_id: str, *, now: str
+        self, provider: str, machine_id: str, login_id: str, *, now: str
     ) -> CredentialRecord | None:
-        record = self.token_record(provider, host, login_id)
+        record = self.token_record(provider, machine_id, login_id)
         if record is None:
             return None
         record = record.model_copy(update={"verified_at": now})
         _write_private(
-            self.account_dir(provider, host, login_id) / "setup-token.json",
+            self.account_dir(provider, machine_id, login_id) / "setup-token.json",
             record.model_dump_json(indent=2) + "\n",
         )
         return record
 
-    def delete_token(self, provider: str, host: str, login_id: str) -> bool:
+    def delete_token(self, provider: str, machine_id: str, login_id: str) -> bool:
         """Remove the token and its record; True when a token was stored."""
 
-        existed = self.token_path(provider, host, login_id).exists()
+        existed = self.token_path(provider, machine_id, login_id).exists()
         for name in ("setup-token", "setup-token.json"):
-            (self.account_dir(provider, host, login_id) / name).unlink(missing_ok=True)
+            (self.account_dir(provider, machine_id, login_id) / name).unlink(missing_ok=True)
         return existed
 
 
@@ -259,15 +268,12 @@ __all__ = [
 ]
 
 
-def unhidden_read_scope(
-    *, execution_machine: str, host: str, os_account: str = "unknown"
-) -> HiddenReadScope:
+def unhidden_read_scope(*, machine_id: str, os_account: str = "unknown") -> HiddenReadScope:
     """An explicit launch fallback when execution-host policy cannot be prepared."""
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 
     return HiddenReadScope(
-        execution_machine=execution_machine,
-        execution_host=host,
+        machine_id=machine_id,
         os_account=os_account or "unknown",
         enforcement=HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
     )
@@ -304,7 +310,7 @@ def local_hidden_read_key_evidence(
 def prepare_hidden_read_launch(
     *,
     manifest: Manifest,
-    execution_machine: str,
+    machine: SpaceMachineRecord,
     provider: ProviderId,
     capability: AgentCapability,
     stage_root: str,
@@ -334,7 +340,6 @@ def prepare_hidden_read_launch(
         confirm_remote_key_evidence,
     )
 
-    machine = manifest.machine_map[execution_machine]
     try:
         if remote_stage is None:
             evidence = local_hidden_read_key_evidence(app_data_dir, git_access)
@@ -345,10 +350,12 @@ def prepare_hidden_read_launch(
             home = home_result.stdout.strip()
             if home_result.returncode or not home.startswith("/"):
                 raise OSError("execution-host home could not be resolved")
-            evidence = confirm_remote_key_evidence(remote_stage=remote_stage, home=home)
+            evidence = confirm_remote_key_evidence(
+                remote_stage=remote_stage, machine_id=machine.machine_id, home=home
+            )
         scope = resolve_hidden_read_scope(
             manifest=manifest,
-            execution_machine=execution_machine,
+            machine=machine,
             provider=provider,
             capability=capability,
             stage_root=stage_root,
@@ -402,6 +409,4 @@ def prepare_hidden_read_launch(
         logging.getLogger(__name__).exception(
             "Hidden-read launch preparation failed; running unhidden"
         )
-        return unhidden_read_scope(
-            execution_machine=execution_machine, host=machine.host, os_account=machine.os_account
-        )
+        return unhidden_read_scope(machine_id=machine.machine_id, os_account=machine.os_account)

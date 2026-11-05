@@ -428,6 +428,18 @@ pub async fn desktop_read_target_project_provisioning_options(
 }
 
 #[tauri::command]
+pub async fn desktop_read_target_space_machines(
+    window: WebviewWindow,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    lifecycle: State<'_, BackendState>,
+    connection_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    authorize_personal_origin(&window, &lifecycle)?;
+    project_transfer::read_target_space_machines(&connections, &sessions, &connection_id).await
+}
+
+#[tauri::command]
 pub async fn desktop_export_project_transfer(
     app: AppHandle,
     window: WebviewWindow,

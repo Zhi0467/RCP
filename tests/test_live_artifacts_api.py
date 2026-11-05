@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from rcp.live_artifact_runtime import resolve_artifact_live_version
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -17,6 +18,11 @@ def test_live_endpoint_pins_version_and_rechecks_project(manifest, tmp_path):
     store = app.state.catalog.store
     _, descriptor = create_saved_artifact(app, project_id)
     artifact = store.artifact(descriptor.artifact_id)
+    store.checkpoint_agent_task(
+        artifact.origin_operation_id,
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(tmp_path / "stage"),
+    )
     metrics = Path(manifest.repositories[0].path) / "metrics.jsonl"
     metrics.write_text('{"loss": 1.0}\n')
     declaration = {

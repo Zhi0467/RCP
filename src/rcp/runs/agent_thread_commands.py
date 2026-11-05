@@ -28,6 +28,7 @@ from rcp.limits import (
     AGENT_PROJECT_DETAILS_MAX_ITEMS,
     AGENT_PROJECTS_MAX_ITEMS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.regular_file_reader import RegularFileTooLargeError, read_local_regular_file
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
@@ -397,13 +398,12 @@ def thread_agent(store: AppStore, thread: AgentThreadRecord) -> dict[str, str | 
         provider=pick.get("provider"),
         model=pick.get("model"),
         reasoning=pick.get("reasoning"),
-        run_on=pick.get("run_on"),
     )
     return {
         "provider": profile.provider,
         "model": profile.model,
         "reasoning": profile.reasoning,
-        "run_on": profile.run_on,
+        "run_on": BACKEND_MACHINE_ID,
     }
 
 
@@ -445,9 +445,7 @@ def store_thread_pick(
     and a launch is checked when it runs. An agent's handoff pick must run now.
     """
     if thread.project_id is None:
-        from rcp.runs.space_chat import space_agent_profile
-
-        run_on = space_agent_profile(store, provider=provider, run_on=run_on).run_on
+        run_on = BACKEND_MACHINE_ID
     else:
         from rcp.runs.auto_research_admission import (
             AutoResearchChildProfileInvalid,
@@ -817,11 +815,14 @@ def projects_command_usage(client: str) -> str:
     return "\n".join(f"- `{client} {usage}`" for usage in projects_usages())
 
 
-def unstarted_handoff_turns(store: AppStore) -> list[AgentTaskRecord]:
+def unstarted_thread_turns(store: AppStore) -> list[AgentTaskRecord]:
+    """Admitted handoff and queued-message turns whose worker never started."""
+
     with store.connection() as connection:
         rows = connection.execute(
             "SELECT target_operation_id FROM agent_handoffs WHERE target_operation_id IS NOT NULL "
-            "UNION SELECT notified_operation_id FROM agent_handoffs WHERE notified_operation_id IS NOT NULL"
+            "UNION SELECT notified_operation_id FROM agent_handoffs WHERE notified_operation_id IS NOT NULL "
+            "UNION SELECT operation_id FROM agent_thread_queue WHERE operation_id IS NOT NULL"
         ).fetchall()
     return [
         task
@@ -832,18 +833,18 @@ def unstarted_handoff_turns(store: AppStore) -> list[AgentTaskRecord]:
     ]
 
 
-def restart_handoff_turns(background: BackgroundAgentTasks, tasks: list[AgentTaskRecord]) -> None:
+def restart_thread_turns(background: BackgroundAgentTasks, tasks: list[AgentTaskRecord]) -> None:
     """Relaunch through admitted launch, which refuses a closed thread's turn.
 
-    The dispatcher then fails that turn so its handoff reports.
+    The dispatcher then fails that turn so its handoff or queued message reports.
     """
     for task in tasks:
         try:
             background.launch_admitted(task.operation_id)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            logger.warning("Handoff task %s restart deferred: %s", task.operation_id, exc)
+            logger.warning("Thread turn %s restart deferred: %s", task.operation_id, exc)
             background.store.record_agent_task_event(
-                task.operation_id, f"Handoff restart deferred: {exc}", level="warning"
+                task.operation_id, f"Thread turn restart deferred: {exc}", level="warning"
             )
 
 

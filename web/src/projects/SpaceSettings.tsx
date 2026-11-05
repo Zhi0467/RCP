@@ -60,7 +60,7 @@ interface Props {
   /** The signed-in member; their own logins fill each "Yours" tray. */
   viewerUserId?: string | null;
   /** Open this login's "Sign-ins" fold, as a login notice asks. */
-  focusSignIns?: { provider: string; host: string } | null;
+  focusSignIns?: { provider: string; machine_id: string } | null;
   onClose: () => void;
 }
 
@@ -191,16 +191,13 @@ function SpaceMachineList({
   spaceKind: "personal" | "team";
   writesDisabled: boolean;
   viewerUserId: string | null;
-  focusSignIns: { provider: string; host: string } | null;
+  focusSignIns: { provider: string; machine_id: string } | null;
   onLoginChanged?: () => void;
 }) {
   const { machines, error, replace, remove } = useSpaceMachines();
   const signIns = useProviderSignIns(viewerUserId);
   const [adding, setAdding] = useState(false);
-  // Two cards on one host share its logins; a notice opens the first.
-  const focusedMachine = focusSignIns
-    ? machines?.find((machine) => machine.host === focusSignIns.host)?.machine_id
-    : undefined;
+  const focusedMachine = focusSignIns?.machine_id;
   return (
     <section className="settings-section provider-path-settings space-machine-settings">
       <header>
@@ -222,11 +219,12 @@ function SpaceMachineList({
             osAccount={machine.os_account}
             record={machine}
             writesDisabled={writesDisabled}
+            accountRequired={spaceKind === "team"}
             onRecordChange={replace}
             signIns={
               <SignInsFold
                 machineName={machine.name}
-                host={machine.host}
+                machineId={machine.machine_id}
                 data={signIns}
                 viewerUserId={viewerUserId}
                 writesDisabled={writesDisabled}

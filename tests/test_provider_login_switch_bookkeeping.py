@@ -6,6 +6,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.base import ProviderUsage
 from rcp.runs.provider_login import bound_running_count, remove_shared_login, settle_provider_login
 from rcp.service import RunRequest
@@ -27,7 +28,9 @@ async def test_switched_turn_revokes_only_captured_login_generation(
 ):
     old = _login(accounts, provider, own=True, member=MEMBER)
     current = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
+    accounts.store.set_provider_login_setting(
+        MEMBER, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _started_task(accounts, "previous", old)
     accounts.store.mark_provider_login_signed_out(
         old, member_id=MEMBER, source="sign_out", detail="expired"
@@ -59,7 +62,7 @@ async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
     store = accounts.store
     old = _login(accounts, provider)
     current = _login(accounts, provider, machine=True)
-    store.set_provider_login_setting(MEMBER, provider, "", "shared")
+    store.set_provider_login_setting(MEMBER, provider, BACKEND_MACHINE_ID, "shared")
     _started_task(accounts, "previous", old)
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='succeeded' WHERE operation_id='previous'")
@@ -73,6 +76,15 @@ async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
         connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='current'")
     assert bound_running_count(store, old) == 0
     assert bound_running_count(store, current) == 1
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id=NULL WHERE operation_id='current'"
+        )
+    assert bound_running_count(store, current) == 1
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id='backend' WHERE operation_id='current'"
+        )
     removed = remove_shared_login(store, AgentLauncher(), old, cancel_sign_in=lambda _: None)
     assert removed.removed_at is not None
     assert store.agent_task("current").status == "running"
@@ -159,7 +171,9 @@ async def test_lineage_gate_recheck_reselects_after_credential_expires(
 ):
     own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
+    accounts.store.set_provider_login_setting(
+        MEMBER, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _started_task(accounts, "parent", own)
     execution, selected, outcome, _ = await _launch(
         accounts, tmp_path, own, parent="parent", lineage=True, gate_failure=True

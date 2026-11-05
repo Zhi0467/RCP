@@ -5,6 +5,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
+
 if TYPE_CHECKING:
     from rcp.terminals.remote import CompletionParser
 
@@ -39,18 +41,21 @@ class TerminalSession:
     started_at: str
     last_activity_at: str
     unit: str
-    # What this repository was registered as when the shell started: its
-    # declared path, its machine, and that machine's account. The resolved
-    # `path` can differ from the declared one, and two machines can share a
-    # path, so only the whole identity distinguishes a re-registration.
+    # The card the shell runs on, and the path the repository was declared
+    # at when it started. The resolved `path` can differ from the declared
+    # one, and two machines can share a path, so only both distinguish a
+    # re-registration.
+    machine_id: str
     declared_path: str = ""
-    declared_machine: str = ""
-    declared_account: str = ""
-    execution_host: str = ""
     containment: Literal["mirrored", "cooperative"] = "mirrored"
     state: Literal["live", "idle"] = "idle"
     ended_at: str | None = None
     termination_reason: str | None = None
+
+    @property
+    def remote(self) -> bool:
+        """Whether the shell runs over SSH: only the backend's own card has no host."""
+        return self.machine_id != BACKEND_MACHINE_ID
 
 
 @dataclass

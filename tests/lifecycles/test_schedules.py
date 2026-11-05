@@ -5,7 +5,7 @@ from pathlib import Path
 from tests.lifecycles.engine import explore
 from tests.lifecycles.schedules import Schedules
 
-STATES = 104
+STATES = 101
 
 
 def _root(tmp_path: Path) -> Path:

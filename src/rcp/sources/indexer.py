@@ -8,12 +8,12 @@ import shlex
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     SOURCE_ORIGINAL_COPY_BUFFER_BYTES,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import PROVIDERS, ProviderId, remote_bundle
 from rcp.providers.session_format import SessionFormat, session_format
 from rcp.rcp_home import rcp_temp_dir
@@ -34,6 +35,9 @@ from rcp.sources.cache import (
 from rcp.sources.record_parsing import normalize_path, normalize_record, path_matches_roots
 from rcp.transport import state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 
 class ConversationRecord(BaseModel):
@@ -115,11 +119,13 @@ class ConversationIndexer:
         manifest: Manifest,
         cache_root: Path | None = None,
         *,
+        machine_cards: Callable[[], Mapping[str, SpaceMachineRecord]],
         app_chat_origin: AppChatOrigin | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.manifest = manifest
         self.cache_root = cache_root
+        self.machine_cards = machine_cards
         state_repository = manifest.repository_map[manifest.state.repository]
         self.app_chat_origin = app_chat_origin or AppChatOrigin(
             machine=state_repository.machine,
@@ -159,10 +165,6 @@ class ConversationIndexer:
         sessions: list[ConversationSession] = []
         unmatched = 0
         malformed = 0
-        local_machines = [item.alias for item in self.manifest.machines if not item.host]
-        source_machine = (
-            local_machines[0] if local_machines else self.manifest.agent_profile("refresh").run_on
-        )
         source_errors: list[str] = []
 
         roots = [
@@ -211,9 +213,9 @@ class ConversationIndexer:
                 session_id = metadata["session_id"] or path.stem
                 sessions.append(
                     ConversationSession(
-                        key=f"{repository.alias}/{source_machine}/{provider}/{session_id}",
+                        key=f"{repository.alias}/{provider}/{session_id}",
                         provider=provider,
-                        source_machine=source_machine,
+                        source_machine=BACKEND_MACHINE_ID,
                         truth_repository=repository.alias,
                         session_id=session_id,
                         cwd=metadata["cwd"],
@@ -235,9 +237,11 @@ class ConversationIndexer:
         for cache_key in self._local_metadata_cache.keys() - seen_local_sources:
             del self._local_metadata_cache[cache_key]
 
-        for machine in self.manifest.machines:
-            if not machine.host:
+        cards = self.machine_cards()
+        for machine_id in self.manifest.machines:
+            if machine_id == BACKEND_MACHINE_ID:
                 continue
+            machine = cards[machine_id]
             remote_roots = [
                 (profile.id, root)
                 for profile in PROVIDERS.values()
@@ -246,10 +250,10 @@ class ConversationIndexer:
             for provider, root in remote_roots:
                 try:
                     remote_index = self._inspect_remote_root(
-                        machine.host, root, provider, machine.alias
+                        machine.host, root, provider, machine_id
                     )
                 except (OSError, ValueError) as exc:
-                    source_errors.append(f"{machine.alias}/{provider}: {exc}")
+                    source_errors.append(f"{machine.name}/{provider}: {exc}")
                     continue
                 unmatched += remote_index.unmatched_files
                 malformed += remote_index.malformed_files
@@ -260,9 +264,7 @@ class ConversationIndexer:
                         unmatched += 1
                         continue
                     matched.append((metadata, repository))
-                original_stays_remote = (
-                    execution_machine == machine.alias or not cache_remote_sources
-                )
+                original_stays_remote = execution_machine == machine_id or not cache_remote_sources
                 if original_stays_remote:
                     # Keep the provider original on its own machine. Slice
                     # materialization runs the normalizer there and transfers only
@@ -274,21 +276,21 @@ class ConversationIndexer:
                     try:
                         source_paths = self._cache_remote_files(
                             machine.host,
-                            machine.alias,
+                            machine_id,
                             provider,
                             [metadata["path"] for metadata, _ in matched],
                             pin_artifact=pin_artifact,
                         )
                     except OSError as exc:
-                        source_errors.append(f"{machine.alias}/{provider}: {exc}")
+                        source_errors.append(f"{machine.name}/{provider}: {exc}")
                         continue
                 for metadata, repository in matched:
                     session_id = metadata["session_id"] or Path(metadata["path"]).stem
                     sessions.append(
                         ConversationSession(
-                            key=(f"{repository.alias}/{machine.alias}/{provider}/{session_id}"),
+                            key=f"{repository.alias}/{provider}/{session_id}",
                             provider=provider,
-                            source_machine=machine.alias,
+                            source_machine=machine_id,
                             truth_repository=repository.alias,
                             session_id=session_id,
                             cwd=metadata["cwd"],
@@ -323,7 +325,7 @@ class ConversationIndexer:
                 )
                 sessions.append(
                     ConversationSession(
-                        key=(f"{state_alias}/{self.app_chat_origin.machine}/app_chat/{session_id}"),
+                        key=f"{state_alias}/app_chat/{session_id}",
                         provider="app_chat",
                         source_machine=self.app_chat_origin.machine,
                         truth_repository=state_alias,
@@ -669,10 +671,10 @@ class ConversationIndexer:
         }
 
     def _inspect_remote_root(
-        self, host: str, root: str, provider: str, machine_alias: str
+        self, host: str, root: str, provider: str, machine_id: str
     ) -> RemoteConversationIndex:
         repository_paths = [
-            item.path for item in self.manifest.repositories if item.machine == machine_alias
+            item.path for item in self.manifest.repositories if item.machine == machine_id
         ]
         payload = json.dumps(
             {"root": root, "provider": provider, "repository_paths": repository_paths}
@@ -727,7 +729,7 @@ class ConversationIndexer:
     def _cache_remote_files(
         self,
         host: str,
-        machine_alias: str,
+        machine_id: str,
         provider: str,
         remote_paths: list[str],
         *,
@@ -735,7 +737,7 @@ class ConversationIndexer:
     ) -> dict[str, Path]:
         if self.cache_root is None:
             raise OSError("remote conversation cache is not configured")
-        directory = self.cache_root / machine_alias / provider
+        directory = self.cache_root / machine_id / provider
         directory.mkdir(parents=True, exist_ok=True)
         if not remote_paths:
             return {}

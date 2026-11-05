@@ -9,6 +9,7 @@ import pytest
 
 from rcp.artifact_import import import_project_artifacts
 from rcp.limits import ARTIFACT_IMPORT_RETRY_SECONDS, RUN_STAGE_RETENTION_DAYS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.storage import AppStore, ArtifactRevisionCandidateRecord
 from rcp.transport.run_stage import RemoteRunStage
@@ -100,10 +101,11 @@ def test_offline_remote_failure_survives_restart_and_backs_off_then_imports(
     store, tmp_path, monkeypatch
 ):
     task, descriptor, _ = _legacy(store, tmp_path)
+    compute = store.create_space_machine(name="compute", host="compute", os_account="")
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET stage_host = ?, stage_root = ? WHERE operation_id = ?",
-            ("compute", "/tmp/rcp-run.test", task.operation_id),
+            "UPDATE graph_runs SET stage_machine_id = ?, stage_root = ? WHERE operation_id = ?",
+            (compute.machine_id, "/tmp/rcp-run.test", task.operation_id),
         )
     touched = (store.test_clock[0] - timedelta(days=1)).timestamp()
     calls = []
@@ -164,7 +166,7 @@ def _candidate(store, tmp_path):
             source_operation_id=source.operation_id,
             source_artifact_id=original.artifact_id,
             revision_operation_id=turn.operation_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=turn.stage_root,
             artifact_scope_id=turn.operation_id,
             source_name=descriptor.name,

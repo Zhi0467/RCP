@@ -97,7 +97,7 @@ def test_only_operational_success_reopens_master_after_revoking_edit(store):
         return store.episode_report_rebootstrap_pending(
             "project",
             "native",
-            stage_host=None,
+            stage_machine_id=None,
             stage_root="/scratch/native",
             owner="chat",
         )

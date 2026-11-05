@@ -82,6 +82,24 @@ def materialize_patches(
     )
 
 
+def current_cursor_key(key: str) -> str:
+    """The `repo/provider/session` key a stored cursor names.
+
+    Keys written before a machine became its card carried the machine alias as
+    `repo/machine/provider/session`; history keeps those bytes, so they are
+    read without that segment.
+    """
+
+    parts = key.split("/")
+    return "/".join((parts[0], *parts[2:])) if len(parts) == 4 else key
+
+
+def current_cursors(cursors: dict[str, str]) -> dict[str, str]:
+    """One patch's cursors under current keys, in their stored order."""
+
+    return {current_cursor_key(key): value for key, value in cursors.items()}
+
+
 def materialize_patches_from_state(
     patches: Iterable[Patch],
     *,
@@ -159,7 +177,7 @@ def materialize_patches_from_state(
             break
         state = candidate
         descriptors.extend(candidate_descriptors)
-        processed_cursors.update(patch.processed_cursors)
+        processed_cursors.update(current_cursors(patch.processed_cursors))
         state = state.model_copy(
             update={
                 "validation_messages": [

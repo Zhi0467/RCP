@@ -61,7 +61,7 @@ class ProviderAuthentication:
     def credential_available(
         self,
         credentials: ProviderCredentialStore,
-        host: str,
+        machine_id: str,
         login_id: str,
         *,
         login_state: ProviderLoginStateRecord | None = None,
@@ -69,12 +69,12 @@ class ProviderAuthentication:
         return True
 
     def credential_metadata(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str
     ) -> dict | None:
         return None
 
     def process_environment(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, host: str
     ) -> ProviderProcessEnvironment:
         return ProviderProcessEnvironment()
 
@@ -93,7 +93,7 @@ class ProviderAuthentication:
     def save_token(
         self,
         credentials: ProviderCredentialStore,
-        host: str,
+        machine_id: str,
         login_id: str,
         token: str,
         *,
@@ -103,17 +103,23 @@ class ProviderAuthentication:
         raise ValueError("Token entry is not supported by this provider.")
 
     def prepare_verification(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, host: str
     ) -> None:
         pass
 
     def verified(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str, *, now: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, now: str
     ) -> None:
         pass
 
     def sign_out(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
+        self,
+        credentials: ProviderCredentialStore,
+        machine_id: str,
+        login_id: str,
+        binary: str,
+        *,
+        host: str,
     ) -> list[str] | None:
         raise ValueError("Sign-out is not supported by this provider.")
 

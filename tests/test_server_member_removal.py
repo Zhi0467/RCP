@@ -10,6 +10,7 @@ from pathlib import Path
 from rcp.api import create_app
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.cli import CallerIdentity, ServerEventEmitter
 from rcp.server_ops.members import MemberRemovalCoordinator, prepare_member_remove_command
 from rcp.server_ops.models import ServerCommandRequest, ServerStepEvent
@@ -233,8 +234,8 @@ def test_live_task_settles_before_member_tombstone_completes(tmp_path) -> None:
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Shared",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )
@@ -294,8 +295,8 @@ def test_member_removal_presses_the_existing_episode_stop_fence(tmp_path) -> Non
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Shared",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )
@@ -350,8 +351,8 @@ def test_background_member_pause_does_not_signal_a_live_provider_control(tmp_pat
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Project",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )

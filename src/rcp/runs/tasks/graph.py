@@ -40,6 +40,7 @@ from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.history.queries import format_head
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS, PATCH_SELF_CHECK_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.patch_validator import (
@@ -97,7 +98,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import stage_skill_selection
 from rcp.sources import ImportedProviderSourceInventory
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import (
     ImportedProviderSourceReadback,
     RemoteRunStage,
@@ -121,12 +122,12 @@ _IMPORTED_PROVIDER_SOURCES_LABEL = "imported-provider-history"
 
 
 class _PreparedGraphContext(BaseModel):
-    version: Literal[2] = 2
+    version: Literal[3] = 3
     project_id: str
     kind: Literal["seed", "refresh"]
     graph_revision: int
     run_truth_scope: list[str]
-    execution_host: str
+    machine_id: str
     original_contract_path: str | None = None
     context: RunContext
 
@@ -158,8 +159,10 @@ def _verify_prepared_imported_sources(
     context: RunContext,
     inventory: ImportedProviderSourceInventory | None,
     parent: AgentTaskRecord,
+    store: AppStore,
 ) -> ImportedProviderSourceReadback | None:
-    if not parent.stage_host:
+    machine_id = parent.stage_machine_id
+    if machine_id is None or machine_id == BACKEND_MACHINE_ID:
         service.validate_imported_source_context(context, inventory)
         return None
     if inventory is None or not inventory.files:
@@ -175,7 +178,7 @@ def _verify_prepared_imported_sources(
         inventory,
         expected_roots=_remote_imported_source_roots(inventory, staged_root),
     )
-    stage = RemoteRunStage(parent.stage_host)
+    stage = RemoteRunStage(host_of(store, machine_id))
     stage_available = stage.directory_exists(parent.stage_root)
     if stage_available is None:
         raise StateUnavailable("could not reach the saved remote staging directory")
@@ -188,11 +191,12 @@ def _verify_prepared_imported_sources(
     )
 
 
-def _read_prepared_graph_context(parent: AgentTaskRecord) -> _PreparedGraphContext:
+def _read_prepared_graph_context(parent: AgentTaskRecord, store: AppStore) -> _PreparedGraphContext:
     if not parent.stage_root:
         raise ValueError("the prior attempt has no retained stage")
-    if parent.stage_host:
-        stage = RemoteRunStage(parent.stage_host)
+    machine_id = parent.stage_machine_id
+    if machine_id is not None and machine_id != BACKEND_MACHINE_ID:
+        stage = RemoteRunStage(host_of(store, machine_id))
         stage_available = stage.directory_exists(parent.stage_root)
         if stage_available is None:
             raise StateUnavailable("could not reach the saved remote staging directory")
@@ -240,7 +244,7 @@ def _continuation_graph_context(
     *,
     kind: str,
     request: RunRequest,
-    execution_host: str,
+    machine_id: str,
     imported_source_inventory: ImportedProviderSourceInventory | None,
 ) -> _PreparedGraphContext:
     """Load the immutable context owned by a native-session continuation.
@@ -253,7 +257,7 @@ def _continuation_graph_context(
     if record is None:
         raise ValueError("The saved continuation task is unavailable. Retry this task.")
     try:
-        prepared = _read_prepared_graph_context(record)
+        prepared = _read_prepared_graph_context(record, execution.store)
     except StateUnavailable:
         raise
     except (OSError, ValueError) as exc:
@@ -276,8 +280,8 @@ def _continuation_graph_context(
         problems.append("task kind changed")
     if sorted(prepared.run_truth_scope) != expected_scope:
         problems.append("run truth scope changed")
-    if prepared.execution_host != execution_host or record.stage_host != (execution_host or None):
-        problems.append("execution host changed")
+    if prepared.machine_id != machine_id or record.stage_machine_id != machine_id:
+        problems.append("execution machine changed")
     if prepared.graph_revision != current_revision:
         problems.append(
             f"graph revision moved from {prepared.graph_revision} to {current_revision}"
@@ -289,6 +293,7 @@ def _continuation_graph_context(
             prepared.context,
             imported_source_inventory,
             record,
+            execution.store,
         )
     except ValueError as exc:
         problems.append(str(exc))
@@ -318,7 +323,7 @@ def _try_reuse_graph_context(
     *,
     kind: str,
     request: RunRequest,
-    execution_host: str,
+    machine_id: str,
     imported_source_inventory: ImportedProviderSourceInventory | None,
 ) -> _GraphRetryState | None:
     lineage = _retry_lineage(execution)
@@ -332,17 +337,15 @@ def _try_reuse_graph_context(
     context_errors: list[str] = []
     for candidate in lineage:
         try:
-            value = _read_prepared_graph_context(candidate)
+            value = _read_prepared_graph_context(candidate, execution.store)
             if kind not in {"seed", "refresh"} or value.kind != kind:
                 raise ValueError("task kind changed")
             if value.project_id != candidate.project_id:
                 raise ValueError("project identity changed")
             if sorted(value.run_truth_scope) != expected_scope:
                 raise ValueError("run truth scope changed")
-            if value.execution_host != execution_host or candidate.stage_host != (
-                execution_host or None
-            ):
-                raise ValueError("execution host changed")
+            if value.machine_id != machine_id or candidate.stage_machine_id != machine_id:
+                raise ValueError("execution machine changed")
             if value.graph_revision != graph_revision:
                 raise ValueError("graph revision changed")
             imported_source_readback = _verify_prepared_imported_sources(
@@ -350,6 +353,7 @@ def _try_reuse_graph_context(
                 value.context,
                 imported_source_inventory,
                 candidate,
+                execution.store,
             )
             prepared = value
             prepared_parent = candidate
@@ -475,7 +479,7 @@ def _stage_prepared_graph_context(
     project_id: str,
     kind: str,
     graph_revision: int,
-    execution_host: str,
+    machine_id: str,
     original_contract_path: str,
     context: RunContext,
 ) -> None:
@@ -484,7 +488,7 @@ def _stage_prepared_graph_context(
         kind=kind,
         graph_revision=graph_revision,
         run_truth_scope=context.run_truth_scope,
-        execution_host=execution_host,
+        machine_id=machine_id,
         original_contract_path=original_contract_path,
         context=context,
     )
@@ -626,20 +630,20 @@ async def stream_graph_run(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
+        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
-    request = _pinned_to_profile(request, profile)
     local_stage: Path | None = None
-    execution_machine = service.manifest.machine_map[profile.run_on]
-    execution_host = execution_machine.host
-    provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
+    machine_id = service.manifest.base_machine
+    execution_host = host_of(service.paper.store, machine_id)
+    provider_binary = service.launcher.provider_binary(profile.provider, machine_id)
     remote_stage: RemoteRunStage | None = None
     try:
         imported_source_inventory = await asyncio.to_thread(
             service.imported_source_inventory,
             surface,
-            execution_machine,
+            machine_id,
         )
     except (OSError, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -699,7 +703,7 @@ async def stream_graph_run(
                     execution,
                     kind=kind,
                     request=request,
-                    execution_host=execution_host,
+                    machine_id=machine_id,
                     imported_source_inventory=imported_source_inventory,
                 )
                 if execution is not None and reuses_native_checkpoint
@@ -713,7 +717,7 @@ async def stream_graph_run(
                     execution,
                     kind=kind,
                     request=request,
-                    execution_host=execution_host,
+                    machine_id=machine_id,
                     imported_source_inventory=imported_source_inventory,
                 )
             )
@@ -763,18 +767,18 @@ async def stream_graph_run(
                         execution.operation_id if execution is not None else None,
                         protected_roots=_protected_run_stage_roots(
                             execution.store if execution is not None else None,
-                            execution_host,
+                            machine_id,
                         ),
                     )
                     if execution is not None:
                         assert remote_stage.root is not None
-                        execution.checkpoint_stage(execution_host, str(remote_stage.root))
+                        execution.checkpoint_stage(machine_id, str(remote_stage.root))
                     context = await asyncio.to_thread(
                         _stage_graph_context,
                         context,
                         service,
                         remote_stage,
-                        execution_machine.alias,
+                        machine_id,
                         imported_source_inventory=imported_source_inventory,
                     )
                     if imported_source_inventory is not None and imported_source_inventory.files:
@@ -802,7 +806,7 @@ async def stream_graph_run(
                     local_stage = stage_root / _safe_stage_name(name)
                     local_stage.mkdir(parents=True, exist_ok=True)
                     if execution is not None:
-                        execution.checkpoint_stage("", str(local_stage))
+                        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(local_stage))
                 workspace = local_stage
                 patch_path = str(local_stage / "patch.json")
 
@@ -837,7 +841,7 @@ async def stream_graph_run(
                 native_session_id=request.session_id,
             )
             validator_command = validator_staged.client_command("validate", patch_path)
-            read_dirs = _agent_read_dirs(context, remote_stage, service, execution_machine.alias)
+            read_dirs = _agent_read_dirs(context, remote_stage, service, machine_id)
             if (
                 retry_state is not None
                 and retry_state.prepared is not None
@@ -876,7 +880,7 @@ async def stream_graph_run(
                 if request.message
                 else None
             )
-            compute_profiles = service.machine_prompt_profiles(profile.run_on)
+            compute_profiles = service.machine_prompt_profiles(machine_id)
             base_contract_content = service.graph_task_contract(
                 kind,
                 project_name=context.project_name,
@@ -1062,7 +1066,7 @@ async def stream_graph_run(
                         project_id=execution_record.project_id,
                         kind=kind,
                         graph_revision=graph_revision,
-                        execution_host=execution_host,
+                        machine_id=machine_id,
                         original_contract_path=base_contract_path,
                         context=context,
                     )
@@ -1145,7 +1149,7 @@ async def stream_graph_run(
             if execution is not None and execution.stage_root is not None and not rounds:
                 retained = _GraphFinalization(
                     kind=kind,
-                    stage_host=execution.stage_host or "",
+                    stage_machine_id=machine_id,
                     stage_root=execution.stage_root,
                     workspace=str(workspace),
                     run_truth_scope=context.run_truth_scope,
@@ -1355,7 +1359,7 @@ class _GraphFinalization(BaseModel):
     """The launch facts a recorded pass needs that durable rows do not hold."""
 
     kind: str
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
     workspace: str
     run_truth_scope: list[str]
@@ -1548,7 +1552,7 @@ async def finalize_recorded_graph_result(
     local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
         owner="graph",
-        stage_host=retained.stage_host,
+        stage_machine_id=retained.stage_machine_id,
         stage_root=retained.stage_root,
         workspace=retained.workspace,
     )

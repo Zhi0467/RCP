@@ -201,7 +201,7 @@ def test_operational_prune_bounds_recovery_outputs_and_writing_sessions(tmp_path
             connection.execute(
                 """
                 INSERT INTO writing_sessions (
-                    native_session_id, provider, execution_machine, project_id,
+                    native_session_id, provider, machine_id, project_id,
                     model, created_at, last_resumed_at, introduction_hash_examined,
                     graph_revision_examined, research_md_hash_examined
                 ) VALUES (?, 'codex', 'laptop', 'project', '', ?, ?, '', 0, '')

@@ -21,6 +21,7 @@ from rcp.core.authority import (
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
@@ -63,8 +64,8 @@ def _project_store(path: Path) -> AppStore:
             project_id="project-one",
             locator=str(write_local_test_manifest(path.parent)),
             name="Project one",
-            state_location="/tmp/project-one/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project-one/.research",
             added_at=store.now(),
         )
     )
@@ -285,8 +286,8 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
             project_id=project_id,
             locator=str(write_local_test_manifest(tmp_path)),
             name="Project one",
-            state_location="/tmp/project-one/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project-one/.research",
             added_at=now,
         )
     )

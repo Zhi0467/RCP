@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionOrigin
@@ -35,7 +36,7 @@ def _answered(store, *, mode="work"):
     store.checkpoint_agent_task(
         "origin",
         native_session_id="origin-session",
-        stage_host="",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(store.path.parent / "chat-stage"),
     )
     store.complete_agent_task("origin", applied_revision=None, result={})
@@ -44,7 +45,7 @@ def _answered(store, *, mode="work"):
         store.bind_agent_task_write_scope(
             task.operation_id,
             project_id=task.project_id,
-            stage_host=task.stage_host or "",
+            stage_machine_id=task.stage_machine_id or "",
             stage_root=task.stage_root,
             fingerprint="a" * 64,
         )
@@ -57,7 +58,7 @@ def _answered(store, *, mode="work"):
             provider="codex",
             native_session_id="origin-session",
             stage_root=task.stage_root,
-            stage_host=task.stage_host,
+            stage_machine_id=task.stage_machine_id,
             capability=task.dispatch_authority.task_contract,
             write_scope_fingerprint="a" * 64 if mode == "work" else None,
             graph_target=task.graph_target,
@@ -530,9 +531,9 @@ def test_followup_defers_without_claim_while_original_binding_is_held(tmp_path, 
     if state == "remote_unresolved":
         with store.connection() as connection:
             connection.execute(
-                "UPDATE graph_runs SET stage_host='worker' WHERE operation_id='origin'"
+                "UPDATE graph_runs SET stage_machine_id='worker' WHERE operation_id='origin'"
             )
-            origin = question.origin.model_copy(update={"stage_host": "worker"})
+            origin = question.origin.model_copy(update={"stage_machine_id": "worker"})
             connection.execute(
                 "UPDATE questions SET origin_json=? WHERE question_id=?",
                 (origin.model_dump_json(), question.question_id),

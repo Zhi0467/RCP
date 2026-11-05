@@ -42,7 +42,7 @@ async def _consume(store, launcher, tmp_path, *, stage=None, request=None, **opt
         event
         async for event in _stream_agent_events(
             launcher,
-            request or RunRequest(provider="codex"),
+            request or RunRequest(provider="codex", run_on="remote"),
             "Run the task",
             workspace=tmp_path,
             session_id=None,
@@ -213,8 +213,9 @@ async def test_labelled_forwarding_keeps_fork_session_fence(tmp_path, forward_la
         tmp_path,
         request=RunRequest(
             provider="codex",
+            run_on="remote",
             fork_session_id="parent",
-            fork_source_host="remote",
+            fork_source_machine_id="remote",
             fork_source_cwd="/parent",
         ),
         execution=None,

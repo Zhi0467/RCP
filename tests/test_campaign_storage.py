@@ -10,6 +10,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.loop_status import other_branch_auto_research
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -44,8 +45,8 @@ def _project(store: AppStore, project_id: str = "project") -> None:
             project_id=project_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name=project_id,
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=store.now(),
         )
     )
@@ -1026,8 +1027,7 @@ def test_public_usage_snapshot_excludes_hidden_episode_report_usage(tmp_path) ->
         concluding_operation_id=root.operation_id,
         allocation_operation_id="hidden-report",
         provider="codex",
-        run_on="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="root-session",
         stage_root="/tmp/root-stage",
         skill_id="episode-report",
@@ -1050,8 +1050,7 @@ def test_public_usage_snapshot_excludes_hidden_episode_report_usage(tmp_path) ->
         request={
             "episode_id": episode.episode_id,
             "provider": "codex",
-            "run_on": "local",
-            "execution_host": "",
+            "run_on": BACKEND_MACHINE_ID,
         },
         created_at=store.now(),
         updated_at=store.now(),

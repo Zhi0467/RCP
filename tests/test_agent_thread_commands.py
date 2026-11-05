@@ -983,3 +983,64 @@ def test_a_queued_message_waits_out_a_racing_turn_and_its_deferral_restarts(
     assert (row.operation_id, row.refusal_reason) == (None, None)
     world.drain()
     assert store.agent_thread_queue_item(queued.queue_id).deferred_at is None
+
+
+@pytest.mark.parametrize("failure", ["transient", "unexpected"])
+def test_a_deferred_queued_message_retries_itself_until_it_starts_or_times_out(
+    manifest, tmp_path: Path, monkeypatch, failure
+) -> None:
+    from datetime import datetime, timedelta
+
+    from rcp.limits import AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+    from rcp.runs.provider_login import MachineDependenciesMissing
+    from tests.helpers import wait_until
+
+    monkeypatch.setattr("rcp.runs.agent_thread_queue.AGENT_THREAD_QUEUE_RETRY_SECONDS", 0.05)
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store = world.store
+    queued = world.queue("key", "Next")
+    error = (
+        MachineDependenciesMissing("codex is missing")
+        if failure == "transient"
+        else TypeError("unexpected")
+    )
+
+    def refused(*args, **kwargs):
+        raise error
+
+    admit = world.background.admit_provider_task
+    monkeypatch.setattr(world.background, "admit_provider_task", refused)
+    world.app.state.reconcile_thread_handoffs()
+    row = store.agent_thread_queue_item(queued.queue_id)
+    assert row.deferred_at is not None and (row.operation_id, row.refusal_reason) == (None, None)
+    if failure == "transient":
+        monkeypatch.setattr(world.background, "admit_provider_task", admit)
+        started = wait_until(lambda: store.agent_thread_queue_item(queued.queue_id).operation_id)
+        assert store.agent_task(started).request["message"] == "Next"
+        return
+    later = datetime.fromisoformat(store.now()) + timedelta(
+        seconds=AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS
+    )
+    monkeypatch.setattr(store, "now", lambda: later.isoformat())
+    reason = wait_until(lambda: store.agent_thread_queue_item(queued.queue_id).refusal_reason)
+    assert reason.startswith("delivery_timed_out") and reason.endswith(TypeError.__name__)
+    assert store.agent_tasks(world.project_id) == []
+
+
+def test_an_admitted_queued_message_restarts_with_the_backend(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    from tests.helpers import fake_launch_admitted
+
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store, background = world.store, world.background
+    queued = world.queue("key", "Next")
+    [operation_id] = world.drain()
+    assert store.agent_thread_queue_item(queued.queue_id).operation_id == operation_id
+    relaunched: list[str] = []
+    monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **kwargs: None)
+    fake_launch_admitted(monkeypatch, background, relaunched.append)
+    background.recover_at_startup()
+    task = store.agent_task(operation_id)
+    assert task is not None and task.status == "queued"
+    assert relaunched == [operation_id]

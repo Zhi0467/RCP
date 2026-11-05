@@ -11,6 +11,7 @@ import pytest
 
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import (
     complete_restored_project_publication,
     rebind_restored_project_registration,
@@ -24,8 +25,6 @@ from rcp.setup import render_prepared_team_manifest
 from rcp.storage import AppStore, ProjectProvisioningRequestRecord
 from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport.remote_backup_checkout import (
-    CheckoutInspectionError,
-    inspect_checkout,
     restore_server_only,
 )
 from tests.helpers import unchecked_write_authority
@@ -42,15 +41,14 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     store, _ = AppStore.initialize_team_space(data / "rcp.sqlite3", "Backup lab")
     record, original = _completed_registration(tmp_path)
     account = pwd.getpwuid(os.geteuid()).pw_name
+    store.ensure_space_machines([("", account, "Backend")])
     root = tmp_path / "projects"
     github = root / record.project_id / "repositories" / "paper"
     server = github.with_name("notes")
     commit = _initialize_git_repository(github)
     for directory in (root, github.parent.parent, github.parent):
         directory.chmod(0o700)
-    first = restore_server_only(
-        os_account=account, central_root=str(root), repository_path=str(server)
-    )
+    restore_server_only(os_account=account, central_root=str(root), repository_path=str(server))
     (server / "code.py").write_text("print('not archived')\n")
     _git(server, "add", "code.py")
     _git(
@@ -66,23 +64,22 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     old_commit = _git(server, "rev-parse", "HEAD")
     layout = SimpleNamespace(service_account=account, service_home=Path.home(), projects_root=root)
     monkeypatch.setattr("rcp.storage.models.DEFAULT_SERVER_LAYOUT", layout)
+    monkeypatch.setattr("rcp.storage.provisioning.DEFAULT_SERVER_LAYOUT", layout)
     monkeypatch.setattr("rcp.server_ops.layout.DEFAULT_SERVER_LAYOUT", layout)
     values = original.model_dump()
     values["target_space_id"] = store.space_id
     values["authorized_by"]["space_id"] = store.space_id
     values["machines"][0].update(
-        location="local",
-        host="",
-        os_account=account,
-        central_root=str(root),
-        resolved_central_root=str(root),
+        machine_id=BACKEND_MACHINE_ID, central_root=str(root), resolved_central_root=str(root)
     )
-    values["repositories"][0].update(intended_path=str(github), resolved_path=str(github))
+    values["repositories"][0].update(
+        machine_id=BACKEND_MACHINE_ID, intended_path=str(github), resolved_path=str(github)
+    )
     values["repositories"][0]["git_check"].update(
         commit=commit, deploy_key_label=f"rcp:{store.space_id}:{record.project_id}:paper"
     )
     for check in values["provider_checks"]:
-        check["execution_account"] = account
+        check.update(machine_id=BACKEND_MACHINE_ID, execution_account=account)
 
     def reviewed(payload):
         draft = ProjectProvisioningRequestRecord.model_validate(payload)
@@ -99,7 +96,7 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         dict(
             alias="notes",
             repository=None,
-            machine_alias="worker",
+            machine_id=BACKEND_MACHINE_ID,
             intended_path=str(server),
             resolved_path=str(server),
             checkout_disposition="request_created",
@@ -132,8 +129,8 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         update=dict(
             home_space_id=store.space_id,
             locator=str(manifest_path),
-            state_location=str(manifest.research_dir),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.research_dir),
         )
     )
     store.upsert_project(record)
@@ -160,7 +157,9 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     restored_store = AppStore(restored / "rcp.sqlite3")
     shutil.rmtree(manifest.research_dir)
     shutil.rmtree(server)
-    machine = restore._recovery_machine(capture.recovery.machines[0])
+    machine = restore._recovery_machine(
+        capture.recovery.machines[0], {card.machine_id: card for card in store.space_machines()}
+    )
     from rcp.server_ops.project_checkout import ProjectCheckoutManager
 
     checkouts = ProjectCheckoutManager(layout)
@@ -177,6 +176,7 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
         SimpleNamespace(projects=(server_first,), space_id=store.space_id),
         None,
         (),
+        {card.machine_id: card for card in store.space_machines()},
     )
     assert progress["status"] == "continue"
     saved = restore.RestoreRepositoryRecovery.model_validate(progress["progress"][0])
@@ -232,7 +232,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     assert restored_store.completed_project_provisioning_requests(
         record.project_id
     ) == store.completed_project_provisioning_requests(record.project_id)
-    assert first["origin"] == ""
     from datetime import datetime, timedelta
 
     connected = addition.model_dump()
@@ -261,22 +260,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     assert project_capture_warnings((connected_capture,)) == ()
 
 
-def test_server_only_capture_refuses_an_origin(tmp_path):
-    account = pwd.getpwuid(os.geteuid()).pw_name
-    path = tmp_path / "central" / str(uuid.uuid4()) / "repositories" / "code"
-    proof = restore_server_only(
-        os_account=account, central_root=str(tmp_path / "central"), repository_path=str(path)
-    )
-    _git(path, "remote", "add", "origin", "git@github.com:example/code.git")
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account,
-            repository_path=str(path),
-            expected_origin="",
-            recorded_commit=proof["head"],
-        )
-
-
 def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
     """The folder has an origin RCP did not set. Archives written before adoption existed keep their
     exact bytes.
@@ -287,16 +270,11 @@ def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
     account = pwd.getpwuid(os.geteuid()).pw_name
     folder = tmp_path / "anywhere" / "notes"
     commit = _initialize_git_repository(folder)
-    arguments = ["helper", "inspect-adopted", account, str(folder)]
+    arguments = ["helper", "inspect", account, str(folder)]
     assert main([*arguments, commit]) == 0
     assert main([*arguments, "0" * 40]) == 3
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account, repository_path=str(folder), expected_origin="",
-            recorded_commit=commit,
-        )  # fmt: skip
     repository = BackupRecoveryRepository(
-        alias="notes", repository=None, machine_alias="server", resolved_path=str(folder),
+        alias="notes", repository=None, machine_id=BACKEND_MACHINE_ID, resolved_path=str(folder),
         git_commit=commit, deploy_key_label=None, public_key_fingerprint=None,
     )  # fmt: skip
     assert "adopted" not in repository.model_dump()

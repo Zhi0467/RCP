@@ -7,6 +7,10 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _PROJECT_ALIAS = re.compile(r"[a-z][a-z0-9-]{0,47}")
@@ -162,6 +166,33 @@ DEFAULT_SERVER_LAYOUT = ServerLayout(
 )
 
 
+@dataclass(frozen=True)
+class MachineRoute:
+    """Where server work on one space card runs: the card's host and account, read by id.
+
+    The backend card has no host and runs as the service account; `central_root`
+    is the checkout root a provisioning request chose for this card.
+    """
+
+    machine_id: str
+    host: str
+    os_account: str
+    central_root: str | None
+
+    @property
+    def location(self) -> Literal["local", "ssh"]:
+        return "ssh" if self.host else "local"
+
+    @classmethod
+    def of(cls, card: SpaceMachineRecord, central_root: str | None) -> MachineRoute:
+        return cls(
+            machine_id=card.machine_id,
+            host=card.host,
+            os_account=card.os_account,
+            central_root=central_root,
+        )
+
+
 def remote_credentials_root(remote_home: str) -> PurePosixPath:
     if not isinstance(remote_home, str) or any(
         ord(character) < 32 or ord(character) == 127 for character in remote_home
@@ -231,6 +262,7 @@ def _project_credential_components(project_id: str, alias: str) -> None:
 
 __all__ = [
     "DEFAULT_SERVER_LAYOUT",
+    "MachineRoute",
     "ServerLayout",
     "project_deploy_key_relative_path",
     "remote_project_deploy_key_relative_path",

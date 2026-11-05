@@ -9,6 +9,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import EpisodeCommandRequest
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.questions import work_command_handler
 from rcp.runs.shared import _sse
@@ -102,7 +103,7 @@ class _Member:
         stage = str(self.stage)
 
         async def stream(_project_id, _kind, request, execution):
-            execution.checkpoint_stage("", stage)
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, stage)
             yield _sse(AgentEvent(event="session", session_id="orchestrator-session"))
             await async_wait_until(execution.control.pause_requested.is_set)
             yield _sse(AgentEvent(event="paused", text="Provider process paused."))
@@ -113,7 +114,7 @@ class _Member:
         stage = str(self.stage)
 
         async def stream(_project_id, _kind, _request, execution):
-            execution.checkpoint_stage("", stage)
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, stage)
             yield _sse(AgentEvent(event="session", session_id="orchestrator-session"))
             yield _sse(AgentEvent(event="done"))
 
@@ -217,3 +218,26 @@ def test_another_chat_cannot_control_the_episode(manifest, tmp_path: Path, monke
         assert (refused.status, refused.result["code"]) == ("invalid", "episode_not_started_here")
     assert store.episode(episode_id).stop_requested_at is None  # type: ignore[union-attr]
     assert store.auto_research_messages(episode_id) == []
+
+
+def test_a_refused_kickoff_key_retries_with_corrected_arguments(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    member = _Member(manifest, tmp_path, monkeypatch)
+    store = member.store
+    member.settling_orchestrator()
+    kickoff = member.turn("kickoff-turn")
+    unready = kickoff("go", KICKOFF)
+    assert (unready.status, unready.result["code"]) == ("invalid", "provider_not_ready")
+    member.provider_ready()
+    started = kickoff("go", {**KICKOFF, "invocation_limit": 4})
+    assert (started.status, started.result["disposition"]) == ("ok", "created"), started.message
+    episode_id = str(started.result["episode_id"])
+    assert store.episode(episode_id).invocation_ceiling == 4  # type: ignore[union-attr]
+    changed = kickoff("go", KICKOFF)
+    assert changed.status == "invalid"
+
+    root_id = store.episode(episode_id).root_operation_id  # type: ignore[union-attr]
+    wait_for_task(store, root_id, expect="succeeded")
+    paused = kickoff("pause", {"action": "pause", "episode_id": episode_id})
+    assert (paused.status, paused.result["code"]) == ("invalid", "episode_not_pausable")

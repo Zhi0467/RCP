@@ -162,10 +162,11 @@ def voice_memory(request: Request, thread_id: str):
     if not thread["project_id"]:
         return {"truncated": False}
     from rcp.agents.memory_files import read_project_memory_indexes
+    from rcp.machine_cards import host_of
     from rcp.transport.run_stage import RemoteRunStage
 
     service = get_project_service(get_catalog(request), thread["project_id"])
-    host = service.manifest.machine_map[service.manifest.base_machine].host
+    host = host_of(private.store, service.manifest.base_machine)
     remote = RemoteRunStage(host) if host else None
     try:
         result = read_project_memory_indexes(get_store(request), thread["project_id"], remote)

@@ -32,7 +32,7 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 7
+TRANSFER_RECORD_SCHEMA_VERSION = 8
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -168,12 +168,14 @@ TRANSFER_EXECUTABLE_JSON_FIELDS = frozenset(
         "dispatch_authority_json",
         "execution_host",
         "execution_machine",
+        "machine_id",
         "native_session_id",
         "session_id",
         "next_attempt_at",
         "next_check_at",
         "output_path",
         "stage_host",
+        "stage_machine_id",
         "stage_root",
         "run_on",
         "attachment_set_id",
@@ -1187,7 +1189,7 @@ class TransferGraphBranchRecord(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, 2, 3, 4, 5, 6, 7] = 1
+    schema_version: Literal[8] = TRANSFER_RECORD_SCHEMA_VERSION
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1206,31 +1208,13 @@ class TransferRecordBundle(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_bundle(self) -> TransferRecordBundle:
-        if self.paper is not None and (
-            self.schema_version < 7 or self.paper.project_id != self.project_id
-        ):
-            raise ValueError("saved paper requires matching project and record schema version 7")
-        if self.schema_version == 1 and any(episode.archive for episode in self.episodes):
-            raise ValueError("episode archive state requires transfer record schema version 2")
-        if self.schema_version < 3 and any(episode.graph_archived for episode in self.episodes):
-            raise ValueError("graph branch archive state requires transfer record schema version 3")
-        if self.schema_version < 4 and any(
-            episode.branch_name is not None or episode.reserved_branch_names
-            for episode in self.episodes
-        ):
-            raise ValueError("branch names require transfer record schema version 4")
-        if self.schema_version < 5 and any(
-            episode.report is not None and episode.report.deleted_at is not None
-            for episode in self.episodes
-        ):
-            raise ValueError("deleted reports require transfer record schema version 5")
-        if self.schema_version < 6 and self.branches:
-            raise ValueError("branch records require transfer record schema version 6")
+        if self.paper is not None and self.paper.project_id != self.project_id:
+            raise ValueError("saved paper requires a matching project")
         branches = {branch.branch_id: branch for branch in self.branches}
         if len(branches) != len(self.branches):
             raise ValueError("transfer bundle repeats a branch identity")
         episodes = {episode.episode_id: episode for episode in self.episodes}
-        if self.schema_version >= 6 and any(
+        if any(
             episode.graph_target.kind == "branch" and episode.graph_target.branch_id not in branches
             for episode in self.episodes
         ):
@@ -1352,8 +1336,6 @@ class TransferRecordBundle(_StrictTransferRecord):
         return self
 
     def validate_canonical_branches(self, metadata: Mapping[str, GraphBranchMetadata]) -> None:
-        if self.schema_version < 6:
-            return
         branches = {branch.branch_id: branch for branch in self.branches}
         if not metadata.keys() <= branches.keys():
             raise ValueError("canonical branch history requires its operational record")
@@ -1365,28 +1347,6 @@ class TransferRecordBundle(_StrictTransferRecord):
                 or TransferGraphHead.capture(canonical.effective_parent_head) != branch.parent_head
             ):
                 raise ValueError("operational branch binding differs from canonical history")
-
-    @model_serializer(mode="wrap")
-    def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
-        data = handler(self)
-        if self.schema_version < 7:
-            data.pop("paper", None)
-        if self.schema_version < 6:
-            data.pop("branches", None)
-        if self.schema_version < 4:
-            for episode in data.get("episodes", []):
-                episode.pop("branch_name", None)
-                episode.pop("reserved_branch_names", None)
-        if self.schema_version < 3:
-            # Older payloads predate the graph archive flag; keep their canonical bytes.
-            for episode in data.get("episodes", []):
-                episode.pop("graph_archived", None)
-        if self.schema_version == 1:
-            # The canonical v1 payload predates this field. Preserve its exact
-            # shape so decoding an old archive preserves its canonical bytes.
-            for episode in data.get("episodes", []):
-                episode.pop("archive", None)
-        return data
 
     @staticmethod
     def _validate_auto_research_references(

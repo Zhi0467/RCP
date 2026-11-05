@@ -8,6 +8,7 @@ import pytest
 from rcp.api.experiment_controls import _experiment_control_response
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import Experiment, GraphState
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.storage import AppStore, WatcherContinuation
@@ -44,10 +45,9 @@ def _waiting_child(tmp_path, monkeypatch, *, child_ceiling=10):
         project_id=task.project_id,
         control_node_id=task.request["control_node_id"],
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=task.native_session_id,
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=task.stage_root,
         chat_id=task.request["chat_id"],
         operation_id=task.operation_id,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HOST, everyState, loginRow, settingsFor } from "./fixtures/signInRows.mjs";
+import { MACHINE, everyState, loginRow, settingsFor } from "./fixtures/signInRows.mjs";
 
 const model = await import("../src/projects/providerLoginsModel.ts");
 
@@ -52,9 +52,9 @@ test("a card shows the first state that applies: draining, signing in, signed ou
   );
 });
 
-test("rows split by host into the viewer's own, shared with the machine sign-in first, and members", () => {
-  const rows = [...everyState, loginRow({ host: "other.example", login_id: "elsewhere" })];
-  const [claude, codex, opencode] = model.signInsForHost(rows, HOST, "u-me");
+test("rows split by machine into the viewer's own, shared with the machine sign-in first, and members", () => {
+  const rows = [...everyState, loginRow({ machine_id: "m-other", login_id: "elsewhere" })];
+  const [claude, codex, opencode] = model.signInsForMachine(rows, MACHINE, "u-me");
   assert.equal(claude.own.login_id, "own-me");
   assert.deepEqual(
     claude.shared.map((row) => row.login_id),
@@ -78,40 +78,48 @@ test("API sends login ids, add and remove bodies, and the setting through their 
     return new Response(JSON.stringify({}), { status: 200 });
   };
   try {
-    await api.addProviderLogin("codex", HOST, "shared");
+    await api.addProviderLogin("codex", MACHINE, "shared");
     await api.addProviderLogin("claude", "", "own");
-    await api.removeProviderLogin("codex", HOST, "ana");
-    await api.saveProviderLoginSetting("claude", HOST, "shared_then_own");
+    await api.removeProviderLogin("codex", MACHINE, "ana");
+    await api.saveProviderLoginSetting("claude", MACHINE, "shared_then_own");
     await api.loadProviderLoginSettings();
-    await api.startProviderSignIn("codex", HOST, "ana");
+    await api.startProviderSignIn("codex", MACHINE, "ana");
     await api.providerSignInStatus("codex", "attempt-1");
     await api.cancelProviderSignIn("codex", "attempt-1");
-    await api.saveProviderToken("claude", HOST, "own-me", "private-value");
-    await api.verifyProviderLogin("claude", HOST, "");
-    await api.signOutProvider("claude", HOST, "own-me");
+    await api.saveProviderToken("claude", MACHINE, "own-me", "private-value");
+    await api.verifyProviderLogin("claude", MACHINE, "");
+    await api.signOutProvider("claude", MACHINE, "own-me");
     assert.deepEqual(calls, [
-      ["/api/providers/codex/logins/add", "POST", { host: HOST, kind: "shared" }],
-      ["/api/providers/claude/logins/add", "POST", { host: "", kind: "own" }],
-      ["/api/providers/codex/logins/remove", "POST", { host: HOST, login_id: "ana" }],
-      ["/api/providers/claude/logins/setting", "PUT", { host: HOST, setting: "shared_then_own" }],
+      ["/api/providers/codex/logins/add", "POST", { machine_id: MACHINE, kind: "shared" }],
+      ["/api/providers/claude/logins/add", "POST", { machine_id: "", kind: "own" }],
+      ["/api/providers/codex/logins/remove", "POST", { machine_id: MACHINE, login_id: "ana" }],
+      [
+        "/api/providers/claude/logins/setting",
+        "PUT",
+        { machine_id: MACHINE, setting: "shared_then_own" },
+      ],
       ["/api/providers/logins/settings", "GET", null],
-      ["/api/providers/codex/logins/sign-in", "POST", { host: HOST, login_id: "ana" }],
+      ["/api/providers/codex/logins/sign-in", "POST", { machine_id: MACHINE, login_id: "ana" }],
       ["/api/providers/codex/logins/sign-in/attempt-1", "GET", null],
       ["/api/providers/codex/logins/sign-in/attempt-1/cancel", "POST", null],
       [
         "/api/providers/claude/logins/token",
         "POST",
-        { host: HOST, login_id: "own-me", token: "private-value" },
+        { machine_id: MACHINE, login_id: "own-me", token: "private-value" },
       ],
-      ["/api/providers/claude/logins/verify", "POST", { host: HOST, login_id: "" }],
-      ["/api/providers/claude/logins/sign-out", "POST", { host: HOST, login_id: "own-me" }],
+      ["/api/providers/claude/logins/verify", "POST", { machine_id: MACHINE, login_id: "" }],
+      [
+        "/api/providers/claude/logins/sign-out",
+        "POST",
+        { machine_id: MACHINE, login_id: "own-me" },
+      ],
     ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("live login states replace project rows matched by provider, host and login", async () => {
+test("live login states replace project rows matched by provider, machine and login", async () => {
   const { mergeProviderLogins } = await import("../src/projects/providers.ts");
   const project = [
     loginRow({ state: "signed_out" }),
@@ -162,7 +170,7 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
       render(
         React.createElement(SignInsFold, {
           machineName: "gpu-1",
-          host: HOST,
+          machineId: MACHINE,
           viewerUserId,
           writesDisabled: false,
           data: {
@@ -276,7 +284,7 @@ test("a dismissed sign-in notice stays hidden until that login signs out again",
   const banners = "../src/ui/bannerDismissal.ts";
   const signOut = {
     provider: "claude",
-    host: "gpu.example",
+    machine_id: "m-gpu",
     login_id: "",
     generation: 3,
     changed_at: "t1",
@@ -291,7 +299,7 @@ test("a dismissed sign-in notice stays hidden until that login signs out again",
     // Another failure of the same sign-out moves only its time.
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, changed_at: "t2" })), true);
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, generation: 5 })), false);
-    assert.equal(reloaded.isBannerDismissed(key({ ...signOut, host: "" })), false);
+    assert.equal(reloaded.isBannerDismissed(key({ ...signOut, machine_id: "" })), false);
     assert.equal(reloaded.isBannerDismissed(key({ ...signOut, login_id: "ana" })), false);
     // A cleared condition forgets only its own dismissals.
     reloaded.dismissBanner("compute-route:gpu:helper:timeout");

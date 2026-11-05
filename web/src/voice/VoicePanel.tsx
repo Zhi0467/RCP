@@ -83,7 +83,7 @@ function ConfirmationCard({
       ? ([
           [
             "Provider",
-            [profile.provider, profile.model || "default model", profile.reasoning, profile.run_on]
+            [profile.provider, profile.model || "default model", profile.reasoning]
               .filter(Boolean)
               .join(" · "),
           ],

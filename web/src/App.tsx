@@ -999,20 +999,20 @@ function MemberApp({
   // Space settings is already open remounts it on the requested section.
   const [spaceSettings, setSpaceSettings] = useState<{
     section: SpaceSettingsSectionId;
-    signIns?: { provider: string; host: string };
+    signIns?: { provider: string; machine_id: string };
     opened: number;
   } | null>(null);
   const openSpaceSettings = useCallback(
     (
       section: SpaceSettingsSectionId = "appearance",
-      signIns?: { provider: string; host: string },
+      signIns?: { provider: string; machine_id: string },
     ) => setSpaceSettings((current) => ({ section, signIns, opened: (current?.opened ?? 0) + 1 })),
     [],
   );
   // A login notice opens Space settings at that login's machine card "Sign-ins" fold.
   const openSignIns = useCallback(
-    (state: { provider: string; host: string }) =>
-      openSpaceSettings("machines", { provider: state.provider, host: state.host }),
+    (state: { provider: string; machine_id: string }) =>
+      openSpaceSettings("machines", { provider: state.provider, machine_id: state.machine_id }),
     [openSpaceSettings],
   );
   // Space settings is a page over the current route; any navigation leaves it.
@@ -3236,7 +3236,7 @@ function MemberApp({
         const agent = launchConfig ?? profile;
         // Only a code worktree names its one repository; the server stamps every other scope.
         const { worktree_repository: pickedRepository, ...isolationFields } = isolation ?? {};
-        const worktreeRepositories = worktreeRepositoryChoices(project, profile.run_on);
+        const worktreeRepositories = worktreeRepositoryChoices(project, project.run_on);
         const worktreeRepository =
           pickedRepository && worktreeRepositories.includes(pickedRepository)
             ? pickedRepository
@@ -3249,7 +3249,7 @@ function MemberApp({
             provider: agent.provider,
             model: agent.model || null,
             reasoning: agent.reasoning,
-            run_on: profile.run_on,
+            run_on: project.run_on,
             ...(isolation?.code_worktree && worktreeRepository
               ? { run_truth_scope: [worktreeRepository] }
               : {}),

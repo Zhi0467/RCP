@@ -24,6 +24,7 @@ import tomlkit
 
 from rcp.config import Manifest
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.control import (
     ServerControlClient,
@@ -621,13 +622,12 @@ class TargetTransferActivationCoordinator:
                 "reviewed target manifest is invalid during retained-history capture"
             ) from exc
         state_repository = manifest.repository_map[manifest.state.repository]
-        machine = manifest.machine_map[state_repository.machine]
         manifest._path = (
             Path(state_repository.path) / ".research" / "manifest.toml"
-            if not machine.host
+            if state_repository.machine == BACKEND_MACHINE_ID
             else request_stage / "target-bootstrap.toml"
         )
-        workspace = state_workspace_for_probe(manifest, self.data_dir)
+        workspace = state_workspace_for_probe(manifest, self.data_dir, self.store)
         retained_stage = request_stage / "retained"
         retained_stage.mkdir(mode=_DIRECTORY_MODE)
         return workspace.backup_source_root(retained_stage)

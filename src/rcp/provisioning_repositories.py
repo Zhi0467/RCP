@@ -22,9 +22,9 @@ def effective_repositories(
     The creation request establishes alias order; adds append and connects replace
     the source, deploy-key evidence, and checkout proof in place. In-flight work
     has no effect. This is operational provenance, never manifest/truth authority.
-    Callers can pass the records of a database snapshot without opening live state.
+    Callers can pass the records of a database snapshot without opening live state;
+    the store verified each record's review digest when it read it.
     """
-    from rcp.storage.provisioning import project_provisioning_review_digest
 
     if project.home_space_id is None:
         raise ValueError("The project has no durable home-space identity.")
@@ -46,18 +46,12 @@ def effective_repositories(
     if ordered[0] != origins[0]:
         raise ValueError("Repository changes cannot precede project creation.")
     repositories: dict[str, ProjectProvisioningRepositoryRecord] = {}
-    checkout_machines: dict[str, tuple[str, str | None, str]] = {}
     for request in ordered:
-        if project_provisioning_review_digest(request) != request.final_review_digest:
-            raise ValueError("The completed provisioning review digest is stale.")
         if request.kind in {"add_repository", "connect_repository"} and (
             request.target_project_id != project.project_id or len(request.repositories) != 1
         ):
             raise ValueError("Repository changes must target this project and one repository.")
-        machines = {machine.alias: machine for machine in request.machines}
         for repository in request.repositories:
-            machine = machines[repository.machine_alias]
-            machine_identity = (machine.location, machine.host, machine.os_account)
             if (
                 repository.resolved_path is None
                 or repository.git_check.status != "ready"
@@ -69,9 +63,8 @@ def effective_repositories(
                 if previous is None or repository.repository is None:
                     raise ValueError("Connecting requires an existing alias and GitHub source.")
                 if (
-                    previous.machine_alias != repository.machine_alias
+                    previous.machine_id != repository.machine_id
                     or previous.resolved_path != repository.resolved_path
-                    or checkout_machines[repository.alias] != machine_identity
                     or (
                         previous.repository is not None
                         and previous.repository != repository.repository
@@ -84,7 +77,6 @@ def effective_repositories(
             elif previous is not None:
                 raise ValueError("A completed request repeats an existing repository alias.")
             repositories[repository.alias] = repository
-            checkout_machines[repository.alias] = machine_identity
     identities = [
         repository.repository.identity
         for repository in repositories.values()

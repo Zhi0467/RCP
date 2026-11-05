@@ -13,8 +13,9 @@ import uuid
 from collections.abc import Iterable, Mapping
 
 from rcp.config import MachineComputeConfig
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage.mixin_base import StoreMixinBase
-from rcp.storage.models import SpaceMachineRecord
+from rcp.storage.models import SpaceMachineHostInUse, SpaceMachineRecord
 
 
 class SpaceMachineStoreMixin(StoreMixinBase):
@@ -34,8 +35,32 @@ class SpaceMachineStoreMixin(StoreMixinBase):
             raise KeyError(machine_id)
         return _record(row)
 
+    def space_machine_has_work(self, machine_id: str) -> bool:
+        """An open turn, compute job, watcher, or project provisioning still reaches this card."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM graph_runs WHERE status IN ('queued', 'running', 'pausing') "
+                "AND (stage_machine_id = ? OR json_extract(request_json, '$.run_on') = ?) "
+                "UNION ALL SELECT 1 FROM compute_jobs WHERE status = 'running' AND machine_id = ? "
+                "UNION ALL SELECT 1 FROM watchers "
+                "WHERE status IN ('active', 'degraded') AND machine_id = ? "
+                "UNION ALL SELECT 1 FROM project_provisioning_requests "
+                "WHERE status NOT IN ('completed', 'cancelled') AND EXISTS ("
+                "SELECT 1 FROM json_each(machines_json) "
+                "WHERE json_extract(value, '$.machine_id') = ? "
+                "OR (json_extract(value, '$.machine_id') IS NULL AND json_extract(value, '$.host') "
+                "IN (SELECT host FROM space_machines WHERE machine_id = ?))) LIMIT 1",
+                (machine_id, machine_id, machine_id, machine_id, machine_id, machine_id),
+            ).fetchone()
+        return row is not None
+
     def space_machine_for(self, host: str) -> SpaceMachineRecord | None:
-        """The card for `host`; a space keeps one card per host route."""
+        """The card for `host`; a space keeps one card per host route.
+
+        Only creation and the legacy upgrade look a card up by host. Everything
+        else names the card by id.
+        """
 
         with self.connection() as connection:
             row = connection.execute(
@@ -45,37 +70,50 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         return _record(row) if row else None
 
     def backend_space_machine(self) -> SpaceMachineRecord:
-        """The card for the backend's own machine, the one with no host.
+        """The card for the backend's own machine, `BACKEND_MACHINE_ID`, the one with no host.
 
         A project on that machine usually made it. Otherwise it is made here with
         no account, which checks nothing, as a Space turn without a card did.
         """
 
-        card = self.space_machine_for("")
-        if card is None:
+        try:
+            return self.space_machine(BACKEND_MACHINE_ID)
+        except KeyError:
             self.ensure_space_machines([("", "", "Backend")])
-            card = self.space_machine_for("")
-        assert card is not None
+            card = self.space_machine(BACKEND_MACHINE_ID)
         return card
 
-    def provider_shell_timeout_seconds(self, provider: str, host: str) -> int | None:
+    def provider_shell_timeout_seconds(self, provider: str, machine_id: str) -> int | None:
         """This machine's configured shell timeout for `provider`; None keeps its default."""
 
-        card = self.space_machine_for(host)
-        value = card.provider_shell_timeout.get(provider, "") if card is not None else ""
+        card = (
+            self.backend_space_machine()
+            if machine_id == BACKEND_MACHINE_ID
+            else self.space_machine(machine_id)
+        )
+        value = card.provider_shell_timeout.get(provider, "")
         return int(value) * 60 if value else None
 
-    def machine_compute(self, host: str) -> MachineComputeConfig | None:
+    def machine_compute(self, machine_id: str) -> MachineComputeConfig | None:
         """This machine's compute settings, as compute jobs read them."""
 
-        card = self.space_machine_for(host)
-        return card.compute_config() if card is not None else None
+        return self.space_machine(machine_id).compute_config()
 
-    def provider_binary(self, provider: str, host: str) -> str | None:
+    def provider_binary(self, provider: str, machine_id: str) -> str | None:
         """The executable recorded for `provider` on this machine; None lets RCP discover it."""
 
-        card = self.space_machine_for(host)
-        return card.provider_paths.get(provider) if card is not None else None
+        return self.space_machine(machine_id).provider_paths.get(provider)
+
+    def clear_machine_caches(self, machine_id: str) -> None:
+        """Drop what was probed through the card's old route: readiness, skills, compute."""
+
+        with self.connection() as connection:
+            for table in (
+                "provider_readiness_snapshots",
+                "provider_skill_inventories",
+                "compute_backend_probes",
+            ):
+                connection.execute(f"DELETE FROM {table} WHERE machine_id = ?", (machine_id,))
 
     def merge_legacy_machine_settings(
         self,
@@ -158,7 +196,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 WHERE NOT EXISTS (SELECT 1 FROM space_machines WHERE host = ?)
                 """,
                 [
-                    (uuid.uuid4().hex, name, host, os_account, now, now, host)
+                    (_new_machine_id(host), name, host, os_account, now, now, host)
                     for host, os_account, name in machines
                 ],
             )
@@ -177,7 +215,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
 
     def create_space_machine(self, *, name: str, host: str, os_account: str) -> SpaceMachineRecord:
         now = self.now()
-        machine_id = uuid.uuid4().hex
+        machine_id = _new_machine_id(host)
         try:
             with self.connection() as connection:
                 connection.execute(
@@ -190,7 +228,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     (machine_id, name, host, os_account, now, now),
                 )
         except sqlite3.IntegrityError as exc:
-            raise ValueError("this space already has a machine for that host") from exc
+            raise SpaceMachineHostInUse(host) from exc
         return self.space_machine(machine_id)
 
     def update_space_machine(
@@ -198,6 +236,8 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         machine_id: str,
         *,
         name: str | None = None,
+        host: str | None = None,
+        os_account: str | None = None,
         writable_paths: list[str] | None = None,
         hidden_folders: list[str] | None = None,
         provider_autocompact: Mapping[str, str | None] | None = None,
@@ -207,14 +247,21 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         access_hint: str | None = None,
         provider_paths: Mapping[str, str | None] | None = None,
     ) -> SpaceMachineRecord:
-        # Write only the fields given, so a rename and a path edit racing on one
-        # card both land. Provider settings merge per provider (None removes one), so
-        # two providers saved at once both land too.
-        with self.connection() as connection:
-            updated = connection.execute(
-                """
+        """Write only the fields given, so racing edits of different fields all land.
+
+        Provider settings merge per provider (None removes one). A host another
+        card already has raises SpaceMachineHostInUse. The caller validates the
+        route and invalidates what the old route taught (`machine_cards`).
+        """
+
+        try:
+            with self.connection() as connection:
+                updated = connection.execute(
+                    """
                 UPDATE space_machines
                 SET name = COALESCE(?, name),
+                    host = COALESCE(?, host),
+                    os_account = COALESCE(?, os_account),
                     writable_paths_json = COALESCE(?, writable_paths_json),
                     hidden_folders_json = COALESCE(?, hidden_folders_json),
                     provider_autocompact_json = COALESCE(
@@ -232,20 +279,26 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                     updated_at = ?
                 WHERE machine_id = ?
                 """,
-                (
-                    name,
-                    None if writable_paths is None else json.dumps(writable_paths),
-                    None if hidden_folders is None else json.dumps(hidden_folders),
-                    None if provider_autocompact is None else json.dumps(provider_autocompact),
-                    None if provider_shell_timeout is None else json.dumps(provider_shell_timeout),
-                    job_manager,
-                    jobs_root,
-                    access_hint,
-                    None if provider_paths is None else json.dumps(provider_paths),
-                    self.now(),
-                    machine_id,
-                ),
-            ).rowcount
+                    (
+                        name,
+                        host,
+                        os_account,
+                        None if writable_paths is None else json.dumps(writable_paths),
+                        None if hidden_folders is None else json.dumps(hidden_folders),
+                        None if provider_autocompact is None else json.dumps(provider_autocompact),
+                        None
+                        if provider_shell_timeout is None
+                        else json.dumps(provider_shell_timeout),
+                        job_manager,
+                        jobs_root,
+                        access_hint,
+                        None if provider_paths is None else json.dumps(provider_paths),
+                        self.now(),
+                        machine_id,
+                    ),
+                ).rowcount
+        except sqlite3.IntegrityError as exc:
+            raise SpaceMachineHostInUse(host or "") from exc
         if not updated:
             raise KeyError(machine_id)
         return self.space_machine(machine_id)
@@ -257,6 +310,10 @@ class SpaceMachineStoreMixin(StoreMixinBase):
             ).rowcount
         if not deleted:
             raise KeyError(machine_id)
+
+
+def _new_machine_id(host: str) -> str:
+    return uuid.uuid4().hex if host else BACKEND_MACHINE_ID
 
 
 def _record(row: sqlite3.Row) -> SpaceMachineRecord:

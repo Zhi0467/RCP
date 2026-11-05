@@ -18,6 +18,7 @@ from rcp.core.models import BranchMergeReceipt
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES, PATCH_SELF_CHECK_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID, card, host_of
 from rcp.runs import merge_plan
 from rcp.runs.branch_merge import (
     BranchMergeContext,
@@ -133,8 +134,9 @@ async def stream_branch_merge_task(
             AgentEvent(event="error", text="The branch merge task has no pinned provider target.")
         )
         return
-    machine = service.manifest.machine_map.get(request.run_on)
-    if machine is None:
+    try:
+        machine = card(execution.store, request.run_on)
+    except KeyError:
         yield _sse(AgentEvent(event="error", text=f"unknown execution machine: {request.run_on}"))
         return
 
@@ -148,11 +150,12 @@ async def stream_branch_merge_task(
         if recorded is not None:
             if execution.stage_root is None:
                 raise ValueError("The recorded branch merge has no retained stage.")
-            remote = execution.stage_host or ""
+            stage_machine_id = execution.stage_machine_id or BACKEND_MACHINE_ID
+            remote = host_of(execution.store, stage_machine_id)
             local_stage, remote_stage, workspace = attach_retained_stage(
                 execution,
                 owner="branch merge",
-                stage_host=remote,
+                stage_machine_id=stage_machine_id,
                 stage_root=execution.stage_root,
                 workspace=(
                     str(RemoteRunStage(remote).attach(execution.stage_root).workspace)
@@ -164,10 +167,10 @@ async def stream_branch_merge_task(
         elif machine.host:
             remote_stage = RemoteRunStage(machine.host).open(
                 stage_id,
-                protected_roots=_protected_run_stage_roots(execution.store, machine.host),
+                protected_roots=_protected_run_stage_roots(execution.store, machine.machine_id),
             )
             assert remote_stage.root is not None
-            execution.checkpoint_stage(machine.host, str(remote_stage.root))
+            execution.checkpoint_stage(machine.machine_id, str(remote_stage.root))
             workspace = Path(str(remote_stage.workspace))
             stage_root = str(remote_stage.root)
         else:
@@ -176,7 +179,7 @@ async def stream_branch_merge_task(
             local_stage.mkdir(mode=0o700, parents=True, exist_ok=False)
             workspace = local_stage / "workspace"
             workspace.mkdir(mode=0o700)
-            execution.checkpoint_stage("", str(local_stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(local_stage))
             stage_root = str(local_stage)
         stage = BranchMergeStage(
             local_stage=local_stage,
@@ -193,7 +196,7 @@ async def stream_branch_merge_task(
             manifest=service.manifest,
             truth_scope=write_repositories(service.history.state()),
             project_id=task.project_id,
-            execution_machine=request.run_on,
+            machine=machine,
             capability="orchestrate",
             stage_root=stage_root,
             workspace_root=str(workspace),
@@ -253,7 +256,7 @@ async def stream_branch_merge_task(
                     verify=lambda: verify_episode_merge_code(execution.store, episode),
                     execution=execution,
                     binary=(
-                        service.launcher.provider_binary(request.provider, machine.host)
+                        service.launcher.provider_binary(request.provider, machine.machine_id)
                         if request.provider
                         else None
                     ),
@@ -439,7 +442,7 @@ async def stream_branch_merge_task(
                     invocation_gate=staged_validator.invocation_gate,
                     service=service,
                     execution=execution,
-                    binary=service.launcher.provider_binary(request.provider, machine.host),
+                    binary=service.launcher.provider_binary(request.provider, machine.machine_id),
                     code_block=code_block,
                     code_roots=list(write_scope.repository_roots) if code else None,
                     code_landed=code_landed or recorded is not None,

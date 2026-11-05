@@ -5,6 +5,7 @@ import type {
   ProjectTransferBundle,
   ProjectTransferPrepareRequest,
   ServerStep,
+  SpaceMachine,
   TargetProviderSetupProjection,
 } from "./types";
 
@@ -419,13 +420,7 @@ export async function prepareDesktopProjectTransfer(
       connection_id: request.connectionId,
       source_project_id: request.sourceProjectId,
       ...(request.includeLocalCommits ? { include_local_commits: true } : {}),
-      target_provisioning: {
-        ...request.targetProvisioning,
-        machines: request.targetProvisioning.machines.map((machine) => ({
-          ...machine,
-          host: machine.host ?? "",
-        })),
-      },
+      target_provisioning: request.targetProvisioning,
     },
   });
 }
@@ -464,6 +459,14 @@ export async function readDesktopTargetProjectProvisioningOptions(
     "desktop_read_target_project_provisioning_options",
     { connectionId },
   );
+}
+
+export async function readDesktopTargetSpaceMachines(
+  connectionId: string,
+): Promise<SpaceMachine[]> {
+  if (!isDesktopRuntime())
+    throw new Error("Target machines are available only in the source-built desktop app.");
+  return invokeDesktop<SpaceMachine[]>("desktop_read_target_space_machines", { connectionId });
 }
 
 export async function runDesktopProjectTransfer(

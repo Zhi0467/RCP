@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import pytest
 
 from rcp.limits import BULLETIN_KEY_MAX_CHARS, BULLETIN_REPLY_MAX_CHARS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import Artifact, ProjectRecord
 from rcp.storage.bulletin import BulletinError
 
@@ -39,8 +40,8 @@ def test_target_and_project_isolation_and_reply_depth(store):
             project_id="other",
             locator="other",
             name="Other",
-            state_location="other",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="other",
             added_at=store.now(),
         )
     )

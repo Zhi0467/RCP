@@ -127,7 +127,7 @@ def test_remote_source_is_pinned_before_rsync_makes_it_visible(
     manifest, tmp_path, monkeypatch
 ) -> None:
     cache_root = tmp_path / "source-cache"
-    indexer = ConversationIndexer(manifest, cache_root)
+    indexer = ConversationIndexer(manifest, cache_root, machine_cards=dict)
     remote_path = "/provider/session.jsonl"
     expected = cache_root / "gpu" / "codex" / remote_path.lstrip("/")
     pinned: list[Path] = []
@@ -293,7 +293,7 @@ def test_clear_is_scoped_to_rebuildable_roots_and_preserves_active_paths(
     facts.parent.mkdir(exist_ok=True)
     chat.write_text("chat", encoding="utf-8")
     facts.write_text("fact", encoding="utf-8")
-    indexer = ConversationIndexer(manifest, cache_root)
+    indexer = ConversationIndexer(manifest, cache_root, machine_cards=dict)
 
     retained = indexer.clear_rebuildable_caches(active_paths=[cached_source])
 
@@ -316,7 +316,7 @@ def test_source_index_build_sweeps_expired_rebuildable_entries(manifest, tmp_pat
     stale = cache_root / "remote" / "codex" / "stale.jsonl"
     stale.parent.mkdir(parents=True)
     stale.write_text("stale", encoding="utf-8")
-    indexer = ConversationIndexer(manifest, cache_root, clock=clock)
+    indexer = ConversationIndexer(manifest, cache_root, machine_cards=dict, clock=clock)
     lifecycle = RebuildableCache(
         cache_root,
         REMOTE_SOURCE_CACHE_LIMITS,
@@ -344,7 +344,7 @@ def test_indexer_records_source_access_explicitly_without_changing_provider_mtim
         encoding="utf-8",
     )
     os.utime(cached, (0, 0))
-    indexer = ConversationIndexer(manifest, cache_root, clock=clock)
+    indexer = ConversationIndexer(manifest, cache_root, machine_cards=dict, clock=clock)
     indexer.cache_metrics()
     clock.advance(seconds=5)
     session = ConversationSession(

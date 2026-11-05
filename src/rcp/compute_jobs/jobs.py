@@ -30,8 +30,8 @@ from rcp.compute_jobs.files import (
 )
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.config import Manifest
 from rcp.limits import COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.machine_cards import card
 from rcp.storage import AppStore
 
 if TYPE_CHECKING:
@@ -42,14 +42,13 @@ logger = logging.getLogger(__name__)
 
 def launch_compute_job(
     store: AppStore,
-    manifest: Manifest,
     request: ComputeLaunchRequest,
     *,
     data_dir: Path,
     project_id: str,
     origin_operation_id: str,
     episode_id: str | None,
-    execution_machine: str,
+    machine_id: str,
     writable_roots: list[str] | tuple[str, ...],
     protected_paths: list[str] | tuple[str, ...] = (),
     probe: ComputeBackendProbe | None = None,
@@ -57,23 +56,20 @@ def launch_compute_job(
     request = ComputeLaunchRequest.model_validate(request.model_dump())
     if any(not PurePosixPath(root).is_absolute() for root in writable_roots):
         raise ValueError("compute writable roots must be absolute")
-    context, backend = resolve_context(
-        manifest,
-        execution_machine,
-        store.machine_compute(manifest.machine_map[execution_machine].host),
-    )
+    machine = card(store, machine_id)
+    context, backend = resolve_context(machine)
     if backend is None:
         raise RuntimeError(
-            f"No reliable compute process owner is available for machine {execution_machine!r} "
+            f"No reliable compute process owner is available on {machine.name} "
             f"({context.os_name}). {UNAVAILABLE_BACKEND_GUIDANCE}"
         )
     job_id = uuid.uuid4().hex
     if probe is None:
-        probe = store.compute_backend_probe(project_id, execution_machine, "helper")
+        probe = store.compute_backend_probe(project_id, machine_id, "helper")
     if probe is not None:
         if not probe.ready:
             raise ValueError("Compute probe does not match the resolved ready backend.")
-        if probe.execution_machine != execution_machine or probe.backend_id != backend.id:
+        if probe.machine_id != machine_id or probe.backend_id != backend.id:
             raise ComputeProbeStaleError("Compute probe does not match the resolved ready backend.")
         context.containment = probe.containment
     root = PurePosixPath(resolve_jobs_root(context, data_dir)) / job_id
@@ -85,8 +81,7 @@ def launch_compute_job(
         origin_operation_id=origin_operation_id,
         label=request.label,
         episode_id=episode_id,
-        execution_machine=execution_machine,
-        execution_host=context.execution_host,
+        machine_id=machine_id,
         backend_id=backend.id,
         backend_handle="",
         job_root=str(root),
@@ -135,7 +130,7 @@ def refresh_compute_job(
     job_id: str,
     *,
     data_dir: Path,
-    unavailable_hosts: dict[str, str] | None = None,
+    unavailable_machines: dict[str, str] | None = None,
 ) -> ComputeJobRecord:
     record = store.compute_job(job_id)
     if record is None:
@@ -143,7 +138,7 @@ def refresh_compute_job(
     if record.status != "running":
         return record
     try:
-        context = recorded_job_context(record)
+        context = recorded_job_context(store, record)
         try:
             alive = COMPUTE_BACKENDS[record.backend_id].alive(record.backend_handle, context)
             if alive is None:
@@ -151,10 +146,10 @@ def refresh_compute_job(
         except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
             # A local OSError (a missing scheduler binary, say) is this row's problem,
             # not an outage of the local host.
-            if unavailable_hosts is not None and (
-                record.execution_host or not isinstance(exc, OSError)
+            if unavailable_machines is not None and (
+                context.execution_host or not isinstance(exc, OSError)
             ):
-                unavailable_hosts[record.execution_host] = safe_compute_diagnostic(str(exc))
+                unavailable_machines[record.machine_id] = safe_compute_diagnostic(str(exc))
             raise
         started = read_job_file(context, str(PurePosixPath(record.job_root) / "started"))
         started_at = record.started_at
@@ -245,7 +240,7 @@ def helper_cancel_action(store: AppStore, watcher: WatcherRecord) -> Callable[[]
     matches = [
         job
         for job in store.compute_jobs_for_log_path(
-            watcher.project_id, watcher.execution_host, watcher.log_path
+            watcher.project_id, watcher.machine_id, watcher.log_path
         )
         if job.origin_operation_id == watcher.origin_operation_id
         and all(getattr(watcher, name) == value for name, value in helper_watch_spec(job).items())
@@ -268,7 +263,7 @@ def _cancel_helper_job(store: AppStore, job: ComputeJobRecord) -> bool:
     """
     if _reconcile_helper_exit(store, job):
         return False
-    context = recorded_job_context(job)
+    context = recorded_job_context(store, job)
     backend = COMPUTE_BACKENDS[job.backend_id]
     backend.cancel(job.backend_handle, context)
     if _reconcile_helper_exit(store, job):
@@ -296,7 +291,7 @@ def _reconcile_helper_exit(store: AppStore, job: ComputeJobRecord) -> bool:
         return observed.status == "exited"
     # Ordinary polling leaves terminal records alone. A human Cancel can recover
     # a missing receipt that arrived after an earlier observation settled as lost.
-    context = recorded_job_context(job)
+    context = recorded_job_context(store, job)
     if COMPUTE_BACKENDS[job.backend_id].alive(job.backend_handle, context) is not False:
         return False
     receipt = read_job_file(context, job.exit_path)
@@ -312,7 +307,7 @@ def _reconcile_helper_exit(store: AppStore, job: ComputeJobRecord) -> bool:
     return settled.status == "exited"
 
 
-def helper_startup_state(job: ComputeJobRecord) -> dict[str, object]:
+def helper_startup_state(store: AppStore, job: ComputeJobRecord) -> dict[str, object]:
     """The job's state just after launch, read by RCP outside any agent sandbox."""
     if job.status == "running":
         # A fresh job's running record carries a diagnostic only when the refresh
@@ -325,7 +320,7 @@ def helper_startup_state(job: ComputeJobRecord) -> dict[str, object]:
     state["diagnostic"] = job.diagnostic
     try:
         state["log_tail"] = read_job_file(
-            recorded_job_context(job), job.log_path, COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES
+            recorded_job_context(store, job), job.log_path, COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES
         )
     except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
         state["log_tail"] = None

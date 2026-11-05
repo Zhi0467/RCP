@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import compose
 from rcp.agents.prompts import _attachment_items
+from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.runs.chat import (
     _append_chat_exchange,
     _clear_stale_turn_handoffs,
@@ -60,7 +61,7 @@ def _local_edit_workspace(execution, edit, local: Path, session_id: str | None) 
             origin is None
             or origin.history_only
             or origin.project_id != current.project_id
-            or origin.stage_host
+            or (origin.stage_machine_id or BACKEND_MACHINE_ID) != BACKEND_MACHINE_ID
             or origin.stage_root != str(local)
             or origin.native_session_id != session_id
         ):
@@ -74,7 +75,9 @@ def _local_edit_workspace(execution, edit, local: Path, session_id: str | None) 
         prior = ArtifactEditAdmission.model_validate(origin.request.get("artifact_edit"))
         if prior.fresh_session:
             return local
-        if prior.stage_host or prior.stage_root != str(local):
+        if (
+            prior.stage_machine_id or BACKEND_MACHINE_ID
+        ) != BACKEND_MACHINE_ID or prior.stage_root != str(local):
             raise ValueError("The prior artifact edit changed its saved stage.")
         origin_id = prior.origin_operation_id
 
@@ -82,9 +85,9 @@ def _local_edit_workspace(execution, edit, local: Path, session_id: str | None) 
 def _open_stage(service, request, data_dir, execution):
     edit = request.artifact_edit
     assert edit is not None
-    machine = service.manifest.machine_map[request.run_on]
+    machine = card(execution.store, request.run_on)
     root = execution.stage_root
-    if root and (execution.stage_host or "") != machine.host:
+    if root and (execution.stage_machine_id or BACKEND_MACHINE_ID) != machine.machine_id:
         raise ValueError("The edit's saved stage differs from its execution host.")
     if machine.host:
         remote = RemoteRunStage(machine.host)
@@ -94,7 +97,7 @@ def _open_stage(service, request, data_dir, execution):
             remote.open("artifact-edit-" + edit.operation_id, reuse=False)
         else:
             raise ValueError("The edit's exact stage is unavailable.")
-        execution.checkpoint_stage(machine.host, str(remote.root))
+        execution.checkpoint_stage(machine.machine_id, str(remote.root))
         return None, remote, Path(str(remote.workspace)), machine
     if root:
         local = Path(root)
@@ -107,7 +110,7 @@ def _open_stage(service, request, data_dir, execution):
         local.mkdir(parents=True, exist_ok=True)
     else:
         raise ValueError("The edit's exact stage is unavailable.")
-    execution.checkpoint_stage("", str(local))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(local))
     workspace = local
     if not edit.fresh_session:
         workspace = _local_edit_workspace(execution, edit, local, request.session_id)
@@ -236,7 +239,7 @@ async def stream_artifact_edit_run(
             capability="discuss",
             outcome=outcome,
             binary=(
-                service.launcher.provider_binary(request.provider, machine.host)
+                service.launcher.provider_binary(request.provider, machine.machine_id)
                 if request.provider
                 else None
             ),

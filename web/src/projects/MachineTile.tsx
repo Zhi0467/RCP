@@ -9,6 +9,7 @@ export interface MachineSignal {
 
 /** One machine as a small clickable card; used to pick or open a machine. */
 export function MachineTile({
+  machineId,
   name,
   hostLabel,
   account = "",
@@ -18,6 +19,8 @@ export function MachineTile({
   disabled = false,
   onSelect,
 }: {
+  /** The card's id, when the tile is a space card. */
+  machineId?: string;
   name: string;
   hostLabel: string;
   account?: string;
@@ -32,7 +35,7 @@ export function MachineTile({
     <button
       className={`machine-tile${selected ? " selected" : ""}`}
       type="button"
-      data-machine-tile={name}
+      data-machine-tile={machineId ?? name}
       aria-pressed={selected}
       disabled={disabled}
       onClick={onSelect}

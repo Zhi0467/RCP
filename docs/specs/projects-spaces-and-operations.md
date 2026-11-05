@@ -38,46 +38,107 @@ fresh personal sign-in.
 
 ### Space machines
 
-One machine card per unique host records everything configured on that machine:
-name, account, writable paths, hidden folders, provider limits, provider
-executables, job manager, jobs root and access hint. A project only adds or
-removes cards under an alias its repositories and agent profiles name; it
-configures none of them, and Project Settings shows the same card. A project
-detaches a machine only while no repository lives on it; agent profiles that ran
-on it move to the base machine. Cards are
-space state and do not travel with a transferred project.
+A machine is its space card: one `space_machines` row with `machine_id`,
+`name`, `host`, `os_account` and every setting configured on that machine
+(writable paths, hidden folders, provider limits, provider executables, job
+manager, jobs root and access hint). The card is the only owner. Every other
+record, including the project manifest, names the machine by `machine_id` and
+reads host and account from the card when it needs them
+([machine_cards.py](../../src/rcp/machine_cards.py)). The UI shows the card's
+name. The backend's own machine is the card with no host and the fixed id
+`backend`, made on first read in every space.
 
-**Why:** settings kept per project disagreed for one machine, and a fix in one
-project's Settings silently missed the others.
+A manifest lists the cards a project uses in `machines`, and each repository
+names one in `machine` (`""` while unassigned). A project adds or detaches a
+card but configures none of it; Project Settings shows the same card. A project
+detaches a machine only while no repository lives on it. Cards are space state
+and do not travel with a transferred project.
 
-Older builds kept `provider_paths`, `compute` and `access_hint` on the
-manifest's machine entries. A card that existed before this layout, or that a
-manifest creates, imports them once: Slurm turns on when any project named it,
-and every other value fills only an empty field. The import runs before
-startup recovery relaunches work. Only a start that read every project settles
-cards; registering one project merges without settling. A human edit to a card
-settles it, so no later start refills a field the human cleared.
-The keys stay inert in the manifest, so backups record the file as written.
+**Why:** a machine named per project, or keyed by host, had several identities.
+Settings kept per project disagreed for one machine, and a host edit had to
+rewrite every copy.
 
-SSH
-selects account through the route; a second account on one host refuses. In a
-team space, a blank account on Add machine is filled from a batch-mode login as
-the service account; a personal card keeps it blank. An unknown host key shows its SHA256 fingerprint with **Trust**. SSH
-itself fetches the key over the account's own route (proxy, port, algorithms,
-host-key alias) into a scratch file, offering no credential. Trust rescans,
-refuses if the key changed since it was shown or any user or global known-hosts
-file already names the host, and appends it to the first user `known_hosts`. RCP never trusts a key on its own, and a
-changed host key cannot be overridden from the UI. Every command a card asks a
-human to run is rendered by `operator_commands` as typed from that human's own
-shell: on a team server that is their own login, with `sudo -u <service> -H` and
-the service account's SSH route to reach another machine. Project
-manifests own each machine's alias, host, and account; cards own its settings.
-Setup/Add machine copies card host/account
-and rechecks account even when the route omits user. Space card creation never
-writes manifests. Startup, registration and Add machine fill cards from accepted
-manifests; conflicting accounts produce a nameless account and logged warning.
-Raw loads, preflight, replay, backup and rehearsal never mutate cards. Backup
-keeps them; transfer excludes them so the target grants its own paths.
+SSH selects the account through the route, so one host has one card:
+`UNIQUE(host)` refuses a second card, on create and on edit. In a team space, a
+blank account on Add machine is filled from a batch-mode login as the service
+account; a personal card keeps it blank.
+
+The backend card is the machine RCP runs on: it has no host, and its host and
+account are not editable. Every other card has a host, so a blank host on edit
+is refused. The backend card is never deletable. A blank backend account is
+the installed service account: team provisioning and backup checkout proofs
+read it as that account.
+
+Editing a card's host or account writes only that row. Its one check is a
+batch-mode login to the new host; the same failures as Add machine come back,
+a named account the login does not land on is refused, and a team space fills
+a blank account from that login. A card with a live or retained terminal
+session keeps its route and is not deleted until those sessions end, because
+units stop through the card's current route. So does a card an open turn, a running compute job, an
+active watcher, or an open project provisioning request still reaches, and such a
+card is not deleted: their records
+name the card, and a moved or missing route would lose the work. A card whose
+host a not-yet-upgraded project manifest still names keeps its route too, since
+that project maps its old hosts to cards when it next opens. The edit then
+forgets
+what the old route taught: provider readiness, skill inventories, every
+project's compute probes on the card, and those projects' display snapshots.
+Nothing is torn down. Running processes keep their connection, and records hold
+only the id, so the next launch or recovery reaches the card's current host.
+
+An unknown host key shows its SHA256 fingerprint with **Trust**. SSH itself
+fetches the key over the account's own route (proxy, port, algorithms, host-key
+alias) into a scratch file, offering no credential. Trust rescans, refuses if
+the key changed since it was shown or any user or global known-hosts file
+already names the host, and appends it to the first user `known_hosts`. RCP
+never trusts a key on its own, and a changed host key cannot be overridden from
+the UI. Every command a card asks a human to run is rendered by
+`operator_commands` as typed from that human's own shell: on a team server that
+is their own login, with `sudo -u <service> -H` and the service account's SSH
+route to reach another machine.
+
+Space card creation never writes manifests. Raw loads, preflight, replay,
+backup and rehearsal never mutate cards. Backup keeps them; transfer excludes
+them so the target grants its own paths.
+
+### Machine identity upgrade
+
+Older manifests held `[[machines]]` tables that named each machine by a
+per-project alias, with host, account and some settings; records copied that
+alias or the host. [machine_upgrade.py](../../src/rcp/machine_upgrade.py) is
+the only reader of those shapes, and `load_manifest` refuses them. One rule maps
+a legacy reference: to the card whose host equals the reference's host, or to
+`""`. An alias gets its host only from its own legacy manifest; a host-keyed row
+uses its host; an empty host is the backend card. The upgrade never creates a
+card from a row.
+
+1. SQLite migration 77 rekeys host-keyed rows through the rule, keeping the
+   newest row on a key collision. It clears readiness and skill-inventory
+   caches, renames credential folders to `machine-<machine_id>`, and marks
+   every project `machine_ids_pending`. Each old folder name stays as a link
+   to its new folder, so a rolled-back release still finds its sign-ins.
+2. Before startup recovery, `fill_space_machines` reads every pending legacy
+   manifest. Its machines become cards, and the settings older builds kept
+   there merge in: Slurm turns on when any project named it, and every other
+   value fills only an empty field. Manifests that name different accounts for
+   one host leave the card's account blank and log a warning. Only a start
+   that read every pending manifest settles cards. A human edit to a card also
+   settles it, so no later start refills a field the human cleared.
+3. It then rewrites each pending project: alias-keyed rows first, then the
+   manifest naming card ids (published state, not Patch history, so read-only
+   and non-home projects upgrade too), and the pending flag last. An
+   interrupted rewrite repeats on the next start.
+
+A project is skipped while its state cannot be reached or a transfer or
+provisioning request is open; it stays pending. Startup merge-effect
+reconciliation skips pending projects. Any other open of a pending project,
+recovery's included, runs the same rewrite first, so a project whose state
+comes back upgrades on open; if it cannot, the open is refused as unavailable. A fenced update or restore candidate rewrites only projects whose
+state is on the backend
+([candidate proof](server-and-machine-operations.md#application-boundary-and-local-checkpoint)).
+
+An older build cannot open an upgraded project: the manifest has no version
+field and older readers require machine aliases.
 
 ## Team initialization and enrollment
 
@@ -141,16 +202,12 @@ Episode archives travel with their original archiving-human snapshot and time.
 A graph branch that Merge cleanup archived travels as its owner's
 `graph_archived` flag; the target records a graph-only isolation with that flag,
 and the source's worktree binding and merge state stay behind.
-Operational-record readers accept versions 1 to 7; writers use the lowest that
-fits: version 1 with none of these, version 2 when episode archive metadata is
-present, version 3 when a graph branch is archived, version 4 when the
-project holds [branch-name](auto-research-and-branch-merge.md#branch-names)
-reservations, version 5 when a member deleted an episode report, version 6
-when the project holds graph branch records, and version 7 when it holds a saved
-Paper, which travels with the transfer. Older records and source
-configurations keep their original serialized shape. The optional
-`record_schema_version` source-configuration field makes older strict clients
-and targets refuse preparation before the source is released. Release rechecks the required version under the storage write lock,
+Operational records are version 8, which names machines by card id; readers
+and writers accept no other version, so both ends of a transfer run a release
+with card ids. A saved Paper travels with the transfer. The required
+`record_schema_version` source-configuration field
+makes older strict clients and targets refuse preparation before the source is
+released. Release rechecks the required version under the storage write lock,
 and archive changes obey the same transfer fence as other project writes.
 
 Every project has exactly one canonical state repository, local or remote. Its
@@ -224,8 +281,8 @@ boundary that matters is that each run still changes only its own project.
 
 `TerminalManager` admits one session per project/repository and one shell per
 resolved working tree across aliases/projects. Tree identity is resolved path
-plus host, not declaration spelling. An opening request reserves that identity
-so renames cannot admit another shell. Project members can attach/end their
+plus machine id, not declaration spelling. An opening request reserves that
+identity so renames cannot admit another shell. Project members can attach/end their
 session; its starter remains the audit actor. Lost starter membership, account
 removal, project deletion or retirement ends it; viewers losing access disconnect.
 A slow viewer detaches with reconnect available while the shell keeps running.
@@ -240,7 +297,7 @@ persisted launch intents before new sessions.
 
 A mirrored record finishes only after its unit is confirmed gone, including
 failed launches or exited SSH. Remote cleanup uses a fresh connection if needed
-and the recorded account. Shutdown leaves uncertain records unfinished without
+and the card's current host and account. Shutdown leaves uncertain records unfinished without
 waiting serially for the network. Failed live stops retain runtime for retry,
 hide the session, disconnect viewers and discard their queued output. Successful
 stops drain queued output. Any uncertain stop blocks a second shell on that tree,
@@ -249,15 +306,17 @@ even under a new alias.
 Startup reconciliation is bounded and concurrent, best-effort per record, never
 a server boot gate. Metadata must include every current field with correct string
 or end-field null types and a filename matching session id; defaults cannot turn
-missing host into local authority. Unreadable records stay untouched and block
-any identifiable project/repository. Unexpected reconciliation failures also
+a missing machine id into local authority. Unreadable records stay untouched and block
+any identifiable project/repository. A record an older build wrote names its
+host; it is read through the [upgrade rule](#machine-identity-upgrade), and an
+unresolved one stays as written and keeps blocking. Unexpected reconciliation failures also
 block. Each filename owns its independent blocker. Readable unfinished records
 are retained before stopping, including when the startup budget expires. Foreign
 data-directory unit identities retire as mismatches without attempting a stop.
 Open retries every retained record matching alias or resolved tree and refuses
 until all owned units are confirmed gone; unreadable records can match only alias.
 
-Sessions pin declared path, machine, host and account. List, open (before 404 or
+Sessions pin declared path and machine id. List, open (before 404 or
 launch checks) and socket access retire changed/removed registrations. Stale
 aliases retire concurrently; open settles only its own alias. Failed retirement
 retries later and keeps the tree reserved. An unchanged running session returns
@@ -287,8 +346,10 @@ shell history is written. Terminals add no graph mutation or manifest permission
 
 ## Repository and truth scope
 
-The project manifest names repository aliases, paths paired with execution
-machines/hosts, truth-scope membership, provider roots, and execution profiles.
+The project manifest names repository aliases, each with a path and the card id
+of its machine, truth-scope membership, provider roots, and execution profiles.
+A repository with `machine = ""` is listed, and every launch, preview, terminal
+or transfer that needs its machine refuses with "Assign a machine".
 Project truth scope is human-authored canonical membership, and the graph's
 `project_truth_scope` is its one source: `agents/project_repositories.py` reads
 it for every launch, and the manifest's `project.truth_scope` is only a mirror

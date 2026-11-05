@@ -168,7 +168,8 @@ export function AutoResearchDialog({
     setLaunchOpen(false);
   }, [open, project?.id]);
   const launchConfig =
-    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+    pickedConfig ??
+    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   // A code worktree checks out one writable repository on the orchestrator's
   // machine; the human picks it only when several qualify.
   const worktreeRepositories =

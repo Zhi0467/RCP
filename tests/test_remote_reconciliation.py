@@ -16,6 +16,14 @@ from rcp.runs.remote_reconciliation import JournalUnavailable, reconcile_remote_
 from .test_remote_provider_receipts import _store
 
 
+def _card(store) -> str:
+    """The remote card a pass runs on, its host "remote"."""
+    existing = store.space_machine_for("remote")
+    if existing is not None:
+        return existing.machine_id
+    return store.create_space_machine(name="remote", host="remote", os_account="").machine_id
+
+
 def _journal(*, accepted=True, terminal=True, intact=True, events=""):
     outcome = {
         "version": 1,
@@ -44,9 +52,11 @@ def _journal(*, accepted=True, terminal=True, intact=True, events=""):
 @pytest.fixture
 def waiting(tmp_path):
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
+    store.begin_remote_provider_pass(
+        "first", _card(store), "/stage", "/stage/one.pid", supervised=True
+    )
     record = store.agent_task("first").model_copy(
-        update={"stage_host": "remote", "stage_root": "/stage"}
+        update={"stage_machine_id": _card(store), "stage_root": "/stage"}
     )
     return store, record
 
@@ -185,8 +195,10 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
     """Better an unfinished turn than one settled by an owner that never agreed."""
 
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
-    store.checkpoint_agent_task("first", stage_host="remote", stage_root="/stage")
+    store.begin_remote_provider_pass(
+        "first", _card(store), "/stage", "/stage/one.pid", supervised=True
+    )
+    store.checkpoint_agent_task("first", stage_machine_id=_card(store), stage_root="/stage")
     store.interrupt_active_agent_tasks()
     events = json.dumps({"type": "turn.completed"}) + "\n"
 
@@ -208,8 +220,10 @@ def test_a_turn_a_live_worker_is_watching_is_never_planned(tmp_path) -> None:
     """
 
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
-    store.checkpoint_agent_task("first", stage_host="remote", stage_root="/stage")
+    store.begin_remote_provider_pass(
+        "first", _card(store), "/stage", "/stage/one.pid", supervised=True
+    )
+    store.checkpoint_agent_task("first", stage_machine_id=_card(store), stage_root="/stage")
 
     assert store.operation_ids_awaiting_remote_result() == []
     assert _plan(store, stopped=lambda *_: True, read_journal=lambda *_: None) == []
@@ -219,7 +233,9 @@ def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
     """Two settlers would apply one turn twice, so the claim has to be exclusive."""
 
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
+    store.begin_remote_provider_pass(
+        "first", _card(store), "/stage", "/stage/one.pid", supervised=True
+    )
     store.interrupt_active_agent_tasks()
 
     assert store.claim_recorded_finalization("first") is True
@@ -235,7 +251,9 @@ def test_only_one_caller_can_claim_a_recorded_finalization(tmp_path) -> None:
 
 def test_nothing_is_planned_once_the_pass_is_settled(tmp_path) -> None:
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid", supervised=True)
+    store.begin_remote_provider_pass(
+        "first", _card(store), "/stage", "/stage/one.pid", supervised=True
+    )
     store.finish_remote_provider_pass("first", "/stage/one.pid")
 
     assert _plan(store, stopped=lambda *_: True, read_journal=lambda *_: None) == []
@@ -321,7 +339,7 @@ def test_recorded_settlement_drains_detached_mailbox_before_failing_task(tmp_pat
     store = _store(tmp_path)
     store.mark_agent_task_running("first")
     pid_file = "/stage/provider.pid"
-    store.begin_remote_provider_pass("first", "remote", "/stage", pid_file, supervised=True)
+    store.begin_remote_provider_pass("first", _card(store), "/stage", pid_file, supervised=True)
     store.update_agent_task_message("first", "Detached", phase="awaiting_remote_result")
     execution = AgentTaskExecution("first", store, AgentProcessControl())
     order = []
@@ -365,7 +383,7 @@ def test_one_invalid_mailbox_checkpoint_does_not_block_other_detached_turns(tmp_
         store.mark_agent_task_running(operation_id)
         store.begin_remote_provider_pass(
             operation_id,
-            "remote",
+            _card(store),
             f"/stage/{operation_id}",
             f"/stage/{operation_id}/provider.pid",
             supervised=True,
@@ -426,7 +444,7 @@ def _awaiting(store, operation_id):
     store.mark_agent_task_running(operation_id)
     store.begin_remote_provider_pass(
         operation_id,
-        "remote",
+        _card(store),
         f"/stage/{operation_id}",
         f"/stage/{operation_id}/provider.pid",
         supervised=True,
@@ -508,9 +526,11 @@ def test_a_waiting_pass_that_never_started_fails_and_can_be_paused(tmp_path, mon
         stage.mkdir(mode=0o700)
         store.mark_agent_task_running(operation_id)
         store.begin_remote_provider_pass(
-            operation_id, "remote", str(stage), str(stage / "never.pid"), supervised=True
+            operation_id, _card(store), str(stage), str(stage / "never.pid"), supervised=True
         )
-        store.checkpoint_agent_task(operation_id, stage_host="remote", stage_root=str(stage))
+        store.checkpoint_agent_task(
+            operation_id, stage_machine_id=_card(store), stage_root=str(stage)
+        )
         store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
 
     (waiting,) = [item for item in _plan(store) if item.record.operation_id == "first"]
@@ -529,7 +549,7 @@ def _two_failing_waiters(tmp_path, monkeypatch):
     for operation_id in ("first", "second"):
         store.mark_agent_task_running(operation_id)
         store.begin_remote_provider_pass(
-            operation_id, "remote", f"/stage/{operation_id}", f"/stage/{operation_id}/p.pid"
+            operation_id, _card(store), f"/stage/{operation_id}", f"/stage/{operation_id}/p.pid"
         )
         store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
     monkeypatch.setattr(

@@ -40,7 +40,7 @@ type Route = { template: string; parameters: Parameter[]; scope: "displayed_grap
  * /artifacts/{artifact_id}/download and
  * /tasks/{operation_id}/artifacts/{artifact_id}/download: attachment downloads.
  * /result-views and /result-views/{view_id}/preview: redirect-only aliases.
- * /machines/{machine_alias}/browser: every read runs a local or SSH readiness probe.
+ * /machines/{machine_id}/browser: every read runs a local or SSH readiness probe.
  * /artifacts/{artifact_id}/versions/{version_id}/live: an uncaptured live source
  * reads remote files or job logs over SSH on every request.
  * /chats/{chat_id}/worktree: remote Git inspection can contact the network
@@ -59,7 +59,7 @@ export const PROJECT_READ_POLICY = {
     "/experiment-episodes": "experiment_stop_settlement",
     "/digest": "member_digest_mark_creation",
     "/episodes/{episode_id}/merge-preview": "git_object_write",
-    "/machines/{machine_alias}/browser": "live_readiness_probe",
+    "/machines/{machine_id}/browser": "live_readiness_probe",
     "/artifacts/{artifact_id}/versions/{version_id}/live": "live_remote_snapshot",
   } as Record<string, string>,
   credentialNames: [

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 
 from .helpers import wait_for_task, wait_until
 from .provider_login_switch_helpers import PROJECT, switch_background, switched_session
@@ -139,7 +140,7 @@ def test_operation_after_login_switch(
                 provider=provider,
                 native_session_id="session",
                 stage_root=str(stage),
-                stage_host="",
+                stage_machine_id=BACKEND_MACHINE_ID,
                 capability=previous.dispatch_authority.task_contract,
                 graph_target=GraphTargetRef(),
             ),

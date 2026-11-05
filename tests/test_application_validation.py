@@ -15,6 +15,7 @@ from rcp.__main__ import instance_lock
 from rcp.api import create_app
 from rcp.background import StartupEffectBlocked, StartupEffectFence
 from rcp.config import load_manifest
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import (
     TEAM_PROJECT_DELETE_CONFIRMATION,
     TEAM_PROJECT_DELETE_UNAVAILABLE_REASON,
@@ -48,21 +49,18 @@ WEB_BUILD_ID = "sha256:" + ("c" * 64)
 FINGERPRINT = "SHA256:" + ("A" * 43)
 
 
-def _write_remote_manifest(root: Path, *, project_id: str) -> Path:
+def _write_remote_manifest(root: Path, *, project_id: str, machine_id: str) -> Path:
     remote_root = f"/srv/rcp/projects/{project_id}/repositories/repo"
     root.mkdir(parents=True, mode=0o700)
     manifest = root / "manifest.toml"
     manifest.write_text(
         f'''name = "Unavailable remote project"
 
-[[machines]]
-alias = "remote"
-host = "unreachable.example.test"
-os_account = "rcp"
+machines = ["{machine_id}"]
 
 [[repositories]]
 alias = "repo"
-machine = "remote"
+machine = "{machine_id}"
 path = "{remote_root}"
 
 [project]
@@ -77,9 +75,6 @@ default_run_truth_scope = ["repo"]
 [sources]
 claude_roots = ["~/.claude/projects"]
 codex_roots = ["~/.codex/sessions"]
-
-[execution]
-run_on = "remote"
 
 [paper.coach]
 default_provider = "codex"
@@ -105,13 +100,17 @@ def _run_unavailable_project_candidate_child(
         "Unavailable Project Rehearsal Lab",
     )
     member, _token = store.enroll_team_member(bootstrap, "Alice")
+    machine_id = store.create_space_machine(
+        name="remote", host="unreachable.example.test", os_account="rcp"
+    ).machine_id
     project_id = str(uuid.uuid4())
     manifest_path = _write_remote_manifest(
         overlay_root / "projects" / project_id,
         project_id=project_id,
+        machine_id=machine_id,
     )
     manifest = load_manifest(manifest_path)
-    state_location = f"/srv/rcp/projects/{project_id}/repositories/repo/.research"
+    state_path = f"/srv/rcp/projects/{project_id}/repositories/repo/.research"
     remote_error = "The configured SSH canonical state is currently unreachable."
     store.upsert_project(
         ProjectRecord(
@@ -119,8 +118,8 @@ def _run_unavailable_project_candidate_child(
             home_space_id=store.space_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=state_location,
-            state_remote=True,
+            state_machine_id=machine_id,
+            state_path=state_path,
             added_at=store.now(),
             revision=7,
             reachable=False,
@@ -133,7 +132,8 @@ def _run_unavailable_project_candidate_child(
         "home_space_id": store.space_id,
         "name": manifest.name,
         "locator": str(manifest.path),
-        "state_location": state_location,
+        "state_machine_id": machine_id,
+        "state_path": state_path,
         "remote": True,
         "last_opened_at": None,
         "revision": 7,
@@ -174,7 +174,7 @@ def _run_unavailable_project_candidate_child(
                 capture_status="remote_unreachable",
                 overlay_locator=str(manifest.path),
                 original_locator=str(manifest.path),
-                original_state_location=state_location,
+                original_state_path=state_path,
                 original_remote=True,
                 original_reachable=False,
                 original_error_sha256=hashlib.sha256(remote_error.encode()).hexdigest(),
@@ -614,18 +614,20 @@ def test_consolidation_receipt_bytes_survive_rehearsal(tmp_path):
 
 def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "source.sqlite3")
-    for host in ("", "worker.example.test"):
+    for machine_id in (BACKEND_MACHINE_ID, "worker"):
         owner = BrowserOwnerKey(
-            space_id="space", project_id="project", stage_name="chat", host_key=host
+            space_id="space", project_id="project", stage_name="chat", host_key=machine_id
         )
         store.record_browser_owner(
             owner,
-            execution_host=host,
+            machine_id=machine_id,
             workspace_dir="/source/stage/workspace",
             stage_root="/source/stage",
             chat_id="chat",
         )
-    remote_before = next(row for row in store.browser_owners("project") if row["execution_host"])
+    remote_before = next(
+        row for row in store.browser_owners("project") if row["machine_id"] != BACKEND_MACHINE_ID
+    )
     overlay = tmp_path / "overlay"
     absent = overlay / "absent"
     with store.connection() as connection:
@@ -635,7 +637,7 @@ def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_p
         rehearsal_module._rebind_local_stage_paths(connection, absent)
         rehearsal_module._validate_rebound_paths(connection, root=overlay, projects=[])
     for row in store.browser_owners("project"):
-        if row["execution_host"]:
+        if row["machine_id"] != BACKEND_MACHINE_ID:
             assert row == remote_before
         else:
             for field in ("stage_root", "workspace_dir"):

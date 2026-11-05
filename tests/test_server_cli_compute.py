@@ -10,6 +10,7 @@ import pytest
 from rcp.__main__ import build_parser
 from rcp.api.app import create_app
 from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.cli import CallerIdentity, run_server_command
 from rcp.server_ops.compute import prepare_compute_probe_command
 from rcp.server_ops.control import ServerControlClient, ServerControlComputeProbeResult
@@ -41,14 +42,14 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
             name=manifest.name,
             locator=str(manifest.path),
             added_at=store.now(),
-            state_location=str(manifest.path.parent),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.path.parent),
         )
     )
-    card = store.create_space_machine(name="laptop", host="", os_account="")
+    card = store.backend_space_machine()
     store.update_space_machine(card.machine_id, job_manager="slurm")
     result = ComputeBackendProbe(
-        execution_machine="laptop",
+        machine_id=BACKEND_MACHINE_ID,
         backend_id="systemd_user" if route == "helper" else "slurm",
         state="ready" if ready else "failed",
         ready=ready,
@@ -69,8 +70,8 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
     store.record_compute_backend_probe(PROJECT_ID, other_probe, other_route)
     calls = []
 
-    def probe(loaded, machine_alias, selected_route, *, data_dir, compute):
-        calls.append((loaded.path, machine_alias, selected_route, data_dir))
+    def probe(machine, selected_route, *, data_dir):
+        calls.append((machine.machine_id, selected_route, data_dir))
         return result
 
     monkeypatch.setattr(app_module, "probe_compute_backend", probe)
@@ -85,7 +86,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
         )
         app = create_app(data_dir=data_dir, instance_metadata=metadata)
         args = build_parser().parse_args(
-            ["server", "compute", "probe", "--project", PROJECT_ID, "laptop", "--route", route]
+            ["server", "compute", "probe", "--project", PROJECT_ID, card.name, "--route", route]
         )
         output = StringIO()
         exchange = ServerControlClient._exchange
@@ -119,14 +120,14 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
                 space_id=store.space_id,
                 selector_kind="project",
                 selector_id=PROJECT_ID,
-                machine_alias="laptop",
+                machine_id=BACKEND_MACHINE_ID,
                 compute_route=route,
                 probe=result,
             )
         ]
-    assert calls == [(manifest.path, "laptop", route, data_dir)]
-    assert store.compute_backend_probe(PROJECT_ID, "laptop", route) == result
-    assert store.compute_backend_probe(PROJECT_ID, "laptop", other_route) == other_probe
+    assert calls == [(BACKEND_MACHINE_ID, route, data_dir)]
+    assert store.compute_backend_probe(PROJECT_ID, BACKEND_MACHINE_ID, route) == result
+    assert store.compute_backend_probe(PROJECT_ID, BACKEND_MACHINE_ID, other_route) == other_probe
     for text in (result.status_label, result.backend_id, result.containment, result.diagnostic):
         assert text in output.getvalue()
 
@@ -146,11 +147,11 @@ def test_server_compute_probe_refuses_a_route_the_machine_does_not_offer(
             name=manifest.name,
             locator=str(manifest.path),
             added_at=store.now(),
-            state_location=str(manifest.path.parent),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.path.parent),
         )
     )
-    card = store.create_space_machine(name="laptop", host="", os_account="")
+    card = store.backend_space_machine()
     store.update_space_machine(card.machine_id, job_manager="none")
     calls = []
     monkeypatch.setattr(app_module, "probe_compute_backend", lambda *args, **_: calls.append(args))
@@ -171,7 +172,7 @@ def test_server_compute_probe_refuses_a_route_the_machine_does_not_offer(
                 "probe",
                 "--project",
                 PROJECT_ID,
-                "laptop",
+                BACKEND_MACHINE_ID,
                 "--route",
                 "scheduler",
             ]
@@ -188,7 +189,7 @@ def test_server_compute_probe_refuses_a_route_the_machine_does_not_offer(
             )
     assert code != 0, output.getvalue()
     assert calls == []
-    assert store.compute_backend_probe(PROJECT_ID, "laptop", "scheduler") is None
+    assert store.compute_backend_probe(PROJECT_ID, BACKEND_MACHINE_ID, "scheduler") is None
 
 
 def test_compute_probe_requires_the_service_account() -> None:
@@ -215,15 +216,15 @@ def test_compute_control_preserves_old_wire_shape_and_requires_new_protocol(old_
 
     fields = dict(request_id=str(uuid.uuid4()), instance_id=str(uuid.uuid4()))
     ordinary = ServerControlRequest(operation="probe", protocol_version=10, **fields)
-    assert "machine_alias" not in json.loads(ordinary.model_dump_json())
+    assert "machine_id" not in json.loads(ordinary.model_dump_json())
     assert "compute_route" not in json.loads(ordinary.model_dump_json())
-    with pytest.raises(ValueError, match="project and machine alias"):
+    with pytest.raises(ValueError):
         ServerControlRequest(
             operation="compute_backend_probe",
             protocol_version=old_version,
             selector_kind="project",
             selector_id=PROJECT_ID,
-            machine_alias="laptop",
+            machine_id=BACKEND_MACHINE_ID,
             compute_route="helper",
             **fields,
         )

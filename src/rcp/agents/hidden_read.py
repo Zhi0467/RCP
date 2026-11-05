@@ -10,12 +10,13 @@ import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from rcp.agents.provider_environment import LOGIN_HOMES
 from rcp.agents.staged_hidden_read import glob_path_regex, host_facts
 from rcp.agents.staged_hidden_read import probe_hidden_read_wrapper as probe_hidden_read_wrapper
 from rcp.agents.write_scope import RegisteredRepositoryRoot, installed_server_storage
-from rcp.config import MachineConfig, Manifest
+from rcp.config import Manifest
 from rcp.core.models import (
     HIDDEN_READ_WRAPPER_ROOT,
     HiddenReadKeyEvidence,
@@ -32,6 +33,9 @@ from rcp.providers import PROVIDER_IDS, AgentCapability, ProviderId, profile_for
 from rcp.rcp_home import command_socket_directory
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.ssh import control_directory_candidate
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 # Case-insensitive globs over variable names. Tool calls keep every other
 # variable, so a lab's own settings, proxies, schedulers, GPUs and toolchains
@@ -291,7 +295,7 @@ def _glob_prefix(pattern: str) -> tuple[str, str]:
 def resolve_hidden_read_scope(
     *,
     manifest: Manifest,
-    execution_machine: str,
+    machine: SpaceMachineRecord,
     provider: ProviderId,
     capability: AgentCapability,
     stage_root: str,
@@ -306,10 +310,8 @@ def resolve_hidden_read_scope(
     thread_owner: str | None = None,
     member_ids: Sequence[str] = (),
 ) -> HiddenReadScope:
-    machine = manifest.machine_map[execution_machine]
     return resolve_machine_hidden_read_scope(
         machine=machine,
-        execution_machine=execution_machine,
         provider=provider,
         capability=capability,
         stage_root=stage_root,
@@ -324,7 +326,7 @@ def resolve_hidden_read_scope(
         thread_owner=thread_owner,
         member_ids=member_ids,
         repository_paths=tuple(
-            item.path for item in manifest.repositories if item.machine == execution_machine
+            item.path for item in manifest.repositories if item.machine == machine.machine_id
         ),
         project_transcript_roots=(str(manifest.research_dir / "chat"),)
         if remote_stage is None
@@ -334,8 +336,7 @@ def resolve_hidden_read_scope(
 
 def resolve_machine_hidden_read_scope(
     *,
-    machine: MachineConfig,
-    execution_machine: str,
+    machine: SpaceMachineRecord,
     provider: ProviderId,
     capability: AgentCapability,
     stage_root: str,
@@ -390,7 +391,7 @@ def resolve_machine_hidden_read_scope(
     transcript_roots = {
         str(PurePosixPath(item.path) / ".research" / "chat")
         for item in repository_inventory
-        if item.execution_host == machine.host
+        if item.machine == machine.machine_id
     }
     transcript_roots.update(project_transcript_roots)
     transcript_roots.update(
@@ -416,7 +417,7 @@ def resolve_machine_hidden_read_scope(
         home + "/.rcp/tools",
         command_socket_directory(home),
         home + "/.ssh/known_hosts",
-        *[item.path for item in repository_inventory if item.execution_host == machine.host],
+        *[item.path for item in repository_inventory if item.machine == machine.machine_id],
         *repository_paths,
     ]
     if data_dir:
@@ -504,8 +505,7 @@ def resolve_machine_hidden_read_scope(
     ):
         reasons.add("provider_native_tools_uncovered")
     return HiddenReadScope(
-        execution_machine=execution_machine,
-        execution_host=machine.host,
+        machine_id=machine.machine_id,
         os_account=facts["os_account"],
         account_home=home,
         hidden_directories=filtered_dirs,

@@ -111,17 +111,17 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     [headerless_card] = client.get("/api/projects").json()
     assert headerless_card == card
 
-    mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "8"})
+    mismatch = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "9"})
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
-    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 7}
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 8}
 
     refused = client.delete(
         f"/api/projects/{project_id}", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}
     )
     assert refused.status_code == 426
     assert refused.json()["detail"]["code"] == "team_shell_protocol_mismatch"
-    assert refused.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 7}
+    assert refused.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 8}
     assert store.project(project_id) is not None
     headerless = client.delete(f"/api/projects/{project_id}")
     assert headerless.status_code == 426

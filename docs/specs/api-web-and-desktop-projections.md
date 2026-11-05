@@ -621,19 +621,21 @@ unobservable job returns 409 with a `jobs` list, and resending with
 
 ## Compute setup and job APIs
 
-Project machine entries carry `alias`, `host`, `os_account`, `removable` (no
-repository or agent profile uses it), the space card's `compute` block, and live
-`compute_probes`, one `ComputeBackendProbe` or null per route. Both are read
-from the card and storage even when the graph snapshot is cached. Project
-Settings saves no machine settings.
-`DELETE /api/projects/{project_id}/machines/{machine_alias}` uses project write
-admission, refuses with 422 only a machine a repository lives on, moves agent
-profiles that run there to the base machine, and returns the project snapshot;
-the space card stays.
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
+Project machine entries carry `machine_id`, `removable` (no repository lives on
+it and it is not the base), the space card's `compute` block, and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. Name, host and
+account come from the space card list. Both are read from the card and storage
+even when the graph snapshot is cached. Project Settings saves no machine
+settings. A repository entry's `machine` is a card id or `""`.
+`POST /api/projects/{project_id}/machines` takes `{machine_id}` (404 for a card
+the space lacks) and appends it to the manifest through the state workspace.
+`DELETE /api/projects/{project_id}/machines/{machine_id}` uses project write
+admission, refuses with 422 a machine a repository lives on, and returns the
+project snapshot; the space card stays.
+`POST /api/projects/{project_id}/machines/{machine_id}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
-`GET /api/projects/{project_id}/machines/{machine_alias}/browser` returns the
+`GET /api/projects/{project_id}/machines/{machine_id}/browser` returns the
 browser readiness of that machine's execution account; the composer reads it
 while a chat's Browser toggle is on and warns when it is not ready.
 
@@ -659,7 +661,7 @@ are returned on the watcher and allow an explicit retry.
 The machine card's Compute fold holds **Slurm**, helper `jobs_root`, and the
 access hint; RCP exposes no resource-argument inputs. Each saves on its own.
 Runs offers **Check again** through
-`POST .../machines/{machine_alias}/compute/check`. Each stored probe supplies
+`POST .../machines/{machine_id}/compute/check`. Each stored probe supplies
 its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
@@ -858,15 +860,16 @@ and requires the exact echoed integer. Missing/mismatched negotiation or changed
 compatible release/update path. Semantic versions and commit order are not the
 protocol. Personal work remains usable; unavailable team cards remain labelled.
 
-Desktop supports `[3, 7]`, server `[1, 7]`. Protocol 1 forbids team deletion;
+Desktop supports `[3, 8]`, server `[1, 8]`. Protocol 1 forbids team deletion;
 2 permits deletion only with negotiated support and the exact confirmation;
 3 adds optional reviewed `source_commit` and `rcp-transfer-v2` Git archives,
-while accepting omitted commits/v1 archives; 4 adds optional
-`record_schema_version=2` for episode archives; 5 also allows 3 (an archived
-graph branch) and 4 (branch names); 6 also allows 5 (a deleted episode
-report); 7 also allows 6 (graph branch records). The desktop refuses preparation,
-before any target mutation, when the source needs a record version the
-negotiated protocol lacks, so a new record
+while accepting omitted commits/v1 archives; 4 through 7 carried record
+versions 2 through 7. Protocol 8 carries only `record_schema_version=8`, whose
+records name space machine cards by id instead of host aliases. The source names
+no machines; the target request places each repository on one of its own cards.
+Servers write and accept only version 8, so the desktop relays a transfer only
+over protocol 8. It refuses preparation, before any target mutation, when the
+negotiated protocol lacks the source's record version, so a new record
 version needs a new protocol. Archive-free transfers retain prior bytes; incompatible peers refuse preparation before source release.
 Breaking contracts get a new immutable version; retirement is explicit.
 The range governs native bootstrap and relay, not server operations, provider
@@ -1413,14 +1416,14 @@ Auto-research detail asks the member to review the episode rather than suggestin
 an unavailable action.
 
 `GET /api/providers/logins` lists every login, shared and own, on each space
-machine and project target host, with secret-free credential summaries, labels,
-supported sign-in methods, the space machine names on that host, and active
-sign-ins ([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
+machine card, with secret-free credential summaries, labels, supported sign-in
+methods, that card's name in `machines`, and active sign-ins
+([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
 The project snapshot's `provider_logins` lists, for the viewer, the login each
 agent's launch would use: each execution profile's provider on the base machine,
 resolved through the viewer's setting. Parked work (queued tasks,
 provider-auth recoveries, the current failed Experiment turn, undelivered
-watcher groups) adds its provider and host, resolved the same way; a parked
+watcher groups) adds its provider and machine card, resolved the same way; a parked
 Codex session keeps the login it is bound to. A refusal that names no login lists
 every login of the refused source. Two members can therefore see different rows.
 Apart from parked work, a machine no profile runs on raises no notice, and a provider whose login RCP
@@ -1538,9 +1541,9 @@ Experiment detail links active turns to the task inspector, labels durable
 objectives separately from stale guidance, and shows `parent_watching` from the
 backend. Its watcher fold contains only work that child handed off. Starting Run
 opens this detail, separating historical budgets from Next episode limit and
-showing watcher/session/host continuity. An explicit main route must match both
-episode and target; an advanced control shows a History handoff, never the newer
-episode's controls/transcript.
+showing watcher/session continuity and the machine card it runs on. An explicit
+main route must match both episode and target; an advanced control shows a
+History handoff, never the newer episode's controls/transcript.
 
 Isolation-owning cards show branch base/head, merge state, and the server-offered Merge.
 Submission rechecks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
@@ -1769,9 +1772,9 @@ Personal and team spaces draw the same fold; a provider whose login RCP does not
 manage, such as OpenCode, shows only its machine sign-in card, without state or
 actions. A collapsed Members row, shown when the space has other members, counts
 their signed-in own logins. A signed-out login's notice is one row: key mark,
-provider, the host when remote, an icon (hover "Sign-ins") that opens this fold,
-and Dismiss. On Runs, work waiting on another member's own login names them
-instead of the icon; the landing page omits those rows. A failed list load marks
+provider, an icon (hover "Sign-ins") that opens this fold, and Dismiss. On Runs,
+work waiting on another member's own login names them instead of the icon; the
+landing page omits those rows. A failed list load marks
 the fold itself.
 
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A
@@ -1788,11 +1791,14 @@ and reach now. Both settle an undecided job manager, even on a card no project
 uses yet. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
 finds the executable on the machine and records it on the card. A card carries a boolean
 `deletable`: true only when every project can be read and no repository
-lives on any alias bound to it, including each project’s base. Delete detaches
+lives on it in any project, including as a project's base. Delete detaches
 the machine from every listing project before deleting the card. If detaching
-fails, the error is returned and the card stays. Host and account never change.
-A team create with a blank account fills it
-from the login check or refuses with 422 and a `detail.code` of
+fails, the error is returned and the card stays.
+A `PATCH` of `host` or `os_account` that changes the route runs the one
+[edit check](projects-spaces-and-operations.md#space-machines); a host another
+card holds returns 409.
+A team create with a blank account fills it from a login. That login and a
+route edit's login refuse with 422 and a `detail.code` of
 `authentication_failed`, `host_key_unknown` (with the fingerprint),
 `host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes
 `{host, fingerprint}`, rescans, and appends the key to the route's first
@@ -1818,10 +1824,7 @@ filtered then paged, marking protected entries; project setup's folder browser
 uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that
 machine's agent-browser readiness, reaching the host, so cards load it one
 machine at a time rather than with the list; `POST .../browser/install` is the
-explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
-alias to the project manifest through the state workspace. Existing projects
-fill the machine list at startup and on registration. Project
-snapshots expose non-secret compute metadata; readiness exposes a backend-owned
+explicit, bounded install. Project snapshots expose non-secret compute metadata; readiness exposes a backend-owned
 execution-machine/target-machine matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an
 explicit refresh runs network probes, and a machine route or execution-binding

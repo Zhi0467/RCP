@@ -42,7 +42,7 @@ def _waiting_child(tmp_path, *, ceiling=6, browser_requested=False):
         )
         stage = tmp_path / kind
         stage.mkdir(exist_ok=True)
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id=request.session_id or kind + "-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -58,7 +58,7 @@ def _waiting_child(tmp_path, *, ceiling=6, browser_requested=False):
         RunRequest(
             browser_requested=not browser_requested,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",

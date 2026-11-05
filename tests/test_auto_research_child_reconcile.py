@@ -11,6 +11,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -55,8 +56,8 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -68,7 +69,7 @@ def _setup(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord]:
         role="orchestrator",
         actor_operation_id="root",
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
     )
     episode, root = store.create_auto_research_episode_with_root_task(
@@ -128,7 +129,7 @@ def _worker_request(
 ) -> RunRequest:
     return RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         chat_id=worker_id,
         chat_scope="node",

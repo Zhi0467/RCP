@@ -9,10 +9,9 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from rcp.compute_jobs.text import safe_compute_diagnostic
-from rcp.config import MachineConfig
 from rcp.limits import (
     TERMINAL_PROBE_COMMAND_TIMEOUT_SECONDS,
     TERMINAL_PROBE_THREADS,
@@ -22,6 +21,9 @@ from rcp.limits import (
 from rcp.transport.remote_compute_probe import classify_ssh_failure
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
+
+if TYPE_CHECKING:
+    from rcp.storage.models import SpaceMachineRecord
 
 ProbeState = Literal[
     "pending", "reachable", "unreachable", "authentication_failed", "host_key_failed", "incapable"
@@ -47,7 +49,7 @@ class TerminalProbe:
         return self.state == "reachable"
 
 
-def probe_remote_terminal(machine: MachineConfig, *, runner=subprocess.run) -> TerminalProbe:
+def probe_remote_terminal(machine: SpaceMachineRecord, *, runner=subprocess.run) -> TerminalProbe:
     command = shlex.join(
         [
             "python3",
@@ -108,7 +110,7 @@ def probe_remote_terminal(machine: MachineConfig, *, runner=subprocess.run) -> T
 class TerminalProbeCache:
     """One cache per terminal manager; all access belongs to its event loop."""
 
-    def __init__(self, probe: Callable[[MachineConfig], TerminalProbe] | None = None) -> None:
+    def __init__(self, probe: Callable[[SpaceMachineRecord], TerminalProbe] | None = None) -> None:
         self._probe = probe or probe_remote_terminal
         self._entries: dict[tuple[str, str, str], asyncio.Task[TerminalProbe]] = {}
         self._tasks: set[asyncio.Task[TerminalProbe]] = set()
@@ -119,10 +121,10 @@ class TerminalProbeCache:
         self._closed = False
 
     @staticmethod
-    def _key(machine: MachineConfig) -> tuple[str, str, str]:
-        return machine.alias, machine.host, machine.os_account
+    def _key(machine: SpaceMachineRecord) -> tuple[str, str, str]:
+        return machine.machine_id, machine.host, machine.os_account
 
-    async def _run(self, machine: MachineConfig) -> TerminalProbe:
+    async def _run(self, machine: SpaceMachineRecord) -> TerminalProbe:
         async with self._slots:
             loop = asyncio.get_running_loop()
             try:
@@ -130,7 +132,7 @@ class TerminalProbeCache:
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                 return TerminalProbe(None, "unreachable", safe_compute_diagnostic(str(exc)))
 
-    def _task(self, machine: MachineConfig) -> asyncio.Task[TerminalProbe]:
+    def _task(self, machine: SpaceMachineRecord) -> asyncio.Task[TerminalProbe]:
         if self._closed:
             raise RuntimeError("Terminal probe cache is closed.")
         key = self._key(machine)
@@ -142,7 +144,7 @@ class TerminalProbeCache:
             task.add_done_callback(self._tasks.discard)
         return task
 
-    def get(self, machine: MachineConfig) -> TerminalProbe:
+    def get(self, machine: SpaceMachineRecord) -> TerminalProbe:
         task = self._task(machine)
         return (
             task.result()
@@ -150,7 +152,7 @@ class TerminalProbeCache:
             else TerminalProbe(None, "pending", "Checking terminal capability on this machine.")
         )
 
-    async def ensure(self, machine: MachineConfig) -> TerminalProbe:
+    async def ensure(self, machine: SpaceMachineRecord) -> TerminalProbe:
         while True:
             task = self._task(machine)
             try:
@@ -166,7 +168,7 @@ class TerminalProbeCache:
             if self._entries.get(self._key(machine)) is task:
                 return result
 
-    def invalidate(self, machine: MachineConfig | None = None) -> None:
+    def invalidate(self, machine: SpaceMachineRecord | None = None) -> None:
         """Drop cached answers, and the probes still producing them.
 
         A superseded probe holds one of the few worker slots until its own

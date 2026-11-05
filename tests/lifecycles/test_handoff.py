@@ -6,8 +6,12 @@ from unittest import mock
 from tests.lifecycles.engine import RESTART, Action, explore, witness
 from tests.lifecycles.handoff import Handoff
 
-STATES = 148
-LOST = (Action("settle", ("T0", "transport_lost")), Action("finish", ("T0",)))
+STATES = 159
+LOST = (
+    Action("run", ("T0",)),
+    Action("settle", ("T0", "transport_lost")),
+    Action("finish", ("T0",)),
+)
 
 
 def _root(tmp_path: Path) -> Path:
@@ -17,15 +21,16 @@ def _root(tmp_path: Path) -> Path:
 
 
 def test_handoff_lifecycle_holds_within_bound(tmp_path: Path) -> None:
-    """Every handoff state within four actions keeps agreement, safety and liveness.
+    """Every handoff state within five actions keeps agreement, safety and liveness.
 
-    Liveness looks three environment steps ahead, so a bound of 4 checks it from
-    the first two levels. The stood-down reattempt of 3ef7773ec is a Safety
-    trace of four actions: the delivered turn loses its link, its worker arms a
-    retry, its attachment expires, and the timer stands down. This bound runs
-    in about 21 s locally, a little over the 20 s budget; the only cut that fits
-    is dropping the member Retry, which the goal reads. A bound of 5 does not
-    fit.
+    Liveness looks three environment steps ahead, so a bound of 5 checks it from
+    the first three levels. The stood-down reattempt of 3ef7773ec is a Safety
+    trace of five actions: the delivered turn's worker claims it, the turn
+    loses its link, its worker arms a retry, its attachment expires, and the
+    timer stands down. A restart between the claim and the verdict, or between
+    dispatch and the claim, interrupts the turn instead of relaunching it. This
+    bound runs in about 20 s locally; a bound of 4 no longer reaches the
+    3ef7773ec trace.
     """
 
     result = explore(Handoff(), _root(tmp_path), tmp_path / "saves")

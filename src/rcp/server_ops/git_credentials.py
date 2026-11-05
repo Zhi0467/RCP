@@ -26,6 +26,7 @@ from rcp.limits import (
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.layout import (
     DEFAULT_SERVER_LAYOUT,
+    MachineRoute,
     ServerLayout,
     remote_project_deploy_key_path,
     remote_projects_root,
@@ -38,7 +39,6 @@ from rcp.server_ops.models import (
     NonsecretField,
     ServerStep,
 )
-from rcp.storage import ProjectProvisioningMachineIntent
 from rcp.transport.ssh import SSH_OPTIONS
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -107,7 +107,7 @@ class DeployKeyMaterial:
     project_id: str
     repository_alias: str
     repository: GitHubRepositoryRef
-    machine_alias: str
+    machine_id: str
     location: Literal["local", "ssh"]
     host: str
     os_account: str
@@ -147,7 +147,7 @@ class GitCredentialManager:
 
     def prepare_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         repository: GitHubRepositoryRef,
         *,
         space_id: str,
@@ -178,7 +178,7 @@ class GitCredentialManager:
 
     def preflight_recovery_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         *,
         space_id: str,
         project_id: str,
@@ -238,7 +238,7 @@ class GitCredentialManager:
 
     def prepare_recovery_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         repository: GitHubRepositoryRef,
         *,
         space_id: str,
@@ -257,7 +257,7 @@ class GitCredentialManager:
 
     def inspect_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> DeployKeyMaterial:
         self._require_material_target(machine, material)
@@ -295,7 +295,7 @@ class GitCredentialManager:
 
     def remove_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> bool:
         self._require_material_target(machine, material)
@@ -319,7 +319,7 @@ class GitCredentialManager:
 
     def probe_write(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         request_id: str,
@@ -386,7 +386,7 @@ class GitCredentialManager:
 
     def github_trust_argv(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> tuple[str, ...]:
         self._require_material_target(machine, material)
@@ -419,7 +419,7 @@ class GitCredentialManager:
 
     def _probe_in_directory(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         request_id: str,
@@ -597,7 +597,7 @@ class GitCredentialManager:
 
     def _failed_push_probe(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         origin: str,
@@ -681,7 +681,7 @@ class GitCredentialManager:
 
     def _cleanup_remote_ref(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         origin: str,
@@ -727,7 +727,7 @@ class GitCredentialManager:
 
     def _git(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         argv: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
@@ -755,7 +755,7 @@ class GitCredentialManager:
 
     def _helper(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         arguments: tuple[str, ...],
     ) -> dict[str, object]:
         result = self._target_result(
@@ -780,7 +780,7 @@ class GitCredentialManager:
 
     def _target_result(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         command: tuple[str, ...],
         *,
         timeout: float,
@@ -800,7 +800,7 @@ class GitCredentialManager:
     def _material(
         self,
         payload: dict[str, object],
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         repository: GitHubRepositoryRef,
         *,
         space_id: str,
@@ -851,7 +851,7 @@ class GitCredentialManager:
             project_id=project_id,
             repository_alias=repository_alias,
             repository=repository,
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             location=machine.location,
             host=machine.host,
             os_account=machine.os_account,
@@ -871,7 +871,7 @@ class GitCredentialManager:
 
     def _expected_key_paths(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         *,
         home: str,
         project_id: str,
@@ -891,11 +891,11 @@ class GitCredentialManager:
 
     @staticmethod
     def _require_material_target(
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> None:
         if (
-            material.machine_alias != machine.alias
+            material.machine_id != machine.machine_id
             or material.location != machine.location
             or material.host != machine.host
             or material.os_account != machine.os_account
@@ -911,7 +911,7 @@ class GitCredentialManager:
 
 def deploy_key_operator_step(
     manager: GitCredentialManager,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     material: DeployKeyMaterial,
     *,
     number: int,
@@ -969,7 +969,7 @@ def deploy_key_operator_step(
 
 def _github_host_trust_actions(
     manager: GitCredentialManager,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     material: DeployKeyMaterial,
 ) -> tuple[ExternalAction, CommandAction]:
     return (
@@ -994,7 +994,7 @@ def _github_host_trust_actions(
 
 def restore_deploy_key_operator_step(
     manager: GitCredentialManager,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     material: DeployKeyMaterial,
     *,
     number: int,
@@ -1092,7 +1092,7 @@ def cleanup_ref_operator_step(
     )
 
 
-def _validate_machine(machine: ProjectProvisioningMachineIntent, layout: ServerLayout) -> None:
+def _validate_machine(machine: MachineRoute, layout: ServerLayout) -> None:
     if machine.location == "local":
         if (
             machine.os_account != layout.service_account
@@ -1172,7 +1172,7 @@ def deploy_key_ssh_command(material: DeployKeyMaterial) -> str:
 
 def target_account_argv(
     layout: ServerLayout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     command: tuple[str, ...],
 ) -> tuple[str, ...]:
     """Wrap one command for the reviewed local or SSH execution account."""

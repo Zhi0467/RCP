@@ -23,7 +23,9 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.launcher import AgentLauncher
 from rcp.agents.prompts import PromptFactory, render_graph_history
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -35,6 +37,7 @@ from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.runs import auto_research_mail as auto_research_mail_module
 from rcp.runs.auto_research import (
@@ -73,6 +76,7 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
+    SpaceMachineRecord,
 )
 from rcp.transport.workspace_mailbox import RunStageMailbox
 from tests.helpers import unchecked_write_authority
@@ -198,6 +202,17 @@ def _seat_patch() -> Patch:
     )
 
 
+def _card(host: str = "") -> SpaceMachineRecord:
+    return SpaceMachineRecord(
+        machine_id="gpu-card" if host else BACKEND_MACHINE_ID,
+        name="Machine",
+        host=host,
+        os_account="",
+        created_at="",
+        updated_at="",
+    )
+
+
 def _service(manifest, tmp_path: Path) -> ProjectService:
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
     history.append(_seat_patch())
@@ -217,7 +232,7 @@ def _setup_auto_research(
     worker_status: str = "running",
     native_session_id: str | None = None,
     stage_root: str | None = None,
-    run_on: str = "laptop",
+    run_on: str = "backend",
     invocation_ceiling: int = 12,
     episode_id: str = "auto_research",
     graph_base_head: GraphHeadRef | None = None,
@@ -231,8 +246,8 @@ def _setup_auto_research(
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -249,7 +264,7 @@ def _setup_auto_research(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
     )
     orchestrator_authority = AgentDispatchAuthority(
@@ -346,6 +361,7 @@ def _setup_auto_research(
             status_message=f"worker {worker_status}",
             parent_operation_id=root.operation_id,
             native_session_id=native_session_id,
+            stage_machine_id=BACKEND_MACHINE_ID if stage_root else None,
             stage_root=stage_root,
             authorized_by=authorizer,
             dispatch_authority=worker_authority,
@@ -366,7 +382,7 @@ def _execution(
         operation_id=task.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=task.stage_host,
+        stage_machine_id=task.stage_machine_id,
         stage_root=task.stage_root,
         continuation=continuation,
         retry_feedback=("provider disconnected after doing the work",)
@@ -765,7 +781,7 @@ def _continuation_record(store, episode, predecessor, request, **fields):
         parent_operation_id=predecessor.operation_id,
         authorized_by=episode.authorized_by,
         dispatch_authority=predecessor.dispatch_authority,
-        **fields,
+        **({"stage_machine_id": BACKEND_MACHINE_ID} if fields.get("stage_root") else {}) | fields,
     )
 
 
@@ -794,7 +810,7 @@ def _recovery_task(
             status_message="retry running",
             attempt=worker.attempt + 1,
             native_session_id=worker.native_session_id,
-            stage_host=worker.stage_host,
+            stage_machine_id=worker.stage_machine_id,
             stage_root=worker.stage_root,
         ),
         continuation_cause=continuation_cause,
@@ -861,7 +877,7 @@ def _claimed_mail_recovery(tmp_path: Path):
         local=stage,
         remote=None,
         workspace=stage,
-        execution_host="",
+        machine=_card(),
         provider_binary=None,
     )
     delivery = auto_research_mail_delivery(
@@ -955,7 +971,7 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             validate=lambda *_args: AutoResearchCommandEffectResult(),
             worker_request_factory=worker_request_factory,
             graph_state=service.history.state,
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             apply_patch=apply_patch,
         ),
     )
@@ -1249,7 +1265,7 @@ async def test_orchestrator_final_settlement_recovers_apply_committed_before_con
             validate=lambda *_args: AutoResearchCommandEffectResult(),
             worker_request_factory=worker_request_factory,
             graph_state=service.history.state,
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             apply_patch=apply_patch,
         ),
     )
@@ -1658,7 +1674,7 @@ def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="live-session",
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
     root = store.agent_task(root.operation_id)
@@ -1691,7 +1707,7 @@ def test_an_orchestrator_wake_retry_launches_on_the_session_it_needs(
             operation_id="lifecycle-wake",
             status_message="lifecycle wake running",
             native_session_id=root.native_session_id,
-            stage_host=root.stage_host,
+            stage_machine_id=root.stage_machine_id,
             stage_root=root.stage_root,
         ),
         lifecycle_notice_ids=[notice.notice_id],
@@ -1787,7 +1803,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
             native_session_id=(
                 "live-session" if failure_point in {"rebind", "login-switch"} else None
             ),
-            stage_host=None,
+            stage_machine_id="backend",
             stage_root=str(stage),
         )
         _record_original_contract(
@@ -1813,7 +1829,7 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
                 "reason": "login_switch",
                 "native_session_id": "live-session",
                 "transcript_path": str(tmp_path / "rollout.jsonl"),
-                "host": "",
+                "machine_id": "backend",
             },
             tier="summary",
         )
@@ -1887,7 +1903,10 @@ def test_orchestrator_encrypted_refusal_admits_clean_same_allocation(manifest, t
     stage = tmp_path / "stage"
     stage.mkdir()
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="old-session", stage_root=str(stage), stage_host=None
+        root.operation_id,
+        native_session_id="old-session",
+        stage_root=str(stage),
+        stage_machine_id="backend",
     )
     store.fail_agent_task(root.operation_id, "invalid_encrypted_content")
     store.record_agent_task_receipt(
@@ -1929,7 +1948,7 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="spent-session",
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
     store.fail_agent_task(root.operation_id, "provider session limit")
@@ -1947,7 +1966,7 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
             status_message="clean retry running",
             attempt=root.attempt + 1,
             native_session_id=None,
-            stage_host=root.stage_host,
+            stage_machine_id=root.stage_machine_id,
             stage_root=root.stage_root,
         ),
         continuation_cause="resume",
@@ -2630,7 +2649,7 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
             operation_id="lifecycle-wake",
             status_message="lifecycle wake running",
             native_session_id=root.native_session_id,
-            stage_host=root.stage_host,
+            stage_machine_id=root.stage_machine_id,
             stage_root=root.stage_root,
         ),
         lifecycle_notice_ids=[notice.notice_id],
@@ -2768,17 +2787,22 @@ def test_recovery_restages_the_durable_claimed_mail_over_any_left_copy(
 async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_host(
     manifest, tmp_path, monkeypatch
 ) -> None:
+    (tmp_path / "store").mkdir()
+    card_store = AppStore(tmp_path / "store" / "app.sqlite3")
+    state_card = card_store.create_space_machine(name="State", host="state.example", os_account="")
+    worker_card = card_store.create_space_machine(
+        name="Worker", host="worker.example", os_account=""
+    )
     remote_manifest_path = tmp_path / "remote-manifest" / ".research" / "manifest.toml"
     remote_manifest_path.parent.mkdir(parents=True)
     manifest_text = manifest.path.read_text(encoding="utf-8")
-    manifest_text = manifest_text.replace('host = ""', 'host = "state.example"', 1)
     manifest_text = manifest_text.replace(
-        "[[repositories]]",
-        '[[machines]]\nalias = "worker-host"\nhost = "worker.example"\n\n[[repositories]]',
-        1,
-    )
+        f'machines = ["{BACKEND_MACHINE_ID}"]',
+        f'machines = ["{state_card.machine_id}", "{worker_card.machine_id}"]',
+    ).replace(f'machine = "{BACKEND_MACHINE_ID}"', f'machine = "{state_card.machine_id}"')
     remote_manifest_path.write_text(manifest_text, encoding="utf-8")
     service = _service(load_manifest(remote_manifest_path), tmp_path)
+    service.launcher = AgentLauncher(accounts=ProviderAccounts.for_store(card_store))
     _LocalBackedRemoteStage.base = tmp_path / "remote"
     monkeypatch.setattr(
         "rcp.runs.tasks.auto_research_stream.RemoteRunStage",
@@ -2787,7 +2811,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
     service, store, _auto_research, _root, worker = _setup_branch_auto_research(
         service,
         tmp_path / "store",
-        run_on="worker-host",
+        run_on=worker_card.machine_id,
     )
     observed: dict[str, object] = {}
 
@@ -2823,7 +2847,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
     }
     stored = store.agent_task(worker.operation_id)
     assert stored is not None
-    assert stored.stage_host == "worker.example"
+    assert stored.stage_machine_id == worker_card.machine_id
 
 
 @pytest.mark.asyncio
@@ -3202,8 +3226,7 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         command_client="/stage/rcp-agent",
         write_scope=ProjectWriteScope.create(
             project_id="project",
-            execution_machine="laptop",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             capability="orchestrate",
             stage_root="/stage",
             workspace_root="/stage",
@@ -3353,7 +3376,7 @@ def test_orchestrator_context_consumes_staged_main_graph_pointer(
         local=None if remote else stage_path,
         remote=cast(auto_research_stream_module.RemoteRunStage | None, remote_stage),
         workspace=stage_path,
-        execution_host="execution.example" if remote else "",
+        machine=_card("execution.example" if remote else ""),
         provider_binary=None,
     )
     request = AutoResearchRunRequest.model_validate(root.request)
@@ -3390,10 +3413,10 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     stage_path = tmp_path / "stage"
     stage_path.mkdir()
     execution = _execution(store, root)
-    execution.checkpoint_stage("", str(stage_path))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage_path))
     request = AutoResearchRunRequest.model_validate(root.request)
     stage = auto_research_stream_module._WorkerStage(
-        local=stage_path, remote=None, workspace=stage_path, execution_host="", provider_binary=None
+        local=stage_path, remote=None, workspace=stage_path, machine=_card(), provider_binary=None
     )
     context = auto_research_stream_module._auto_research_context(service, request, stage)
     read_path = str(stage_path / "inputs" / "main-graph-snapshot.json")
@@ -3415,8 +3438,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
     )
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="orchestrate",
         stage_root=str(stage_path),
         workspace_root=str(stage_path),
@@ -3428,7 +3450,9 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
             execution.continuation = "resume"
             overlap = LoopOverlap()
-            service.history.manifest = _with_gpu_machine(manifest)
+            gpu_id = _with_gpu_machine(manifest, service.paper.store)
+            service.history.manifest = load_manifest(manifest.path)
+            service.launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
         binding = store.auto_research_actor_binding(root.operation_id)
         turn = auto_research_stream_module._CanonicalOrchestratorTurn(
             task=root,
@@ -3469,20 +3493,24 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             not {"parent_graph_path", "shared_repositories", "other_branch_loops"} & values.keys()
         )
         assert [item["id"] for item in values["compute"]["active"]] == (
-            ["laptop", "gpu"] if index else ["laptop"]
+            [BACKEND_MACHINE_ID, gpu_id] if index else [BACKEND_MACHINE_ID]
         )
         assert ("gpu.example" in prompt) == bool(index)
 
 
-def _with_gpu_machine(manifest):
-    """The fixture project plus a remote machine, saved the way Settings saves it."""
+def _with_gpu_machine(manifest, store: AppStore) -> str:
+    """The fixture project plus a remote machine card, saved the way Settings saves it."""
 
-    with manifest.path.open("a") as handle:
-        handle.write(
-            '\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n'
-            'access_hint = "submit with srun"\n'
-        )
-    return load_manifest(manifest.path)
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    store.update_space_machine(gpu.machine_id, access_hint="submit with srun")
+    manifest.path.write_text(
+        manifest.path.read_text(encoding="utf-8").replace(
+            f'machines = ["{BACKEND_MACHINE_ID}"]',
+            f'machines = ["{BACKEND_MACHINE_ID}", "{gpu.machine_id}"]',
+        ),
+        encoding="utf-8",
+    )
+    return gpu.machine_id
 
 
 def test_child_profile_choices_list_at_most_the_capped_models_per_provider():
@@ -3896,13 +3924,14 @@ def test_a_relaunch_restores_a_remote_actor_mailbox_without_reaching_its_host(
     service = _service(manifest, tmp_path)
     service, store, _auto_research, _root, worker = _setup_branch_auto_research(service, tmp_path)
     execution = _execution(store, worker)
-    execution.stage_host, execution.stage_root = "gpu", "/stage"
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    execution.stage_machine_id, execution.stage_root = gpu.machine_id, "/stage"
     request = AutoResearchRunRequest.model_validate(worker.request)
     monkeypatch.setattr(
         auto_research_stream_module,
         "_retained_finalization",
         lambda _execution: SimpleNamespace(
-            stage_host="gpu", stage_root="/stage", workspace="/stage/workspace"
+            stage_machine_id=gpu.machine_id, stage_root="/stage", workspace="/stage/workspace"
         ),
     )
 
@@ -3965,7 +3994,7 @@ def test_worker_refused_transcript_human_retry_starts_fresh(
             "reason": "login_switch",
             "native_session_id": worker.native_session_id,
             "transcript_path": str(transcript),
-            "host": "",
+            "machine_id": BACKEND_MACHINE_ID,
         },
     )
     launcher = _WorkerLauncher(session_id="replacement-session")
@@ -4005,7 +4034,7 @@ def test_worker_refused_transcript_human_retry_starts_fresh(
         assert turn.binding.native_session_id is None
         assert turn.allocation_operation_id == worker.operation_id
         assert turn.task.graph_target == worker.graph_target
-        assert str(transcript) in start_context(execution, "")
+        assert str(transcript) in start_context(execution, BACKEND_MACHINE_ID)
         assert store.episode_budget_meter(episode.episode_id).invocations_used == before
         return
     retried = wait_for_task(store, retried.operation_id, expect="succeeded")

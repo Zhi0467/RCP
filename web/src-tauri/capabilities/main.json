@@ -25,6 +25,7 @@
     "allow-desktop-advance-project-transfer",
     "allow-desktop-run-incoming-project-provision",
     "allow-desktop-read-target-project-provisioning-options",
+    "allow-desktop-read-target-space-machines",
     "allow-desktop-export-project-transfer",
     "allow-desktop-select-project-transfer-export",
     "allow-desktop-open-project-transfer-terminal",

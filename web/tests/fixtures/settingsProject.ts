@@ -46,8 +46,7 @@ export function projectFor(id: string): ProjectSnapshot {
     state_repository: "repo",
     machines: [
       {
-        alias: "local",
-        host: null,
+        machine_id: "local",
         compute: null,
         compute_probes: { scheduler: null, helper: null },
         removable: false,

@@ -618,6 +618,37 @@ def install_consolidation_resource_versions(connection: sqlite3.Connection) -> N
         _install(connection, table, statements)
 
 
+def reinstall_project_settings_versions(connection: sqlite3.Connection) -> None:
+    """Project metadata Settings shows: name, state card and path, and locator."""
+    _install(
+        connection,
+        "projects",
+        [_bump("ROW.project_id", "settings")],
+        columns=("name", "state_machine_id", "state_path", "locator"),
+    )
+
+
+def forget_compared_column(connection: sqlite3.Connection, table: str, column: str) -> None:
+    """Stop every owner trigger on `table` comparing `column`, before the column is dropped.
+
+    UPDATE triggers compare the columns they captured at installation; SQLite
+    drops a column without checking triggers, so a stale comparison would fail
+    at the next write.
+    """
+    clause = f'OLD."{column}" IS NOT NEW."{column}"'
+    triggers = connection.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?", (table,)
+    ).fetchall()
+    for name, sql in triggers:
+        rewritten = str(sql).replace(f" OR {clause}", "").replace(f"{clause} OR ", "")
+        if rewritten == sql:
+            continue
+        if f'"{column}"' in rewritten or f".{column}" in rewritten:
+            raise RuntimeError(f"trigger {name} still reads {table}.{column}")
+        connection.execute(f'DROP TRIGGER "{name}"')
+        connection.execute(rewritten)
+
+
 def install_provider_login_versions(connection: sqlite3.Connection) -> None:
     """Rebuilt login/cache tables and member settings publish Settings changes."""
     for event in ("insert", "update", "delete"):

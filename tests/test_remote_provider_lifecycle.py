@@ -78,7 +78,12 @@ async def test_codex_exec_requires_terminal_protocol_event(
         return [
             event
             async for event in launcher.stream(
-                "codex", "inspect the task", cwd=tmp_path, capability="scratch_patch"
+                "codex",
+                "inspect the task",
+                cwd=tmp_path,
+                capability="scratch_patch",
+                machine_id="backend",
+                host="",
             )
         ]
 
@@ -113,6 +118,7 @@ def transported_launcher(monkeypatch):
     monkeypatch.setattr(
         launcher, "_remote_login_command", lambda command, **kwargs: shlex.join(command)
     )
+    monkeypatch.setattr(launcher, "machine_host", lambda machine_id: "test-host")
     monkeypatch.setattr(
         launcher_module, "ssh_arguments", lambda host, command, **kwargs: shlex.split(command)
     )
@@ -144,6 +150,7 @@ async def test_closing_at_runtime_checkpoint_awaits_remote_and_local_cleanup(
         cwd=tmp_path,
         capability="scratch_patch",
         runtime_id="exec",
+        machine_id="test-machine",
         host="test-host",
         remote_pid_file=pid_file,
         control=control,
@@ -210,6 +217,7 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
             "prompt",
             cwd=tmp_path,
             capability="scratch_patch",
+            machine_id="test-machine",
             host="test-host",
             remote_pid_file=str(tmp_path / "agent.pid"),
         )
@@ -262,6 +270,7 @@ async def test_provider_error_settles_confirmed_remote_pass_before_early_consume
         cwd=tmp_path,
         capability="scratch_patch",
         runtime_id="exec",
+        machine_id="test-machine",
         host="test-host",
         remote_pid_file=str(tmp_path / "agent.pid"),
     )
@@ -299,6 +308,7 @@ async def test_remote_process_reservation_precedes_spawn_and_spawn_failure_settl
         cwd=tmp_path,
         capability="scratch_patch",
         runtime_id="exec",
+        machine_id="test-machine",
         host="test-host",
         remote_pid_file=pid_file,
     )
@@ -348,6 +358,7 @@ async def test_supervised_transport_loss_leaves_the_remote_pass_for_reconciliati
             "prompt",
             cwd=tmp_path,
             capability="scratch_patch",
+            machine_id="test-machine",
             host="test-host",
             remote_pid_file=pid_file,
             runtime_id=profile_for("codex").legacy_runtime_id,
@@ -402,6 +413,7 @@ async def test_pause_of_supervised_remote_turn_does_not_wait_for_reconciliation(
             "prompt",
             cwd=tmp_path,
             capability="scratch_patch",
+            machine_id="test-machine",
             host="test-host",
             remote_pid_file=str(tmp_path / "agent.pid"),
             runtime_id="exec",
@@ -453,6 +465,7 @@ async def test_provider_turn_rides_the_master_of_its_own_run(
         cwd=tmp_path,
         capability="scratch_patch",
         runtime_id="exec",
+        machine_id="test-machine",
         host="test-host",
         remote_pid_file=str(tmp_path / "agent.pid"),
         transport_partition="test-host:/tmp/rcp-run.op-one",
@@ -483,9 +496,10 @@ def test_shutdown_and_pause_settle_the_right_pass(
     from rcp.transport import RemoteRunStage
 
     from .helpers import wait_until
-    from .test_background import _admitted_launch_task, _store
+    from .test_background import _admitted_launch_task, _store, _work_request
 
     store = _store(tmp_path)
+    gpu = store.create_space_machine(name="GPU", host="test-host", os_account="")
     pause = Mock(wraps=store.request_agent_task_pause)
     monkeypatch.setattr(store, "request_agent_task_pause", pause)
     monkeypatch.setattr(
@@ -521,7 +535,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
     mailbox = Mock()
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("test-host", str(tmp_path))
+        execution.checkpoint_stage(gpu.machine_id, str(tmp_path))
         execution.command_mailbox = mailbox
         mailbox.execution = execution
         async for frame in shared._stream_agent_events(
@@ -546,6 +560,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
     task = _admitted_launch_task(
         store,
         operation_id="quit-turn",
+        request=_work_request("launch-quit-turn").model_copy(update={"run_on": gpu.machine_id}),
         record_updates={
             "runtime_id": "codex.exec-json.v1" if delivered else "codex.app-server-stdio.v1"
         },
@@ -567,7 +582,7 @@ def test_shutdown_and_pause_settle_the_right_pass(
         assert tasks.runtime_is_idle()
         record = store.agent_task(task.operation_id)
         assert record is not None
-        passes = store.unresolved_remote_provider_passes("test-host", str(tmp_path))
+        passes = store.unresolved_remote_provider_passes(gpu.machine_id, str(tmp_path))
         if not delivered:
             assert record.status == "paused"
             assert stop.called

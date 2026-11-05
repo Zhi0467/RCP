@@ -26,6 +26,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
     TURN_OUTCOME_REASON_MAX_CHARS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
 from rcp.service import (
@@ -54,11 +55,11 @@ def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadS
     first = scopes[0]
     if (
         any(
-            (scope.execution_host, scope.os_account, scope.account_home)
-            != (first.execution_host, first.os_account, first.account_home)
+            (scope.machine_id, scope.os_account, scope.account_home)
+            != (first.machine_id, first.os_account, first.account_home)
             for scope in scopes
         )
-        or first.execution_host
+        or first.machine_id != BACKEND_MACHINE_ID
     ):
         raise ValueError("Space hidden-read policies must belong to one local account")
     directories = tuple(sorted({path for scope in scopes for path in scope.hidden_directories}))
@@ -71,8 +72,7 @@ def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadS
     )
     evidence = {item.path: item for scope in scopes for item in scope.key_evidence}
     return HiddenReadScope(
-        execution_machine=first.execution_machine,
-        execution_host="",
+        machine_id=first.machine_id,
         os_account=first.os_account,
         account_home=first.account_home,
         hidden_directories=directories,
@@ -126,15 +126,13 @@ def space_agent_profile(
 ) -> AgentSurfaceConfig:
     """The Space thread's agent: the named pick, else the backend default.
 
-    A Space thread always runs on the backend machine, so `run_on` is not a
-    choice: it becomes that machine's Space card id, the one the picker sends.
+    A Space thread always runs on the backend card, so `run_on` is not a choice.
     """
-    del run_on
+    del store, run_on
     return AgentSurfaceConfig(
         provider=provider or "codex",
         model=model or "",
         reasoning=reasoning or "medium",
-        run_on=store.backend_space_machine().machine_id,
     )
 
 
@@ -303,7 +301,7 @@ async def stream_space_chat_run(
             "provider": profile.provider,
             "model": profile.model,
             "reasoning": profile.reasoning,
-            "run_on": profile.run_on,
+            "run_on": BACKEND_MACHINE_ID,
         }
     )
     turn = await _open_space_turn(owner, request, data_dir, execution, project_git_access)
@@ -347,7 +345,7 @@ async def stream_space_chat_run(
                     remote_stage=None,
                     capability="work_auto",
                     outcome=outcome,
-                    binary=launcher.provider_binary(profile.provider, ""),
+                    binary=launcher.provider_binary(profile.provider, BACKEND_MACHINE_ID),
                     invocation_gate=gate,
                     hidden_read_scope=turn.hidden_read_scope,
                     browser_grant=browser,
@@ -459,7 +457,7 @@ class _SpaceTurn:
                         project.service,
                         self.execution,
                         data_dir,
-                        old_request.model_copy(update={"run_on": project.scope.execution_machine}),
+                        old_request.model_copy(update={"run_on": project.scope.machine_id}),
                         source,
                     )
                 )
@@ -482,7 +480,7 @@ def _space_stage(owner: SpaceThreadOwner, data_dir: Path, execution: AgentTaskEx
     stage.mkdir(parents=True, exist_ok=True)
     if stage.is_symlink() or stage.resolve() != stage:
         raise ValueError("Space stage is not a canonical local directory")
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     return stage
 
 
@@ -604,7 +602,7 @@ async def _prepare_space_policies(
             try:
                 policy = await _prepare_hidden_read_scope(
                     project.service,
-                    request.model_copy(update={"run_on": project.scope.execution_machine}),
+                    request.model_copy(update={"run_on": project.scope.machine_id}),
                     workspace=stage,
                     remote_stage=None,
                     execution=execution,
@@ -710,6 +708,7 @@ def _space_browser(turn: _SpaceTurn):
         turn.request,
         workspace=turn.stage,
         execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         execution=turn.execution,
         remote_stage=None,
         capability="work_auto",
@@ -917,10 +916,10 @@ def _commit_space_session(turn: _SpaceTurn, session_id: str) -> None:
         },
         sort_keys=True,
     )
-    previous = store.chat_session_context(provider, "local", session_id)
+    previous = store.chat_session_context(provider, BACKEND_MACHINE_ID, session_id)
     store.commit_chat_session_context(
         provider=provider,
-        execution_machine="local",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=session_id,
         project_id=store.space_id,
         kind="space_chat",
@@ -1091,13 +1090,11 @@ def default_space_hidden_read_scope(
     """Resolve ordinary local account policy independently of project write admission."""
     from rcp.agents.hidden_read import resolve_machine_hidden_read_scope
     from rcp.agents.provider_environment import local_hidden_read_key_evidence
-    from rcp.config import MachineConfig
 
-    card = owner.store.space_machine_for("")
+    card = owner.store.backend_space_machine()
     assert request.provider is not None
     return resolve_machine_hidden_read_scope(
-        machine=MachineConfig(alias="local", host="", os_account=card.os_account if card else ""),
-        execution_machine="local",
+        machine=card,
         provider=request.provider,
         capability="work_auto",
         stage_root=str(stage),
@@ -1105,8 +1102,8 @@ def default_space_hidden_read_scope(
         app_data_dir=owner.catalog.data_dir,
         remote_stage=None,
         repository_inventory=inventory,
-        machine_hidden_folders=list(card.hidden_folders) if card else [],
-        machine_provider_paths=list(card.provider_paths.values()) if card else [],
+        machine_hidden_folders=list(card.hidden_folders),
+        machine_provider_paths=list(card.provider_paths.values()),
         key_evidence=local_hidden_read_key_evidence(owner.catalog.data_dir, execution.git_access),
         browser_enabled=request.browser_requested,
         thread_owner=owner.thread.user_id,

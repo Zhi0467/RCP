@@ -34,6 +34,7 @@ from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
 from rcp.limits import COMPUTE_JOB_STARTUP_CHECK_SECONDS
+from rcp.machine_cards import card
 from rcp.transport import RemoteRunStage
 
 
@@ -145,11 +146,8 @@ class WorkComputeCommands:
     @cached_property
     def helper_backend(self) -> ComputeBackendProfile | None:
         try:
-            machine = self.write_scope.execution_machine
             _context, backend = resolve_context(
-                self.manifest,
-                machine,
-                self.execution.store.machine_compute(self.manifest.machine_map[machine].host),
+                card(self.execution.store, self.write_scope.machine_id)
             )
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             return None
@@ -216,20 +214,15 @@ class WorkComputeCommands:
         ):
             raise ValueError("Compute cwd is a protected write path.")
         launch = launch.model_copy(update={"cwd": str(cwd)})
-        machine = self.write_scope.execution_machine
-        compute = self.execution.store.machine_compute(self.manifest.machine_map[machine].host)
-        probe = probe_compute_backend(
-            self.manifest, machine, "helper", data_dir=self.data_dir, compute=compute
-        )
+        machine = card(self.execution.store, self.write_scope.machine_id)
+        probe = probe_compute_backend(machine, "helper", data_dir=self.data_dir)
         self.execution.store.record_compute_backend_probe(
             self.write_scope.project_id, probe, "helper"
         )
         try:
             return self._launch(request, launch, probe)
         except ComputeProbeStaleError:
-            probe = probe_compute_backend(
-                self.manifest, machine, "helper", data_dir=self.data_dir, compute=compute
-            )
+            probe = probe_compute_backend(machine, "helper", data_dir=self.data_dir)
             self.execution.store.record_compute_backend_probe(
                 self.write_scope.project_id, probe, "helper"
             )
@@ -255,13 +248,12 @@ class WorkComputeCommands:
             )
         job = launch_compute_job(
             self.execution.store,
-            self.manifest,
             launch,
             data_dir=self.data_dir,
             project_id=self.write_scope.project_id,
             origin_operation_id=self.execution.operation_id,
             episode_id=self.episode_id,
-            execution_machine=self.write_scope.execution_machine,
+            machine_id=self.write_scope.machine_id,
             writable_roots=self.write_scope.writable_roots,
             protected_paths=self.write_scope.protected_write_paths,
             probe=probe,
@@ -271,7 +263,7 @@ class WorkComputeCommands:
         result = {
             "job_id": job.job_id,
             "watcher": helper_watch_spec(job),
-            "startup": helper_startup_state(job),
+            "startup": helper_startup_state(self.execution.store, job),
         }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 

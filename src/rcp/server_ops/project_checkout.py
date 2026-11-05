@@ -32,7 +32,12 @@ from rcp.server_ops.git_credentials import (
     run_bounded_process,
     target_account_argv,
 )
-from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout, remote_projects_root
+from rcp.server_ops.layout import (
+    DEFAULT_SERVER_LAYOUT,
+    MachineRoute,
+    ServerLayout,
+    remote_projects_root,
+)
 from rcp.server_ops.models import (
     OPERATOR_SHELL,
     ExternalAction,
@@ -44,7 +49,6 @@ from rcp.server_ops.models import (
 from rcp.storage import (
     ProjectProvisioningCheckoutDisposition,
     ProjectProvisioningKind,
-    ProjectProvisioningMachineIntent,
 )
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -71,7 +75,7 @@ class RetainedResearchState:
 
 @dataclass(frozen=True)
 class ProjectCheckoutResult:
-    machine_alias: str
+    machine_id: str
     repository_alias: str
     central_root: str
     repository_path: str
@@ -135,7 +139,7 @@ class ProjectCheckoutManager:
 
     def prepare(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         request_kind: ProjectProvisioningKind,
@@ -151,7 +155,7 @@ class ProjectCheckoutManager:
         if (
             project_id != material.project_id
             or repository_alias != material.repository_alias
-            or material.machine_alias != machine.alias
+            or material.machine_id != machine.machine_id
         ):
             raise ProjectCheckoutRefused(
                 "account_or_path",
@@ -217,7 +221,7 @@ class ProjectCheckoutManager:
                 retained_research=exc.retained_research,
             ) from exc
         return ProjectCheckoutResult(
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             repository_alias=repository_alias,
             central_root=receipt.central_root,
             repository_path=receipt.repository_path,
@@ -228,7 +232,7 @@ class ProjectCheckoutManager:
 
     def prepare_server_only(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         *,
         request_kind: ProjectProvisioningKind,
         project_id: str,
@@ -257,7 +261,7 @@ class ProjectCheckoutManager:
 
     def adopt_existing(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         *,
         repository_alias: str,
         repository_path: str,
@@ -291,7 +295,7 @@ class ProjectCheckoutManager:
                 context, repository_path, "The folder's commit changed after it was checked."
             )
         return ProjectCheckoutResult(
-            machine_alias=machine.alias,
+            machine_id=machine.machine_id,
             repository_alias=repository_alias,
             central_root=context.central_root,
             repository_path=repository_path,
@@ -302,7 +306,7 @@ class ProjectCheckoutManager:
 
     def prepare_initial(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         request_kind: ProjectProvisioningKind,
@@ -311,10 +315,10 @@ class ProjectCheckoutManager:
         state_repository: bool,
         expected_commit: str | None = None,
     ) -> ProjectCheckoutResult:
-        if (material.project_id, material.repository_alias, material.machine_alias) != (
+        if (material.project_id, material.repository_alias, material.machine_id) != (
             project_id,
             repository_alias,
-            machine.alias,
+            machine.machine_id,
         ):
             raise ProjectCheckoutRefused(
                 "account_or_path", "The checkout target differs from its key."
@@ -332,7 +336,7 @@ class ProjectCheckoutManager:
 
     def _prepare_initial(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         *,
         request_kind: ProjectProvisioningKind,
@@ -460,7 +464,7 @@ class ProjectCheckoutManager:
                 allow_dirty=request_kind == "connect_repository",
             )
         return ProjectCheckoutResult(
-            machine.alias,
+            machine.machine_id,
             repository_alias,
             receipt.central_root,
             path,
@@ -471,7 +475,7 @@ class ProjectCheckoutManager:
 
     def publish_initial(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         repository_path: str,
@@ -547,7 +551,7 @@ class ProjectCheckoutManager:
 
     def prepare_recovery(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         *,
         project_id: str,
@@ -595,7 +599,7 @@ class ProjectCheckoutManager:
 
     def verify_recovery_research(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         repository_path: str,
         *,
         account_home: str,
@@ -736,7 +740,7 @@ class ProjectCheckoutManager:
 
     def _prepare_path(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         *,
         project_id: str,
@@ -806,7 +810,7 @@ class ProjectCheckoutManager:
 
     def _verify_git_directory(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> None:
@@ -825,7 +829,7 @@ class ProjectCheckoutManager:
 
     def _seal_new_git_directory(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> None:
@@ -844,7 +848,7 @@ class ProjectCheckoutManager:
 
     def _clone(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
         repository_path: str,
     ) -> None:
@@ -876,7 +880,7 @@ class ProjectCheckoutManager:
 
     def _verify_repository(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
         *,
@@ -1094,7 +1098,7 @@ class ProjectCheckoutManager:
 
     def _retained_research(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
     ) -> RetainedResearchState:
@@ -1134,7 +1138,7 @@ class ProjectCheckoutManager:
 
     def _helper(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         arguments: tuple[str, ...],
     ) -> dict[str, object]:
         operation = arguments[0]
@@ -1169,7 +1173,7 @@ class ProjectCheckoutManager:
 
     def _git_at(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         repository_path: str,
         arguments: tuple[str, ...],
@@ -1191,7 +1195,7 @@ class ProjectCheckoutManager:
 
     def _git(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial | CheckoutAccount,
         argv: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
@@ -1224,7 +1228,7 @@ class ProjectCheckoutManager:
 
     def _target(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         command: tuple[str, ...],
     ) -> subprocess.CompletedProcess[str]:
         try:
@@ -1260,7 +1264,7 @@ class ProjectCheckoutManager:
 
 
 def retained_research_operator_step(
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     refusal: ProjectCheckoutRefused,
     *,
     number: int,

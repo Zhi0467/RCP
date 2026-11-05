@@ -55,6 +55,8 @@ from unittest import mock
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.attachments import ChatAttachmentDescriptor
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
+from rcp.machine_upgrade import _Cards, _migrate_artifact_edit_stages, _migrate_stage_receipts
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -69,7 +71,6 @@ from rcp.storage.models import (
     AGENT_TASK_TRANSITIONS,
     MACHINE_LOGIN_ID,
     AgentTaskStatus,
-    LoginKey,
 )
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin, migrate_per_member_provider_logins
@@ -79,7 +80,7 @@ from tests.lifecycles.engine import RESTART, START, Action, Clock, Goal, Memory,
 
 _ROOT = "A0"
 _EXPIRY = START + timedelta(minutes=30)
-_LOGIN = LoginKey("codex", "", MACHINE_LOGIN_ID)
+_LOGIN = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
 _OUTCOMES = ("success", "transport_lost", "provider_auth", "session_refused", "paused")
 _TERMINAL = frozenset({"succeeded", "failed", "interrupted", "paused"})
 _MIGRATION = "a migration runs when a store opens, never inside an action"
@@ -99,8 +100,8 @@ def seeded_store(tmp_path: Path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / ".research"),
             added_at=store.now(),
         )
     )
@@ -112,7 +113,7 @@ def work_request(chat_id, *, message="Exercise the admitted launch boundary."):
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo"],
         chat_scope="project",
         chat_id=chat_id,
@@ -165,7 +166,11 @@ async def done_stream(_project_id, _kind, _request, _execution) -> AsyncIterator
 async def _transport_lost_stream(_project_id, _kind, _request, execution) -> AsyncIterator[str]:
     """``test_a_turn_the_provider_explained_is_never_blamed_on_the_link``: a bare 255 on a host."""
 
-    execution.stage_host = "gpu.example.edu"
+    store = execution.store
+    gpu = store.space_machine_for("gpu.example.edu") or store.create_space_machine(
+        name="GPU", host="gpu.example.edu", os_account=""
+    )
+    execution.stage_machine_id = gpu.machine_id
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "provider_exit",
@@ -318,6 +323,9 @@ class AgentTask:
         ProviderLoginStoreMixin.assign_provider_login,
         ProviderLoginStoreMixin.record_provider_login_refusal,
         migrate_per_member_provider_logins,
+        _Cards.__init__,
+        _migrate_stage_receipts,
+        _migrate_artifact_edit_stages,
         ProjectTransferStoreMixin._insert_transfer_tasks,
         ProjectTransferStoreMixin.settle_source_transfer_tasks,
     )
@@ -392,6 +400,9 @@ class AgentTask:
         _migrate_campaign_episodes: _MIGRATION,
         migrate_artifacts: _MIGRATION,
         migrate_per_member_provider_logins: _MIGRATION,
+        _Cards.__init__: _MIGRATION,
+        _migrate_stage_receipts: _MIGRATION,
+        _migrate_artifact_edit_stages: _MIGRATION,
     }
 
     def __init__(self) -> None:

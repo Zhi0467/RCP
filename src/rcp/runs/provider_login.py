@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.config import Manifest, load_manifest
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
-from rcp.storage.models import LoginKey
 
 if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
@@ -39,29 +39,22 @@ class MachineDependenciesMissing(AdmissionRefused):
     """The execution machine lacks a required program or is unsupported."""
 
 
-def provider_login_host(manifest: Manifest, run_on: str) -> str:
-    """The host a project machine alias names in `manifest`."""
-    machine = manifest.machine_map.get(run_on)
-    if machine is None:
-        raise ValueError(f"unknown execution machine: {run_on}")
-    return machine.host or ""
-
-
-def run_on_host(
+def run_on_machine(
     store: AppStore,
     project_id: str,
     run_on: str | None,
     manifest: Callable[[], Manifest] | None = None,
 ) -> str:
-    """The host a task's `run_on` names.
+    """The card a task's `run_on` names.
 
-    A Space task always runs on the backend, so its `run_on` (a card id that may
-    since have been deleted) is never looked up. A project task names a machine
-    alias in its manifest, read from the project unless `manifest` is given; None
-    names the base machine every agent profile runs on.
+    A Space task always runs on the backend. A project task's `run_on` is its
+    card id; None names the base machine every agent runs on, read from the
+    project's manifest unless `manifest` is given.
     """
     if project_id == store.space_id:
-        return ""
+        return BACKEND_MACHINE_ID
+    if run_on:
+        return run_on
     if manifest is None:
         project = store.project(project_id)
         if project is None:
@@ -69,17 +62,19 @@ def run_on_host(
         loaded = load_manifest(project.locator)
     else:
         loaded = manifest()
-    return provider_login_host(loaded, run_on or loaded.base_machine)
+    if not loaded.base_machine:
+        raise ValueError("Assign a machine to the state repository.")
+    return loaded.base_machine
 
 
-def task_login_host(
+def task_login_machine(
     store: AppStore, task: AgentTaskRecord, manifest: Callable[[], Manifest]
 ) -> str:
-    """Prefer a captured stage host; resolve queued tasks from their execution target."""
-    if task.stage_host is not None or task.stage_root is not None:
-        return task.stage_host or ""
+    """Prefer a captured stage's card; resolve queued tasks from their execution target."""
+    if task.stage_machine_id is not None:
+        return task.stage_machine_id
     run_on = task.request.get("run_on")
-    return run_on_host(store, task.project_id, str(run_on) if run_on else None, manifest)
+    return run_on_machine(store, task.project_id, str(run_on) if run_on else None, manifest)
 
 
 @dataclass
@@ -107,13 +102,13 @@ def parked_provider_work(
         if task is None or not task.request.get("provider"):
             continue
         try:
-            host = task_login_host(store, task, manifest)
+            machine_id = task_login_machine(store, task, manifest)
         except (OSError, ValueError):
             logging.getLogger(__name__).warning(
                 "Provider login skipped an unavailable queued execution target."
             )
             continue
-        account = resolved_task_login(store, task, host=host)
+        account = resolved_task_login(store, task, machine_id=machine_id)
         if account is not None:
             work[account].queued.append(operation_id)
     # Episode recovery has its own durable queue. Other failed turns must also
@@ -127,7 +122,7 @@ def parked_provider_work(
         if first.project_id == project_id:
             origin = store.agent_task(first.origin_operation_id)
             account = (
-                resolved_task_login(store, origin, host=first.execution_host or "")
+                resolved_task_login(store, origin, machine_id=first.machine_id)
                 if origin is not None
                 else None
             )
@@ -207,13 +202,16 @@ def resume_provider_account(
                 or store.agent_task_has_receipt(task.parent_operation_id, "transport_auto_retry")
             )
         ):
-            return member_id is None and resolved_task_login(store, task, host=key.host) == key
+            return (
+                member_id is None
+                and resolved_task_login(store, task, machine_id=key.machine_id) == key
+            )
         authorizer = task.authorized_by.user_id if task.authorized_by else None
         if member_id is not None and authorizer != member_id:
             return False
         if authorizer is None or not profile_for(key.provider).authentication.manages_login:
             return not key.login_id
-        setting = store.provider_login_setting(authorizer, key.provider, key.host).setting
+        setting = store.provider_login_setting(authorizer, key.provider, key.machine_id).setting
         return (verified.member_id == authorizer and "own" in setting) or (
             verified.member_id is None and "shared" in setting
         )
@@ -224,7 +222,7 @@ def resume_provider_account(
             store, project.project_id, lambda project=project: load_manifest(project.locator)
         )
         for resolved, work in parked.items():
-            if (resolved.provider, resolved.host) != (key.provider, key.host):
+            if (resolved.provider, resolved.machine_id) != (key.provider, key.machine_id):
                 continue
             work.recoveries = [pair for pair in work.recoveries if eligible(pair[1])]
             work.queued = [operation_id for operation_id in work.queued if eligible(operation_id)]
@@ -306,17 +304,21 @@ def _claim_auth_retry(store: AppStore, operation_id: str) -> bool:
 
 
 def resolved_task_login(
-    store: AppStore, task: AgentTaskRecord, *, host: str | None = None
+    store: AppStore, task: AgentTaskRecord, *, machine_id: str | None = None
 ) -> LoginKey | None:
     """Dry-run a turn boundary with the session's stay-put login preference."""
     provider = str(task.request.get("provider") or "")
     if not provider:
         return None
-    host = task.stage_host or "" if host is None else host
+    if machine_id is None:
+        run_on = task.request.get("run_on")
+        machine_id = task.stage_machine_id or run_on_machine(
+            store, task.project_id, str(run_on) if run_on else None
+        )
     accounts = ProviderAccounts.for_store(store)
     result, _ = accounts.resolve_launch_login(
         provider,
-        host,
+        machine_id,
         task.authorized_by.user_id if task.authorized_by else None,
         session_id=task.native_session_id,
         task=task,
@@ -327,7 +329,7 @@ def resolved_task_login(
     # Keep a parked machine login discoverable while it is unhealthy. Release
     # still checks usability and re-resolves before dispatch.
     return result.login or (
-        LoginKey(provider, host, task.login_id) if task.login_id is not None else None
+        LoginKey(provider, machine_id, task.login_id) if task.login_id is not None else None
     )
 
 
@@ -337,7 +339,7 @@ def provider_login_changed(
     key: LoginKey | None = None,
     member_id: str | None = None,
     provider: str = "",
-    host: str = "",
+    machine_id: str = "",
     reconcile_episodes: Callable[[], int],
     watcher_delivery: WatcherDelivery,
 ) -> dict[str, int]:
@@ -352,10 +354,10 @@ def provider_login_changed(
     if member_id is None or not provider:
         raise ValueError("A setting change requires its member and provider.")
     checked = 0
-    for row in background.store.provider_logins(provider, host):
+    for row in background.store.provider_logins(provider, machine_id):
         checked += resume_provider_account(
             background,
-            LoginKey(provider, host, row.login_id),
+            LoginKey(provider, machine_id, row.login_id),
             member_id=member_id,
             watcher_delivery=watcher_delivery,
         )["checked"]
@@ -369,7 +371,7 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
     provider = str(record.request.get("provider") or "")
     if not provider or record.login_id is None:
         return
-    key = LoginKey(provider, record.stage_host or "", record.login_id)
+    key = LoginKey(provider, record.stage_machine_id or "", record.login_id)
     starts = [
         receipt.created_at
         for receipt in store.agent_task_receipts(record.operation_id)
@@ -399,10 +401,10 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
         prior = connection.execute(
             "SELECT 1 FROM graph_run_receipts WHERE category='provider_login_limit_retry' "
             "AND json_extract(payload_json, '$.provider')=? "
-            "AND json_extract(payload_json, '$.host')=? "
+            "AND json_extract(payload_json, '$.machine_id')=? "
             "AND json_extract(payload_json, '$.session')=? "
             "AND json_extract(payload_json, '$.login_id')=? LIMIT 1",
-            (provider, key.host, record.native_session_id, key.login_id),
+            (provider, key.machine_id, record.native_session_id, key.login_id),
         ).fetchone()
         if prior is not None:
             return
@@ -413,7 +415,7 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
             json.dumps(
                 {
                     "provider": provider,
-                    "host": key.host,
+                    "machine_id": key.machine_id,
                     "session": record.native_session_id,
                     "login_id": key.login_id,
                     "to": chosen.login_id,
@@ -431,7 +433,8 @@ def bound_running_count(store: AppStore, key: LoginKey) -> int:
     with store.connection() as connection:
         row = connection.execute(
             "SELECT COUNT(*) FROM graph_runs "
-            "WHERE json_extract(request_json, '$.provider')=? AND COALESCE(stage_host,'')=? "
+            "WHERE json_extract(request_json, '$.provider')=? "
+            "AND COALESCE(NULLIF(stage_machine_id,''),'backend')=? "
             "AND login_id=? AND status IN ('running', 'pausing')",
             key,
         ).fetchone()
@@ -465,13 +468,13 @@ def reconcile_login_removals(store: AppStore, launcher: AgentLauncher) -> None:
     """Finish drains and retry unreachable credential deletion after restart."""
     with store.connection() as connection:
         rows = connection.execute(
-            "SELECT provider, host, login_id FROM provider_login_states "
+            "SELECT provider, machine_id, login_id FROM provider_login_states "
             "WHERE draining_since IS NOT NULL AND "
             "(removed_at IS NULL OR detail = ?)",
             (_CLEANUP_PENDING,),
         ).fetchall()
     for row in rows:
-        key = LoginKey(row["provider"], row["host"], row["login_id"])
+        key = LoginKey(row["provider"], row["machine_id"], row["login_id"])
         with launcher.credential_gate.hold_blocking(key):
             if bound_running_count(store, key):
                 continue
@@ -491,7 +494,7 @@ def delete_removed_credential(store: AppStore, key: LoginKey, *, defer: bool = F
     deleted = not defer and cleanup_provider_login_credential(store, key)
     with store.connection() as connection:
         connection.execute(
-            "UPDATE provider_login_states SET detail=? WHERE provider=? AND host=? AND login_id=?",
+            "UPDATE provider_login_states SET detail=? WHERE provider=? AND machine_id=? AND login_id=?",
             ("Sign-in removed." if deleted else _CLEANUP_PENDING, *key),
         )
     return deleted

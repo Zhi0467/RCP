@@ -10,8 +10,10 @@ from rcp.agents.continuation_prompt import context_delta
 from rcp.agents.group_context import build_group_context
 from rcp.agents.prompts import render_chat_read_context
 from rcp.agents.write_scope import registered_repository_roots, resolve_project_write_scope
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import chat_prompt_values
 from rcp.service import RunRequest
+from rcp.storage import AppStore
 
 from .test_branch_context import branch_services as branch_services
 
@@ -25,15 +27,16 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
     sibling = service.manifest.model_copy(deep=True)
     sibling.repository_map["repo-a"].path = str(tmp_path / "sibling")
     sibling.repository_map["repo-b"].path = "/other/repository"
-    remote = sibling.machines[0].model_copy(update={"alias": "remote", "host": "remote.example"})
-    sibling.machines.append(remote)
+    sibling.machines.append("remote")
     sibling.repository_map["repo-b"].machine = "remote"
     monkeypatch.setattr("rcp.agents.group_context.load_manifest", lambda _: sibling)
     store = SimpleNamespace(
         project_group_for=lambda _: SimpleNamespace(name="Benchmarks") if grouped else None,
         project_group_project_ids=lambda _: ["project", "sibling"] if grouped else ["project"],
         project=lambda _: SimpleNamespace(locator="sibling-manifest", name="Sibling"),
+        space_machine={"remote": SimpleNamespace(host="remote.example")}.__getitem__,
     )
+    backend = AppStore(tmp_path / "cards.sqlite3").backend_space_machine()
     context = service.assemble_chat(RunRequest(chat_scope="project", run_truth_scope=["repo-a"]))
     stage = tmp_path / "stage"
     (stage / "workspace").mkdir(parents=True)
@@ -43,7 +46,7 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
             manifest=service.manifest,
             truth_scope=service.manifest.project.truth_scope,
             project_id="project",
-            execution_machine="laptop",
+            machine=backend,
             capability="work_auto",
             stage_root=str(stage),
             workspace_root=str(stage / "workspace"),
@@ -57,7 +60,7 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
         )
 
     before = write_scope()
-    context.group_context = build_group_context(service, store, "laptop")
+    context.group_context = build_group_context(service, store, BACKEND_MACHINE_ID)
     assert write_scope() == before
     rendered = render_chat_read_context(context)
     if not grouped:
@@ -99,8 +102,7 @@ def test_unavailable_sibling_is_reported_and_grants_no_reads(
 ):
     service, _ = branch_services
     sibling = service.manifest.model_copy(deep=True)
-    if broken == "machine":
-        service.manifest.machines[0].host = "execution.example"
+    machine_id = "execution" if broken == "machine" else BACKEND_MACHINE_ID
 
     def load(_):
         if broken == "manifest":
@@ -112,8 +114,9 @@ def test_unavailable_sibling_is_reported_and_grants_no_reads(
         project_group_for=lambda _: SimpleNamespace(name="Benchmarks"),
         project_group_project_ids=lambda _: ["project", "sibling"],
         project=lambda _: SimpleNamespace(locator="sibling-manifest", name="Sibling"),
+        backend_space_machine=lambda: SimpleNamespace(host=""),
     )
-    group = build_group_context(service, store, "laptop")
+    group = build_group_context(service, store, machine_id)
     assert group is not None
     assert group.readable_project_ids == {"project"}
     assert group.read_dirs() == []

@@ -29,7 +29,9 @@ def helper(tmp_path, monkeypatch):
         origin_operation_id="origin",
     )
     store.create_compute_job(job)
-    watcher = _record("helper").model_copy(update=jobs.helper_watch_spec(job))
+    watcher = _record("helper").model_copy(
+        update={**jobs.helper_watch_spec(job), "machine_id": job.machine_id}
+    )
     store.create_watchers([watcher])
 
     class Backend:
@@ -39,7 +41,7 @@ def helper(tmp_path, monkeypatch):
 
         def cancel(self, handle, context):
             assert handle == job.backend_handle
-            assert context.execution_host == job.execution_host
+            assert context.machine_id == job.machine_id
             assert context.writable_roots == context.protected_paths == ()
             self.calls += 1
             if self.failure:
@@ -252,7 +254,7 @@ def test_natural_completion_retries_after_watcher_persistence_fails(
     ("field", "value"),
     [
         ("project_id", "other"),
-        ("execution_host", "other-host"),
+        ("machine_id", "other-machine"),
         ("origin_operation_id", "other-origin"),
         ("check_command", "false"),
         ("cancel_command", "true"),

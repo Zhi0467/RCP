@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import LoginKey
 from rcp.providers import profile_for
 from rcp.runs import provider_login
 from rcp.storage import AppStore
-from rcp.storage.models import LoginKey
 
 if TYPE_CHECKING:
     from rcp.runs.provider_sign_in import ProviderSignInRunner
@@ -42,14 +42,14 @@ def provider_login_row(
             }
         )
     metadata = (
-        profile.authentication.credential_metadata(credentials, key.host, key.login_id)
+        profile.authentication.credential_metadata(credentials, key.machine_id, key.login_id)
         if visible
         else None
     )
     assignment = store.provider_login_assignment(key)
     return {
         "provider": key.provider,
-        "host": key.host,
+        "machine_id": key.machine_id,
         "login_id": key.login_id,
         "kind": "own" if state.member_id else "shared",
         "owner_user_id": state.member_id,
@@ -80,11 +80,11 @@ def provider_login_row(
     }
 
 
-def missing_own_login_row(provider: str, host: str, viewer_id: str) -> dict[str, object]:
+def missing_own_login_row(provider: str, machine_id: str, viewer_id: str) -> dict[str, object]:
     """Represent a refused source without inventing a stored login identity."""
     return {
         "provider": provider,
-        "host": host,
+        "machine_id": machine_id,
         "login_id": None,
         "kind": "own",
         "owner_user_id": viewer_id,

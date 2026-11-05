@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import ProjectRecord
 
 from .test_work_questions import work_execution
@@ -18,8 +19,8 @@ def store(tmp_path):
             project_id="project",
             locator="local",
             name="Project",
-            state_location="local",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="local",
             added_at=store.now(),
         )
     )

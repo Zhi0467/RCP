@@ -79,7 +79,6 @@ function runProfile(profile: AgentProfile | undefined): Record<string, unknown> 
     provider: profile.provider,
     model: profile.model,
     reasoning: profile.reasoning,
-    run_on: profile.run_on,
   };
 }
 

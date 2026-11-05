@@ -134,6 +134,7 @@ from rcp.limits import (
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card, host_of
 from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
 from rcp.paper.compile import PaperCompiler
@@ -268,7 +269,7 @@ from rcp.storage import (
     TeamAuthenticationError,
     WatcherRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
 from rcp.transfer.target import (
@@ -544,35 +545,31 @@ def create_app(
                         boundary_sha256=request.boundary_sha256,
                     )
                 case "compute_backend_probe":
-                    assert request.selector_id is not None and request.machine_alias is not None
+                    assert request.selector_id is not None and request.machine_id is not None
                     assert request.compute_route is not None
                     record = store.project(request.selector_id)
                     if record is None or record.home_space_id != store.space_id:
                         raise ServerControlError("operation_refused", "Project not found.")
                     try:
                         manifest = load_manifest(record.locator)
-                        if request.machine_alias not in manifest.machine_map:
-                            raise ValueError(f"unknown execution machine: {request.machine_alias}")
+                        if request.machine_id not in manifest.machines:
+                            raise ValueError(f"unknown execution machine: {request.machine_id}")
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
-                    compute = store.machine_compute(
-                        manifest.machine_map[request.machine_alias].host
-                    )
+                    compute = store.machine_compute(request.machine_id)
                     offered = machine_compute_routes(
-                        compute, execution=request.machine_alias == manifest.base_machine
+                        compute, execution=request.machine_id == manifest.base_machine
                     )
                     if request.compute_route not in offered:
                         raise ServerControlError(
                             "operation_refused",
-                            f"{request.machine_alias} does not offer the "
+                            f"{card(store, request.machine_id).name} does not offer the "
                             f"{request.compute_route} route.",
                         )
                     probe = probe_compute_backend(
-                        manifest,
-                        request.machine_alias,
+                        card(store, request.machine_id),
                         request.compute_route,
                         data_dir=app_data,
-                        compute=compute,
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -581,7 +578,7 @@ def create_app(
                         space_id=space_id,
                         selector_kind="project",
                         selector_id=record.project_id,
-                        machine_alias=request.machine_alias,
+                        machine_id=request.machine_id,
                         compute_route=request.compute_route,
                         probe=store.record_compute_backend_probe(
                             record.project_id, probe, request.compute_route
@@ -760,6 +757,9 @@ def create_app(
         process_environment=launcher.process_environment,
     )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+    catalog.remote_machine_upgrades_allowed = lambda: (
+        startup_effect_fence is None or not startup_effect_fence.active
+    )
 
     paper_live = catalog.paper_live
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
@@ -820,14 +820,7 @@ def create_app(
                 str(row[0]), kind, request, execution
             )
 
-    setup = ProjectSetupManager(
-        app_data,
-        catalog,
-        launcher,
-        machine_account=lambda host: (
-            card.os_account if (card := store.space_machine_for(host)) else ""
-        ),
-    )
+    setup = ProjectSetupManager(app_data, catalog, launcher)
     if control_server is not None:
         target_transfer_activation_coordinator = TargetTransferActivationCoordinator(
             store,
@@ -840,9 +833,10 @@ def create_app(
     )
     default_project_id = default_record.project_id if default_record else None
     default_project_name = default_record.name if default_record else None
-    default_state_host = (
-        catalog.state_host(default_project_id) if default_project_id is not None else ""
+    default_state_machine_id = (
+        default_record.state_machine_id if default_record is not None else BACKEND_MACHINE_ID
     )
+    default_state_host = host_of(store, default_state_machine_id)
     default_service = (
         _LazyProjectService(catalog, default_project_id) if default_project_id is not None else None
     )
@@ -877,14 +871,13 @@ def create_app(
 
         if request.run_on is None:
             raise ValueError("An Auto-research turn has no pinned execution machine.")
-        execution_machine = service.manifest.machine_map.get(request.run_on)
-        if execution_machine is None:
+        if request.run_on not in service.manifest.machines:
             raise ValueError(f"unknown execution machine: {request.run_on}")
         # Resolved once for this launch, from the group its prompt shows.
         read_scope = resolve_read_scope(
             service._project_id,
             service.manifest.repositories,
-            build_group_context(service, execution.store, execution_machine.alias),
+            build_group_context(service, execution.store, request.run_on),
         )
 
         def validate_auto_research_patch(context, arguments) -> AutoResearchCommandEffectResult:
@@ -962,7 +955,7 @@ def create_app(
                 )
             ),
             graph_state=service.history.state,
-            execution_host=execution_machine.host,
+            machine_id=request.run_on,
             apply_patch=apply_auto_research_patch,
             merge=merge_owned_branch,
             on_graph_applied=lambda: evaluate_graph_wake_boundary(
@@ -1047,7 +1040,7 @@ def create_app(
         execution.git_access = provider_git_access(
             service.manifest,
             project_id=project_id,
-            run_on=profile.run_on,
+            run_on=service.manifest.base_machine,
             member=task.authorized_by,
             store=store,
             data_dir=app_data,
@@ -1453,7 +1446,9 @@ def create_app(
             background_tasks,
             group,
         ),
-        preflight_episode_wake=preflight_episode_wake,
+        preflight_episode_wake=lambda runtime, episode, group: preflight_episode_wake(
+            runtime, episode, group, store=store
+        ),
         admit_experiment_watcher_invocation=admit_experiment_watcher_invocation,
         experiment_watcher_request=experiment_watcher_delivery_request,
         start_watcher_notification=lambda *args, **kwargs: start_watcher_notification(
@@ -1641,12 +1636,12 @@ def create_app(
         reconcile_thread_handoffs()
         return released
 
-    def resume_setting(member_id: str, provider: str, host: str) -> dict[str, int]:
+    def resume_setting(member_id: str, provider: str, machine_id: str) -> dict[str, int]:
         released = provider_login_changed(
             background_tasks,
             member_id=member_id,
             provider=provider,
-            host=host,
+            machine_id=machine_id,
             reconcile_episodes=reconcile_episodes,
             watcher_delivery=watcher_delivery,
         )
@@ -1765,7 +1760,7 @@ def create_app(
             and store.is_project_member(project_id, member_id)
         )
 
-    terminals = TerminalManager(app_data, membership_check=terminal_member_active)
+    terminals = TerminalManager(app_data, membership_check=terminal_member_active, store=store)
     notification_sender = NotificationSender(
         store,
         catalog,
@@ -1819,13 +1814,13 @@ def create_app(
             targets = await asyncio.to_thread(catalog.provider_targets)
 
             def mark_refreshing() -> None:
-                for provider, host, binary in targets:
-                    provider_skills.mark_refreshing(provider, host, binary)
+                for provider, machine_id, binary in targets:
+                    provider_skills.mark_refreshing(provider, machine_id, binary)
 
-            def probe(provider: str, host: str, binary: str | None) -> None:
+            def probe(provider: str, machine_id: str, binary: str | None) -> None:
                 try:
                     readiness = launcher.readiness(
-                        LoginKey(provider, host, MACHINE_LOGIN_ID), binary=binary
+                        LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=binary
                     )
                 except Exception as exc:
                     # An unexpected readiness exception still has to finish
@@ -1837,12 +1832,16 @@ def create_app(
                         installed=False,
                         authenticated=False,
                         binary_path=binary,
-                        path_state="unreachable" if host else "missing",
+                        path_state=(
+                            "missing" if machine_id == BACKEND_MACHINE_ID else "unreachable"
+                        ),
                         reason=str(exc),
                     )
-                    provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
+                    provider_skills.refresh(
+                        provider, machine_id, binary, readiness, reuse_cached=True
+                    )
                     raise
-                provider_skills.refresh(provider, host, binary, readiness, reuse_cached=True)
+                provider_skills.refresh(provider, machine_id, binary, readiness, reuse_cached=True)
 
             # Mark the whole startup inventory before beginning any provider
             # process so the UI never mistakes a prior process's cache for a
@@ -1852,8 +1851,8 @@ def create_app(
 
             results = await asyncio.gather(
                 *(
-                    asyncio.to_thread(probe, provider, host, binary)
-                    for provider, host, binary in targets
+                    asyncio.to_thread(probe, provider, machine_id, binary)
+                    for provider, machine_id, binary in targets
                 ),
                 return_exceptions=True,
             )
@@ -1878,7 +1877,7 @@ def create_app(
         try:
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,
-                protected_roots=_protected_run_stage_roots(store, default_state_host),
+                protected_roots=_protected_run_stage_roots(store, default_state_machine_id),
             )
         except Exception as exc:
             # Stale scratch cleanup is best-effort and must not delay app
@@ -2051,16 +2050,17 @@ def create_app(
         # Prepare every recorded home before recovery selects a usable credential.
         with store.connection() as connection:
             rows = connection.execute(
-                "SELECT host, login_id FROM provider_login_states "
-                "WHERE provider='codex' AND login_id != '' ORDER BY host, login_id"
+                "SELECT machine_id, login_id FROM provider_login_states "
+                "WHERE provider='codex' AND login_id != '' ORDER BY machine_id, login_id"
             ).fetchall()
         for row in rows:
-            login = LoginKey("codex", row["host"], row["login_id"])
-            if not login.host and not any(
+            login = LoginKey("codex", row["machine_id"], row["login_id"])
+            if login.machine_id == BACKEND_MACHINE_ID and not any(
                 path.is_dir()
                 for path in (
                     provider_credentials.login_home("codex", login.login_id),
-                    provider_credentials.account_dir("codex", "", login.login_id) / "codex-home",
+                    provider_credentials.account_dir("codex", login.machine_id, login.login_id)
+                    / "codex-home",
                 )
             ):
                 continue
@@ -2104,13 +2104,15 @@ def create_app(
                 await paper_live.start()
                 register_paper_live(store, paper_live)
                 sync_coordinator.start()
-                # Cards hold provider executables and compute settings; an older
-                # manifest's copy must reach them before recovery relaunches work.
-                await asyncio.to_thread(fill_space_machines, store)
+                # Records must name cards by id before recovery reads them.
+                await asyncio.to_thread(fill_space_machines, store, app_data)
+                await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
                 await asyncio.to_thread(reconcile_thread_handoffs)
                 for project in store.projects():
+                    if project.machine_ids_pending:
+                        continue
                     if store.pending_merge_effect_tasks(
                         project.project_id
                     ) or store.legacy_merge_effect_tasks(project.project_id):
@@ -2248,11 +2250,13 @@ def create_app(
                 from rcp.runs.provider_login import resume_provider_account
 
                 # `provider_logins` also yields an implicit machine login with no row.
-                pairs = {(state.provider, state.host) for state in store.provider_login_states()}
+                pairs = {
+                    (state.provider, state.machine_id) for state in store.provider_login_states()
+                }
                 logins = [
-                    LoginKey(provider, host, row.login_id)
-                    for provider, host in sorted(pairs)
-                    for row in store.provider_logins(provider, host)
+                    LoginKey(provider, machine_id, row.login_id)
+                    for provider, machine_id in sorted(pairs)
+                    for row in store.provider_logins(provider, machine_id)
                 ]
                 for login in logins:
                     try:
@@ -2270,7 +2274,7 @@ def create_app(
                         )
                 if member_removal_coordinator is not None:
                     await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
-                protected_roots = _protected_run_stage_roots(store, "")
+                protected_roots = _protected_run_stage_roots(store, BACKEND_MACHINE_ID)
                 if protected_roots is not None:
                     _sweep_stale_stages(
                         app_data / "run-stage",
@@ -2350,6 +2354,8 @@ def create_app(
                 raise
         try:
             if fenced_startup:
+                await asyncio.to_thread(fill_space_machines, store, app_data, rewrite_remote=False)
+                await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 app.state.startup_recovery_plan = background_tasks.plan_startup_recovery().as_dict()
                 if control_server is not None:
                     control_server.start()

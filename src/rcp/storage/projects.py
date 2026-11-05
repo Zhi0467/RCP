@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from rcp.compute_jobs.models import ComputeJobRecord
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkill
 from rcp.storage.compute_jobs import _compute_job_record
 from rcp.storage.digest import rewrite_digest_project_links
@@ -55,22 +56,22 @@ class ProjectStoreMixin(StoreMixinBase):
     def provider_skill_inventory(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
     ) -> ProviderSkillInventoryRecord | None:
         with self.connection() as connection:
             row = connection.execute(
                 """
                 SELECT * FROM provider_skill_inventories
-                WHERE provider = ? AND host = ? AND configured_binary = ?
+                WHERE provider = ? AND machine_id = ? AND configured_binary = ?
                 """,
-                (provider, host, configured_binary or ""),
+                (provider, machine_id, configured_binary or ""),
             ).fetchone()
         if row is None:
             return None
         return ProviderSkillInventoryRecord(
             provider=row["provider"],
-            host=row["host"],
+            machine_id=row["machine_id"],
             configured_binary=row["configured_binary"],
             resolved_binary=row["resolved_binary"],
             provider_version=row["provider_version"],
@@ -87,7 +88,7 @@ class ProjectStoreMixin(StoreMixinBase):
     def mark_provider_skill_inventory_refreshing(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
         *,
         updated_at: str,
@@ -96,18 +97,18 @@ class ProjectStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 INSERT INTO provider_skill_inventories (
-                    provider, host, configured_binary, status, updated_at
+                    provider, machine_id, configured_binary, status, updated_at
                 ) VALUES (?, ?, ?, 'refreshing', ?)
-                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                ON CONFLICT(provider, machine_id, configured_binary) DO UPDATE SET
                     status = 'refreshing', diagnostic = NULL, updated_at = excluded.updated_at
                 """,
-                (provider, host, configured_binary or "", updated_at),
+                (provider, machine_id, configured_binary or "", updated_at),
             )
 
     def save_provider_skill_inventory_success(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
         *,
         resolved_binary: str,
@@ -123,11 +124,11 @@ class ProjectStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 INSERT INTO provider_skill_inventories (
-                    provider, host, configured_binary, resolved_binary,
+                    provider, machine_id, configured_binary, resolved_binary,
                     provider_version, command_json, protocol, skills_json,
                     inventory_hash, status, diagnostic, refreshed_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', NULL, ?, ?)
-                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                ON CONFLICT(provider, machine_id, configured_binary) DO UPDATE SET
                     resolved_binary = excluded.resolved_binary,
                     provider_version = excluded.provider_version,
                     command_json = excluded.command_json,
@@ -141,7 +142,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 """,
                 (
                     provider,
-                    host,
+                    machine_id,
                     configured_binary or "",
                     resolved_binary,
                     provider_version,
@@ -157,7 +158,7 @@ class ProjectStoreMixin(StoreMixinBase):
     def save_provider_skill_inventory_failure(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
         *,
         diagnostic: str,
@@ -167,9 +168,9 @@ class ProjectStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 INSERT INTO provider_skill_inventories (
-                    provider, host, configured_binary, status, diagnostic, updated_at
+                    provider, machine_id, configured_binary, status, diagnostic, updated_at
                 ) VALUES (?, ?, ?, 'unavailable', ?, ?)
-                ON CONFLICT(provider, host, configured_binary) DO UPDATE SET
+                ON CONFLICT(provider, machine_id, configured_binary) DO UPDATE SET
                     status = CASE
                         WHEN provider_skill_inventories.refreshed_at IS NULL
                         THEN 'unavailable'
@@ -178,7 +179,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     diagnostic = excluded.diagnostic,
                     updated_at = excluded.updated_at
                 """,
-                (provider, host, configured_binary or "", diagnostic, updated_at),
+                (provider, machine_id, configured_binary or "", diagnostic, updated_at),
             )
 
     def project_by_locator(self, locator: str) -> ProjectRecord | None:
@@ -439,17 +440,22 @@ class ProjectStoreMixin(StoreMixinBase):
             self._require_project_deletion_safe(connection, project_id, work_stopped=work_stopped)
             rows = connection.execute(
                 """
-                SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root
+                SELECT DISTINCT COALESCE(space_machines.host, '') AS host,
+                    graph_runs.stage_root AS root
                 FROM graph_runs
-                WHERE project_id = ? AND stage_root IS NOT NULL
+                LEFT JOIN space_machines
+                    ON space_machines.machine_id = graph_runs.stage_machine_id
+                WHERE graph_runs.project_id = ? AND graph_runs.stage_root IS NOT NULL
+                    AND (
+                        COALESCE(graph_runs.stage_machine_id, ?) = ?
+                        OR space_machines.machine_id IS NOT NULL
+                    )
                 """,
-                (project_id,),
+                (project_id, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
             ).fetchall()
         return [ProjectStageRecord.model_validate(dict(row)) for row in rows]
 
-    def delete_project_records(
-        self, project_id: str, *, memory_host_key: str | None = None
-    ) -> dict[str, int]:
+    def delete_project_records(self, project_id: str) -> dict[str, int]:
         """Atomically delete every database row owned by one registration.
 
         The active-task check is repeated under a write lock so a task cannot be
@@ -485,12 +491,13 @@ class ProjectStoreMixin(StoreMixinBase):
                         update={"project_id": memory_id}
                     )
                     connection.execute(
-                        "INSERT OR IGNORE INTO memory_deletions VALUES (?, ?, ?, ?)",
+                        "INSERT OR IGNORE INTO memory_deletions VALUES (?, ?, ?, ?, ?)",
                         (
                             memory_id,
-                            record.state_location,
+                            record.state_machine_id,
+                            record.state_path,
                             record.model_dump_json(),
-                            memory_host_key,
+                            record.state_machine_id,
                         ),
                     )
                     if memory_id != project_id:
@@ -915,23 +922,23 @@ class ProjectStoreMixin(StoreMixinBase):
             connection.execute(
                 """
                 INSERT INTO projects (
-                    project_id, home_space_id, locator, name, state_location, state_remote, added_at,
-                    last_opened_at, revision, primary_question, attention_count,
+                    project_id, home_space_id, locator, name, state_machine_id, state_path,
+                    added_at, last_opened_at, revision, primary_question, attention_count,
                     last_refresh_at, reachable, error
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(project_id) DO UPDATE SET
                     locator = excluded.locator,
                     name = excluded.name,
-                    state_location = excluded.state_location,
-                    state_remote = excluded.state_remote
+                    state_machine_id = excluded.state_machine_id,
+                    state_path = excluded.state_path
                 """,
                 (
                     record.project_id,
                     record.home_space_id,
                     record.locator,
                     record.name,
-                    record.state_location,
-                    int(record.state_remote),
+                    record.state_machine_id,
+                    record.state_path,
                     record.added_at,
                     record.last_opened_at,
                     record.revision,
@@ -953,8 +960,8 @@ class ProjectStoreMixin(StoreMixinBase):
         home_space_id: str,
         name: str,
         locator: str,
-        state_location: str,
-        state_remote: bool,
+        state_machine_id: str,
+        state_path: str,
     ) -> ProjectRecord:
         """Move one stopped restored catalog row to its replacement checkout."""
 
@@ -975,14 +982,14 @@ class ProjectStoreMixin(StoreMixinBase):
                 connection.execute(
                     """
                     UPDATE projects
-                    SET locator = ?, state_location = ?, state_remote = ?,
+                    SET locator = ?, state_machine_id = ?, state_path = ?,
                         reachable = 0, error = ?
                     WHERE project_id = ?
                     """,
                     (
                         locator,
-                        state_location,
-                        int(state_remote),
+                        state_machine_id,
+                        state_path,
                         "Replacement restore publication is pending.",
                         project_id,
                     ),

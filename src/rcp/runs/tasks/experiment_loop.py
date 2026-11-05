@@ -68,6 +68,7 @@ from rcp.limits import (
     ask_hold_seconds,
 )
 from rcp.loop_status import LoopOverlap, other_branch_loops
+from rcp.machine_cards import card
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -211,7 +212,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.storage import EpisodeRecord
+from rcp.storage import ExperimentEpisodeRecord
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -284,7 +285,7 @@ def _load_experiment_loop_episode_context(
 class _WorkPromptContext:
     episode_context_baseline: dict[str, object] | None
     experiment_control_snapshot: dict[str, object] | None
-    wake_episode: EpisodeRecord | None
+    wake_episode: ExperimentEpisodeRecord | None
     loop_control_path: str | None
     watcher_state_path: str | None
     provider_switch_recovery: bool
@@ -482,7 +483,7 @@ async def _prepare_work_prompt_context(
     episode_context_baseline = prepare_experiment_episode_context_candidate(
         turn.execution, current_context
     )
-    wake_episode: EpisodeRecord | None = None
+    wake_episode: ExperimentEpisodeRecord | None = None
     if turn.waking:
         if not turn.request.control_episode_id or turn.request.control_invocation is None:
             raise ValueError("Experiment-loop wake is missing its episode invocation.")
@@ -491,7 +492,7 @@ async def _prepare_work_prompt_context(
             raise ValueError("Experiment-loop wake has no committed episode session to continue.")
         if (
             wake_episode.native_session_id != turn.request.session_id
-            or wake_episode.stage_host != turn.execution.stage_host
+            or wake_episode.stage_machine_id != turn.execution.stage_machine_id
             or wake_episode.stage_root != turn.execution.stage_root
         ):
             raise ValueError(
@@ -676,7 +677,7 @@ def _experiment_master(
             execution,
             episode_id=episode_id,
             session_id=session_id,
-            stage_identity=(record.stage_host or "", record.stage_root),
+            stage_identity=(record.stage_machine_id or "", record.stage_root),
             key=key,
         )
         if started is not None:
@@ -733,8 +734,11 @@ def _experiment_lineage_master(
     while episode_id is not None and episode_id not in visited:
         visited.add(episode_id)
         for task in reversed(execution.store.episode_tasks(episode_id)):
-            if task.native_session_id != session_id or (task.stage_host or "", task.stage_root) != (
-                current.stage_host or "",
+            if task.native_session_id != session_id or (
+                task.stage_machine_id or "",
+                task.stage_root,
+            ) != (
+                current.stage_machine_id or "",
                 current.stage_root,
             ):
                 continue
@@ -798,7 +802,8 @@ def _session_start_contract(
         task
         for lineage_id in episode_ids
         for task in reversed(execution.store.episode_tasks(lineage_id))
-        if task.status == "succeeded" and (task.stage_host or "", task.stage_root) == stage_identity
+        if task.status == "succeeded"
+        and (task.stage_machine_id or "", task.stage_root) == stage_identity
     ]
     for candidate_session_id in (session_id, None):
         for task in tasks:
@@ -1434,7 +1439,7 @@ async def _validate_watch_deliverable(
             node_id=turn.request.node_id,
             episode_id=turn.request.control_episode_id,
             graph_target=origin_task.graph_target,
-            execution_host=turn.execution_host,
+            machine_id=turn.write_scope.machine_id,
             continuation=_watcher_continuation(turn),
         )
         if handoff.stops:
@@ -2124,7 +2129,7 @@ async def _apply_experiment_loop_turn(
             node_id=turn.request.node_id,
             episode_id=turn.request.control_episode_id,
             graph_target=origin_task.graph_target,
-            execution_host=turn.execution_host,
+            machine_id=turn.write_scope.machine_id,
             continuation=_watcher_continuation(turn),
         )
 
@@ -2221,8 +2226,7 @@ async def _apply_experiment_loop_turn(
             prepared,
             binding,
             native_session_id=applied.native_session_id,
-            execution_host=turn.execution_host,
-            stage_host=execution.stage_host,
+            stage_machine_id=execution.stage_machine_id,
             stage_root=execution.stage_root,
             graph_result=experiment_graph_result_summary(applied.graph_update),
             context_baseline=episode_context_baseline,
@@ -2378,7 +2382,7 @@ async def _launch_and_stream_work_turn(
     launcher: AgentLauncher,
     prompt: str,
     contract_path: str,
-    wake_episode: EpisodeRecord | None,
+    wake_episode: ExperimentEpisodeRecord | None,
     required_session_id: str | None = None,
     *,
     browser_grant: BrowserGrant | None = None,
@@ -2616,7 +2620,6 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
             remote_stage=turn.remote_stage,
             execution=turn.execution,
             capability="work_auto",
-            execution_host=turn.execution_host,
             data_dir=data_dir,
             local_stage=turn.local_stage,
         )
@@ -2625,6 +2628,7 @@ async def _stream_experiment_loop_task_with_browser_lifetime(
                 turn.request,
                 workspace=turn.workspace,
                 execution_host=turn.execution_host,
+                machine_id=service.manifest.base_machine,
                 execution=turn.execution,
                 remote_stage=turn.remote_stage,
                 capability="work_auto",
@@ -2820,26 +2824,26 @@ async def _stream_work_graph_repair(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = _pinned_to_profile(request, profile)
-        execution_machine = service.manifest.machine_map[profile.run_on]
-        execution_host = execution_machine.host
-        provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
+        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
+        machine = card(execution.store, service.manifest.base_machine)
+        execution_host = machine.host
+        provider_binary = service.launcher.provider_binary(profile.provider, machine.machine_id)
         context = service.assemble_chat(request)
-        context.group_context = build_group_context(
-            service, execution.store, execution_machine.alias
-        )
+        context.group_context = build_group_context(service, execution.store, machine.machine_id)
         stage_name = _chat_stage_name(service, request, execution)
         local_stage: Path | None = None
         remote_stage: RemoteRunStage | None = None
         if execution_host:
-            stage_root = _validated_remote_chat_resume_stage(execution, execution_host, stage_name)
+            stage_root = _validated_remote_chat_resume_stage(
+                execution, machine.machine_id, stage_name
+            )
             remote_stage = RemoteRunStage(execution_host).attach(stage_root)
             context = context.model_copy(
                 update=_stage_context_paths(
                     context,
                     service,
                     remote_stage,
-                    execution_machine.alias,
+                    machine.machine_id,
                 )
             )
             workspace = Path(str(remote_stage.workspace))
@@ -2856,7 +2860,7 @@ async def _stream_work_graph_repair(
         )
         token = _task_token(execution)
         shell_timeout = execution.store.provider_shell_timeout_seconds(
-            profile.provider, execution_host
+            profile.provider, machine.machine_id
         )
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -2892,7 +2896,7 @@ async def _stream_work_graph_repair(
         write_scope = _project_write_scope(
             context,
             service,
-            execution_machine.alias,
+            machine,
             local_stage=local_stage,
             workspace=workspace,
             remote_stage=remote_stage,
@@ -2906,7 +2910,7 @@ async def _stream_work_graph_repair(
             local_stage,
             remote_stage,
             service,
-            execution_machine.alias,
+            machine.machine_id,
         )
         if context.group_context is not None:
             read_dirs.extend(context.group_context.read_dirs())
@@ -2914,7 +2918,7 @@ async def _stream_work_graph_repair(
         assert validator_lifecycle is not None
         outcome = _ProviderOutcome(session_id=request.session_id)
         turn = WorkTurn(
-            compute_profiles=service.machine_prompt_profiles(execution_machine.alias),
+            compute_profiles=service.machine_prompt_profiles(machine.machine_id),
             graph_read_scope=graph_read_scope,
             data_dir=data_dir,
             service=service,
@@ -3104,8 +3108,7 @@ async def _stream_work_graph_repair(
             execution,
             request,
             native_session_id=outcome.session_id,
-            execution_host=execution_host,
-            stage_host=episode.stage_host,
+            stage_machine_id=episode.stage_machine_id,
             stage_root=episode.stage_root,
             graph_result=experiment_graph_result_summary(graph_update),
             watcher_ids=episode.last_watcher_ids,

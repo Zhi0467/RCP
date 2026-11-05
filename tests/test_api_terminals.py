@@ -16,12 +16,12 @@ from starlette.websockets import WebSocketDisconnect
 from rcp.api.app import create_app
 from rcp.api.dependencies import get_project_service
 from rcp.config import (
-    MachineConfig,
     RepositoryConfig,
     load_manifest,
     write_added_machine,
     write_project_scope,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
@@ -696,8 +696,11 @@ def test_projection_reports_machine_capability_independent_of_space(
         client = signed_in_client(app)
         project_id = app.state.default_project_id
     current = app.state.catalog.open(project_id).manifest
-    current.machines.append(MachineConfig(alias="ssh", host="worker.invalid"))
-    current.repositories.append(RepositoryConfig(alias="ssh-repo", machine="ssh", path="/repo"))
+    ssh = app.state.catalog.store.create_space_machine(
+        name="ssh", host="worker.invalid", os_account=""
+    ).machine_id
+    current.machines.append(ssh)
+    current.repositories.append(RepositoryConfig(alias="ssh-repo", machine=ssh, path="/repo"))
     repositories = client.get(f"/api/projects/{project_id}/terminals/repositories").json()
     local = repositories[0]
     assert local["eligible"] is True
@@ -729,7 +732,7 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
     access = provider_git_access(
         app.state.catalog.open(project_id).manifest,
         project_id=project_id,
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         member=_store.completed_project_provisioning_requests(project_id)[0].authorized_by,
         store=_store,
         data_dir=tmp_path,
@@ -780,13 +783,19 @@ def _register_remote(app, project_id, *, repositories=1):
     reload it at any time.
     """
     service = app.state.catalog.open(project_id)
-    machine = MachineConfig(alias="remote", host="compute.example")
-    manifest = write_added_machine(service.manifest, machine)
+    machine = app.state.services.store.create_space_machine(
+        name="remote", host="compute.example", os_account=""
+    )
+    manifest = write_added_machine(service.manifest, machine.machine_id)
     for index in range(repositories):
         manifest = write_project_scope(
             manifest,
             manifest.project.truth_scope,
-            {"alias": f"remote-{index}", "machine": machine.alias, "path": f"/srv/repo-{index}"},
+            {
+                "alias": f"remote-{index}",
+                "machine": machine.machine_id,
+                "path": f"/srv/repo-{index}",
+            },
         )
     service.history.manifest = manifest
     from .test_project_membership import _record_repository_provenance
@@ -992,7 +1001,13 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
     class _Receipt:
         payload = {"canonical_repository_roots": ["/canonical/elsewhere/code"]}
 
+    class _Machine:
+        host = "example.invalid"
+
     class _Store:
+        def space_machine(self, machine_id):
+            return _Machine()
+
         def all_project_agent_tasks(self, project_id):
             return [_Task()]
 
@@ -1005,12 +1020,8 @@ def test_remote_symlinked_repository_keeps_its_work_collision_warning(monkeypatc
     class _Repo:
         alias, machine, path = "code", "remote-1", "/symlinked/code"
 
-    class _Machine:
-        host = "example.invalid"
-
     class _Manifest:
         repositories = [_Repo()]
-        machine_map = {"remote-1": _Machine()}
 
     work = terminal_projection.running_repository_work(_Store(), "p1", _Manifest(), "owner")
     assert [entry["operation_id"] for entry in work["code"]] == ["op-1"]

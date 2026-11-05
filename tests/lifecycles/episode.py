@@ -21,8 +21,10 @@ Actions and the product calls they make:
 
 - ``stop`` (member): ``stop_bound_experiment_episode``, the Stop route's body.
 - ``settle <turn> succeeded|failed|exit``: the worker's verdict
-  (``commit_experiment_episode_turn``, with an ending signal for ``exit``, then
-  ``complete_agent_task``; or ``fail_agent_task``), then its ``finally`` block:
+  (``commit_experiment_episode_handoff``, the Work finalizer's watcher handoff
+  with its session-replacement refusals, arming no new observer and carrying an
+  ending signal for ``exit``, then ``complete_agent_task``; or
+  ``fail_agent_task``), then its ``finally`` block:
   ``settle_ready_experiment_loop_stops`` and ``_task_settled``, which runs the
   app's ``after_task_settled`` and so reconciles the episode. The verdict and
   the ``finally`` block are one action: splitting them doubles the space past
@@ -38,7 +40,7 @@ Actions and the product calls they make:
 - ``restart``: ``recover_at_startup``, ``accept_watcher_notifications``, then
   ``reconcile_experiment_episode`` for each Experiment-loop episode, as the app's
   startup sequence runs them.
-- ``outage``: seeds the live leaf's ``stage_host``, turns the outage flag on and
+- ``outage``: seeds the live leaf's ``stage_machine_id``, turns the outage flag on and
   restarts; ``outage_ends`` turns it off.
 
 To fit the budget, checks and polls are offered only while the episode runs
@@ -69,13 +71,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Event
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 from unittest import mock
 
 from rcp.agents import AgentEvent
 from rcp.core.models import Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+from rcp.machine_upgrade import migrate_machine_identity
 from rcp.runs.shared import _sse
 from rcp.server_ops.application_validation import _rebind_local_stage_paths
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -171,7 +174,7 @@ class Loop:
             provider="codex",
             model="gpt-5",
             reasoning="medium",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_id=self.chat_id,
             chat_scope="node",
@@ -218,6 +221,7 @@ class Loop:
                 request,
                 operation_id=operation_id,
                 native_session_id="native-session-abc",
+                stage_machine_id="backend",
                 stage_root=str(stage),
                 **fields,
             ),
@@ -351,10 +355,9 @@ class Loop:
             project_id=self.project_id,
             control_node_id=EXPERIMENT_ID,
             provider=provider,
-            execution_machine="laptop",
-            execution_host="",
+            machine_id="backend",
             native_session_id=native_session_id,
-            stage_host=None,
+            stage_machine_id="backend",
             stage_root=str(stage_root),
             chat_id=self.chat_id,
             operation_id=operation_id,
@@ -369,7 +372,7 @@ class Loop:
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": "backend",
             "run_truth_scope": ["repo-a"],
             "patch_kind": "experiment_loop",
             "control_node_id": EXPERIMENT_ID,
@@ -428,10 +431,9 @@ class Loop:
                 concluding_operation_id="loop-root",
                 allocation_operation_id=allocation_operation_id,
                 provider="codex",
-                run_on="laptop",
-                execution_host="",
+                machine_id="backend",
                 native_session_id="native-session",
-                stage_host=None,
+                stage_machine_id="backend",
                 stage_root="/tmp/episode-stage",
                 skill_id="episode-report",
                 skill_version="1",
@@ -450,12 +452,13 @@ class Loop:
                 episode_id=self.episode_id,
                 kind="episode_report",
                 status="queued",
-                request={"provider": "codex", "run_on": "laptop", "execution_host": ""},
+                request={"provider": "codex", "run_on": "backend"},
                 created_at=now,
                 updated_at=now,
                 status_message="Wrapping up visualization and report",
                 parent_operation_id="loop-root",
                 native_session_id="native-session",
+                stage_machine_id="backend",
                 stage_root="/tmp/episode-stage",
                 visible=False,
             ),
@@ -483,7 +486,7 @@ class Loop:
         *,
         continuation: WatcherContinuation | None = None,
         origin_operation_id: str = "loop-root",
-        execution_host: str = "",
+        machine_id: str = "backend",
         group_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
         chat_id: str | None = None,
@@ -496,7 +499,7 @@ class Loop:
             origin_task_kind="node_chat",
             chat_id=chat_id or self.chat_id,
             node_id=EXPERIMENT_ID,
-            execution_host=execution_host,
+            machine_id=machine_id,
             group_id=group_id,
             group_label=None if group_id is None else f"Array {group_id}",
             graph_target=graph_target or GraphTargetRef(),
@@ -522,7 +525,7 @@ class Loop:
         status: str = "active",
         continuation: WatcherContinuation | None = None,
         origin_operation_id: str = "loop-root",
-        execution_host: str = "",
+        machine_id: str = "backend",
         graph_target: GraphTargetRef | None = None,
         chat_id: str | None = None,
     ) -> WatcherRecord:
@@ -532,7 +535,7 @@ class Loop:
                     watcher_id,
                     continuation=continuation,
                     origin_operation_id=origin_operation_id,
-                    execution_host=execution_host,
+                    machine_id=machine_id,
                     graph_target=graph_target,
                     chat_id=chat_id,
                 )
@@ -616,6 +619,7 @@ _MIGRATIONS = (
     _migrate_campaign_wrapup,
     _migrate_experiment_episodes,
     _remove_impossible_legacy_experiment_wrapup,
+    migrate_machine_identity,
 )
 _AUTO_RESEARCH = (
     AutoResearchStoreMixin._insert_paid_auto_research_task,
@@ -882,7 +886,10 @@ class Episode:
         stage = root / "stage"
         loop.bind_session(stage)
         loop.store.checkpoint_agent_task(
-            _ROOT, native_session_id="native-session-abc", stage_root=str(stage)
+            _ROOT,
+            native_session_id="native-session-abc",
+            stage_machine_id="backend",
+            stage_root=str(stage),
         )
         loop.record_context_candidate(_ROOT)
         loop.store.record_agent_task_contract(
@@ -1008,7 +1015,7 @@ class Episode:
             )
             with world.store.connection() as connection:
                 connection.execute(
-                    "UPDATE graph_runs SET stage_host = ? WHERE operation_id = ?",
+                    "UPDATE graph_runs SET stage_machine_id = ? WHERE operation_id = ?",
                     (_STAGE_HOST, leaf),
                 )
             world.outage = self.outage = True
@@ -1120,7 +1127,6 @@ def _settle(world: World, operation_id: str, outcome: str) -> None:
     if outcome == "failed":
         store.fail_agent_task(operation_id, "provider error")
     else:
-        request = task.request
         episode_id = world.names.episode_id
         ending = (
             {
@@ -1132,28 +1138,65 @@ def _settle(world: World, operation_id: str, outcome: str) -> None:
             if outcome == "exit"
             else None
         )
-        state = store.experiment_episode(episode_id)
-        assert state is not None
-        store.commit_experiment_episode_turn(
-            episode_id=episode_id,
-            project_id=world.names.project_id,
-            control_node_id=EXPERIMENT_ID,
-            provider=str(request["provider"]),
-            execution_machine=state.execution_machine or "laptop",
-            execution_host=state.execution_host or "",
-            native_session_id=state.native_session_id or "native-session-abc",
-            stage_host=state.stage_host,
-            stage_root=state.stage_root or "",
-            chat_id=str(request["chat_id"]),
-            operation_id=operation_id,
-            invocation=int(request["control_invocation"]),
-            graph_result="applied",
-            watcher_ids=[],
-            context_baseline={},
-            ending_signal=ending,
-        )
+        _hand_off(world, task, ending)
         store.complete_agent_task(operation_id, applied_revision=None, result={})
     _finish(world, operation_id)
+
+
+def _hand_off(world: World, task: AgentTaskRecord, ending: dict | None) -> None:
+    """The turn's watcher handoff as the Work finalizer commits it, arming no new observer."""
+
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.experiment_loop import (
+        commit_experiment_episode_handoff,
+        root_experiment_loop_operation_id,
+    )
+    from rcp.watchers import WatcherBinding
+
+    store = world.store
+    request = world.background._request_from_record(task)
+    assert isinstance(request, RunRequest) and request.run_on is not None
+    execution = AgentTaskExecution(
+        operation_id=task.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        runtime_id=task.runtime_id,
+        stage_machine_id=task.stage_machine_id,
+        stage_root=task.stage_root,
+        continuation=cast(Any, store.agent_task_continuation_cause(task.operation_id)),
+    )
+    values = request.model_dump(mode="json")
+    binding = WatcherBinding(
+        project_id=task.project_id,
+        origin_operation_id=root_experiment_loop_operation_id(execution),
+        origin_task_kind="node_chat",
+        chat_id=request.chat_id or "",
+        node_id=request.node_id,
+        episode_id=request.control_episode_id,
+        graph_target=task.graph_target,
+        machine_id=request.run_on,
+        continuation=WatcherContinuation.model_validate(
+            {
+                name: values[name]
+                for name in WatcherContinuation.model_fields
+                if values.get(name) is not None
+            }
+        ),
+    )
+    commit_experiment_episode_handoff(
+        execution,
+        request,
+        [],
+        binding,
+        native_session_id=task.native_session_id,
+        stage_machine_id=execution.stage_machine_id,
+        stage_root=execution.stage_root,
+        graph_result="applied",
+        context_baseline={},
+        stops=[],
+        ending_signal=ending,
+    )
 
 
 def _finish(world: World, operation_id: str) -> None:

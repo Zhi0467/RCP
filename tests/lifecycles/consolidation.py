@@ -17,7 +17,9 @@ The poller polls every minute, so every action is followed by one
 transient error, leaving the claimed task queued. ``night`` moves the clock to
 the next 02:00 and is offered only when nothing is due, since a due target is
 claimed by the very next poll. The turn's actions are ``settle`` (success
-captures the report and completes; fail; pause), and ``commit``, one keyed
+writes the report into the turn's stage, captures it through
+``_discover_chat_artifacts`` as the Work finalizer does, and completes; fail;
+pause), and ``commit``, one keyed
 Apply through ``consolidation_apply_handler``, which writes graph history.
 Members Keep or Dismiss a settled row and send a turn into the consolidation
 chat (``send``, offered while a target is due). A restart runs the startup
@@ -519,26 +521,10 @@ def _days(day: str | None, today) -> int | None:
 
 
 def _settle(world: World, operation_id: str, outcome: str) -> None:
-    from rcp.storage.artifact_models import Artifact
-
     store = world.store
     if outcome == "success":
         if store.consolidation_run_for_operation(operation_id) is not None:
-            now = store.now()
-            store.create_artifact(
-                Artifact(
-                    artifact_id=f"report-{operation_id}",
-                    project_id=world.project_id,
-                    supplier="turn",
-                    supplier_id=operation_id,
-                    origin_operation_id=operation_id,
-                    source_name="consolidation-report.html",
-                    media_type="text/html",
-                    created_at=now,
-                    expires_at=now,
-                ),
-                data=_REPORT,
-            )
+            _capture_report(world, operation_id)
         store.complete_agent_task(
             operation_id, applied_revision=None, result={"graph_update": {"status": "none"}}
         )
@@ -547,6 +533,26 @@ def _settle(world: World, operation_id: str, outcome: str) -> None:
     else:
         store.checkpoint_agent_task(operation_id, native_session_id=f"session-{operation_id}")
         store.pause_agent_task(operation_id)
+
+
+def _capture_report(world: World, operation_id: str) -> None:
+    """The turn writes its report into its stage, and the Work finalizer's discovery captures it."""
+
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.chat import _discover_chat_artifacts, _prepare_local_artifact_directory
+
+    store = world.store
+    stage = store.path.parent.parent / "stage"
+    stage.mkdir(exist_ok=True)
+    directory = _prepare_local_artifact_directory(stage, operation_id, reuse=False)
+    (directory / "consolidation-report.html").write_bytes(_REPORT)
+    execution = AgentTaskExecution(
+        operation_id=operation_id, store=store, control=AgentProcessControl()
+    )
+    _discover_chat_artifacts(
+        execution, operation_id, directory, None, service=world.runtime.service
+    )
 
 
 def _commit(world: World, operation_id: str) -> None:

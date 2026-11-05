@@ -33,6 +33,7 @@ from rcp.browser import readiness as browser_readiness
 from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.history.branches import BranchHistoryManager
+from rcp.machine_cards import card
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.repository_preview import (
     REPOSITORY_PREVIEW_CSP,
@@ -363,7 +364,7 @@ def preview_repository_file(
     # HEAD is a client's availability preflight, so it validates the same window
     # GET would render. A cheaper probe would report a preview that then fails.
     try:
-        source = load_repository_source_for_path(manifest, path, line=line)
+        source = load_repository_source_for_path(manifest, path, store=store, line=line)
         document = repository_source_document(source, line=line)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -471,7 +472,6 @@ class AddProjectMachineRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     machine_id: str = Field(min_length=1, max_length=64)
-    alias: str = Field(min_length=1, max_length=48)
 
 
 @router.post(
@@ -485,12 +485,12 @@ def add_project_machine(
     store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    """Append a space machine card to this project's manifest; returns the project snapshot."""
+    """Add a space machine card to this project's manifest; returns the project snapshot."""
 
     try:
         with MACHINE_ATTACHMENT_LOCK:
             store.space_machine(body.machine_id)
-            return project_display_cache.add_machine(project_id, body.machine_id, body.alias)
+            return project_display_cache.add_machine(project_id, body.machine_id)
     except KeyError as exc:
         if exc.args == (body.machine_id,):
             raise HTTPException(status_code=404, detail="Machine not found") from exc
@@ -500,31 +500,28 @@ def add_project_machine(
 
 
 @router.delete(
-    "/api/projects/{project_id}/machines/{machine_alias}",
+    "/api/projects/{project_id}/machines/{machine_id}",
     dependencies=[Depends(require_project_write_admission)],
 )
 def remove_project_machine(
     project_id: str,
-    machine_alias: str,
+    machine_id: str,
     *,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
-    """Drop a machine no repository lives on; agent profiles on it move to the base machine.
-
-    Its space card stays.
-    """
+    """Drop a machine no repository lives on; its space card stays."""
 
     with MACHINE_ATTACHMENT_LOCK:
-        return detach_project_machine(project_display_cache, project_id, machine_alias)
+        return detach_project_machine(project_display_cache, project_id, machine_id)
 
 
 def detach_project_machine(
-    project_display_cache: ProjectDisplayCache, project_id: str, machine_alias: str
+    project_display_cache: ProjectDisplayCache, project_id: str, machine_id: str
 ) -> dict[str, object]:
     """Detach under the caller's write fence and machine attachment lock."""
 
     try:
-        return project_display_cache.remove_machine(project_id, machine_alias)
+        return project_display_cache.remove_machine(project_id, machine_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
@@ -532,12 +529,12 @@ def detach_project_machine(
 
 
 @router.post(
-    "/api/projects/{project_id}/machines/{machine_alias}/compute/check",
+    "/api/projects/{project_id}/machines/{machine_id}/compute/check",
     dependencies=[Depends(require_project_write_admission)],
 )
 def check_machine_compute(
     project_id: str,
-    machine_alias: str,
+    machine_id: str,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -545,27 +542,27 @@ def check_machine_compute(
     """Re-check every route of one machine after a human fixed what a notice named."""
     project_id = catalog.resolve_project_id(project_id)
     manifest = get_project_writer(catalog, project_id).manifest
-    if machine_alias not in manifest.machine_map:
-        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    if machine_id not in manifest.machines:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_id}")
     refresh_compute_probes(
-        store, manifest, project_id, data_dir=catalog.data_dir, machines=[machine_alias]
+        store, manifest, project_id, data_dir=catalog.data_dir, machines=[machine_id]
     )
     return {
         route: probe.model_dump(mode="json") if probe else None
         for route in ("scheduler", "helper")
-        for probe in [store.compute_backend_probe(project_id, machine_alias, route)]
+        for probe in [store.compute_backend_probe(project_id, machine_id, route)]
     }
 
 
-@router.get("/api/projects/{project_id}/machines/{machine_alias}/browser")
+@router.get("/api/projects/{project_id}/machines/{machine_id}/browser")
 def project_machine_browser(
-    project_id: str, machine_alias: str, *, catalog: CatalogDependency
+    project_id: str, machine_id: str, *, catalog: CatalogDependency, store: StoreDependency
 ) -> dict[str, object]:
     """Readiness of the browser a chat on this machine would get, read when it is turned on."""
     project_id = catalog.resolve_project_id(project_id)
-    machine = get_project_service(catalog, project_id).manifest.machine_map.get(machine_alias)
-    if machine is None:
-        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    if machine_id not in get_project_service(catalog, project_id).manifest.machines:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_id}")
+    machine = card(store, machine_id)
     return browser_readiness(
         host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
     ).model_dump()

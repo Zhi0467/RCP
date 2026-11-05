@@ -741,7 +741,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 or not current_task.native_session_id
                 or not current_task.stage_root
                 or task.native_session_id != expected_session
-                or (task.stage_host or "") != (current_task.stage_host or "")
+                or (task.stage_machine_id or "") != (current_task.stage_machine_id or "")
                 or task.stage_root != current_task.stage_root
                 or task.request.get("session_id") != expected_session
                 or task.request.get("chat_id") != current_task.request.get("chat_id")
@@ -943,7 +943,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     or not current.native_session_id
                     or not current.stage_root
                     or record.native_session_id != current.native_session_id
-                    or (record.stage_host or "") != (current.stage_host or "")
+                    or (record.stage_machine_id or "") != (current.stage_machine_id or "")
                     or record.stage_root != current.stage_root
                     or record.request.get("session_id") != current.native_session_id
                     or record.request.get("trigger") != "orchestrator"

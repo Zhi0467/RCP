@@ -33,7 +33,7 @@ def _resolved_graph_request(
             # the current surface setting" on a later continuation.
             "model": profile.model,
             "reasoning": profile.reasoning,
-            "run_on": profile.run_on,
+            "run_on": service.manifest.base_machine,
             "run_truth_scope": admitted_write_repositories(
                 service.history.state(),
                 request.run_truth_scope,
@@ -59,7 +59,7 @@ def _resolved_auto_research_request(
     ):
         raise ValueError("Auto-research recovery requires its exact pinned execution profile.")
     profile_for(request.provider)
-    if request.run_on not in service.manifest.machine_map:
+    if request.run_on not in service.manifest.machines:
         raise ValueError(f"unknown execution machine: {request.run_on}")
     skill_resolved = service.resolve_skill_request(cast(RunRequest, request))
     if not isinstance(skill_resolved, AutoResearchRunRequest):

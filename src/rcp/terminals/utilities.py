@@ -32,10 +32,7 @@ def resolve_repository(
     repository = manifest.repository_map.get(repository_id)
     if repository is None:
         raise ValueError("Repository is not registered to this project.")
-    host = manifest.machine_map[repository.machine].host
-    if host:
-        if remote_stage is None or remote_stage.host != host:
-            raise TerminalUnavailable("Remote repository resolution requires its execution host.")
+    if remote_stage is not None:
         return _resolve_remote_repository(
             manifest, project_id, repository_id, inventory, remote_stage
         )
@@ -47,7 +44,7 @@ def resolve_repository(
         raise TerminalUnavailable(
             "The registered repository overlaps an application or account root."
         )
-    local = [item for item in inventory if not item.execution_host]
+    local = [item for item in inventory if item.machine == repository.machine]
     owners = [
         item
         for item in local
@@ -120,7 +117,7 @@ def _resolve_remote_repository(
     remote_stage: RemoteRunStage,
 ) -> tuple[Path, list[str]]:
     repository = manifest.repository_map[repository_id]
-    same_host = [item for item in inventory if item.execution_host == remote_stage.host]
+    same_host = [item for item in inventory if item.machine == repository.machine]
     owners = [
         item
         for item in same_host

@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import test from "node:test";
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { HOST, everyState, loginRow, settingsFor, signIn } from "./fixtures/signInRows.mjs";
+import { MACHINE, everyState, loginRow, settingsFor, signIn } from "./fixtures/signInRows.mjs";
 
 /**
  * Serve the Sign-ins fixture with a routed login API. `state.rows` and
@@ -105,7 +105,7 @@ test("switches and swap write the setting at once and redraw the tray order", as
     ["shared", "shared_then_own", "own_then_shared"].map((setting) => [
       "claude/logins/setting",
       "PUT",
-      { host: HOST, setting },
+      { machine_id: MACHINE, setting },
     ]),
   );
   assert.equal(state.settings.settings[0].setting, "own_then_shared");
@@ -166,9 +166,9 @@ test("add slots add shared and own logins; Claude opens token entry on the new l
   assert.deepEqual(
     calls.map((call) => [call.path, call.body]),
     [
-      ["codex/logins/add", { host: HOST, kind: "shared" }],
-      ["claude/logins/add", { host: HOST, kind: "own" }],
-      ["claude/logins/token", { host: HOST, login_id: "own-new", token: "private-value" }],
+      ["codex/logins/add", { machine_id: MACHINE, kind: "shared" }],
+      ["claude/logins/add", { machine_id: MACHINE, kind: "own" }],
+      ["claude/logins/token", { machine_id: MACHINE, login_id: "own-new", token: "private-value" }],
     ],
   );
   assert.ok(state.rows.includes(own));
@@ -214,7 +214,7 @@ test("card actions sit behind ⋯; removing from shared confirms with the bound 
   assert.equal(await card(page, "claude", "own-dee").locator("[data-sign-in-action]").count(), 0);
   assert.deepEqual(
     calls.map((call) => [call.path, call.body]),
-    [["claude/logins/remove", { host: HOST, login_id: "bo" }]],
+    [["claude/logins/remove", { machine_id: MACHINE, login_id: "bo" }]],
   );
   assert.deepEqual(errors, []);
 });
@@ -229,7 +229,9 @@ const codexRows = (sign_in) => [
   }),
 ];
 const codexSettings = {
-  settings: [{ provider: "codex", host: HOST, setting: "shared", changed_at: null, stored: true }],
+  settings: [
+    { provider: "codex", machine_id: MACHINE, setting: "shared", changed_at: null, stored: true },
+  ],
   other_member_count: 0,
 };
 

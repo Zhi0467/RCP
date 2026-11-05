@@ -366,7 +366,7 @@ class ArtifactStoreMixin(StoreMixinBase):
         return artifact
 
     def session_artifacts(
-        self, project_id: str, stage_host: str, stage_root: str
+        self, project_id: str, stage_machine_id: str, stage_root: str
     ) -> list[Artifact]:
         """Live turn artifacts whose origin task ran on this exact stage."""
         with self.connection() as connection:
@@ -374,8 +374,8 @@ class ArtifactStoreMixin(StoreMixinBase):
                 "SELECT a.metadata FROM artifacts a JOIN graph_runs g "
                 "ON g.operation_id = json_extract(a.metadata, '$.origin_operation_id') "
                 "WHERE a.project_id = ? AND json_extract(a.metadata, '$.supplier') = 'turn' "
-                "AND COALESCE(g.stage_host, '') = ? AND g.stage_root = ? ORDER BY a.artifact_id",
-                (project_id, stage_host, stage_root),
+                "AND COALESCE(g.stage_machine_id, '') = ? AND g.stage_root = ? ORDER BY a.artifact_id",
+                (project_id, stage_machine_id, stage_root),
             ).fetchall()
         now = datetime.fromisoformat(self.now())
         artifacts = [Artifact.model_validate_json(row[0]) for row in rows]

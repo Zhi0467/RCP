@@ -8,6 +8,7 @@ import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from rcp import repository_window
 from rcp.config import Manifest
@@ -17,9 +18,13 @@ from rcp.limits import (
     REPOSITORY_PREVIEW_TIMEOUT_SECONDS,
     REPOSITORY_PREVIEW_WINDOW_LINES,
 )
+from rcp.machine_cards import host_of
 from rcp.repository_window import WindowUnreadable, read_window
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnavailable
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 REPOSITORY_PREVIEW_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
@@ -42,6 +47,7 @@ def load_repository_source(
     repository_alias: str,
     relative_path: str,
     *,
+    store: AppStore,
     line: int | None = None,
     max_bytes: int = REPOSITORY_PREVIEW_MAX_BYTES,
 ) -> RepositorySource:
@@ -51,10 +57,12 @@ def load_repository_source(
     repository = manifest.repository_map.get(repository_alias)
     if repository is None:
         raise FileNotFoundError("Repository not found")
-    machine = manifest.machine_map[repository.machine]
-    if machine.host:
+    if not repository.machine:
+        raise ValueError(f"Assign a machine to repository {repository_alias!r}.")
+    host = host_of(store, repository.machine)
+    if host:
         window = _read_remote_file(
-            machine.host,
+            host,
             repository.path,
             relative_path,
             line=line,
@@ -85,6 +93,7 @@ def load_repository_source_for_path(
     manifest: Manifest,
     absolute_path: str,
     *,
+    store: AppStore,
     line: int | None = None,
     max_bytes: int = REPOSITORY_PREVIEW_MAX_BYTES,
 ) -> RepositorySource:
@@ -95,6 +104,7 @@ def load_repository_source_for_path(
         manifest,
         repository_alias,
         relative.as_posix(),
+        store=store,
         line=line,
         max_bytes=max_bytes,
     )

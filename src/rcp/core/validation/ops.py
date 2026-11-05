@@ -862,14 +862,14 @@ def validate_set_project_truth_scope(op: SetProjectTruthScopeOperation, ctx: OpC
     if descriptor is not None:
         alias = descriptor.alias
         machine = descriptor.machine
-        if not alias or not machine or not descriptor.path:
+        if not alias or not descriptor.path:
             ctx.report.reject(
                 "incomplete-repository",
-                "A new repository descriptor needs alias, machine, and path.",
+                "A new repository descriptor needs alias and path.",
                 ctx.revision,
             )
         else:
-            if ctx.machines is not None and machine not in ctx.machines:
+            if machine and ctx.machines is not None and machine not in ctx.machines:
                 ctx.report.reject(
                     "unknown-repository-machine",
                     f"Repository {alias!r} uses unknown machine {machine!r}.",

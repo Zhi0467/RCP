@@ -10,6 +10,7 @@ from threading import Event
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import AgentTaskRecord
@@ -387,8 +388,7 @@ def test_overlapping_catalog_owner_refuses_before_git_creation(harness, monkeypa
             RegisteredRepositoryRoot(
                 project_id="different-project",
                 alias="other-root",
-                machine="laptop",
-                execution_host="",
+                machine=BACKEND_MACHINE_ID,
                 path=str(harness.repository.parent),
             ),
         ]
@@ -436,20 +436,22 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
 
     chat = str(uuid.uuid4())
     harness.turn(chat, worktree=True)
+    machine = harness.store.create_space_machine(
+        name="fixture", host="fixture-execution-account", os_account=""
+    )
     binding = harness.store.conversation_worktree(harness.project_id, chat).model_copy(
         update={
-            "execution_host": "fixture-execution-account",
+            "machine_id": machine.machine_id,
             "shared_path": "/canonical/repository",
         }
     )
     manifest = harness.manifest.model_copy(
         update={
-            "machines": [
-                machine.model_copy(update={"host": binding.execution_host})
-                for machine in harness.manifest.machines
-            ],
+            "machines": [*harness.manifest.machines, machine.machine_id],
             "repositories": [
-                repository.model_copy(update={"path": "/registered/repository-link"})
+                repository.model_copy(
+                    update={"machine": machine.machine_id, "path": "/registered/repository-link"}
+                )
                 if repository.alias == binding.repository_alias
                 else repository
                 for repository in harness.manifest.repositories
@@ -460,7 +462,7 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
     request = RunRequest(
         chat_id=chat,
         chat_scope="project",
-        run_on="laptop",
+        run_on=machine.machine_id,
         run_truth_scope=[binding.repository_alias],
     )
     resolved = binding.shared_path
@@ -468,7 +470,7 @@ def test_remote_binding_uses_execution_machine_canonical_path_without_ssh(harnes
 
     def canonicalize_on_execution_account(store, *, host, operation, **kwargs):
         """This stub exercises remote identity semantics without calling SSH."""
-        assert host == binding.execution_host
+        assert host == machine.host
         assert operation == "canonicalize"
         assert kwargs["shared_path"] == "/registered/repository-link"
         calls.append(kwargs)

@@ -7,9 +7,9 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
-from rcp.storage.models import LoginKey
 
 from .test_provider_login_resolver import _limit, _login, _task
 from .test_provider_login_resolver import accounts as accounts
@@ -71,12 +71,14 @@ async def _launch(
         await kwargs["before_start"]()
         yield AgentEvent(event="done")
 
-    request = RunRequest(provider=key.provider, mode="discuss", message="hello")
+    request = RunRequest(
+        provider=key.provider, mode="discuss", message="hello", run_on=BACKEND_MACHINE_ID
+    )
     if fork:
         request = request.model_copy(
             update={
                 "fork_session_id": "session",
-                "fork_source_host": "",
+                "fork_source_machine_id": BACKEND_MACHINE_ID,
                 "fork_source_cwd": str(tmp_path),
             }
         )
@@ -108,7 +110,9 @@ async def _launch(
 async def test_real_launch_moves_session_to_another_login(accounts, tmp_path, provider, event):
     own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
+    accounts.store.set_provider_login_setting(
+        MEMBER, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _started_task(accounts, "previous", own)
     if event == "limited":
         _limit(accounts, own)
@@ -137,7 +141,9 @@ async def test_real_launch_moves_session_to_another_login(accounts, tmp_path, pr
 async def test_gate_recheck_falls_back_to_another_login(accounts, tmp_path, provider):
     own = _login(accounts, provider, own=True, member=MEMBER)
     shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
+    accounts.store.set_provider_login_setting(
+        MEMBER, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _started_task(accounts, "previous", own)
     execution, selected, outcome, _ = await _launch(accounts, tmp_path, own, gate_failure=True)
     assert selected == [own, shared]
@@ -151,7 +157,7 @@ async def test_gate_recheck_falls_back_to_another_login(accounts, tmp_path, prov
 async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
     own = _login(accounts, "claude", own=True, member=MEMBER)
     shared = _login(accounts, "claude", machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, "claude", "", "shared")
+    accounts.store.set_provider_login_setting(MEMBER, "claude", BACKEND_MACHINE_ID, "shared")
     _started_task(accounts, "parent", own)
     if lineage == "transport_auto_retry":
         accounts.store.record_agent_task_receipt("parent", lineage, {})
@@ -166,7 +172,7 @@ async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
 async def test_pre_provider_failure_does_not_supply_previous_login(accounts, tmp_path):
     own = _login(accounts, "claude", own=True, member=MEMBER)
     shared = _login(accounts, "claude", machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, "claude", "", "shared")
+    accounts.store.set_provider_login_setting(MEMBER, "claude", BACKEND_MACHINE_ID, "shared")
     _started_task(accounts, "never_started", own, started=False)
     _, selected, _, _ = await _launch(accounts, tmp_path, shared)
     assert selected == [shared]
@@ -193,7 +199,7 @@ async def test_launch_capture_fences_only_its_login(accounts, tmp_path):
 
     own = _login(accounts, "codex", own=True, member=MEMBER)
     shared = _login(accounts, "codex", machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, "codex", "", "own")
+    accounts.store.set_provider_login_setting(MEMBER, "codex", BACKEND_MACHINE_ID, "own")
     execution, selected, _, _ = await _launch(accounts, tmp_path, own, session=None)
 
     async def unused_stream(*_args):
@@ -263,6 +269,8 @@ async def test_launcher_releases_failed_gate_before_reselection(
             "codex",
             "hello",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="discuss",
             login_key=own,
             login_unavailable=reselect,
@@ -293,13 +301,15 @@ def test_readiness_cache_and_invalidation_are_per_login(accounts, monkeypatch):
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     for key in (own, other, own, other):
-        assert launcher.readiness(LoginKey("codex", "", key.login_id)).version == (
+        assert launcher.readiness(LoginKey("codex", BACKEND_MACHINE_ID, key.login_id)).version == (
             key.login_id or "machine"
         )
     assert probes == [own.login_id, other.login_id]
-    launcher.invalidate_readiness(LoginKey("codex", "", own.login_id))
-    assert launcher.cached_readiness(LoginKey("codex", "", own.login_id)) is None
-    assert launcher.cached_readiness(LoginKey("codex", "", other.login_id)) is not None
+    launcher.invalidate_readiness(LoginKey("codex", BACKEND_MACHINE_ID, own.login_id))
+    assert launcher.cached_readiness(LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)) is None
+    assert (
+        launcher.cached_readiness(LoginKey("codex", BACKEND_MACHINE_ID, other.login_id)) is not None
+    )
 
 
 @pytest.mark.asyncio
@@ -307,7 +317,7 @@ def test_readiness_cache_and_invalidation_are_per_login(accounts, monkeypatch):
 async def test_fork_is_a_fresh_login_choice(accounts, tmp_path, provider):
     source = _login(accounts, provider)
     shared = _login(accounts, provider, machine=True)
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "shared")
+    accounts.store.set_provider_login_setting(MEMBER, provider, BACKEND_MACHINE_ID, "shared")
     _started_task(accounts, "source", source)
     _, selected, _, _ = await _launch(accounts, tmp_path, source, session=None, fork=True)
     assert selected == [shared]
@@ -331,18 +341,20 @@ async def test_turn_boundary_records_setting_move_reason(
     shared = _login(accounts, provider, machine=True)
     previous = shared if reason == "preferred_source_available" else own
     expected = own if reason == "preferred_source_available" else shared
-    accounts.store.set_provider_login_setting(MEMBER, provider, "", "own_then_shared")
+    accounts.store.set_provider_login_setting(
+        MEMBER, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _started_task(accounts, "previous", previous)
     if reason == "sender_setting":
         with accounts.store.connection() as connection:
             connection.execute(
                 "UPDATE graph_runs SET authorized_user_id=? WHERE operation_id='previous'", (SPACE,)
             )
-        accounts.store.set_provider_login_setting(MEMBER, provider, "", "shared")
+        accounts.store.set_provider_login_setting(MEMBER, provider, BACKEND_MACHINE_ID, "shared")
     elif reason == "setting_changed":
         later = (datetime.fromisoformat(accounts.store.now()) + timedelta(seconds=1)).isoformat()
         monkeypatch.setattr(accounts.store, "now", lambda: later)
-        accounts.store.set_provider_login_setting(MEMBER, provider, "", "shared")
+        accounts.store.set_provider_login_setting(MEMBER, provider, BACKEND_MACHINE_ID, "shared")
     _, selected, _, _ = await _launch(accounts, tmp_path, previous)
     receipts = [
         r

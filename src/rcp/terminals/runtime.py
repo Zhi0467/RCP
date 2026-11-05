@@ -14,7 +14,7 @@ from rcp.limits import (
     TERMINAL_STOP_TIMEOUT_SECONDS,
     TERMINAL_SWEEP_INTERVAL_SECONDS,
 )
-from rcp.terminals import launch, remote
+from rcp.terminals import launch
 from rcp.terminals.models import (
     DETACHED,
     TerminalRuntime,
@@ -85,7 +85,7 @@ def end_subscribers(runtime: TerminalRuntime, *, discard_pending: bool = False) 
 async def _finish_end(manager: TerminalManager, runtime: TerminalRuntime, reason: str) -> None:
     session = runtime.session
     stopped = True
-    if session.execution_host:
+    if session.remote:
         # Closing this exact SSH PTY hangs up its remote supervisor, which stops
         # the unit, and that hangup is never acknowledged. An SSH that exited on
         # its own is no better evidence: the supervisor writes its completion
@@ -155,14 +155,7 @@ async def _confirm_remote_stop(manager: TerminalManager, session: TerminalSessio
         # Shutdown must not wait on the network for every live session.
         return False
     try:
-        await manager.stop_thread(
-            partial(
-                remote.stop_remote_unit,
-                session.execution_host,
-                session.unit,
-                session.declared_account,
-            )
-        )
+        await manager.stop_thread(partial(manager.stop_remote_unit, session))
     except TerminalUnavailable as exc:
         logger.warning(
             "Terminal unit %s may survive on its execution machine; startup will retry: %s",

@@ -40,7 +40,7 @@ def start_watcher_notification(
     watcher_ids: list[str],
     *,
     authorized_by: AuthorizedHuman,
-    episode_stage_host: str | None = None,
+    episode_stage_machine_id: str | None = None,
     episode_stage_root: str | None = None,
     admission_fence: Callable[[Callable[[], None]], bool] | None = None,
 ) -> AgentTaskRecord | None:
@@ -174,7 +174,7 @@ def start_watcher_notification(
         updated_at=now,
         status_message="Waiting to deliver a watcher update.",
         native_session_id=request.session_id if experiment_wake else None,
-        stage_host=episode_stage_host if experiment_wake else None,
+        stage_machine_id=episode_stage_machine_id if experiment_wake else None,
         stage_root=episode_stage_root if experiment_wake else None,
         estimate_seconds=estimate,
         estimate_samples=samples,

@@ -23,6 +23,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
 )
+from rcp.machine_cards import host_of
 from rcp.project_transfer import capture_project_transfer_source
 from rcp.rcp_home import rcp_temp_dir
 from rcp.transfer.archive import (
@@ -366,7 +367,7 @@ def _capture_and_seal_source_archive(
                 declared = source_manifest_model.repository_map[repository.alias]
                 bundle = git_root / f"{repository.alias}.bundle"
                 capture_repository_bundle(
-                    host=source_manifest_model.machine_map[declared.machine].host,
+                    host=host_of(store, declared.machine),
                     path=declared.path,
                     expected_head=repository.source_commit,
                     destination=bundle,
@@ -486,8 +487,8 @@ def _require_reviewed_source_unchanged(
 ) -> None:
     current, _head = capture_project_transfer_source(
         service,
+        store,
         include_local_commits=transfer.source_configuration.includes_local_commits,
-        record_schema_version=store.project_transfer_record_schema_version(transfer.project_id),
     )
     if transfer.source_configuration is None or current != transfer.source_configuration:
         raise ValueError("source configuration changed after the reviewed transfer boundary")

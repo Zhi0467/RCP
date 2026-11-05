@@ -360,7 +360,6 @@ export function compactExperimentControl(
             model: operational.session.model,
             reasoning: operational.session.reasoning,
             run_on: operational.session.run_on,
-            execution_host: operational.session.execution_host,
             run_truth_scope: operational.session.run_truth_scope?.slice(0, 8) ?? null,
             native_session_bound: operational.session.native_session_bound,
             diagnostic: operational.session.diagnostic

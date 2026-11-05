@@ -28,13 +28,16 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.schema import parse_agent_patch_json
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import create_named_app as create_app
 from tests.helpers import signed_in_client
 
 
 async def _events(launcher: AcceptanceAgentLauncher, prompt: str, cwd: Path, **kwargs):
+    kwargs.setdefault("machine_id", BACKEND_MACHINE_ID)
+    kwargs.setdefault("host", "")
     return [
         event
         async for event in launcher.stream(
@@ -190,12 +193,13 @@ def test_acceptance_agent_reuse_refuses_an_owner_without_an_explicit_mode(
 def test_acceptance_launcher_refuses_remote_execution(tmp_path) -> None:
     launcher = AcceptanceAgentLauncher()
 
-    readiness = launcher.readiness(LoginKey("codex", "fixture.invalid", MACHINE_LOGIN_ID))
+    readiness = launcher.readiness(LoginKey("codex", "fixture", MACHINE_LOGIN_ID))
     events = asyncio.run(
         _events(
             launcher,
             "not used",
             tmp_path,
+            machine_id="fixture",
             host="fixture.invalid",
         )
     )
@@ -516,6 +520,8 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
                     "codex",
                     _prompt(stage, contract),
                     cwd=stage,
+                    machine_id=BACKEND_MACHINE_ID,
+                    host="",
                     invocation_gate=staged.invocation_gate,
                     capability="orchestrate",
                 ):

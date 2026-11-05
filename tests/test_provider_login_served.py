@@ -12,10 +12,11 @@ import uvicorn
 from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.agents import launcher as launcher_module
 from rcp.api.app import create_app
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task, wait_until
 from .test_provider_sign_in import _fake_codex
@@ -50,8 +51,8 @@ def test_served_device_login_recovers_queued_work_without_polling(
             project_id="project",
             locator=str(manifest.path),
             name="Login journey",
-            state_location=str(tmp_path / "state"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "state"),
             added_at=store.now(),
         )
     )
@@ -70,7 +71,7 @@ def test_served_device_login_recovers_queued_work_without_polling(
             "project_chat",
             RunRequest(
                 provider="codex",
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
                 chat_scope="project",
                 chat_id="00000000-0000-4000-8000-000000000777",
                 message="Inspect results",
@@ -79,7 +80,7 @@ def test_served_device_login_recovers_queued_work_without_polling(
             authorized_by=fabricated_authorizer(),
         )
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused",
         source="turn",
@@ -105,16 +106,20 @@ def test_served_device_login_recovers_queued_work_without_polling(
                 == 200
             )
             setting = client.put(
-                "/api/providers/codex/logins/setting", json={"host": "", "setting": "shared"}
+                "/api/providers/codex/logins/setting",
+                json={"machine_id": BACKEND_MACHINE_ID, "setting": "shared"},
             )
             assert setting.status_code == 200, setting.text
             assert "checked" in setting.json()["resumed"]
             if added:
                 response = client.post(
-                    "/api/providers/codex/logins/add", json={"host": "", "kind": "shared"}
+                    "/api/providers/codex/logins/add",
+                    json={"machine_id": BACKEND_MACHINE_ID, "kind": "shared"},
                 )
             else:
-                response = client.post("/api/providers/codex/logins/sign-in", json={"host": ""})
+                response = client.post(
+                    "/api/providers/codex/logins/sign-in", json={"machine_id": BACKEND_MACHINE_ID}
+                )
             assert response.status_code == 200, response.text
             status = response.json()["sign_in"] if added else response.json()
             login_id = status["attempt_id"]
@@ -143,7 +148,8 @@ def test_served_device_login_recovers_queued_work_without_polling(
             assert "checked" in status.json()["resumed"]
             if added:
                 removed = client.post(
-                    "/api/providers/codex/logins/remove", json={"login_id": account_id}
+                    "/api/providers/codex/logins/remove",
+                    json={"machine_id": BACKEND_MACHINE_ID, "login_id": account_id},
                 )
                 assert removed.status_code == 200, removed.text
                 assert removed.json()["removed_at"] is not None

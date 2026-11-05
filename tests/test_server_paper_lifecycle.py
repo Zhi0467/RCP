@@ -199,7 +199,10 @@ def test_released_project_stays_inactive_after_restart(tmp_path, monkeypatch, sa
         if not saved:
             with pytest.raises(PaperConflict):
                 await restarted.tree(transfer.project_id)
-            assert store.project_transfer_record_schema_version(transfer.project_id) < 7
+            with store.connection() as connection:
+                assert not connection.execute(
+                    "SELECT 1 FROM paper_publication WHERE project_id=?", (transfer.project_id,)
+                ).fetchone()
             await restarted.close()
             return
         before = await restarted.tree(transfer.project_id)

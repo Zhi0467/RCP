@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, JsonValue
 
@@ -24,7 +24,7 @@ from rcp.storage.artifact_models import Artifact, ArtifactVersion
 from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.chat_names import backfill_chat_names
 from rcp.storage.mixin_base import StoreMixinBase
-from rcp.storage.models import ProjectTransferImportRecord
+from rcp.storage.models import ProjectProvisioningRequestRecord, ProjectTransferImportRecord
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
     TransferGraphHead,
@@ -253,68 +253,6 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 )
             self._require_finished_transfer_state(connection, transfer.project_id)
 
-    def project_transfer_record_schema_version(self, project_id: str) -> int:
-        """Return the record capability required by retained project history."""
-
-        with self.connection() as connection:
-            return self._project_transfer_record_schema_version_in_connection(
-                connection, project_id
-            )
-
-    @staticmethod
-    def _project_transfer_record_schema_version_in_connection(
-        connection: sqlite3.Connection, project_id: str
-    ) -> Literal[1, 2, 3, 4, 5, 6, 7]:
-        tables = {
-            row[0]
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
-        if (
-            "paper_publication" in tables
-            and connection.execute(
-                "SELECT 1 FROM paper_publication WHERE project_id = ? LIMIT 1", (project_id,)
-            ).fetchone()
-            is not None
-        ):
-            return 7
-        if (
-            connection.execute(
-                "SELECT 1 FROM graph_branches WHERE project_id = ? LIMIT 1", (project_id,)
-            ).fetchone()
-            is not None
-        ):
-            return 6
-        deleted = connection.execute(
-            "SELECT 1 FROM episode_reports AS report "
-            "JOIN episodes AS episode ON episode.episode_id = report.episode_id "
-            "WHERE episode.project_id = ? AND report.deleted_at IS NOT NULL LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if deleted is not None:
-            return 5
-        named = connection.execute(
-            "SELECT 1 FROM branch_name_reservations WHERE project_id = ? LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if named is not None:
-            return 4
-        archived = connection.execute(
-            """
-            SELECT 1 FROM episode_archives AS archive
-            JOIN episodes AS episode ON episode.episode_id = archive.episode_id
-            WHERE episode.project_id = ? LIMIT 1
-            """,
-            (project_id,),
-        ).fetchone()
-        graph_archived = connection.execute(
-            "SELECT 1 FROM episode_isolation_states WHERE project_id = ? "
-            "AND json_extract(state_json, '$.graph_archived') = 1 LIMIT 1",
-            (project_id,),
-        ).fetchone()
-        if graph_archived is not None:
-            return 3
-        return 2 if archived is not None else 1
-
     def export_project_transfer_records(
         self,
         project_id: str,
@@ -376,11 +314,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 )
             paper = self._transfer_paper_draft(connection, project_id)
             saved_paper = capture_paper_section(connection, project_id)
-            schema_version = self._project_transfer_record_schema_version_in_connection(
-                connection, project_id
-            )
         return TransferRecordBundle(
-            schema_version=schema_version,
             project_id=project_id,
             attributions=attributions,
             tasks=tasks,
@@ -1395,8 +1329,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     target_request,
                     normalized_capture.project_id,
                 )
-                if normalized_capture.records.schema_version != (
-                    target_request.source_configuration.record_schema_version or 1
+                if (
+                    normalized_capture.records.schema_version
+                    != target_request.source_configuration.record_schema_version
                 ):
                     raise ValueError(
                         "transfer operational record schema does not match target preparation"
@@ -1656,7 +1591,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         ).fetchone()
         if row is None:
             raise ValueError("linked incoming provisioning request is missing")
-        provisioning = ProjectTransferStoreMixin._provisioning_record_for_import(row)
+        provisioning = ProjectTransferStoreMixin._provisioning_record_for_import(row, connection)
         if (
             provisioning.kind != "incoming_transfer"
             or provisioning.status != "ready_for_review"
@@ -1665,13 +1600,15 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             raise ValueError("linked incoming provisioning request is not ready for review")
 
     @staticmethod
-    def _provisioning_record_for_import(row: sqlite3.Row) -> object:
+    def _provisioning_record_for_import(
+        row: sqlite3.Row, connection: sqlite3.Connection
+    ) -> ProjectProvisioningRequestRecord:
         # ``ProjectProvisioningStoreMixin`` owns this decoder.  Keeping this
         # narrow call here avoids importing its implementation into transfer
         # model code and still validates the persisted review digest.
         from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 
-        return ProjectProvisioningStoreMixin._project_provisioning_record(row)
+        return ProjectProvisioningStoreMixin._project_provisioning_record(row, connection)
 
     @staticmethod
     def _project_transfer_import_record(row: sqlite3.Row) -> ProjectTransferImportRecord:
@@ -1938,7 +1875,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     operation_id, project_id, episode_id, kind, status, request_json,
                     created_at, updated_at, started_at, finished_at, status_message,
                     error, applied_revision, result_json, attempt, parent_operation_id,
-                    runtime_id, native_session_id, history_only, stage_host, stage_root,
+                    runtime_id, native_session_id, history_only, stage_machine_id, stage_root,
                     graph_target_json, write_scope_fingerprint, estimate_seconds,
                     estimate_samples, phase, last_activity_at, dispatch_authority_json,
                     authorized_space_id, authorized_user_id, authorized_display_name, visible
@@ -2118,7 +2055,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 """
                 INSERT INTO watchers (
                     watcher_id, project_id, origin_operation_id, origin_task_kind,
-                    chat_id, node_id, episode_id, graph_target_json, execution_host,
+                    chat_id, node_id, episode_id, graph_target_json, machine_id,
                     check_command, log_path, cwd, graph_condition_json, armed_revision,
                     continuation_json, status, created_at, last_checked_at,
                     last_exit_code, last_error, completed_at, next_check_at,
@@ -2240,17 +2177,16 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 connection.execute(
                     """
                     INSERT INTO experiment_episode_state (
-                        episode_id, provider, execution_machine, execution_host,
-                        native_session_id, stage_host, stage_root, chat_id,
+                        episode_id, provider, machine_id,
+                        native_session_id, stage_machine_id, stage_root, chat_id,
                         last_turn_operation_id, last_turn_invocation, last_graph_result,
                         last_watcher_ids_json, context_baseline_json, session_diagnostic,
                         created_at, updated_at
-                    ) VALUES (?, ?, NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
+                    ) VALUES (?, ?, '', NULL, NULL, NULL, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
                     """,
                     (
                         episode.episode_id,
                         experiment.provider,
-                        _TRANSFER_IMPORT_INERT_PROVIDER,
                         experiment.chat_id,
                         experiment.last_turn_operation_id,
                         experiment.last_turn_invocation,
@@ -2308,11 +2244,11 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     """
                     INSERT INTO episode_wrapups (
                         episode_id, ending, partial, concluding_operation_id,
-                        allocation_operation_id, provider, run_on, execution_host,
-                        native_session_id, stage_host, stage_root, skill_id, skill_version,
+                        allocation_operation_id, provider, machine_id,
+                        native_session_id, stage_machine_id, stage_root, skill_id, skill_version,
                         output_name, output_path, receipt_json, receipt_sha256, state,
                         diagnostic, created_at, updated_at, finished_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL,
+                    ) VALUES (?, ?, ?, ?, ?, ?, '', NULL, NULL, NULL, ?, ?, NULL, NULL,
                               ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -2322,8 +2258,6 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         wrapup.concluding_operation_id,
                         wrapup.allocation_operation_id,
                         wrapup.provider,
-                        _TRANSFER_IMPORT_INERT_PROVIDER,
-                        _TRANSFER_IMPORT_INERT_PROVIDER,
                         wrapup.skill_id,
                         wrapup.skill_version,
                         _history_json_document(wrapup.receipt),

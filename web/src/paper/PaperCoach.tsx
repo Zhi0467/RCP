@@ -100,7 +100,7 @@ export function PaperCoach({
   opening?: CoachOpening;
   onOpening: (opening: CoachOpening) => void;
 }) {
-  const baseMachine = profileRunConfig(project.agent_profiles.paper_coach).run_on;
+  const baseMachine = project.run_on;
   const [sessions, setSessions] = useState<WritingSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(opening?.sessionId ?? null);
   const [fresh, setFresh] = useState(opening?.fresh ?? false);
@@ -204,7 +204,7 @@ export function PaperCoach({
       ? configOverride.config
       : selectedSession
         ? sessionConfig(selectedSession, baseMachine)
-        : profileRunConfig(project.agent_profiles.paper_coach);
+        : profileRunConfig(project.agent_profiles.paper_coach, baseMachine);
   const sessionTasks = conversation.tasks;
   const activeTask = sessionTasks.find(isActiveTask);
   const steeringTask =

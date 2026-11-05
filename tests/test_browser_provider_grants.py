@@ -18,6 +18,7 @@ from rcp.agents.command_mailbox import stage_command_mailbox
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.artifact_preview import PREVIEW_COMMAND
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.providers.browser_grant import BrowserGrant
 
@@ -85,8 +86,7 @@ def test_discuss_browser_rules_and_command_config_agree(
     inputs = Path(staged.client_path).parent
     hidden_file = str(tmp_path / "private-input")
     hidden = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         os_account="test",
         hidden_files=(hidden_file,),
         enforcement=HiddenReadStatus(status="enforced"),
@@ -281,7 +281,13 @@ async def test_launcher_delivers_grant_environment(tmp_path, monkeypatch):
     events = [
         event
         async for event in launcher.stream(
-            "opencode", "probe", cwd=tmp_path, capability="discuss", browser_grant=grant
+            "opencode",
+            "probe",
+            cwd=tmp_path,
+            capability="discuss",
+            browser_grant=grant,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
         )
     ]
     answer = next(event for event in events if event.event == "answer")
@@ -337,8 +343,7 @@ def test_coach_codex_client_keeps_readonly_filesystem(runtime, session_id, tmp_p
         session_id=session_id,
         invocation_gate=staged.invocation_gate,
         hidden_read_scope=HiddenReadScope(
-            execution_machine="local",
-            execution_host="",
+            machine_id="backend",
             os_account="test",
             enforcement=HiddenReadStatus(status="enforced"),
         ),

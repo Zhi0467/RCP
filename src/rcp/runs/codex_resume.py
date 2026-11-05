@@ -26,11 +26,19 @@ def record_refusal(
     *,
     provider: str,
     session_id: str | None,
+    machine_id: str,
     host: str,
     error: str,
 ) -> None:
     try:
-        _record_refusal(execution, provider=provider, session_id=session_id, host=host, error=error)
+        _record_refusal(
+            execution,
+            provider=provider,
+            session_id=session_id,
+            machine_id=machine_id,
+            host=host,
+            error=error,
+        )
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         if execution is not None:
             execution.store.record_agent_task_receipt(
@@ -46,6 +54,7 @@ def _record_refusal(
     *,
     provider: str,
     session_id: str | None,
+    machine_id: str,
     host: str,
     error: str,
 ) -> None:
@@ -85,13 +94,13 @@ def _record_refusal(
             "reason": "login_switch",
             "native_session_id": session_id,
             "transcript_path": path,
-            "host": host,
+            "machine_id": machine_id,
         },
         tier="summary",
     )
 
 
-def start_context(execution: AgentTaskExecution | None, host: str) -> str:
+def start_context(execution: AgentTaskExecution | None, machine_id: str) -> str:
     """The handoff owner supplies its full contract; add only the history pointer."""
     if execution is None:
         return ""
@@ -108,8 +117,7 @@ def start_context(execution: AgentTaskExecution | None, host: str) -> str:
         return ""
     for receipt in execution.store.agent_task_receipts(source_id):
         if receipt.category == REFUSAL:
-            if receipt.payload.get("host") != host:
-                # A retry rebound to another machine cannot read that host's file.
+            if receipt.payload.get("machine_id") != machine_id:
                 return ""
             path = receipt.payload["transcript_path"]
             context = (
@@ -126,7 +134,7 @@ def start_context(execution: AgentTaskExecution | None, host: str) -> str:
                     {
                         "reason": "login_switch",
                         "source_operation_id": source_id,
-                        "host": host,
+                        "machine_id": machine_id,
                         "transcript_path": path,
                         "prompt_suffix": context,
                     },

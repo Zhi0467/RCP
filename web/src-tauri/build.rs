@@ -19,6 +19,7 @@ const COMMANDS: &[&str] = &[
     "desktop_advance_project_transfer",
     "desktop_run_incoming_project_provision",
     "desktop_read_target_project_provisioning_options",
+    "desktop_read_target_space_machines",
     "desktop_export_project_transfer",
     "desktop_select_project_transfer_export",
     "desktop_open_project_transfer_terminal",

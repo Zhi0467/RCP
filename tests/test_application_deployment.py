@@ -778,7 +778,9 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
         monkeypatch.setattr(
             store,
             "project",
-            lambda project_id: project(project_id).model_copy(update={"state_remote": True}),
+            lambda project_id: project(project_id).model_copy(
+                update={"state_machine_id": "remote-card"}
+            ),
         )
     opened = []
     open_snapshot = live.state.catalog.open_snapshot
@@ -1271,17 +1273,15 @@ def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
         assert {root: visible(root) for root in before} == before
 
 
-def test_prepare_refuses_checkout_identity_mismatch(captured, monkeypatch):
-    from rcp.server_ops import backup_project_files
-    from rcp.transport.remote_backup_checkout import CheckoutInspectionError
-
-    def mismatch(_recovery):
-        raise CheckoutInspectionError("Checkout origin does not match.")
-
-    monkeypatch.setattr(backup_project_files, "verify_checkout_identities", mismatch)
-    with pytest.raises(CheckoutInspectionError):
-        prepare(captured[0])
-    assert not (Path(captured[0].output_dir) / "application-proof.json").exists()
+def test_a_moved_checkout_origin_neither_blocks_nor_warns(captured):
+    request, state, _ = captured
+    checkout = Path(state["research"]).parent
+    origin = ("git", "-C", str(checkout), "remote")
+    subprocess.run((*origin, "remove", "origin"), check=False, capture_output=True)
+    subprocess.run((*origin, "add", "origin", "git@github.com:example/moved.git"), check=True)
+    prepared = prepare(request)
+    assert prepared["warnings"] == []
+    assert (Path(request.output_dir) / "application-proof.json").exists()
 
 
 def test_missing_project_root_warns_and_preparation_proceeds(captured, tmp_path):
@@ -1553,6 +1553,7 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
 
     from rcp.consolidation import consolidation_chat_id
     from rcp.core.authority import AuthorizedHuman
+    from rcp.machine_cards import BACKEND_MACHINE_ID
     from rcp.storage import AgentTaskRecord
     from tests.server_upgrade_state import seed_shared_consolidation_workspace
 
@@ -1583,6 +1584,7 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
                         kind="project_chat",
                         status="succeeded",
                         request={"chat_id": consolidation_chat_id(state["project_id"])},
+                        stage_machine_id=BACKEND_MACHINE_ID,
                         stage_root=str(Path(request.data_dir) / "run-stage" / str(index)),
                         created_at=now,
                         updated_at=now,

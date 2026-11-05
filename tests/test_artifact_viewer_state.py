@@ -10,6 +10,7 @@ import pytest
 
 from rcp.artifacts import AgentArtifactDescriptor, classify_artifact_bytes, descriptor_for
 from rcp.live_artifacts import ResolvedLiveVersion
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AgentTaskRecord, Artifact, AutoResearchChildExperimentRecord, EpisodeRecord
 from rcp.storage.artifacts import ArtifactDeleted
 from tests.helpers import signed_in_client
@@ -42,7 +43,7 @@ def _task(store, project_id, *, request=None, **fields):
             "provider": "codex",
             "model": "",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
         },
         **fields,
     )

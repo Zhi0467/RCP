@@ -35,6 +35,15 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
     if any(
+        row[1] == "state_machine_id" for row in connection.execute("PRAGMA table_info(projects)")
+    ):
+        connection.execute("ALTER TABLE projects DROP COLUMN state_machine_id")
+        connection.execute("ALTER TABLE projects DROP COLUMN machine_ids_pending")
+        connection.execute("ALTER TABLE projects RENAME COLUMN state_path TO state_location")
+        connection.execute(
+            "ALTER TABLE projects ADD COLUMN state_remote INTEGER NOT NULL DEFAULT 0"
+        )
+    if any(
         row[1] == "origin_flag_id"
         for row in connection.execute("PRAGMA table_info(evidence_flags)")
     ):
@@ -46,7 +55,7 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE provider_login_states RENAME TO new_provider_login_states")
         AppStore._migrate_provider_login_states(connection)
         connection.execute(
-            "INSERT INTO provider_login_states SELECT provider,host,state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states WHERE login_id=''"
+            "INSERT INTO provider_login_states SELECT provider,COALESCE((SELECT host FROM space_machines m WHERE m.machine_id=n.machine_id),''),state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states n WHERE login_id=''"
         )
         connection.execute("DROP TABLE new_provider_login_states")
         connection.execute("DROP TABLE provider_readiness_snapshots")
@@ -108,6 +117,89 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute(f"DROP TABLE IF EXISTS {table}")
 
 
+_MACHINE_IDENTITY_RENAMES = (
+    ("chat_session_contexts", "machine_id", "execution_machine", False),
+    ("writing_sessions", "machine_id", "execution_machine", False),
+    ("compute_backend_probes", "machine_id", "execution_machine", False),
+    ("compute_jobs", "machine_id", "execution_host", True),
+    ("watchers", "machine_id", "execution_host", True),
+    ("browser_owners", "machine_id", "execution_host", True),
+    ("graph_runs", "stage_machine_id", "stage_host", True),
+    ("artifact_revision_candidates", "stage_machine_id", "stage_host", True),
+    ("episode_wrapups", "machine_id", "execution_host", True),
+    ("episode_wrapups", "stage_machine_id", "stage_host", True),
+    ("experiment_episode_state", "machine_id", "execution_host", True),
+    ("experiment_episode_state", "stage_machine_id", "stage_host", True),
+    ("provider_readiness_snapshots", "machine_id", "host", True),
+    ("provider_skill_inventories", "machine_id", "host", True),
+)
+_MACHINE_IDENTITY_DROPS = (
+    ("compute_jobs", "execution_machine TEXT NOT NULL DEFAULT ''"),
+    ("episode_wrapups", "run_on TEXT"),
+    ("experiment_episode_state", "execution_machine TEXT"),
+)
+
+
+def downgrade_machine_identity(connection: sqlite3.Connection) -> None:
+    """Undo migration 77's column renames, naming each card's host again."""
+
+    for table, new, old, card_keyed in _MACHINE_IDENTITY_RENAMES:
+        if not any(row[1] == new for row in connection.execute(f"PRAGMA table_info({table})")):
+            continue
+        connection.execute(f'ALTER TABLE "{table}" RENAME COLUMN "{new}" TO "{old}"')
+        if card_keyed:
+            connection.execute(
+                f'UPDATE "{table}" SET "{old}" = COALESCE('
+                f'(SELECT host FROM space_machines m WHERE m.machine_id = "{table}"."{old}"), '
+                f'"{old}")'
+            )
+    for table, column in _MACHINE_IDENTITY_DROPS:
+        name = column.split()[0]
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if columns and name not in columns:
+            connection.execute(f'ALTER TABLE "{table}" ADD COLUMN {column}')
+    _restore_legacy_table_shapes(connection, {entry[0] for entry in _MACHINE_IDENTITY_RENAMES})
+
+
+def _restore_legacy_table_shapes(connection: sqlite3.Connection, tables: set[str]) -> None:
+    """Rebuild each table whose shape migration 5 checks to its legacy statement."""
+
+    legacy = {
+        row[1]: row[3] for row in AppStore._legacy_storage_schema_cache or () if row[0] == "table"
+    }
+    actual = {row[1]: row[3] for row in AppStore._storage_schema(connection) if row[0] == "table"}
+    for table in sorted(tables):
+        if (
+            table not in legacy
+            or table not in actual
+            or actual[table] == legacy[table]
+            or table in AppStore._SCHEMA_NORMALIZED_TABLES
+        ):
+            continue
+        indexes = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? "
+                "AND sql IS NOT NULL",
+                (table,),
+            )
+        ]
+        columns = {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+        connection.execute(f'ALTER TABLE "{table}" RENAME TO "{table}__legacy_shape"')
+        connection.execute(legacy[table])
+        names = ", ".join(
+            f'"{row[1]}"'
+            for row in connection.execute(f'PRAGMA table_info("{table}")')
+            if row[1] in columns
+        )
+        connection.execute(
+            f'INSERT INTO "{table}" ({names}) SELECT {names} FROM "{table}__legacy_shape"'
+        )
+        connection.execute(f'DROP TABLE "{table}__legacy_shape"')
+        for index in indexes:
+            connection.execute(index)
+
+
 def downgrade_artifacts(
     connection: sqlite3.Connection, *, report_html: dict[str, str] | None = None
 ) -> None:
@@ -116,6 +208,7 @@ def downgrade_artifacts(
     Migration 46 rebuilt the provisioning table; this restores its pre-46 shape.
     """
     downgrade_resource_watermarks(connection)
+    downgrade_machine_identity(connection)
     if not any(
         row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):

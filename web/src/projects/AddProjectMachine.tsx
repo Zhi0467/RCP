@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { addProjectMachine } from "../core/api";
 import { errorMessage } from "../core/errors";
-import { machineHostLabel, machinesToAdd, projectMachineAlias } from "./spaceMachines";
+import { machineHostLabel, machinesToAdd } from "./spaceMachines";
 import type { ProjectSnapshot, SpaceMachine } from "../core/types";
 import { NewMachineForm } from "./MachineCard";
 import { AddMachineTile, MachineTile } from "./MachineTile";
@@ -10,7 +10,6 @@ import { AddMachineTile, MachineTile } from "./MachineTile";
 export function AddProjectMachine({
   projectId,
   spaceKind,
-  takenAliases,
   machines,
   writesDisabled,
   onCreated,
@@ -19,11 +18,10 @@ export function AddProjectMachine({
 }: {
   projectId: string;
   spaceKind: "personal" | "team";
-  takenAliases: string[];
   machines: SpaceMachine[];
   writesDisabled: boolean;
   onCreated: (machine: SpaceMachine) => void;
-  onAdded: (project: ProjectSnapshot, alias: string) => void;
+  onAdded: (project: ProjectSnapshot, machineId: string) => void;
   onClose: () => void;
 }) {
   const [creating, setCreating] = useState(false);
@@ -31,14 +29,12 @@ export function AddProjectMachine({
   const [error, setError] = useState<string | null>(null);
   const candidates = machinesToAdd(machines, projectId);
 
-  // One click adds the machine; its name in this project is derived, not asked.
   const add = async (machine: SpaceMachine) => {
     if (adding) return;
-    const alias = projectMachineAlias(machine.name, takenAliases);
     setAdding(machine.machine_id);
     setError(null);
     try {
-      onAdded(await addProjectMachine(projectId, machine.machine_id, alias), alias);
+      onAdded(await addProjectMachine(projectId, machine.machine_id), machine.machine_id);
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -70,6 +66,7 @@ export function AddProjectMachine({
           {candidates.map((machine) => (
             <MachineTile
               key={machine.machine_id}
+              machineId={machine.machine_id}
               name={machine.name}
               hostLabel={machineHostLabel(machine.host, spaceKind)}
               account={machine.os_account}

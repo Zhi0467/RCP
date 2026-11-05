@@ -38,7 +38,7 @@ const loop = {
   checkout: {
     kind: "worktree",
     available: true,
-    execution_host: "worker-host",
+    machine_id: "m-worker",
     repository_paths: ["/workspace/repo"],
     repository_alias: "repo",
     isolation_owner_episode_id: "different-owner",
@@ -94,7 +94,6 @@ test("starter metadata links the initiating parent independently of checkout own
   assert.match(html, /data-starter-kind="auto_research"/);
   assert.match(html, /data-checkout-kind="worktree"/);
   const checkoutTitle = html.match(/data-checkout-kind="worktree" title="([^"]+)"/)[1];
-  assert.ok(checkoutTitle.includes(loop.checkout.execution_host));
   assert.ok(checkoutTitle.includes(loop.checkout.repository_paths[0]));
   const human = render({
     ...loop,
@@ -367,32 +366,26 @@ test("the real start handler selects its returned isolated episode beside a live
   assert.deepEqual(parseProjectHash(href).experimentRoute, selection.selectedExperimentRoute);
 });
 
-test("checkout identity exposes the host and every repository on cards and overlaps", () => {
-  for (const execution_host of ["worker-host", ""]) {
-    const checkout = {
-      ...loop.checkout,
-      execution_host,
-      repository_paths: ["/workspace/one", "/workspace/two"],
-    };
-    const metadata = renderToStaticMarkup(
-      React.createElement(ExperimentLoopMetadata, {
-        projectId: "project-one",
-        metadata: { ...loop, checkout },
-      }),
-    );
-    const overlap = renderToStaticMarkup(
-      React.createElement(ExperimentStartOverlap, {
-        projectId: "project-one",
-        loops: { rows: [{ ...loop, checkout, started_by: { kind: "human" } }], omitted: 0 },
-      }),
-    );
-    const title = (html) => html.match(/data-checkout-kind="worktree" title="([^"]+)"/)[1];
-    assert.equal(title(metadata), title(overlap));
-    const [host, ...paths] = title(overlap).split(" · ");
-    assert.ok(host.length > 0);
-    if (execution_host) assert.equal(host, execution_host);
-    assert.deepEqual(paths, checkout.repository_paths);
-  }
+test("checkout identity exposes every repository on cards and overlaps", () => {
+  const checkout = {
+    ...loop.checkout,
+    repository_paths: ["/workspace/one", "/workspace/two"],
+  };
+  const metadata = renderToStaticMarkup(
+    React.createElement(ExperimentLoopMetadata, {
+      projectId: "project-one",
+      metadata: { ...loop, checkout },
+    }),
+  );
+  const overlap = renderToStaticMarkup(
+    React.createElement(ExperimentStartOverlap, {
+      projectId: "project-one",
+      loops: { rows: [{ ...loop, checkout, started_by: { kind: "human" } }], omitted: 0 },
+    }),
+  );
+  const title = (html) => html.match(/data-checkout-kind="worktree" title="([^"]+)"/)[1];
+  assert.equal(title(metadata), title(overlap));
+  assert.deepEqual(title(overlap).split(" · "), checkout.repository_paths);
 });
 
 test("branch tags name each branch by its ref and share overlap rendering", async () => {

@@ -123,7 +123,7 @@ class ServerControlRequest(_StrictModel):
     selector_id: str | None = None
     boundary_sha256: str | None = None
     target_id: str | None = None
-    machine_alias: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    machine_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
     proof_path: str | None = None
     proof_sha256: str | None = None
@@ -138,7 +138,7 @@ class ServerControlRequest(_StrictModel):
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
         if self.operation != "compute_backend_probe" and (
-            self.machine_alias is not None or self.compute_route is not None
+            self.machine_id is not None or self.compute_route is not None
         ):
             raise ValueError("only compute backend probes accept machine and route selectors")
         if self.operation != "maintenance_verify" and (
@@ -165,13 +165,13 @@ class ServerControlRequest(_StrictModel):
                 self.protocol_version < 12
                 or self.selector_kind != "project"
                 or self.selector_id is None
-                or not self.machine_alias
+                or not self.machine_id
                 or self.compute_route is None
                 or self.boundary_sha256 is not None
                 or self.target_id is not None
             ):
                 raise ValueError(
-                    "compute backend probe requires one project and machine alias with a route"
+                    "compute backend probe requires one project and machine with a route"
                 )
         elif self.operation in {
             "maintenance_enter",
@@ -453,7 +453,7 @@ class ServerControlComputeProbeResult(_StrictModel):
     space_id: str
     selector_kind: Literal["project"]
     selector_id: str
-    machine_alias: str
+    machine_id: str
     compute_route: ComputeRoute
     probe: ComputeBackendProbe
 
@@ -466,7 +466,7 @@ class ServerControlComputeProbeResult(_StrictModel):
             character not in _HEX_DIGEST for character in self.data_dir_id
         ):
             raise ValueError("control data directory id must be a lowercase SHA-256 digest")
-        if self.machine_alias != self.probe.execution_machine:
+        if self.machine_id != self.probe.machine_id:
             raise ValueError("compute backend probe returned another machine")
         return self
 
@@ -986,7 +986,7 @@ class ServerControlClient:
         return result
 
     def probe_compute_backend(
-        self, *, project_id: str, machine_alias: str, route: ComputeRoute
+        self, *, project_id: str, machine_id: str, route: ComputeRoute
     ) -> ComputeBackendProbe:
         request = ServerControlRequest(
             request_id=str(uuid.uuid4()),
@@ -994,13 +994,13 @@ class ServerControlClient:
             operation="compute_backend_probe",
             selector_kind="project",
             selector_id=project_id,
-            machine_alias=machine_alias,
+            machine_id=machine_id,
             compute_route=route,
         )
         result = self._exchange(request)
         if (
             not isinstance(result, ServerControlComputeProbeResult)
-            or result.machine_alias != machine_alias
+            or result.machine_id != machine_id
             or result.compute_route != route
         ):
             raise ServerControlError("invalid_response", "The service returned another probe.")
@@ -1653,7 +1653,7 @@ def _validated_control_result(
             raise ValueError("compute backend probe returned another selector")
         if validated_probe.compute_route != request.compute_route:
             raise ValueError("compute backend probe returned another route")
-        if validated_probe.machine_alias != request.machine_alias:
+        if validated_probe.machine_id != request.machine_id:
             raise ValueError("compute backend probe returned another machine")
         return validated_probe
     if request.operation == "provider_readiness_plan":

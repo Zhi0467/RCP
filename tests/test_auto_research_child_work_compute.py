@@ -162,7 +162,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             code_worktree=False,
             invocation_ceiling=5,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -177,7 +177,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         episode.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="hyp/replanning-restores-plasticity",
@@ -191,7 +191,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             resolved_provider_skills=[
                 ProviderSkillReference(
                     provider="codex",
-                    machine="laptop",
+                    machine="backend",
                     provider_version="test-provider",
                     inventory_hash="captured-test-inventory",
                     name="native-review",
@@ -227,7 +227,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         job = store.compute_job(launcher.job_id)
         assert job.origin_operation_id == child.operation_id
         assert job.episode_id == episode.episode_id
-        assert job.execution_machine == "laptop"
+        assert job.machine_id == "backend"
     assert store.episode(episode.episode_id).invocations_used == 1
 
     if state == "running":
@@ -315,7 +315,7 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
             code_worktree=False,
             invocation_ceiling=5,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -326,7 +326,7 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
     root = wait_for_task(store, root.operation_id, expect="succeeded")
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         chat_scope="node",
         node_id="hyp/replanning-restores-plasticity",
@@ -348,7 +348,7 @@ def test_child_session_replaces_its_master_when_turn_owner_changes(manifest, tmp
     child = wait_for_task(store, child.operation_id, expect="succeeded")
 
     def capture_master(task, owner):
-        current = store.chat_session_context("codex", "laptop", session_id)
+        current = store.chat_session_context("codex", "backend", session_id)
         assert current is not None
         snapshot = json.loads(current.snapshot_json)
         expected = chat_master_contract_key(ontology_extensions=False, owner=owner)

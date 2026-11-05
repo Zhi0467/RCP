@@ -332,6 +332,17 @@ ruleset are independent. When retiring a field, update
 `adapt_persisted_patch_document` and affected replay field rules together, including
 adapter-introduced fields. Historical bytes never change.
 
+History written before a machine became its card holds machine aliases, which
+stay as written. A `RepositoryDescriptor` has no machine in new Patches; an old
+one's `machine` is inert text, omitted when empty so stored bytes replay
+unchanged. Accepting a repository whose descriptor names no card the project
+uses assigns the base machine; a repair from history keeps a descriptor's machine only when it is a card the
+project uses, otherwise `""`. A `SourceRef.machine` is a card id in new refs
+and inert text in old ones. Cursor keys are `repo/provider/session`; an old
+four-part `repo/machine/provider/session` key is read without its machine
+segment (`core/materialize.current_cursor_key`), so old cursors still suppress
+re-ingestion.
+
 Every graph model field declares a `GraphField` role: content, engine bookkeeping,
 or identity. Proposal annotations distinguish filing stamps from resolution fields.
 The agent schema strips both. Filing resets both.

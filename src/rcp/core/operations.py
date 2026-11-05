@@ -199,8 +199,15 @@ class CoverageUpdate(_StrictPayload):
 
 
 class RepositoryDescriptor(_StrictPayload):
+    """A repository an agent proposed. `machine` is retained text from older Patches only.
+
+    New descriptors leave it out; the accepting human's manifest names the card.
+    """
+
     alias: Annotated[str, GraphField("content")]
-    machine: Annotated[str, GraphField("content")]
+    machine: Annotated[str, GraphField("content")] = Field(
+        default="", exclude_if=lambda value: not value
+    )
     path: Annotated[str, GraphField("content")]
 
 

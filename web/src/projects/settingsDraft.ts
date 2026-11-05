@@ -55,7 +55,7 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
     )
       return null;
     if (!isRecord(parsed.profiles)) return null;
-    dropProfilesWithoutRuntime(parsed.profiles);
+    normalizeStagedProfiles(parsed.profiles);
     if (parsed.skillDefaults !== undefined && !isSkillDefaults(parsed.skillDefaults)) return null;
     // Machine settings once staged here; the space machine card saves them
     // directly now. v3 also briefly persisted compute connections. Drop all of
@@ -107,12 +107,15 @@ export function deserializeSettingsDraft(value: string | null): SettingsDraft | 
  * Provider and runtime are one choice, and nothing here can name the missing
  * half, so the incomplete profile is dropped and the manifest's own values are
  * restored for that surface. Staging an empty runtime instead would show the
- * researcher a nameless blank where a real runtime belongs.
+ * researcher a nameless blank where a real runtime belongs. A staged machine
+ * is dropped too: every profile runs on the base machine.
  */
-function dropProfilesWithoutRuntime(profiles: Record<string, unknown>): void {
+function normalizeStagedProfiles(profiles: Record<string, unknown>): void {
   for (const [surface, profile] of Object.entries(profiles)) {
     if (!isRecord(profile) || typeof profile.runtime !== "string" || !profile.runtime) {
       delete profiles[surface];
+    } else {
+      delete profile.run_on;
     }
   }
 }

@@ -22,16 +22,18 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.agents.context import RepositoryPointer
 from rcp.config import Manifest, RepositoryConfig
 from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding, WorktreeBinding
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import AgentCapability
 from rcp.rcp_home import command_socket_directory, short_socket_root
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
     from rcp.server_ops.config import ServerPathsConfig
+    from rcp.storage.models import SpaceMachineRecord
 
 
 class WritableRepositoryRoot(BaseModel):
-    """One exact project repository admitted on the execution machine."""
+    """One exact project repository admitted on the execution machine; `machine` is its card id."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -41,14 +43,13 @@ class WritableRepositoryRoot(BaseModel):
 
 
 class RegisteredRepositoryRoot(BaseModel):
-    """One repository root owned by a project in the application catalog."""
+    """One repository root owned by a project in the application catalog, on its card."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     project_id: str = Field(min_length=1)
     alias: str = Field(min_length=1)
     machine: str = Field(min_length=1)
-    execution_host: str
     path: str = Field(min_length=1)
 
 
@@ -70,8 +71,7 @@ class ProjectWriteScope(BaseModel):
 
     schema_generation: Literal[1] = 1
     project_id: str = Field(min_length=1)
-    execution_machine: str = Field(min_length=1)
-    execution_host: str
+    machine_id: str = Field(min_length=1)
     capability: Literal["work_auto", "orchestrate"]
     stage_root: str = Field(min_length=1)
     workspace_root: str = Field(min_length=1)
@@ -148,8 +148,7 @@ class ProjectWriteScope(BaseModel):
         cls,
         *,
         project_id: str,
-        execution_machine: str,
-        execution_host: str,
+        machine_id: str,
         capability: Literal["work_auto", "orchestrate"],
         stage_root: str,
         workspace_root: str,
@@ -166,8 +165,7 @@ class ProjectWriteScope(BaseModel):
         payload: dict[str, object] = {
             "schema_generation": 1,
             "project_id": project_id,
-            "execution_machine": execution_machine,
-            "execution_host": execution_host,
+            "machine_id": machine_id,
             "capability": capability,
             "stage_root": stage_root,
             "workspace_root": workspace_root,
@@ -244,15 +242,14 @@ class CompositeWriteScope:
 
     stage_root: str
     projects: tuple[ProjectWriteScope, ...] = ()
-    execution_machine: str = "local"
-    execution_host: str = ""
+    machine_id: str = BACKEND_MACHINE_ID
     capability: Literal["work_auto"] = "work_auto"
     # The thread owner's private notes on the backend; outside the graph fingerprint.
     member_memory_root: str | None = None
 
     def __post_init__(self) -> None:
         stage = PurePosixPath(self.stage_root)
-        if not stage.is_absolute() or self.execution_host:
+        if not stage.is_absolute() or self.machine_id != BACKEND_MACHINE_ID:
             raise ValueError("Space scopes require an absolute local stage")
         if (
             self.member_memory_root is not None
@@ -264,7 +261,7 @@ class CompositeWriteScope:
             raise ValueError("Space scopes require unique project bindings")
         for scope in self.projects:
             if (
-                scope.execution_host
+                scope.machine_id != BACKEND_MACHINE_ID
                 or scope.capability != "work_auto"
                 or PurePosixPath(scope.stage_root) != stage / "projects" / scope.project_id
             ):
@@ -347,7 +344,7 @@ def resolve_project_write_scope(
     manifest: Manifest,
     truth_scope: list[str],
     project_id: str,
-    execution_machine: str,
+    machine: SpaceMachineRecord,
     capability: AgentCapability,
     stage_root: str,
     workspace_root: str,
@@ -363,7 +360,7 @@ def resolve_project_write_scope(
     memory_roots: list[str] | None = None,
     member_memory_root: str | None = None,
 ) -> ProjectWriteScope:
-    """Resolve and verify one exact Work-like scope on its execution machine.
+    """Resolve and verify one exact Work-like scope on its execution machine's card.
 
     A scope that writes repositories also receives the execution machine's
     space-level writable paths and the default temporary roots. RCP's own
@@ -376,9 +373,6 @@ def resolve_project_write_scope(
         raise ValueError(f"capability {capability!r} has no project write scope")
     if not project_id:
         raise ValueError("project write scope requires a durable project id")
-    machine = manifest.machine_map.get(execution_machine)
-    if machine is None:
-        raise ValueError(f"unknown write-scope execution machine: {execution_machine}")
     if bool(machine.host) != (remote_stage is not None):
         raise ValueError("write-scope execution host does not match its task stage")
     if remote_stage is not None and remote_stage.host != machine.host:
@@ -401,10 +395,13 @@ def resolve_project_write_scope(
             raise ValueError(f"duplicate repository pointer in write scope: {pointer.alias}")
         pointers[pointer.alias] = pointer
 
+    unassigned = [alias for alias in aliases if not manifest.repository_map[alias].machine]
+    if unassigned:
+        raise ValueError(f"Assign a machine to repository {unassigned[0]!r}.")
     eligible = [
         manifest.repository_map[alias]
         for alias in aliases
-        if manifest.repository_map[alias].machine == execution_machine
+        if manifest.repository_map[alias].machine == machine.machine_id
     ]
     binding = conversation_worktree
     if include_shared_checkout and binding is None:
@@ -419,12 +416,10 @@ def resolve_project_write_scope(
             # Only the human-dispatched merge task lands an episode's code.
             raise ValueError("episode launches cannot admit the shared checkout")
         if (
-            (isinstance(binding, ConversationWorktreeBinding) and binding.project_id != project_id)
-            or binding.machine != execution_machine
-            or binding.execution_host != machine.host
-        ):
+            isinstance(binding, ConversationWorktreeBinding) and binding.project_id != project_id
+        ) or binding.machine_id != machine.machine_id:
             raise ValueError(
-                "conversation worktree belongs to a different project or execution host"
+                "conversation worktree belongs to a different project or execution machine"
             )
         if aliases != [binding.repository_alias] or len(eligible) != 1:
             raise ValueError("conversation worktree requires its exact single repository run scope")
@@ -434,14 +429,6 @@ def resolve_project_write_scope(
         pointer = pointers.get(repository.alias)
         if pointer is None:
             raise ValueError(f"write scope is missing repository pointer {repository.alias!r}")
-        # Only the machine is compared. A pointer's host says how the *agent*
-        # reaches the repository -- `_stage_context_paths` blanks it for a
-        # repository that lives on the execution machine, because the agent
-        # opens it as a local path there -- while `machine.host` says where the
-        # machine is. Comparing them refused every remote run and passed every
-        # local one by comparing a value to itself. The pointer's path is what
-        # this scope must agree with, and `registered_root != pointer_root`
-        # below checks it against the execution host's own filesystem.
         if pointer.machine != repository.machine:
             raise ValueError(
                 f"repository {repository.alias!r} does not match its project execution machine"
@@ -486,7 +473,7 @@ def resolve_project_write_scope(
             raise ValueError("remote write scope does not match its exact RCP task stage")
 
     execution_inventory = [
-        item for item in repository_inventory if item.execution_host == machine.host
+        item for item in repository_inventory if item.machine == machine.machine_id
     ]
     inventory_paths = [item.path for item in execution_inventory]
     canonical_inventory, _inventory_home = _canonical_directories(
@@ -615,8 +602,7 @@ def resolve_project_write_scope(
 
     return ProjectWriteScope.create(
         project_id=project_id,
-        execution_machine=execution_machine,
-        execution_host=machine.host,
+        machine_id=machine.machine_id,
         capability=capability,
         stage_root=canonical_stage,
         workspace_root=canonical_workspace,
@@ -795,22 +781,24 @@ def registered_repository_roots(
     *,
     project_id: str,
 ) -> list[RegisteredRepositoryRoot]:
-    """Project-owned repository roots in deterministic catalog-inventory form."""
+    """Project-owned repository roots in deterministic catalog-inventory form.
+
+    A repository without a machine has no root anywhere yet, so it owns none.
+    """
 
     roots = [
         RegisteredRepositoryRoot(
             project_id=project_id,
             alias=repository.alias,
             machine=repository.machine,
-            execution_host=manifest.machine_map[repository.machine].host,
             path=repository.path,
         )
         for repository in manifest.repositories
+        if repository.machine
     ]
     return sorted(
         roots,
         key=lambda item: (
-            item.execution_host,
             item.project_id,
             item.alias,
             item.machine,
@@ -948,7 +936,7 @@ def _reject_repository_ownership_overlap(
             "another project" if owner.project_id != project_id else "an unadmitted repository"
         )
         raise ValueError(
-            f"repository {alias!r} overlaps {relation} on this execution host: "
+            f"repository {alias!r} overlaps {relation} on this execution machine: "
             f"{owner.project_id}/{owner.alias}"
         )
 

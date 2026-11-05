@@ -35,7 +35,7 @@ def orchestrator_question_origin(context: AutoResearchCommandContext) -> Questio
         provider=context.request.provider,
         native_session_id=task.native_session_id,
         stage_root=task.stage_root,
-        stage_host=task.stage_host,
+        stage_machine_id=task.stage_machine_id,
         capability="orchestrate",
         write_scope_fingerprint=task.write_scope_fingerprint,
         graph_target=task.graph_target,

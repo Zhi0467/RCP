@@ -12,6 +12,7 @@ import {
   formatCommandArgv,
   githubRepositoryName,
   invalidProjectProvisioningHash,
+  machineCardName,
   parseProjectSetupRoute,
   projectMoveSetupHash,
   projectProvisioningHash,
@@ -570,8 +571,8 @@ function settingsProject() {
     repositories: [{ alias: "research", machine: "local", path: "/repo" }],
     machines: [
       {
-        alias: "local",
-        host: "",
+        machine_id: "local",
+        compute: null,
         compute_probes: { scheduler: null, helper: null },
         removable: false,
       },
@@ -656,17 +657,20 @@ test("the team request derives truth scopes while preserving machine and provide
     name: " Shared project ",
     stateRepository: "paper",
     defaultAutoResearchInvocationCeiling: 10,
-    machines: [{ alias: "server", location: "local", os_account: "rcp" }],
+    machines: [
+      { machine_id: "card-server", central_root: null },
+      { machine_id: "card-gpu", central_root: "/srv/rcp" },
+    ],
     repositories: [
       {
         alias: "paper",
         source: "https://github.com/OpenAI/RCP.git",
-        machine_alias: "server",
+        machine_id: "card-server",
       },
       {
         alias: "private-notes",
         source: "git@github.com:OpenAI/private-notes.git",
-        machine_alias: "server",
+        machine_id: "card-gpu",
       },
     ],
     providerChecks: [
@@ -676,7 +680,7 @@ test("the team request derives truth scopes while preserving machine and provide
         runtime_id: "codex:exec",
         model: "gpt-5.6-luna",
         reasoning: "medium",
-        machine_alias: "server",
+        machine_id: "card-server",
       },
     ],
   });
@@ -686,7 +690,24 @@ test("the team request derives truth scopes while preserving machine and provide
   // Agents read every repository, so the create API's default is the whole scope.
   assert.deepEqual(request.default_run_truth_scope, ["paper", "private-notes"]);
   assert.equal(request.repositories[0].source, "https://github.com/OpenAI/RCP.git");
-  assert.equal(request.provider_checks[0].machine_alias, "server");
+  assert.deepEqual(request.machines, [
+    { machine_id: "card-server", central_root: null },
+    { machine_id: "card-gpu", central_root: "/srv/rcp" },
+  ]);
+  assert.deepEqual(
+    request.repositories.map(({ alias, machine_id }) => [alias, machine_id]),
+    [
+      ["paper", "card-server"],
+      ["private-notes", "card-gpu"],
+    ],
+  );
+  assert.equal(request.provider_checks[0].machine_id, "card-server");
+});
+
+test("a machine shows by its card name and by its id only when the card is unknown", () => {
+  const cards = [{ machine_id: "card-gpu", name: "GPU box" }];
+  assert.equal(machineCardName(cards, "card-gpu"), "GPU box");
+  assert.equal(machineCardName(cards, "card-gone"), "card-gone");
 });
 
 test("the provisioning view renders backend answers and hides native actions in a browser", async () => {
@@ -709,10 +730,7 @@ test("the provisioning view renders backend answers and hides native actions in 
     authorized_by: { space_id: "space-1", user_id: "alice", display_name: "Alice" },
     machines: [
       {
-        alias: "server",
-        location: "local",
-        host: "",
-        os_account: "rcp",
+        machine_id: "card-server",
         intended_central_root: "/var/lib/rcp/projects/project-1",
         resolved_central_root: "/var/lib/rcp/projects/project-1",
         ready: true,
@@ -726,7 +744,7 @@ test("the provisioning view renders backend answers and hides native actions in 
         https_clone_url: "https://github.com/openai/rcp.git",
         ssh_clone_url: "git@github.com:openai/rcp.git",
         settings_url: "https://github.com/openai/rcp/settings/keys",
-        machine_alias: "server",
+        machine_id: "card-server",
         intended_path: "/var/lib/rcp/projects/project-1/paper",
         resolved_path: "/var/lib/rcp/projects/project-1/paper",
         checkout_disposition: "request_created",
@@ -748,7 +766,7 @@ test("the provisioning view renders backend answers and hides native actions in 
         runtime_id: "codex:exec",
         model: "gpt-5.6-luna",
         reasoning: "medium",
-        machine_alias: "server",
+        machine_id: "card-server",
         status: "ready",
         status_label: "Provider ready",
         ready: true,
@@ -825,6 +843,32 @@ test("the provisioning view renders backend answers and hides native actions in 
   assert.match(operatorHtml, /\/var\/lib\/rcp\/projects\/project-1\/paper/);
 
   assert.doesNotMatch(operatorHtml, /deploy_key|operator_action_needed/);
+  assert.match(operatorHtml, /card-server/);
+
+  const namedHtml = renderMarkup(
+    React.createElement(ProvisioningStatus, {
+      request,
+      spaceMachines: [
+        { machine_id: "card-server", name: "Lab server", host: "", os_account: "rcp" },
+      ],
+      events: [],
+      desktop: false,
+      connection: null,
+      operatorTarget: "",
+      probe: null,
+      busy: null,
+      onOperatorTarget: noop,
+      onSaveAndProbe: noop,
+      onCopy: noop,
+      onRun: noop,
+      onTerminal: noop,
+      onCancel: noop,
+      onComplete: noop,
+    }),
+  );
+  const namedLedger = namedHtml.slice(namedHtml.indexOf('class="provisioning-ledger"'));
+  assert.match(namedLedger, /Lab server/);
+  assert.doesNotMatch(namedLedger, /card-server/);
 
   const readyRequest = {
     ...request,

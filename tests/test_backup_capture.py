@@ -22,6 +22,7 @@ from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.backup_capture import (
     BackupCaptureCoordinator,
     BackupKeptArtifactReference,
@@ -47,6 +48,7 @@ from rcp.server_runtime import ServerMetadata
 from rcp.service import canonical_chat_backup_sources, iter_canonical_chat_backup_prefix
 from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport import SSHStateWorkspace, StateUnavailable
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError, inspect_checkout
 from rcp.transport.remote_backup_inventory import inspect_direct_root
@@ -55,6 +57,7 @@ from tests.helpers import unchecked_write_authority
 SOURCE_COMMIT = "a" * 40
 WEB_BUILD_ID = "sha256:" + ("b" * 64)
 FINGERPRINT = "SHA256:" + ("A" * 43)
+REMOTE_MACHINE_ID = "0" * 31 + "1"
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -92,24 +95,16 @@ def _initialize_git_repository(path: Path) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def _manifest_document(
-    repository: Path,
-    *,
-    account: str,
-    host: str = "",
-) -> str:
+def _manifest_document(repository: Path, *, machine_id: str) -> str:
     claude_root = repository.parent / "claude-history"
     codex_root = repository.parent / "codex-history"
     return f'''name = "Backup project"
 
-[[machines]]
-alias = "worker"
-host = "{host}"
-os_account = "{account}"
+machines = ["{machine_id}"]
 
 [[repositories]]
 alias = "paper"
-machine = "worker"
+machine = "{machine_id}"
 path = "{repository}"
 
 [project]
@@ -124,14 +119,6 @@ default_run_truth_scope = ["paper"]
 [sources]
 claude_roots = ["{claude_root}"]
 codex_roots = ["{codex_root}"]
-
-[execution]
-run_on = "worker"
-
-[paper.coach]
-default_provider = "codex"
-default_model = ""
-default_reasoning = "medium"
 '''
 
 
@@ -144,7 +131,7 @@ def _project_inventory(
     host: str = "",
     artifact_name: str = "kept-figure.png",
 ) -> tuple[BackupSnapshotProjectInventory, Path]:
-    account = pwd.getpwuid(os.geteuid()).pw_name
+    machine_id = REMOTE_MACHINE_ID if host else BACKEND_MACHINE_ID
     central_root = tmp_path / f"central-{project_id}"
     repository = central_root / project_id / "repositories" / "paper"
     if not host:
@@ -155,7 +142,7 @@ def _project_inventory(
         manifest_path = tmp_path / f"bootstrap-{project_id}" / "manifest.toml"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(
-        _manifest_document(repository, account=account, host=host),
+        _manifest_document(repository, machine_id=machine_id),
         encoding="utf-8",
     )
     manifest = load_manifest(manifest_path)
@@ -172,10 +159,7 @@ def _project_inventory(
         configuration_sha256=configuration.sha256,
         machines=(
             BackupRecoveryMachine(
-                alias="worker",
-                location="ssh" if host else "local",
-                host=host,
-                os_account=account,
+                machine_id=machine_id,
                 resolved_central_root=str(central_root),
             ),
         ),
@@ -183,7 +167,7 @@ def _project_inventory(
             BackupRecoveryRepository(
                 alias="paper",
                 repository=parse_github_repository_ref("git@github.com:openai/rcp.git"),
-                machine_alias="worker",
+                machine_id=machine_id,
                 resolved_path=str(repository),
                 git_commit=commit,
                 deploy_key_label=(f"rcp:00000000-0000-4000-8000-000000000001:{project_id}:paper"),
@@ -313,6 +297,7 @@ def _sqlite_capture_with_projects(
     inventories: tuple[BackupSnapshotProjectInventory, ...],
 ) -> tuple[Path, str]:
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "File capture lab")
+    store.ensure_space_machines([("", pwd.getpwuid(os.geteuid()).pw_name, "Backend")])
     publication = BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
     projects = tuple(
         sorted(
@@ -504,12 +489,12 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         category = "local_state_missing"
     elif failure == "untrusted_exception":
 
-        def fail_checkout(*_args):
-            raise CheckoutInspectionError("token=private-secret ssh://private-host/private-path")
+        def fail_manifest(*_args, **_kwargs):
+            raise ValueError("token=private-secret ssh://private-host/private-path")
 
-        monkeypatch.setattr(project_files, "verify_checkout_identities", fail_checkout)
-        expected = "repositories"
-        category = "checkout_invalid"
+        monkeypatch.setattr(project_files, "load_upgraded_manifest", fail_manifest)
+        expected = ".research"
+        category = "project_files_invalid"
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)
         .capture(receipt_path, expected_sha256=digest)
@@ -617,9 +602,10 @@ def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(
     target = repository / "artifacts" / "kept-figure.png"
     candidate = b"agent rewrite"
     assert len(candidate) == target.stat().st_size
-    local_workspace = project_files.state_workspace_for_probe(
+    local_workspace = state_module.state_workspace_for_probe(
         load_manifest(inventory.locator or ""),
         data_dir,
+        AppStore(data_dir / "rcp.sqlite3"),
     )
     reads = 0
 
@@ -661,7 +647,7 @@ def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(
 
         monkeypatch.setattr(workspace, "read_kept_artifact", local_read)
 
-    monkeypatch.setattr(project_files, "state_workspace_for_probe", lambda *_args: workspace)
+    monkeypatch.setattr(project_files, "state_workspace_on_hosts", lambda *_args: workspace)
 
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)
@@ -702,17 +688,14 @@ def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(
         data_dir,
         (healthy, remote),
     )
-    original = project_files.verify_checkout_identities
+    original = project_files.state_workspace_on_hosts
 
-    def fail_remote(recovery: BackupCheckoutRecoveryDescriptor) -> None:
-        if recovery.machines[0].location == "ssh":
-            raise BackupCheckoutHostUnavailable(
-                "host unavailable",
-                machine_alias=recovery.machines[0].alias,
-            )
-        original(recovery)
+    def fail_remote(manifest, data_dir, host_of):
+        if manifest.repository_map[manifest.state.repository].machine == REMOTE_MACHINE_ID:
+            raise StateUnavailable("host unavailable")
+        return original(manifest, data_dir, host_of)
 
-    monkeypatch.setattr(project_files, "verify_checkout_identities", fail_remote)
+    monkeypatch.setattr(project_files, "state_workspace_on_hosts", fail_remote)
 
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)
@@ -832,10 +815,20 @@ def test_only_an_ssh_transport_failure_is_classified_as_host_unreachable(
     )
     monkeypatch.setattr(backup_checkout.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
+    cards = {
+        REMOTE_MACHINE_ID: SpaceMachineRecord(
+            machine_id=REMOTE_MACHINE_ID,
+            name="worker",
+            host="unreachable.example",
+            os_account="alice",
+            created_at="2026-08-29T12:00:00+00:00",
+            updated_at="2026-08-29T12:00:00+00:00",
+        )
+    }
     with pytest.raises(BackupCheckoutHostUnavailable):
-        backup_checkout.verify_checkout_identities(recovery)
+        backup_checkout.verify_checkout_identities(recovery, cards)
     with pytest.raises(CheckoutInspectionError) as invalid:
-        backup_checkout.verify_checkout_identities(recovery)
+        backup_checkout.verify_checkout_identities(recovery, cards)
     assert not isinstance(invalid.value, BackupCheckoutHostUnavailable)
 
 
@@ -927,41 +920,21 @@ def test_forbidden_fact_subtree_marks_that_project_uncaptured(tmp_path: Path) ->
     assert receipt.status == "partial"
 
 
-def test_checkout_inspection_rejects_changed_origin_and_push_url(tmp_path: Path) -> None:
+def test_checkout_inspection_ignores_remotes_but_not_a_lost_commit(tmp_path: Path) -> None:
     repository = tmp_path / "checkout"
     commit = _initialize_git_repository(repository)
     account = pwd.getpwuid(os.geteuid()).pw_name
+    _git(repository, "remote", "set-url", "origin", "git@github.com:example/moved.git")
+    _git(repository, "config", "remote.origin.pushurl", "git@github.com:example/other.git")
+    _git(repository, "remote", "add", "upstream", "git@github.com:example/upstream.git")
 
     proof = inspect_checkout(
-        os_account=account,
-        repository_path=str(repository),
-        expected_origin="git@github.com:openai/rcp.git",
-        recorded_commit=commit,
+        os_account=account, repository_path=str(repository), recorded_commit=commit
     )
     assert proof["head"] == commit
-
-    _git(repository, "remote", "set-url", "origin", "git@github.com:openai/other.git")
     with pytest.raises(CheckoutInspectionError):
         inspect_checkout(
-            os_account=account,
-            repository_path=str(repository),
-            expected_origin="git@github.com:openai/rcp.git",
-            recorded_commit=commit,
-        )
-
-    _git(repository, "remote", "set-url", "origin", "git@github.com:openai/rcp.git")
-    _git(
-        repository,
-        "config",
-        "remote.origin.pushurl",
-        "git@github.com:openai/other.git",
-    )
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account,
-            repository_path=str(repository),
-            expected_origin="git@github.com:openai/rcp.git",
-            recorded_commit=commit,
+            os_account=account, repository_path=str(repository), recorded_commit="0" * 40
         )
 
 

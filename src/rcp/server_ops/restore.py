@@ -10,7 +10,7 @@ import sqlite3
 import stat
 import tarfile
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -22,6 +22,12 @@ from rcp.limits import (
     BACKUP_COPY_BUFFER_BYTES,
     BACKUP_RECEIPT_MAX_BYTES,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
+)
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_upgrade import (
+    LegacyBackupArchiveManifest,
+    read_backup_archive_manifest,
+    upgraded_backup_manifest,
 )
 from rcp.server_ops._local_primitives import (
     canonical_json_bytes,
@@ -43,6 +49,7 @@ from rcp.server_ops.provider_cleanup import (
 )
 from rcp.storage import AppStore
 from rcp.storage.artifacts import write_artifact_file
+from rcp.storage.models import SpaceMachineRecord
 
 RESTORE_DIRECTORY_MODE = 0o700
 
@@ -52,6 +59,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Agent tables (v68-73), pending fires (v74), thread queue (v75), coach steers (v76).
+        "b8ed2421e756253fdc93a4c5081236805bf8b33b08aeb67fb1d947334c4dc1c2",
+        "ddbc017f09a3e7ff4ce44bbd9e3c652dea2c2a39505bd136cbbc9ea90c5f9769",
+        "ba42e91552059c5d6614be09f7434f9d386b56c6194e6a388eb50647432c9c1b",
+        "02ea588a6ba12428b60bf6079960d1eccb34ac2dbd5fc12ac770bdca947cb218",
+        "8db62e09e7f221113d3d296ca3af0eda6e82261fa5c00bdd006cbf7eb1a8405a",
+        "5bae964f6c1d983e3fd12fdbb731130ff3c1463407b9fbbbc76d141901c5684b",
+        "90c0d362877c050f985f43403cee3738368edfc68d002c3c1f4a8cbeee4293c0",
+        "26b84f8266ebafd94fbe6dac85ea20ee34e9a4c559ba90d56600ceee8ad81dbe",
+        "1468246ff7b92da2c3063591cadc0607c524246ec81399eae82ed44c58b4b67a",
+        "5bc239ef3bbdf34eeb0ba8123bba10d88559eece98d5bd57cdb0cf2e92bdf0f8",
+        "64058d031291aa5f20cca4c2e1b823393a90580f976cb161a7f1761bcf6fbc23",
+        "804f3c4a2837f21aed2eb009aeedff26bac731a12fe80d17d53f0d2fb0154999",
+        "bb6bd418311c5b0a5caebd2eed8c9b0d738d2941e9604cacdbe992143a96df9f",
         "05095de94823752b75afb91025690d49f9608862332eaf96719980b941013b8c",
         "0603bc7a67307330641feb2885987bc6db72edf3aefd71dd0f88d806ac021dcc",
         "52fba32f73682c7c325cff1a359e6e8034dd56f34595c1749891bf33a22e8a50",
@@ -522,7 +542,7 @@ def _digest(value: str, *, label: str) -> str:
 class RestoreRepositoryRecovery(_StrictModel):
     project_id: str
     repository_alias: str
-    machine_alias: str
+    machine_id: str
     state: Literal["key_started", "key_ready", "checkout_ready"]
     source: Literal["github", "server_only"] = "github"
     deploy_key_label: str | None = None
@@ -656,7 +676,11 @@ def _canonical_sha256(value: object) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
-def restore_old_authority_boundary(manifest: BackupArchiveManifest) -> str:
+def restore_old_authority_boundary(
+    manifest: BackupArchiveManifest, cards: Mapping[str, SpaceMachineRecord]
+) -> str:
+    """Digest the archived deploy keys and the routes, read from the archived cards."""
+
     repositories = []
     routes = []
     for project in sorted(manifest.projects, key=lambda item: item.project_id):
@@ -674,11 +698,11 @@ def restore_old_authority_boundary(manifest: BackupArchiveManifest) -> str:
         routes.extend(
             {
                 "project_id": project.project_id,
-                "alias": machine.alias,
-                "host": machine.host,
-                "os_account": machine.os_account,
+                "machine_id": machine.machine_id,
+                "host": cards[machine.machine_id].host,
+                "os_account": cards[machine.machine_id].os_account,
             }
-            for machine in sorted(project.recovery.machines, key=lambda item: item.alias)
+            for machine in sorted(project.recovery.machines, key=lambda item: item.machine_id)
         )
     return _canonical_sha256(
         {
@@ -739,7 +763,7 @@ def _extract_verified_archive(
     *,
     expected_uid: int,
     expected_gid: int,
-) -> tuple[BackupArchiveManifest, str]:
+) -> tuple[BackupArchiveManifest | LegacyBackupArchiveManifest, str]:
     payload_root.mkdir(mode=RESTORE_DIRECTORY_MODE)
     os.chown(payload_root, expected_uid, expected_gid)
     try:
@@ -758,7 +782,7 @@ def _extract_verified_archive(
                 raise RestoreRefused("The restore archive manifest cannot be read.")
             manifest_bytes = manifest_stream.read(BACKUP_RECEIPT_MAX_BYTES + 1)
             try:
-                manifest = BackupArchiveManifest.model_validate_json(manifest_bytes)
+                manifest = read_backup_archive_manifest(manifest_bytes)
             except ValueError as exc:
                 raise RestoreRefused(
                     "The restore archive manifest is invalid or unsupported."
@@ -975,7 +999,7 @@ class RestorePrepareRequest(_StrictModel):
 
 
 def _operator_reply(
-    request, manifest, members, *, message, progress=None, actions=None, extra_fields=()
+    request, manifest, members, cards, *, message, progress=None, actions=None, extra_fields=()
 ):
     import json
 
@@ -986,7 +1010,7 @@ def _operator_reply(
     )
 
     values = {
-        "old_authority_boundary": restore_old_authority_boundary(manifest),
+        "old_authority_boundary": restore_old_authority_boundary(manifest, cards),
         "member_roster_boundary": restore_member_roster_boundary(manifest.captured_at, members),
         "archive_captured_at": manifest.captured_at.isoformat(),
     }
@@ -1003,7 +1027,11 @@ def _operator_reply(
             for r in p.recovery.repositories
         ],
         "machines": [
-            m.model_dump(mode="json")
+            {
+                **m.model_dump(mode="json"),
+                "host": cards[m.machine_id].host,
+                "os_account": cards[m.machine_id].os_account,
+            }
             for p in manifest.projects
             if p.recovery
             for m in p.recovery.machines
@@ -1041,30 +1069,17 @@ def _operator_reply(
     }
 
 
-def _recovery_machine(archived):
-    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
-    from rcp.storage import ProjectProvisioningMachineIntent
+def _recovery_machine(archived, cards):
+    """The archived checkout machine, routed by its card in the archived space."""
+    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, MachineRoute
 
-    if archived.location == "local":
-        if (
-            archived.os_account != DEFAULT_SERVER_LAYOUT.service_account
-            or archived.resolved_central_root != str(DEFAULT_SERVER_LAYOUT.projects_root)
-        ):
-            raise RestoreRefused("Archived local checkout target differs from this installation.")
-        return ProjectProvisioningMachineIntent.model_construct(
-            alias=archived.alias,
-            location="local",
-            host="",
-            os_account=archived.os_account,
-            central_root=archived.resolved_central_root,
-        )
-    return ProjectProvisioningMachineIntent(
-        alias=archived.alias,
-        location="ssh",
-        host=archived.host,
-        os_account=archived.os_account,
-        central_root=archived.resolved_central_root,
-    )
+    route = MachineRoute.of(cards[archived.machine_id], archived.resolved_central_root)
+    if route.location == "local" and (
+        route.os_account != DEFAULT_SERVER_LAYOUT.service_account
+        or route.central_root != str(DEFAULT_SERVER_LAYOUT.projects_root)
+    ):
+        raise RestoreRefused("Archived local checkout target differs from this installation.")
+    return route
 
 
 def _recover_adopted(checkouts, machine, repository, saved):
@@ -1080,7 +1095,7 @@ def _recover_adopted(checkouts, machine, repository, saved):
             "python3",
             "-c",
             _remote_checkout_source(),
-            "inspect-adopted",
+            "inspect",
             machine.os_account,
             repository.resolved_path,
             recorded,
@@ -1095,7 +1110,6 @@ def _recover_adopted(checkouts, machine, repository, saved):
     if payload != {
         "account": machine.os_account,
         "repository_path": repository.resolved_path,
-        "origin": "",
         "head": commit,
         "recorded_commit": recorded,
     } or not re.fullmatch(r"[0-9a-f]{40}", str(commit)):
@@ -1129,7 +1143,6 @@ def _recover_server_only(checkouts, machine, repository, saved, archived_researc
     if payload != {
         "account": machine.os_account,
         "repository_path": repository.resolved_path,
-        "origin": "",
         "head": commit,
         "recorded_commit": saved.checkout_commit if saved is not None else commit,
     } or (saved is not None and commit != saved.checkout_commit):
@@ -1166,7 +1179,7 @@ def _record_restored_checkout_proofs(store, data_dir, capture, progress):
                 BackupRecoveryRepository(
                     alias=r.alias,
                     repository=r.repository,
-                    machine_alias=r.machine_alias,
+                    machine_id=r.machine_id,
                     resolved_path=r.resolved_path,
                     git_commit=r.git_check.commit,
                     deploy_key_label=r.git_check.deploy_key_label,
@@ -1201,7 +1214,7 @@ def _record_restored_checkout_proofs(store, data_dir, capture, progress):
     )
 
 
-def _recover_repositories(request, manifest, previous_store, members):
+def _recover_repositories(request, manifest, previous_store, members, cards):
     from rcp.projects import inspect_backup_project_registration
     from rcp.server_ops.backup_checkout import verify_checkout_identities
     from rcp.server_ops.git_credentials import (
@@ -1221,8 +1234,11 @@ def _recover_repositories(request, manifest, previous_store, members):
         assert recovery is not None
         existing = None if previous_store is None else previous_store.project(capture.project_id)
         if existing is not None:
+            assert previous_store is not None
+            existing_cards = previous_store.space_machines()
             registration = inspect_backup_project_registration(
                 existing,
+                store=previous_store,
                 data_dir=Path(request.data_dir),
                 provisioning_requests=previous_store.completed_project_provisioning_requests(
                     capture.project_id
@@ -1238,13 +1254,16 @@ def _recover_repositories(request, manifest, previous_store, members):
                 raise RestoreRefused(
                     "Existing project checkout authority differs from the protected archive."
                 )
-            verify_checkout_identities(registration.recovery)
+            verify_checkout_identities(
+                registration.recovery,
+                {card.machine_id: card for card in existing_cards},
+            )
             # The current typed provisioning owner already proves these exact
             # checkouts, host/account routes, and credentials. No Git mutation.
             continue
-        machines = {m.alias: m for m in recovery.machines}
+        machines = {m.machine_id: m for m in recovery.machines}
         for repository in recovery.repositories:
-            machine = _recovery_machine(machines[repository.machine_alias])
+            machine = _recovery_machine(machines[repository.machine_id], cards)
             saved = next(
                 (
                     p
@@ -1275,7 +1294,7 @@ def _recover_repositories(request, manifest, previous_store, members):
                         RestoreRepositoryRecovery(
                             project_id=capture.project_id,
                             repository_alias=repository.alias,
-                            machine_alias=repository.machine_alias,
+                            machine_id=repository.machine_id,
                             source="server_only",
                             state="checkout_ready",
                             central_root=machine.central_root,
@@ -1305,7 +1324,7 @@ def _recover_repositories(request, manifest, previous_store, members):
                     RestoreRepositoryRecovery(
                         project_id=capture.project_id,
                         repository_alias=repository.alias,
-                        machine_alias=repository.machine_alias,
+                        machine_id=repository.machine_id,
                         state="key_started",
                     )
                 )
@@ -1358,6 +1377,7 @@ def _recover_repositories(request, manifest, previous_store, members):
                         request,
                         manifest,
                         members,
+                        cards,
                         progress=progress,
                         message=probe.diagnostic,
                         actions=[
@@ -1376,6 +1396,7 @@ def _recover_repositories(request, manifest, previous_store, members):
                     request,
                     manifest,
                     members,
+                    cards,
                     progress=progress,
                     message=probe.diagnostic,
                     actions=[a.model_dump(mode="json") for a in step.actions],
@@ -1393,7 +1414,7 @@ def _recover_repositories(request, manifest, previous_store, members):
             )
             if (
                 result.repository_path != repository.resolved_path
-                or result.central_root != machines[repository.machine_alias].resolved_central_root
+                or result.central_root != machines[repository.machine_id].resolved_central_root
                 or result.commit != probe.commit
             ):
                 raise RestoreRefused("Reconstructed checkout differs from the archived target.")
@@ -1546,19 +1567,6 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     )
     if manifest.encryption_recipient_fingerprint != request.recipient_fingerprint:
         raise RestoreRefused("Archive encryption recipient differs from the recovery identity.")
-    repository_identities = {
-        (project.project_id, repository.alias): repository.machine_alias
-        for project in manifest.projects
-        if project.recovery is not None
-        for repository in project.recovery.repositories
-    }
-    if any(
-        repository_identities.get((item.project_id, item.repository_alias)) != item.machine_alias
-        for item in request.progress
-    ):
-        raise RestoreRefused(
-            "Saved restore progress does not match the archived repository inventory."
-        )
     archived_database = payload / manifest.sqlite_snapshot.archive_path
     _verify_sqlite_integrity(archived_database)
     if (
@@ -1618,6 +1626,35 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         shutil.copyfile(source, temporary)
         os.replace(temporary, target)
     with closing(AppStore(database)) as store:
+        cards = {card.machine_id: card for card in store.space_machines()}
+        try:
+            manifest = upgraded_backup_manifest(manifest, cards.values())
+        except ValueError as exc:
+            raise RestoreRefused(
+                "An archived checkout machine has no machine in the archived space."
+            ) from exc
+        if any(
+            machine.machine_id not in cards
+            for project in manifest.projects
+            if project.recovery is not None
+            for machine in project.recovery.machines
+        ):
+            raise RestoreRefused(
+                "An archived checkout machine has no machine in the archived space."
+            )
+        repository_identities = {
+            (project.project_id, repository.alias): repository.machine_id
+            for project in manifest.projects
+            if project.recovery is not None
+            for repository in project.recovery.repositories
+        }
+        if any(
+            repository_identities.get((item.project_id, item.repository_alias)) != item.machine_id
+            for item in request.progress
+        ):
+            raise RestoreRefused(
+                "Saved restore progress does not match the archived repository inventory."
+            )
         if "artifact_inventory" in manifest.model_fields_set:
             recorded = {
                 (i.artifact_id, i.file_id, i.sha256, i.size_bytes)
@@ -1653,7 +1690,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         )
         if not members:
             raise RestoreRefused("Restored team must retain an active authenticating member.")
-        authority = restore_old_authority_boundary(manifest)
+        authority = restore_old_authority_boundary(manifest, cards)
         roster = restore_member_roster_boundary(manifest.captured_at, members)
         if request.confirm_old_authority is not None and request.confirm_old_authority != authority:
             raise RestoreRefused("Archived authority changed after confirmation.")
@@ -1668,6 +1705,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 request,
                 manifest,
                 members,
+                cards,
                 message="Review the archived authority and retained member/token inventory, then confirm both exact boundaries.",
             )
         provider_cleanup_unreached = (
@@ -1686,7 +1724,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         )
         if previous is not None:
             snapshots.callback(previous.close)
-        progress_reply = _recover_repositories(request, manifest, previous, members)
+        progress_reply = _recover_repositories(request, manifest, previous, members, cards)
         if progress_reply is not None:
             return progress_reply
         for capture in manifest.imported_sources:
@@ -1725,7 +1763,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 uid=os.geteuid(),
                 gid=os.getegid(),
             )
-            if record.state_remote:
+            state_remote = record.state_machine_id != BACKEND_MACHINE_ID
+            if state_remote:
                 # Bootstrap bytes are staged under app-data, but stored locator
                 # must name their eventual selected live location.
                 new_locator = str(data / Path(record.locator).relative_to(app))
@@ -1752,13 +1791,13 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 capture,
                 payload,
                 operation_projects,
-                existing_remote=record.state_remote
+                existing_remote=state_remote
                 and previous is not None
                 and previous.project(capture.project_id) is not None,
             )
             complete_restored_project_publication(store, capture, owners, materialization)
             _record_restored_checkout_proofs(store, app, capture, request.progress)
-            if record.state_remote:
+            if state_remote:
                 with closing(sqlite3.connect(database)) as connection, connection:
                     connection.execute(
                         "UPDATE projects SET locator=? WHERE project_id=?",
@@ -1767,7 +1806,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             if workspace_root is not None:
                 for name in (".research", "artifacts", "views"):
                     candidate_root = workspace_root.parent / name
-                    live = Path(record.state_location).parent / name
+                    live = Path(record.state_path).parent / name
                     if name != ".research" and not candidate_root.exists() and not live.exists():
                         continue
                     candidate_root.mkdir(mode=0o700, exist_ok=True)

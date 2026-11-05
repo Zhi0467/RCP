@@ -18,6 +18,7 @@ from rcp.agents.memory_file_io import (
 )
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import MEMORY_MIGRATED_TITLE_MAX_CHARS
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.storage.agent_threads import bound_thread
 from rcp.transport.run_stage import RemoteRunStage
 
@@ -44,16 +45,14 @@ def task_has_project_memory(task: AgentTaskRecord | None) -> bool:
     return task is not None and task.kind in {"node_chat", "project_chat", "auto_research"}
 
 
-def change_project_memory(data_dir: Path, project: ProjectRecord, destination: str | None) -> None:
-    if project.state_remote:
-        host, separator, _path = project.state_location.partition(":/")
-        if not separator:
-            raise ValueError("Remote project state location has no base host")
-        RemoteRunStage(host).project_memory(
+def change_project_memory(store: AppStore, project: ProjectRecord, destination: str | None) -> None:
+    """Move or delete project memory on the state card, over its current host."""
+    if project.state_machine_id != BACKEND_MACHINE_ID:
+        RemoteRunStage(host_of(store, project.state_machine_id)).project_memory(
             {"project_id": project.project_id, "destination": destination}
         )
     else:
-        change_project_files(data_dir, project.project_id, destination)
+        change_project_files(store.path.parent, project.project_id, destination)
 
 
 def finish_project_memory_rename(store: AppStore, project: ProjectRecord) -> None:
@@ -70,7 +69,7 @@ def finish_project_memory_rename(store: AppStore, project: ProjectRecord) -> Non
     for row in aliases:
         old_id = row[0]
         change_project_memory(
-            store.path.parent, project.model_copy(update={"project_id": old_id}), project.project_id
+            store, project.model_copy(update={"project_id": old_id}), project.project_id
         )
         with store.connection() as connection:
             connection.execute(
@@ -140,15 +139,16 @@ def prepare_project_memory(
     safe_component(project_id)
     with _MEMORY_LOCKS(f"{store.path.resolve()}:{project_id}"):
         project = store.project(project_id)
-        location = project.state_location if project else None
+        location = (project.state_machine_id, project.state_path) if project else (None, None)
         # Only a deletion still owed on this same base could remove the new notes;
         # one left on an old or unreachable base never blocks a launch.
         with store.connection() as connection:
             pending = connection.execute(
-                "SELECT 1 FROM memory_deletions WHERE (? IS NULL OR state_location = ?) "
+                "SELECT 1 FROM memory_deletions WHERE (? IS NULL OR "
+                "(state_machine_id = ? AND state_path = ?)) "
                 "AND (project_id = ? OR project_id IN (SELECT alias_id FROM project_aliases "
                 "WHERE canonical_project_id = ?))",
-                (location, location, project_id, project_id),
+                (location[0], *location, project_id, project_id),
             ).fetchone()
         if pending:
             raise ValueError("Project memory deletion remains pending; retry cleanup before launch")

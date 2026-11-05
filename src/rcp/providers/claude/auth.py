@@ -97,18 +97,18 @@ class ClaudeAuthentication(ProviderAuthentication):
     def credential_available(
         self,
         credentials: ProviderCredentialStore,
-        host: str,
+        machine_id: str,
         login_id: str,
         *,
         login_state: ProviderLoginStateRecord | None = None,
     ) -> bool:
-        return credentials.token(self.credential_namespace, host, login_id) is not None
+        return credentials.token(self.credential_namespace, machine_id, login_id) is not None
 
     def credential_metadata(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str
     ) -> dict | None:
-        record = credentials.token_record(self.credential_namespace, host, login_id)
-        if record is None or not self.credential_available(credentials, host, login_id):
+        record = credentials.token_record(self.credential_namespace, machine_id, login_id)
+        if record is None or not self.credential_available(credentials, machine_id, login_id):
             return None
         metadata = record.model_dump()
         try:
@@ -121,12 +121,12 @@ class ClaudeAuthentication(ProviderAuthentication):
         return metadata
 
     def process_environment(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, host: str
     ) -> ProviderProcessEnvironment:
         if host:
             return ProviderProcessEnvironment(
                 remote_prefix=self.remote_token_prefix(self.token_path(login_id))
-                if self.credential_available(credentials, host, login_id)
+                if self.credential_available(credentials, machine_id, login_id)
                 else None
             ).with_variables(self.process_variables, remote=True)
         environment = {
@@ -134,7 +134,7 @@ class ClaudeAuthentication(ProviderAuthentication):
             for name, value in os.environ.items()
             if name not in self.conflicting_variables and name not in self.host_session_variables
         }
-        token = credentials.token(self.credential_namespace, host, login_id)
+        token = credentials.token(self.credential_namespace, machine_id, login_id)
         environment.pop(self.token_variable, None)
         if token:
             environment[self.token_variable] = token
@@ -179,7 +179,7 @@ class ClaudeAuthentication(ProviderAuthentication):
     def save_token(
         self,
         credentials: ProviderCredentialStore,
-        host: str,
+        machine_id: str,
         login_id: str,
         token: str,
         *,
@@ -188,7 +188,7 @@ class ClaudeAuthentication(ProviderAuthentication):
     ) -> None:
         credentials.store_token(
             self.credential_namespace,
-            host,
+            machine_id,
             token,
             member_id=member_id,
             now=now,
@@ -196,24 +196,30 @@ class ClaudeAuthentication(ProviderAuthentication):
         )
 
     def prepare_verification(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, host: str
     ) -> None:
         if host:
             self._remote(
                 host,
                 self.remote_token_placement_command(self.token_path(login_id)),
-                token=credentials.token(self.credential_namespace, host, login_id),
+                token=credentials.token(self.credential_namespace, machine_id, login_id),
             )
 
     def verified(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str, *, now: str
+        self, credentials: ProviderCredentialStore, machine_id: str, login_id: str, *, now: str
     ) -> None:
-        credentials.mark_token_verified(self.credential_namespace, host, login_id, now=now)
+        credentials.mark_token_verified(self.credential_namespace, machine_id, login_id, now=now)
 
     def sign_out(
-        self, credentials: ProviderCredentialStore, host: str, login_id: str, binary: str
+        self,
+        credentials: ProviderCredentialStore,
+        machine_id: str,
+        login_id: str,
+        binary: str,
+        *,
+        host: str,
     ) -> None:
-        credentials.delete_token(self.credential_namespace, host, login_id)
+        credentials.delete_token(self.credential_namespace, machine_id, login_id)
         if host:
             self._remote(host, f"rm -f {_quote_home_relative(self.token_path(login_id))}")
 

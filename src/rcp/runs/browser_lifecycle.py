@@ -17,6 +17,7 @@ from rcp.agents.memory_files import change_project_memory
 from rcp.core.models import HiddenReadScope
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
+from rcp.machine_cards import host_of
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, ProjectRecord
@@ -54,6 +55,7 @@ def acquire_turn_browser(
     store: AppStore | None,
     project_id: str | None,
     stage_root: str,
+    machine_id: str,
     execution_host: str,
     execution: RemoteRunStage | None,
     workspace_dir: str,
@@ -76,7 +78,7 @@ def acquire_turn_browser(
         )
         store.record_browser_owner(
             owner,
-            execution_host=execution_host,
+            machine_id=machine_id,
             workspace_dir=workspace_dir,
             stage_root=stage_root,
             chat_id=chat_id,
@@ -99,8 +101,8 @@ def acquire_turn_browser(
         )
 
 
-def _owner_execution(row) -> RemoteRunStage | None:
-    execution = RemoteRunStage(row["execution_host"]) if row["execution_host"] else None
+def _owner_execution(host: str, row) -> RemoteRunStage | None:
+    execution = RemoteRunStage(host) if host else None
     if execution is not None:
         execution.root = PurePosixPath(row["stage_root"])
     return execution
@@ -170,18 +172,16 @@ def _retry_memory_cleanup(store: AppStore) -> None:
         for pending in pending_memory:
             try:
                 project = ProjectRecord.model_validate_json(pending["project_json"])
-                if project.state_remote:
-                    host = project.state_location.partition(":/")[0]
-                    if not pending["host_key"] or browser_host_key(host) != pending["host_key"]:
-                        logger.warning(
-                            "Project memory cleanup remains pending: base identity unavailable or changed"
-                        )
-                        continue
-                change_project_memory(store.path.parent, project, None)
+                change_project_memory(store, project, None)
                 with store.connection() as connection:
                     connection.execute(
-                        "DELETE FROM memory_deletions WHERE project_id = ? AND state_location = ?",
-                        (pending["project_id"], pending["state_location"]),
+                        "DELETE FROM memory_deletions WHERE project_id = ? "
+                        "AND state_machine_id = ? AND state_path = ?",
+                        (
+                            pending["project_id"],
+                            pending["state_machine_id"],
+                            pending["state_path"],
+                        ),
                     )
             except Exception:
                 logger.exception("Project memory cleanup remains pending")
@@ -221,13 +221,11 @@ def retry_browser_cleanup(
         if active is not None:
             continue
         try:
-            pending = store.unresolved_remote_provider_passes(
-                row["execution_host"], row["stage_root"]
-            )
+            pending = store.unresolved_remote_provider_passes(row["machine_id"], row["stage_root"])
             if any(operation_id != finished_operation_id for operation_id, _ in pending):
                 from rcp.runs.provider_process import require_remote_provider_quiescence
 
-                require_remote_provider_quiescence(store, row["execution_host"], row["stage_root"])
+                require_remote_provider_quiescence(store, row["machine_id"], row["stage_root"])
                 # Settlement may have completed this cleanup through its own finalizer.
                 with store.connection() as connection:
                     remaining = connection.execute(
@@ -238,9 +236,10 @@ def retry_browser_cleanup(
                     continue
             owner = BrowserOwnerKey.model_validate_json(row["owner_json"])
             # Never address an old profile through an alias which now names another account.
-            if browser_host_key(row["execution_host"]) != owner.host_key:
+            host = host_of(store, row["machine_id"])
+            if browser_host_key(host) != owner.host_key:
                 continue
-            execution = _owner_execution(row)
+            execution = _owner_execution(host, row)
             browser_runtime_seam.close_browser_owner(
                 owner,
                 execution=execution,
@@ -271,7 +270,7 @@ def _browser_result_pending(store: AppStore, operation_id: str) -> bool:
     return task.phase == "awaiting_remote_result" or any(
         pending_id == operation_id
         for pending_id, _ in store.unresolved_remote_provider_passes(
-            task.stage_host or "", task.stage_root or ""
+            task.stage_machine_id or "", task.stage_root or ""
         )
     )
 
@@ -305,7 +304,7 @@ def finish_recorded_browser(store: AppStore, operation_id: str) -> None:
                 lease_id=status.lease_id,
                 owner=BrowserOwnerKey.model_validate_json(row["owner_json"]),
             ),
-            execution=_owner_execution(row),
+            execution=_owner_execution(host_of(store, row["machine_id"]), row),
             data_dir=store.path.parent,
         )
     except Exception:
@@ -319,6 +318,7 @@ async def browser_turn(
     request: BaseModel,
     *,
     workspace: Path,
+    machine_id: str,
     execution_host: str,
     execution: AgentTaskExecution | None,
     remote_stage: RemoteRunStage | None,
@@ -344,6 +344,7 @@ async def browser_turn(
         project_id=task.project_id if task is not None else None,
         stage_root=(execution.stage_root if execution is not None else None)
         or str(workspace.parent),
+        machine_id=machine_id,
         execution_host=execution_host,
         execution=remote_stage,
         workspace_dir=str(workspace),

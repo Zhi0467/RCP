@@ -7,6 +7,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.provider_login import MachineDependenciesMissing
 from rcp.service import RunRequest
 from rcp.storage import AppStore
@@ -44,7 +45,7 @@ def test_admission_asks_the_execution_machine_before_any_row(tmp_path, refused):
     tasks = BackgroundAgentTasks(store, _done, dependency_checker=checker)  # pyright: ignore[reportArgumentType]
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id=str(uuid4()),
         message="Inspect the result.",

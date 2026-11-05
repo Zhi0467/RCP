@@ -17,6 +17,7 @@ from rcp.core.models import GraphState, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation import ValidationContext, validate_patch
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
@@ -29,7 +30,8 @@ def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
     manifest, tmp_path
 ) -> None:
     state = GraphState(project_truth_scope=["repo-a"])
-    assembler = ContextAssembler(manifest)
+    backend = AppStore(tmp_path / "app.sqlite3").backend_space_machine()
+    assembler = ContextAssembler(manifest, cards={BACKEND_MACHINE_ID: backend})
     run = assembler.assemble(state)
     chat = assembler.chat_context(state, graph_target=GraphTargetRef())
     coach = assembler.paper_pointers()
@@ -87,7 +89,7 @@ def test_a_group_sibling_repository_read_is_stamped_and_admitted(
         project=lambda _: SimpleNamespace(locator="sibling-manifest", name="Sibling"),
     )
     context = service.assemble_chat(RunRequest(chat_scope="project"))
-    context.group_context = build_group_context(service, store, "laptop")
+    context.group_context = build_group_context(service, store, BACKEND_MACHINE_ID)
 
     read_scope = context.read_scope
     sibling_refs = [f"{sibling_id}:repo-a", f"{sibling_id}:repo-b"]
@@ -120,14 +122,15 @@ def test_a_group_sibling_repository_read_is_stamped_and_admitted(
 
 def test_a_resumed_task_keeps_its_recorded_write_set(manifest, tmp_path) -> None:
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
-    service = ProjectService(
-        manifest, history, PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))
-    )
+    store = AppStore(tmp_path / "app.sqlite3")
+    service = ProjectService(manifest, history, PaperService(manifest, store))
     assert history.state().project_truth_scope == ["repo-a", "repo-b"]
     stored = RunRequest(run_truth_scope=["repo-a"], chat_scope="project")
 
     chat = service.assemble_chat(stored)
-    run = ContextAssembler(manifest).assemble(history.state(), writable=stored.run_truth_scope)
+    run = ContextAssembler(
+        manifest, cards={BACKEND_MACHINE_ID: store.backend_space_machine()}
+    ).assemble(history.state(), writable=stored.run_truth_scope)
 
     for context in (chat, run):
         assert context.run_truth_scope == ["repo-a"]

@@ -814,7 +814,7 @@ export function ChatsWorkspace({
     const profile = project.agent_profiles?.[conversation.kind];
     const config = conversationAgentConfig(
       conversation,
-      profile ? profileRunConfig(profile) : NO_RUN_CONFIG,
+      profile ? profileRunConfig(profile, project.run_on) : NO_RUN_CONFIG,
     );
     const label =
       (latest?.request.provider === config.provider ? latest.provider_label : null) ||

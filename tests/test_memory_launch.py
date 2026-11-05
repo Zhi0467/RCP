@@ -13,8 +13,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 def test_memory_roots_survive_scope_serialization_and_change_identity(tmp_path: Path) -> None:
     values = dict(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability="work_auto",
         stage_root=str(tmp_path),
         workspace_root=str(tmp_path),
@@ -273,8 +272,7 @@ def test_member_notes_are_labelled_apart_from_project_memory(tmp_path):
     shared, notes = str(tmp_path / "shared"), str(tmp_path / "members" / "alice")
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability="work_auto",
         stage_root=str(tmp_path),
         workspace_root=str(tmp_path),

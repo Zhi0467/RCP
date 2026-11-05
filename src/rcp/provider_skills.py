@@ -21,9 +21,10 @@ from rcp.agents.launcher import AgentLauncher, ProviderReadiness
 from rcp.agents.provider_accounts import ProviderAccounts, record_provider_failure
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
+from rcp.machine_cards import LoginKey, card, host_of
 from rcp.providers import ProviderSkill, ProviderSkillProbe, ProviderSkillReference, profile_for
 from rcp.storage import AppStore, ProviderSkillInventoryRecord
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport.ssh import ssh_arguments
 
 _REFRESH_COMPLETION_GRACE_SECONDS = 5.0
@@ -69,8 +70,7 @@ class ProviderSkillInventorySnapshot(BaseModel):
     """The last-known provider-native skills for one execution target."""
 
     provider: str
-    machine: str
-    host: str
+    machine_id: str
     configured_binary: str | None = None
     resolved_binary: str | None = None
     provider_version: str | None = None
@@ -122,17 +122,17 @@ class ProviderSkillInventoryManager:
     def mark_refreshing(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
     ) -> ProviderSkillInventorySnapshot:
         with self._lock:
-            self._pending_refresh_locked(provider, host, configured_binary)
-        return self.snapshot(provider, host, configured_binary, host or "local")
+            self._pending_refresh_locked(provider, machine_id, configured_binary)
+        return self.snapshot(provider, machine_id, configured_binary)
 
     def refresh(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
         readiness: ProviderReadiness,
         *,
@@ -148,7 +148,7 @@ class ProviderSkillInventoryManager:
         """
 
         with self._lock:
-            pending = self._pending_refresh_locked(provider, host, configured_binary)
+            pending = self._pending_refresh_locked(provider, machine_id, configured_binary)
             owns_refresh = not pending.owned
             if owns_refresh:
                 pending.owned = True
@@ -156,7 +156,7 @@ class ProviderSkillInventoryManager:
                     time.monotonic() + self.timeout + _REFRESH_COMPLETION_GRACE_SECONDS
                 )
 
-        machine = host or "local"
+        machine = card(self.store, machine_id).name
         result: ProviderSkillInventorySnapshot | None = None
         if owns_refresh:
             try:
@@ -173,7 +173,7 @@ class ProviderSkillInventoryManager:
                         raise ValueError("Provider did not report a version during readiness.")
 
                     if self.accounts is not None:
-                        self._probe_login(provider, host)
+                        self._probe_login(provider, machine_id)
                     elif not readiness.authenticated:
                         raise ValueError(
                             readiness.reason or "Provider is not ready for skill discovery."
@@ -181,7 +181,9 @@ class ProviderSkillInventoryManager:
 
                     profile = profile_for(provider)
                     probe = profile.skill_probe(readiness.binary_path)
-                    stored = self.store.provider_skill_inventory(provider, host, configured_binary)
+                    stored = self.store.provider_skill_inventory(
+                        provider, machine_id, configured_binary
+                    )
                     if (
                         reuse_cached
                         and stored is not None
@@ -194,7 +196,7 @@ class ProviderSkillInventoryManager:
                         inventory_hash = stored.inventory_hash or _inventory_hash(skills)
                         refreshed_at = stored.refreshed_at
                     else:
-                        payload = self._run_probe(host, probe, provider=provider)
+                        payload = self._run_probe(machine_id, probe, provider=provider)
                         skills = sorted(
                             profile.parse_skills(payload),
                             key=lambda item: (item.name, item.path or ""),
@@ -203,7 +205,7 @@ class ProviderSkillInventoryManager:
                         refreshed_at = _now()
                     self.store.save_provider_skill_inventory_success(
                         provider,
-                        host,
+                        machine_id,
                         configured_binary,
                         resolved_binary=readiness.binary_path,
                         provider_version=readiness.version,
@@ -216,12 +218,12 @@ class ProviderSkillInventoryManager:
                 except Exception as exc:
                     self.store.save_provider_skill_inventory_failure(
                         provider,
-                        host,
+                        machine_id,
                         configured_binary,
                         diagnostic=str(exc),
                         updated_at=_now(),
                     )
-                result = self.snapshot(provider, host, configured_binary, machine)
+                result = self.snapshot(provider, machine_id, configured_binary)
             finally:
                 with self._lock:
                     pending.result = result
@@ -244,29 +246,29 @@ class ProviderSkillInventoryManager:
     def snapshot(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
-        machine: str,
     ) -> ProviderSkillInventorySnapshot:
-        record = self.store.provider_skill_inventory(provider, host, configured_binary)
+        record = self.store.provider_skill_inventory(provider, machine_id, configured_binary)
         if record is None:
             return ProviderSkillInventorySnapshot(
                 provider=provider,
-                machine=machine,
-                host=host,
+                machine_id=machine_id,
                 configured_binary=configured_binary,
                 status="unavailable",
             )
-        return _snapshot(record, machine=machine, configured_binary=configured_binary)
+        return _snapshot(record, configured_binary=configured_binary)
 
     def wait(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
     ) -> bool:
         with self._lock:
-            pending = self._pending_refreshes.get(self._key(provider, host, configured_binary))
+            pending = self._pending_refreshes.get(
+                self._key(provider, machine_id, configured_binary)
+            )
         if pending is None:
             return True
         return self._wait_for_pending(pending)
@@ -274,14 +276,14 @@ class ProviderSkillInventoryManager:
     def resolve(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
-        machine: str,
         names: list[str],
     ) -> list[ProviderSkillReference]:
         if not names:
             return []
-        inventory = self.snapshot(provider, host, configured_binary, machine)
+        inventory = self.snapshot(provider, machine_id, configured_binary)
+        machine = card(self.store, machine_id).name
         available = {skill.name: skill for skill in inventory.skills if skill.enabled}
         missing = [name for name in names if name not in available]
         if missing:
@@ -297,7 +299,7 @@ class ProviderSkillInventoryManager:
         return [
             ProviderSkillReference(
                 provider=provider,
-                machine=machine,
+                machine=machine_id,
                 provider_version=inventory.provider_version,
                 inventory_hash=inventory.inventory_hash,
                 name=name,
@@ -311,10 +313,10 @@ class ProviderSkillInventoryManager:
     def _pending_refresh_locked(
         self,
         provider: str,
-        host: str,
+        machine_id: str,
         configured_binary: str | None,
     ) -> _PendingRefresh:
-        key = self._key(provider, host, configured_binary)
+        key = self._key(provider, machine_id, configured_binary)
         pending = self._pending_refreshes.get(key)
         if pending is not None and not pending.event.is_set():
             return pending
@@ -327,7 +329,7 @@ class ProviderSkillInventoryManager:
         # write can land after the owner's terminal write and strand the cache.
         self.store.mark_provider_skill_inventory_refreshing(
             provider,
-            host,
+            machine_id,
             configured_binary,
             updated_at=_now(),
         )
@@ -346,20 +348,20 @@ class ProviderSkillInventoryManager:
                 if pending.deadline <= deadline:
                     return False
 
-    def _probe_login(self, provider: str, host: str) -> LoginKey:
+    def _probe_login(self, provider: str, machine_id: str) -> LoginKey:
         """Choose a healthy shared credential independently of machine readiness."""
-        key = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        key = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
         if self.accounts is not None:
             candidates = sorted(
-                self.store.provider_logins(provider, host),
+                self.store.provider_logins(provider, machine_id),
                 key=lambda row: (row.login_id != MACHINE_LOGIN_ID, row.added_at or ""),
             )
             shared = [
-                LoginKey(provider, host, row.login_id)
+                LoginKey(provider, machine_id, row.login_id)
                 for row in candidates
                 if row.member_id is None
                 and not row.draining_since
-                and self.accounts.refusal(LoginKey(provider, host, row.login_id)) is None
+                and self.accounts.refusal(LoginKey(provider, machine_id, row.login_id)) is None
             ]
             if not shared:
                 raise ValueError(
@@ -370,17 +372,18 @@ class ProviderSkillInventoryManager:
 
     def _run_probe(
         self,
-        host: str,
+        machine_id: str,
         probe: ProviderSkillProbe,
         *,
         provider: str,
     ) -> object:
-        key = self._probe_login(provider, host)
+        key = self._probe_login(provider, machine_id)
         with self.credential_gate.hold_blocking(key):
             if self.accounts is not None and (reason := self.accounts.refusal(key)):
                 raise ValueError(reason)
             generation = self.store.provider_login_state(key).generation
             environment = self.process_environment(key)
+            host = host_of(self.store, machine_id)
             env = environment.local_env if not host else None
             command = [*environment.command_prefix, *probe.command]
             if probe.protocol == "jsonl":
@@ -534,8 +537,8 @@ class ProviderSkillInventoryManager:
             return value["result"]
 
     @staticmethod
-    def _key(provider: str, host: str, configured_binary: str | None) -> tuple[str, str, str]:
-        return provider, host, configured_binary or ""
+    def _key(provider: str, machine_id: str, configured_binary: str | None) -> tuple[str, str, str]:
+        return provider, machine_id, configured_binary or ""
 
 
 def _write_rpc(stream: object, value: dict[str, object]) -> None:
@@ -552,13 +555,11 @@ def _inventory_hash(skills: list[ProviderSkill]) -> str:
 def _snapshot(
     record: ProviderSkillInventoryRecord,
     *,
-    machine: str,
     configured_binary: str | None,
 ) -> ProviderSkillInventorySnapshot:
     return ProviderSkillInventorySnapshot(
         provider=record.provider,
-        machine=machine,
-        host=record.host,
+        machine_id=record.machine_id,
         configured_binary=configured_binary,
         resolved_binary=record.resolved_binary,
         provider_version=record.provider_version,

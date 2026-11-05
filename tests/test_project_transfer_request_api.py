@@ -15,6 +15,7 @@ from rcp import __version__
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.restore import detach_restore_database
@@ -28,6 +29,7 @@ from rcp.storage import (
     ProjectTransferRepositorySource,
     ProjectTransferSourceConfiguration,
 )
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 from rcp.transfer.source import read_transfer_archive, stage_transfer_archive
 from tests.helpers import signed_in_client
 
@@ -51,18 +53,17 @@ def _source_configuration() -> ProjectTransferSourceConfiguration:
         source_rcp_version="0.1.0.dev0+main",
         source_schema_generation=1,
         supported_archive_codecs=("rcp-transfer-v1",),
-        machine_aliases=("laptop",),
         repositories=(
             ProjectTransferRepositorySource(
                 alias="paper",
                 repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-                machine_alias="laptop",
             ),
         ),
         state_repository="paper",
         project_truth_scope=("paper",),
         default_run_truth_scope=("paper",),
         source_manifest_sha256="a" * 64,
+        record_schema_version=TRANSFER_RECORD_SCHEMA_VERSION,
     )
 
 
@@ -76,9 +77,7 @@ def _incoming_payload(project_id: str, *, request_id: str) -> dict[str, object]:
         "default_run_truth_scope": ["paper"],
         "machines": [
             ProjectProvisioningMachineIntent(
-                alias="server",
-                location="local",
-                os_account="rcp",
+                machine_id=BACKEND_MACHINE_ID,
                 central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
             ).model_dump(mode="json")
         ],
@@ -86,7 +85,7 @@ def _incoming_payload(project_id: str, *, request_id: str) -> dict[str, object]:
             {
                 "alias": "paper",
                 "source": "https://github.com/openai/rcp.git",
-                "machine_alias": "server",
+                "machine_id": BACKEND_MACHINE_ID,
             }
         ],
         "provider_checks": [
@@ -96,7 +95,7 @@ def _incoming_payload(project_id: str, *, request_id: str) -> dict[str, object]:
                 runtime_id="codex:exec",
                 model="gpt-5.6-luna",
                 reasoning="medium",
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             ).model_dump(mode="json")
             for profile in AGENT_EXECUTION_PROFILES
         ],
@@ -167,6 +166,7 @@ def _ready_incoming(store: AppStore, request_id: str) -> None:
 def _team_app(tmp_path: Path):
     data_dir = tmp_path / "team"
     store, bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    store.ensure_space_machines([("", "rcp", "Server")])
     alice, alice_token = store.enroll_team_member(bootstrap, "Alice")
     _invitation, invitation_code = store.create_team_invitation(alice.user_id)
     bob, bob_token = store.enroll_team_member(invitation_code, "Bob")
@@ -322,11 +322,11 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         assert (
             configuration["source_manifest_sha256"]
             == hashlib.sha256(
-                (Path(source_record.state_location) / "manifest.toml").read_bytes()
+                (Path(source_record.state_path) / "manifest.toml").read_bytes()
             ).hexdigest()
         )
         _set_origin(
-            Path(source_record.state_location).parent,
+            Path(source_record.state_path).parent,
             "https://github.com/openai/another.git",
         )
         assert (
@@ -341,7 +341,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             == source_request
         )
         _set_origin(
-            Path(source_record.state_location).parent,
+            Path(source_record.state_path).parent,
             "git@github.com:OpenAI/RCP.git",
         )
         assert (
@@ -509,7 +509,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
         assert released.status_code == 200
         source_request = released.json()
         _set_origin(
-            Path(source_record.state_location).parent,
+            Path(source_record.state_path).parent,
             "https://github.com/openai/another.git",
         )
         assert (
@@ -525,7 +525,7 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             == source_request
         )
         _set_origin(
-            Path(source_record.state_location).parent,
+            Path(source_record.state_path).parent,
             "git@github.com:OpenAI/RCP.git",
         )
         accepted_release = team_client.post(

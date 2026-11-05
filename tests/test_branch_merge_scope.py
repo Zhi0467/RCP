@@ -6,6 +6,7 @@ import pytest
 
 from rcp.core.models import Patch
 from rcp.core.validation import ValidationContext, validate_patch
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 
@@ -50,7 +51,7 @@ def sourced_branch(manifest, tmp_path, monkeypatch, request):
         )
     )
     source_ref = {
-        "machine": "laptop",
+        "machine": BACKEND_MACHINE_ID,
         "truth_repository": "repo-b",
         "source": "codex",
         "session_id": "non-default-repository-session",
@@ -143,7 +144,7 @@ def _plan(harness, operation):
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=scope,
         chat_scope="project",
         mode="work",

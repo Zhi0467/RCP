@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, which RCP reviews or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
+| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
 
@@ -278,7 +278,7 @@ lineage and the admitted write set, never from client/provider requests. The
 admitted aliases must lie inside the graph's truth scope at launch, so a
 repository a human unticked after admission is no longer a write root; every
 other project repository stays readable context only. It binds project,
-execution host/account, capability, exact stage/workspace, admitted aliases and
+execution machine id, capability, exact stage/workspace, admitted aliases and
 canonical roots, protected paths and a stable fingerprint. Prompts render it.
 
 Construction requires a complete valid manifest inventory for every registered
@@ -289,10 +289,11 @@ prevent reading provisional publication/rollback state. Missing inventory fails
 closed.
 
 The workspace must be inside its exact stage. Roots must belong to the same
-project/alias/machine/host, exist and be writable there. Deduplication never
-replaces roots with a common parent. Host identity comes from catalog/manifest;
-a repository pointer's host describes how the agent reaches it, not ownership.
-Its machine and canonical path must match on the execution host.
+project, repository alias and machine id, exist and be writable there.
+Deduplication never replaces roots with a common parent. Machine identity comes
+from the manifest's card id; a repository pointer's route describes how the
+agent reaches it, not ownership. Its machine id and canonical path must match on
+the execution machine.
 
 Repository roots cannot be another project's checkout, broad parent/home/temp
 folder, app data, SQLite or canonical `.research`. Provider auth/session/cache
@@ -395,7 +396,7 @@ enforced at launch and the sandbox later becomes unavailable, the wrapper
 refuses the command rather than run it unhidden.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
-root with its validated worktree root on the same execution machine and host.
+root with its validated worktree root on the same execution machine.
 Catalog ownership and overlap checks validate the registered checkout and
 the planned sibling before creation, and the replacement before launch. The
 binding also pins Git's canonical common metadata directory: it is admitted as
@@ -440,7 +441,8 @@ app-server checks the activated profile before starting a turn.
 Paper coach uses the `rcp_paper` permission profile in exec and app-server,
 for fresh and resumed sessions. Its shell runs any command, such as a figure
 converter. Its writable roots are the turn's changes folder and the temporary
-directories; the workspace receives no write grant.
+directories, plus the folder of each saved artifact attached to the message;
+the workspace receives no write grant.
 App-server verifies that this profile is active before delivering the turn.
 
 ### Browser grants
@@ -510,7 +512,8 @@ system prompt and Artifact tools to a turn started from inside it.
 
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
-`Edit` rules confine all file-writing tools, including `Write`, to that folder.
+`Edit` rules confine all file-writing tools, including `Write`, to that folder and
+the folder of each attached saved artifact.
 `Bash` is allowed, as for Work, and as for Work the `Edit` rules do not bound it.
 WebSearch and WebFetch remain available, subject to the resolved hidden-read
 policy.
@@ -567,7 +570,8 @@ Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carrie
 path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages, including the paper coach's, are
 outside Git. The coach's native read tools remain available, its edit rules
-allow only its task's changes folder, and its shell is allowed, as Work's is.
+allow only its task's changes folder and attached saved artifact folders, and its
+shell is allowed, as Work's is.
 Discuss and ingestion may edit only their workspace and their own
 write folders. Discuss and ingestion deny general shell commands, allowing only
 `python3 -I -S <staged-client-path> *` when their broker gate names that client.
@@ -626,11 +630,12 @@ Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
-Launch receipts record project, host, capability, canonical write roots,
-fingerprint, enforcement mode and fresh/resumed state. Their canonical-state
-boundary is `provider_enforced` only where every tool is bounded (Codex) and
+Launch receipts record project, execution machine id, capability, canonical
+write roots, fingerprint, enforcement mode and fresh/resumed state. Their
+canonical-state boundary is `provider_enforced` only where every tool is bounded
+(Codex) and
 `file_tools_only` where the Work shell is not (Claude, OpenCode). A resumed
-launch checks that its stage still belongs to the same project and host, then
+launch checks that its stage still belongs to the same project and machine id, then
 records the scope it built; the provider receives exactly that scope.
 
 **Why:** No turn's scope is compared with an earlier turn's. Enforcement happens
@@ -1044,7 +1049,7 @@ One base means one machine whose SSH settings reach the others.
 
 Providers run with the same capability and scope locally and over SSH. Remote launches use remote canonical
 roots. The remote stage owns validation, wrappers, transfers and recovery;
-resumption proves its saved host and stage. Transport failure is unavailable,
+resumption proves its saved machine and stage. Transport failure is unavailable,
 not semantic correction.
 
 SSH connections are owned per durable unit of work: stage or lock. Short control
@@ -1079,9 +1084,10 @@ watcher wakes, Retry and recovery all state the machines as they are at launch.
 Paper coach and the branch-merge agent receive no compute-machine context;
 they retain their protected graph-history client. The coach's provider-specific
 shell and file rules are described above. The first master/task context lists
-each machine's alias, route, job manager and hint. A
-resumed native session receives a concise delta for added or changed machines,
-with the rules of any manager they name, and only the alias of a removed one.
+each machine's card name, route, job manager and hint; data fields carry the
+card id. A resumed native session receives a concise delta for added or changed
+machines, with the rules of any manager they name, and only the name of a
+removed one.
 Compute metadata never grants authority and never includes credential contents
 or paths. Older rows that carry `active_compute_ids` keep loading; the field no
 longer selects anything.
@@ -1122,7 +1128,7 @@ owns turn selection.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
-atomic persistence and collision-free paths; remote keys digest the exact host.
+atomic persistence and collision-free paths, keyed by machine id and login id.
 Ambiguous legacy remote token paths require repasting, never guessed migration.
 
 Codex device sign-in uses app-server `account/login/start` with
@@ -1143,7 +1149,7 @@ separate processes and unnecessary probes are avoided. Codex mid-turn refresh
 races remain possible; verified sign-in is the recovery.
 
 The account lifecycle owner serializes sign-in, verify and sign-out under the
-gate through durable publication, keyed by `(provider, host, login_id)`. A second
+gate through durable publication, keyed by `(provider, machine_id, login_id)`. A second
 device sign-in on that login returns 409 and names the starter. The per-attempt
 status and cancel routes answer only the starter (404 for anyone else).
 Replacement first publishes a signed-out fence, so interruption cannot admit an
@@ -1158,15 +1164,17 @@ removal records the departing member. Removed logins cannot be verified or
 receive tokens, including attempts completing after removal; a credential such an
 attempt wrote is deleted, or left pending for reconciliation.
 
-`GET /api/providers/logins` lists each nonremoved login on a listed host. The shared row mapper
+`GET /api/providers/logins` lists each nonremoved login on every space machine
+card, unused cards included; deleted cards are omitted. The shared row mapper
 also supplies project notices, resolving new launches and parked work for the
 viewer. Other members' own rows redact detail, source and
 token metadata. Device codes and URLs appear only for the attempt starter.
 Project responses attach these rows after reading the shared display cache.
 A refused own source without a stored login appears as a signed-out own notice
-with null `login_id`, the viewer's ID, provider label and host; other fields are
-empty. Its action opens Settings, Sign-ins. Every added shared row reports its
-running-turn count even before draining; machine and own rows report zero.
+with null `login_id`, the viewer's ID, provider label and `machine_id`; other
+fields are empty. Its action opens Settings, Sign-ins. Every added shared row
+reports its running-turn count even before draining; machine and own rows report
+zero.
 
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
@@ -1180,7 +1188,7 @@ Unsupported interactions refuse explicitly; status GET is read-only.
 Sign-out records a new generation, `source="sign_out"` and actor.
 
 `GET /api/providers/logins/settings` returns the viewer's effective settings:
-host row, migration fallback `*`, then the built-in default. PUT
+the machine's row, migration fallback `*`, then the built-in default. PUT
 `/api/providers/{provider}/logins/setting` accepts only `own`, `own_then_shared`,
 `shared_then_own` or `shared`. Personal and team spaces follow the same rules;
 only the built-in default differs. OpenCode has no added login or setting. No agent command reaches these routes.
@@ -1190,9 +1198,10 @@ removes credentials without deleting sessions. Shared logins stay. A credential
 under a running turn, whoever's turn it is, is kept until that turn ends; each advance cleans after its
 completion check, so the completing pass finds none of the member's turns
 running. Pending removal retries remote deletion on each
-advance, returning unreached hosts in `provider_cleanup_unreached`, including the
-completing pass; unreachable hosts do not block completion. Fencing also marks
-each own login draining, so after completion the removal reconciler retries any
+advance, returning unreached machine ids in `provider_cleanup_unreached`,
+including the completing pass; unreachable machines do not block completion.
+Fencing also marks each own login draining, so after completion the removal
+reconciler retries any
 credential still pending, as for a shared removal. Restore's stale-member
 removal fences the copied rows while preparing and deletes credentials only
 after both restore boundaries are confirmed, because the archived deployment may
@@ -1208,9 +1217,9 @@ machine: any member may add, sign in, verify, sign out or remove them, except
 that the machine sign-in cannot be removed. Only the owner acts on an own login.
 OpenCode has only its machine sign-in, because RCP does not sign it in.
 
-Each member has one setting per `(provider, host)`: `own`, `own_then_shared`,
+Each member has one setting per `(provider, machine_id)`: `own`, `own_then_shared`,
 `shared_then_own` or `shared`. It names which sources are on and the order they
-are tried; "both off" cannot be stored. Lookup is the host's row, then the
+are tried; "both off" cannot be stored. Lookup is the machine's row, then the
 member's `*` row, then the built-in default: `own` in a team space, `shared` in a
 personal one. The upgrade wrote `*` = `own_then_shared` for every team member
 not being removed, so their work kept using the shared logins. There is no team or
@@ -1309,13 +1318,14 @@ login home from Claude and OpenCode runs, and each home's `auth.json` from Codex
 runs. Agents read shared transcripts at their machine-home paths.
 Only the local machine sign-in keeps the cross-process credential startup lock.
 
+Credentials live under `<data_dir>/providers/<provider>/machine-<machine_id>/`.
 Every member's agents run as the same OS account, so any agent can read any
 token in `providers/` and any added home; hidden read is cooperative. Each task
 records the `login_id` it ran on.
 
 ### Login state and failure
 
-Each login has a `(provider, host, login_id)` row (the machine sign-in's is
+Each login has a `(provider, machine_id, login_id)` row (the machine sign-in's is
 written on first use; until then its stored default is signed in, generation 0) with signed-in state
 and a generation. The empty login ID names the machine sign-in. Admission dry-runs
 the member's ordered own/shared setting before allocating a task or debiting an
@@ -1330,7 +1340,7 @@ meanwhile fails as an ordinary provider error that recovery retries, not
 `provider_auth`, so nobody is asked to sign in again. Claude recognizes its remote
 missing-token fence and a 401 naming authentication or OAuth (observed
 2026-09-15).
-An own login is unique per provider, host and member while `removed_at IS NULL`;
+An own login is unique per provider, machine and member while `removed_at IS NULL`;
 removal retains the historical row and its member attribution. Assignment clocks do not publish resource versions; member login
 settings do.
 
@@ -1417,8 +1427,9 @@ Membership therefore grants repository transport write access; removing membersh
 revokes product access. Discuss keeps no repository-write allowance despite its
 transport access.
 
-Remote machines require explicit `machines[].os_account` and working ordinary
-SSH from the service account. Server-local profiles use the service account.
+A remote team card always records its account, filled from a login when left
+blank ([space machines](projects-spaces-and-operations.md#space-machines)), and
+ordinary SSH from the service account must work. Server-local profiles use the service account.
 RCP imports no member SSH key and never falls back to a laptop, personal checkout,
 provider login or alternate account. Unreachable or unready targets fail visibly.
 [Canonical publication](graph-history-and-transitions.md#canonical-publication)
@@ -1553,7 +1564,7 @@ efforts, OpenCode models and optional reasoning variants. Unreadable catalogs
 use the declared list; that cannot approve an explicitly saved unknown model.
 
 Turns and credential-touching readiness/skill probes share one startup gate per
-login `(provider, host, login_id)`. They acquire it before environment preparation
+login `(provider, machine_id, login_id)`. They acquire it before environment preparation
 and login-generation capture; turns recheck eligibility before spawn. Probes
 hold it throughout; turns hold until a provider-authored line and the minimum
 stagger, with a bounded maximum hold. Broker readiness is not provider output.
@@ -1563,10 +1574,9 @@ timeout, so a refresh can finish its credential write.
 The local machine sign-in also uses an advisory lock under the account's RCP
 directory across RCP processes. Only contention retries; filesystem lock errors fail the launch and
 release the in-process lock. OS exit releases the file lock. Remote gates cover
-one RCP process only. SSH destination spellings that differ beyond case and
-surrounding whitespace form separate gates. Mid-turn provider refresh remains outside this startup protection.
+one RCP process only. Mid-turn provider refresh remains outside this startup protection.
 
-Credential-touching readiness is durable per `(provider, host, login_id,
+Credential-touching readiness is durable per `(provider, machine_id, login_id,
 executable)` and version. Implicit reads run `--version` under the gate and reuse
 matching answers. Refresh and version change invalidate them; verify, sign-in and
 sign-out invalidate that login's answers only. Native

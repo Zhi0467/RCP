@@ -267,7 +267,7 @@ def _run(execute: Callable[[], object], request_id: str) -> dict[str, Any]:
         if exc.status_code == 503:
             raise _NotNow(503, exc.detail) from exc
         return {"outcome": "failed", "reason": _reason(exc.detail)}
-    except StateUnavailable as exc:
+    except (StateUnavailable, OSError) as exc:
         raise _NotNow(503, str(exc)) from exc
     except (PatchRejected, ReplayHalted) as exc:
         return {"outcome": "failed", "reason": str(exc)}

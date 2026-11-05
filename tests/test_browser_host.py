@@ -277,8 +277,7 @@ def hidden_scope(path="/selected/secret"):
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 
     return HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         os_account="researcher",
         hidden_files=(path,),
         env_deny_list=HIDDEN_READ_ENV_DENY_LIST,

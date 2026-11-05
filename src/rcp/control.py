@@ -97,7 +97,6 @@ class ExperimentSessionBinding(BaseModel):
     model: str | None = None
     reasoning: str | None = None
     run_on: str | None = None
-    execution_host: str | None = None
     run_truth_scope: list[str] | None = None
     native_session_bound: bool = False
     diagnostic: str | None = None

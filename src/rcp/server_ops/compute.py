@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
+from contextlib import closing
 from datetime import UTC, datetime
 from typing import BinaryIO
 
@@ -16,6 +18,24 @@ from rcp.server_ops.models import (
     ServerPlanEvent,
     ServerStep,
 )
+from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
+
+
+def resolve_machine_selector(selector: str, cards: Iterable[SpaceMachineRecord]) -> str:
+    """The card id an operator named: an id, or a name exactly one card has."""
+
+    cards = list(cards)
+    if any(card.machine_id == selector for card in cards):
+        return selector
+    named = [card.machine_id for card in cards if card.name == selector]
+    if len(named) != 1:
+        raise ValueError(
+            f"No machine is named {selector!r}."
+            if not named
+            else f"Several machines are named {selector!r}; use the machine id."
+        )
+    return named[0]
 
 
 def prepare_compute_probe_command(
@@ -26,11 +46,12 @@ def prepare_compute_probe_command(
 ) -> PreparedServerCommand:
     if request.command != "server compute probe":
         raise ValueError("compute probe requires the compute probe command")
-    assert request.project_id is not None and request.machine_alias is not None
+    project_id, selector = request.project_id, request.machine_id
+    assert project_id is not None and selector is not None
     assert request.compute_route is not None
     pending = ServerStep(
         number=1,
-        title=f"Probe {request.compute_route} on {request.machine_alias}",
+        title=f"Probe {request.compute_route} on {request.machine_id}",
         purpose="Verify and store the selected machine's compute backend readiness.",
         performed_by="system",
         target=MachineTarget(host=identity.host, os_account=identity.username),
@@ -46,15 +67,17 @@ def prepare_compute_probe_command(
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
         emitter.emit_step(pending.model_copy(update={"state": "running"}))
         try:
+            with closing(AppStore.open_read_only(layout.data_dir / "rcp.sqlite3")) as store:
+                machine_id = resolve_machine_selector(selector, store.space_machines())
             client = ServerControlClient.from_data_dir(
                 layout.data_dir, expected_server_uid=os.geteuid()
             )
             probe = client.probe_compute_backend(
-                project_id=request.project_id,
-                machine_alias=request.machine_alias,
+                project_id=project_id,
+                machine_id=machine_id,
                 route=request.compute_route,
             )
-        except ServerControlError as exc:
+        except (ServerControlError, ValueError) as exc:
             emitter.emit_step(pending.model_copy(update={"state": "failed", "message": str(exc)}))
             return
         emitter.emit_step(

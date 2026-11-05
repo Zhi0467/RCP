@@ -257,9 +257,10 @@ Rerun `gcloud compute config-ssh` after a VM address changes.
 Toggle **Slurm** in the machine's **Compute** fold, then check the route:
 
 ```bash
-sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias> --route scheduler
+sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine> --route scheduler
 ```
 
+`<machine>` is the card's id, or its name when that name is unique in the space.
 Follow any administrator guidance and choose **Check again** on Runs. For the
 Linux launch helper, use **Allow background processes** on the machine card.
 If doctor reports missing service-account linger, rerun installation.

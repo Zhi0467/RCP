@@ -10,6 +10,7 @@ from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.prompts import GraphReadPrompt, render_graph_history
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.session_master import recorded_master_values
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -294,7 +295,7 @@ async def test_child_history_launch(manifest, tmp_path, history_handlers):
     request = RunRequest.model_validate(
         {
             **task.request,
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo-a"],
             "node_id": "blk/check-result",
             "chat_id": route.worker_id,
@@ -309,6 +310,7 @@ async def test_child_history_launch(manifest, tmp_path, history_handlers):
         }
     )
     store.create_auto_research_child_work(route, task)
+    store.backend_space_machine()
     launcher = _HistoryLauncher(service, history_handlers, kind="auto_child")
     await _check_launch(
         launcher,

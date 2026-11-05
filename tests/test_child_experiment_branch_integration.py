@@ -83,6 +83,7 @@ def test_dispatched_child_reads_and_updates_its_parent_branch_with_child_provena
     """
     main = _service(manifest, tmp_path)
     branch, store, parent, root, _worker = _setup_branch_auto_research(main, tmp_path / "store")
+    store.backend_space_machine()
     main_head = main.history.head_ref()
     main_graph = (manifest.research_dir / "graph.json").read_bytes()
     created, failure = _apply_work_patch(

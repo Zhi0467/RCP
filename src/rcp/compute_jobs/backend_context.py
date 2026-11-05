@@ -10,7 +10,9 @@ from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
-    from rcp.config import MachineComputeConfig, Manifest
+    from rcp.config import MachineComputeConfig
+    from rcp.storage import AppStore
+    from rcp.storage.models import SpaceMachineRecord
 
 
 class ComputeLaunchUncertainError(RuntimeError):
@@ -28,7 +30,7 @@ class ComputeTransportError(RuntimeError):
 @dataclass
 class BackendContext:
     execution_host: str
-    execution_machine: str
+    machine_id: str
     compute: MachineComputeConfig | None
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run
     uid: str = ""
@@ -105,7 +107,7 @@ def facility_probe(
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
         ready, diagnostic = False, str(exc)
     return ComputeBackendProbe(
-        execution_machine=context.execution_machine,
+        machine_id=context.machine_id,
         backend_id=profile.id,
         state="ready" if ready else "failed",
         ready=ready,
@@ -119,23 +121,20 @@ def facility_probe(
 
 
 def resolve_context(
-    manifest: Manifest,
-    machine_alias: str,
-    compute: MachineComputeConfig | None,
+    machine: SpaceMachineRecord,
     runner=subprocess.run,
 ) -> tuple[BackendContext, ComputeBackendProfile | None]:
-    """Resolve identity and OS on the execution machine, never on its client.
+    """Resolve identity and OS on the card's machine, never on its client.
 
-    `compute` is the machine card's setting (`AppStore.machine_compute`).
+    The route and compute settings are read from the card now, as the job runs.
     """
     from rcp.compute_jobs.backends import resolve_backend
     from rcp.config import MachineComputeConfig
 
-    machine = manifest.machine_map[machine_alias]
     context = BackendContext(
-        execution_machine=machine_alias,
+        machine_id=machine.machine_id,
         execution_host=machine.host,
-        compute=compute or MachineComputeConfig(),
+        compute=machine.compute_config() or MachineComputeConfig(),
         runner=runner,
     )
     os_result = context.run(["uname", "-s"])
@@ -173,11 +172,16 @@ def resolve_context(
     return context, profile
 
 
-def recorded_job_context(record: ComputeJobRecord) -> BackendContext:
-    """A launched job's context; its root and handle are recorded, so compute settings do not matter."""
+def recorded_job_context(store: AppStore, record: ComputeJobRecord) -> BackendContext:
+    """A launched job's context on its card's current route.
+
+    Its root and handle are recorded, so compute settings do not matter.
+    """
+    from rcp.machine_cards import host_of
+
     return BackendContext(
-        execution_host=record.execution_host,
-        execution_machine=record.execution_machine,
+        execution_host=host_of(store, record.machine_id),
+        machine_id=record.machine_id,
         compute=None,
         containment=record.containment,
     )

@@ -235,7 +235,7 @@ def question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
         provider=task.request["provider"],
         native_session_id=task.native_session_id,
         stage_root=task.stage_root,
-        stage_host=task.stage_host,
+        stage_machine_id=task.stage_machine_id,
         capability=authority.task_contract,
         write_scope_fingerprint=task.write_scope_fingerprint,
         graph_target=task.graph_target,
@@ -272,7 +272,7 @@ def handle_space_ask(
                 "provider": task.request.get("provider"),
                 "native_session_id": task.native_session_id,
                 "stage_root": task.stage_root,
-                "stage_host": task.stage_host,
+                "stage_machine_id": task.stage_machine_id,
                 "capability": SPACE_QUESTION_CAPABILITY,
                 "write_scope_fingerprint": task.write_scope_fingerprint,
                 "graph_target": task.graph_target,
@@ -295,7 +295,7 @@ def require_question_origin_binding(
     request: RunRequest,
     origin: QuestionOrigin,
     *,
-    execution_host: str,
+    stage_machine_id: str,
     stage_root: str | None,
     write_scope_fingerprint: str | None,
 ) -> None:
@@ -310,7 +310,7 @@ def require_question_origin_binding(
         or task.request.get("provider") != origin.provider
         or request.session_id != origin.native_session_id
         or task.native_session_id not in {None, origin.native_session_id}
-        or execution_host != (origin.stage_host or "")
+        or stage_machine_id != origin.stage_machine_id
         or stage_root != origin.stage_root
         or request.mode != ("discuss" if discuss else "work")
         or task.request.get("mode") != request.mode
@@ -604,7 +604,7 @@ _QUESTION_BINDING_FIELDS = {
     "provider",
     "native_session_id",
     "stage_root",
-    "stage_host",
+    "stage_machine_id",
     "capability",
     "write_scope_fingerprint",
     "graph_target",

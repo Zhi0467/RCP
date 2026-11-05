@@ -4,6 +4,18 @@ from datetime import UTC, datetime
 
 from rcp.agents import ContextAssembler
 from rcp.core.models import GraphState
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.storage.models import SpaceMachineRecord
+
+BACKEND = SpaceMachineRecord(
+    machine_id=BACKEND_MACHINE_ID,
+    name="Backend",
+    host="",
+    os_account="",
+    created_at="",
+    updated_at="",
+)
+CARDS = {BACKEND_MACHINE_ID: BACKEND}
 
 
 def test_contract_names_direct_provider_roots_and_project_watermark(manifest) -> None:
@@ -12,8 +24,8 @@ def test_contract_names_direct_provider_roots_and_project_watermark(manifest) ->
         project_truth_scope=manifest.project.truth_scope,
         last_refresh_at=watermark,
     )
-    assembler = ContextAssembler(manifest)
-    roots = assembler.source_roots("laptop")
+    assembler = ContextAssembler(manifest, cards=CARDS)
+    roots = assembler.source_roots(BACKEND_MACHINE_ID)
 
     context = assembler.assemble(
         state,
@@ -31,7 +43,7 @@ def test_contract_names_direct_provider_roots_and_project_watermark(manifest) ->
 
 
 def test_new_project_has_no_ingestion_watermark(manifest) -> None:
-    context = ContextAssembler(manifest).assemble(
+    context = ContextAssembler(manifest, cards=CARDS).assemble(
         GraphState(project_truth_scope=manifest.project.truth_scope),
         source_roots={"codex": ["/logs/codex"], "claude": ["/logs/claude"]},
     )

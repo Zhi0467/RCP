@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import get_args
 
 import pytest
@@ -10,14 +11,57 @@ import rcp.config as config_module
 from rcp.config import (
     AgentExecutionProfile,
     AgentSurface,
-    MachineConfig,
+    LegacyManifestError,
     Manifest,
     load_manifest,
     permissions_for,
+    write_added_machine,
     write_agent_settings,
+    write_project_scope,
     write_removed_machine,
 )
 from rcp.providers import AgentCapability
+
+BASE = "a" * 32
+GPU = "b" * 32
+
+
+@pytest.fixture
+def manifest(tmp_path: Path) -> Manifest:
+    """A two-repository project on one card, with no agent profiles written."""
+
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    research = repo_a / ".research"
+    research.mkdir(parents=True)
+    repo_b.mkdir()
+    path = research / "manifest.toml"
+    path.write_text(
+        f"""name = "test-paper"
+machines = ["{BASE}"]
+
+[[repositories]]
+alias = "repo-a"
+machine = "{BASE}"
+path = "{repo_a}"
+
+[[repositories]]
+alias = "repo-b"
+machine = "{BASE}"
+path = "{repo_b}"
+
+[project]
+truth_scope = ["repo-a", "repo-b"]
+
+[state]
+repository = "repo-a"
+
+[agent]
+default_run_truth_scope = ["repo-a"]
+""",
+        encoding="utf-8",
+    )
+    return load_manifest(path)
 
 
 def test_capability_permissions_are_fixed_and_narrow() -> None:
@@ -118,7 +162,6 @@ def test_manifest_rejects_conflicting_auto_research_ceiling_keys(manifest) -> No
 
 def test_current_five_profile_manifest_without_orchestrator_still_normalizes(manifest) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["execution"] = None
     payload["agent"].pop("orchestrator")
 
     migrated = Manifest.model_validate(payload)
@@ -130,7 +173,7 @@ def test_current_five_profile_manifest_without_orchestrator_still_normalizes(man
     assert migrated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
 
 
-def test_orchestrator_profile_is_fixed_and_must_run_beside_canonical_state(manifest) -> None:
+def test_orchestrator_profile_permissions_are_fixed(manifest) -> None:
     wrong_permissions = manifest.model_dump(mode="python")
     wrong_permissions["agent"]["orchestrator"]["permissions"] = permissions_for(
         "scratch_patch"
@@ -138,36 +181,104 @@ def test_orchestrator_profile_is_fixed_and_must_run_beside_canonical_state(manif
     with pytest.raises(ValueError, match="orchestrator safety contract"):
         Manifest.model_validate(wrong_permissions)
 
-    wrong_machine = manifest.model_dump(mode="python")
-    wrong_machine["machines"].append({"alias": "other", "host": "", "provider_paths": {}})
-    wrong_machine["agent"]["orchestrator"]["run_on"] = "other"
-    with pytest.raises(ValueError, match="agent.orchestrator.run_on must be the canonical"):
-        Manifest.model_validate(wrong_machine)
+
+def test_every_agent_runs_on_the_state_repositorys_card(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["machines"].append(GPU)
+    payload["repositories"][1]["machine"] = GPU
+
+    loaded = Manifest.model_validate(payload)
+
+    assert loaded.base_machine == BASE
+    assert all(
+        "run_on" not in loaded.agent_profile(surface).model_dump()
+        for surface in (
+            "seed",
+            "refresh",
+            "node_chat",
+            "project_chat",
+            "paper_coach",
+            "orchestrator",
+        )
+    )
 
 
-def test_an_older_coach_machine_is_dropped_for_the_base(manifest) -> None:
-    older = manifest.model_dump(mode="python")
-    older["machines"].append({"alias": "other", "host": "gpu.example", "provider_paths": {}})
-    older["agent"]["paper_coach"]["run_on"] = "other"
+def test_a_repository_may_be_unassigned_but_not_on_an_unlisted_card(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["repositories"][1]["machine"] = ""
+    assert Manifest.model_validate(payload).repository_map["repo-b"].machine == ""
 
-    loaded = Manifest.model_validate(older)
+    payload["repositories"][1]["machine"] = GPU
+    with pytest.raises(ValueError, match="unknown machines"):
+        Manifest.model_validate(payload)
 
-    assert loaded.agent_profile("paper_coach").run_on == loaded.base_machine
+
+def test_a_manifest_naming_machines_by_alias_is_refused(manifest) -> None:
+    manifest.path.write_text(
+        manifest.path.read_text(encoding="utf-8").replace(
+            f'machines = ["{BASE}"]\n', '\n[[machines]]\nalias = "laptop"\nhost = ""\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LegacyManifestError):
+        load_manifest(manifest.path)
 
 
-def test_remove_machine_rewrites_stale_coach_run_on(manifest) -> None:
-    document = tomlkit.parse(manifest.path.read_text())
-    document["machines"].append({"alias": "other", "host": "gpu.example"})
-    document["agent"]["paper_coach"] = {"run_on": "other"}
-    manifest.path.write_text(tomlkit.dumps(document))
+def test_adding_and_removing_a_card_writes_only_the_machine_list(manifest) -> None:
+    added = write_added_machine(manifest, GPU)
+    assert added.machines == [BASE, GPU]
+    with pytest.raises(ValueError):
+        write_added_machine(added, GPU)
+
+    with pytest.raises(ValueError):
+        write_removed_machine(added, BASE)
+    removed = write_removed_machine(added, GPU)
+
+    assert removed.machines == [BASE]
+    assert removed.repository_map["repo-b"].machine == BASE
+
+
+def test_an_agent_proposed_repository_is_written_on_the_named_card(manifest, tmp_path) -> None:
+    updated = write_project_scope(
+        manifest,
+        ["repo-a", "repo-b", "repo-c"],
+        {"alias": "repo-c", "machine": BASE, "path": str(tmp_path / "repo-c")},
+    )
+
+    assert updated.repository_map["repo-c"].machine == BASE
+    with pytest.raises(ValueError, match="unknown machine"):
+        write_project_scope(
+            updated,
+            ["repo-a"],
+            {"alias": "repo-d", "machine": GPU, "path": str(tmp_path / "repo-d")},
+        )
+
+
+def _place_repo_b(manifest, machine: str, path: str) -> None:
+    text = manifest.path.read_text(encoding="utf-8")
+    text = text.replace(f'path = "{manifest.repository_map["repo-b"].path}"', f'path = "{path}"')
+    text = text.replace(f'machines = ["{BASE}"]', f'machines = ["{BASE}", "{machine}"]')
+    head, _, tail = text.partition('alias = "repo-b"')
+    tail = tail.replace(f'machine = "{BASE}"', f'machine = "{machine}"', 1)
+    manifest.path.write_text(head + 'alias = "repo-b"' + tail, encoding="utf-8")
+
+
+def test_a_relative_repository_path_resolves_beside_the_project(manifest) -> None:
+    _place_repo_b(manifest, "backend", "../repo-b")
 
     loaded = load_manifest(manifest.path)
-    base = loaded.base_machine
-    write_removed_machine(loaded, "other")
 
-    saved = tomlkit.parse(manifest.path.read_text())
-    assert saved["agent"]["paper_coach"]["run_on"] == base
-    assert all(machine["alias"] != "other" for machine in saved["machines"])
+    assert loaded.repository_map["repo-b"].path == manifest.repository_map["repo-b"].path
+
+
+def test_a_relative_path_on_a_remote_card_stays_as_written(manifest) -> None:
+    _place_repo_b(manifest, GPU, "work/repo-b")
+
+    loaded = load_manifest(manifest.path)
+
+    assert loaded.repository_map["repo-b"].machine == GPU
+    assert loaded.repository_map["repo-b"].path == "work/repo-b"
 
 
 def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:
@@ -202,6 +313,7 @@ def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> N
     content = manifest.path.read_text(encoding="utf-8")
     assert "default_auto_research_invocation_ceiling = 14" in content
     assert "default_campaign_invocation_ceiling" not in content
+    assert "run_on" not in tomlkit.parse(content)["agent"]["orchestrator"]
 
 
 def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest) -> None:
@@ -214,18 +326,12 @@ def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest)
     loaded = load_manifest(manifest.path)
 
     assert manifest.path.read_text(encoding="utf-8") == legacy
-    assert [machine.alias for machine in loaded.machines] == ["laptop"]
+    assert loaded.machines == [BASE]
     profiles = {surface: loaded.agent_profile(surface) for surface in ("seed", "node_chat")}
     updated = write_agent_settings(loaded, list(loaded.agent.default_run_truth_scope), profiles)
 
     assert "compute_connections" not in updated.path.read_text(encoding="utf-8")
-    assert updated.agent_profile("node_chat").run_on == loaded.agent_profile("node_chat").run_on
-
-
-@pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
-def test_machine_rejects_option_shaped_ssh_hosts(host: str) -> None:
-    with pytest.raises(ValueError, match="SSH destination contains unsupported characters"):
-        MachineConfig(alias="remote", host=host)
+    assert updated.agent_profile("node_chat") == loaded.agent_profile("node_chat")
 
 
 def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:
@@ -241,11 +347,12 @@ def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> N
 
 @pytest.mark.parametrize(
     ("field", "message"),
-    [("machines", "machine aliases"), ("repositories", "repository aliases")],
+    [("machines", "machine ids"), ("repositories", "repository aliases")],
 )
 def test_manifest_rejects_duplicate_authority_aliases(manifest, field: str, message: str) -> None:
     payload = manifest.model_dump(mode="python")
-    payload[field].append(dict(payload[field][0]))
+    first = payload[field][0]
+    payload[field].append(dict(first) if isinstance(first, dict) else first)
 
     with pytest.raises(ValueError, match=rf"{message} must be unique"):
         Manifest.model_validate(payload)

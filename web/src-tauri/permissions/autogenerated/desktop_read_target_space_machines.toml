@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-read-target-space-machines"
+description = "Enables the desktop_read_target_space_machines command without any pre-configured scope."
+commands.allow = ["desktop_read_target_space_machines"]
+
+[[permission]]
+identifier = "deny-desktop-read-target-space-machines"
+description = "Denies the desktop_read_target_space_machines command without any pre-configured scope."
+commands.deny = ["desktop_read_target_space_machines"]

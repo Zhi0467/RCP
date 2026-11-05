@@ -88,7 +88,7 @@ def _watcher(
         cwd=".",
         continuation=WatcherContinuation(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         status="completed",
@@ -204,11 +204,11 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
         *,
         operation_id=None,
         authorized_by=None,
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=None,
         graph_target=None,
     ):
-        assert stage_host is None
+        assert stage_machine_id is None
         assert stage_root is None
         assert graph_target.kind == "main"
         started_kinds.append(kind)
@@ -285,7 +285,7 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     now = store.now()
     work_request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
         message="Change the graph.",
@@ -321,7 +321,7 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
         status="paused",
         request=RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             chat_scope="project",
             chat_id=str(uuid.uuid4()),
             message="Explain the graph.",
@@ -459,11 +459,11 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         *,
         operation_id=None,
         authorized_by=None,
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=None,
         graph_target=None,
     ):
-        assert stage_host is None
+        assert stage_machine_id is None
         assert stage_root is None
         assert graph_target.kind == "main"
         now = valid_store.now()
@@ -571,7 +571,7 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     alice = setup_store.preprovision_team_member("Alice")
     bob = setup_store.preprovision_team_member("Bob")
     for member in (alice, bob):
-        setup_store.set_provider_login_setting(member.user_id, "codex", "", "shared")
+        setup_store.set_provider_login_setting(member.user_id, "codex", "backend", "shared")
     selected = [alice.user_id]
     app = create_app(
         str(manifest.path),
@@ -668,7 +668,7 @@ def test_resume_retry_and_repair_capture_the_current_actor_instead_of_parent(
     )
     work_request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
         message="Change the graph.",

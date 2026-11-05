@@ -21,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from rcp.core.models import upgrade_graph_projection
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_upgrade import local_project_state_paths
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
     fsync_file_tree,
@@ -295,7 +297,7 @@ def prepare(
             raise MaintenanceRefused("Application capture belongs to a different data directory.")
         _snapshot_roots(Path(sqlite.snapshot_path), data_dir, output)
         coordinator = BackupProjectFileCaptureCoordinator(
-            data_dir, local_project_copies=local_project_copies, require_checkout_identity=True
+            data_dir, local_project_copies=local_project_copies
         )
         if not offline:
             coordinator._validate_capture_boundary(receipt_path, sqlite)
@@ -418,15 +420,9 @@ def _snapshot_roots(database: Path, data: Path, output: Path) -> list[dict]:
     with closing(
         sqlite3.connect(f"{database.as_uri()}?mode=ro&immutable=1", uri=True)
     ) as connection:
-        rows = connection.execute(
-            "SELECT project_id, state_location, state_remote FROM projects ORDER BY project_id"
-        ).fetchall()
+        rows = local_project_state_paths(connection)
     roots = [{"live": str(data), "project_id": None}]
-    roots.extend(
-        {"live": location, "project_id": project_id}
-        for project_id, location, remote in rows
-        if not remote
-    )
+    roots.extend({"live": location, "project_id": project_id} for project_id, location in rows)
     for root in roots:
         path = Path(_absolute(root["live"]))
         if root["project_id"] is not None and (
@@ -580,7 +576,7 @@ def verify_live_application(
             capture = captures[expected.project_id]
             remote = _project_restore_location(capture)[1] is None
             record = store.project(expected.project_id)
-            if record is None or bool(record.state_remote) != remote:
+            if record is None or (record.state_machine_id != BACKEND_MACHINE_ID) != remote:
                 raise MaintenanceRefused(
                     f"The switched release changed where project {expected.project_id} "
                     "keeps its state."

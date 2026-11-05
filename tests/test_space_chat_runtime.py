@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import APP_PLACES
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.space_chat import (
     SPACE_MASTER_POLICY,
     SpaceThreadOwner,
@@ -74,11 +75,12 @@ def test_space_runtime_real_storage_and_partial_apply(
         monkeypatch.setattr(app.state.catalog, "open_execution", open_project)
         if broken == "remote":
             original_record = store.project
+            gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
 
             def remote_record(pid):
                 record = original_record(pid)
                 if pid == unavailable_id and record is not None:
-                    return record.model_copy(update={"state_remote": True})
+                    return record.model_copy(update={"state_machine_id": gpu.machine_id})
                 return record
 
             monkeypatch.setattr(store, "project", remote_record)
@@ -120,7 +122,7 @@ def test_space_runtime_real_storage_and_partial_apply(
         if broken == "hidden" and service.history.project_id == unavailable_id:
             from rcp.agents.provider_environment import unhidden_read_scope
 
-            return unhidden_read_scope(execution_machine="local", host="")
+            return unhidden_read_scope(machine_id=BACKEND_MACHINE_ID)
         return default_space_hidden_read_scope(
             owner, request, kwargs["workspace"], execution, kwargs["repository_inventory"]
         )
@@ -258,7 +260,10 @@ def test_space_runtime_real_storage_and_partial_apply(
     assert [message.role for message in transcript.messages] == ["user", "assistant"]
     assert transcript.messages[-1].text == "Finished the requested work."
     assert transcript.messages[-1].turn_outcome == execution.turn_outcome
-    assert store.chat_session_context("claude", "local", "space-native").kind == "space_chat"
+    assert (
+        store.chat_session_context("claude", BACKEND_MACHINE_ID, "space-native").kind
+        == "space_chat"
+    )
 
     if broken is None:
         from rcp.service import RunRequest

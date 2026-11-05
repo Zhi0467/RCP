@@ -282,7 +282,7 @@ test("a served login notice is one row whose action opens its sign-ins, on a pho
       assert.equal(await page.locator("[data-login-notice-action]").count(), 1);
       await page.locator('[data-login-notice-action="open-sign-ins"]').click();
       assert.deepEqual(await page.evaluate(() => window.openedSignIns), [
-        { provider: "codex", host: "" },
+        { provider: "codex", machine_id: "m-backend" },
       ]);
       const width = await page.evaluate(() => [
         document.documentElement.scrollWidth,

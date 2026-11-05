@@ -296,7 +296,7 @@ def test_continuation_refuses_a_stage_frozen_on_another_machine(manifest, tmp_pa
         report_error="The report output was invalid.",
     )
     store.checkpoint_agent_task(
-        root.operation_id, stage_host="other-host", stage_root=root.stage_root
+        root.operation_id, stage_machine_id="other-host", stage_root=root.stage_root
     )
     episodes_before = [item.model_dump(mode="json") for item in store.episodes(project_id)]
     tasks_before = [item.model_dump(mode="json") for item in store.agent_tasks(project_id)]
@@ -340,10 +340,7 @@ def test_continue_refuses_a_live_or_unbound_episode(manifest, tmp_path) -> None:
 def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
     manifest, tmp_path: Path
 ) -> None:
-    """A repointed execution alias cannot resume the saved session; nothing is chained.
-
-    The binding `bind_session` commits is frozen on a machine the alias no longer names.
-    """
+    """A session staged on another machine cannot resume; nothing is chained."""
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app)
@@ -355,10 +352,9 @@ def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
         project_id=loop.project_id,
         control_node_id=EXPERIMENT_ID,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="other-host",
+        machine_id="backend",
         native_session_id="native-session-abc",
-        stage_host="other-host",
+        stage_machine_id="other-machine",
         stage_root=str(stage),
         chat_id=loop.chat_id,
         operation_id="loop-root",

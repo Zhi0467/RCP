@@ -18,6 +18,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkillReference
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
@@ -162,7 +163,7 @@ def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
             invocation_ceiling=5,
             code_worktree=False,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=_RUN_TRUTH_SCOPE,
         ),
         authorized_by=authorizer,
@@ -182,7 +183,7 @@ def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
         episode.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=_RUN_TRUTH_SCOPE,
             chat_scope="node",
             node_id="hyp/replanning-restores-plasticity",
@@ -250,8 +251,8 @@ def _claimed_delivery(tmp_path):
             project_id="project",
             locator="/tmp/project/research.yaml",
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -651,7 +652,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     store = app.state.background_tasks.store
-    store_test_claude_token(store)
+    store_test_claude_token(store, "backend")
     child_turns = []
     original_stage = child_work_module._stage_auto_research_child_work_turn
 
@@ -661,7 +662,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         return result
 
     monkeypatch.setattr(child_work_module, "_stage_auto_research_child_work_turn", capture_turn)
-    pointer = RepositoryAccess(alias="state", machine="laptop", path=str(tmp_path / "sibling"))
+    pointer = RepositoryAccess(alias="state", machine="backend", path=str(tmp_path / "sibling"))
     group = GroupContext(
         group_name="Benchmarks",
         project_id=app.state.default_project_id,
@@ -715,7 +716,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             invocation_ceiling=5,
             code_worktree=False,
             provider=provider,
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -732,7 +733,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         episode.episode_id,
         RunRequest(
             provider=provider,
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="hyp/replanning-restores-plasticity",
@@ -746,7 +747,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
             resolved_provider_skills=[
                 ProviderSkillReference(
                     provider=provider,
-                    machine="laptop",
+                    machine="backend",
                     provider_version="test-provider",
                     inventory_hash="captured-test-inventory",
                     name="native-review",
@@ -858,7 +859,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         episode.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="hyp/replanning-restores-plasticity",
@@ -917,7 +918,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
     graph_revision = service.history.state().revision
     loop_request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         chat_scope="node",
         node_id=experiment_id,
@@ -950,7 +951,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
     store.complete_agent_task(loop_operation_id, applied_revision=None, result={})
     continuation = WatcherContinuation(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         patch_kind="experiment_loop",
         control_node_id=experiment_id,
@@ -984,10 +985,9 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
         project_id=project_id,
         control_node_id=experiment_id,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id="backend",
         native_session_id="loop-session",
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(loop_stage),
         chat_id=loop_chat_id,
         operation_id=loop_operation_id,
@@ -1046,7 +1046,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
             invocation_ceiling=5,
             code_worktree=False,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -1063,7 +1063,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
         episode.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id=experiment_id,

@@ -83,7 +83,6 @@ function operational(fields = {}) {
       model: "gpt-5.6",
       reasoning: "high",
       run_on: "cluster",
-      execution_host: "login.research",
       run_truth_scope: ["repo-a", "repo-b"],
       native_session_bound: true,
       diagnostic: null,
@@ -130,7 +129,7 @@ function watcher(fields = {}) {
     origin_task_kind: "node_chat",
     chat_id: "chat-1",
     node_id: "experiment/detail",
-    execution_host: "login.research",
+    machine_id: "cluster",
     check_command:
       "ids=$(squeue -h -o '%A') || exit 2; grep -Fxq 48192 <<<\"$ids\"; case $? in 0) exit 1;; 1) exit 0;; *) exit 2;; esac",
     log_path: "/scratch/evaluation.log",
@@ -1318,7 +1317,7 @@ test("detail separates watcher provenance from semantic meaning and execution bi
   assert.match(html, /codex/);
   assert.match(html, /gpt-5\.6/);
   assert.match(html, /high/);
-  assert.match(html, /cluster · login\.research/);
+  assert.match(html, /cluster/);
   assert.match(html, /repo-a, repo-b/);
 
   assert.match(html, /authoritative-current-task/);

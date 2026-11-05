@@ -8,6 +8,7 @@ import pytest
 from rcp.core.models import GraphState
 from rcp.core.research_md import render_research_md
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.shared import _stage_context_paths
@@ -18,6 +19,7 @@ from rcp.runs.tasks.auto_research_stream import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from tests.helpers import seed_patch, unchecked_write_authority
 from tests.test_branch_history import _branch_metadata, _branch_patch
 
@@ -66,13 +68,20 @@ def test_orchestrator_context_and_refresh_keep_branch_pointer(branch_services, t
     request = AutoResearchRunRequest(
         episode_id=branch.history.branch_id,
         role="orchestrator",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
     )
     stage = _WorkerStage(
         local=tmp_path,
         remote=None,
         workspace=tmp_path,
-        execution_host="",
+        machine=SpaceMachineRecord(
+            machine_id=BACKEND_MACHINE_ID,
+            name="Backend",
+            host="",
+            os_account="",
+            created_at="",
+            updated_at="",
+        ),
         provider_binary=None,
     )
     context = _auto_research_context(branch, request, stage)
@@ -100,7 +109,7 @@ def test_remote_context_preserves_target_namespace_and_shared_paper_path(branch_
     service = branch_services[0 if target == "main" else 1]
     context = service.assemble_chat(RunRequest(chat_scope="project"))
     service.manifest.repository_map["repo-a"].path = "/srv/research-project"
-    updates = _stage_context_paths(context, service, None, "laptop")  # type: ignore[arg-type]
+    updates = _stage_context_paths(context, service, None, BACKEND_MACHINE_ID)  # type: ignore[arg-type]
     canonical = Path("/srv/research-project/.research")
     graph_root = canonical
     if target == "branch":

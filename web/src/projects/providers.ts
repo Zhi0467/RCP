@@ -127,7 +127,7 @@ export function modelChange(
 /**
  * Overlay the live account states on the project's own account list. The
  * project snapshot says which logins this project uses; the live list says
- * what each is now, matched by provider, host and login. Nothing outside the
+ * what each is now, matched by provider, machine and login. Nothing outside the
  * project's logins is shown.
  */
 export function mergeProviderLogins(
@@ -141,7 +141,7 @@ export function mergeProviderLogins(
       ? live.find(
           (state) =>
             state.provider === entry.provider &&
-            state.host === entry.host &&
+            state.machine_id === entry.machine_id &&
             state.kind === "own" &&
             state.owner_user_id === entry.owner_user_id,
         )

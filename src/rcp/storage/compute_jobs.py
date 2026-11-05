@@ -46,25 +46,25 @@ class ComputeJobStoreMixin(StoreMixinBase):
         return [{**json.loads(row[1]), "operation_id": row[0]} for row in rows]
 
     def compute_backend_probe(
-        self, project_id: str, execution_machine: str, route: ComputeRoute
+        self, project_id: str, machine_id: str, route: ComputeRoute
     ) -> ComputeBackendProbe | None:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT probe_json FROM compute_backend_probes "
-                "WHERE project_id = ? AND execution_machine = ? AND route = ?",
-                (project_id, execution_machine, route),
+                "WHERE project_id = ? AND machine_id = ? AND route = ?",
+                (project_id, machine_id, route),
             ).fetchone()
         return ComputeBackendProbe.model_validate_json(row[0]) if row is not None else None
 
     def delete_compute_backend_probe(
-        self, project_id: str, execution_machine: str, *, route: ComputeRoute | None = None
+        self, project_id: str, machine_id: str, *, route: ComputeRoute | None = None
     ) -> None:
         """Forget one machine's route checks, or only ``route`` when it is given."""
         with self.connection() as connection:
             connection.execute(
-                "DELETE FROM compute_backend_probes WHERE project_id = ? AND execution_machine = ? "
+                "DELETE FROM compute_backend_probes WHERE project_id = ? AND machine_id = ? "
                 "AND (? IS NULL OR route = ?)",
-                (project_id, execution_machine, route, route),
+                (project_id, machine_id, route, route),
             )
 
     def record_compute_backend_probe(
@@ -74,10 +74,10 @@ class ComputeJobStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO compute_backend_probes "
-                "(project_id, execution_machine, route, probe_json, probed_at) VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(project_id, execution_machine, route) DO UPDATE SET "
+                "(project_id, machine_id, route, probe_json, probed_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(project_id, machine_id, route) DO UPDATE SET "
                 "probe_json = excluded.probe_json, probed_at = excluded.probed_at",
-                (project_id, probe.execution_machine, route, probe.model_dump_json(), self.now()),
+                (project_id, probe.machine_id, route, probe.model_dump_json(), self.now()),
             )
         return probe
 
@@ -111,14 +111,14 @@ class ComputeJobStoreMixin(StoreMixinBase):
         return [_compute_job_record(row) for row in rows]
 
     def compute_jobs_for_log_path(
-        self, project_id: str, execution_host: str, log_path: str
+        self, project_id: str, machine_id: str, log_path: str
     ) -> list[ComputeJobRecord]:
         """Resolve durable ownership without the display list's age/count cap."""
         with self.connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM compute_jobs WHERE project_id = ? "
-                "AND execution_host = ? AND log_path = ?",
-                (project_id, execution_host, log_path),
+                "AND machine_id = ? AND log_path = ?",
+                (project_id, machine_id, log_path),
             ).fetchall()
         return [_compute_job_record(row) for row in rows]
 
@@ -194,8 +194,9 @@ class ComputeJobStoreMixin(StoreMixinBase):
                 log_path=row["log_path"],
             )
             for row in connection.execute(
-                "SELECT j.job_id, j.status, j.execution_host, j.argv, j.log_path "
-                "FROM compute_jobs j JOIN episodes e ON e.episode_id = j.episode_id "
+                "SELECT j.job_id, j.status, COALESCE(m.host, '') AS execution_host, j.argv, "
+                "j.log_path FROM compute_jobs j JOIN episodes e ON e.episode_id = j.episode_id "
+                "LEFT JOIN space_machines m ON m.machine_id = j.machine_id "
                 "WHERE j.project_id = ? AND COALESCE(e.isolation_owner_episode_id, e.episode_id) "
                 "= ? AND j.status IN ('running', 'lost') ORDER BY j.job_id",
                 (project_id, owner_episode_id),
@@ -214,8 +215,10 @@ class ComputeJobStoreMixin(StoreMixinBase):
                 log_path=row["log_path"],
             )
             for row in connection.execute(
-                "SELECT w.watcher_id, w.status, w.execution_host, w.check_command, w.log_path "
+                "SELECT w.watcher_id, w.status, COALESCE(m.host, '') AS execution_host, "
+                "w.check_command, w.log_path "
                 "FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
+                "LEFT JOIN space_machines m ON m.machine_id = w.machine_id "
                 "JOIN episode_isolations i ON i.project_id = w.project_id "
                 "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
                 "WHERE w.project_id = ? AND i.owner_episode_id = ? "

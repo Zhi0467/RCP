@@ -15,6 +15,8 @@ from rcp.agents.graph_rules import GRAPH_RULES_VERSION
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, PromptFactory, chat_master_contract_key
 from rcp.core.transition_models import GraphTargetRef
 
+from .test_branch_context import branch_services as branch_services
+
 
 @pytest.mark.parametrize(
     ("phase", "continued"),
@@ -148,3 +150,27 @@ def test_history_contract_renders_only_scope_verbs() -> None:
     assert "`client graph_diff " not in contract
     assert "`project`" in contract
     assert "`main`" in contract
+
+
+def test_a_resumed_chat_learns_a_new_skill_from_its_delta(branch_services) -> None:
+    from rcp.agents.continuation_prompt import context_delta
+    from rcp.runs.chat import chat_prompt_values
+    from rcp.service import RunRequest
+
+    service, _ = branch_services
+    context = service.assemble_chat(RunRequest(chat_scope="project"))
+
+    def values(pointers):
+        return chat_prompt_values(
+            context,
+            RunRequest(),
+            repositories=[],
+            compute_profiles=[],
+            skill_pointers=pointers,
+            experiment_watcher_resources=[],
+            workspace="workspace",
+        )
+
+    added = {"id": "new", "kind": "skill", "version": "1.0.0", "description": "When.", "path": "p"}
+    delta = context_delta(values([]), values([added]))
+    assert delta["skills"] == [{**added}]

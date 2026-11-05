@@ -176,7 +176,7 @@ async function resolveProjectConversationContext(
     provider: profile.provider,
     model: profile.model,
     reasoning: profile.reasoning,
-    run_on: profile.run_on,
+    run_on: project.run_on,
   };
   // The same reading as the visible composer: a branched chat starts on its origin's agent.
   const config = latestPersistedChatConfig(
@@ -523,7 +523,7 @@ export async function conversationSendTarget(
     provider: profile.provider,
     model: profile.model,
     reasoning: profile.reasoning,
-    run_on: profile.run_on,
+    run_on: project.run_on,
   };
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =

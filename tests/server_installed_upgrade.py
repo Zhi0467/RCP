@@ -135,8 +135,10 @@ def assert_serves(fixture: dict, version: str) -> None:
     assert os.readlink("/etc/rcp/current") == selected["release_directory"]
     with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
         assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        columns = {row[1] for row in database.execute("PRAGMA table_info(provider_login_states)")}
+        backend = "machine_id='backend'" if "machine_id" in columns else "host=''"
         assert database.execute(
-            "SELECT state FROM provider_login_states WHERE provider='codex' AND host=''"
+            f"SELECT state FROM provider_login_states WHERE provider='codex' AND {backend}"
         ).fetchone() == ("signed_in",)
     assert (DATA / "providers/claude/qualification/setup-token").read_text() == "synthetic-login\n"
     assert json.loads((DATA / "jobs/completed/receipt.json").read_text()) == {"status": "completed"}
@@ -250,11 +252,18 @@ def dry_run() -> dict:
     wait_health()
     verdict = next(field["value"] for field in fields if field["name"] == "update_rehearsal")
     assert verdict == "ready", fields
-    return {
-        "verdict": verdict,
-        "warnings": [field["value"] for field in fields if field["name"] == "update_warning"],
-        "service_unchanged": True,
-    }
+    warnings = [field["value"] for field in fields if field["name"] == "update_warning"]
+    assert warnings == [], fields
+    return {"verdict": verdict, "warnings": warnings, "service_unchanged": True}
+
+
+def _backend_stage() -> dict[str, str]:
+    """The running release's spelling of a stage on the backend: by host before 0.4.41."""
+    from rcp.storage import AgentTaskRecord
+
+    if "stage_machine_id" in AgentTaskRecord.model_fields:
+        return {"stage_machine_id": "backend"}
+    return {"stage_host": ""}
 
 
 def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
@@ -289,10 +298,14 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
         run_truth_scope=[],
     )
     stage = str(data_dir / "run-stage" / operation_id)
+    on_backend = (
+        {"machine_id": "backend"}
+        if "machine_id" in inspect.signature(ProjectWriteScope.create).parameters
+        else {"execution_machine": "server", "execution_host": ""}
+    )
     scope = ProjectWriteScope.create(
         project_id=fixture["project_id"],
-        execution_machine="server",
-        execution_host="",
+        **on_backend,
         capability="work_auto",
         stage_root=stage,
         workspace_root=str(Path(stage) / "workspace"),
@@ -315,7 +328,7 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     )
     store.mark_agent_task_running(operation_id)
     store.checkpoint_agent_task(
-        operation_id, native_session_id="upgrade-session", stage_host="", stage_root=stage
+        operation_id, native_session_id="upgrade-session", stage_root=stage, **_backend_stage()
     )
     old_binding = (
         "continuation_binding" in inspect.signature(store.bind_agent_task_write_scope).parameters
@@ -323,7 +336,7 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
     store.bind_agent_task_write_scope(
         operation_id,
         project_id=task.project_id,
-        stage_host="",
+        **_backend_stage(),
         stage_root=stage,
         fingerprint=scope.fingerprint,
         **({"continuation_binding": False} if old_binding else {}),
@@ -338,7 +351,7 @@ def seed_question_followup(data_dir: Path, fixture: dict) -> dict:
             provider="codex",
             native_session_id="upgrade-session",
             stage_root=stage,
-            stage_host="",
+            **_backend_stage(),
             capability="work_auto",
             write_scope_fingerprint=scope.fingerprint,
             graph_target=task.graph_target,
@@ -462,7 +475,7 @@ def seed_turn_artifact(data_dir: Path, fixture: dict, label: str) -> dict:
         authorized_by=AuthorizedHuman(
             space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
         ),
-        stage_host="",
+        **_backend_stage(),
         stage_root=str(stage),
     )
     store.create_agent_task(task)
@@ -807,7 +820,9 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     confirmation = f"{target['tag']}:{target['manifest_sha256']}"
     select(candidate, observe=True, fail=True)
     failed = operator("update", "--confirm-target", confirmation, expected=1)
-    assert "installed-upgrade intentional candidate failure" in failed.stdout
+    assert "installed-upgrade intentional candidate failure" in failed.stdout, (
+        failed.stdout[-4000:] + failed.stderr[-4000:]
+    )
     exact = json.loads((ROOT / "rollback-exact.json").read_text())
     journal = json.loads(
         (Path("/etc/rcp/supervisor/operations") / f"{exact['operation_id']}.json").read_text()

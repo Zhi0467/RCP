@@ -41,7 +41,7 @@ from rcp.limits import (
     SERVER_THREAD_DRAIN_TIMEOUT_SECONDS,
     WATCHER_CHECK_TIMEOUT_SECONDS,
 )
-from rcp.server_ops.models import ServerStepEvent
+from rcp.server_ops.models import SERVER_CLI_PROTOCOL_VERSION, ServerStepEvent
 from rcp.server_runtime import (
     ServerMetadata,
     read_server_metadata,
@@ -121,7 +121,7 @@ def test_version_machine_readable_uses_the_server_event_shape(monkeypatch, capsy
     event = ServerStepEvent.model_validate_json(capsys.readouterr().out).model_dump(mode="json")
     fields = {item["name"]: item["value"] for item in event["step"]["fields"]}
     assert set(event) == set(ServerStepEvent.model_fields)
-    assert event["version"] == 1
+    assert event["version"] == SERVER_CLI_PROTOCOL_VERSION
     assert event["event"] == "step"
     assert event["command"] == "version"
     assert event["step"]["state"] == "succeeded"

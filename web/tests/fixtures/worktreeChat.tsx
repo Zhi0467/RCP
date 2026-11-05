@@ -30,7 +30,8 @@ const project = {
   repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
   project_truth_scope: ["repo"],
   state_repository: "repo",
-  machines: [{ alias: "local", host: null }],
+  run_on: "local",
+  machines: [{ machine_id: "local" }],
 } as unknown as ProjectSnapshot;
 
 const requests: AgentTaskRequest[] = [];

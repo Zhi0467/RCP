@@ -197,3 +197,8 @@ from `pre-schedule-pending-fires-v39-a83fbf5`.
 stored its steered messages (storage migration 76), ending at migration 75
 after the thread queue. It is built by the exact base source `911af577` from
 `pre-thread-queue-v40-351ef3f`.
+
+`pre-machine-identity-v42-811b6e7` retains the last shape before machines were
+named by card id (storage migration 77), ending at migration 76 after the coach
+steers. It is built by the exact base source `811b6e71` from
+`pre-coach-steers-v41-911af57`.

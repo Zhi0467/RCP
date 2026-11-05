@@ -17,18 +17,12 @@ const requestBody = {
   project_truth_scope: ["paper"],
   default_run_truth_scope: ["paper"],
   default_auto_research_invocation_ceiling: 10,
-  machines: [
-    {
-      alias: "server",
-      location: "local",
-      os_account: "rcp",
-    },
-  ],
+  machines: [{ machine_id: "card-server", central_root: null }],
   repositories: [
     {
       alias: "paper",
       source: "https://github.com/OpenAI/RCP.git",
-      machine_alias: "server",
+      machine_id: "card-server",
     },
   ],
   provider_checks: [
@@ -38,7 +32,7 @@ const requestBody = {
       runtime_id: "codex:exec",
       model: "gpt-5.6-luna",
       reasoning: "medium",
-      machine_alias: "server",
+      machine_id: "card-server",
     },
   ],
 };

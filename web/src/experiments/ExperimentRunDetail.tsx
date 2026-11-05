@@ -37,6 +37,8 @@ import type {
   WatcherRecord,
 } from "../core/types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
+import { spaceMachineById } from "../projects/spaceMachines";
+import { useSpaceMachines } from "../projects/useSpaceMachines";
 
 const healthLabels: Record<ExperimentLoopHealth, string> = {
   starting: "Starting",
@@ -136,6 +138,9 @@ export function ExperimentRunDetail({
 }: Props) {
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [run.node.id]);
+  const machineCards = useSpaceMachines().machines;
+  const machineName = (machineId: string) =>
+    spaceMachineById(machineCards ?? [], machineId)?.name ?? machineId;
   const launchProfile = project?.agent_profiles.node_chat;
   // Only an explicit pick is state; untouched, the picker follows the current profile.
   const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
@@ -147,7 +152,8 @@ export function ExperimentRunDetail({
     setStartMessage("");
   }, [run.node.id]);
   const launchConfig =
-    pickedConfig ?? (launchProfile ? profileRunConfig(launchProfile) : undefined);
+    pickedConfig ??
+    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   const launchReady =
     !project ||
     !launchConfig ||
@@ -601,6 +607,7 @@ export function ExperimentRunDetail({
               onCheckWatcher={onCheckWatcher}
               onStopWatcher={onStopWatcher}
               onHideWatcher={watcherVisibility.hide}
+              machineName={machineName}
             />
           </ul>
         ) : null}
@@ -615,6 +622,7 @@ export function ExperimentRunDetail({
                 onCheckWatcher={onCheckWatcher}
                 onStopWatcher={onStopWatcher}
                 onHideWatcher={watcherVisibility.hide}
+                machineName={machineName}
               />
             </ul>
           </Fold>
@@ -657,7 +665,7 @@ export function ExperimentRunDetail({
                   session?.reasoning,
                 ]),
               },
-              { label: "Machine", value: joinFacts([session?.run_on, session?.execution_host]) },
+              { label: "Machine", value: session?.run_on ? machineName(session.run_on) : null },
               {
                 label: "Truth scope",
                 value: session?.run_truth_scope?.join(", "),
@@ -806,6 +814,7 @@ function WatcherItems({
   onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
+  machineName,
 }: {
   apiBase: string;
   items: ExperimentWatcherItem[];
@@ -814,6 +823,7 @@ function WatcherItems({
   onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
+  machineName: (machineId: string) => string;
 }) {
   return items.map((item) =>
     item.kind === "group" ? (
@@ -825,6 +835,7 @@ function WatcherItems({
         onCheckWatcher={onCheckWatcher}
         onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
+        machineName={machineName}
         key={item.group.groupId}
       />
     ) : (
@@ -836,6 +847,7 @@ function WatcherItems({
         onCheckWatcher={onCheckWatcher}
         onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
+        machineName={machineName}
         key={item.watcher.watcher_id}
       />
     ),
@@ -860,6 +872,7 @@ function WatcherGroupDetail({
   onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
+  machineName,
 }: {
   apiBase: string;
   group: ExperimentWatcherGroup;
@@ -868,6 +881,7 @@ function WatcherGroupDetail({
   onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
+  machineName: (machineId: string) => string;
 }) {
   return (
     <li className="experiment-run-watcher-group">
@@ -893,6 +907,7 @@ function WatcherGroupDetail({
               onCheckWatcher={onCheckWatcher}
               onStopWatcher={onStopWatcher}
               onHideWatcher={onHideWatcher}
+              machineName={machineName}
               key={watcher.watcher_id}
             />
           ))}
@@ -910,6 +925,7 @@ function WatcherDetail({
   onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
+  machineName,
 }: {
   apiBase: string;
   watcher: WatcherRecord;
@@ -918,6 +934,7 @@ function WatcherDetail({
   onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
+  machineName: (machineId: string) => string;
 }) {
   const external = isExternalWatcherRecord(watcher);
   // Retiring an observer writes no graph, so the graph-mutation lock folded into
@@ -1001,7 +1018,7 @@ function WatcherDetail({
             },
             { label: "Check exit code", value: external ? watcher.last_exit_code : null },
             { label: "Completed", value: formatMoment(watcher.completed_at) },
-            { label: "Machine", value: watcher.execution_host || "Local" },
+            { label: "Machine", value: machineName(watcher.machine_id) },
             {
               label: "Delivery task",
               value: watcher.notification_operation_id,

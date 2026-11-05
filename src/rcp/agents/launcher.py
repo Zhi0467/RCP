@@ -57,6 +57,7 @@ from rcp.limits import (
     TURN_JOURNAL_MAX_PATCH_BYTES,
     TURN_JOURNAL_MAX_STDERR_BYTES,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card, host_of
 from rcp.providers import (
     AgentCapability,
     ModelChoice,
@@ -72,7 +73,6 @@ from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderSt
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import (
     MACHINE_LOGIN_ID,
-    LoginKey,
     ProviderLoginStateRecord,
     ProviderReadinessSnapshotRecord,
     SpaceMachineRecord,
@@ -759,9 +759,21 @@ class AgentLauncher:
         """The environment for one provider process; every Claude start goes through it."""
 
         authentication = profile_for(key.provider).authentication
+        host = self.machine_host(key.machine_id)
         if self.credentials is None:
-            return authentication.unmanaged_environment(key.host)
-        return authentication.process_environment(self.credentials, key.host, key.login_id)
+            return authentication.unmanaged_environment(host)
+        return authentication.process_environment(
+            self.credentials, key.machine_id, key.login_id, host=host
+        )
+
+    def machine_host(self, machine_id: str) -> str:
+        """The card's current SSH route, read now; a launcher without a store has only the backend."""
+
+        if self.accounts is not None:
+            return host_of(self.accounts.store, machine_id)
+        if machine_id != BACKEND_MACHINE_ID:
+            raise ValueError("Only the backend's own machine is reachable without a space store.")
+        return ""
 
     def _login_refusal(self, key: LoginKey) -> str | None:
         if self.accounts is not None:
@@ -805,7 +817,7 @@ class AgentLauncher:
         ``unconfigured`` state tells settings that no stable path is saved yet.
         """
 
-        key = (login.provider, login.host, binary, login.login_id)
+        key = self._readiness_key(login, binary)
         with self._readiness_lock:
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
                 return self._with_login_state(cached.model_copy(deep=True), login)
@@ -861,7 +873,7 @@ class AgentLauncher:
         self,
         provider: str,
         *,
-        host: str = "",
+        machine_id: str,
         binary: str | None = None,
         refresh: bool = False,
         member_id: str | None = None,
@@ -870,11 +882,11 @@ class AgentLauncher:
         machine_readiness: ProviderReadiness | None = None,
     ) -> ProviderReadiness:
         """Probe the login admission would select, without assigning a turn."""
-        login = LoginKey(provider, host, MACHINE_LOGIN_ID)
+        login = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
         if self.accounts is not None:
             resolved, _ = self.accounts.resolve_launch_login(
                 provider,
-                host,
+                machine_id,
                 member_id,
                 session_id=session_id,
                 lineage_login=lineage_login,
@@ -896,8 +908,9 @@ class AgentLauncher:
     ) -> ProviderReadiness | None:
         """Return one already-probed capability, or None rather than probing."""
 
+        key = self._readiness_key(login, binary)
         with self._readiness_lock:
-            cached = self._readiness_cache.get((login.provider, login.host, binary, login.login_id))
+            cached = self._readiness_cache.get(key)
         return (
             None if cached is None else self._with_login_state(cached.model_copy(deep=True), login)
         )
@@ -905,10 +918,20 @@ class AgentLauncher:
     def invalidate_readiness(self, login: LoginKey, *, binary: str | None = None) -> None:
         """Forget one exact capability without disturbing other projects."""
 
+        key = self._readiness_key(login, binary)
         with self._readiness_lock:
-            key = (login.provider, login.host, binary, login.login_id)
             self._readiness_cache.pop(key, None)
             self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
+
+    def _readiness_key(
+        self, login: LoginKey, binary: str | None
+    ) -> tuple[str, str, str | None, str]:
+        """One capability on the card's current route, so an edited host is probed afresh."""
+
+        return (login.provider, self._route(login.machine_id), binary, login.login_id)
+
+    def _route(self, machine_id: str) -> str:
+        return f"{machine_id}\0{self.machine_host(machine_id)}"
 
     def execution_account(self, *, host: str = "") -> ProviderExecutionAccount:
         """Resolve the exact OS account reached by the same local or SSH route as launches."""
@@ -943,7 +966,7 @@ class AgentLauncher:
     def _readiness_uncached(
         self, login: LoginKey, *, binary: str | None, refresh: bool = False
     ) -> ProviderReadiness:
-        host = login.host
+        host = self.machine_host(login.machine_id)
         profile = profile_for(login.provider)
         configured = binary is not None
         candidate = binary
@@ -1096,7 +1119,7 @@ class AgentLauncher:
                 login,
                 ProviderReadinessSnapshotRecord(
                     provider=login.provider,
-                    host=host,
+                    machine_id=login.machine_id,
                     login_id=login.login_id,
                     binary=candidate,
                     version=version,
@@ -1176,7 +1199,8 @@ class AgentLauncher:
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
         write_scope: ProviderWriteScope | None = None,
-        host: str = "",
+        machine_id: str,
+        host: str,
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
         transport_partition: str | None = None,
@@ -1197,6 +1221,8 @@ class AgentLauncher:
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
+        `machine_id` is the card the turn runs on; `host` is the route this
+        launch resolved from it once, so its stage and provider share one route.
         `before_start` runs once the credential gate is held and the provider is
         certain to start: the moment a caller may read the login generation this
         process will run under, since a Verify cannot change it while the gate is
@@ -1212,7 +1238,7 @@ class AgentLauncher:
                 "A session fork needs its source cwd and its host's supervisor, and cannot resume."
             )
         if hidden_read_scope is None:
-            hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
+            hidden_read_scope = unhidden_read_scope(machine_id=machine_id)
         prompt += "\n\n" + hidden_read_prompt(
             hidden_read_scope,
             browser_enforcement=(
@@ -1221,9 +1247,9 @@ class AgentLauncher:
         )
         # Omitted resolves at launch; explicit None is a staged, unset value.
         if shell_timeout_seconds is ...:
-            shell_timeout_seconds = self.shell_timeout_seconds(provider, host)
+            shell_timeout_seconds = self.shell_timeout_seconds(provider, machine_id)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
-        autocompact = self._autocompact(provider, host)
+        autocompact = self._autocompact(provider, machine_id)
         # Display only (invariant 4b): the panel's compaction mark, when the
         # machine pins a token count rather than the provider's own default.
         autocompact_status = (
@@ -1256,6 +1282,7 @@ class AgentLauncher:
                         read_dirs=read_dirs,
                         write_dirs=write_dirs,
                         write_scope=write_scope,
+                        machine_id=machine_id,
                         host=host,
                         control=control,
                         remote_pid_file=(
@@ -1317,7 +1344,8 @@ class AgentLauncher:
         read_dirs: list[Path] | None = None,
         write_dirs: list[Path] | None = None,
         write_scope: ProviderWriteScope | None = None,
-        host: str = "",
+        machine_id: str,
+        host: str,
         control: AgentProcessControl | None = None,
         remote_pid_file: str | None = None,
         transport_partition: str | None = None,
@@ -1339,9 +1367,9 @@ class AgentLauncher:
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
-        login_key = login_key or LoginKey(provider, host, MACHINE_LOGIN_ID)
-        if (login_key.provider, login_key.host) != (provider, host):
-            raise ValueError("Login does not match the provider execution host.")
+        login_key = login_key or LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
+        if (login_key.provider, login_key.machine_id) != (provider, machine_id):
+            raise ValueError("Login does not match the provider execution machine.")
         while True:
             readiness = await asyncio.to_thread(self.readiness, login_key, binary=binary)
             if self._login_refusal(login_key) is None or login_unavailable is None:
@@ -1385,10 +1413,10 @@ class AgentLauncher:
                     text="Provider workspace does not match the resolved project write scope.",
                 )
                 return
-            if host != write_scope.execution_host:
+            if machine_id != write_scope.machine_id:
                 yield AgentEvent(
                     event="error",
-                    text="Provider execution host does not match the resolved project write scope.",
+                    text="Provider execution machine does not match the resolved project write scope.",
                 )
                 return
 
@@ -1402,10 +1430,10 @@ class AgentLauncher:
             yield AgentEvent(event="error", text=work_problem)
             return
         if hidden_read_scope is None:
-            hidden_read_scope = unhidden_read_scope(execution_machine=host or "local", host=host)
+            hidden_read_scope = unhidden_read_scope(machine_id=machine_id)
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
-        autocompact = self._autocompact(provider, host)
+        autocompact = self._autocompact(provider, machine_id)
         legacy_command = (
             self._command(
                 provider,
@@ -1517,8 +1545,8 @@ class AgentLauncher:
                 turn.environment, remote=bool(host)
             )
             if git_access is not None:
-                if git_access.host != host:
-                    raise ValueError("Git access does not match the provider execution host.")
+                if git_access.machine_id != machine_id:
+                    raise ValueError("Git access does not match the provider execution machine.")
                 environment, notices = await git_access.prepare(environment)
                 for notice in notices:
                     yield AgentEvent(event="message", text=notice)
@@ -2092,34 +2120,43 @@ class AgentLauncher:
             autocompact=autocompact,
         )
 
-    def _autocompact(self, provider: str, host: str) -> str:
+    def _autocompact(self, provider: str, machine_id: str) -> str:
         """The machine card's auto-compact setting for `provider`, read at each launch."""
 
         if self.accounts is None:
             return ""
-        card = self.accounts.store.space_machine_for(host)
-        return card.provider_autocompact.get(provider, "") if card is not None else ""
+        return card(self.accounts.store, machine_id).provider_autocompact.get(provider, "")
 
     def machine_cards(self) -> dict[str, SpaceMachineRecord]:
-        """Every space machine card by host, read now; empty without a space store."""
+        """Every space machine card by id, read now; a launcher without a store has only the backend."""
 
         if self.accounts is None:
-            return {}
-        return {card.host: card for card in self.accounts.store.space_machines()}
+            backend = SpaceMachineRecord(
+                machine_id=BACKEND_MACHINE_ID,
+                name="Backend",
+                host="",
+                os_account="",
+                created_at="",
+                updated_at="",
+            )
+            return {BACKEND_MACHINE_ID: backend}
+        self.accounts.store.backend_space_machine()
+        return {item.machine_id: item for item in self.accounts.store.space_machines()}
 
-    def provider_binary(self, provider: str, host: str = "") -> str | None:
+    def provider_binary(self, provider: str, machine_id: str) -> str | None:
         """The machine card's recorded executable; None lets readiness discover one."""
 
         if self.accounts is None:
             return None
-        return self.accounts.store.provider_binary(provider, host)
+        return card(self.accounts.store, machine_id).provider_paths.get(provider)
 
-    def shell_timeout_seconds(self, provider: str, host: str = "") -> int | None:
+    def shell_timeout_seconds(self, provider: str, machine_id: str) -> int | None:
         """Resolve the configured timeout once; None preserves the provider default."""
 
         if self.accounts is None:
             return None
-        return self.accounts.store.provider_shell_timeout_seconds(provider, host)
+        store = self.accounts.store
+        return store.provider_shell_timeout_seconds(provider, card(store, machine_id).machine_id)
 
     def _discover_remote_provider(
         self, provider: str, host: str

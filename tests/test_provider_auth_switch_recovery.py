@@ -7,6 +7,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.provider_login import resume_provider_account, settle_provider_login
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
@@ -25,9 +26,14 @@ def test_auth_failed_work_retries_on_usable_login(accounts, tmp_path, provider, 
     member = fabricated_authorizer().user_id
     old = _login(accounts, provider, own=True, member=member)
     next_login = _login(accounts, provider, machine=True)
-    store.set_provider_login_setting(member, provider, "", "own_then_shared")
+    store.set_provider_login_setting(member, provider, BACKEND_MACHINE_ID, "own_then_shared")
     request = RunRequest(
-        provider=provider, mode="work", message="continue", chat_id="chat", chat_scope="project"
+        provider=provider,
+        mode="work",
+        message="continue",
+        chat_id="chat",
+        chat_scope="project",
+        run_on=BACKEND_MACHINE_ID,
     )
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -100,7 +106,7 @@ def test_immediate_auth_retry_is_bounded_but_verify_releases_again(accounts, mon
     member = fabricated_authorizer().user_id
     old = _login(accounts, "codex", own=True, member=member)
     team = _login(accounts, "codex", machine=True)
-    store.set_provider_login_setting(member, "codex", "", "own_then_shared")
+    store.set_provider_login_setting(member, "codex", BACKEND_MACHINE_ID, "own_then_shared")
     original = _turn(accounts, old)
     with store.connection() as connection:
         connection.execute(
@@ -233,7 +239,10 @@ def test_requested_recovery_waits_for_allowed_login(
         )
     else:
         store.set_provider_login_setting(
-            member.user_id, provider, "", "own" if direction == "personal_to_team" else "shared"
+            member.user_id,
+            provider,
+            BACKEND_MACHINE_ID,
+            "own" if direction == "personal_to_team" else "shared",
         )
     selected = []
     background = switch_background(store, stage, selected)
@@ -244,12 +253,14 @@ def test_requested_recovery_waits_for_allowed_login(
         store.mark_provider_login_verified(usable, member_id=member.user_id, detail="verified")
         resume_provider_account(background, usable)
     else:
-        store.set_provider_login_setting(member.user_id, provider, "", "own_then_shared")
+        store.set_provider_login_setting(
+            member.user_id, provider, BACKEND_MACHINE_ID, "own_then_shared"
+        )
         provider_login_changed(
             background,
             member_id=member.user_id,
             provider=provider,
-            host="",
+            machine_id=BACKEND_MACHINE_ID,
             reconcile_episodes=lambda: 0,
             watcher_delivery=Mock(spec=WatcherDelivery),
         )

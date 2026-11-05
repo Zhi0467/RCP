@@ -6,6 +6,7 @@ import pytest
 
 from rcp.core.models import GraphState, Patch
 from rcp.history import HistoryManager, PatchRejected
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.graph import _read_prepared_graph_context, _stage_prepared_graph_context
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
@@ -99,7 +100,7 @@ def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
         project_id="project",
         kind="refresh",
         graph_revision=context.graph_revision,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         original_contract_path=str(stage / "inputs/task.md"),
         context=context,
     )
@@ -123,7 +124,7 @@ def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
         stage_root=str(stage),
     )
 
-    prepared = _read_prepared_graph_context(record)
+    prepared = _read_prepared_graph_context(record, app.state.background_tasks.store)
 
     assert prepared.graph_revision == context.graph_revision
     assert prepared.context.research_md_path == context.research_md_path
@@ -134,4 +135,4 @@ def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
     prepared_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="unrecognized_path"):
-        _read_prepared_graph_context(record)
+        _read_prepared_graph_context(record, app.state.background_tasks.store)

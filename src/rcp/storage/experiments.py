@@ -17,6 +17,7 @@ from rcp.limits import (
     QUESTION_SNAPSHOT_MAX_RECORDS,
     SPACE_RUNS_COMPLETED_TTL,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.storage.branch_names import _chain_root
 from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, _VISIBLE_EPISODE_REPORTS
@@ -59,15 +60,17 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class _ExperimentResumeBinding:
     native_session_id: str
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
 
-    def workspace_problem(self) -> str | None:
-        if self.stage_host:
+    def workspace_problem(self, store: AppStore) -> str | None:
+        if self.stage_machine_id and self.stage_machine_id != BACKEND_MACHINE_ID:
             from rcp.transport import RemoteRunStage
 
             try:
-                available = RemoteRunStage(self.stage_host).directory_exists(self.stage_root)
+                available = RemoteRunStage(host_of(store, self.stage_machine_id)).directory_exists(
+                    self.stage_root
+                )
             except Exception as exc:
                 raise OSError("The saved provider workspace could not be checked.") from exc
             if available is None:
@@ -91,7 +94,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             and record.native_session_id == origin.native_session_id
             and record.request.get("provider") == origin.provider
             and record.stage_root == origin.stage_root
-            and (record.stage_host or "") == (origin.stage_host or "")
+            and (record.stage_machine_id or "") == (origin.stage_machine_id or "")
             and record.graph_target == origin.graph_target
             and original.dispatch_authority is not None
             and original.dispatch_authority.task_contract == origin.capability
@@ -211,8 +214,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                 connection, origin.project_id, original.kind, original.request.get("chat_id")
             ):
                 return None
-            if origin.stage_host and self._unresolved_remote_provider_passes(
-                connection, origin.stage_host, origin.stage_root
+            origin_stage_card = origin.stage_machine_id
+            if origin_stage_card and self._unresolved_remote_provider_passes(
+                connection, origin_stage_card, origin.stage_root
             ):
                 return None
             self._require_project_accepts_new_work(connection, origin.project_id)
@@ -514,10 +518,16 @@ class ExperimentStoreMixin(StoreMixinBase):
                         )
                 connection.execute(
                     """
-                    INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO experiment_episode_state (
+                        episode_id, machine_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?)
                     """,
-                    (episode.episode_id, episode.created_at, record.created_at),
+                    (
+                        episode.episode_id,
+                        record.request["run_on"],
+                        episode.created_at,
+                        record.created_at,
+                    ),
                 )
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
                 if auto_research_route is not None:
@@ -927,7 +937,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             (
                 item.node_id,
                 item.graph_target.key,
-                item.execution_host,
+                item.machine_id,
                 self._automatic_watcher_delivery_policy(item.continuation),
             )
             for item in watchers
@@ -1250,9 +1260,9 @@ class ExperimentStoreMixin(StoreMixinBase):
             "project_id": record.project_id,
             "control_node_id": request.get("control_node_id"),
             "provider": request.get("provider"),
-            "execution_machine": request.get("run_on"),
+            "machine_id": request.get("run_on"),
             "native_session_id": session_id,
-            "stage_host": record.stage_host or "",
+            "stage_machine_id": record.stage_machine_id or "",
             "stage_root": record.stage_root,
             "chat_id": request.get("chat_id"),
             "model": request.get("model"),
@@ -1262,21 +1272,19 @@ class ExperimentStoreMixin(StoreMixinBase):
             "project_id": episode["project_id"],
             "control_node_id": episode["control_node_id"],
             "provider": episode["provider"],
-            "execution_machine": episode["execution_machine"],
+            "machine_id": episode["machine_id"],
             "native_session_id": episode["native_session_id"],
-            "stage_host": episode["stage_host"] or "",
+            "stage_machine_id": episode["stage_machine_id"] or "",
             "stage_root": episode["stage_root"],
             "chat_id": episode["chat_id"],
             "model": binding_request.get("model"),
             "reasoning": binding_request.get("reasoning"),
         }
         mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
-        if (episode["execution_host"] or "") != (record.stage_host or ""):
-            mismatched.append("execution_host")
         if mismatched:
             raise ValueError(
                 "The automatic Experiment wake no longer matches its episode binding: "
-                + ", ".join(sorted(set(mismatched)))
+                + ", ".join(mismatched)
             )
 
     @staticmethod
@@ -1450,7 +1458,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 or record.graph_target != binding.graph_target
                 or record.chat_id != binding.chat_id
                 or record.node_id != binding.node_id
-                or record.execution_host != binding.execution_host
+                or record.machine_id != binding.machine_id
                 or record.continuation != binding.continuation
             )
             for record in records
@@ -1585,7 +1593,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         graph_target_json: str,
         node_id: str | None,
-        execution_host: str,
+        machine_id: str,
         cwd: str,
         check_command: str,
         log_path: str,
@@ -1596,7 +1604,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             project_id,
             graph_target_json,
             node_id or "",
-            execution_host,
+            machine_id,
             cwd,
             check_command,
             log_path,
@@ -1637,7 +1645,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 WHERE project_id = ?
                   AND graph_target_json = ?
                   AND IFNULL(node_id, '') = ?
-                  AND execution_host = ?
+                  AND machine_id = ?
                   AND cwd = ?
                   AND check_command = ?
                   AND log_path = ?
@@ -1686,7 +1694,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 binding.project_id,
                 serialized_target,
                 binding.node_id,
-                binding.execution_host,
+                binding.machine_id,
                 item.cwd,
                 item.check_command,
                 item.log_path,
@@ -1731,7 +1739,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                     record.project_id,
                     graph_target_json(record.graph_target),
                     record.node_id,
-                    record.execution_host,
+                    record.machine_id,
                     record.cwd,
                     record.check_command,
                     record.log_path,
@@ -1925,8 +1933,8 @@ class ExperimentStoreMixin(StoreMixinBase):
             expected_episode_id=episode_id,
             graph_target=binding.graph_target,
         )
-        if binding.execution_host != resource.execution_host:
-            raise ValueError("Experiment watcher maintenance must use the episode execution host.")
+        if binding.machine_id != resource.machine_id:
+            raise ValueError("Experiment watcher maintenance must use the episode machine.")
         if continuation != resource.continuation:
             raise ValueError(
                 "Experiment watcher maintenance no longer matches the live episode policy."
@@ -2041,7 +2049,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             control_node_id=control_node_id,
             episode_id=episode_id,
             graph_target=target,
-            execution_host=episode.execution_host,
+            machine_id=episode.machine_id or "",
             wake_task_kind=wake_task_kind,
             wake_chat_id=episode.chat_id,
             continuation=continuation,
@@ -2365,7 +2373,11 @@ class ExperimentStoreMixin(StoreMixinBase):
 
         with self.connection() as connection:
             binding = self._experiment_episode_resume_binding(connection, operation_id)
-        return binding if isinstance(binding, str) else binding.workspace_problem()
+        return (
+            binding
+            if isinstance(binding, str)
+            else binding.workspace_problem(cast("AppStore", self))
+        )
 
     @staticmethod
     def _experiment_episode_resume_binding(
@@ -2400,7 +2412,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             return "the attempt has no complete RCP-owned session and stage"
         return _ExperimentResumeBinding(
             native_session_id=str(task["native_session_id"]),
-            stage_host=str(task["stage_host"] or ""),
+            stage_machine_id=str(task["stage_machine_id"] or ""),
             stage_root=str(task["stage_root"]),
         )
 
@@ -2452,10 +2464,9 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_id: str,
         provider: str,
-        execution_machine: str,
-        execution_host: str,
+        machine_id: str,
         native_session_id: str,
-        stage_host: str | None,
+        stage_machine_id: str | None,
         stage_root: str,
         chat_id: str,
         operation_id: str,
@@ -2534,8 +2545,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             raise ValueError("The accepted handoff does not match its exact Experiment task.")
         if existing["native_session_id"] is not None:
             fixed = {
-                "execution_machine": execution_machine,
-                "execution_host": execution_host,
+                "machine_id": machine_id,
                 "chat_id": chat_id,
             }
             fixed_conflicts = sorted(
@@ -2549,7 +2559,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             binding = {
                 "provider": provider,
                 "native_session_id": native_session_id,
-                "stage_host": stage_host or "",
+                "stage_machine_id": stage_machine_id or "",
                 "stage_root": stage_root,
             }
             binding_conflicts = sorted(
@@ -2563,8 +2573,8 @@ class ExperimentStoreMixin(StoreMixinBase):
         connection.execute(
             """
             UPDATE experiment_episode_state
-            SET provider = ?, execution_machine = ?, execution_host = ?,
-                native_session_id = ?, stage_host = ?, stage_root = ?, chat_id = ?,
+            SET provider = ?, machine_id = ?,
+                native_session_id = ?, stage_machine_id = ?, stage_root = ?, chat_id = ?,
                 last_turn_operation_id = ?, last_turn_invocation = ?,
                 last_graph_result = ?, last_watcher_ids_json = ?,
                 context_baseline_json = ?, session_diagnostic = NULL, updated_at = ?
@@ -2572,10 +2582,9 @@ class ExperimentStoreMixin(StoreMixinBase):
             """,
             (
                 provider,
-                execution_machine,
-                execution_host,
+                machine_id,
                 native_session_id,
-                stage_host,
+                stage_machine_id,
                 stage_root,
                 chat_id,
                 operation_id,
@@ -2625,10 +2634,9 @@ class ExperimentStoreMixin(StoreMixinBase):
         project_id: str,
         control_node_id: str,
         provider: str,
-        execution_machine: str,
-        execution_host: str,
+        machine_id: str,
         native_session_id: str,
-        stage_host: str | None,
+        stage_machine_id: str | None,
         stage_root: str,
         chat_id: str,
         operation_id: str,
@@ -2650,10 +2658,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                 project_id=project_id,
                 control_node_id=control_node_id,
                 provider=provider,
-                execution_machine=execution_machine,
-                execution_host=execution_host,
+                machine_id=machine_id,
                 native_session_id=native_session_id,
-                stage_host=stage_host,
+                stage_machine_id=stage_machine_id,
                 stage_root=stage_root,
                 chat_id=chat_id,
                 operation_id=operation_id,
@@ -2676,7 +2683,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         binding: WatcherBinding,
         operation_id: str,
         native_session_id: str,
-        stage_host: str | None,
+        stage_machine_id: str | None,
         stage_root: str,
         graph_result: str,
         context_baseline: dict[str, object],
@@ -2721,10 +2728,9 @@ class ExperimentStoreMixin(StoreMixinBase):
                 project_id=binding.project_id,
                 control_node_id=control_node_id,
                 provider=continuation.provider,
-                execution_machine=continuation.run_on,
-                execution_host=binding.execution_host,
+                machine_id=binding.machine_id,
                 native_session_id=native_session_id,
-                stage_host=stage_host,
+                stage_machine_id=stage_machine_id,
                 stage_root=stage_root,
                 chat_id=binding.chat_id,
                 operation_id=operation_id,
@@ -3370,11 +3376,11 @@ class ExperimentStoreMixin(StoreMixinBase):
             (project_id,),
         ).fetchall()
         active_sessions = {
-            (row["provider"], row["execution_host"], row["native_session_id"])
+            (row["provider"], row["stage_machine_id"], row["native_session_id"])
             for row in _connection.execute(
                 """
                 SELECT json_extract(request_json, '$.provider') AS provider,
-                       COALESCE(stage_host, '') AS execution_host, native_session_id
+                       COALESCE(stage_machine_id, '') AS stage_machine_id, native_session_id
                 FROM graph_runs
                 WHERE project_id = ? AND status IN ('queued', 'running', 'pausing')
                   AND native_session_id IS NOT NULL
@@ -3499,7 +3505,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                         update={
                             "session_active": (
                                 binding.provider,
-                                binding.execution_host,
+                                binding.stage_machine_id or "",
                                 binding.native_session_id,
                             )
                             in active_sessions,
@@ -3690,9 +3696,8 @@ class ExperimentStoreMixin(StoreMixinBase):
             workflow_ids=binding_request.get("workflow_ids") or [],
             skill_ids=binding_request.get("skill_ids") or [],
             resolved_skill_packages=binding_request.get("resolved_skill_packages") or [],
-            run_on=(episode.execution_machine if episode is not None else None)
+            run_on=(episode.machine_id if episode is not None else None)
             or _optional_str(binding_request.get("run_on")),
-            execution_host=episode.execution_host if episode else None,
             run_truth_scope=(
                 [str(item) for item in root_request["run_truth_scope"]]
                 if isinstance(root_request.get("run_truth_scope"), list)
@@ -3718,10 +3723,9 @@ class ExperimentStoreMixin(StoreMixinBase):
     ) -> bool:
         """Whether this node-owned observer can wake the current episode.
 
-        Conversation, provider, execution-machine alias, and package provenance
-        are deliberately absent. The episode owns its session and policy; the
-        watcher owns only the node, episode, and check execution host needed to
-        answer the operational question.
+        Conversation, provider, and package provenance are deliberately absent.
+        The episode owns its session and policy; the watcher owns only the node,
+        episode, and check machine needed to answer the operational question.
         """
 
         continuation = record.continuation
@@ -3730,7 +3734,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             record.project_id == episode.project_id
             and episode.control_node_id == control_node_id
             and record.graph_target == episode.graph_target
-            and record.execution_host == episode.execution_host
+            and record.machine_id == episode.machine_id
         )
         return (
             continuation.patch_kind == "experiment_loop"
@@ -3837,7 +3841,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             key = (
                 first.node_id,
                 first.graph_target.key,
-                first.execution_host,
+                first.machine_id,
                 self._automatic_watcher_delivery_policy(first.continuation),
             )
             groups.setdefault(key, []).extend(unit)

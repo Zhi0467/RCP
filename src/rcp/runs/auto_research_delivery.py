@@ -567,14 +567,14 @@ def arm_auto_research_graph_condition(
     *,
     watcher_id: str,
     state: GraphState,
-    execution_host: str,
+    machine_id: str,
     on_ready: AutoResearchWatcherReadyHook | None = None,
 ) -> GraphWatcherRecord:
     """Arm one orchestrator graph condition through the existing watcher store."""
 
     if not isinstance(watcher_id, str) or not watcher_id.strip():
         raise ValueError("a auto_research graph watcher id must not be blank")
-    binding = _auto_research_graph_watcher_binding(store, context, execution_host=execution_host)
+    binding = _auto_research_graph_watcher_binding(store, context, machine_id=machine_id)
     records = arm_watchers(
         store,
         [],
@@ -611,13 +611,13 @@ def reconcile_auto_research_graph_condition(
     arguments: WatchGraphArguments,
     *,
     watcher_id: str,
-    execution_host: str,
+    machine_id: str,
 ) -> GraphWatcherRecord | None:
     """Read one planned graph watcher without arming or delivering it again."""
 
     if not isinstance(watcher_id, str) or not watcher_id.strip():
         return None
-    binding = _auto_research_graph_watcher_binding(store, context, execution_host=execution_host)
+    binding = _auto_research_graph_watcher_binding(store, context, machine_id=machine_id)
     watcher = store.watcher(watcher_id)
     if not isinstance(watcher, GraphWatcherRecord):
         return None
@@ -628,7 +628,7 @@ def reconcile_auto_research_graph_condition(
         or watcher.chat_id != binding.chat_id
         or watcher.node_id != binding.node_id
         or watcher.episode_id != context.episode.episode_id
-        or watcher.execution_host != binding.execution_host
+        or watcher.machine_id != binding.machine_id
         or watcher.condition != arguments.condition
         or watcher.continuation != binding.continuation
         or watcher.armed_revision is None
@@ -641,7 +641,7 @@ def _auto_research_graph_watcher_binding(
     store: AppStore,
     context: AutoResearchCommandContext,
     *,
-    execution_host: str,
+    machine_id: str,
 ) -> WatcherBinding:
     request = context.request
     if request.role != "orchestrator":
@@ -671,7 +671,7 @@ def _auto_research_graph_watcher_binding(
         node_id=request.control_node_id,
         episode_id=context.episode.episode_id,
         graph_target=context.task.graph_target,
-        execution_host=execution_host,
+        machine_id=machine_id,
         continuation=WatcherContinuation(
             browser_requested=context.episode.browser_requested,
             provider=request.provider,

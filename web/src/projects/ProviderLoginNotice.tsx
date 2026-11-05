@@ -44,7 +44,6 @@ export function ProviderLoginNotice({ states, viewerUserId = null, onOpenSignIns
             >
               <KeyRound size={14} aria-hidden="true" className="provider-login-notice-mark" />
               <strong>{label}</strong>
-              {state.host ? <span>{state.host}</span> : null}
               {other ? (
                 <span className="provider-login-notice-owner">{state.owner_display_name}</span>
               ) : onOpenSignIns ? (

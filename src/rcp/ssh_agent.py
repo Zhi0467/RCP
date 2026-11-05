@@ -254,7 +254,7 @@ class BackendSSHAgent:
 
 
 def confirm_remote_key_evidence(
-    *, remote_stage: RemoteRunStage, home: str
+    *, remote_stage: RemoteRunStage, machine_id: str, home: str
 ) -> tuple[HiddenReadKeyEvidence, ...]:
     """Confirm on the execution account; owner/check failures keep inventoried keys readable.
 
@@ -311,7 +311,7 @@ def confirm_remote_key_evidence(
 
                 context = BackendContext(
                     execution_host="",
-                    execution_machine=remote_stage.host,
+                    machine_id=machine_id,
                     compute=None,
                     runner=runner,
                     uid=facts["uid"],
