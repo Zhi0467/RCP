@@ -8801,11 +8801,16 @@ def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
     assert [event.text for event in settled if event.event == "answer"] == ["Refreshed offline."]
     assert settled[-1].event == "done"
     assert "rq/transfer-after-shift" in service.history.state().nodes
-    assert [
-        item
-        for item in service.history.load_patches()
-        if item.source_operation_id == execution.operation_id
-    ] != []
+    assert (
+        len(
+            [
+                item
+                for item in service.history.load_patches()
+                if item.source_operation_id == execution.operation_id
+            ]
+        )
+        == 1
+    )
     assert launcher.calls == 0
 
 

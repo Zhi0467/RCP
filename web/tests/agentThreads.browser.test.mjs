@@ -656,10 +656,13 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     // The completed project's comments and draft clear while Space keeps its own comment.
     await page.waitForFunction(
       () =>
-        !sessionStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
+        !localStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
         !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
     assert.equal(await space.getByRole("button", { name: "1 annotation" }).count(), 1);
+    await page.evaluate(() => sessionStorage.clear());
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
     const sent = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
     assert.ok(sent.body.message.includes("Show the comparison"));
     assert.equal(sent.body.attachment_set_id, "set-1");

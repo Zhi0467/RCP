@@ -7,6 +7,7 @@ import os
 import pwd
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderId, profile_for
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.install import _run_as_account
@@ -64,6 +66,7 @@ def prepare_provider_update_command(
         emitter.emit_step(_running(pending[0], "Inspecting the installed provider as rcp."))
         try:
             account = _installed_service_account(layout)
+            _refuse_while_turns_run(layout.data_dir / "rcp.sqlite3", provider)
             before_path = _discover_provider(account, provider)
             before_version = (
                 _provider_version(account, before_path, process_runner)
@@ -186,6 +189,31 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
         return pwd.getpwnam(layout.service_account)
     except KeyError as exc:
         raise ProviderUpdateRefused("The installed rcp service account is missing.") from exc
+
+
+def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
+    """Refuse while a backend turn runs this provider; an unreadable database does not block."""
+    try:
+        connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return
+    try:
+        (running,) = connection.execute(
+            "SELECT COUNT(*) FROM graph_runs "
+            "WHERE json_extract(request_json, '$.provider')=? "
+            "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
+            "AND status IN ('running', 'pausing')",
+            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
+        ).fetchone()
+    except sqlite3.Error:
+        return
+    finally:
+        connection.close()
+    if running:
+        raise ProviderUpdateRefused(
+            f"{running} agent turn(s) are running {profile_for(provider).label} on the backend. "
+            "Wait for them to finish or stop them, then rerun this update."
+        )
 
 
 def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path | None:

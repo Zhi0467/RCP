@@ -62,6 +62,7 @@ def start_episode_report(
                 report_request,
                 machine_id=existing.stage_machine_id,
                 authorized_by=episode.authorized_by,
+                automatic=True,
             )
         except AdmissionRefused:
             return None

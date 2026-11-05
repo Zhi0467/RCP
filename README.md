@@ -26,6 +26,12 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
   autonomous episode.
 - **Bounded autonomy.** One click starts an Experiment or an Auto-research
   episode from the graph or a graph branch, with a budget and a Stop.
+
+The [demo project](examples/demo-project/state-repo/.research/research.md) shows
+what a project's graph and history look like on disk.
+
+### More features
+
 - **Work between sessions.** Watchers, recovery, and visual reports keep running
   without an open tab, and the phone UI shows them. A nightly pass merges
   duplicate nodes, and agents keep shared memory notes for later runs.

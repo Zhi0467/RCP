@@ -421,11 +421,22 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         mark = self.provider_login_assignment(key, connection=connection).limited_at
         return mark is not None and (
             continued
-            or (
-                datetime.fromisoformat(now or self.now()) - datetime.fromisoformat(mark)
-            ).total_seconds()
-            < PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+            or self.provider_login_limit_lapses_in(key, connection=connection, now=now) > 0
         )
+
+    def provider_login_limit_lapses_in(
+        self,
+        key: LoginKey,
+        *,
+        now: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> float:
+        """Seconds until this login's limit mark lapses; 0 when it has none or it lapsed."""
+        mark = self.provider_login_assignment(key, connection=connection).limited_at
+        if mark is None:
+            return 0.0
+        elapsed = datetime.fromisoformat(now or self.now()) - datetime.fromisoformat(mark)
+        return max(0.0, PROVIDER_LOGIN_LIMIT_HINT_SECONDS - elapsed.total_seconds())
 
     def set_provider_login_limit(
         self, key: LoginKey, *, provider_started_at: str, limited: bool

@@ -73,6 +73,7 @@ from rcp.runs.experiment_recovery import (
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
+    ProviderLoginsLimited,
     ProviderSignedOut,
     run_on_machine,
 )
@@ -504,8 +505,12 @@ class BackgroundAgentTasks:
         lineage_login: LoginKey | None = None,
         isolation_episode_id: str | None = None,
         graph_target: GraphTargetRef | None = None,
+        automatic: bool = False,
     ) -> None:
-        """Refuse an ineligible execution account before durable allocation or debit."""
+        """Refuse an ineligible execution account before durable allocation or debit.
+
+        An automatic launch is also refused while every allowed login is limited.
+        """
 
         if request.provider is None:
             raise ValueError("Provider task admission requires a resolved provider.")
@@ -535,6 +540,12 @@ class BackgroundAgentTasks:
         )
         if isinstance(resolved, LoginRefusal):
             raise ProviderSignedOut(resolved.detail)
+        if automatic and accounts.automatic_launch_wait(
+            request.provider, machine, authorized_by.user_id if authorized_by else None
+        ):
+            raise ProviderLoginsLimited(
+                "Every sign-in is at its usage limit. This wake waits for one to lapse."
+            )
         if self.dependency_checker is not None and (
             reason := self.dependency_checker.launch_refusal(host_of(self.store, machine))
         ):

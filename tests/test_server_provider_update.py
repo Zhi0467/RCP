@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import uuid
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -20,6 +21,8 @@ from rcp.server_ops.provider_update import (
     _discover_provider,
     prepare_provider_update_command,
 )
+from rcp.storage import AgentTaskRecord, AppStore
+from tests.test_auto_research_children_storage import _identity, _project
 
 
 def _layout(tmp_path: Path) -> ServerLayout:
@@ -199,3 +202,97 @@ def test_provider_update_finds_the_native_opencode_install_without_a_symlink(
     assert (str(binary), "upgrade") in calls
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert events[-1]["step"]["state"] == "succeeded"
+
+
+def _seed_turn(layout: ServerLayout, provider: str, status: str, machine: str | None) -> None:
+    layout.data_dir.mkdir(parents=True, exist_ok=True)
+    store = AppStore(layout.data_dir / "rcp.sqlite3")
+    _project(store)
+    task = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id="project",
+            kind="project_chat",
+            status="succeeded",
+            request={"provider": provider, "message": "work"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status=?, stage_machine_id=? WHERE operation_id=?",
+            (status, machine, task.operation_id),
+        )
+    store.close()
+
+
+def _update_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed) -> tuple[int, list]:
+    layout = _layout(tmp_path)
+    seed(layout)
+    account = _account(layout)
+    binary = layout.service_home / ".opencode" / "bin" / "opencode"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr("rcp.server_ops.provider_update.pwd.getpwnam", lambda _name: account)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(_account, argv: tuple[str, ...], _timeout: float):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "1.18.34", "")
+
+    exit_code = run_server_command(
+        _parse("opencode"),
+        handler=lambda request, identity: prepare_provider_update_command(
+            request, identity, runner=runner, layout=layout
+        ),
+        identity=CallerIdentity(uid=0, username="root", host="lab"),
+        stream=StringIO(),
+    )
+    return exit_code, calls
+
+
+@pytest.mark.parametrize("status", ["running", "pausing"])
+def test_provider_update_refuses_while_a_backend_turn_runs_that_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    exit_code, calls = _update_opencode(
+        tmp_path, monkeypatch, lambda layout: _seed_turn(layout, "opencode", status, None)
+    )
+
+    assert exit_code != 0
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider", "status", "machine"),
+    [
+        ("codex", "running", None),
+        ("opencode", "succeeded", None),
+        ("opencode", "running", "gpu-card"),
+    ],
+)
+def test_provider_update_ignores_turns_that_do_not_run_it_on_the_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    status: str,
+    machine: str | None,
+) -> None:
+    exit_code, calls = _update_opencode(
+        tmp_path, monkeypatch, lambda layout: _seed_turn(layout, provider, status, machine)
+    )
+
+    assert exit_code == 0
+    assert any(call[-1] == "upgrade" for call in calls)
+
+
+def test_provider_update_proceeds_when_the_database_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    exit_code, _calls = _update_opencode(tmp_path, monkeypatch, lambda _layout: None)
+
+    assert exit_code == 0

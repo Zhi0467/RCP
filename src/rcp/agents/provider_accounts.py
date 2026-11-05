@@ -16,6 +16,12 @@ LoginSwitchReason = Literal[
     "unhealthy", "limited", "sender_setting", "setting_changed", "preferred_source_available"
 ]
 LoginSource = Literal["own", "shared"]
+_SETTING_SOURCES: dict[str, tuple[LoginSource, ...]] = {
+    "own": ("own",),
+    "own_then_shared": ("own", "shared"),
+    "shared_then_own": ("shared", "own"),
+    "shared": ("shared",),
+}
 
 
 @dataclass(frozen=True)
@@ -293,6 +299,66 @@ class ProviderAccounts:
         assert result is not None
         return result
 
+    def automatic_launch_wait(self, provider: str, machine_id: str, member_id: str | None) -> float:
+        """Seconds an automatic launch waits for an allowed login without a live limit mark.
+
+        0 when one is free, or when no login is allowed and admission refuses
+        instead. A human-started turn never waits; it takes a limited login.
+        """
+        with self.store.connection() as connection:
+            if not profile_for(provider).authentication.manages_login or member_id is None:
+                keys = [LoginKey(provider, machine_id, MACHINE_LOGIN_ID)]
+            else:
+                setting = self.store.provider_login_setting(
+                    member_id, provider, machine_id, connection=connection
+                )
+                keys = [
+                    LoginKey(provider, machine_id, row.login_id)
+                    for row in self._allowed_logins(
+                        connection,
+                        provider,
+                        machine_id,
+                        member_id,
+                        _SETTING_SOURCES[setting.setting],
+                    )
+                ]
+            return min(
+                (
+                    self.store.provider_login_limit_lapses_in(key, connection=connection)
+                    for key in keys
+                ),
+                default=0.0,
+            )
+
+    def _usable(self, machine_id: str, state: ProviderLoginStateRecord) -> bool:
+        return (
+            state.state == "signed_in"
+            and not state.removed_at
+            and profile_for(state.provider).authentication.credential_available(
+                self.credentials, machine_id, state.login_id, login_state=state
+            )
+        )
+
+    def _allowed_logins(
+        self,
+        connection: sqlite3.Connection,
+        provider: str,
+        machine_id: str,
+        member_id: str,
+        sources: tuple[LoginSource, ...],
+    ) -> list[ProviderLoginStateRecord]:
+        """Assignable logins (usable, not draining) the member's setting allows."""
+        return [
+            row
+            for row in self.store.provider_logins(provider, machine_id, connection=connection)
+            if not row.draining_since
+            and self._usable(machine_id, row)
+            and (
+                (row.member_id == member_id and "own" in sources)
+                or (row.member_id is None and "shared" in sources)
+            )
+        ]
+
     def _resolve_login(
         self,
         connection: sqlite3.Connection,
@@ -308,22 +374,10 @@ class ProviderAccounts:
         setting = self.store.provider_login_setting(
             member_id or "", provider, machine_id, connection=connection
         )
-        sources: tuple[LoginSource, ...] = {
-            "own": ("own",),
-            "own_then_shared": ("own", "shared"),
-            "shared_then_own": ("shared", "own"),
-            "shared": ("shared",),
-        }[setting.setting]
-        auth = profile_for(provider).authentication
+        sources = _SETTING_SOURCES[setting.setting]
 
         def usable(state: ProviderLoginStateRecord) -> bool:
-            return (
-                state.state == "signed_in"
-                and not state.removed_at
-                and auth.credential_available(
-                    self.credentials, machine_id, state.login_id, login_state=state
-                )
-            )
+            return self._usable(machine_id, state)
 
         # Legacy tasks without an authorizer retain the machine login. OpenCode
         # has no RCP-managed added logins, independent of a member's setting.
@@ -341,16 +395,7 @@ class ProviderAccounts:
             if usable(state) and state.member_id in (None, member_id):
                 return lineage_login, None
 
-        rows = self.store.provider_logins(provider, machine_id, connection=connection)
-        assignable = [row for row in rows if not row.draining_since and usable(row)]
-        allowed = [
-            row
-            for row in assignable
-            if (
-                (row.member_id == member_id and "own" in sources)
-                or (row.member_id is None and "shared" in sources)
-            )
-        ]
+        allowed = self._allowed_logins(connection, provider, machine_id, member_id, sources)
 
         def key_for(row: ProviderLoginStateRecord) -> LoginKey:
             return LoginKey(provider, machine_id, row.login_id)

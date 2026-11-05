@@ -1676,8 +1676,9 @@ def test_chat_wake_admits_the_current_agents_provider(store) -> None:
     tasks = BackgroundAgentTasks(store, None)
     admitted: list[str | None] = []
 
-    def admit(_project_id, request, *, authorized_by):
+    def admit(_project_id, request, *, authorized_by, automatic):
         assert authorized_by == _identity(store)
+        assert automatic
         admitted.append(request.provider)
         raise AdmissionRefused("stop here")
 

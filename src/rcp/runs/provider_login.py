@@ -35,6 +35,10 @@ class ProviderSignedOut(AdmissionRefused):
     """The execution account needs a verified provider sign-in."""
 
 
+class ProviderLoginsLimited(AdmissionRefused):
+    """Every allowed login is under a live limit mark, so automatic work waits."""
+
+
 class MachineDependenciesMissing(AdmissionRefused):
     """The execution machine lacks a required program or is unsupported."""
 

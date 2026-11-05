@@ -426,3 +426,99 @@ def test_run_on_names_its_card_and_defaults_to_the_base_machine(tmp_path):
     assert run_on_machine(store, "project", None) == BACKEND_MACHINE_ID
     for run_on in (gpu.machine_id, None):
         assert run_on_machine(store, store.space_id, run_on) == BACKEND_MACHINE_ID
+
+
+def _limited_chat(tmp_path, monkeypatch):
+    """A succeeded chat turn whose only sign-in then hit its usage limit."""
+    from datetime import datetime
+
+    from rcp.storage import WatcherContinuation, WatcherRecord
+
+    from .helpers import fabricated_authorizer, wait_for_task
+    from .lifecycles.agent_task import seeded_store, work_request
+
+    store = seeded_store(tmp_path)
+    clock = [datetime.fromisoformat(store.now())]
+    monkeypatch.setattr(store, "now", lambda: clock[0].isoformat())
+    stage = tmp_path / "chat-stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, _request, execution):
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
+        yield _sse(AgentEvent(event="session", session_id="chat-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    authorizer = fabricated_authorizer("Researcher")
+    request = work_request("limited-chat")
+    first = tasks.start("project", "project_chat", request, authorized_by=authorizer)
+    first = wait_for_task(store, first.operation_id, expect="succeeded")
+    login = LoginKey("codex", BACKEND_MACHINE_ID, first.login_id or MACHINE_LOGIN_ID)
+    assert store.set_provider_login_limit(
+        login, provider_started_at=(clock[0] - timedelta(seconds=1)).isoformat(), limited=True
+    )
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="limited-watch",
+                project_id="project",
+                origin_operation_id=first.operation_id,
+                origin_task_kind="project_chat",
+                chat_id=request.chat_id,
+                check_command="true",
+                cwd=str(stage),
+                log_path=str(stage / "watch.log"),
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    model="",
+                    reasoning="medium",
+                    run_on=BACKEND_MACHINE_ID,
+                    run_truth_scope=["repo"],
+                    patch_kind="work",
+                ),
+                status="completed",
+                created_at=store.now(),
+                completed_at=store.now(),
+            )
+        ]
+    )
+    return store, tasks, clock, authorizer, request
+
+
+def test_watcher_wake_waits_for_a_limited_login_to_lapse(tmp_path, monkeypatch):
+    from rcp.limits import PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+    from rcp.runs.watcher_admission import start_watcher_notification
+
+    from .helpers import wait_for_task
+
+    store, tasks, clock, authorizer, request = _limited_chat(tmp_path, monkeypatch)
+    wake_request = request.model_copy(
+        update={"trigger": "watcher", "watcher_ids": ["limited-watch"]}
+    )
+
+    def wake():
+        return start_watcher_notification(
+            tasks,
+            "project",
+            "project_chat",
+            wake_request,
+            ["limited-watch"],
+            authorized_by=authorizer,
+        )
+
+    before = _counts(store)
+    assert wake() is None
+    assert _counts(store) == before
+    assert store.watcher("limited-watch").status == "completed"
+    clock[0] += timedelta(seconds=PROVIDER_LOGIN_LIMIT_HINT_SECONDS)
+    started = wake()
+    assert started is not None
+    wait_for_task(store, started.operation_id, expect="succeeded")
+
+
+def test_human_turn_launches_on_a_limited_login(tmp_path, monkeypatch):
+    from .helpers import wait_for_task
+
+    store, tasks, _clock, authorizer, request = _limited_chat(tmp_path, monkeypatch)
+    turn = tasks.start("project", "project_chat", request, authorized_by=authorizer)
+    wait_for_task(store, turn.operation_id, expect="succeeded")

@@ -119,7 +119,9 @@ independent. Remote resources belong to the configured account. Provider-native
 state remains in that account's home, outside protected backups. The random
 installation identity is distinct from space and member identities.
 
-Provider updates run the native updater as the service account. They never
+Provider updates run the native updater as the service account. They refuse,
+before changing anything, while a backend agent turn running that provider is
+running or pausing. An unreadable database does not block them. They never
 collect credentials. They check the executable and login independently.
 Discovery saves stable command paths rather than resolved versioned symlinks.
 Product login behavior belongs to
