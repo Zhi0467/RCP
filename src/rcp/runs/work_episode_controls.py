@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
 _AUTO_RESEARCH_RECEIPT = "work_auto_research_kickoff"
 _TURN_CONTROL_RECEIPT = "work_episode_turn_control"
+TURN_CONTROL_REFUSALS = {"pause": "episode_not_pausable", "resume": "episode_not_resumable"}
 
 
 class EpisodeRefused(ValueError):
@@ -328,7 +329,7 @@ def control_own_turn(
             status=task.status,
         )
 
-    return _attempt(request, f"episode_not_{action}able", control)
+    return _attempt(request, TURN_CONTROL_REFUSALS[action], control)
 
 
 def handle_work_episode_controls(
@@ -420,13 +421,6 @@ def handle_work_auto_research_kickoff(
     episode = store.episode(episode_id)
     disposition = "existing"
     if episode is None:
-        if previous is None:
-            store.record_agent_task_receipt(
-                execution.operation_id,
-                _AUTO_RESEARCH_RECEIPT,
-                {"episode_id": episode_id, "intent_sha256": intent},
-                tier="diagnostic",
-            )
         start = WorkAutoResearchStart(
             source_operation_id=execution.operation_id,
             episode_id=episode_id,
@@ -445,6 +439,12 @@ def handle_work_auto_research_kickoff(
             return _refuse(request, str(exc), exc.code)
         except ValueError as exc:
             return _refuse(request, str(exc), "auto_research_not_started")
+        store.record_agent_task_receipt(
+            execution.operation_id,
+            _AUTO_RESEARCH_RECEIPT,
+            {"episode_id": episode_id, "intent_sha256": intent},
+            tier="diagnostic",
+        )
         episode = store.episode(episode_id)
         assert episode is not None
         disposition = "created"
