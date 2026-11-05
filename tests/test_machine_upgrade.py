@@ -375,6 +375,14 @@ def _seed(connection: sqlite3.Connection) -> None:
         (NOW, json.dumps({"layout": "split-v1", "stage_host": "gpu.example", "stage_root": "/s"})),
     )
     connection.execute(
+        "INSERT INTO graph_run_receipts (operation_id, created_at, tier, category, payload_json) "
+        "VALUES ('op', ?, 'diagnostic', 'remote_provider_started', ?)",
+        (
+            NOW,
+            json.dumps({"stage_host": "gpu.example", "stage_root": "/s", "pid_file": "/s/pid"}),
+        ),
+    )
+    connection.execute(
         "INSERT INTO compute_jobs (job_id, project_id, origin_operation_id, execution_machine, "
         "execution_host, backend_id, backend_handle, job_root, cwd, argv, log_path, exit_path, "
         "containment, status, created_at) VALUES ('job', 'remote', 'op', 'gpu', 'gpu.example', "
@@ -468,16 +476,17 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
             "stage_root": "/s",
         }
         assert connection.execute("SELECT COUNT(*) FROM compute_backend_probes").fetchone()[0] == 0
-        receipt = json.loads(
-            connection.execute("SELECT payload_json FROM graph_run_receipts").fetchone()[0]
-        )
-        assert receipt["stage_machine_id"] == GPU
+        receipts = [
+            json.loads(row[0])
+            for row in connection.execute("SELECT payload_json FROM graph_run_receipts")
+        ]
+        assert [receipt.get("stage_machine_id") for receipt in receipts] == [GPU, GPU]
+        assert all("stage_host" not in receipt for receipt in receipts)
         space_request = connection.execute(
             "SELECT request_json FROM graph_runs WHERE operation_id = 'space-op'"
         ).fetchone()[0]
         assert json.loads(space_request)["run_on"] == BACKEND
         assert connection.execute("SELECT agent_run_on FROM agent_threads").fetchone()[0] == BACKEND
-        assert "stage_host" not in receipt
         assert connection.execute("SELECT machine_id FROM compute_jobs").fetchone()[0] == GPU
         connection.execute("UPDATE compute_jobs SET status = 'exited' WHERE job_id = 'job'")
         assert (

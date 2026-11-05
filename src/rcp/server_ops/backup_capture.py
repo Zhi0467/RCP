@@ -7,8 +7,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import stat
+import tempfile
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
@@ -28,6 +30,7 @@ from rcp.limits import (
 from rcp.machine_upgrade import upgraded_capture_receipt
 from rcp.operation_ids import canonical_operation_uuid as _canonical_operation_uuid
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
+from rcp.rcp_home import rcp_temp_dir
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
     is_canonical_uuid4,
@@ -689,11 +692,31 @@ def reinspect_uncaptured_projects(
 
     Backups retain their original verdict. Preparation publishes this inventory
     as a separate receipt before binding project files and application proofs.
+    The outgoing release's snapshot is judged in this release's schema, on a
+    migrated private copy, never the snapshot itself.
     """
     if all(project.status == "capturable" for project in receipt.projects):
         return receipt
     validate_backup_sqlite_snapshot(receipt)
-    with closing(AppStore.open_read_only_snapshot(Path(receipt.snapshot_path))) as store:
+    with tempfile.TemporaryDirectory(prefix="rcp-reinspect-", dir=rcp_temp_dir()) as scratch:
+        migrated = Path(scratch) / "rcp.sqlite3"
+        shutil.copyfile(receipt.snapshot_path, migrated)
+        projects = _reinspected_projects(receipt, migrated)
+    return BackupSQLiteCaptureReceipt.model_validate(
+        receipt.model_copy(
+            update={
+                "projects": projects,
+                "status": "partial"
+                if not receipt.app_data_plan.complete
+                or any(project.status == "uncaptured" for project in projects)
+                else "complete",
+            }
+        )
+    )
+
+
+def _reinspected_projects(receipt: BackupSQLiteCaptureReceipt, database: Path):
+    with closing(AppStore(database)) as store:
         records = {record.project_id: record for record in store.projects()}
         if set(records) != {project.project_id for project in receipt.projects}:
             raise BackupCaptureUnavailable("The SQLite snapshot project inventory differs.")
@@ -708,17 +731,7 @@ def reinspect_uncaptured_projects(
             else project
             for project in receipt.projects
         )
-    return BackupSQLiteCaptureReceipt.model_validate(
-        receipt.model_copy(
-            update={
-                "projects": projects,
-                "status": "partial"
-                if not receipt.app_data_plan.complete
-                or any(project.status == "uncaptured" for project in projects)
-                else "complete",
-            }
-        )
-    )
+    return projects
 
 
 def _kept_artifact_references(

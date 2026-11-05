@@ -759,10 +759,14 @@ def _upgraded_project_json(project_json: str, cards: _Cards) -> str:
     return json.dumps(project)
 
 
-def _migrate_chat_stage_layouts(connection: sqlite3.Connection, cards: _Cards) -> None:
+def _migrate_stage_receipts(connection: sqlite3.Connection, cards: _Cards) -> None:
+    """Receipts that name their stage by host: chat layouts and remote provider passes.
+
+    An unresolved remote pass found by its stage card fences a second pass on it.
+    """
     rows = connection.execute(
-        "SELECT receipt_id, payload_json FROM graph_run_receipts "
-        "WHERE category = 'chat_stage_layout'"
+        "SELECT receipt_id, payload_json FROM graph_run_receipts WHERE category IN "
+        "('chat_stage_layout', 'remote_provider_started', 'remote_provider_stopped')"
     ).fetchall()
     for receipt_id, payload_json in rows:
         payload = json.loads(payload_json)
@@ -900,5 +904,5 @@ def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) ->
     migrate_memory_deletion_machines(
         connection, lambda project_json: _upgraded_project_json(project_json, cards)
     )
-    _migrate_chat_stage_layouts(connection, cards)
+    _migrate_stage_receipts(connection, cards)
     _rename_credential_folders(file_root, cards)
