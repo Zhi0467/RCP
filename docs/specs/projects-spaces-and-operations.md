@@ -74,8 +74,9 @@ batch-mode login to the new host; the same failures as Add machine come back,
 a named account the login does not land on is refused, and a team space fills
 a blank account from that login. A card with a live or retained terminal
 session keeps its route until those sessions end, because units stop through
-the card's current route. So does a card an open turn, a running compute job, or
-an active watcher still reaches, and such a card is not deleted: their records
+the card's current route. So does a card an open turn, a running compute job, an
+active watcher, or an open project provisioning request still reaches, and such a
+card is not deleted: their records
 name the card, and a moved or missing route would lose the work. A card whose
 host a not-yet-upgraded project manifest still names keeps its route too, since
 that project maps its old hosts to cards when it next opens. The edit then

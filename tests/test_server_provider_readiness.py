@@ -764,3 +764,12 @@ def test_local_execution_account_probe_reports_the_process_account() -> None:
     assert account.reachable is True
     assert account.os_account == pwd.getpwuid(os.geteuid()).pw_name
     assert account.reason is None
+
+
+def test_an_open_provisioning_request_keeps_its_machine_busy(tmp_path: Path) -> None:
+    store, authorizer = _team_store(tmp_path)
+    request = _request(store, authorizer, remote=True)
+    card = request.machines[0].machine_id
+
+    assert store.space_machine_has_work(card)
+    assert not store.space_machine_has_work(BACKEND_MACHINE_ID)

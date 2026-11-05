@@ -36,7 +36,7 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         return _record(row)
 
     def space_machine_has_work(self, machine_id: str) -> bool:
-        """An open turn, a running compute job, or a live watcher still reaches this card."""
+        """An open turn, compute job, watcher, or project provisioning still reaches this card."""
 
         with self.connection() as connection:
             row = connection.execute(
@@ -44,8 +44,12 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 "AND (stage_machine_id = ? OR json_extract(request_json, '$.run_on') = ?) "
                 "UNION ALL SELECT 1 FROM compute_jobs WHERE status = 'running' AND machine_id = ? "
                 "UNION ALL SELECT 1 FROM watchers "
-                "WHERE status IN ('active', 'degraded') AND machine_id = ? LIMIT 1",
-                (machine_id, machine_id, machine_id, machine_id),
+                "WHERE status IN ('active', 'degraded') AND machine_id = ? "
+                "UNION ALL SELECT 1 FROM project_provisioning_requests "
+                "WHERE status NOT IN ('completed', 'cancelled') AND EXISTS ("
+                "SELECT 1 FROM json_each(machines_json) "
+                "WHERE json_extract(value, '$.machine_id') = ?) LIMIT 1",
+                (machine_id, machine_id, machine_id, machine_id, machine_id),
             ).fetchone()
         return row is not None
 
