@@ -351,7 +351,18 @@ def _seed(connection: sqlite3.Connection) -> None:
         "INSERT INTO graph_runs (operation_id, project_id, kind, status, request_json, "
         "created_at, updated_at, status_message, stage_host, stage_root) "
         "VALUES ('op', 'remote', 'project_chat', 'running', ?, ?, ?, 'Running', '', '/stage')",
-        (json.dumps({"run_on": "laptop", "chat_id": "chat"}), NOW, NOW),
+        (
+            json.dumps(
+                {
+                    "run_on": "laptop",
+                    "chat_id": "chat",
+                    "stage_host": None,
+                    "fork_source_host": "gpu.example",
+                }
+            ),
+            NOW,
+            NOW,
+        ),
     )
     connection.execute(
         "INSERT INTO graph_runs (operation_id, project_id, kind, status, request_json, "
@@ -489,6 +500,13 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
         assert [receipt.get("stage_machine_id") for receipt in receipts] == [GPU, GPU]
         assert all("stage_host" not in receipt for receipt in receipts)
         origin = json.loads(connection.execute("SELECT origin_json FROM questions").fetchone()[0])
+        request = json.loads(
+            connection.execute(
+                "SELECT request_json FROM graph_runs WHERE operation_id = 'op'"
+            ).fetchone()[0]
+        )
+        assert (request["stage_machine_id"], request["fork_source_machine_id"]) == (None, GPU)
+        assert not {"stage_host", "fork_source_host"} & set(request)
         assert origin == {"stage_root": "/s", "stage_machine_id": GPU}
         space_request = connection.execute(
             "SELECT request_json FROM graph_runs WHERE operation_id = 'space-op'"

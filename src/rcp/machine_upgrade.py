@@ -784,6 +784,49 @@ def _migrate_stage_receipts(connection: sqlite3.Connection, cards: _Cards) -> No
         )
 
 
+_REQUEST_DOCUMENTS = (
+    ("graph_runs", "request_json", ()),
+    ("watchers", "continuation_json", ()),
+    ("auto_research_child_experiments", "request_json", ()),
+    ("chat_forks", "record_json", ("origin",)),
+)
+_REQUEST_HOST_KEYS = {
+    "stage_host": "stage_machine_id",
+    "fork_source_host": "fork_source_machine_id",
+}
+
+
+def _migrate_request_hosts(connection: sqlite3.Connection, cards: _Cards) -> None:
+    """Every stored turn request names its stage and fork source by card.
+
+    A request must reproduce exactly at launch, so a renamed key left in place
+    would refuse every turn an older release queued.
+    """
+    for table, column, path in _REQUEST_DOCUMENTS:
+        if column not in _columns(connection, table):
+            continue
+        prefix = "".join(f".{key}" for key in path)
+        condition = " OR ".join(
+            f"json_type({column}, '${prefix}.{key}') IS NOT NULL" for key in _REQUEST_HOST_KEYS
+        )
+        rows = connection.execute(
+            f'SELECT rowid, {column} FROM "{table}" WHERE {condition}'
+        ).fetchall()
+        for rowid, document_json in rows:
+            document = json.loads(document_json)
+            request = document
+            for key in path:
+                request = request[key]
+            for old, new in _REQUEST_HOST_KEYS.items():
+                if old in request:
+                    host = request.pop(old)
+                    request[new] = None if host is None else cards.id_for_host(str(host))
+            connection.execute(
+                f'UPDATE "{table}" SET {column} = ? WHERE rowid = ?',
+                (json.dumps(document), rowid),
+            )
+
+
 def _migrate_question_origins(connection: sqlite3.Connection, cards: _Cards) -> None:
     if "origin_json" not in _columns(connection, "questions"):
         return
@@ -911,6 +954,7 @@ def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) ->
         )
     _migrate_artifact_edit_stages(connection, cards)
     _migrate_question_origins(connection, cards)
+    _migrate_request_hosts(connection, cards)
     _drop_column(connection, "episode_wrapups", "run_on")
     if "execution_machine" in _columns(connection, "experiment_episode_state"):
         connection.execute(

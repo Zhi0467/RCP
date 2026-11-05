@@ -825,6 +825,20 @@ class TerminalManager:
             return False
         return True
 
+    def holds_machine(self, machine_id: str) -> bool:
+        """Whether a live or retained session runs on the card, so its route must not move.
+
+        A unit is stopped through the card's current route; a moved route would
+        find no unit and call a live one gone.
+        """
+        return any(
+            runtime.session.machine_id == machine_id for runtime in self.sessions.values()
+        ) or any(
+            session.machine_id == machine_id
+            for retained in self._unresolved.values()
+            for session in retained
+        )
+
     def stop_remote_unit(self, session: TerminalSession) -> None:
         """Stop a remote session's unit through its card's current route and account."""
         machine = card(self.store, session.machine_id)

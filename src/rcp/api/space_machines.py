@@ -23,6 +23,7 @@ from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_insid
 from rcp.agents.hidden_read import cached_hidden_read_readiness, hidden_read_defaults
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import (
+    _api_services,
     get_catalog,
     get_identity_access,
     get_project_display_cache,
@@ -701,6 +702,11 @@ def update_space_machine(
     machine = _machine_or_404(store, machine_id)
     host, os_account = _checked_route(store, machine, body)
     route_changed = (host, os_account) != (machine.host, machine.os_account)
+    if route_changed and _api_services(request).terminals.holds_machine(machine_id):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "machine_has_terminals", "message": "machine_has_terminals"},
+        )
     target = machine.model_copy(update={"host": host, "os_account": os_account})
     writable_paths = None
     if body.writable_paths is not None:

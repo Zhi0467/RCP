@@ -72,7 +72,9 @@ read it as that account.
 Editing a card's host or account writes only that row. Its one check is a
 batch-mode login to the new host; the same failures as Add machine come back,
 a named account the login does not land on is refused, and a team space fills
-a blank account from that login. The edit then forgets
+a blank account from that login. A card with a live or retained terminal
+session keeps its route until those sessions end, because units stop through
+the card's current route. The edit then forgets
 what the old route taught: provider readiness, skill inventories, every
 project's compute probes on the card, and those projects' display snapshots.
 Nothing is torn down. Running processes keep their connection, and records hold

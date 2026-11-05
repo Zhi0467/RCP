@@ -1167,6 +1167,9 @@ UNKNOWN_TABLE: dict[str, str] = {
         "schema migration rewrites legacy lineage keys inside JSON columns"
     ),
     "rcp.machine_upgrade:_rekey": "schema migration renames a host or alias column to a card id",
+    "rcp.machine_upgrade:_migrate_request_hosts": (
+        "schema migration renames stored request host keys to card ids"
+    ),
     "rcp.storage.machine_rekey:_rekey_bindings": (
         "project open rewrites a project's binding JSON from aliases to card ids"
     ),

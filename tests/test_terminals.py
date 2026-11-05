@@ -1871,3 +1871,12 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     receipt = read_record(manager, session.session_id)
     assert bool(receipt["ended_at"]) is confirmed
     assert receipt["termination_reason"] == "ended"
+
+
+@pytest.mark.asyncio
+async def test_a_retained_session_holds_its_card_route(unstarted) -> None:
+    assert not unstarted.holds_machine("worker-card")
+    unstarted._unresolved[("project", "repo-a")] = [SimpleNamespace(machine_id="worker-card")]
+
+    assert unstarted.holds_machine("worker-card")
+    assert not unstarted.holds_machine("other-card")

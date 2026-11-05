@@ -223,12 +223,18 @@ def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
     assert mismatched.json()["detail"]["code"] == "account_mismatch"
     from rcp.api import space_machines
 
+    terminals = app.state.services.terminals
+    monkeypatch.setattr(terminals, "holds_machine", lambda machine_id: True)
+    held = client.patch(path, json={"host": "new.example", "os_account": "carol"})
+    assert held.status_code == 409
+    assert held.json()["detail"]["code"] == "machine_has_terminals"
+    monkeypatch.setattr(terminals, "holds_machine", lambda machine_id: False)
     space_machines._REACH[(str(store.path), card.machine_id)] = [{"from": "Old", "probe": {}}]
     moved = client.patch(path, json={"host": "new.example", "os_account": "carol"})
     assert moved.status_code == 200, moved.text
     assert moved.json()["reach"] == []
     assert (moved.json()["host"], moved.json()["os_account"]) == ("new.example", "carol")
-    assert logins == ["new.example", "new.example"] and invalidated == [card.machine_id]
+    assert logins == ["new.example"] * 3 and invalidated == [card.machine_id]
     assert client.patch(path, json={"host": "other.example"}).status_code == 409
     assert store.space_machine(card.machine_id).host == "new.example"
     assert client.patch(path, json={"host": ""}).status_code == 422
