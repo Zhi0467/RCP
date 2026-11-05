@@ -31,7 +31,6 @@ from rcp.storage import (
     ProjectTransferSourceConfiguration,
 )
 from rcp.storage import models as storage_models
-from rcp.storage import provisioning as storage_provisioning
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
 from rcp.transfer import (
     TRANSFER_ARCHIVE_CODEC,
@@ -122,7 +121,6 @@ def _prepare_target_request(
 ):
     layout = SimpleNamespace(service_account="rcp", projects_root=central_root)
     monkeypatch.setattr(storage_models, "DEFAULT_SERVER_LAYOUT", layout)
-    monkeypatch.setattr(storage_provisioning, "DEFAULT_SERVER_LAYOUT", layout)
     target.ensure_space_machines([("", "rcp", "Server")])
     machines = [
         ProjectProvisioningMachineIntent(

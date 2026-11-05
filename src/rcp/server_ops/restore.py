@@ -58,8 +58,7 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Agent tables (v68-73), pending fires (v74), thread queue (v75), coach steers (v76),
-        # machine identity (v77).
+        # Agent tables (v68-73), pending fires (v74), thread queue (v75), coach steers (v76).
         "b8ed2421e756253fdc93a4c5081236805bf8b33b08aeb67fb1d947334c4dc1c2",
         "ddbc017f09a3e7ff4ce44bbd9e3c652dea2c2a39505bd136cbbc9ea90c5f9769",
         "ba42e91552059c5d6614be09f7434f9d386b56c6194e6a388eb50647432c9c1b",

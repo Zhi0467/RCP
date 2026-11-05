@@ -1199,7 +1199,7 @@ def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
         space_id=str(uuid.uuid4()),
         selector_kind="project",
         selector_id=str(uuid.uuid4()) if mismatch == "project" else project_id,
-        machine_alias=probe.execution_machine,
+        machine_id=probe.machine_id,
         compute_route="scheduler" if mismatch == "route" else "helper",
         probe=probe,
     )
@@ -1216,14 +1216,14 @@ def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
         if mismatch is None:
             assert (
                 client.probe_compute_backend(
-                    project_id=project_id, machine_alias="laptop", route="helper"
+                    project_id=project_id, machine_id="laptop", route="helper"
                 )
                 == probe
             )
         else:
             with pytest.raises(ServerControlError):
                 client.probe_compute_backend(
-                    project_id=project_id, machine_alias="laptop", route="helper"
+                    project_id=project_id, machine_id="laptop", route="helper"
                 )
     finally:
         server.stop()
@@ -1245,12 +1245,12 @@ def test_compute_probe_client_rejects_another_machine(tmp_path, monkeypatch):
         space_id=str(uuid.uuid4()),
         selector_kind="project",
         selector_id=project_id,
-        machine_alias="other",
+        machine_id="other",
         compute_route="helper",
         probe=_result("other", "systemd_user", "ready", "Passed."),
     )
     client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
     monkeypatch.setattr(client, "_exchange", lambda _: result)
     with pytest.raises(ServerControlError) as caught:
-        client.probe_compute_backend(project_id=project_id, machine_alias="laptop", route="helper")
+        client.probe_compute_backend(project_id=project_id, machine_id="laptop", route="helper")
     assert caught.value.code == "invalid_response"

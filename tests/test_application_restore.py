@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
 
-import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.server_ops.backup import _write_deterministic_archive, build_archive_manifest
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
@@ -53,15 +52,7 @@ def _write_archive(value, manifest, root):
     value["plaintext_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _use_captured_provisioning_layout(monkeypatch, root):
-    use_captured_layout(monkeypatch, root)
-    monkeypatch.setattr(
-        "rcp.storage.provisioning.DEFAULT_SERVER_LAYOUT", storage_models.DEFAULT_SERVER_LAYOUT
-    )
-
-
 def _build_restore_request(root, monkeypatch, socket_root):  # noqa: F811
-    _use_captured_provisioning_layout(monkeypatch, root)
     request, state, metadata = build_captured(root, monkeypatch, socket_root)
     store = AppStore(Path(request.data_dir) / "rcp.sqlite3")
     project_id = store.projects()[0].project_id
@@ -139,7 +130,7 @@ def restore_template(tmp_path_factory, socket_root):  # noqa: F811
 def restore_request(restore_template, monkeypatch):
     root, value = restore_template
     reset_from_template(root / "template", root / "live")
-    _use_captured_provisioning_layout(monkeypatch, root / "live")
+    use_captured_layout(monkeypatch, root / "live")
     return deepcopy(value)
 
 

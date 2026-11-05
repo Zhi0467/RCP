@@ -19,7 +19,7 @@ from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
-from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import ModelChoice, configured_runtime_id
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
@@ -54,7 +54,6 @@ from rcp.storage import (
     ProjectProvisioningProviderIntent,
     ProjectProvisioningRepositoryIntent,
 )
-from rcp.storage.models import LoginKey
 
 
 class _Launcher:

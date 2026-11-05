@@ -162,7 +162,6 @@ class ServerCommandRequest(_StrictModel):
     team_name: ShortText | None = None
     request_id: str | None = None
     project_id: str | None = None
-    #: The space card to act on: its id, or its name when exactly one card has it.
     machine_id: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
     compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
     provider_update_provider: ProviderId | None = None

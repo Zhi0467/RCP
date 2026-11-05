@@ -24,6 +24,7 @@ from rcp.server_ops.models import (
     MessageText,
     ServerStep,
 )
+from rcp.storage import models as storage_models
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
     ProjectMemberRecord,
@@ -250,9 +251,10 @@ def _require_provisioning_cards(
         if card is None:
             raise ValueError("provisioning machine names no machine in this space")
         if machine.machine_id == BACKEND_MACHINE_ID:
-            if card.os_account != DEFAULT_SERVER_LAYOUT.service_account:
+            layout = storage_models.DEFAULT_SERVER_LAYOUT
+            if card.os_account != layout.service_account:
                 raise ValueError("the server-local provisioning machine must execute as rcp")
-            if machine.central_root != str(DEFAULT_SERVER_LAYOUT.projects_root):
+            if machine.central_root != str(layout.projects_root):
                 raise ValueError("the server-local provisioning root is fixed by the installation")
 
 

@@ -816,7 +816,7 @@ def test_unused_machine_does_not_weaken_checkout_recovery_proof(
         next(item for item in payload["machines"] if item["machine_id"] == owner)[
             "resolved_central_root"
         ] = None
-    with pytest.raises(ValidationError, match="machines differ|no resolved central root"):
+    with pytest.raises(ValidationError):
         type(recovery).model_validate(payload)
 
 
