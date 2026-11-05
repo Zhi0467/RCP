@@ -739,3 +739,14 @@ def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api,
         row for row in client.get("/api/providers/logins").json() if row["login_id"] == key.login_id
     )
     assert row["bound_running"] == 2
+
+
+def test_provider_discovery_reads_the_backend_card(manifest, tmp_path) -> None:
+    from tests.helpers import create_named_app, signed_in_client
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        response = client.get("/api/providers")
+
+    assert response.status_code == 200, response.text
+    assert {row["provider"] for row in response.json()} == set(PROVIDER_IDS)

@@ -439,6 +439,7 @@ export interface ProjectTransferSourceConfiguration {
   project_truth_scope: string[];
   default_run_truth_scope: string[];
   source_manifest_sha256: string;
+  record_schema_version: number;
 }
 
 export interface ProjectTransferRepositoryBinding {

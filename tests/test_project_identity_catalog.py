@@ -468,3 +468,21 @@ def test_open_refuses_manifest_name_owned_by_another_project(
     assert catalog.loaded_service(target.project_id) is None
     assert store.project(target.project_id) == target
     assert store.project(foreign_project_id) is not None
+
+
+def test_a_retired_display_cache_is_rebuilt_for_a_backend_project(manifest, tmp_path) -> None:
+    from tests.helpers import create_named_app
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    catalog = app.state.catalog
+    (card,) = catalog.cards()
+    display = app.state.services.project_display_cache
+    assert display.rebuild_cached_snapshot(card["id"])
+    cache_path = catalog._cached_snapshot_path(card["id"])
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache_path.write_text(json.dumps({**envelope, "schema_version": 5}), encoding="utf-8")
+    assert catalog.cached_snapshot_status(card["id"])[0] == "invalid"
+
+    display.rebuild_retired_local_caches()
+
+    assert catalog.cached_snapshot_status(card["id"])[0] == "valid"

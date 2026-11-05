@@ -2961,6 +2961,21 @@ class ProjectDisplayCache:
             target=rebuild, name=f"rcp-legacy-display-rebuild-{project_id}", daemon=True
         ).start()
 
+    def rebuild_retired_local_caches(self) -> None:
+        """Rebuild each backend-state project's display cache that this release cannot read.
+
+        An older release's cache schema is retired with its machine aliases, and
+        a cutover candidate's space reads run from caches before any project opens.
+        A remote project waits for its machine-id upgrade.
+        """
+
+        for record in self._store.projects():
+            if record.machine_ids_pending or record.state_machine_id != BACKEND_MACHINE_ID:
+                continue
+            if self._catalog.cached_snapshot_status(record.project_id)[0] == "invalid":
+                with suppress(KeyError):
+                    self.rebuild_cached_snapshot(record.project_id)
+
     def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         service, draft = self._catalog.reconcile_snapshot(project_id)
         return service, self.complete_snapshot(project_id, draft)

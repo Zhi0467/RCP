@@ -94,7 +94,7 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         "owner_kind": "desktop",
         "running_commit": None,
         "web_build_id": None,
-        "team_shell_protocol": {"minimum": 1, "maximum": 7},
+        "team_shell_protocol": {"minimum": 1, "maximum": 8},
         "active_agent_tasks": 0,
         "projects": 0,
         "agent_mode": "provider",
@@ -164,9 +164,9 @@ def test_team_shell_protocol_one_fixture_remains_supported(tmp_path) -> None:
     ]
 
 
-def test_team_shell_protocol_seven_fixture_matches_server_range(tmp_path) -> None:
+def test_team_shell_protocol_eight_fixture_matches_server_range(tmp_path) -> None:
     fixture = json.loads(
-        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v7.json").read_text()
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v8.json").read_text()
     )
     with signed_in_client(create_app(data_dir=tmp_path)) as client:
         assert client.get("/api/health").json()["team_shell_protocol"] == fixture["server_range"]
@@ -180,13 +180,13 @@ def test_latest_native_transfer_protocol_carries_every_writable_record_version()
     record version also needs a new team-shell protocol.
     """
     native = json.loads(
-        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v7.json").read_text()
+        (Path(__file__).parent / "fixtures" / "team_shell_protocol_v8.json").read_text()
     )["native_transfer"]
     field = ProjectTransferSourceConfigurationRequest.model_fields["record_schema_version"]
-    accepted = [version for member in get_args(field.annotation) for version in get_args(member)]
+    accepted = list(get_args(field.annotation))
     assert native["record_schema_field"] == "record_schema_version"
     assert native["record_schema_versions"] == accepted
-    assert accepted == list(range(2, TRANSFER_RECORD_SCHEMA_VERSION + 1))
+    assert accepted == [TRANSFER_RECORD_SCHEMA_VERSION]
 
 
 def test_health_projects_team_creation_eligibility_without_member_authority(tmp_path) -> None:

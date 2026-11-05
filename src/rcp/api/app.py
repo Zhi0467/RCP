@@ -2106,6 +2106,7 @@ def create_app(
                 sync_coordinator.start()
                 # Records must name cards by id before recovery reads them.
                 await asyncio.to_thread(fill_space_machines, store, app_data)
+                await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
                 await asyncio.to_thread(reconcile_thread_handoffs)
@@ -2354,6 +2355,7 @@ def create_app(
         try:
             if fenced_startup:
                 await asyncio.to_thread(fill_space_machines, store, app_data, rewrite_remote=False)
+                await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 app.state.startup_recovery_plan = background_tasks.plan_startup_recovery().as_dict()
                 if control_server is not None:
                     control_server.start()

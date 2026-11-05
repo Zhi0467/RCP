@@ -1083,11 +1083,11 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
     mismatch = client.post(
         "/api/team/enroll",
         json={"code": bootstrap, "display_name": "Alice"},
-        headers={header: "8"},
+        headers={header: "9"},
     )
     assert mismatch.status_code == 426
     assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
-    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 7}
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 8}
 
     enrolled = client.post(
         "/api/team/enroll",

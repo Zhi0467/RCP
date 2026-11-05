@@ -41,10 +41,10 @@ const TEAM_SHELL_PROTOCOL_HEADER: &str = "RCP-Team-Shell-Protocol";
 // Protocol 3 carries reviewed commits; protocol 4 also preserves episode archive
 // state; protocol 5 also carries archived graph branches and branch names;
 // protocol 6 also carries deleted episode reports; protocol 7 also carries
-// graph branch records. Native transfer preparation refuses record versions the
-// negotiated protocol lacks.
+// graph branch records; protocol 8 carries only card-id records. Native transfer
+// preparation refuses record versions the negotiated protocol lacks.
 const TEAM_SHELL_PROTOCOL_MINIMUM: u32 = 3;
-pub(crate) const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 7;
+pub(crate) const TEAM_SHELL_PROTOCOL_MAXIMUM: u32 = 8;
 const TEAM_ENROLLMENT_PATH: &str = "/api/team/enroll";
 const TEAM_SESSION_EXCHANGE_PATH: &str = "/api/team/session/exchange";
 const TEAM_PROJECT_CARDS_PATH: &str = "/api/projects";
@@ -544,6 +544,23 @@ impl TeamSessionState {
             .await
             .map_err(|error| format!("could not read target provider setup choices: {error}"))?;
         response_json(response, "target provider setup choices").await
+    }
+
+    pub(crate) async fn read_target_space_machines_value(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+    ) -> Result<Value, String> {
+        let (connection, client, cookie) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        let response = client
+            .get(endpoint(&connection.local_origin, "/api/space/machines")?)
+            .header(COOKIE, cookie)
+            .send()
+            .await
+            .map_err(|error| format!("could not read target space machines: {error}"))?;
+        response_json(response, "target space machines").await
     }
 
     /// Retrieve the target's raw activation proof through the pinned native
@@ -1978,7 +1995,7 @@ mod tests {
             assert!(error.contains(DESKTOP_SOURCE_COMMIT));
             assert!(error.contains(installed_server_commit(&older_server)));
         }
-        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 7);
+        assert_eq!(select_team_shell_protocol(&health()).unwrap(), 8);
 
         let mut stale_desktop = health();
         stale_desktop.team_shell_protocol = Some(TeamShellProtocolRange {
@@ -2150,10 +2167,7 @@ mod tests {
         assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
         assert_eq!(
             fixture["desktop_range"],
-            serde_json::json!({
-                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
-                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
-            })
+            serde_json::json!({"minimum": 3, "maximum": 7})
         );
         let mut server = health();
         server.team_shell_protocol =
@@ -2164,6 +2178,32 @@ mod tests {
             maximum: 6,
         });
         assert_eq!(validate_health(&server, None).unwrap(), 6);
+    }
+
+    #[test]
+    fn protocol_eight_fixture_preserves_protocol_seven_connectivity() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v8.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["protocol_version"], 8);
+        assert_eq!(fixture["selection_header"], TEAM_SHELL_PROTOCOL_HEADER);
+        assert_eq!(
+            fixture["desktop_range"],
+            serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+            })
+        );
+        let mut server = health();
+        server.team_shell_protocol =
+            Some(serde_json::from_value(fixture["server_range"].clone()).unwrap());
+        assert_eq!(validate_health(&server, None).unwrap(), 8);
+        server.team_shell_protocol = Some(TeamShellProtocolRange {
+            minimum: 1,
+            maximum: 7,
+        });
+        assert_eq!(validate_health(&server, None).unwrap(), 7);
     }
 
     #[test]

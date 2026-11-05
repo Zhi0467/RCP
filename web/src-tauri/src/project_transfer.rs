@@ -45,6 +45,7 @@ const SOURCE_ARCHIVE_PATH_PREFIX: &str = "/api/native/project-transfers/source-r
 const SOURCE_CREATE_PATH: &str = "/api/project-transfers/source-requests";
 const SOURCE_LINK_PATH_PREFIX: &str = "/api/project-transfers/source-requests/";
 const COORDINATOR_VERSION: u32 = 1;
+const BACKEND_MACHINE_ID: &str = "backend";
 const COORDINATOR_FILENAME: &str = "project-transfer-coordinator.json";
 const MAX_COORDINATOR_BYTES: u64 = 1024 * 1024;
 const MAX_ADVANCE_TRANSITIONS: usize = 8;
@@ -81,17 +82,23 @@ pub struct ProjectTransferTargetProvisioningIntent {
     pub name: String,
     pub default_auto_research_invocation_ceiling: u64,
     pub machines: Vec<ProjectTransferMachineIntent>,
+    pub repositories: Vec<ProjectTransferTargetRepository>,
+    pub state_machine_id: String,
     pub provider_checks: Vec<ProjectTransferProviderIntent>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectTransferMachineIntent {
-    pub alias: String,
-    pub location: String,
-    pub host: String,
-    pub os_account: String,
+    pub machine_id: String,
     pub central_root: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTransferTargetRepository {
+    pub alias: String,
+    pub machine_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -102,7 +109,7 @@ pub struct ProjectTransferProviderIntent {
     pub runtime_id: String,
     pub model: String,
     pub reasoning: String,
-    pub machine_alias: String,
+    pub machine_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -389,7 +396,6 @@ fn secure_coordinator_permissions(_file: &File) -> Result<(), String> {
 pub struct ProjectTransferRepositorySource {
     pub alias: String,
     pub repository: Option<ProjectTransferRepositoryIdentity>,
-    pub machine_alias: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_commit: Option<String>,
 }
@@ -406,14 +412,12 @@ pub struct ProjectTransferSourceConfiguration {
     pub source_rcp_version: String,
     pub source_schema_generation: u64,
     pub supported_archive_codecs: Vec<String>,
-    pub machine_aliases: Vec<String>,
     pub repositories: Vec<ProjectTransferRepositorySource>,
     pub state_repository: String,
     pub project_truth_scope: Vec<String>,
     pub default_run_truth_scope: Vec<String>,
     pub source_manifest_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub record_schema_version: Option<u64>,
+    pub record_schema_version: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -447,7 +451,7 @@ pub struct ProjectTransferLinkReceipt {
 #[serde(deny_unknown_fields)]
 struct ProjectTransferResolvedPath {
     repository_alias: String,
-    machine_alias: String,
+    machine_id: String,
     path: String,
 }
 
@@ -609,10 +613,7 @@ pub struct ProjectProvisioningFinalReviewProjection {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct ProjectProvisioningMachineProjection {
-    pub alias: String,
-    pub location: String,
-    pub host: String,
-    pub os_account: String,
+    pub machine_id: String,
     pub intended_central_root: Option<String>,
     pub resolved_central_root: Option<String>,
     pub ready: bool,
@@ -628,7 +629,7 @@ pub struct ProjectProvisioningRepositoryProjection {
     pub https_clone_url: Option<String>,
     pub ssh_clone_url: Option<String>,
     pub settings_url: Option<String>,
-    pub machine_alias: String,
+    pub machine_id: String,
     pub intended_path: Option<String>,
     pub resolved_path: Option<String>,
     pub checkout_disposition: Option<String>,
@@ -650,7 +651,7 @@ pub struct ProjectProvisioningProviderProjection {
     pub runtime_id: String,
     pub model: String,
     pub reasoning: String,
-    pub machine_alias: String,
+    pub machine_id: String,
     pub status: String,
     pub status_label: String,
     pub ready: bool,
@@ -920,7 +921,7 @@ struct IncomingProvisioningCreateBody<'a> {
 struct DerivedRepositoryIntent {
     alias: String,
     source: Option<String>,
-    machine_alias: String,
+    machine_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -991,8 +992,8 @@ pub async fn prepare(
         .source_release_proof_sha256
         .as_deref()
         .ok_or_else(|| "the source transfer omitted its release commitment".to_string())?;
-    validate_target_machine_intent(&request.target_provisioning, configuration)?;
-    let derived_repositories = derive_repository_intents(configuration);
+    let derived_repositories =
+        derive_repository_intents(&request.target_provisioning, configuration)?;
     let incoming_body = IncomingProvisioningCreateBody {
         request_id: &request.target_request_id,
         source_project_id: &request.source_project_id,
@@ -1594,6 +1595,35 @@ pub async fn read_target_provider_setup(
     parse_provider_setup_projection(&value)
 }
 
+pub async fn read_target_space_machines(
+    connections: &TeamConnectionState,
+    sessions: &TeamSessionState,
+    connection_id: &str,
+) -> Result<Vec<Value>, String> {
+    validate_uuid4(connection_id, "team connection identity")?;
+    let _ = sessions.established(connection_id)?;
+    let value = sessions
+        .read_target_space_machines_value(connections, connection_id)
+        .await?;
+    parse_space_machines(&value)
+}
+
+fn parse_space_machines(value: &Value) -> Result<Vec<Value>, String> {
+    let machines = value
+        .get("machines")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            "the target space machines endpoint returned an invalid response".to_string()
+        })?;
+    for machine in machines {
+        let object = machine
+            .as_object()
+            .ok_or_else(|| "the target space returned an invalid machine".to_string())?;
+        validate_machine_id(required_text(object, "machine_id")?, "target space machine")?;
+    }
+    Ok(machines.clone())
+}
+
 fn validate_prepare_request(request: &ProjectTransferPrepareRequest) -> Result<(), String> {
     validate_uuid4(
         &request.source_request_id,
@@ -1621,31 +1651,38 @@ fn validate_prepare_request(request: &ProjectTransferPrepareRequest) -> Result<(
     if intent.provider_checks.is_empty() || intent.provider_checks.len() > 32 {
         return Err("target provisioning must contain a bounded provider list".into());
     }
-    let mut machine_aliases = Vec::with_capacity(intent.machines.len());
+    if intent.repositories.is_empty() || intent.repositories.len() > 64 {
+        return Err("target provisioning must contain a bounded repository list".into());
+    }
+    let mut machine_ids = Vec::with_capacity(intent.machines.len());
     for machine in &intent.machines {
-        validate_alias(&machine.alias, "target provisioning machine alias")?;
-        if !matches!(machine.location.as_str(), "local" | "ssh") {
-            return Err("target provisioning machine location is invalid".into());
-        }
+        validate_machine_id(&machine.machine_id, "target provisioning machine")?;
         if let Some(root) = &machine.central_root {
             validate_absolute_path(root, "target provisioning central root")?;
         }
-        if machine_aliases.contains(&machine.alias) {
-            return Err("target provisioning machine aliases must be unique".into());
+        if machine_ids.contains(&machine.machine_id) {
+            return Err("target provisioning machines must be unique".into());
         }
-        machine_aliases.push(machine.alias.clone());
+        machine_ids.push(machine.machine_id.clone());
+    }
+    let mut repository_aliases = Vec::with_capacity(intent.repositories.len());
+    for repository in &intent.repositories {
+        validate_alias(&repository.alias, "target provisioning repository alias")?;
+        if !machine_ids.contains(&repository.machine_id) {
+            return Err("target provisioning repository names an unknown machine".into());
+        }
+        if repository_aliases.contains(&repository.alias) {
+            return Err("target provisioning repository aliases must be unique".into());
+        }
+        repository_aliases.push(repository.alias.clone());
+    }
+    if !machine_ids.contains(&intent.state_machine_id) {
+        return Err("target provisioning state machine is unknown".into());
     }
     let mut profiles = Vec::with_capacity(intent.provider_checks.len());
     for provider in &intent.provider_checks {
-        validate_alias(
-            &provider.machine_alias,
-            "target provisioning provider machine alias",
-        )?;
-        if !machine_aliases
-            .iter()
-            .any(|alias| alias == &provider.machine_alias)
-        {
-            return Err("target provisioning provider names an unknown machine".into());
+        if provider.machine_id != intent.state_machine_id {
+            return Err("every target provider must run on the state machine".into());
         }
         if profiles.contains(&provider.profile) {
             return Err("target provisioning provider profiles must be unique".into());
@@ -1681,9 +1718,8 @@ fn validate_source_for_prepare(
     validate_source_configuration(configuration)?;
     // Refuse before any target mutation, so an older team server never receives
     // a provisioning reservation for history it cannot import.
-    if configuration
-        .record_schema_version
-        .is_some_and(|version| !target_record_schema_versions(target_protocol).contains(&version))
+    if !target_record_schema_versions(target_protocol)
+        .contains(&configuration.record_schema_version)
     {
         return Err(
             "the target team server cannot receive this project's history; have the server \
@@ -2368,32 +2404,26 @@ fn optional_digest(
     Ok(value)
 }
 
-/// Every transfer record version this desktop relays. The negotiated
-/// team-shell protocol narrows it to the versions the target server accepts.
-const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 6] = [2, 3, 4, 5, 6, 7];
+/// Every transfer record version this desktop relays. Card-id records
+/// (version 8) replaced host aliases, so only protocol 8 carries them; an
+/// older team server cannot import them and is refused.
+const RELAYED_RECORD_SCHEMA_VERSIONS: [u64; 1] = [8];
 
 fn target_record_schema_versions(protocol: u32) -> &'static [u64] {
     match protocol {
-        0..=3 => &[],
-        4 => &RELAYED_RECORD_SCHEMA_VERSIONS[..1],
-        5 => &RELAYED_RECORD_SCHEMA_VERSIONS[..3],
-        6 => &RELAYED_RECORD_SCHEMA_VERSIONS[..4],
-        _ => &RELAYED_RECORD_SCHEMA_VERSIONS,
+        8 => &RELAYED_RECORD_SCHEMA_VERSIONS,
+        _ => &[],
     }
 }
 
 fn validate_source_configuration(
     configuration: &ProjectTransferSourceConfiguration,
 ) -> Result<(), String> {
-    if configuration
-        .record_schema_version
-        .is_some_and(|version| !RELAYED_RECORD_SCHEMA_VERSIONS.contains(&version))
-    {
+    if !RELAYED_RECORD_SCHEMA_VERSIONS.contains(&configuration.record_schema_version) {
         return Err("the desktop does not support the source transfer record schema".into());
     }
     if configuration.source_schema_generation == 0
         || configuration.supported_archive_codecs.is_empty()
-        || configuration.machine_aliases.is_empty()
         || configuration.repositories.is_empty()
     {
         return Err("the source transfer configuration is incomplete".into());
@@ -2401,21 +2431,10 @@ fn validate_source_configuration(
     for codec in &configuration.supported_archive_codecs {
         validate_safe_line(codec, "source archive codec", 120, true)?;
     }
-    for alias in &configuration.machine_aliases {
-        validate_alias(alias, "source machine alias")?;
-    }
     let mut aliases = Vec::with_capacity(configuration.repositories.len());
     let mut identities = Vec::with_capacity(configuration.repositories.len());
     for repository in &configuration.repositories {
         validate_alias(&repository.alias, "source repository alias")?;
-        validate_alias(&repository.machine_alias, "source repository machine alias")?;
-        if !configuration
-            .machine_aliases
-            .iter()
-            .any(|machine| machine == &repository.machine_alias)
-        {
-            return Err("the source repository names an unknown machine alias".into());
-        }
         if aliases.contains(&repository.alias) {
             return Err("source repository aliases must be unique".into());
         }
@@ -2542,6 +2561,18 @@ fn validate_alias(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_machine_id(value: &str, label: &str) -> Result<(), String> {
+    if value == BACKEND_MACHINE_ID
+        || (value.len() == 32
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        return Ok(());
+    }
+    Err(format!("{label} id is invalid"))
+}
+
 fn validate_absolute_path(value: &str, label: &str) -> Result<(), String> {
     validate_safe_line(value, label, 4096, true)?;
     if !value.starts_with('/') || value.split('/').any(|component| component == "..") {
@@ -2585,39 +2616,45 @@ fn choose_archive_codec(
         .ok_or_else(|| "the source transfer offers no archive codec".to_string())
 }
 
-fn validate_target_machine_intent(
+fn derive_repository_intents(
     intent: &ProjectTransferTargetProvisioningIntent,
     configuration: &ProjectTransferSourceConfiguration,
-) -> Result<(), String> {
-    for source_alias in &configuration.machine_aliases {
-        if !intent
-            .machines
-            .iter()
-            .any(|machine| &machine.alias == source_alias)
-        {
-            return Err(format!(
-                "target provisioning is missing source machine alias {source_alias}"
-            ));
-        }
+) -> Result<Vec<DerivedRepositoryIntent>, String> {
+    if intent.repositories.len() != configuration.repositories.len() {
+        return Err("target provisioning must place exactly the source repositories".into());
     }
-    Ok(())
-}
-
-fn derive_repository_intents(
-    configuration: &ProjectTransferSourceConfiguration,
-) -> Vec<DerivedRepositoryIntent> {
-    configuration
+    let repositories = configuration
         .repositories
         .iter()
-        .map(|repository| DerivedRepositoryIntent {
-            alias: repository.alias.clone(),
-            source: repository
-                .repository
-                .as_ref()
-                .map(|identity| format!("https://github.com/{}.git", identity.identity)),
-            machine_alias: repository.machine_alias.clone(),
+        .map(|repository| {
+            let placement = intent
+                .repositories
+                .iter()
+                .find(|placement| placement.alias == repository.alias)
+                .ok_or_else(|| {
+                    format!(
+                        "target provisioning does not place source repository {}",
+                        repository.alias
+                    )
+                })?;
+            Ok(DerivedRepositoryIntent {
+                alias: repository.alias.clone(),
+                source: repository
+                    .repository
+                    .as_ref()
+                    .map(|identity| format!("https://github.com/{}.git", identity.identity)),
+                machine_id: placement.machine_id.clone(),
+            })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    if repositories
+        .iter()
+        .find(|repository| repository.alias == configuration.state_repository)
+        .is_none_or(|repository| repository.machine_id != intent.state_machine_id)
+    {
+        return Err("the state repository must be placed on the state machine".into());
+    }
+    Ok(repositories)
 }
 
 fn parse_link_receipt(value: &Value) -> Result<ProjectTransferLinkReceipt, String> {
@@ -2807,7 +2844,7 @@ fn validate_target_admission_receipt(
     let mut aliases = HashSet::new();
     for path in &receipt.resolved_paths {
         validate_alias(&path.repository_alias, "resolved repository alias")?;
-        validate_alias(&path.machine_alias, "resolved machine alias")?;
+        validate_machine_id(&path.machine_id, "resolved machine")?;
         validate_absolute_path(&path.path, "resolved repository path")?;
         if !aliases.insert(&path.repository_alias) {
             return Err("the target admission receipt repeats a repository alias".into());
@@ -2990,7 +3027,6 @@ fn validate_bundle(bundle: &ProjectTransferBundle) -> Result<(), String> {
                     .any(|source_repository| {
                         source_repository.alias == repository.alias
                             && source_repository.repository == repository.repository
-                            && source_repository.machine_alias == repository.machine_alias
                     })
             })
     {
@@ -3149,10 +3185,7 @@ fn parse_machine_projection(value: &Value) -> Result<ProjectProvisioningMachineP
         .as_object()
         .ok_or_else(|| "the target machine projection is invalid".to_string())?;
     Ok(ProjectProvisioningMachineProjection {
-        alias: required_text(object, "alias")?.to_string(),
-        location: required_text(object, "location")?.to_string(),
-        host: required_text(object, "host")?.to_string(),
-        os_account: required_text(object, "os_account")?.to_string(),
+        machine_id: required_text(object, "machine_id")?.to_string(),
         intended_central_root: optional_text(object, "intended_central_root")?,
         resolved_central_root: optional_text(object, "resolved_central_root")?,
         ready: required_bool(object, "ready")?,
@@ -3209,7 +3242,7 @@ fn parse_repository_projection(
         https_clone_url,
         ssh_clone_url,
         settings_url,
-        machine_alias: required_text(object, "machine_alias")?.to_string(),
+        machine_id: required_text(object, "machine_id")?.to_string(),
         intended_path: optional_text(object, "intended_path")?,
         resolved_path: optional_text(object, "resolved_path")?,
         checkout_disposition: optional_text(object, "checkout_disposition")?,
@@ -3237,7 +3270,7 @@ fn parse_provider_projection(
         runtime_id: required_text(object, "runtime_id")?.to_string(),
         model: required_text(object, "model")?.to_string(),
         reasoning: required_text(object, "reasoning")?.to_string(),
-        machine_alias: required_text(object, "machine_alias")?.to_string(),
+        machine_id: required_text(object, "machine_id")?.to_string(),
         status: required_text(object, "status")?.to_string(),
         status_label: required_text(object, "status_label")?.to_string(),
         ready: required_bool(object, "ready")?,
@@ -4181,19 +4214,21 @@ mod tests {
                 name: "Moved project".into(),
                 default_auto_research_invocation_ceiling: 3,
                 machines: vec![ProjectTransferMachineIntent {
-                    alias: "server".into(),
-                    location: "local".into(),
-                    host: String::new(),
-                    os_account: "rcp".into(),
+                    machine_id: BACKEND_MACHINE_ID.into(),
                     central_root: Some("/srv/rcp/projects".into()),
                 }],
+                repositories: vec![ProjectTransferTargetRepository {
+                    alias: "state".into(),
+                    machine_id: BACKEND_MACHINE_ID.into(),
+                }],
+                state_machine_id: BACKEND_MACHINE_ID.into(),
                 provider_checks: vec![ProjectTransferProviderIntent {
                     profile: "discuss".into(),
                     provider: "codex".into(),
                     runtime_id: "exec".into(),
                     model: "model".into(),
                     reasoning: "medium".into(),
-                    machine_alias: "server".into(),
+                    machine_id: BACKEND_MACHINE_ID.into(),
                 }],
             },
         }
@@ -4220,7 +4255,7 @@ mod tests {
         assert!(!value.to_string().contains("proof_bytes"));
         assert!(!value.to_string().contains("member_token"));
         let mut extra = value.clone();
-        extra["target_provisioning"]["repositories"] = Value::Array(Vec::new());
+        extra["target_provisioning"]["machine_aliases"] = Value::Array(Vec::new());
         assert!(serde_json::from_value::<ProjectTransferPrepareRequest>(extra).is_err());
     }
 
@@ -4290,7 +4325,7 @@ mod tests {
     #[test]
     fn archived_record_capability_round_trips_and_rejects_unsupported_versions() {
         let protocol: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v7.json"
+            "../../../tests/fixtures/team_shell_protocol_v8.json"
         ))
         .unwrap();
         let legacy = safe_transfer_payload()["source_configuration"].clone();
@@ -4313,7 +4348,7 @@ mod tests {
             validate_source_configuration(&parsed).unwrap();
             assert_eq!(serde_json::to_value(parsed).unwrap(), included);
         }
-        for unsupported in [1, 8] {
+        for unsupported in [7, 9] {
             included["record_schema_version"] = serde_json::json!(unsupported);
             let parsed = serde_json::from_value(included.clone()).unwrap();
             assert!(validate_source_configuration(&parsed).is_err());
@@ -4321,59 +4356,29 @@ mod tests {
     }
 
     #[test]
-    fn preparation_relays_only_record_versions_the_target_protocol_accepts() {
-        let four: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v4.json"
+    fn preparation_relays_card_id_records_only_to_protocol_eight() {
+        let eight: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/team_shell_protocol_v8.json"
         ))
         .unwrap();
-        let five: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v5.json"
-        ))
-        .unwrap();
-        let six: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v6.json"
-        ))
-        .unwrap();
-        let seven: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/team_shell_protocol_v7.json"
-        ))
-        .unwrap();
-        assert_eq!(seven["protocol_version"], TEAM_SHELL_PROTOCOL_MAXIMUM);
+        assert_eq!(eight["protocol_version"], TEAM_SHELL_PROTOCOL_MAXIMUM);
         let accepted = |protocol: u32| -> Vec<u64> {
-            match protocol {
-                3 => Vec::new(),
-                4 => vec![four["native_transfer"]["record_schema_version"]
-                    .as_u64()
-                    .unwrap()],
-                5 => serde_json::from_value(
-                    five["native_transfer"]["record_schema_versions"].clone(),
-                )
-                .unwrap(),
-                6 => {
-                    serde_json::from_value(six["native_transfer"]["record_schema_versions"].clone())
-                        .unwrap()
-                }
-                _ => serde_json::from_value(
-                    seven["native_transfer"]["record_schema_versions"].clone(),
-                )
-                .unwrap(),
+            if protocol == 8 {
+                serde_json::from_value(eight["native_transfer"]["record_schema_versions"].clone())
+                    .unwrap()
+            } else {
+                Vec::new()
             }
         };
         let request = prepare_request();
         let mut source = decision_record("source", REQUEST_ID);
         for protocol in 3..=TEAM_SHELL_PROTOCOL_MAXIMUM {
-            source
-                .source_configuration
-                .as_mut()
-                .unwrap()
-                .record_schema_version = None;
-            validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol).unwrap();
-            for version in 2..=7 {
+            for version in 2..=9 {
                 source
                     .source_configuration
                     .as_mut()
                     .unwrap()
-                    .record_schema_version = Some(version);
+                    .record_schema_version = version;
                 assert_eq!(
                     validate_source_for_prepare(&source, &request, TARGET_SPACE_ID, protocol)
                         .is_ok(),
@@ -4431,6 +4436,40 @@ mod tests {
     }
 
     #[test]
+    fn target_placement_covers_the_source_and_keeps_providers_on_the_state_machine() {
+        let configuration = transfer_configuration();
+        let request = prepare_request();
+        validate_prepare_request(&request).unwrap();
+        derive_repository_intents(&request.target_provisioning, &configuration).unwrap();
+
+        let card = "a".repeat(32);
+        let mut moved = request.clone();
+        moved
+            .target_provisioning
+            .machines
+            .push(ProjectTransferMachineIntent {
+                machine_id: card.clone(),
+                central_root: None,
+            });
+        moved.target_provisioning.state_machine_id = card.clone();
+        assert!(validate_prepare_request(&moved).is_err());
+        for provider in &mut moved.target_provisioning.provider_checks {
+            provider.machine_id = card.clone();
+        }
+        validate_prepare_request(&moved).unwrap();
+        assert!(derive_repository_intents(&moved.target_provisioning, &configuration).is_err());
+        moved.target_provisioning.repositories[0].machine_id = card;
+        derive_repository_intents(&moved.target_provisioning, &configuration).unwrap();
+
+        let mut unplaced = request.clone();
+        unplaced.target_provisioning.repositories[0].alias = "other".into();
+        assert!(derive_repository_intents(&unplaced.target_provisioning, &configuration).is_err());
+        let mut unknown = request;
+        unknown.target_provisioning.machines[0].machine_id = "server".into();
+        assert!(validate_prepare_request(&unknown).is_err());
+    }
+
+    #[test]
     fn server_only_transfer_requires_bundle_and_relays_no_url() {
         let mut source = decision_record("source", REQUEST_ID);
         let configuration = source.source_configuration.as_mut().unwrap();
@@ -4441,7 +4480,18 @@ mod tests {
         configuration.repositories.push(local);
         configuration.supported_archive_codecs = vec!["rcp-transfer-v2".into()];
         validate_source_configuration(configuration).unwrap();
-        let intents = serde_json::to_value(derive_repository_intents(configuration)).unwrap();
+        let mut request = prepare_request();
+        request
+            .target_provisioning
+            .repositories
+            .push(ProjectTransferTargetRepository {
+                alias: "local".into(),
+                machine_id: BACKEND_MACHINE_ID.into(),
+            });
+        let intents = serde_json::to_value(
+            derive_repository_intents(&request.target_provisioning, configuration).unwrap(),
+        )
+        .unwrap();
         assert!(intents[1]["source"].is_null());
         validate_source_for_prepare(
             &source,
@@ -4490,20 +4540,18 @@ mod tests {
             source_rcp_version: "0.3.2".into(),
             source_schema_generation: 9,
             supported_archive_codecs: vec!["source-preferred-codec".into()],
-            machine_aliases: vec!["server".into()],
             repositories: vec![ProjectTransferRepositorySource {
                 alias: "state".into(),
                 repository: Some(ProjectTransferRepositoryIdentity {
                     identity: "example/state".into(),
                 }),
-                machine_alias: "server".into(),
                 source_commit: None,
             }],
             state_repository: "state".into(),
             project_truth_scope: vec!["state".into()],
             default_run_truth_scope: vec!["state".into()],
             source_manifest_sha256: "a".repeat(64),
-            record_schema_version: None,
+            record_schema_version: 8,
         };
         assert_eq!(
             choose_archive_codec(&configuration).unwrap(),
@@ -4527,16 +4575,15 @@ mod tests {
                 "source_rcp_version": "0.3.2",
                 "source_schema_generation": 1,
                 "supported_archive_codecs": ["tar-zstd-v1"],
-                "machine_aliases": ["server"],
                 "repositories": [{
                     "alias": "state",
-                    "repository": {"identity": "example/state"},
-                    "machine_alias": "server"
+                    "repository": {"identity": "example/state"}
                 }],
                 "state_repository": "state",
                 "project_truth_scope": ["state"],
                 "default_run_truth_scope": ["state"],
-                "source_manifest_sha256": "a".repeat(64)
+                "source_manifest_sha256": "a".repeat(64),
+                "record_schema_version": 8
             },
             "source_configuration_sha256": "b".repeat(64),
             "accepted_schema_generation": 1,
@@ -4605,20 +4652,18 @@ mod tests {
             source_rcp_version: "0.3.2".into(),
             source_schema_generation: 1,
             supported_archive_codecs: vec!["tar-zstd-v1".into()],
-            machine_aliases: vec!["server".into()],
             repositories: vec![ProjectTransferRepositorySource {
                 alias: "state".into(),
                 repository: Some(ProjectTransferRepositoryIdentity {
                     identity: "example/state".into(),
                 }),
-                machine_alias: "server".into(),
                 source_commit: None,
             }],
             state_repository: "state".into(),
             project_truth_scope: vec!["state".into()],
             default_run_truth_scope: vec!["state".into()],
             source_manifest_sha256: "a".repeat(64),
-            record_schema_version: None,
+            record_schema_version: 8,
         }
     }
 
@@ -4643,7 +4688,7 @@ mod tests {
             target_preparation_sha256: "b".repeat(64),
             resolved_paths: vec![ProjectTransferResolvedPath {
                 repository_alias: "state".into(),
-                machine_alias: "server".into(),
+                machine_id: BACKEND_MACHINE_ID.into(),
                 path: "/srv/rcp/projects/state".into(),
             }],
             accepted_schema_generation: 1,
@@ -4979,7 +5024,7 @@ mod tests {
                 "display_name": "Z"
             },
             "machines": [{
-                "alias": "server", "location": "local", "host": "", "os_account": "rcp",
+                "machine_id": "backend",
                 "intended_central_root": "/srv/rcp/projects", "resolved_central_root": null,
                 "ready": true, "status_label": "Ready"
             }],
@@ -4988,7 +5033,7 @@ mod tests {
                 "https_clone_url": "https://github.com/example/state.git",
                 "ssh_clone_url": "git@github.com:example/state.git",
                 "settings_url": "https://github.com/example/state/settings",
-                "machine_alias": "server", "intended_path": "/srv/rcp/projects/state",
+                "machine_id": "backend", "intended_path": "/srv/rcp/projects/state",
                 "resolved_path": null, "checkout_disposition": null, "status": "ready",
                 "status_label": "Ready", "ready": true, "commit": "a".repeat(40),
                 "write_verified": true, "deploy_key_label": null,
@@ -4996,7 +5041,7 @@ mod tests {
             }],
             "provider_checks": [{
                 "profile": "discuss", "provider": "codex", "runtime_id": "exec",
-                "model": "model", "reasoning": "medium", "machine_alias": "server",
+                "model": "model", "reasoning": "medium", "machine_id": "backend",
                 "status": "ready", "status_label": "Ready", "ready": true,
                 "binary_path": "/usr/bin/codex", "version": "1", "resolved_runtime_id": "exec",
                 "execution_account": "rcp", "checked_at": null, "diagnostic": null

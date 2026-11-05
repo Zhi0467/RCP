@@ -56,7 +56,7 @@ from rcp.loop_status import (
     LoopCheckout,
     episode_loop_metadata_from_snapshot,
 )
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.project_deletion import (
@@ -1033,9 +1033,9 @@ def providers(
     """
 
     return [
-        launcher.readiness(LoginKey(provider, "", MACHINE_LOGIN_ID), refresh=refresh).model_dump(
-            mode="json"
-        )
+        launcher.readiness(
+            LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), refresh=refresh
+        ).model_dump(mode="json")
         for provider in PROVIDER_IDS
     ]
 

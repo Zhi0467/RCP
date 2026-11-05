@@ -88,6 +88,7 @@ pub fn run() {
             commands::desktop_advance_project_transfer,
             commands::desktop_run_incoming_project_provision,
             commands::desktop_read_target_project_provisioning_options,
+            commands::desktop_read_target_space_machines,
             commands::desktop_export_project_transfer,
             commands::desktop_select_project_transfer_export,
             commands::desktop_open_project_transfer_terminal,
