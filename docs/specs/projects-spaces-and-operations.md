@@ -129,8 +129,9 @@ card from a row.
    and non-home projects upgrade too), and the pending flag last. An
    interrupted rewrite repeats on the next start.
 
-A project is skipped while its state cannot be reached or a transfer or
-provisioning request is open; it stays pending. Startup merge-effect
+A project is skipped while its state cannot be reached or a provisioning
+request or format-8 transfer request is open; it stays pending. An open
+transfer from before format 8 can only be restarted, so it holds nothing back. Startup merge-effect
 reconciliation skips pending projects. Any other open of a pending project,
 recovery's included, runs the same rewrite first, so a project whose state
 comes back upgrades on open; if it cannot, the open is refused as unavailable. A fenced update or restore candidate rewrites only projects whose
