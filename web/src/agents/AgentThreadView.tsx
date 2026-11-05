@@ -13,6 +13,7 @@ import {
   RotateCcw,
   Send,
   Square,
+  SquareStack,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -1586,6 +1587,16 @@ export function AgentThreadView({
         tools={null}
         actions={
           <>
+            {cards.unavailable && (
+              <span
+                className="agent-cards-unavailable"
+                role="img"
+                aria-label="Approval cards couldn't load. Retrying."
+                title="Approval cards couldn't load. Retrying."
+              >
+                <SquareStack size={16} />
+              </span>
+            )}
             {voice && (
               <button
                 className={`icon-button chat-voice-button${voiceHere ? " active" : ""}`}

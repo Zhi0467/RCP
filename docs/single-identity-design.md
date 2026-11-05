@@ -179,7 +179,14 @@ durable row that resolves to `""` is shown as "Removed machine".
 
    A project is skipped while its state cannot be reached, or while it has an
    open transfer or provisioning request. It stays pending until that settles.
+   Opening a pending project runs the same rewrite first, so a project whose
+   state comes back is upgraded on open without a restart.
 4. **Recovery** skips pending projects, and a pending project does not open.
+5. **Candidate proof.** An update or restore candidate runs the per-project
+   rewrite for local pending projects inside its copy, then reads them as
+   usual. Remote pending projects stay pending; the proof checks only that
+   they are recorded, since remote manifests are rewritten after rollback
+   authority ends (§3.3).
 
 ### 3.3 Rollback
 

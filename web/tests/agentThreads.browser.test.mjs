@@ -2090,9 +2090,11 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     });
     assert.ok(await moss.locator(".chat-annotatable-answer").count());
     assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
+    await moss.locator(".agent-cards-unavailable").waitFor();
     shown.fail = false;
     shown.proposals = [proposalCard("proposal/b", "H3 standing → refuted")];
     await moss.locator('.approval-card[aria-label*="H3 standing"]').waitFor({ timeout: 10_000 });
+    assert.equal(await moss.locator(".agent-cards-unavailable").count(), 0);
     await failing.close();
   });
 });

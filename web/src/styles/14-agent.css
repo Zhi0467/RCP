@@ -1032,6 +1032,12 @@
 .chat-voice-button.icon-button {
   color: var(--ink);
 }
+.agent-cards-unavailable {
+  display: inline-flex;
+  align-items: center;
+  color: var(--amber);
+  cursor: default;
+}
 .chat-voice-button.active {
   background: var(--forest);
   border-color: var(--forest);
