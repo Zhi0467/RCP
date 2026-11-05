@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 
 from rcp.attachments import ChatAttachmentStore
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS, AGENT_THREAD_QUEUE_MAX_CHARS
+from rcp.limits import (
+    AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS,
+    AGENT_THREAD_QUEUE_MAX_CHARS,
+    AGENT_THREAD_QUEUE_RETRY_SECONDS,
+)
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_thread_commands import _TRANSIENT_DELIVERY, _thread_busy, _thread_request
 from rcp.runs.turn_attachments import claim_turn_attachments
@@ -52,7 +56,10 @@ def dispatch_thread_queue(
     *,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> list[str]:
-    """Start each free thread's oldest queued message; one bad row never blocks the others."""
+    """Start each free thread's oldest queued message; one bad row never blocks the others.
+
+    A deferred message arms one later pass, so it starts or times out without another event.
+    """
     admitted: list[str] = []
     for row in store.pending_agent_thread_queue():
         try:
@@ -61,7 +68,14 @@ def dispatch_thread_queue(
             ):
                 admitted.append(operation_id)
         except Exception:
-            logger.exception("Queued message %s admission failed", row.queue_id)
+            logger.exception("Queued message %s could not be deferred", row.queue_id)
+    if any(row.deferred_at is not None for row in store.pending_agent_thread_queue()):
+        background.schedule_thread_queue_dispatch(
+            AGENT_THREAD_QUEUE_RETRY_SECONDS,
+            lambda: dispatch_thread_queue(
+                store, catalog, background, project_admission=project_admission
+            ),
+        )
     return admitted
 
 
@@ -72,7 +86,25 @@ def admit_queued_message(
     row: AgentThreadQueueRecord,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> str | None:
-    """Start the message as the member's own turn, refuse it for good, or leave it waiting."""
+    """Start the message as the member's own turn, refuse it for good, or leave it waiting.
+
+    An unexpected failure defers it like a transient one, so the delivery timeout refuses it.
+    """
+    try:
+        return _admit_queued_message(store, catalog, background, row, project_admission)
+    except Exception as exc:
+        logger.exception("Queued message %s admission failed", row.queue_id)
+        _defer(store, catalog, row, type(exc).__name__)
+        return None
+
+
+def _admit_queued_message(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    background: BackgroundAgentTasks,
+    row: AgentThreadQueueRecord,
+    project_admission: Callable[[str], AbstractContextManager[object]],
+) -> str | None:
     thread = store.agent_thread(row.thread_id)
     ready = _queue_ready(store, thread, row)
     if isinstance(ready, str):
@@ -86,12 +118,7 @@ def admit_queued_message(
     try:
         return _start_queued_turn(store, catalog, background, row, thread, ready, project_admission)
     except _TRANSIENT_DELIVERY as exc:
-        since = datetime.fromisoformat(store.defer_agent_thread_queue_item(row.queue_id))
-        waited = (datetime.fromisoformat(store.now()) - since).total_seconds()
-        if waited >= AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS:
-            _refuse(store, catalog, row, f"delivery_timed_out: {exc}")
-        else:
-            logger.warning("Queued message %s start deferred: %s", row.queue_id, exc)
+        _defer(store, catalog, row, str(exc))
     except (ValueError, KeyError) as exc:
         if _thread_busy(store, thread):
             logger.warning("Queued message %s waits: another turn took the thread", row.queue_id)
@@ -170,6 +197,18 @@ def _start_queued_turn(
                 authorized_by=member,
                 queue_id=row.queue_id,
             ).operation_id
+
+
+def _defer(
+    store: AppStore, catalog: ProjectCatalog, row: AgentThreadQueueRecord, detail: str
+) -> None:
+    """Keep the message for a later pass, refusing it once it has waited out the timeout."""
+    since = datetime.fromisoformat(store.defer_agent_thread_queue_item(row.queue_id))
+    waited = (datetime.fromisoformat(store.now()) - since).total_seconds()
+    if waited >= AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS:
+        _refuse(store, catalog, row, f"delivery_timed_out: {detail}")
+    else:
+        logger.warning("Queued message %s start deferred: %s", row.queue_id, detail)
 
 
 def _refuse(

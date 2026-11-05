@@ -485,6 +485,7 @@ class BackgroundAgentTasks:
         self._transport_retry_closed = False
         self._transport_retry_fence = threading.Condition(self._controls_lock)
         self._remote_reconciliation_timer: threading.Timer | None = None
+        self._thread_queue_timer: threading.Timer | None = None
         self._remote_reconciliation_worker: threading.Thread | None = None
         self._remote_reconciliation_requested = False
         self._remote_result_lock = threading.Lock()
@@ -1513,6 +1514,8 @@ class BackgroundAgentTasks:
                 self._transport_retry_timers.clear()
                 reconciliation_timer = self._remote_reconciliation_timer
                 self._remote_reconciliation_timer = None
+                thread_queue_timer = self._thread_queue_timer
+                self._thread_queue_timer = None
                 workers.append(self._remote_reconciliation_worker)
                 mailboxes = list(self._detached_mailboxes.values())
         for mailbox in mailboxes:
@@ -1521,6 +1524,8 @@ class BackgroundAgentTasks:
             timer.cancel()
         if reconciliation_timer is not None:
             reconciliation_timer.cancel()
+        if thread_queue_timer is not None:
+            thread_queue_timer.cancel()
         for operation_id, control in active:
             if control.request_detach():
                 continue
@@ -2667,6 +2672,28 @@ class BackgroundAgentTasks:
                 self._remote_reconciliation_requested = True
                 return
             self._remote_reconciliation_timer = timer
+        timer.start()
+
+    def schedule_thread_queue_dispatch(self, delay: float, dispatch: Callable[[], object]) -> None:
+        """Arm one later pass over deferred queued messages; an armed pass covers new ones."""
+
+        def run() -> None:
+            with self._controls_lock:
+                if self._thread_queue_timer is timer:
+                    self._thread_queue_timer = None
+                if self._shutdown_requested:
+                    return
+            try:
+                dispatch()
+            except Exception:
+                logger.exception("Deferred queued messages could not be dispatched")
+
+        timer = threading.Timer(delay, run)
+        timer.daemon = True
+        with self._controls_lock:
+            if self._shutdown_requested or self._thread_queue_timer is not None:
+                return
+            self._thread_queue_timer = timer
         timer.start()
 
     def _recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
