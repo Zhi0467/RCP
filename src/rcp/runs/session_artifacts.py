@@ -150,7 +150,7 @@ def _tracked(
         _Tracked(artifact, durable=True)
         for artifact in (
             store.session_artifacts(
-                task.project_id, execution.stage_host or "", execution.stage_root
+                task.project_id, execution.stage_machine_id or "", execution.stage_root
             )
             if execution.stage_root
             else []
@@ -177,7 +177,7 @@ def _tracked(
             origin is not None
             and bool(execution.stage_root)
             and origin.stage_root == execution.stage_root
-            and (origin.stage_host or "") == (execution.stage_host or "")
+            and origin.stage_machine_id == execution.stage_machine_id
         )
         # Otherwise this turn runs elsewhere: a fresh-session edit, or a standalone
         # recovery that moved the chat to another machine. The file is written for

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.storage import AppStore, ProjectRecord
 
@@ -20,8 +21,8 @@ def _store_with_episode(tmp_path: Path) -> tuple[AppStore, Path]:
             project_id="project",
             locator=str(tmp_path),
             name="Project",
-            state_location=str(tmp_path),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path),
             added_at=store.now(),
         )
     )
@@ -37,7 +38,10 @@ def _store_with_episode(tmp_path: Path) -> tuple[AppStore, Path]:
     )
     store.mark_agent_task_running("operation")
     store.checkpoint_agent_task(
-        "operation", native_session_id="native-session", stage_root=str(stage)
+        "operation",
+        native_session_id="native-session",
+        stage_machine_id="backend",
+        stage_root=str(stage),
     )
     store.complete_agent_task("operation", applied_revision=None, result={})
     return store, stage

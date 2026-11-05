@@ -8,6 +8,8 @@ import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents import launcher as launcher_module
+from rcp.agents.provider_accounts import ProviderAccounts
+from rcp.machine_cards import LoginKey
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.shared import (
     _ProviderOutcome,
@@ -16,7 +18,7 @@ from rcp.runs.shared import (
 )
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport import (
     RemoteRunStage,
     StateMissing,
@@ -71,7 +73,12 @@ async def test_an_unreachable_readiness_probe_types_its_error(
     events = [
         event
         async for event in launcher.stream(
-            "codex", "inspect", cwd=tmp_path, host=HOST, capability="scratch_patch"
+            "codex",
+            "inspect",
+            cwd=tmp_path,
+            machine_id="gpu",
+            host=HOST,
+            capability="scratch_patch",
         )
     ]
     (error,) = [event for event in events if event.event == "error"]
@@ -81,13 +88,15 @@ async def test_an_unreachable_readiness_probe_types_its_error(
 
 @pytest.mark.parametrize("ssh_ran", [True, False])
 def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
-    monkeypatch: pytest.MonkeyPatch, ssh_ran: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ssh_ran: bool
 ) -> None:
     """Discovery and version answered; the auth probe exited 255. The answer is
     `unreachable` either way and is not cached, so the next launch asks the host
     again. Only a probe whose ssh ran marks the loss a reattempt may fix."""
 
-    launcher = AgentLauncher()
+    store = AppStore(tmp_path / "state.sqlite3")
+    machine_id = store.create_space_machine(name="GPU", host=HOST, os_account="rcp").machine_id
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     probes: list[list[str]] = []
 
     def probe(self, host, command, **_kwargs):
@@ -101,12 +110,12 @@ def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
         return launcher_module._ProbeNoVerdict(command, 255, "", "ssh could not start")
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
-    first = launcher.readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID))
+    first = launcher.readiness(LoginKey("codex", machine_id, MACHINE_LOGIN_ID))
     assert first.path_state == "unreachable" and not first.authenticated
     assert first.link_lost is ssh_ran
-    assert launcher.cached_readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID)) is None
+    assert launcher.cached_readiness(LoginKey("codex", machine_id, MACHINE_LOGIN_ID)) is None
     probed = len(probes)
-    launcher.readiness(LoginKey("codex", HOST, MACHINE_LOGIN_ID))
+    launcher.readiness(LoginKey("codex", machine_id, MACHINE_LOGIN_ID))
     assert len(probes) > probed
 
 
@@ -115,7 +124,8 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int
 ) -> None:
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", HOST, "/stage", "/stage/one.pid")
+    machine_id = store.create_space_machine(name="GPU", host=HOST, os_account="rcp").machine_id
+    store.begin_remote_provider_pass("first", machine_id, "/stage", "/stage/one.pid")
     store.fail_agent_task("first", "SSH disconnected")
     monkeypatch.setattr(
         launcher_module.subprocess,
@@ -125,11 +135,13 @@ def test_the_previous_pass_check_names_a_host_it_cannot_reach(
 
     if exit_code == 255:
         with pytest.raises(StateUnreachable):
-            require_remote_provider_quiescence(store, HOST, "/stage")
+            require_remote_provider_quiescence(store, machine_id, "/stage")
     else:
         with pytest.raises(ValueError, match="still running"):
-            require_remote_provider_quiescence(store, HOST, "/stage")
-    assert store.unresolved_remote_provider_passes(HOST, "/stage") == [("first", "/stage/one.pid")]
+            require_remote_provider_quiescence(store, machine_id, "/stage")
+    assert store.unresolved_remote_provider_passes(machine_id, "/stage") == [
+        ("first", "/stage/one.pid")
+    ]
 
 
 @pytest.mark.asyncio

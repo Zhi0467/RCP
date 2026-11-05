@@ -10,11 +10,13 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 CLAUDE = ClaudeAuthentication()
 CLAUDE_TOKEN_VARIABLE = CLAUDE.token_variable
@@ -80,7 +82,7 @@ def credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProviderCred
     store = ProviderCredentialStore(tmp_path / "providers")
     store.store_token(
         "claude",
-        "",
+        BACKEND_MACHINE_ID,
         TOKEN,
         member_id="member",
         now="2026-09-14T10:00:00+00:00",
@@ -92,11 +94,11 @@ def credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProviderCred
 def test_token_is_stored_privately_and_the_record_is_secret_free(
     credentials: ProviderCredentialStore,
 ) -> None:
-    path = credentials.token_path("claude", "", login_id=MACHINE_LOGIN_ID)
+    path = credentials.token_path("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
-    assert credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == TOKEN
-    record = credentials.token_record("claude", "", login_id=MACHINE_LOGIN_ID)
+    assert credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) == TOKEN
+    record = credentials.token_record("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
     assert record is not None and record.pasted_by == "member" and record.verified_at is None
     assert TOKEN not in (path.parent / "setup-token.json").read_text()
     with pytest.raises(ValueError):
@@ -109,7 +111,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     credentials: ProviderCredentialStore,
 ) -> None:
     environment = AgentLauncher(credentials=credentials).process_environment(
-        LoginKey("claude", "", MACHINE_LOGIN_ID)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
@@ -119,15 +121,15 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     assert environment.remote_prefix is None
     assert (
         AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("codex", "", MACHINE_LOGIN_ID))
+        .process_environment(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
         .local_env
         is None
     )
 
-    credentials.delete_token("claude", "", login_id=MACHINE_LOGIN_ID)
+    credentials.delete_token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
     without = (
         AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID))
+        .process_environment(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
         .local_env
     )
     assert without is not None
@@ -143,7 +145,7 @@ def test_local_environment_drops_a_hosting_claude_session(
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 
     environment = AgentLauncher(credentials=credentials).process_environment(
-        LoginKey("claude", "", MACHINE_LOGIN_ID)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
 
     assert environment.local_env is not None
@@ -152,24 +154,26 @@ def test_local_environment_drops_a_hosting_claude_session(
     assert environment.local_env["CLAUDE_CODE_USE_BEDROCK"] == "1"
 
 
+def _card_launcher(credentials: ProviderCredentialStore, host: str) -> tuple[AgentLauncher, str]:
+    store = AppStore(credentials.root.parent / "rcp.sqlite3")
+    machine_id = store.create_space_machine(name=host, host=host, os_account="").machine_id
+    return AgentLauncher(accounts=ProviderAccounts(store, credentials)), machine_id
+
+
 def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
     credentials: ProviderCredentialStore,
 ) -> None:
-    host = "gpu.example"
+    launcher, machine_id = _card_launcher(credentials, "gpu.example")
     assert (
-        AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
-        .remote_prefix
+        launcher.process_environment(LoginKey("claude", machine_id, MACHINE_LOGIN_ID)).remote_prefix
         == CLAUDE_EXPORTS
     )
     credentials.store_token(
-        "claude", host, TOKEN, member_id="member", now="now", login_id=MACHINE_LOGIN_ID
+        "claude", machine_id, TOKEN, member_id="member", now="now", login_id=MACHINE_LOGIN_ID
     )
-    prefix = (
-        AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("claude", host, MACHINE_LOGIN_ID))
-        .remote_prefix
-    )
+    prefix = launcher.process_environment(
+        LoginKey("claude", machine_id, MACHINE_LOGIN_ID)
+    ).remote_prefix
     assert prefix == CLAUDE.remote_token_prefix() + "; " + CLAUDE_EXPORTS
     assert TOKEN not in prefix
     assert "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN" in prefix
@@ -197,7 +201,9 @@ async def test_every_local_claude_start_receives_the_stored_token(
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(credentials=credentials, readiness_snapshots=store)
 
-    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    readiness = launcher.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert readiness.authenticated and readiness.work_like_available
 
     skills = ProviderSkillInventoryManager(
@@ -205,14 +211,20 @@ async def test_every_local_claude_start_receives_the_stored_token(
         credential_gate=launcher.credential_gate,
         process_environment=launcher.process_environment,
     )
-    skills.mark_refreshing("claude", "", str(binary))
-    inventory = skills.refresh("claude", "", str(binary), readiness)
+    skills.mark_refreshing("claude", BACKEND_MACHINE_ID, str(binary))
+    inventory = skills.refresh("claude", BACKEND_MACHINE_ID, str(binary), readiness)
     assert [skill.name for skill in inventory.skills] == ["review"]
 
     events = [
         event
         async for event in launcher.stream(
-            "claude", "Discuss", binary=str(binary), cwd=tmp_path, capability="discuss"
+            "claude",
+            "Discuss",
+            binary=str(binary),
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
         )
     ]
     assert [event.text for event in events if event.event == "answer"] == ["Discuss works"]
@@ -236,30 +248,34 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     binary = _fake_claude(tmp_path)
     store = AppStore(tmp_path / "app.sqlite3")
     first = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
     probed = [start["argv"] for start in _starts(tmp_path)]
     assert ["auth", "status"] in probed
     (tmp_path / "starts.jsonl").unlink()
 
     fresh = AgentLauncher(credentials=credentials, readiness_snapshots=store)
-    reused = fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    reused = fresh.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert reused == first
     assert [start["argv"] for start in _starts(tmp_path)] == [["--version"]]
     (tmp_path / "starts.jsonl").unlink()
 
-    fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
+    fresh.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+    )
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     (tmp_path / "starts.jsonl").unlink()
 
     (tmp_path / "version.txt").write_text("2.1.271 (Claude Code)\n")
     upgraded = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
     assert upgraded.version == "2.1.271 (Claude Code)"
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     snapshot = store.provider_readiness_snapshot(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), str(binary)
     )
     assert snapshot is not None and snapshot.version == "2.1.271 (Claude Code)"
     assert TOKEN not in snapshot.readiness_json
@@ -273,7 +289,9 @@ async def test_before_start_runs_once_under_the_credential_gate(
 
     binary = _fake_claude(tmp_path)
     launcher = AgentLauncher(credentials=credentials)
-    lock = launcher.credential_gate._lock_for(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    lock = launcher.credential_gate._lock_for(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    )
     observed: list[bool] = []
 
     async def before_start() -> None:
@@ -286,6 +304,8 @@ async def test_before_start_runs_once_under_the_credential_gate(
             "Discuss",
             binary=str(binary),
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="discuss",
             before_start=before_start,
         )
@@ -296,24 +316,27 @@ async def test_before_start_runs_once_under_the_credential_gate(
 
 def test_account_paths_do_not_collide_and_deletion_is_isolated(tmp_path: Path) -> None:
     credentials = ProviderCredentialStore(tmp_path / "providers")
-    hosts = ["", "local", "account/host", "account_host", "account:host"]
-    for index, host in enumerate(hosts):
+    machines = [BACKEND_MACHINE_ID, "local", "account-host", "account_host"]
+    for index, machine_id in enumerate(machines):
         credentials.store_token(
             "claude",
-            host,
+            machine_id,
             f"token-{index}",
             member_id="member",
             now="now",
             login_id=MACHINE_LOGIN_ID,
         )
     assert len(
-        {credentials.token_path("claude", host, login_id=MACHINE_LOGIN_ID) for host in hosts}
-    ) == len(hosts)
-    credentials.delete_token("claude", "account/host", login_id=MACHINE_LOGIN_ID)
-    for index, host in enumerate(hosts):
-        assert credentials.token("claude", host, login_id=MACHINE_LOGIN_ID) == (
-            None if host == "account/host" else f"token-{index}"
+        {credentials.token_path("claude", m, login_id=MACHINE_LOGIN_ID) for m in machines}
+    ) == len(machines)
+    credentials.delete_token("claude", "account-host", login_id=MACHINE_LOGIN_ID)
+    for index, machine_id in enumerate(machines):
+        assert credentials.token("claude", machine_id, login_id=MACHINE_LOGIN_ID) == (
+            None if machine_id == "account-host" else f"token-{index}"
         )
+    for invalid in ("", "account/host", ".."):
+        with pytest.raises(ValueError):
+            credentials.token_path("claude", invalid, login_id=MACHINE_LOGIN_ID)
 
 
 def test_remote_environment_refuses_missing_token_instead_of_inheriting_one(tmp_path: Path) -> None:
@@ -423,16 +446,20 @@ def test_member_git_default_reaches_launch_and_repository_config_wins(
         write_git_identity(tmp_path / "data", GitIdentity("member", "bad\nname"))
 
 
-def test_claude_without_managed_credentials_still_runs_foreground() -> None:
+def test_claude_without_managed_credentials_still_runs_foreground(tmp_path: Path) -> None:
     launcher = AgentLauncher()
     assert (
-        launcher.process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID)).local_env[
-            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
-        ]
+        launcher.process_environment(
+            LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+        ).local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]
         == "1"
     )
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    remote = store.create_space_machine(name="remote", host="remote", os_account="").machine_id
     assert (
-        launcher.process_environment(LoginKey("claude", "remote", MACHINE_LOGIN_ID)).remote_prefix
+        AgentLauncher(accounts=ProviderAccounts.for_store(store))
+        .process_environment(LoginKey("claude", remote, MACHINE_LOGIN_ID))
+        .remote_prefix
         == CLAUDE_EXPORTS
     )
 
@@ -444,17 +471,18 @@ def test_added_claude_token_isolated_from_machine(
     from uuid import uuid4
 
     login_id = str(uuid4())
+    machine_id = "remote-card" if host else BACKEND_MACHINE_ID
     CLAUDE.save_token(
         credentials,
-        host,
+        machine_id,
         login_id,
         "added-token",
         member_id="member",
         now="2026-09-14T10:00:00+00:00",
     )
-    environment = CLAUDE.process_environment(credentials, host, login_id)
-    assert credentials.token("claude", host, login_id) == "added-token"
-    assert credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == TOKEN
+    environment = CLAUDE.process_environment(credentials, machine_id, login_id, host=host)
+    assert credentials.token("claude", machine_id, login_id) == "added-token"
+    assert credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) == TOKEN
     if host:
         assert f"logins/{login_id}/claude-setup-token" in (environment.remote_prefix or "")
         assert "added-token" not in (environment.remote_prefix or "")

@@ -9,6 +9,7 @@ import pytest
 
 from rcp.core.models import Patch
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.notifications import NotificationSender
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import ProjectRecord
@@ -356,8 +357,8 @@ def test_proposal_and_reopened_attention_have_distinct_occurrences(manifest, tmp
 def test_wrapup_sign_in_changes_observation_without_changing_health(tmp_path, monkeypatch):
     from rcp.agents.provider_accounts import LoginRefusal
     from rcp.api.episodes import serialize_episode
+    from rcp.machine_cards import LoginKey
     from rcp.storage import AppStore
-    from rcp.storage.models import LoginKey
 
     from .test_episode_api_serialization import _begin_report, _branch_summary, _project
 
@@ -570,8 +571,8 @@ def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp
             project_id=other,
             locator=str(tmp_path / other / "research.yaml"),
             name=other,
-            state_location=str(tmp_path / other / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / other / ".research"),
             added_at=store.now(),
         )
     )

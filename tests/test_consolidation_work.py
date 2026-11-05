@@ -58,7 +58,7 @@ def _admit(app, *, chat_id=None, target=None):
         provider=profile.provider,
         model=profile.model,
         reasoning=profile.reasoning,
-        run_on=profile.run_on,
+        run_on=app.state.service.manifest.base_machine,
         chat_scope="project",
         chat_id=chat_id or str(uuid.uuid4()),
         mode="work",
@@ -485,7 +485,7 @@ async def test_consolidation_admission_launches_only_with_compatible_stage(
     elif stage_state == "different_host":
         with previous.store.connection() as conn:
             conn.execute(
-                "UPDATE graph_runs SET stage_host='old-host' WHERE operation_id=?",
+                "UPDATE graph_runs SET stage_machine_id='old-machine' WHERE operation_id=?",
                 (previous.operation_id,),
             )
         shutil.rmtree(Path(previous.stage_root))

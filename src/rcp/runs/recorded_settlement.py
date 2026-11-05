@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent
 from rcp.agents.provider_environment import unhidden_read_scope
+from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers import AgentCapability, ProviderTurnRequest
 from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
@@ -53,7 +54,7 @@ def provider_turn_request(
         read_dirs=[],
         write_dirs=[Path(root) for root in write_scope.repository_roots] if write_scope else [],
         write_scope=write_scope,
-        hidden_read_scope=unhidden_read_scope(execution_machine="recorded", host=""),
+        hidden_read_scope=unhidden_read_scope(machine_id="recorded"),
         capability=capability,
         provider_version=recorded.provider_version,
     )
@@ -221,7 +222,7 @@ def attach_retained_stage(
     execution: AgentTaskExecution,
     *,
     owner: str,
-    stage_host: str,
+    stage_machine_id: str,
     stage_root: str,
     workspace: str,
 ) -> tuple[Path | None, RemoteRunStage | None, Path]:
@@ -233,10 +234,10 @@ def attach_retained_stage(
     finalizer write somewhere the turn never ran.
     """
 
-    if (execution.stage_host or "", execution.stage_root) != (stage_host, stage_root):
+    if (execution.stage_machine_id, execution.stage_root) != (stage_machine_id, stage_root):
         raise ValueError(f"The retained {owner} finalization context belongs to another stage.")
-    if stage_host:
-        remote_stage = RemoteRunStage(stage_host).attach(stage_root)
+    if stage_machine_id != BACKEND_MACHINE_ID:
+        remote_stage = RemoteRunStage(host_of(execution.store, stage_machine_id)).attach(stage_root)
         local_stage = None
         allowed_workspaces = {str(remote_stage.workspace)}
     else:

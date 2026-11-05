@@ -141,10 +141,10 @@ def test_resumed_compute_mailbox_keeps_the_launch_scope(manifest, tmp_path) -> N
             status_message="Running",
         )
     )
+    remote = store.create_space_machine(name="Remote", host="remote", os_account="rcp")
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="laptop",
-        execution_host="remote",
+        machine_id=remote.machine_id,
         capability="work_auto",
         stage_root="/stage",
         workspace_root="/stage/workspace",
@@ -155,7 +155,7 @@ def test_resumed_compute_mailbox_keeps_the_launch_scope(manifest, tmp_path) -> N
         "accepted-turn",
         store,
         AgentProcessControl(),
-        stage_host="remote",
+        stage_machine_id=remote.machine_id,
         stage_root="/stage",
         write_scope_fingerprint=scope.fingerprint,
     )

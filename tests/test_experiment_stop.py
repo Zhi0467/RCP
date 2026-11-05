@@ -13,6 +13,7 @@ from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
@@ -285,6 +286,7 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id=f"restart-{status}-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     loop.record_context_candidate("loop-root")
@@ -345,13 +347,13 @@ def test_a_stage_host_outage_at_restart_keeps_the_stopped_turn_for_a_later_recov
     turn for the next start; Stop must not abandon it in the same pass.
     """
     loop.start_episode(status="running")
+    gpu = loop.store.create_space_machine(name="GPU", host="gpu-host", os_account="rcp")
     loop.store.checkpoint_agent_task(
-        "loop-root", native_session_id="remote-session", stage_root="/scratch/stage"
+        "loop-root",
+        native_session_id="remote-session",
+        stage_machine_id=gpu.machine_id,
+        stage_root="/scratch/stage",
     )
-    with loop.store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET stage_host = 'gpu-host' WHERE operation_id = 'loop-root'"
-        )
     loop.record_context_candidate("loop-root")
     loop.store.request_experiment_loop_stop(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
@@ -383,7 +385,10 @@ def test_a_refused_recovery_at_restart_lets_stop_abandon_the_turn(
     stage = tmp_path / "refused-stage"
     stage.mkdir()
     loop.store.checkpoint_agent_task(
-        "loop-root", native_session_id="refused-session", stage_root=str(stage)
+        "loop-root",
+        native_session_id="refused-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(stage),
     )
     loop.record_context_candidate("loop-root")
     loop.store.request_experiment_loop_stop(
@@ -566,7 +571,7 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, t
     assert task.request["session_id"] == "native-session-abc"
     assert task.request["watcher_ids"] == ["finished-unclaimed"]
     assert task.stage_root == str(tmp_path / "stage")
-    assert task.stage_host is None
+    assert task.stage_machine_id == BACKEND_MACHINE_ID
     assert task.parent_operation_id is None
     causes = [
         receipt.payload.get("continuation_cause")
@@ -602,8 +607,7 @@ def test_control_state_exposes_the_operational_block_without_the_session_id(loop
         "provider": "codex",
         "model": "gpt-5",
         "reasoning": "medium",
-        "run_on": "laptop",
-        "execution_host": "",
+        "run_on": BACKEND_MACHINE_ID,
         "run_truth_scope": ["repo-a"],
         "native_session_bound": True,
         "diagnostic": None,
@@ -646,10 +650,9 @@ def test_episode_binding_is_immutable_after_first_success(loop, tmp_path) -> Non
             project_id=loop.project_id,
             control_node_id=EXPERIMENT_ID,
             provider="claude",
-            execution_machine="laptop",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             native_session_id="different-session",
-            stage_host=None,
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(tmp_path / "other-stage"),
             chat_id=loop.chat_id,
             operation_id="loop-root",
@@ -695,6 +698,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             attempt=2,
             parent_operation_id="failed-wake-for-switch",
             native_session_id="new-claude-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(new_stage),
         ),
         continuation_cause="handoff",
@@ -703,6 +707,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
         operation_id="successful-provider-switch",
         store=loop.store,
         control=AgentProcessControl(),
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(new_stage),
         continuation="handoff",
     )
@@ -711,8 +716,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
         execution,
         request,
         native_session_id="new-claude-session",
-        execution_host="",
-        stage_host=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(new_stage),
         graph_result="no graph change",
         watcher_ids=["next-observer"],
@@ -732,7 +736,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
     assert runtime.provider == "claude"
     assert runtime.model == "sonnet"
     assert runtime.reasoning == "high"
-    assert runtime.run_on == "laptop"
+    assert runtime.run_on == BACKEND_MACHINE_ID
     receipts = loop.store.agent_task_receipts("successful-provider-switch")
     replacement = next(
         item for item in receipts if item.category == "experiment_episode_binding_replaced"
@@ -746,10 +750,9 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             project_id=loop.project_id,
             control_node_id=EXPERIMENT_ID,
             provider="codex",
-            execution_machine="gpu",
-            execution_host="gpu.example",
+            machine_id="gpu",
             native_session_id="third-session",
-            stage_host="gpu.example",
+            stage_machine_id="gpu",
             stage_root="/tmp/third-stage",
             chat_id=loop.chat_id,
             operation_id="successful-provider-switch",
@@ -785,6 +788,7 @@ def test_same_episode_roots_cannot_change_provider_configuration(loop, tmp_path)
                 status="queued",
                 status_message="Should not start.",
                 native_session_id="native-session-abc",
+                stage_machine_id=BACKEND_MACHINE_ID,
                 stage_root=str(stage),
             ),
             ["changed-config-watcher"],
@@ -810,6 +814,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(loop, tmp_path)
         status="queued",
         status_message="Should not start.",
         native_session_id="wrong-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
 
@@ -826,6 +831,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(loop, tmp_path)
             no_session,
             ["ready"],
             authorized_by=loop.authorizer,
+            episode_stage_machine_id=BACKEND_MACHINE_ID,
             episode_stage_root=str(stage),
         )
 
@@ -882,7 +888,7 @@ def test_provider_default_model_stays_pinned_after_settings_change(loop, tmp_pat
     )
     project = loop.client.get(f"/api/projects/{loop.project_id}").json()
     profiles = {
-        surface: {key: profile[key] for key in ("provider", "model", "reasoning", "run_on")}
+        surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
         for surface, profile in project["agent_profiles"].items()
     }
     profiles["node_chat"]["model"] = "new-explicit-model"
@@ -953,6 +959,7 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id="native-session-abc",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     loop.seed_wake(
@@ -993,6 +1000,7 @@ def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(loop, tmp_p
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id="native-session-abc",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
 
@@ -1024,6 +1032,7 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id="native-session-abc",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     episode = loop.store.episode(loop.episode_id)
@@ -1042,6 +1051,7 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
             attempt=2,
             parent_operation_id="loop-root",
             native_session_id="native-session-abc",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             graph_target=episode.graph_target,
             authorized_by=loop.authorizer,
@@ -1107,7 +1117,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
     request = RunRequest(
         provider="codex",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1126,6 +1136,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
             updated_at=now,
             status_message="Graph update rejected.",
             native_session_id="repair-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             result={
                 "messages": ["Operational work completed."],
@@ -1153,6 +1164,7 @@ def test_graph_repair_recovery_remains_patch_only(manifest, tmp_path, status, ac
             attempt=2,
             parent_operation_id="rejected-work",
             native_session_id="repair-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             dispatch_authority=_task_authority(repair_request, kind="project_chat"),
         ),
@@ -1511,7 +1523,7 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    store_test_claude_token(app.state.background_tasks.store)
+    store_test_claude_token(app.state.background_tasks.store, BACKEND_MACHINE_ID)
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
@@ -1549,7 +1561,7 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
     assert request.provider == "claude"
     assert request.model == "sonnet"
     assert request.reasoning == "high"
-    assert request.run_on == "laptop"
+    assert request.run_on == BACKEND_MACHINE_ID
     assert request.session_id is None
     assert request.control_episode_id == loop.episode_id
     assert request.control_invocation == 2
@@ -1565,7 +1577,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
     manifest, tmp_path
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    store_test_claude_token(app.state.background_tasks.store)
+    store_test_claude_token(app.state.background_tasks.store, BACKEND_MACHINE_ID)
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
@@ -1605,6 +1617,7 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             attempt=2,
             parent_operation_id="failed-wake-before-switch",
             native_session_id="provisional-claude-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(provisional_stage),
         ),
         continuation_cause="handoff",
@@ -1632,13 +1645,13 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
             operation_id=retried.operation_id,
             store=loop.store,
             control=AgentProcessControl(),
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(provisional_stage),
             continuation="retry",
         ),
         retried_request,
         native_session_id="provisional-claude-session",
-        execution_host="",
-        stage_host=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(provisional_stage),
         graph_result="no graph change",
         watcher_ids=["next-observer"],
@@ -1664,6 +1677,7 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id="legacy-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     prompt = "legacy task contract"
@@ -1711,6 +1725,7 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
     loop.store.checkpoint_agent_task(
         "loop-root",
         native_session_id="legacy-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     prompt = "legacy task contract"
@@ -1799,6 +1814,7 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
             status="queued",
             status_message="Waiting for the provider.",
             native_session_id="native-session-abc",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         ),
         ["bound-limit-watcher"],
@@ -1894,7 +1910,7 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(loop, tmp_p
 
 
 def test_initial_run_takes_the_humans_pick_on_the_profiles_machine(loop, tmp_path) -> None:
-    store_test_claude_token(loop.store)
+    store_test_claude_token(loop.store, BACKEND_MACHINE_ID)
     loop.record_answers()
 
     response = loop.client.post(
@@ -1913,7 +1929,7 @@ def test_initial_run_takes_the_humans_pick_on_the_profiles_machine(loop, tmp_pat
     assert request["provider"] == "claude"
     assert request["model"] == "client-model"
     assert request["reasoning"] == "high"
-    assert request["run_on"] == "laptop"
+    assert request["run_on"] == BACKEND_MACHINE_ID
 
 
 def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, tmp_path) -> None:
@@ -1957,7 +1973,7 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     assert request["provider"] == "codex"
     assert request["model"] == ""
     assert request["reasoning"] == "medium"
-    assert request["run_on"] == "laptop"
+    assert request["run_on"] == BACKEND_MACHINE_ID
     assert request["run_truth_scope"] == sorted(loop.service.history.state().project_truth_scope)
     assert request["chat_id"] == new_chat_id
     assert request["session_id"] is None
@@ -1967,14 +1983,19 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
     """A second reachable machine makes the refusal about the pin; the loop stays where its
     canonical state and episode live.
     """
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    gpu = app.state.background_tasks.store.create_space_machine(
+        name="GPU", host="gpu.example", os_account="rcp"
+    )
     manifest.path.write_text(
         manifest.path.read_text(encoding="utf-8").replace(
-            "[[repositories]]", '[[machines]]\nalias = "gpu"\nhost = ""\n[[repositories]]', 1
+            f'machines = ["{BACKEND_MACHINE_ID}"]',
+            f'machines = ["{BACKEND_MACHINE_ID}", "{gpu.machine_id}"]',
+            1,
         ),
         encoding="utf-8",
     )
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    store_test_claude_token(app.state.background_tasks.store)
+    store_test_claude_token(app.state.background_tasks.store, BACKEND_MACHINE_ID)
     loop = _Loop(app)
     loop.start_episode(status="failed")
     loop.record_context_candidate("loop-root")
@@ -1991,11 +2012,11 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
         if seen:
             break
         Event().wait(0.01)
-    assert seen and seen[0].run_on == "laptop"
+    assert seen and seen[0].run_on == BACKEND_MACHINE_ID
 
     pinned = loop.client.post(
         f"/api/projects/{loop.project_id}/tasks/loop-root/retry",
-        json={"run_on": "gpu"},
+        json={"run_on": gpu.machine_id},
     )
     assert pinned.status_code == 409
 
@@ -2090,7 +2111,7 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path
             origin_task_kind="node_chat",
             chat_id=loop.chat_id,
             node_id=EXPERIMENT_ID,
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             continuation=loop.continuation(),
         ),
     )
@@ -2481,7 +2502,7 @@ def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> 
     branch_request = RunRequest(
         provider="codex",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="node",
         chat_id=branch_chat,
@@ -2830,6 +2851,7 @@ def test_answered_question_waits_for_active_session_without_human_action(
                     status="succeeded",
                     status_message="Settled.",
                     native_session_id="native-session-abc",
+                    stage_machine_id=BACKEND_MACHINE_ID,
                     stage_root=str(stage),
                     authorized_by=loop.authorizer,
                 ),
@@ -2847,6 +2869,7 @@ def test_answered_question_waits_for_active_session_without_human_action(
             operation_id="loop-3",
             provider="codex",
             native_session_id="native-session-abc",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             capability="work_auto",
             write_scope_fingerprint="a" * 64,
@@ -2857,7 +2880,7 @@ def test_answered_question_waits_for_active_session_without_human_action(
     )
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         mode="work",
         chat_id=loop.chat_id,
         chat_scope="node",
@@ -2873,6 +2896,7 @@ def test_answered_question_waits_for_active_session_without_human_action(
             status="running",
             status_message="Working.",
             native_session_id=request.session_id,
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             authorized_by=loop.authorizer,
         )

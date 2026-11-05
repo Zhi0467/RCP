@@ -9,6 +9,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research, start_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
@@ -46,7 +47,7 @@ def test_episode_wake_after_login_switch(
     )
 
     async def setup_stream(_project, kind, request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -58,7 +59,7 @@ def test_episode_wake_after_login_switch(
     tasks = BackgroundAgentTasks(store, setup_stream)
     if operation == "experiment_watcher":
         root_request = _experiment_request().model_copy(
-            update={"provider": provider, "run_on": "laptop"}
+            update={"provider": provider, "run_on": BACKEND_MACHINE_ID}
         )
         root = wait_for_task(
             store,
@@ -71,10 +72,9 @@ def test_episode_wake_after_login_switch(
             project_id=PROJECT,
             control_node_id=root_request.control_node_id,
             provider=provider,
-            execution_machine="laptop",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             native_session_id=root.native_session_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
             chat_id=root_request.chat_id,
             operation_id=root.operation_id,
@@ -90,7 +90,7 @@ def test_episode_wake_after_login_switch(
             AutoResearchStartRequest(
                 invocation_ceiling=6,
                 provider=provider,
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
                 run_truth_scope=["repo-a"],
             ),
             authorized_by=member,
@@ -102,7 +102,7 @@ def test_episode_wake_after_login_switch(
     worker_id = str(uuid4())
     worker_request = RunRequest(
         provider=provider,
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="node",
         node_id="blk/result",
@@ -183,7 +183,7 @@ def test_episode_wake_after_login_switch(
             worker_id=worker_id if operation == "worker_watcher" else None,
             chat_id=source.request["chat_id"],
             node_id=source.request["node_id"],
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             check_command="true",
             log_path=str(stage / "job.log"),
             cwd=str(stage),
@@ -212,6 +212,9 @@ def test_episode_wake_after_login_switch(
             request,
             [watcher.watcher_id],
             authorized_by=member,
+            episode_stage_machine_id=(
+                BACKEND_MACHINE_ID if operation == "experiment_watcher" else None
+            ),
             episode_stage_root=str(stage) if operation == "experiment_watcher" else None,
         )
         operation_id = wake.operation_id if wake else None

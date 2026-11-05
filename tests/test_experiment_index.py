@@ -23,6 +23,7 @@ from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.loop_status import episode_loop_metadata, episode_loop_metadata_from_snapshot
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -127,7 +128,7 @@ def _record_loop(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -281,7 +282,7 @@ def _record_branch_target_child_experiment(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=child_id,
         chat_scope="node",
@@ -437,7 +438,7 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
         parent.root_operation_id,
         "agent_launch",
         {
-            "execution_host": "",
+            "machine_id": BACKEND_MACHINE_ID,
             "canonical_repository_roots": [manifest.repository_map["repo-a"].path],
         },
     )
@@ -605,8 +606,8 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
             home_space_id=store.space_id,
             locator=str(tmp_path / "hidden" / "manifest.toml"),
             name="Hidden project",
-            state_location=str(tmp_path / "hidden" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "hidden" / ".research"),
             added_at=store.now(),
         )
     )
@@ -1358,7 +1359,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
                 episode_id=parent.episode_id,
                 continuation=WatcherContinuation(
                     provider="codex",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     run_truth_scope=["repo-a"],
                     patch_kind="work",
                 ),
@@ -1497,8 +1498,8 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
             project_id="unusable-project",
             locator=str(tmp_path / "missing" / "manifest.toml"),
             name="Unusable project",
-            state_location=str(tmp_path / "missing" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "missing" / ".research"),
             added_at=record.added_at,
         )
     )
@@ -1560,7 +1561,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     monkeypatch.setattr(app.state.catalog, "commit_cached_snapshot", capture_commit)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1701,7 +1702,7 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
     store = app.state.background_tasks.store
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1759,7 +1760,7 @@ def test_completed_graph_turn_rebuilds_an_unusable_display_cache(
     monkeypatch.setattr(api_app_module, "stream_work_run", finish_work)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1956,7 +1957,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -2024,7 +2025,7 @@ def test_persisted_experiment_request_selects_owner_without_work_fallback(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -2074,7 +2075,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     monkeypatch.setattr(api_app_module, "stream_work_run", update_then_stop)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -2111,8 +2112,8 @@ def test_experiment_indexes_list_healthy_projects_beside_another_projects_missin
             home_space_id=store.space_id,
             locator=str(tmp_path / "unavailable" / "manifest.toml"),
             name="Unavailable project",
-            state_location=str(tmp_path / "unavailable" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "unavailable" / ".research"),
             added_at=store.now(),
             revision=1,
         )

@@ -7,14 +7,15 @@ from pathlib import Path
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import AppStore
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.storage_helpers import downgrade_resource_watermarks
 
 
 def test_default_login_is_synthetic_signed_in(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
-    state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
     assert state.generation == 0
     assert store.provider_login_states() == []
@@ -24,7 +25,7 @@ def test_failed_login_is_durable_and_detail_is_bounded(tmp_path):
     path = tmp_path / "state.sqlite3"
     store = AppStore(path)
     state = store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="  expired\n  " + "x" * 600,
         source="turn",
@@ -40,10 +41,15 @@ def test_failed_login_is_durable_and_detail_is_bounded(tmp_path):
 def test_verification_bumps_generation_and_ignores_late_failure(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     verified = store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     assert verified.state == "signed_in"
     assert verified.generation == 1
@@ -51,19 +57,30 @@ def test_verification_bumps_generation_and_ignores_late_failure(tmp_path):
     assert verified.source == "verify"
     assert (
         store.mark_provider_login_failed(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="late", source="report"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            generation=0,
+            detail="late",
+            source="report",
         )
         == verified
     )
-    assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)) == verified
+    assert (
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+        == verified
+    )
     failed = store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=1, detail="expired", source="probe"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=1,
+        detail="expired",
+        source="probe",
     )
     assert failed.state == "signed_out"
     assert failed.generation == 1
     assert (
         store.mark_provider_login_verified(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="other", detail="verified"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="other",
+            detail="verified",
         ).generation
         == 2
     )
@@ -102,39 +119,48 @@ def test_failure_atomically_invalidates_only_its_generation_readiness(tmp_path):
 
     store = AppStore(tmp_path / "state.sqlite3")
     repaired = store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="ok"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), member_id="member", detail="ok"
     )
     snapshot = ProviderReadinessSnapshotRecord(
         provider="codex",
-        host="",
+        machine_id=BACKEND_MACHINE_ID,
         binary="/fake/provider",
         version="1",
         readiness_json="{}",
         probed_at=store.now(),
     )
-    store.save_provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), snapshot)
+    store.save_provider_readiness_snapshot(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), snapshot
+    )
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="old failure", source="probe"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="old failure",
+        source="probe",
     )
     assert (
-        store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), snapshot.binary)
+        store.provider_readiness_snapshot(
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), snapshot.binary
+        )
         == snapshot
     )
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=repaired.generation,
         detail="new failure",
         source="turn",
     )
     assert (
-        store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), snapshot.binary)
+        store.provider_readiness_snapshot(
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), snapshot.binary
+        )
         is None
     )
 
 
 def test_limit_marks_require_a_later_provider_start(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "state.sqlite3")
-    key = LoginKey("claude", "", MACHINE_LOGIN_ID)
+    key = LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     monkeypatch.setattr(store, "now", lambda: "2026-01-01T03:00:00+00:00")
     assert store.set_provider_login_limit(
         key, provider_started_at="2026-01-01T02:00:00+00:00", limited=True
@@ -154,10 +180,14 @@ def test_limit_marks_require_a_later_provider_start(tmp_path, monkeypatch):
 
 def test_removed_login_cannot_be_revived_and_restore_keeps_ownership(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
-    login = store.add_provider_login("claude", "", member_id="member", added_by="member")
-    key = LoginKey(login.provider, login.host, login.login_id)
+    login = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, member_id="member", added_by="member"
+    )
+    key = LoginKey(login.provider, login.machine_id, login.login_id)
     with pytest.raises(ValueError):
-        store.add_provider_login("claude", "", member_id="member", added_by="member")
+        store.add_provider_login(
+            "claude", BACKEND_MACHINE_ID, member_id="member", added_by="member"
+        )
     store.mark_provider_login_verified(key, member_id="member", detail="ok")
     with store.connection() as connection:
         store.detach_provider_logins_for_restore(connection, now=store.now())
@@ -205,8 +235,8 @@ def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
             )
     upgraded = AppStore(path)
     assert [
-        (row.host, row.login_id, row.generation) for row in upgraded.provider_login_states()
-    ] == [("", "", 3), ("worker", "", 3)]
+        (row.machine_id, row.login_id, row.generation) for row in upgraded.provider_login_states()
+    ] == [("", "", 3), (BACKEND_MACHINE_ID, "", 3)]
     with upgraded.connection() as connection:
         assert [
             tuple(row)
@@ -217,7 +247,7 @@ def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
         assert [
             tuple(row)
             for row in connection.execute(
-                "SELECT provider,host,setting FROM provider_login_settings WHERE user_id='member' ORDER BY provider"
+                "SELECT provider,machine_id,setting FROM provider_login_settings WHERE user_id='member' ORDER BY provider"
             )
         ] == [(provider, "*", "own_then_shared") for provider in sorted(PROVIDER_IDS)]
         assert (
@@ -234,7 +264,7 @@ def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
 
 def test_assignment_clock_does_not_invalidate_settings(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
-    key = LoginKey("codex", "", MACHINE_LOGIN_ID)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO graph_runs(operation_id,project_id,kind,status,request_json,created_at,updated_at,status_message) VALUES('task','project','project_chat','queued','{}','2026-01-01','2026-01-01','')"
@@ -271,7 +301,7 @@ def test_setting_lookup_prefers_host_then_fallback_then_space_default(tmp_path, 
 def test_removed_own_login_can_be_replaced_without_losing_history(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
     original = store.add_provider_login("claude", "worker", member_id="member", added_by="member")
-    key = LoginKey(original.provider, original.host, original.login_id)
+    key = LoginKey(original.provider, original.machine_id, original.login_id)
     store.set_provider_login_draining(key)
     with pytest.raises(ValueError, match="already has an own login"):
         store.add_provider_login("claude", "worker", member_id="member", added_by="member")

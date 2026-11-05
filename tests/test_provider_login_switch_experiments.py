@@ -7,6 +7,7 @@ from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
 from rcp.runs.questions import work_command_handler
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -68,7 +69,7 @@ def test_experiment_entry_point_resolves_usable_login(manifest, tmp_path, direct
     own = _login(accounts, "codex", own=True, member=member.user_id)
     shared = _login(accounts, "codex", machine=True, member=member.user_id)
     old, new = (own, shared) if direction == "personal_to_team" else (shared, own)
-    store.set_provider_login_setting(member.user_id, "codex", "", "own_then_shared")
+    store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "own_then_shared")
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET login_id=? WHERE operation_id=?", (old.login_id, previous)

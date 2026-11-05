@@ -202,10 +202,9 @@ def _wrapup(
         concluding_operation_id=concluding_operation_id,
         allocation_operation_id=allocation_operation_id,
         provider="codex",
-        run_on="local",
-        execution_host="",
+        machine_id="backend",
         native_session_id="native-session",
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root="/tmp/episode-stage",
         skill_id="episode-report",
         skill_version="1",
@@ -226,14 +225,14 @@ def _wrapup(
         status="queued",
         request={
             "provider": "codex",
-            "run_on": "local",
-            "execution_host": "",
+            "run_on": "backend",
         },
         created_at=now,
         updated_at=now,
         status_message="Wrapping up visualization and report",
         parent_operation_id=concluding_operation_id,
         native_session_id="native-session",
+        stage_machine_id="backend",
         stage_root="/tmp/episode-stage",
         visible=False,
     )
@@ -905,7 +904,7 @@ def test_restart_retries_a_shutdown_paused_report_on_a_new_hidden_task(tmp_path)
     store.bind_agent_task_write_scope(
         allocation.operation_id,
         project_id="project",
-        stage_host="",
+        stage_machine_id="backend",
         stage_root="/tmp/episode-stage",
         fingerprint="a" * 64,
     )
@@ -1170,9 +1169,7 @@ def test_campaign_migration_keeps_latest_report_and_is_idempotent(tmp_path) -> N
                 (
                     operation_id,
                     kind,
-                    json.dumps(
-                        {"provider": "codex", "run_on": "local", "execution_host": "localhost"}
-                    ),
+                    json.dumps({"provider": "codex", "run_on": "backend"}),
                     created_at,
                     created_at,
                 ),

@@ -15,6 +15,7 @@ from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.runs.experiment_loop import (
     _watcher_state,
@@ -140,8 +141,7 @@ async def test_unreadable_loop_deliverable_is_a_durable_terminal_recovery_proble
 def _empty_project_write_scope(workspace: Path, project_id: str) -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id=project_id,
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=str(workspace),
         workspace_root=str(workspace),
@@ -156,7 +156,7 @@ def test_experiment_watcher_wake_keeps_packages_available_without_reinvoking_the
     episode_id = "00000000-0000-4000-8000-000000000087"
     continuation = WatcherContinuation(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="experiment_loop",
         control_node_id=_EXPERIMENT_ID,
@@ -237,7 +237,7 @@ def _loop_request(
     return RunRequest(
         provider="codex",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="node",
         node_id=_EXPERIMENT_ID,
@@ -291,6 +291,7 @@ def _execution(
         attempt=2 if parent_operation_id else 1,
         parent_operation_id=parent_operation_id,
         native_session_id=request.session_id,
+        stage_machine_id=BACKEND_MACHINE_ID if stage_root else None,
         stage_root=stage_root,
         authorized_by=AuthorizedHuman(
             space_id=store.space_id,
@@ -326,6 +327,7 @@ def _execution(
         operation_id=operation_id,
         store=store,
         control=AgentProcessControl(),
+        stage_machine_id=BACKEND_MACHINE_ID if stage_root else None,
         stage_root=stage_root,
         continuation=continuation,
         retry_feedback=retry_feedback,
@@ -841,7 +843,7 @@ def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path)
     (stage / "inputs").mkdir(parents=True)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_id="chat-contract-recovery",
         node_id=_EXPERIMENT_ID,
         message="Continue the bounded Experiment loop.",
@@ -920,7 +922,7 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
     (new_stage / "inputs").mkdir(parents=True)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_id="chat-stage-boundary",
         node_id=_EXPERIMENT_ID,
         message="Continue the bounded Experiment loop.",
@@ -993,7 +995,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         provider="codex",
         model="current-episode-model",
         reasoning="high",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id="chat-native-wake",
     )
@@ -1002,7 +1004,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         project_id="project-native-wake",
         control_node_id=_EXPERIMENT_ID,
         provider="codex",
-        execution_machine="laptop",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="provider-session-native-wake",
         stage_root=str(stage),
         chat_id="chat-native-wake",
@@ -1013,7 +1015,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         provider="codex",
         model="older-watcher-model",
         reasoning="low",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="experiment_loop",
         control_node_id=_EXPERIMENT_ID,
@@ -1032,6 +1034,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         chat_id="chat-native-wake",
         node_id=_EXPERIMENT_ID,
         episode_id=episode.episode_id,
+        machine_id=BACKEND_MACHINE_ID,
         check_command="false",
         log_path=str(tmp_path / "detached.log"),
         cwd=str(tmp_path),
@@ -1040,7 +1043,9 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         created_at="2026-08-06T00:00:00Z",
     )
 
-    readiness = preflight_episode_wake(runtime, episode, [watcher])
+    readiness = preflight_episode_wake(
+        runtime, episode, [watcher], store=AppStore(tmp_path / "app.sqlite3")
+    )
 
     assert readiness.readiness == "ready"
     assert readiness.session_id == episode.native_session_id
@@ -1138,16 +1143,15 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert set(initial_baseline) == {"ontology", "repositories", "skills"}
     store.complete_agent_task("loop-initial", applied_revision=None, result={})
 
-    assert episode.provider and episode.execution_machine and episode.chat_id
+    assert episode.provider and episode.machine_id and episode.chat_id
     store.commit_experiment_episode_turn(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         control_node_id=episode.control_node_id,
         provider=episode.provider,
-        execution_machine=episode.execution_machine,
-        execution_host=episode.execution_host,
+        machine_id=episode.machine_id,
         native_session_id=native_session_id,
-        stage_host=episode.stage_host,
+        stage_machine_id=episode.stage_machine_id,
         stage_root=episode.stage_root or "",
         chat_id=episode.chat_id,
         operation_id="loop-initial",
@@ -1324,6 +1328,7 @@ def _record_report_attempt(
         status_message="Report written.",
         parent_operation_id=concluding_operation_id,
         native_session_id=session_id,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=stage_root,
         visible=False,
     )
@@ -2202,12 +2207,13 @@ def _store_watcher(
     episode_id: str,
     status: str,
     notified: bool = False,
+    machine_id: str = BACKEND_MACHINE_ID,
 ) -> None:
     now = store.now()
     continuation = WatcherContinuation(
         provider="codex",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="experiment_loop",
         control_node_id=_EXPERIMENT_ID,
@@ -2228,7 +2234,7 @@ def _store_watcher(
                 chat_id="watcher-state-chat",
                 node_id=_EXPERIMENT_ID,
                 episode_id=episode_id,
-                execution_host="",
+                machine_id=machine_id,
                 check_command="false",
                 log_path=f"/tmp/{watcher_id}.log",
                 cwd="/tmp",
@@ -2259,7 +2265,7 @@ def test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetr
     continuation = WatcherContinuation(
         provider="codex",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="experiment_loop",
         control_node_id=_EXPERIMENT_ID,
@@ -2337,15 +2343,15 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
         project_id=project_id,
         episode_id=episode_id,
     )
+    machine = store.create_space_machine(name="Episode", host="episode.example", os_account="rcp")
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
         project_id=project_id,
         control_node_id=_EXPERIMENT_ID,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="episode.example",
+        machine_id=machine.machine_id,
         native_session_id="loop-resource-session",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=str(tmp_path / "loop-resource-stage"),
         chat_id="watcher-state-chat",
         operation_id="loop-resource-root",
@@ -2360,6 +2366,7 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
         project_id=project_id,
         episode_id=episode_id,
         status="active",
+        machine_id=machine.machine_id,
     )
     request = RunRequest(
         chat_scope="node",
@@ -2395,7 +2402,7 @@ async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stal
     resource = resources[0]
     assert resource.resource.control_node_id == _EXPERIMENT_ID
     assert resource.resource.episode_id == episode_id
-    assert resource.resource.execution_host == "episode.example"
+    assert resource.host == "episode.example"
     assert resource.watch_path == str(
         workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
     )
@@ -2426,13 +2433,13 @@ async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_n
             chat_id=f"chat-{suffix}",
             node_id=_EXPERIMENT_ID,
             episode_id=episode_id,
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             check_command="false",
             log_path=f"/tmp/{suffix}.log",
             cwd="/tmp",
             continuation=WatcherContinuation(
                 provider="codex",
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
                 patch_kind="experiment_loop",
                 control_node_id=_EXPERIMENT_ID,
                 control_revision=2,
@@ -2452,7 +2459,7 @@ async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_n
             control_node_id=_EXPERIMENT_ID,
             episode_id=record.episode_id or "",
             graph_target=record.graph_target,
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             wake_task_kind="node_chat",
             wake_chat_id=record.chat_id,
             continuation=record.continuation,
@@ -2463,6 +2470,9 @@ async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_n
     requested_targets: list[GraphTargetRef | None] = []
 
     class Store:
+        def backend_space_machine(self) -> SimpleNamespace:
+            return SimpleNamespace(host="")
+
         def agent_task(self, operation_id: str) -> SimpleNamespace:
             assert operation_id == "target-resource-chat"
             return SimpleNamespace(project_id=project_id, graph_target=task_target)
@@ -2667,10 +2677,9 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         project_id=project_id,
         control_node_id=_EXPERIMENT_ID,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="stopped-session",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root="/tmp/stopped-stage",
         chat_id="watcher-state-chat",
         operation_id="stopped-root",

@@ -350,7 +350,9 @@ def prepare_hidden_read_launch(
             home = home_result.stdout.strip()
             if home_result.returncode or not home.startswith("/"):
                 raise OSError("execution-host home could not be resolved")
-            evidence = confirm_remote_key_evidence(remote_stage=remote_stage, home=home)
+            evidence = confirm_remote_key_evidence(
+                remote_stage=remote_stage, machine_id=machine.machine_id, home=home
+            )
         scope = resolve_hidden_read_scope(
             manifest=manifest,
             machine=machine,

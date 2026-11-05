@@ -59,7 +59,7 @@ def test_owned_target_is_pinned_and_same_key_replays_after_rename(tmp_path, proj
             context, arguments, instruction, worker_id
         ).model_copy(update={"chat_scope": "project" if arguments.project else "node"}),
         graph_state=_blocker_state,
-        execution_host="execution.example",
+        machine_id="backend",
     )
     dispatcher = AutoResearchCommandDispatcher(
         store, effects, mailbox=CommandFileMailbox(lambda _name, _limit: "Inspect the graph.")
@@ -127,7 +127,7 @@ def test_root_status_caps_owned_forks_and_counts_target_writers(tmp_path):
         validate=_effects(store, background).validate,
         worker_request_factory=_worker_request,
         graph_state=_blocker_state,
-        execution_host="execution.example",
+        machine_id="backend",
         branch_head=lambda target: GraphHeadRef(target=target, revision=0),
     )
     result = effects.status(_context(store, episode, root), StatusArguments()).result["forks"]
@@ -206,7 +206,7 @@ def _fork_dispatch(manifest, tmp_path, *, kind="work", seed=True):
         validate=_effects(store, background).validate,
         worker_request_factory=worker_request,
         graph_state=service.history.state,
-        execution_host="local",
+        machine_id="backend",
         experiment_coordinator=coordinator,
     )
     files = {"worker.md": "Inspect the prepared graph.", "seed.json": _seed_text()}

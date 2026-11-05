@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.provider_login import (
     bound_running_count,
     reconcile_login_removals,
@@ -16,7 +17,7 @@ from rcp.runs.provider_login import (
     settle_provider_login,
 )
 from rcp.storage import AppStore, ProjectRecord
-from rcp.storage.models import EpisodeMode, EpisodeRecord, LoginKey
+from rcp.storage.models import EpisodeMode, EpisodeRecord
 
 from .helpers import fabricated_authorizer, fake_launch_admitted, write_local_test_manifest
 from .test_provider_login_resolver import _login, _task
@@ -29,8 +30,8 @@ def _project(store):
             project_id="project",
             locator=str(write_local_test_manifest(store.path.parent)),
             name="project",
-            state_location="unused",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="unused",
             added_at=store.now(),
         )
     )
@@ -85,7 +86,7 @@ def test_idle_episode_does_not_hold_drain_and_sessions_survive(accounts, provide
     launcher = AgentLauncher()
     cancelled = []
     credentials = accounts.credentials
-    home = credentials.account_dir(provider, "", key.login_id) / "codex-home"
+    home = credentials.account_dir(provider, BACKEND_MACHINE_ID, key.login_id) / "codex-home"
     home.mkdir(parents=True, exist_ok=True)
     (home / "auth.json").write_text("credential")
     (home / "session.jsonl").write_text("session")
@@ -106,8 +107,9 @@ def test_paused_codex_episode_does_not_hold_drain(accounts):
 
 def test_remote_credential_deletion_retries_after_restart(accounts, monkeypatch):
     store = accounts.store
-    state = store.add_provider_login("codex", "remote", added_by="member")
-    key = LoginKey("codex", "remote", state.login_id)
+    remote = store.create_space_machine(name="remote", host="remote", os_account="").machine_id
+    state = store.add_provider_login("codex", remote, added_by="member")
+    key = LoginKey("codex", remote, state.login_id)
     store.mark_provider_login_verified(key, member_id="member", detail="ok")
     calls = []
 
@@ -144,7 +146,9 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     authorizer = fabricated_authorizer()
     own = _login(accounts, provider, own=True, member=authorizer.user_id)
     shared = _login(accounts, provider, machine=True)
-    store.set_provider_login_setting(authorizer.user_id, provider, "", "own_then_shared")
+    store.set_provider_login_setting(
+        authorizer.user_id, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     _episode(store, mode="experiment_loop")
     record = _turn(accounts, own, episode_id="episode")
     store.record_agent_task_receipt(
@@ -153,7 +157,7 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     if alternative_lapsed:
         with store.connection() as connection:
             connection.execute(
-                "INSERT INTO provider_login_assignments(provider,host,login_id,limited_at) VALUES(?,?,?,?)",
+                "INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at) VALUES(?,?,?,?)",
                 (*shared, (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()),
             )
     calls = []
@@ -198,7 +202,7 @@ def test_settlement_releases_parked_recovery_to_another_login(accounts, monkeypa
     member = fabricated_authorizer().user_id
     own = _login(accounts, provider, own=True, member=member)
     _login(accounts, provider, machine=True)
-    store.set_provider_login_setting(member, provider, "", "own_then_shared")
+    store.set_provider_login_setting(member, provider, BACKEND_MACHINE_ID, "own_then_shared")
     _episode(store)
     record = _turn(accounts, own, episode_id="episode")
     with store.connection() as connection:
@@ -230,11 +234,12 @@ def test_verify_shared_releases_unbound_work_even_when_resolver_prefers_own(acco
     member = fabricated_authorizer().user_id
     own = _login(accounts, "claude", own=True, member=member)
     shared = _login(accounts, "claude", machine=True)
-    store.set_provider_login_setting(member, "claude", "", "own_then_shared")
+    store.set_provider_login_setting(member, "claude", BACKEND_MACHINE_ID, "own_then_shared")
     record = _turn(accounts, own, status="queued")
     with store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET stage_host='' WHERE operation_id=?", (record.operation_id,)
+            "UPDATE graph_runs SET stage_machine_id=? WHERE operation_id=?",
+            (BACKEND_MACHINE_ID, record.operation_id),
         )
     calls = []
     background = BackgroundAgentTasks(store, _unused_stream)
@@ -258,7 +263,7 @@ def test_codex_work_parked_on_signed_out_shared_login_moves_to_own_login(account
     store.mark_provider_login_signed_out(machine, member_id=None, source="restore", detail="401")
     assert resolved_task_login(store, queued) == machine
     own = _login(accounts, "codex", own=True, member=member)
-    store.set_provider_login_setting(member, "codex", "", "own_then_shared")
+    store.set_provider_login_setting(member, "codex", BACKEND_MACHINE_ID, "own_then_shared")
     assert resolved_task_login(store, queued) == own
     calls = []
     background = BackgroundAgentTasks(store, _unused_stream)
@@ -279,16 +284,16 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
     store = accounts.store
     member = fabricated_authorizer()
     _project(store)
-    store.set_provider_login_setting(member.user_id, "codex", "", "own")
+    store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "own")
     task = AgentTaskRecord(
         operation_id="parked",
         project_id="project",
         kind="project_chat",
         status="queued",
-        request={"provider": "codex", "run_on": "local"},
+        request={"provider": "codex", "run_on": BACKEND_MACHINE_ID},
         login_id=None,
         authorized_by=member,
-        stage_host="",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root="unused",
         created_at=store.now(),
         updated_at=store.now(),
@@ -301,24 +306,24 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
     fake_launch_admitted(monkeypatch, background, launched.append)
     if event == "verify_own":
         row = store.add_provider_login(
-            "codex", "", member_id=member.user_id, added_by=member.user_id
+            "codex", BACKEND_MACHINE_ID, member_id=member.user_id, added_by=member.user_id
         )
-        key = LoginKey("codex", "", row.login_id)
+        key = LoginKey("codex", BACKEND_MACHINE_ID, row.login_id)
     else:
-        key = LoginKey("codex", "", "")
+        key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     store.mark_provider_login_verified(key, member_id=member.user_id, detail="verified")
     if event != "verify_own":
         provider_login_changed(
             background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
         )
         assert launched == []
-        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
+        store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "shared")
     if event == "setting":
         provider_login_changed(
             background,
             member_id=member.user_id,
             provider="codex",
-            host="",
+            machine_id=BACKEND_MACHINE_ID,
             reconcile_episodes=lambda: 0,
             watcher_delivery=watcher_delivery,
         )

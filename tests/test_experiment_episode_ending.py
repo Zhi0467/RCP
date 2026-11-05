@@ -7,6 +7,7 @@ import pytest
 
 from rcp.core.models import ExperimentDecisionPin
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_loop import (
     commit_experiment_episode_binding,
     commit_experiment_episode_handoff,
@@ -409,7 +410,7 @@ class _RecordingStore:
 def _binding_request() -> RunRequest:
     return RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         node_id=_CONTROL_NODE_ID,
         chat_id="episode-chat",
         mode="work",
@@ -438,10 +439,10 @@ def _handoff_binding() -> WatcherBinding:
         chat_id="episode-chat",
         node_id=_CONTROL_NODE_ID,
         episode_id=_EPISODE_ID,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         continuation=WatcherContinuation(
             provider="codex",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             patch_kind="experiment_loop",
             control_node_id=_CONTROL_NODE_ID,
             control_episode_id=_EPISODE_ID,
@@ -461,8 +462,7 @@ def test_exit_receipt_is_written_on_exact_operation_after_binding_commit() -> No
         execution,
         _binding_request(),
         native_session_id="native-session",
-        execution_host="",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root="/tmp/exact-episode-stage",
         graph_result="applied as revision 42",
         watcher_ids=[],
@@ -490,8 +490,7 @@ def test_failed_binding_commit_cannot_publish_an_exit_receipt() -> None:
             execution,
             _binding_request(),
             native_session_id="native-session",
-            execution_host="",
-            stage_host=None,
+            stage_machine_id=None,
             stage_root="/tmp/exact-episode-stage",
             graph_result="applied as revision 42",
             watcher_ids=[],
@@ -523,8 +522,7 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
         prepared,
         binding,
         native_session_id="native-session",
-        execution_host="",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root="/tmp/exact-episode-stage",
         graph_result="applied as revision 42",
         context_baseline={"revision": 42},
@@ -541,8 +539,8 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
                     "episode_id": _EPISODE_ID,
                     "invocation": 2,
                     "provider": "codex",
-                    "execution_machine": "laptop",
-                    "stage_host": None,
+                    "machine_id": BACKEND_MACHINE_ID,
+                    "stage_machine_id": None,
                     "stage_root": "/tmp/exact-episode-stage",
                     "graph_result": "applied as revision 42",
                     "watcher_ids": [prepared[0].watcher_id],

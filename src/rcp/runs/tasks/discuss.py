@@ -39,6 +39,7 @@ from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
 from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS, ask_hold_seconds
+from rcp.machine_cards import card
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
@@ -255,7 +256,7 @@ class _StoredDiscussFinalizationContext(BaseModel):
 
     version: Literal[1] = 1
     request: RunRequest
-    stage_host: str
+    stage_machine_id: str
     stage_root: str
     workspace: str
     artifact_scope_id: str
@@ -296,7 +297,7 @@ def _record_discuss_finalization_context(context: DiscussFinalizationContext) ->
         raise ValueError("A durable Discuss finalization context requires its exact task stage.")
     stored = _StoredDiscussFinalizationContext(
         request=context.request,
-        stage_host=execution.stage_host or "",
+        stage_machine_id=execution.stage_machine_id or "",
         stage_root=execution.stage_root,
         workspace=str(context.workspace),
         artifact_scope_id=context.artifact_scope_id,
@@ -340,7 +341,7 @@ def _load_discuss_finalization_context(
     _local_stage, remote_stage, workspace = attach_retained_stage(
         execution,
         owner="Discuss",
-        stage_host=stored.stage_host,
+        stage_machine_id=stored.stage_machine_id,
         stage_root=stored.stage_root,
         workspace=stored.workspace,
     )
@@ -579,7 +580,7 @@ async def finalize_recorded_discuss_result(
             execution,
             context.request,
             question.origin,
-            execution_host=context.remote_stage.host if context.remote_stage else "",
+            stage_machine_id=execution.stage_machine_id or "",
             stage_root=execution.stage_root,
             write_scope_fingerprint=None,
         )
@@ -622,17 +623,17 @@ async def stream_discuss_run(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
+        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     # Every launch, including Resume, Retry, and recovery, tells the agent the
     # project's current machines as seen from where it now runs.
-    request = _pinned_to_profile(request, profile)
-    compute_profiles = service.machine_prompt_profiles(profile.run_on)
+    machine = card(service.paper.store, service.manifest.base_machine)
+    compute_profiles = service.machine_prompt_profiles(machine.machine_id)
     local_stage: Path | None = None
-    execution_machine = service.manifest.machine_map[profile.run_on]
-    execution_host = execution_machine.host
-    provider_binary = service.launcher.provider_binary(profile.provider, execution_machine.host)
+    execution_host = machine.host
+    provider_binary = service.launcher.provider_binary(profile.provider, machine.machine_id)
     remote_stage: RemoteRunStage | None = None
     artifact_scope_id: str | None = None
     artifact_directory: Path | PurePosixPath | None = None
@@ -660,7 +661,7 @@ async def stream_discuss_run(
                     execution,
                     request,
                     question.origin,
-                    execution_host=execution_host,
+                    stage_machine_id=machine.machine_id,
                     stage_root=execution.stage_root,
                     write_scope_fingerprint=None,
                 )
@@ -670,7 +671,7 @@ async def stream_discuss_run(
                 request.artifact_edit and request.artifact_edit.origin_bound
             ):
                 context.group_context = build_group_context(
-                    service, execution.store, execution_machine.alias
+                    service, execution.store, machine.machine_id
                 )
             if execution is not None:
                 task = execution.store.agent_task(execution.operation_id)
@@ -688,13 +689,11 @@ async def stream_discuss_run(
             saved_stage = execution is not None and execution.stage_root is not None
             if execution_host:
                 remote_stage = open_remote_conversation_stage(
-                    execution_host, stage_name, execution, saved_stage=saved_stage
+                    machine, stage_name, execution, saved_stage=saved_stage
                 )
                 # Resumes rebuild context too; branch read pointers need execution-host paths.
                 context = context.model_copy(
-                    update=_stage_context_paths(
-                        context, service, remote_stage, execution_machine.alias
-                    )
+                    update=_stage_context_paths(context, service, remote_stage, machine.machine_id)
                 )
                 workspace = Path(str(remote_stage.workspace))
             else:
@@ -714,7 +713,7 @@ async def stream_discuss_run(
                     saved_stage=saved_stage,
                 )
                 if execution is not None:
-                    execution.checkpoint_stage("", str(local_stage))
+                    execution.checkpoint_stage(machine.machine_id, str(local_stage))
             hidden_read_scope = await _prepare_hidden_read_scope(
                 service,
                 request,
@@ -722,7 +721,6 @@ async def stream_discuss_run(
                 remote_stage=remote_stage,
                 execution=execution,
                 capability="discuss",
-                execution_host=execution_host,
                 data_dir=data_dir,
                 local_stage=local_stage,
             )
@@ -730,6 +728,7 @@ async def stream_discuss_run(
                 browser_turn(
                     request,
                     workspace=workspace,
+                    machine_id=machine.machine_id,
                     execution_host=execution_host,
                     execution=execution,
                     remote_stage=remote_stage,
@@ -819,7 +818,7 @@ async def stream_discuss_run(
                 local_stage,
                 remote_stage,
                 service,
-                execution_machine.alias,
+                machine.machine_id,
             )
             if context.group_context is not None:
                 read_dirs.extend(context.group_context.read_dirs())
@@ -885,7 +884,9 @@ async def stream_discuss_run(
                 and (request.artifact_edit is not None or not (resuming or retry_attempt))
             ):
                 shell_timeout = (
-                    execution.store.provider_shell_timeout_seconds(profile.provider, execution_host)
+                    execution.store.provider_shell_timeout_seconds(
+                        profile.provider, machine.machine_id
+                    )
                     if execution is not None
                     else None
                 )

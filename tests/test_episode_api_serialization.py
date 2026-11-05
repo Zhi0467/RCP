@@ -18,6 +18,7 @@ from rcp.api.episodes import (
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -27,7 +28,7 @@ from rcp.storage import (
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 
 from .episode_report_helpers import stored_report
 
@@ -38,8 +39,8 @@ def _project(store: AppStore, project_id: str = "project") -> None:
             project_id=project_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name=project_id,
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=store.now(),
         )
     )
@@ -122,6 +123,7 @@ def _auto_episode(
     store.checkpoint_agent_task(
         stored_root.operation_id,
         native_session_id=f"{episode_id}-session",
+        stage_machine_id="backend",
         stage_root=f"/tmp/{episode_id}-stage",
     )
     if root_status == "succeeded":
@@ -178,9 +180,9 @@ def _begin_report(
         concluding_operation_id=root.operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=provider,
-        run_on="local",
-        execution_host="",
+        machine_id="backend",
         native_session_id="native-session",
+        stage_machine_id="backend",
         stage_root="/tmp/episode-stage",
         skill_id="episode-report",
         skill_version="1",
@@ -199,12 +201,13 @@ def _begin_report(
         graph_target=episode.graph_target,
         kind="episode_report",
         status="queued",
-        request={"provider": provider, "run_on": "local", "execution_host": ""},
+        request={"provider": provider, "run_on": "backend"},
         created_at=now,
         updated_at=now,
         status_message="Wrapping up visualization and report",
         parent_operation_id=root.operation_id,
         native_session_id="native-session",
+        stage_machine_id="backend",
         stage_root="/tmp/episode-stage",
         visible=False,
     )
@@ -419,7 +422,7 @@ def test_experiment_wake_role_comes_from_its_durable_continuation_cause(tmp_path
     episode_id = str(uuid.uuid4())
     request = {
         "provider": "codex",
-        "run_on": "local",
+        "run_on": "backend",
         "run_truth_scope": ["repo"],
         "chat_id": str(uuid.uuid4()),
         "chat_scope": "node",
@@ -995,7 +998,7 @@ def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> No
     episode, root = _auto_episode(store, "signed-out-report")
     _begin_report(store, episode, root, ending="completed")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="Sign in again.",
         source="report",
@@ -1017,7 +1020,9 @@ def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(t
     episode, root = _auto_episode(store, "tokenless-report")
     _begin_report(store, episode, root, ending="completed", provider="claude")
     store.mark_provider_login_verified(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="Verified.",
     )
     response = serialize_episode(
         store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary
@@ -1036,39 +1041,36 @@ def _login_accounts(store, manifest) -> dict[tuple[str, str], str]:
 
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     states = ProjectService.provider_logins_for(manifest, launcher, "project")
-    return {(state["provider"], state["host"]): state["state"] for state in states}
+    return {(state["provider"], state["machine_id"]): state["state"] for state in states}
 
 
 def test_provider_logins_cover_only_profile_machines(manifest, tmp_path) -> None:
-    from rcp.config import MachineConfig
-
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
-    manifest.machines.append(MachineConfig(alias="gpu", host="gpu.example"))
-    manifest.machines.append(MachineConfig(alias="agent-box", host="agent.example"))
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    manifest.machines.append(gpu.machine_id)
     manifest.agent.project_chat = manifest.agent_profile("project_chat").model_copy(
-        update={"provider": "claude", "run_on": "agent-box"}
+        update={"provider": "claude"}
     )
-    for provider, host in (("codex", "gpu.example"), ("claude", "agent.example")):
+    for provider, machine_id in (("codex", gpu.machine_id), ("claude", BACKEND_MACHINE_ID)):
         store.mark_provider_login_failed(
-            LoginKey(provider, host, MACHINE_LOGIN_ID),
+            LoginKey(provider, machine_id, MACHINE_LOGIN_ID),
             generation=0,
             detail="Sign in",
             source="turn",
         )
     accounts = _login_accounts(store, manifest)
-    assert ("codex", "gpu.example") not in accounts
-    assert accounts[("claude", "agent.example")] == "signed_out"
+    assert ("codex", gpu.machine_id) not in accounts
+    assert accounts[("claude", BACKEND_MACHINE_ID)] == "signed_out"
 
 
 def test_provider_logins_keep_an_account_holding_queued_work(manifest, tmp_path) -> None:
-    from rcp.config import MachineConfig
-
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
-    manifest.machines.append(MachineConfig(alias="gpu", host="gpu.example"))
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    manifest.machines.append(gpu.machine_id)
     store.mark_provider_login_failed(
-        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID),
+        LoginKey("claude", gpu.machine_id, MACHINE_LOGIN_ID),
         generation=0,
         detail="Sign in",
         source="turn",
@@ -1079,14 +1081,14 @@ def test_provider_logins_keep_an_account_holding_queued_work(manifest, tmp_path)
             project_id="project",
             kind="project_chat",
             status="queued",
-            request={"provider": "claude", "run_on": "gpu", "message": "go"},
+            request={"provider": "claude", "run_on": gpu.machine_id, "message": "go"},
             created_at=store.now(),
             updated_at=store.now(),
             status_message="",
             authorized_by=_authorizer(store),
         )
     )
-    assert _login_accounts(store, manifest)[("claude", "gpu.example")] == "signed_out"
+    assert _login_accounts(store, manifest)[("claude", gpu.machine_id)] == "signed_out"
 
 
 def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> None:

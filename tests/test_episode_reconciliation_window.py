@@ -34,7 +34,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
     )
 
     async def root_stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(tmp_path))
+        execution.checkpoint_stage("backend", str(tmp_path))
         yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -50,7 +50,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
     child_id = str(uuid.uuid4())
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         chat_scope="node",
         chat_id=child_id,
@@ -80,6 +80,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
         updated_at=now,
         status_message="Saved child turn.",
         native_session_id=request.session_id,
+        stage_machine_id="backend",
         stage_root=str(tmp_path),
         authorized_by=parent.authorized_by,
     )

@@ -36,6 +36,7 @@ from rcp.limits import (
     TERMINAL_SUBSCRIBER_QUEUE_SIZE,
 )
 from rcp.machine_cards import card
+from rcp.machine_upgrade import upgraded_terminal_record
 from rcp.terminals import launch, remote
 from rcp.terminals.backends import TerminalCapability, machine_capability
 from rcp.terminals.models import (
@@ -328,6 +329,8 @@ class TerminalManager:
         payload: object = None
         try:
             payload = json.loads(path.read_text())
+            if isinstance(payload, dict):
+                payload = upgraded_terminal_record(payload, self.store.space_machines())
             if not isinstance(payload, dict) or payload.keys() < RECORD_FIELDS:
                 raise ValueError("does not name every field this version writes")
             for key, value in payload.items():

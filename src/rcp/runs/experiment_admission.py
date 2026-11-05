@@ -149,7 +149,7 @@ def resolve_experiment_node_work_request(
             "provider": profile.provider,
             "model": profile.model,
             "reasoning": profile.reasoning,
-            "run_on": profile.run_on,
+            "run_on": service.manifest.base_machine,
             # A start derived from an authorized turn keeps that turn's write set.
             "run_truth_scope": list(
                 request.run_truth_scope or write_repositories(service.history.state())
@@ -377,7 +377,7 @@ def start_experiment_continuation(
     *,
     source: EpisodeRecord,
     authorized_by: AuthorizedHuman,
-    stage_host: str | None,
+    stage_machine_id: str | None,
     stage_root: str,
     continuation_request_id: str,
 ) -> AgentTaskRecord:
@@ -409,7 +409,7 @@ def start_experiment_continuation(
         estimate_seconds=estimate,
         estimate_samples=samples,
         authorized_by=authorized_by,
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=stage_root,
         graph_target=source.graph_target,
         continues_episode_id=source.episode_id,

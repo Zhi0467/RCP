@@ -78,7 +78,7 @@ def test_fresh_status_and_episode_response_share_lifecycle_metadata(loop, ending
         "loop-root",
         "agent_launch",
         {
-            "execution_host": "",
+            "machine_id": "backend",
             "canonical_repository_roots": ["/checkout/project"],
         },
     )
@@ -100,7 +100,7 @@ def test_fresh_status_and_episode_response_share_lifecycle_metadata(loop, ending
     assert row.started_by == response.started_by
     assert row.checkout == response.checkout
     assert row.checkout.repository_paths == ["/checkout/project"]
-    assert row.checkout.execution_host == "" and row.checkout.available
+    assert row.checkout.machine_id == "backend" and row.checkout.available
     assert row.started_by.kind == "human" and row.started_by.human == loop.authorizer
     assert row.stop_initiated_by == response.stop_initiated_by
     assert row.stop_settled_at == response.stop_settled_at
@@ -126,8 +126,7 @@ def test_checkout_identity_uses_immutable_binding_and_explicit_unavailable_histo
     binding = EpisodeWorktreeBinding(
         owner_episode_id=loop.episode_id,
         repository_alias="repo-a",
-        machine="remote",
-        execution_host="execution-host",
+        machine_id="remote",
         shared_path="/shared/project",
         worktree_path="/worktrees/run",
         git_common_dir="/shared/project/.git",
@@ -144,7 +143,7 @@ def test_checkout_identity_uses_immutable_binding_and_explicit_unavailable_histo
     )
     checkout = episode_loop_metadata(loop.store, episode).checkout
     assert checkout.kind == "worktree" and checkout.available
-    assert checkout.execution_host == binding.execution_host
+    assert checkout.machine_id == binding.machine_id
     assert checkout.repository_paths == [binding.worktree_path]
     snapshot = loop.store.episode_loop_metadata_snapshots([episode])[episode.episode_id]
     assert episode_loop_metadata_from_snapshot(episode, snapshot).checkout == checkout
@@ -198,7 +197,7 @@ def test_loop_metadata_queries_only_root_receipts_when_serializing_many_turns(lo
         root.operation_id,
         "agent_launch",
         {
-            "execution_host": "",
+            "machine_id": "backend",
             "canonical_repository_roots": ["/checkout/project"],
         },
     )

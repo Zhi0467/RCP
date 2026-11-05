@@ -25,6 +25,7 @@ from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.agents.prompts import COMMAND_CLIENT
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
@@ -226,7 +227,7 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
         stage_root=str(stage),
         workspace_root=str(stage / "workspace"),
     )
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     execution.store.checkpoint_agent_task(
         execution.operation_id, native_session_id="manual-repair-native-session"
     )
@@ -739,18 +740,16 @@ def _isolated_manifest(root: Path) -> Path:
     path.write_text(
         f'''name = "test-paper"
 
-[[machines]]
-alias = "laptop"
-host = ""
+machines = ["{BACKEND_MACHINE_ID}"]
 
 [[repositories]]
 alias = "repo-a"
-machine = "laptop"
+machine = "{BACKEND_MACHINE_ID}"
 path = "{repo_a}"
 
 [[repositories]]
 alias = "repo-b"
-machine = "laptop"
+machine = "{BACKEND_MACHINE_ID}"
 path = "{repo_b}"
 
 [project]
@@ -761,9 +760,6 @@ repository = "repo-a"
 
 [agent]
 default_run_truth_scope = ["repo-a"]
-
-[execution]
-run_on = "laptop"
 ''',
         encoding="utf-8",
     )
@@ -1652,12 +1648,15 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         shell_timeout_seconds=1800,
     )
     remote = _FilesystemRemoteMailboxStage("test-host", workspace)
+    machine_id = store.create_space_machine(
+        name="Test", host=remote.host, os_account="rcp"
+    ).machine_id
     staged = dataclasses.replace(staged, mailbox=RunStageMailbox(workspace, remote))
     execution = AgentTaskExecution(
         "first",
         store,
         AgentProcessControl(),
-        stage_host=remote.host,
+        stage_machine_id=machine_id,
         stage_root=str(remote.root),
     )
     token = staged.credential.token
@@ -1710,11 +1709,11 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
         return owner
 
     owner = asyncio.run(launch())
-    store.checkpoint_agent_task("first", stage_host=remote.host, stage_root=str(remote.root))
+    store.checkpoint_agent_task("first", stage_machine_id=machine_id, stage_root=str(remote.root))
     store.mark_agent_task_running("first")
     pid_file = str(remote.root / "provider.pid")
     store.begin_remote_provider_pass(
-        "first", remote.host, str(remote.root), pid_file, supervised=True
+        "first", machine_id, str(remote.root), pid_file, supervised=True
     )
     store.update_agent_task_message("first", "Detached", phase="awaiting_remote_result")
     assert owner.detached and not owner.closed and not staged.credential.expired
@@ -1733,7 +1732,7 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(
             "first",
             store,
             AgentProcessControl(),
-            stage_host=remote.host,
+            stage_machine_id=machine_id,
             stage_root=str(remote.root),
         )
 
@@ -1822,7 +1821,7 @@ async def test_graph_only_repair_never_acquires_browser(
     execution.store.record_chat_stage_layout(
         execution.operation_id, stage_root=str(stage), workspace_root=str(stage / "workspace")
     )
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     execution.store.checkpoint_agent_task(
         execution.operation_id, native_session_id="repair-session"
     )

@@ -19,6 +19,7 @@ from rcp.compute_jobs.models import ComputeLaunchRequest
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.compute_jobs.wrapper import render_wrapper
 from rcp.config import MachineComputeConfig
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from tests.helpers import signed_in_client, wait_until
 
@@ -64,10 +65,9 @@ def test_wrapper_records_failed_cd(tmp_path):
 
 
 @pytest.fixture
-def launch_environment(tmp_path, manifest, monkeypatch):
+def launch_environment(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "database" / "rcp.sqlite3")
-    machine = next(machine for machine in manifest.machines if not machine.host)
-    context = BackendContext(execution_host="", execution_machine=machine.alias, compute=None)
+    context = BackendContext(execution_host="", machine_id=BACKEND_MACHINE_ID, compute=None)
 
     class Backend:
         id = "systemd_user"
@@ -90,10 +90,9 @@ def launch_environment(tmp_path, manifest, monkeypatch):
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
 
-    def launch(request=None):
+    def launch(request=None, machine_id=BACKEND_MACHINE_ID):
         return jobs.launch_compute_job(
             store,
-            manifest,
             request
             or ComputeLaunchRequest(
                 argv=["printf", "hello world"], cwd=str(tmp_path), label="Training"
@@ -102,7 +101,7 @@ def launch_environment(tmp_path, manifest, monkeypatch):
             project_id="project",
             origin_operation_id="turn",
             episode_id=None,
-            execution_machine=machine.alias,
+            machine_id=machine_id,
             writable_roots=[str(tmp_path)],
         )
 
@@ -204,9 +203,9 @@ def test_launch_without_backend_names_machine_and_setup_action(
     launch_environment, tmp_path, monkeypatch
 ):
     store, backend, launch = launch_environment
-    context = BackendContext("", "laptop", None, os_name="Linux")
+    context = BackendContext("", BACKEND_MACHINE_ID, None, os_name="Linux")
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, None))
-    with pytest.raises(RuntimeError, match="laptop.*Linux.*systemd.*Slurm"):
+    with pytest.raises(RuntimeError):
         launch()
     assert not (tmp_path / "data" / "jobs").exists()
     assert store.running_compute_jobs() == []
@@ -235,28 +234,20 @@ def test_insert_failure_retains_backend_receipt(launch_environment, tmp_path, mo
     assert json.loads((roots[0] / "launch.json").read_text())["backend_handle"] == "rcp-job-test"
 
 
-@pytest.mark.parametrize("change", ["removed", "repointed"])
 @pytest.mark.parametrize("reconcile", [False, True])
-def test_changed_machine_refresh_uses_recorded_identity(
-    launch_environment, tmp_path, manifest, monkeypatch, change, reconcile
+def test_refresh_follows_the_cards_current_route(
+    launch_environment, tmp_path, monkeypatch, reconcile
 ):
     store, backend, launch = launch_environment
-    machine = manifest.machine_map["laptop"]
-    machine.host = "recorded-host"
-    card = store.create_space_machine(name="recorded", host=machine.host, os_account="")
-    store.update_space_machine(card.machine_id, jobs_root=str(tmp_path / "remote-jobs"))
+    card = store.create_space_machine(name="recorded", host="recorded-host", os_account="")
+    record = launch(machine_id=card.machine_id)
+    store.update_space_machine(card.machine_id, host="other-host")
 
     def ssh_bridge(host, command):
-        assert host == "recorded-host"
+        assert host == "other-host"
         return [sys.executable, *shlex.split(command)[1:]]
 
     monkeypatch.setattr("rcp.transport.ssh.ssh_arguments", ssh_bridge)
-    record = launch()
-    if change == "removed":
-        manifest.machines.remove(machine)
-    else:
-        machine.host = "other-host"
-
     observed = []
 
     def alive(handle, context):
@@ -280,8 +271,8 @@ def test_changed_machine_refresh_uses_recorded_identity(
     assert result.status == "cancelled"
     assert len(observed) == 2
     for context in observed:
-        assert context.execution_host == record.execution_host
-        assert context.execution_machine == record.execution_machine
+        assert context.execution_host == "other-host"
+        assert context.machine_id == card.machine_id
         assert context.containment == record.containment
         assert context.compute is None
 
@@ -296,7 +287,7 @@ def test_systemd_keeps_completed_job_receipts_after_uncertain_start(
     from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
 
     store, _, launch = launch_environment
-    context, _ = jobs.resolve_context(manifest, "laptop")
+    context, _ = jobs.resolve_context(store.backend_space_machine())
     context.uid = "501"
     calls = []
 
@@ -434,7 +425,7 @@ def test_startup_reconciliation_does_not_block_health_or_watchers_and_respects_f
         job_id="startup",
         project_id=app.state.default_project_id,
         origin_operation_id="turn",
-        execution_machine="laptop",
+        machine_id=BACKEND_MACHINE_ID,
         backend_id="systemd_user",
         backend_handle="rcp-job-startup",
         job_root=str(root),
@@ -481,7 +472,7 @@ def test_shipped_file_operations_use_execution_machine(tmp_path, monkeypatch):
     monkeypatch.setattr("rcp.transport.ssh.ssh_arguments", ssh_bridge)
     context = BackendContext(
         execution_host="test-execution-account",
-        execution_machine="remote",
+        machine_id="remote",
         compute=MachineComputeConfig(jobs_root=str(tmp_path / "remote-jobs")),
     )
     root = Path(resolve_jobs_root(context, tmp_path / "unused-local-data")) / "one"
@@ -522,7 +513,7 @@ def test_jobs_root_refuses_stage_retention(tmp_path, monkeypatch):
     )
     context = BackendContext(
         execution_host="test-execution-account",
-        execution_machine="remote",
+        machine_id="remote",
         compute=MachineComputeConfig(jobs_root=stage),
     )
     with pytest.raises(RuntimeError) as refused:

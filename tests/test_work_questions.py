@@ -13,6 +13,7 @@ from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT, ASK_MAX_ATTEMPTS, ASK_WAITING_FRESH_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.questions import (
     discuss_command_handler,
     record_work_question_receipts,
@@ -282,11 +283,10 @@ def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
 
     execution, _ = work_execution(tmp_path)
     store = execution.store
-    store.ensure_space_machines([("", "", "Execution machine")])
-    card = store.space_machine_for("")
-    store.update_space_machine(card.machine_id, provider_shell_timeout={"codex": "30"})
+    store.backend_space_machine()
+    store.update_space_machine(BACKEND_MACHINE_ID, provider_shell_timeout={"codex": "30"})
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
-    hold = ask_hold_seconds(launcher.shell_timeout_seconds("codex"))
+    hold = ask_hold_seconds(launcher.shell_timeout_seconds("codex", BACKEND_MACHINE_ID))
     staged = stage_command_mailbox(
         local_stage=tmp_path,
         remote_stage=None,
@@ -375,7 +375,7 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
             provider=origin.request["provider"],
             native_session_id=origin.native_session_id,
             stage_root=origin.stage_root,
-            stage_host=origin.stage_host,
+            stage_machine_id=origin.stage_machine_id,
             capability=origin.dispatch_authority.task_contract,
             write_scope_fingerprint=origin.write_scope_fingerprint,
             graph_target=origin.graph_target,

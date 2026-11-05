@@ -46,7 +46,7 @@ class LoopCheckout(BaseModel):
 
     kind: Literal["shared", "worktree"]
     available: bool = False
-    execution_host: str | None = None
+    machine_id: str | None = None
     repository_paths: list[str] = Field(default_factory=list)
     repository_alias: str | None = None
     isolation_owner_episode_id: str | None = None
@@ -74,7 +74,7 @@ class LoopOverlapCheckout(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: Literal["shared", "worktree"]
-    execution_host: str | None = None
+    machine_id: str | None = None
     repository_paths: list[str] = Field(default_factory=list)
 
 
@@ -207,7 +207,7 @@ def episode_loop_metadata_from_snapshot(
         checkout = LoopCheckout(
             kind="worktree",
             available=True,
-            execution_host=binding.execution_host,
+            machine_id=binding.machine_id,
             repository_paths=[binding.worktree_path],
             repository_alias=binding.repository_alias,
             isolation_owner_episode_id=binding.owner_episode_id,
@@ -215,16 +215,16 @@ def episode_loop_metadata_from_snapshot(
     else:
         for receipt in reversed(snapshot.launch_receipts):
             roots = receipt.payload.get("canonical_repository_roots")
-            host = receipt.payload.get("execution_host")
+            machine_id = receipt.payload.get("machine_id")
             if (
                 isinstance(roots, list)
                 and all(isinstance(path, str) for path in roots)
-                and isinstance(host, str)
+                and isinstance(machine_id, str)
             ):
                 checkout = checkout.model_copy(
                     update={
                         "available": True,
-                        "execution_host": host,
+                        "machine_id": machine_id,
                         "repository_paths": list(roots),
                     }
                 )
@@ -377,7 +377,7 @@ def _loop_starter(starter: EpisodeStarter) -> LoopStarter:
 def _overlap_checkout(checkout: LoopCheckout) -> LoopOverlapCheckout:
     return LoopOverlapCheckout(
         kind=checkout.kind,
-        execution_host=checkout.execution_host,
+        machine_id=checkout.machine_id,
         repository_paths=checkout.repository_paths,
     )
 

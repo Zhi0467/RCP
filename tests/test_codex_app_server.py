@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.write_scope import ProjectWriteScope
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderTurnRequest
 from rcp.providers.codex.app_server import CodexAppServerRuntime
 
@@ -197,6 +198,8 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
             "Reply exactly APP_SERVER_OK",
             cwd=tmp_path,
             write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="paper_suggest",
             runtime_id="codex.app-server-stdio.v1",
         )
@@ -222,8 +225,7 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
 def _work_scope(stage: Path) -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id="project-1",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=str(stage),
         workspace_root=str(stage),
@@ -255,6 +257,8 @@ async def test_app_server_work_turn_carries_the_exact_project_permission_profile
             cwd=stage,
             write_dirs=[],
             write_scope=_work_scope(stage),
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="work_auto",
             runtime_id="codex.app-server-stdio.v1",
         )
@@ -299,6 +303,8 @@ async def test_app_server_work_turn_stops_when_the_permission_profile_is_not_act
             cwd=stage,
             write_dirs=[],
             write_scope=_work_scope(stage),
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="work_auto",
             runtime_id="codex.app-server-stdio.v1",
         )
@@ -349,6 +355,8 @@ async def test_app_server_runtime_fails_loudly_on_interactive_request(tmp_path: 
             "Do not ask for approval",
             cwd=tmp_path,
             write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="paper_suggest",
             runtime_id="codex.app-server-stdio.v1",
         )
@@ -387,6 +395,7 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
             "codex",
             "Reply exactly APP_SERVER_OK",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
             host="research-host",
             remote_pid_file=str(pid_file),
             write_dirs=[tmp_path / "changes"],
@@ -420,6 +429,8 @@ async def test_app_server_falls_back_to_exec_only_before_prompt_delivery(
             cwd=tmp_path,
             session_id="existing-app-thread",
             write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="paper_suggest",
             runtime_id="app-server",
         )
@@ -447,6 +458,8 @@ async def test_app_server_does_not_fallback_after_prompt_delivery(tmp_path: Path
             "This prompt must not be duplicated",
             cwd=tmp_path,
             write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="paper_suggest",
             runtime_id="app-server",
         )
@@ -897,6 +910,8 @@ async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
                 "Reply exactly EXEC_OK",
                 cwd=tmp_path,
                 write_dirs=[tmp_path / "changes"],
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="paper_suggest",
                 runtime_id="app-server",
             )

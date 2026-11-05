@@ -6,7 +6,8 @@ import pytest
 
 from rcp.api.experiment_controls import _experiment_recommendation
 from rcp.control import ExperimentControlState, ExperimentOperationalState
-from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind, LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind
 
 
 def _revoked_login(
@@ -129,7 +130,7 @@ def test_signed_out_experiment_retry_queues_child_without_spending_budget(tmp_pa
     stage.mkdir()
 
     async def stream(_project, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
@@ -137,12 +138,15 @@ def test_signed_out_experiment_retry_queues_child_without_spending_budget(tmp_pa
     root = tasks.start(
         "project",
         "node_chat",
-        _experiment_request().model_copy(update={"run_on": "laptop"}),
+        _experiment_request().model_copy(update={"run_on": BACKEND_MACHINE_ID}),
         authorized_by=fabricated_authorizer(),
     )
     root = wait_for_task(store, root.operation_id, expect="failed")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]

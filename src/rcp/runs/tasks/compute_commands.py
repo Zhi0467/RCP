@@ -263,7 +263,7 @@ class WorkComputeCommands:
         result = {
             "job_id": job.job_id,
             "watcher": helper_watch_spec(job),
-            "startup": helper_startup_state(job),
+            "startup": helper_startup_state(self.execution.store, job),
         }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 

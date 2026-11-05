@@ -32,9 +32,7 @@ def _isolated(harness, tmp_path, *, graph=True, shared=None):
         }
     )
     conversation_worktree.execute({"operation": "create", "binding": values, "timeout_seconds": 10})
-    binding = EpisodeWorktreeBinding(
-        repository_alias="repo-a", machine="laptop", execution_host="", **values
-    )
+    binding = EpisodeWorktreeBinding(repository_alias="repo-a", machine_id="backend", **values)
     harness.store.create_episode_isolation(
         harness.project_id,
         EpisodeIsolation(
@@ -719,9 +717,9 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
     with harness.store.connection() as connection:
         connection.execute(
             "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, execution_host, check_command, log_path, "
+            "origin_task_kind, chat_id, episode_id, machine_id, check_command, log_path, "
             "cwd, continuation_json, status, created_at) VALUES ('w', ?, 'origin', 'node_chat', "
-            "'chat', ?, '', 'squeue -j 7', '/tmp/log', '/tmp', '{}', 'active', ?)",
+            "'chat', ?, 'backend', 'squeue -j 7', '/tmp/log', '/tmp', '{}', 'active', ?)",
             (harness.project_id, harness.episode.episode_id, harness.store.now()),
         )
     prompts = []

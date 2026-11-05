@@ -15,8 +15,21 @@ from rcp.compute_jobs.probe import (
     _cgroup_isolated,
     probe_compute_backend,
 )
-from rcp.config import MachineComputeConfig
 from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.storage.models import SpaceMachineRecord
+
+
+def _machine(host: str = "", job_manager: str | None = None) -> SpaceMachineRecord:
+    return SpaceMachineRecord(
+        machine_id=BACKEND_MACHINE_ID if not host else "compute",
+        name="Compute",
+        host=host,
+        os_account="",
+        job_manager=job_manager,
+        created_at="",
+        updated_at="",
+    )
 
 
 class ProbeRunner:
@@ -88,12 +101,11 @@ def fake_linux_cgroup(monkeypatch):
 @pytest.mark.parametrize("job_manager", [None, "slurm"])
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
 def test_probe_runs_backend_and_requires_liveness_exit_and_log(
-    manifest, tmp_path, fake_linux_cgroup, os_name, job_manager
+    tmp_path, fake_linux_cgroup, os_name, job_manager
 ):
-    compute = MachineComputeConfig(job_manager=job_manager)
     runner = ProbeRunner(os_name=os_name)
     result = probe_compute_backend(
-        manifest, "laptop", "helper", runner, data_dir=tmp_path, compute=compute
+        _machine(job_manager=job_manager), "helper", runner, data_dir=tmp_path
     )
     assert result.ready
     if os_name == "Linux":
@@ -113,9 +125,9 @@ def test_probe_runs_backend_and_requires_liveness_exit_and_log(
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
 @pytest.mark.parametrize("options", [{"marker": False}, {"exit_status": 1}, {"observable": False}])
-def test_probe_fails_when_backend_contract_is_not_proved(manifest, tmp_path, os_name, options):
+def test_probe_fails_when_backend_contract_is_not_proved(tmp_path, os_name, options):
     result = probe_compute_backend(
-        manifest, "laptop", "helper", ProbeRunner(os_name=os_name, **options), data_dir=tmp_path
+        _machine(), "helper", ProbeRunner(os_name=os_name, **options), data_dir=tmp_path
     )
     assert result.state == "failed"
     assert result.required_action
@@ -124,22 +136,22 @@ def test_probe_fails_when_backend_contract_is_not_proved(manifest, tmp_path, os_
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
-def test_probe_retains_root_when_cancellation_cannot_be_confirmed(manifest, tmp_path, os_name):
+def test_probe_retains_root_when_cancellation_cannot_be_confirmed(tmp_path, os_name):
     runner = ProbeRunner(os_name=os_name)
     runner.reject_cancel = True
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert result.state == "failed"
     assert "Cancellation transport failed" in result.diagnostic
     assert runner.root.is_dir()
 
 
-def test_probe_redacts_machine_resolution_failure(manifest, tmp_path):
+def test_probe_redacts_machine_resolution_failure(tmp_path):
     def runner(command, **kwargs):
         return subprocess.CompletedProcess(
             command, 1, "", "password=hunter2\nBearer abcdefghijklmnop"
         )
 
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert result.state == "failed"
     assert "hunter2" not in result.diagnostic
     assert "abcdefghijklmnop" not in result.diagnostic
@@ -147,9 +159,7 @@ def test_probe_redacts_machine_resolution_failure(manifest, tmp_path):
 
 
 @pytest.mark.parametrize("failed_command", ["uname -s", "id -u", "show-environment"])
-def test_probe_reports_ssh_resolution_failure(manifest, tmp_path, failed_command):
-    manifest.machines[0].host = "compute.example"
-
+def test_probe_reports_ssh_resolution_failure(tmp_path, failed_command):
     def runner(command, **kwargs):
         remote = command[-1]
         if failed_command in remote:
@@ -158,15 +168,15 @@ def test_probe_reports_ssh_resolution_failure(manifest, tmp_path, failed_command
             command, 0, "Linux" if remote == "uname -s" else "501", ""
         )
 
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine("compute.example"), "helper", runner, data_dir=tmp_path)
     assert result.state == "failed"
     assert result.diagnostic == "connection dropped"
     assert not (tmp_path / "jobs").exists()
 
 
-def test_probe_without_resolvable_backend_is_unavailable(manifest, tmp_path):
+def test_probe_without_resolvable_backend_is_unavailable(tmp_path):
     result = probe_compute_backend(
-        manifest, "laptop", "helper", ProbeRunner(os_name="FreeBSD"), data_dir=tmp_path
+        _machine(), "helper", ProbeRunner(os_name="FreeBSD"), data_dir=tmp_path
     )
     assert result.state == "unavailable"
     assert "Linux" in result.required_action
@@ -176,12 +186,12 @@ def test_probe_without_resolvable_backend_is_unavailable(manifest, tmp_path):
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
-def test_probe_returns_fresh_observation(manifest, tmp_path, fake_linux_cgroup, os_name):
+def test_probe_returns_fresh_observation(tmp_path, fake_linux_cgroup, os_name):
     first = probe_compute_backend(
-        manifest, "laptop", "helper", ProbeRunner(os_name=os_name), data_dir=tmp_path
+        _machine(), "helper", ProbeRunner(os_name=os_name), data_dir=tmp_path
     )
     second = probe_compute_backend(
-        manifest, "laptop", "helper", ProbeRunner(os_name=os_name, exit_status=1), data_dir=tmp_path
+        _machine(), "helper", ProbeRunner(os_name=os_name, exit_status=1), data_dir=tmp_path
     )
     assert first.ready
     assert not second.ready
@@ -190,10 +200,8 @@ def test_probe_returns_fresh_observation(manifest, tmp_path, fake_linux_cgroup, 
 @pytest.mark.parametrize("execution_host", ["", "rcp@cluster.example"])
 @pytest.mark.parametrize("failure", [None, "sbatch", "squeue", "scancel", "queue"])
 def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
-    manifest, tmp_path, monkeypatch, execution_host, failure
+    tmp_path, monkeypatch, execution_host, failure
 ):
-    machine = manifest.machines[0]
-    machine.host = execution_host
     binaries = tmp_path / "bin"
     binaries.mkdir()
     submission = tmp_path / "unexpected-submission"
@@ -227,12 +235,10 @@ def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
 
     monkeypatch.setattr("rcp.watchers._run_watcher_command", execute)
     result = probe_compute_backend(
-        manifest,
-        "laptop",
+        _machine(execution_host, job_manager="slurm"),
         "scheduler",
         unexpected_helper,
         data_dir=tmp_path,
-        compute=MachineComputeConfig(job_manager="slurm"),
     )
     assert result.backend_id == "slurm"
     assert result.ready is (failure is None)
@@ -246,7 +252,7 @@ def test_slurm_readiness_uses_watcher_shell_without_submitting_a_job(
         assert result.required_action is None
 
 
-def test_systemd_probe_records_explicit_cooperative_fallback(manifest, tmp_path, monkeypatch):
+def test_systemd_probe_records_explicit_cooperative_fallback(tmp_path, monkeypatch):
     runner = ProbeRunner(os_name="Linux")
     runner.reject_mirrored = True
     monkeypatch.setattr("rcp.compute_jobs.probe._cgroup_isolated", lambda *_: True)
@@ -260,7 +266,7 @@ def test_systemd_probe_records_explicit_cooperative_fallback(manifest, tmp_path,
             else original_read(path, *args, **kw)
         ),
     )
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert result.ready
     assert result.containment == "cooperative"
     assert "Unsupported PrivateUsers" in result.diagnostic
@@ -268,7 +274,7 @@ def test_systemd_probe_records_explicit_cooperative_fallback(manifest, tmp_path,
 
 
 @pytest.mark.parametrize("isolated", [True, False])
-def test_systemd_probe_requires_independent_cgroup(manifest, tmp_path, monkeypatch, isolated):
+def test_systemd_probe_requires_independent_cgroup(tmp_path, monkeypatch, isolated):
     runner = ProbeRunner(os_name="Linux")
     original_read = Path.read_text
     monkeypatch.setattr(
@@ -280,7 +286,7 @@ def test_systemd_probe_requires_independent_cgroup(manifest, tmp_path, monkeypat
             else original_read(path, *args, **kw)
         ),
     )
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert result.ready is isolated
     if isolated:
         assert result.containment == "mirrored"
@@ -311,9 +317,8 @@ def test_cgroup_comparison_ignores_hierarchies_where_both_sit_at_the_root():
 
 
 @pytest.mark.parametrize("job_manager", [None, "slurm"])
-def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, job_manager):
-    compute = MachineComputeConfig(job_manager=job_manager)
-    manifest.machines[0].host = "compute.example"
+def test_remote_linux_without_user_manager_refuses_compute(tmp_path, job_manager):
+    machine = _machine("compute.example", job_manager=job_manager)
     commands = []
 
     def runner(command, **kwargs):
@@ -326,14 +331,12 @@ def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, j
         assert "XDG_RUNTIME_DIR=/run/user/1234" in remote
         return subprocess.CompletedProcess(command, 1, "", "No user manager")
 
-    context, profile = resolve_context(manifest, "laptop", compute, runner)
+    context, profile = resolve_context(machine, runner)
     assert context.uid == "1234"
     assert profile is None
     assert all(command[0] == "ssh" and "compute.example" in command for command in commands)
     commands.clear()
-    result = probe_compute_backend(
-        manifest, "laptop", "helper", runner, data_dir=tmp_path, compute=compute
-    )
+    result = probe_compute_backend(machine, "helper", runner, data_dir=tmp_path)
     assert result.state == "unavailable"
     assert not result.ready
     assert result.required_action
@@ -341,17 +344,17 @@ def test_remote_linux_without_user_manager_refuses_compute(manifest, tmp_path, j
     assert not (tmp_path / "jobs").exists()
 
 
-def test_linux_helper_probe_refuses_without_linger(manifest, tmp_path, fake_linux_cgroup):
+def test_linux_helper_probe_refuses_without_linger(tmp_path, fake_linux_cgroup):
     runner = ProbeRunner(os_name="Linux")
     runner.linger = "no"
-    result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert not result.ready
     assert result.required_action
     assert not any("systemd-run" in command for command in runner.commands)
 
 
 @pytest.mark.parametrize("backend_id", ["systemd_user", "launchd"])
-def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_id):
+def test_real_compute_owner_when_facility_available(tmp_path, backend_id):
     """OS admission is probed independently of the implementation's generated plist."""
     executable = "systemd-run" if backend_id == "systemd_user" else "launchctl"
     if shutil.which(executable) is None:
@@ -424,7 +427,7 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
         return subprocess.run(command, **kwargs)
 
     try:
-        result = probe_compute_backend(manifest, "laptop", "helper", runner, data_dir=tmp_path)
+        result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     finally:
         for unit in units:
             for action in ("stop", "reset-failed"):
@@ -451,9 +454,9 @@ def test_real_compute_owner_when_facility_available(manifest, tmp_path, backend_
     assert list((tmp_path / "jobs").iterdir()) == []
 
 
-def test_scheduler_route_without_manager_never_uses_helper(manifest, tmp_path):
+def test_scheduler_route_without_manager_never_uses_helper(tmp_path):
     runner = ProbeRunner()
-    result = probe_compute_backend(manifest, "laptop", "scheduler", runner, data_dir=tmp_path)
+    result = probe_compute_backend(_machine(), "scheduler", runner, data_dir=tmp_path)
     assert result.state == "unavailable"
     assert not result.ready
     assert not runner.commands

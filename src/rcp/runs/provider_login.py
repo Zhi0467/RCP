@@ -310,7 +310,11 @@ def resolved_task_login(
     provider = str(task.request.get("provider") or "")
     if not provider:
         return None
-    machine_id = task.stage_machine_id or "" if machine_id is None else machine_id
+    if machine_id is None:
+        run_on = task.request.get("run_on")
+        machine_id = task.stage_machine_id or run_on_machine(
+            store, task.project_id, str(run_on) if run_on else None
+        )
     accounts = ProviderAccounts.for_store(store)
     result, _ = accounts.resolve_launch_login(
         provider,

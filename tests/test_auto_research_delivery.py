@@ -15,6 +15,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -69,8 +70,8 @@ def _store(tmp_path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -143,7 +144,7 @@ def _start_auto_research(
             browser_requested=browser_requested,
             invocation_ceiling=invocation_ceiling,
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
@@ -193,7 +194,7 @@ def _arm_completed_graph_condition(
         ),
         watcher_id=watcher_id,
         state=GraphState(revision=2, nodes={blocker.id: blocker}),
-        execution_host=origin.stage_host or "",
+        machine_id=origin.stage_machine_id or "backend",
     )
     assert watcher.watcher_id == watcher_id
     assert watcher.status == "completed"
@@ -260,7 +261,7 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
             context,
             arguments,
             watcher_id="planned-watcher",
-            execution_host=root.stage_host or "",
+            machine_id=root.stage_machine_id or "backend",
         )
         == watcher
     )
@@ -270,7 +271,7 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
             context,
             arguments,
             watcher_id="missing-watcher",
-            execution_host=root.stage_host or "",
+            machine_id=root.stage_machine_id or "backend",
         )
         is None
     )
@@ -284,7 +285,7 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
             context,
             mismatched_arguments,
             watcher_id="planned-watcher",
-            execution_host=root.stage_host or "",
+            machine_id=root.stage_machine_id or "backend",
         )
         is None
     )
@@ -294,7 +295,7 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
             context,
             arguments,
             watcher_id="planned-watcher",
-            execution_host="different-host",
+            machine_id="different-machine",
         )
         is None
     )
@@ -345,7 +346,7 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     assert wake.request["watcher_ids"] == [watcher.watcher_id]
     assert wake.graph_target == auto_research.graph_target
     assert wake.native_session_id == root.native_session_id == "orchestrator-session"
-    assert wake.stage_host == root.stage_host == "execution-host"
+    assert wake.stage_machine_id == root.stage_machine_id == "execution-host"
     assert wake.stage_root == root.stage_root == str(stage)
     assert store.agent_task_continuation_cause(wake.operation_id) == "graph_condition_wake"
     assert observed == [
@@ -367,7 +368,7 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
 
     async def stream(_project_id, _kind, request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -457,7 +458,7 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
 
     async def stream(_project_id, _kind, request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -636,7 +637,7 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             instruction="Keep the actor occupied while delivery races.",
         ),
         parent_operation_id=root.operation_id,
@@ -720,7 +721,7 @@ def test_pending_auto_research_mail_coalesces_into_one_paid_message_wake(tmp_pat
     assert wake.request["wake_cause"] == "message"
     assert wake.request["actor_operation_id"] == root.operation_id
     assert wake.native_session_id == root.native_session_id == "orchestrator-session"
-    assert wake.stage_host == root.stage_host == "execution-host"
+    assert wake.stage_machine_id == root.stage_machine_id == "execution-host"
     assert wake.stage_root == root.stage_root == str(stage)
     assert store.agent_task_continuation_cause(wake.operation_id) == "message_wake"
     assert len(store.auto_research_tasks(auto_research.episode_id)) == 2
@@ -804,9 +805,9 @@ def test_root_mail_wakes_the_exact_routed_ordinary_child_work_session(tmp_path) 
     async def stream(_project_id, kind, request, execution):
         observed.append((kind, execution.continuation, request.session_id))
         if kind == "auto_research" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(root_stage))
+            execution.checkpoint_stage("backend", str(root_stage))
         elif kind == "node_chat" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(child_stage))
+            execution.checkpoint_stage("backend", str(child_stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -825,7 +826,7 @@ def test_root_mail_wakes_the_exact_routed_ordinary_child_work_session(tmp_path) 
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -935,9 +936,9 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
     async def stream(_project_id, kind, request, execution):
         executions.append((execution.operation_id, execution.continuation))
         if kind == "auto_research" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(root_stage))
+            execution.checkpoint_stage("backend", str(root_stage))
         elif kind == "node_chat" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(child_stage))
+            execution.checkpoint_stage("backend", str(child_stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -956,7 +957,7 @@ def test_committed_child_work_mail_wake_reconciles_the_same_operation(
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1029,9 +1030,9 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
 
     async def stream(_project_id, kind, request, execution):
         if kind == "auto_research" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(root_stage))
+            execution.checkpoint_stage("backend", str(root_stage))
         elif kind == "node_chat" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(child_stage))
+            execution.checkpoint_stage("backend", str(child_stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -1050,7 +1051,7 @@ def test_child_work_mail_claims_only_the_bounded_wire_prefix(tmp_path) -> None:
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1253,7 +1254,7 @@ def test_committed_lifecycle_wake_reconciles_after_dispatch_preparation_failure(
     async def stream(_project_id, _kind, request, execution):
         executions.append(execution.operation_id)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -1338,9 +1339,9 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
 
     async def stream(_project_id, kind, request, execution):
         if kind == "auto_research" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(root_stage))
+            execution.checkpoint_stage("backend", str(root_stage))
         elif kind == "node_chat" and execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(child_stage))
+            execution.checkpoint_stage("backend", str(child_stage))
         yield _sse(
             AgentEvent(
                 event="session",
@@ -1375,7 +1376,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
         auto_research.episode_id,
         RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             run_truth_scope=["repo-a"],
             chat_scope="node",
             node_id="blk/result",
@@ -1478,7 +1479,7 @@ def test_busy_root_leaves_lifecycle_and_mail_unclaimed(tmp_path) -> None:
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             instruction="Keep the root actor busy.",
         ),
         parent_operation_id=root.operation_id,
@@ -1604,7 +1605,7 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
             role="worker",
             control_node_id="blk/check-result",
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             instruction="Check the result and report back.",
         ),
         parent_operation_id=root.operation_id,
@@ -1765,7 +1766,7 @@ def test_busy_auto_research_actor_leaves_pending_mail_unclaimed_and_unspent(tmp_
             episode_id=auto_research.episode_id,
             role="orchestrator",
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             instruction="Keep the actor occupied while mail arrives.",
         ),
         parent_operation_id=root.operation_id,
@@ -1856,7 +1857,7 @@ def test_lifecycle_wake_orchestrator_retry_dispatches_through_plain_launcher(tmp
     async def stream(_project_id, _kind, request, execution):
         nonlocal failed_wake
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(
             AgentEvent(
                 event="session",

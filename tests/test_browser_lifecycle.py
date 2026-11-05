@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents import AgentEvent
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.runs.browser_lifecycle import (
@@ -65,6 +66,7 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
         store=store,
         project_id="project",
         stage_root="/stage/chat",
+        machine_id=BACKEND_MACHINE_ID,
         execution_host="",
         execution=None,
         workspace_dir="/stage/chat/workspace",
@@ -83,14 +85,15 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
 ):
     _service, request, execution = _discuss_app(tmp_path)
     store = execution.store
-    store_test_claude_token(store)
+    store_test_claude_token(store, BACKEND_MACHINE_ID)
     task = store.agent_task(execution.operation_id)
     request.browser_requested = True
     request.provider = "claude"
+    request.run_on = BACKEND_MACHINE_ID
     store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
     workspace = tmp_path / "stage" / "workspace"
     workspace.mkdir(parents=True)
-    execution.checkpoint_stage("", str(workspace.parent))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(workspace.parent))
     calls = []
 
     def acquire(
@@ -130,6 +133,7 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
         async with browser_turn(
             request,
             workspace=workspace,
+            machine_id=BACKEND_MACHINE_ID,
             execution_host="",
             execution=execution,
             remote_stage=None,
@@ -175,7 +179,7 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
     task = store.agent_task(execution.operation_id)
     stage_root = tmp_path / "stage"
     workspace = stage_root if legacy_workspace else stage_root / "workspace"
-    execution.checkpoint_stage("", str(stage_root))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage_root))
     owner = BrowserOwnerKey(
         space_id=store.space_id,
         project_id=task.project_id,
@@ -184,7 +188,7 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
     )
     store.record_browser_owner(
         owner,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         workspace_dir=str(workspace),
         stage_root=str(stage_root),
         chat_id=request.chat_id,
@@ -225,7 +229,7 @@ def test_off_cleanup_spares_a_browser_turned_back_on(tmp_path, monkeypatch):
     )
     store.record_browser_owner(
         owner,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         workspace_dir=str(tmp_path / "workspace"),
         stage_root=str(tmp_path),
         chat_id="chat",
@@ -235,6 +239,10 @@ def test_off_cleanup_spares_a_browser_turned_back_on(tmp_path, monkeypatch):
     monkeypatch.setattr(browser_runtime_seam, "close_browser_owner", lambda *a, **kw: None)
     _delete_browser_if_still_off(store, "project", "chat")
     assert store.browser_owners("project")[0]["close_requested"] == 0
+
+
+def _remote_card(store: AppStore) -> str:
+    return store.create_space_machine(name="Remote", host="remote", os_account="rcp").machine_id
 
 
 def test_ssh_owner_identity_resolves_host_and_account(monkeypatch):
@@ -265,7 +273,8 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
     store = execution.store
     task = store.agent_task(execution.operation_id)
     root = tmp_path / "stage"
-    execution.checkpoint_stage("remote", str(root))
+    remote_id = _remote_card(store)
+    execution.checkpoint_stage(remote_id, str(root))
     request.browser_requested = True
     store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
     monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
@@ -298,13 +307,14 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
     async with browser_turn(
         request,
         workspace=root / "workspace",
+        machine_id=remote_id,
         execution_host="remote",
         execution=execution,
         remote_stage=None,
         capability="discuss",
     ):
         store.begin_remote_provider_pass(
-            execution.operation_id, "remote", str(root), pid_file, supervised=True
+            execution.operation_id, remote_id, str(root), pid_file, supervised=True
         )
         store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=False)
         close_chat_browser_owners(store, task.project_id, request.chat_id, delete_profile=True)
@@ -368,9 +378,9 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
     _, request, execution = _discuss_app(tmp_path)
     store = execution.store
     root = tmp_path / "stage"
-    host = "remote" if pending_remote else ""
+    machine_id = _remote_card(store) if pending_remote else BACKEND_MACHINE_ID
     monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
-    execution.checkpoint_stage(host, str(root))
+    execution.checkpoint_stage(machine_id, str(root))
     task = store.agent_task(execution.operation_id)
     owner = BrowserOwnerKey(
         space_id=store.space_id,
@@ -380,7 +390,7 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
     )
     store.record_browser_owner(
         owner,
-        execution_host=host,
+        machine_id=machine_id,
         workspace_dir=str(root / "workspace"),
         stage_root=str(root),
         chat_id=request.chat_id,
@@ -388,7 +398,7 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
     pid_file = str(root / "provider.pid")
     if pending_remote:
         store.begin_remote_provider_pass(
-            execution.operation_id, host, str(root), pid_file, supervised=True
+            execution.operation_id, machine_id, str(root), pid_file, supervised=True
         )
     store.pause_agent_task(execution.operation_id)
     assert store.agent_task(execution.operation_id).status == "paused"
@@ -409,7 +419,7 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
     assert closed[0]["delete_profile"] is True
     assert closed[0]["data_dir"] == store.path.parent
     assert (closed[0]["execution"].host if pending_remote else closed[0]["execution"]) == (
-        host if pending_remote else None
+        "remote" if pending_remote else None
     )
     assert store.browser_owners(task.project_id) == []
 
@@ -448,20 +458,22 @@ async def test_restart_preserves_pending_browser_and_releases_original_lease(
     store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
     root = tmp_path / "stage"
     (root / "workspace").mkdir(parents=True)
-    execution.checkpoint_stage("remote", str(root))
+    remote_id = _remote_card(store)
+    execution.checkpoint_stage(remote_id, str(root))
     remote = RemoteRunStage("remote")
     remote.root = PurePosixPath(root)
     pid_file = str(root / "provider.pid")
     async with browser_turn(
         request,
         workspace=root / "workspace",
+        machine_id=remote_id,
         execution_host="remote",
         execution=execution,
         remote_stage=remote,
         capability="discuss",
     ) as grant:
         store.begin_remote_provider_pass(
-            execution.operation_id, "remote", str(root), pid_file, supervised=True
+            execution.operation_id, remote_id, str(root), pid_file, supervised=True
         )
     lease_id = grant.lease_id
     owner = grant.owner.token()
@@ -475,6 +487,7 @@ async def test_restart_preserves_pending_browser_and_releases_original_lease(
         store=store,
         project_id=task.project_id,
         stage_root=str(tmp_path / "other"),
+        machine_id=remote_id,
         execution_host="remote",
         execution=remote,
         workspace_dir=str(tmp_path / "other" / "workspace"),
@@ -519,14 +532,16 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
     monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
     _, request, execution = _discuss_app(tmp_path / "app")
     store = execution.store
-    store_test_claude_token(store, host="remote")
+    remote_id = _remote_card(store)
+    store_test_claude_token(store, remote_id)
     task = store.agent_task(execution.operation_id)
     request.browser_requested = True
     request.provider = "claude"
+    request.run_on = remote_id
     store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
     root = tmp_path / "stage"
     (root / "workspace").mkdir(parents=True)
-    execution.checkpoint_stage("remote", str(root))
+    execution.checkpoint_stage(remote_id, str(root))
     remote = RemoteRunStage("remote")
     remote.root = PurePosixPath(root)
     monkeypatch.setattr(remote, "finalize_inputs", lambda: None)
@@ -541,6 +556,7 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
     async with browser_turn(
         request,
         workspace=root / "workspace",
+        machine_id=remote_id,
         execution_host="remote",
         execution=execution,
         remote_stage=remote,
@@ -580,27 +596,27 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
     assert store.browser_turn_status(execution.operation_id).lease_id == grant.lease_id
     stopped = True
     retry_browser_cleanup(store)
-    assert not store.unresolved_remote_provider_passes("remote", str(root))
+    assert not store.unresolved_remote_provider_passes(remote_id, str(root))
     assert store.browser_turn_status(execution.operation_id).lease_id is None
     assert not host.record_path(grant.owner.token()).exists()
     assert store.browser_owners(task.project_id) == []
     assert calls == ["ensure", "release", "close"]
 
 
-def test_reused_owner_routes_through_the_latest_ssh_alias(tmp_path):
+def test_reused_owner_routes_through_its_latest_machine(tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
     owner = BrowserOwnerKey(
         space_id=store.space_id, project_id="project", stage_name="chat", host_key="gpu"
     )
-    for alias in ("old-alias", "new-alias"):
+    for machine_id in ("old-machine", "new-machine"):
         store.record_browser_owner(
             owner,
-            execution_host=alias,
+            machine_id=machine_id,
             workspace_dir="/stage/workspace",
             stage_root="/stage",
             chat_id="chat",
         )
-    assert store.browser_owners("project")[0]["execution_host"] == "new-alias"
+    assert store.browser_owners("project")[0]["machine_id"] == "new-machine"
 
 
 @pytest.mark.parametrize("system", ["Linux", "Darwin"])
@@ -634,6 +650,7 @@ def test_hidden_scope_reaches_host_and_effective_status_returns_to_grant(
         store=store,
         project_id="project",
         stage_root="/stage/chat",
+        machine_id=BACKEND_MACHINE_ID,
         execution_host="",
         execution=None,
         workspace_dir=str(tmp_path / "workspace"),

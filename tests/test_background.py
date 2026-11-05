@@ -15,6 +15,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     auto_research_child_work_task,
@@ -50,7 +51,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.lifecycles.agent_task import admitted_launch_task as _admitted_launch_task
 from tests.lifecycles.agent_task import done_stream as _done_stream
 from tests.lifecycles.agent_task import seeded_store as _store
@@ -89,7 +90,7 @@ def _auto_start(**updates: object) -> AutoResearchStartRequest:
             "provider": "codex",
             "model": "",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo"],
             **updates,
         }
@@ -107,7 +108,7 @@ def _experiment_request(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo"],
         chat_id="experiment-chat",
         chat_scope="node",
@@ -133,7 +134,7 @@ def _spawned_work_request(worker_id: str, instruction: str) -> RunRequest:
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo"],
         chat_id=worker_id,
         chat_scope="node",
@@ -150,7 +151,7 @@ def _child_experiment_request(episode_id: str, goal: str) -> RunRequest:
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo"],
         chat_id="00000000-0000-4000-8000-000000000302",
         chat_scope="node",
@@ -275,7 +276,9 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
 
 def _v0433_coach_row():
     """v0.4.33 CoachRequest predates mode, refresh and attachment fields."""
-    request = CoachRequest(message="Tighten the abstract.", provider="codex", run_on="laptop")
+    request = CoachRequest(
+        message="Tighten the abstract.", provider="codex", run_on=BACKEND_MACHINE_ID
+    )
     added = {"mode", "refresh_source_task_id", "refresh_group_ids", "attachment_scope_id"}
     added |= {"attachment_set_id", "attachment_client_id", "attachment_batch_id"}
     added |= {"attachments", "references"}
@@ -452,7 +455,7 @@ def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="duplicate-launch-session"))
         entered.set()
         await async_wait_until(release.is_set)
@@ -641,7 +644,7 @@ def test_launch_admitted_rejects_unknown_dispatch_attempt_before_new_receipts(
     [
         ({"dispatch_authority": None}, "dispatch authority"),
         ({"native_session_id": "changed-session"}, "native session"),
-        ({"stage_host": "remote"}, "stage binding"),
+        ({"stage_machine_id": "remote"}, "stage binding"),
         ({"write_scope_fingerprint": "a" * 64}, "write-scope"),
     ],
 )
@@ -758,7 +761,7 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
     async def stream(_project_id, kind, request, execution):
         assert kind == "auto_research"
         assert isinstance(request, AutoResearchRunRequest)
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="auto-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -986,7 +989,7 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
             yield _sse(AgentEvent(event="done"))
             return
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="restart-work-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -1059,7 +1062,7 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_does_not_spend
         assert isinstance(request, RunRequest)
         seen_continuations.append(execution.continuation)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="spawned-work-mail-session"))
         else:
             assert execution.continuation == "message_wake"
@@ -1128,7 +1131,7 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
             return
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="spawned-work-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -1171,12 +1174,13 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path)
+    remote = store.create_space_machine(name="Worker", host="worker-host", os_account="rcp")
 
     async def stream(_project_id, kind, _request, execution):
         if kind == "auto_research":
             yield _sse(AgentEvent(event="done"))
             return
-        execution.checkpoint_stage("worker-host", "/tmp/rcp-run.remote-work")
+        execution.checkpoint_stage(remote.machine_id, "/tmp/rcp-run.remote-work")
         yield _sse(AgentEvent(event="session", session_id="remote-work-session"))
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
@@ -1234,7 +1238,7 @@ def test_limited_child_resume_continues_its_saved_session(tmp_path: Path) -> Non
         if kind == "auto_research":
             yield _sse(AgentEvent(event="done"))
             return
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="limited-session"))
         yield _sse(AgentEvent(event="error", text="You've hit your session limit"))
 
@@ -1312,7 +1316,7 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
             record_launched_experiment_turn(store, execution.operation_id)
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -1423,7 +1427,7 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
             return
         if execution.continuation == "fresh":
             record_launched_experiment_turn(store, execution.operation_id)
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="restart-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -1501,7 +1505,7 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
             return
         continuations.append(execution.continuation)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="graph-repair-session"))
             yield _sse(
                 AgentEvent(
@@ -1580,13 +1584,14 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = _store(tmp_path)
+    remote = store.create_space_machine(name="Experiment", host="experiment-host", os_account="rcp")
 
     async def stream(_project_id, kind, _request, execution):
         if kind == "auto_research":
             yield _sse(AgentEvent(event="done"))
             return
         record_launched_experiment_turn(store, execution.operation_id)
-        execution.checkpoint_stage("experiment-host", "/tmp/rcp-run.remote-experiment")
+        execution.checkpoint_stage(remote.machine_id, "/tmp/rcp-run.remote-experiment")
         yield _sse(AgentEvent(event="session", session_id="remote-experiment-session"))
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
@@ -1680,7 +1685,7 @@ def test_task_result_keeps_ordered_graph_updates_and_latest_compatibility_projec
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo"],
             chat_id="graph-update-chat",
             chat_scope="node",
@@ -1711,7 +1716,7 @@ def test_auto_research_clean_orchestrator_retry_keeps_paid_allocation(tmp_path: 
             return
         assert execution.continuation == "retry"
         assert request.session_id is None
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="replacement-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -1806,7 +1811,7 @@ def test_experiment_root_and_recovery_use_atomic_episode_admission(tmp_path: Pat
     stage.mkdir()
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         if execution.continuation == "fresh":
             record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
@@ -1852,7 +1857,7 @@ def test_generic_chat_wake_is_a_new_turn_on_the_server_resolved_session(tmp_path
         launches.append(
             (launched_request.trigger, launched_request.session_id, execution.continuation)
         )
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="chat-native-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -1874,7 +1879,7 @@ def test_generic_chat_wake_is_a_new_turn_on_the_server_resolved_session(tmp_path
                     provider="codex",
                     model="",
                     reasoning="medium",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     run_truth_scope=["repo"],
                     patch_kind="work",
                 ),
@@ -1915,7 +1920,7 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
 
     async def stream(_project_id, _kind, request, execution):
         if request.trigger == "experiment_run":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -1936,10 +1941,9 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
         project_id="project",
         control_node_id=_EXPERIMENT_ID,
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="experiment-session",
-        stage_host=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
         chat_id="experiment-chat",
         operation_id=root.operation_id,
@@ -1956,7 +1960,7 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
         origin_task_kind="node_chat",
         chat_id="experiment-chat",
         node_id=_EXPERIMENT_ID,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="true",
         log_path="/tmp/completed-watcher.log",
         cwd="/tmp",
@@ -1964,7 +1968,7 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo"],
             patch_kind="experiment_loop",
             control_node_id=_EXPERIMENT_ID,
@@ -1998,6 +2002,7 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
         ),
         [watcher.watcher_id],
         authorized_by=authorizer,
+        episode_stage_machine_id=BACKEND_MACHINE_ID,
         episode_stage_root=str(stage),
     )
     assert wake is not None
@@ -2027,7 +2032,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
             return
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-watcher-session"))
         else:
             watcher_executions.append(execution.continuation)
@@ -2052,10 +2057,9 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         project_id="project",
         control_node_id="exp/child",
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id="child-watcher-session",
-        stage_host=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
         chat_id=child_request.chat_id,
         operation_id=child_root.operation_id,
@@ -2073,7 +2077,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         node_id="exp/child",
         episode_id=child_id,
         graph_target=parent.graph_target,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="true",
         log_path="/tmp/child-experiment-completed-watcher.log",
         cwd="/tmp",
@@ -2081,7 +2085,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo"],
             patch_kind="experiment_loop",
             control_node_id="exp/child",
@@ -2119,6 +2123,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
             wake_request,
             [watcher.watcher_id],
             authorized_by=authorizer,
+            episode_stage_machine_id=BACKEND_MACHINE_ID,
             episode_stage_root=str(stage),
         )
     monkeypatch.setattr(threading.Thread, "start", real_thread_start)
@@ -2159,7 +2164,10 @@ def _report_allocation(store: AppStore, tmp_path: Path) -> AgentTaskRecord:
     )
     store.mark_agent_task_running(operational.operation_id)
     store.checkpoint_agent_task(
-        operational.operation_id, native_session_id="report-session", stage_root=str(stage)
+        operational.operation_id,
+        native_session_id="report-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(stage),
     )
     store.complete_agent_task(operational.operation_id, applied_revision=None, result={})
     admission = begin_episode_report_wrapup(
@@ -2250,7 +2258,7 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
     store.bind_agent_task_write_scope(
         hidden.operation_id,
         project_id="project",
-        stage_host="",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(tmp_path / "report-stage"),
         fingerprint="a" * 64,
     )
@@ -2429,7 +2437,7 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
     stage.mkdir()
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event="error", text="Transient provider failure."))
@@ -2484,13 +2492,20 @@ def _transport_failed_task(
     return settled
 
 
+def _remote(store: AppStore) -> str:
+    card = store.space_machine_for("remote") or store.create_space_machine(
+        name="Remote", host="remote", os_account="rcp"
+    )
+    return card.machine_id
+
+
 def _waiting_remote_work(store: AppStore, operation_id: str) -> AgentTaskRecord:
     from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE
 
     _admitted_launch_task(
         store,
         operation_id=operation_id,
-        record_updates={"stage_host": "remote", "stage_root": "/stage"},
+        record_updates={"stage_machine_id": _remote(store), "stage_root": "/stage"},
     )
     assert store.mark_agent_task_running(operation_id)
     store.record_agent_task_contract(
@@ -2498,7 +2513,7 @@ def _waiting_remote_work(store: AppStore, operation_id: str) -> AgentTaskRecord:
     )
     store.begin_remote_provider_pass(
         operation_id,
-        "remote",
+        _remote(store),
         "/stage",
         f"/stage/{operation_id}.pid",
         supervised=True,
@@ -2541,10 +2556,10 @@ def test_dropped_supervised_stream_keeps_the_original_task_waiting(tmp_path: Pat
     store = _store(tmp_path)
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("remote", "/stage")
+        execution.checkpoint_stage(_remote(store), "/stage")
         store.begin_remote_provider_pass(
             execution.operation_id,
-            "remote",
+            _remote(store),
             "/stage",
             "/stage/dropped.pid",
             supervised=True,
@@ -2614,7 +2629,7 @@ def test_recorded_result_completes_the_same_task_and_pass_atomically(
         "messages": [f"Trace {index}." for index in range(31)] + ["Recovered answer."]
     }
     assert seen == [waiting.operation_id]
-    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage") == []
     assert len(store.agent_tasks("project", include_hidden=True)) == 1
 
 
@@ -2652,7 +2667,7 @@ def test_pause_of_detached_turn_requires_reachable_exact_process(
 
     assert paused.status == "paused"
     assert stopped == [("remote", "/stage/pause-detached.pid", "boot:123")]
-    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage") == []
 
 
 def test_pause_of_unreachable_detached_turn_is_a_no_op(
@@ -2675,7 +2690,7 @@ def test_pause_of_unreachable_detached_turn_is_a_no_op(
     assert unchanged is not None
     assert unchanged.status == "running"
     assert unchanged.phase == "awaiting_remote_result"
-    assert store.unresolved_remote_provider_passes("remote", "/stage")
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
 def test_pause_preserves_a_finished_remote_result_for_finalization(
@@ -2706,10 +2721,10 @@ def test_pause_preserves_a_finished_remote_result_for_finalization(
         tasks.pause(waiting.operation_id)
 
     assert store.agent_task(waiting.operation_id).phase == "awaiting_remote_result"
-    assert store.unresolved_remote_provider_passes("remote", "/stage")
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
     assert tasks._reconcile_remote_results() is False
     assert store.agent_task(waiting.operation_id).status == "succeeded"
-    assert not store.unresolved_remote_provider_passes("remote", "/stage")
+    assert not store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
 @pytest.mark.parametrize("journal_action", ["finalize", "wait"])
@@ -2741,7 +2756,7 @@ def test_pause_preserves_a_result_that_finishes_during_stop(
         tasks.pause(waiting.operation_id)
 
     assert store.agent_task(waiting.operation_id).phase == "awaiting_remote_result"
-    assert store.unresolved_remote_provider_passes("remote", "/stage")
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
 def test_pause_rechecks_the_task_after_finalization_claims_it(
@@ -2775,7 +2790,7 @@ def test_pause_rechecks_the_task_after_finalization_claims_it(
             paused.result(timeout=2)
 
     assert store.agent_task(waiting.operation_id).phase == "finalizing_recorded_result"
-    assert store.unresolved_remote_provider_passes("remote", "/stage")
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
 def test_reconciliation_is_busy_until_shutdown_has_drained_its_mutations(
@@ -3085,8 +3100,9 @@ def test_a_turn_the_provider_explained_is_never_blamed_on_the_link(
     store.record_agent_task_receipt(
         task.operation_id, "provider_exit", exit_payload, tier="diagnostic"
     )
+    gpu = store.create_space_machine(name="GPU", host="gpu.example.edu", os_account="rcp")
     execution = SimpleNamespace(
-        stage_host="gpu.example.edu",
+        stage_machine_id=gpu.machine_id,
         launch_refused=False,
         provider_auth_refused=None,
         login_key=None,
@@ -3255,14 +3271,18 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     observed = []
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
+        execution.login_key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
     def settled(_project, _kind, _request, _execution):
-        observed.append(store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state)
+        observed.append(
+            store.provider_login_state(
+                LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+            ).state
+        )
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     task = _admitted_launch_task(store, operation_id="dead-login")
@@ -3270,7 +3290,10 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     finished = wait_for_task(store, task.operation_id, expect="failed")
     wait_until(lambda: bool(observed))
     assert finished.failure_kind == "provider_auth"
-    assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).source == "turn"
+    assert (
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).source
+        == "turn"
+    )
     assert observed == ["signed_out"]
 
 
@@ -3281,12 +3304,14 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     store = _store(tmp_path)
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
+        execution.login_key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
         store.mark_provider_login_verified(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="member",
+            detail="verified",
         )
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
@@ -3295,7 +3320,7 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     tasks.launch_admitted(task.operation_id)
     finished = wait_for_task(store, task.operation_id, expect="failed")
     assert finished.failure_kind is None
-    state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
     assert state.generation == 1
 
@@ -3308,9 +3333,12 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
 
     store = _store(tmp_path)
     manifest = tmp_path / "manifest.toml"
+    cluster = store.create_space_machine(name="Cluster", host="cluster", os_account="rcp")
+    listed = f'machines = ["{BACKEND_MACHINE_ID}"]'
+    assert listed in manifest.read_text(encoding="utf-8")
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "[[repositories]]", '[[machines]]\nalias = "cluster"\nhost = ""\n[[repositories]]', 1
+            listed, f'machines = ["{BACKEND_MACHINE_ID}", "{cluster.machine_id}"]', 1
         ),
         encoding="utf-8",
     )
@@ -3318,7 +3346,7 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text="Transient provider failure."))
 
@@ -3330,7 +3358,7 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=[],
             chat_scope="project",
             chat_id="machine-chat",
@@ -3346,10 +3374,10 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
 
     moved = tasks.retry(
         standalone.operation_id,
-        run_on="cluster",
+        run_on=cluster.machine_id,
         authorized_by=standalone.authorized_by,
     )
-    assert moved.request["run_on"] == "cluster"
+    assert moved.request["run_on"] == cluster.machine_id
 
     episode_turn = tasks.start(
         "project",
@@ -3364,7 +3392,7 @@ def test_only_an_episode_pins_the_machine_its_recovery_runs_on(tmp_path: Path) -
     with pytest.raises(ValueError, match="cannot change its pinned execution machine"):
         tasks.retry(
             episode_turn.operation_id,
-            run_on="cluster",
+            run_on=cluster.machine_id,
             authorized_by=episode_turn.authorized_by,
         )
 
@@ -3403,7 +3431,7 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     assert task.status == "running"
     assert task.phase == "awaiting_remote_result"
     assert store.claim_recorded_finalization(waiting.operation_id)
-    assert store.unresolved_remote_provider_passes("remote", "/stage")
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
 def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
@@ -3503,7 +3531,7 @@ def test_a_settlement_that_launches_a_pass_which_also_drops_keeps_waiting(
         """An owner that retries consumes the pass it settled before relaunching."""
         store.finish_remote_provider_pass(execution.operation_id, recorded.pid_file)
         store.begin_remote_provider_pass(
-            execution.operation_id, "remote", "/stage", "/stage/retry.pid", supervised=True
+            execution.operation_id, _remote(store), "/stage", "/stage/retry.pid", supervised=True
         )
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
@@ -3513,7 +3541,7 @@ def test_a_settlement_that_launches_a_pass_which_also_drops_keeps_waiting(
     task = store.agent_task(waiting.operation_id)
     assert task is not None and task.status == "running"
     assert task.phase == "awaiting_remote_result"
-    assert store.unresolved_remote_provider_passes("remote", "/stage") == [
+    assert store.unresolved_remote_provider_passes(_remote(store), "/stage") == [
         (waiting.operation_id, "/stage/retry.pid")
     ]
 
@@ -3540,7 +3568,7 @@ def test_a_pass_the_live_stream_already_consumed_is_not_owed_reconciliation(
     store.finish_remote_provider_pass(waiting.operation_id, pid_file)
 
     assert store.operation_ids_awaiting_remote_result() == []
-    assert not store.unresolved_remote_provider_passes("remote", "/stage")
+    assert not store.unresolved_remote_provider_passes(_remote(store), "/stage")
     record = store.agent_task(waiting.operation_id)
     assert record is not None and record.phase == "awaiting_remote_result"
     decision = remote_finalization.reconcile_remote_pass(
@@ -3597,10 +3625,11 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
     store.mark_agent_task_running(task.operation_id)
     request = tasks._request_from_record(store.agent_task(task.operation_id))
     error = "gpu.example.edu is unreachable, so codex could not be checked."
+    gpu = store.create_space_machine(name="GPU", host="gpu.example.edu", os_account="rcp")
 
-    def kind(*, stage_unreachable: bool, host: str | None = "gpu.example.edu"):
+    def kind(*, stage_unreachable: bool, machine_id: str | None = gpu.machine_id):
         execution = SimpleNamespace(
-            stage_host=host,
+            stage_machine_id=machine_id,
             stage_unreachable=stage_unreachable,
             login_generation=0,
             launch_refused=False,
@@ -3611,12 +3640,12 @@ def test_a_link_lost_before_the_provider_is_classified_from_its_typed_word(
 
     assert kind(stage_unreachable=True) == "transport_lost"
     assert kind(stage_unreachable=False) is None
-    assert kind(stage_unreachable=True, host="") is None
-    assert kind(stage_unreachable=True, host=None) is None
+    assert kind(stage_unreachable=True, machine_id=BACKEND_MACHINE_ID) is None
+    assert kind(stage_unreachable=True, machine_id=None) is None
     monkeypatch.setattr(
-        background_module, "run_on_host", lambda store, project_id, run_on: "gpu.example.edu"
+        background_module, "run_on_machine", lambda store, project_id, run_on: gpu.machine_id
     )
-    assert kind(stage_unreachable=True, host=None) == "transport_lost"
+    assert kind(stage_unreachable=True, machine_id=None) == "transport_lost"
 
 
 @pytest.mark.parametrize("cause", ["retry", "graph_repair"])

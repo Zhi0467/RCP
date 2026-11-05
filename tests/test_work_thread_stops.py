@@ -14,6 +14,7 @@ from rcp.agents.command_protocol import (
     WatcherCommandRequest,
 )
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.questions import work_command_handler
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, WatcherContinuation
@@ -134,7 +135,9 @@ def test_a_work_chat_stops_and_cancels_only_its_own_watchers(manifest, tmp_path:
     loop.start_episode(status="running")
     _, act = _work_turn(loop, "thread-turn", THREAD_CHAT)
     _work_turn(loop, "other-turn", OTHER_CHAT)
-    chat_continuation = WatcherContinuation(provider="codex", run_on="laptop", patch_kind="work")
+    chat_continuation = WatcherContinuation(
+        provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
+    )
     for watcher_id, chat_id, origin, continuation in (
         ("observed", THREAD_CHAT, "thread-turn", chat_continuation),
         ("cancelled", THREAD_CHAT, "thread-turn", chat_continuation),

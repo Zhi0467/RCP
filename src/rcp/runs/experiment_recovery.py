@@ -273,9 +273,10 @@ def retry_experiment_loop(
         and episode.session_bound
         and current_config == active_config
     )
-    session_id = episode.native_session_id if use_active_binding else previous.native_session_id
-    stage_machine_id = episode.stage_machine_id if use_active_binding else previous.stage_machine_id
-    stage_root = episode.stage_root if use_active_binding else previous.stage_root
+    bound = episode if use_active_binding and episode is not None else previous
+    session_id = bound.native_session_id
+    stage_machine_id = bound.stage_machine_id
+    stage_root = bound.stage_root
     owned_checkpoint = previous_checkpoint or use_active_binding
     stage_available: bool | None = True
     if owned_checkpoint and stage_machine_id and stage_machine_id != BACKEND_MACHINE_ID:

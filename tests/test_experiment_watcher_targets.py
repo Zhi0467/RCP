@@ -6,6 +6,7 @@ import pytest
 
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_loop import experiment_watcher_output_name
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 
@@ -48,7 +49,7 @@ def _loop_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["state"],
             "mode": "work",
             "trigger": "watcher" if ids else "experiment_run",
@@ -107,7 +108,7 @@ def _watcher(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["state"],
         patch_kind="experiment_loop",
         control_node_id=_CONTROL_NODE_ID,
@@ -128,7 +129,8 @@ def _watcher(
         node_id=_CONTROL_NODE_ID,
         episode_id=episode_id,
         graph_target=root.graph_target,
-        execution_host="",
+        machine_id=(episode.machine_id if (episode := store.experiment_episode(episode_id)) else "")
+        or "",
         check_command="true",
         log_path=f"/tmp/{watcher_id}.log",
         cwd="/tmp",
@@ -363,10 +365,9 @@ def test_same_node_targets_deliver_completed_watcher_groups_independently(
             project_id=_PROJECT_ID,
             control_node_id=_CONTROL_NODE_ID,
             provider="codex",
-            execution_machine="laptop",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             native_session_id=f"session-{root.operation_id}",
-            stage_host=None,
+            stage_machine_id=None,
             stage_root=str(tmp_path / root.operation_id),
             chat_id=str(root.request["chat_id"]),
             operation_id=root.operation_id,
@@ -422,7 +423,9 @@ def _failed_remote_loop(store: AppStore) -> tuple[str, AgentTaskRecord]:
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="remote-session",
-        stage_host="worker.example",
+        stage_machine_id=store.create_space_machine(
+            name="Worker", host="worker.example", os_account="rcp"
+        ).machine_id,
         stage_root="/remote/rcp-stage",
     )
     store.fail_agent_task(root.operation_id, "interrupted fixture", status="interrupted")

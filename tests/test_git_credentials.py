@@ -7,11 +7,12 @@ import shlex
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops import git_credentials as server_git_credentials
 from rcp.server_ops.git_credentials import (
     DeployKeyMaterial,
@@ -24,8 +25,7 @@ from rcp.server_ops.git_credentials import (
     deploy_key_operator_step,
 )
 from rcp.server_ops.github import GitHubRepositoryRef
-from rcp.server_ops.layout import ServerLayout, remote_project_deploy_key_path
-from rcp.storage import ProjectProvisioningMachineIntent
+from rcp.server_ops.layout import MachineRoute, ServerLayout, remote_project_deploy_key_path
 
 SPACE_ID = "7eb4ea9d-cccf-42fd-abfe-09f71f4b8cd2"
 PROJECT_ID = "2ad064a6-f015-4703-a223-1d64cde75cc8"
@@ -68,20 +68,18 @@ def _layout(tmp_path: Path) -> ServerLayout:
     )
 
 
-def _local_machine(layout: ServerLayout) -> ProjectProvisioningMachineIntent:
-    return ProjectProvisioningMachineIntent.model_construct(
-        alias="server",
-        location="local",
+def _local_machine(layout: ServerLayout) -> MachineRoute:
+    return MachineRoute(
+        machine_id=BACKEND_MACHINE_ID,
         host="",
         os_account="rcp",
         central_root=str(layout.projects_root),
     )
 
 
-def _ssh_machine() -> ProjectProvisioningMachineIntent:
-    return ProjectProvisioningMachineIntent(
-        alias="gpu",
-        location="ssh",
+def _ssh_machine() -> MachineRoute:
+    return MachineRoute(
+        machine_id="gpu-card",
         host="gpu-lab",
         os_account="alice",
         central_root="/srv/lab/projects",
@@ -90,7 +88,7 @@ def _ssh_machine() -> ProjectProvisioningMachineIntent:
 
 def _receipt(
     layout: ServerLayout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     *,
     home: str | None = None,
     created: bool = True,
@@ -122,7 +120,7 @@ def _material(layout: ServerLayout) -> DeployKeyMaterial:
         project_id=PROJECT_ID,
         repository_alias=ALIAS,
         repository=REPOSITORY,
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
         location="local",
         host="",
         os_account="rcp",
@@ -516,7 +514,7 @@ def test_manager_ships_one_helper_through_strict_local_and_ssh_account_boundarie
         ALIAS,
     ]
 
-    default_remote = remote.model_copy(update={"central_root": None})
+    default_remote = replace(remote, central_root=None)
     default_runner = QueueRunner(
         _result(stdout=json.dumps(_receipt(layout, default_remote, home="/srv/accounts/alice")))
     )
@@ -566,9 +564,8 @@ def test_target_account_command_runs_directly_when_service_already_owns_process(
 
 def test_manager_rejects_a_local_machine_for_another_project_root(tmp_path: Path) -> None:
     layout = _layout(tmp_path)
-    machine = ProjectProvisioningMachineIntent.model_construct(
-        alias="server",
-        location="local",
+    machine = MachineRoute(
+        machine_id=BACKEND_MACHINE_ID,
         host="",
         os_account="rcp",
         central_root=str(layout.projects_root / "other"),
@@ -1028,7 +1025,7 @@ def test_probe_directory_cleanup_runs_even_when_ref_parsing_is_refused(
     monkeypatch.setattr(manager, "inspect_key", lambda _machine, _material: material)
 
     def fake_helper(
-        _machine: ProjectProvisioningMachineIntent,
+        _machine: MachineRoute,
         arguments: tuple[str, ...],
     ) -> dict[str, object]:
         helper_calls.append(arguments)
@@ -1060,7 +1057,7 @@ def test_probe_directory_cleanup_failure_does_not_hide_the_original_failure(
     monkeypatch.setattr(manager, "inspect_key", lambda _machine, _material: material)
 
     def fake_helper(
-        _machine: ProjectProvisioningMachineIntent,
+        _machine: MachineRoute,
         arguments: tuple[str, ...],
     ) -> dict[str, object]:
         if arguments[0] == "probe-prepare":

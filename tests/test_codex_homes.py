@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.codex.homes import MIGRATION_LOCK, SHARED_FILES, SHARED_SESSIONS, prepare_home
 from rcp.providers.codex.homes import _legacy_home_idle as inspect_legacy_home
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -86,15 +87,18 @@ def test_conflicting_session_file_is_never_overwritten(tmp_path: Path) -> None:
 )
 def test_login_path_rejects_non_uuid4(tmp_path: Path, login_id: str) -> None:
     with pytest.raises(ValueError):
-        ProviderCredentialStore(tmp_path).account_dir("codex", "", login_id)
+        ProviderCredentialStore(tmp_path).account_dir("codex", BACKEND_MACHINE_ID, login_id)
 
 
 def test_added_login_path_preserves_machine_path(tmp_path: Path) -> None:
     credentials = ProviderCredentialStore(tmp_path)
     login_id = str(uuid4())
-    machine = credentials.account_dir("codex", "", login_id=MACHINE_LOGIN_ID)
-    assert machine == tmp_path / "codex" / "local"
-    assert credentials.account_dir("codex", "", login_id) == machine / "logins" / login_id
+    machine = credentials.account_dir("codex", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
+    assert machine == tmp_path / "codex" / f"machine-{BACKEND_MACHINE_ID}"
+    assert (
+        credentials.account_dir("codex", BACKEND_MACHINE_ID, login_id)
+        == machine / "logins" / login_id
+    )
 
 
 def test_added_codex_environment_and_credential_state(
@@ -108,18 +112,26 @@ def test_added_codex_environment_and_credential_state(
     credentials = ProviderCredentialStore(tmp_path / "providers")
     login_id = str(uuid4())
     auth = CodexAuthentication()
-    environment = auth.process_environment(credentials, "", login_id)
+    environment = auth.process_environment(credentials, BACKEND_MACHINE_ID, login_id, host="")
     assert environment.local_env is not None
     home = Path(environment.local_env["CODEX_HOME"])
     assert home == credentials.login_home("codex", login_id)
     assert (home / "skills").readlink() == machine / "skills"
-    state = ProviderLoginStateRecord(provider="codex", host="", login_id=login_id)
-    assert auth.credential_available(credentials, "", login_id, login_state=state)
-    assert not auth.credential_available(
-        credentials, "", login_id, login_state=state.model_copy(update={"state": "signed_out"})
+    state = ProviderLoginStateRecord(
+        provider="codex", machine_id=BACKEND_MACHINE_ID, login_id=login_id
     )
-    assert not auth.credential_available(credentials, "", login_id)
-    assert auth.sign_out(credentials, "", login_id, "codex") == ["codex", "logout"]
+    assert auth.credential_available(credentials, BACKEND_MACHINE_ID, login_id, login_state=state)
+    assert not auth.credential_available(
+        credentials,
+        BACKEND_MACHINE_ID,
+        login_id,
+        login_state=state.model_copy(update={"state": "signed_out"}),
+    )
+    assert not auth.credential_available(credentials, BACKEND_MACHINE_ID, login_id)
+    assert auth.sign_out(credentials, BACKEND_MACHINE_ID, login_id, "codex", host="") == [
+        "codex",
+        "logout",
+    ]
 
 
 @pytest.mark.parametrize("interrupt_after", ["state_5.sqlite", "state_5.sqlite-wal"])
@@ -229,7 +241,7 @@ def test_remote_home_source_and_environment(
     monkeypatch.setattr(subprocess, "run", run)
     login_id = str(uuid4())
     env = CodexAuthentication().process_environment(
-        ProviderCredentialStore(tmp_path), "example-host", login_id
+        ProviderCredentialStore(tmp_path), "remote", login_id, host="example-host"
     )
     assert env.local_env is None
     assert env.remote_prefix is not None
@@ -253,7 +265,7 @@ def test_local_home_command_supports_frozen_backend(tmp_path, monkeypatch, froze
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
     environment = CodexAuthentication().process_environment(
-        ProviderCredentialStore(tmp_path / "providers"), "", str(uuid4())
+        ProviderCredentialStore(tmp_path / "providers"), BACKEND_MACHINE_ID, str(uuid4()), host=""
     )
     assert environment.local_env is not None
     assert environment.command_prefix == (
@@ -290,7 +302,7 @@ def test_home_command_keeps_lease_through_exec(tmp_path, monkeypatch):
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
     environment = CodexAuthentication().process_environment(
-        ProviderCredentialStore(tmp_path / "providers"), "", str(uuid4())
+        ProviderCredentialStore(tmp_path / "providers"), BACKEND_MACHINE_ID, str(uuid4()), host=""
     )
     child = """
 import fcntl, os
@@ -410,7 +422,7 @@ def test_remote_home_diagnostic_is_visible_without_shell_output(tmp_path, monkey
         ),
     )
     CodexAuthentication().process_environment(
-        ProviderCredentialStore(tmp_path), "example-host", str(uuid4())
+        ProviderCredentialStore(tmp_path), "remote", str(uuid4()), host="example-host"
     )
     assert any(record.levelno == logging.WARNING for record in caplog.records)
     assert "private-shell-output" not in caplog.text
@@ -429,14 +441,16 @@ def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monk
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "machine"))
     credentials = ProviderCredentialStore(tmp_path / "providers")
     login_id = str(uuid4())
-    legacy = credentials.account_dir("codex", "", login_id) / "codex-home"
+    legacy = credentials.account_dir("codex", BACKEND_MACHINE_ID, login_id) / "codex-home"
     (legacy / "sessions").mkdir(parents=True)
     (legacy / "sessions/rollout.jsonl").write_text("rollout\n")
     (legacy / "auth.json").write_text("credential")
     (legacy.with_name("codex-home-retained") / "snapshot").mkdir(parents=True)
 
     def home() -> Path:
-        environment = CodexAuthentication().process_environment(credentials, "", login_id)
+        environment = CodexAuthentication().process_environment(
+            credentials, BACKEND_MACHINE_ID, login_id, host=""
+        )
         assert environment.local_env is not None
         return Path(environment.local_env["CODEX_HOME"])
 
@@ -451,6 +465,8 @@ def test_hidden_legacy_home_moves_beside_the_credential_namespace(tmp_path, monk
     assert (tmp_path / "machine/sessions/rollout.jsonl").read_text() == "rollout\n"
     assert (moved.with_name(moved.name + "-retained") / "snapshot").is_dir()
     fresh = str(uuid4())
-    CodexAuthentication().process_environment(credentials, "", fresh)
+    CodexAuthentication().process_environment(credentials, BACKEND_MACHINE_ID, fresh, host="")
     for login, path in ((login_id, moved), (fresh, credentials.login_home("codex", fresh))):
-        assert (credentials.account_dir("codex", "", login) / "codex-home").readlink() == path
+        assert (
+            credentials.account_dir("codex", BACKEND_MACHINE_ID, login) / "codex-home"
+        ).readlink() == path

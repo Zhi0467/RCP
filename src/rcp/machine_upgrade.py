@@ -221,6 +221,28 @@ def upgraded_hidden_read_scope(
     return upgraded
 
 
+def upgraded_terminal_record(
+    payload: dict[str, Any], cards: Iterable[SpaceMachineRecord]
+) -> dict[str, Any]:
+    """A terminal record an older build wrote, naming its card; one the space lacks is unchanged.
+
+    That build recorded the shell's host and its declared alias and account. The
+    host resolves through the rule, and an unresolved record stays as written,
+    so it still blocks its repository.
+    """
+
+    if "machine_id" in payload or "execution_host" not in payload:
+        return payload
+    machine_id = machine_id_for_host(str(payload["execution_host"]), cards)
+    if not machine_id:
+        return payload
+    legacy = {"execution_host", "declared_machine", "declared_account"}
+    return {
+        **{key: value for key, value in payload.items() if key not in legacy},
+        "machine_id": machine_id,
+    }
+
+
 class _LegacyProvisioningMachine(ProjectProvisioningMachineRecord):
     machine_id: str = Field(default="", exclude=True)
     alias: str

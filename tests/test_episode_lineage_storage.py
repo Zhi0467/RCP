@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
 
 from .storage_helpers import downgrade_artifacts
@@ -28,8 +29,8 @@ def _project(project_id: str) -> ProjectRecord:
         project_id=project_id,
         locator=f"/tmp/{project_id}/research.yaml",
         name=project_id,
-        state_location=f"/tmp/{project_id}/.research",
-        state_remote=False,
+        state_machine_id=BACKEND_MACHINE_ID,
+        state_path=f"/tmp/{project_id}/.research",
         added_at="2026-08-14T00:00:00+00:00",
     )
 
@@ -160,9 +161,9 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
                 """
                 INSERT INTO watchers (
                     watcher_id, project_id, origin_operation_id, origin_task_kind,
-                    chat_id, execution_host, check_command, log_path, cwd,
+                    chat_id, machine_id, check_command, log_path, cwd,
                     continuation_json, status, created_at, notification_operation_id
-                ) VALUES (?, 'project', ?, 'campaign', 'chat', '', 'true', '/tmp/log',
+                ) VALUES (?, 'project', ?, 'campaign', 'chat', 'backend', 'true', '/tmp/log',
                           '/tmp', ?, 'completed', ?, ?)
                 """,
                 (
