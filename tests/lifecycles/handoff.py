@@ -3,12 +3,14 @@
 A world is one real backend over the explorer's tree: the store, the engine and
 ``dispatch_thread_handoffs`` run as in production. ``boot`` replaces only the
 seams ``tests/test_agent_thread_commands.py`` replaces: ``store.now`` reads the
-explorer clock, admission and remote reconciliation do nothing, ``_spawn_record``
-registers a worker without starting a thread, and ``_schedule_transport_retry``
-records a timer instead of sleeping. A worker's two halves are separate
-actions: the turn's verdict commits (``settle``), then ``_task_settled`` decides
-the automatic retry and the worker leaves (``finish``). A timer fires only as
-an action, advancing the clock by its delay. Every action is followed by a
+explorer clock, admission and remote reconciliation do nothing, and
+``_schedule_transport_retry`` records a timer instead of sleeping. The real
+``_spawn_record`` dispatches each turn and writes its dispatch receipts; only
+the worker thread is held (``workers.py``). A worker's three steps are separate
+actions: it claims its turn (``run``), the turn's verdict commits (``settle``),
+then ``_task_settled`` decides the automatic retry and the worker leaves
+(``finish``), so a restart can land between any two. A timer fires only as an
+action, advancing the clock by its delay. Every action is followed by a
 dispatch.
 
 Views name each turn by lineage: ``S0`` for the source Space turn, ``T0`` for
@@ -31,7 +33,6 @@ job, and a handoff whose worker died must settle once the backend comes back.
 from __future__ import annotations
 
 import json
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -40,6 +41,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 from unittest import mock
 
+from rcp.agents import AgentProcessControl
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS
 from rcp.runs.agent_thread_commands import _settle_delivered_handoffs
 from rcp.server_ops.members import _remove_member_agent_data
@@ -48,6 +50,7 @@ from rcp.storage.models import AgentTaskStatus
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from tests.lifecycles.engine import RESTART, START, Action, Clock, Goal, Memory, Safety, Step
+from tests.lifecycles.workers import HeldWorker, held_workers
 
 _TERMINAL = frozenset({"succeeded", "failed", "interrupted", "paused"})
 _SETTLE_OUTCOMES = ("succeeded", "transport_lost", "other")
@@ -143,7 +146,7 @@ class Names:
 
 class Handoff:
     name = "handoff"
-    bound = 4
+    bound = 5
     horizon = 3
     covers = {AgentTaskStatus: ("turns", 1)}
     tables = frozenset({"agent_handoffs"})
@@ -159,7 +162,6 @@ class Handoff:
         RestoreDetachmentStoreMixin.detach_restored_lifecycle,
     )
     unreached_values = {
-        "running": "settle marks the turn running and commits its verdict in one action",
         "pausing": "the handoff model has no Pause; the agent task explorer covers it",
         "paused": "the handoff model has no Pause; the agent task explorer covers it",
     }
@@ -196,6 +198,7 @@ class Handoff:
         with (
             mock.patch("rcp.background.seconds_until_automatic_launch", lambda: 0),
             mock.patch("rcp.storage.rows.datetime", ExplorerDatetime),
+            held_workers(),
         ):
             yield
 
@@ -279,22 +282,15 @@ class Handoff:
         background._schedule_remote_reconciliation = lambda **kwargs: None
         background.on_task_settled = None
 
-        def spawn(record, request, **kwargs):
-            current = store.agent_task(record.operation_id) or record
-            if current.status == "queued":
-                with background._controls_lock:
-                    background._workers[current.operation_id] = threading.current_thread()
-            return current
-
         def schedule(operation_id: str, *, attempt: int, delay: float | None = None) -> None:
             wait = AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt] if delay is None else delay
             world.timers.append((operation_id, attempt, wait))
 
-        background._spawn_record = spawn
         background._schedule_transport_retry = schedule
         return world
 
     def close(self, world: World) -> None:
+        _drop_workers(world.background)
         world.store.close()
 
     def save_memory(self, world: World) -> Memory:
@@ -317,14 +313,17 @@ class Handoff:
         background = world.background
         with background._controls_lock:
             for name in workers:
-                background._workers[operation[name]] = threading.current_thread()
+                background._controls[operation[name]] = AgentProcessControl()
+                background._workers[operation[name]] = HeldWorker()
             background._retry_decided.update(operation[name] for name in decided)
 
     def actions(self, view) -> list[Action]:
         _handoff, turns, _busy, timers, expired = view
         found: list[Action] = []
         for name, status, _kind, _retry, _resume, _receipts, (worker, _decided) in turns:
-            if worker and status in {"queued", "running"}:
+            if worker and status == "queued":
+                found.append(Action("run", (name,)))
+            elif worker and status == "running":
                 found.extend(Action("settle", (name, outcome)) for outcome in _SETTLE_OUTCOMES)
             elif worker and status in _TERMINAL:
                 found.append(Action("finish", (name,)))
@@ -342,7 +341,9 @@ class Handoff:
     def apply(self, world: World, action: Action) -> None:
         names = world.lineage()
         operation = {name: op for op, name in names.items()}
-        if action.name == "settle":
+        if action.name == "run":
+            assert world.store.mark_agent_task_running(operation[action.args[0]])
+        elif action.name == "settle":
             _settle(world, operation[action.args[0]], action.args[1])
         elif action.name == "finish":
             _finish(world, operation[action.args[0]])
@@ -430,9 +431,6 @@ class Handoff:
 
 def _settle(world: World, operation_id: str, outcome: str) -> None:
     store = world.store
-    task = store.agent_task(operation_id)
-    if task is not None and task.status == "queued":
-        store.mark_agent_task_running(operation_id)
     if outcome == "succeeded":
         store.complete_agent_task(
             operation_id,
@@ -449,7 +447,6 @@ def _settle(world: World, operation_id: str, outcome: str) -> None:
 
 
 def _finish(world: World, operation_id: str) -> None:
-    from rcp.agents import AgentProcessControl
     from rcp.background import AgentTaskExecution
 
     background = world.background
@@ -460,6 +457,14 @@ def _finish(world: World, operation_id: str) -> None:
     )
     background._task_settled(record, background._request_from_record(record), execution)
     background._forget_control(operation_id)
+
+
+def _drop_workers(background) -> None:
+    """The process holding these held workers ends with the world."""
+
+    with background._controls_lock:
+        background._controls.clear()
+        background._workers.clear()
 
 
 def _newest_delivered(view):
