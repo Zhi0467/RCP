@@ -961,6 +961,14 @@ def delete_space_machine(
     with ExitStack() as fences:
         for project_id in listed:
             fences.enter_context(project_write_admission(project_id, request))
+        if not fences.enter_context(_api_services(request).terminals.route_change(machine_id)):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "machine_has_terminals",
+                    "message": "Close this machine's terminals before deleting it.",
+                },
+            )
         with MACHINE_ATTACHMENT_LOCK:
             usage = _machine_usage(store)
             if usage.deletable(machine) and store.space_machine_has_work(machine_id):

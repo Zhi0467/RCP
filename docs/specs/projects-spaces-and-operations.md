@@ -73,8 +73,8 @@ Editing a card's host or account writes only that row. Its one check is a
 batch-mode login to the new host; the same failures as Add machine come back,
 a named account the login does not land on is refused, and a team space fills
 a blank account from that login. A card with a live or retained terminal
-session keeps its route until those sessions end, because units stop through
-the card's current route. So does a card an open turn, a running compute job, an
+session keeps its route and is not deleted until those sessions end, because
+units stop through the card's current route. So does a card an open turn, a running compute job, an
 active watcher, or an open project provisioning request still reaches, and such a
 card is not deleted: their records
 name the card, and a moved or missing route would lose the work. A card whose
