@@ -588,6 +588,7 @@ machine is the state repository's card. Transfer records are format 8
 ([records.py](../../src/rcp/transfer/records.py)). A transfer begun before the
 machine identity upgrade is refused with "Restart the transfer", and the desktop
 sets its saved preparation aside as `<coordinator>.v1.json` and starts clean.
+Such a request does not hold back the project's machine id upgrade.
 The target rebuilds configuration without
 source paths. Drift causes refusal before source fencing. Final desktop review
 records target admission then source release through independently authenticated

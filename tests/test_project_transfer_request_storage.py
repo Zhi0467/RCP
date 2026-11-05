@@ -993,3 +993,27 @@ def test_corrupt_public_or_protected_transfer_state_fails_loudly(tmp_path: Path)
         )
     with pytest.raises(RuntimeError, match="does not match"):
         source.project_transfer_request(source_request.request_id)
+
+
+def test_a_transfer_from_before_format_8_does_not_hold_back_the_machine_upgrade(
+    tmp_path: Path,
+) -> None:
+    from rcp.storage.machine_rekey import project_machine_upgrade_blocked
+
+    source = AppStore(tmp_path / "personal" / "rcp.sqlite3", space_kind="personal")
+    project_id = str(uuid.uuid4())
+    _project(source, project_id)
+    source.create_source_project_transfer_request(
+        project_id=project_id,
+        target_space_id=str(uuid.uuid4()),
+        initiated_by=_actor(source, "Z"),
+        source_configuration=_source_configuration(),
+    )
+    assert project_machine_upgrade_blocked(source, project_id)
+
+    with source.connection() as connection:
+        connection.execute(
+            "UPDATE project_transfer_requests SET record_json = json_set(record_json, "
+            "'$.source_configuration.record_schema_version', 7)"
+        )
+    assert not project_machine_upgrade_blocked(source, project_id)

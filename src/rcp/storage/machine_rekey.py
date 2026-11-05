@@ -20,12 +20,14 @@ from typing import TYPE_CHECKING, Any
 
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_upgrade import machine_id_for_alias, upgraded_worktree_binding
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 _OPEN_REQUEST = """
 SELECT 1 FROM project_transfer_requests WHERE project_id = ? AND phase != 'completed'
+AND json_extract(record_json, '$.source_configuration.record_schema_version') = ?
 UNION ALL
 SELECT 1 FROM project_provisioning_requests
 WHERE proposed_project_id = ? AND status NOT IN ('completed', 'cancelled')
@@ -41,10 +43,18 @@ _RUN_ON_DOCUMENTS = (
 
 
 def project_machine_upgrade_blocked(store: AppStore, project_id: str) -> bool:
-    """Whether a transfer or provisioning request is still open for the project."""
+    """Whether a transfer or provisioning request is still open for the project.
+
+    A transfer begun before format 8 can only be restarted, so it holds nothing back.
+    """
 
     with store.connection() as connection:
-        return connection.execute(_OPEN_REQUEST, (project_id, project_id)).fetchone() is not None
+        return (
+            connection.execute(
+                _OPEN_REQUEST, (project_id, TRANSFER_RECORD_SCHEMA_VERSION, project_id)
+            ).fetchone()
+            is not None
+        )
 
 
 def rekey_project_machines(
