@@ -214,7 +214,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         graph_mutation: { available: true, reason: null },
         run_on: "local",
         repositories: [],
-        machines: [{ alias: "local", host: "" }],
+        machines: [{ machine_id: "local" }],
         project_truth_scope: [],
         default_run_truth_scope: [],
         providers,
@@ -339,6 +339,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           };
         else if (path === "/api/agent-threads/cards")
           json = { proposal_cards: [], asked_cards: [] };
+        else if (path === "/api/space/machines") json = { machines: [] };
         else if (/\/episodes\/[^/]+\/questions$/.test(path)) json = [];
         else if (path.endsWith("/consolidation"))
           json = { schedule: null, inbox: [], can_write: true, recent_nights: [] };

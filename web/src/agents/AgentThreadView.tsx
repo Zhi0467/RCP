@@ -826,7 +826,7 @@ export function AgentThreadView({
       const [transcript, asked, waiting] = await Promise.all([
         loadThreadTranscript(current),
         loadThreadQuestions(current),
-        loadThreadQueue(current).catch(() => null),
+        loadThreadQueue(current),
       ]);
       const sent = sentTurn.current;
       // A running project turn writes its member message only when it settles.
@@ -844,7 +844,7 @@ export function AgentThreadView({
           messages: unchanged(previous?.messages, transcript.messages),
           questions: unchanged(previous?.questions, asked),
           latest: unchanged(previous?.latest, latestTask),
-          queue: unchanged(previous?.queue, waiting?.items ?? previous?.queue ?? NO_QUEUE),
+          queue: unchanged(previous?.queue, waiting.items),
           finishedAt: current.last_finished_at,
         };
         return previous &&
@@ -1076,7 +1076,7 @@ export function AgentThreadView({
       ? latest
       : null;
   // A paused turn holds the conversation until it is resumed or retried.
-  const pausedTask = latest?.paused && latest.can_resume ? latest : null;
+  const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
   const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
   const queue = view?.queue ?? NO_QUEUE;
   const queues = thread.kind === "project";

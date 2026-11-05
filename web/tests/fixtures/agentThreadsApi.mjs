@@ -318,6 +318,7 @@ export async function mockApi(page, writes) {
       });
     if (/^\/api\/projects\/p\d\/readiness$/.test(path))
       return json({
+        run_on: "local",
         provider_readiness: { local: { claude: readiness } },
         agent_profiles: {
           project_chat: { provider: "claude", model: "opus", reasoning: "high", run_on: "local" },

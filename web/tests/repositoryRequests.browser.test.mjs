@@ -63,6 +63,12 @@ test("repository requests preserve intent and open the bound provisioning review
         projection.kind = body.kind;
         return route.fulfill({ json: projection });
       }
+      if (path === "/api/space/machines")
+        return route.fulfill({
+          json: {
+            machines: [{ machine_id: "m-server", name: "server", host: "", os_account: "rcp" }],
+          },
+        });
       if (path.endsWith("/complete")) confirmed = true;
       return route.fulfill({ json: path.includes(requestId) ? projection : [] });
     });

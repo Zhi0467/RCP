@@ -106,7 +106,7 @@ test("a new Auto-research start lists runs live on other branches", () => {
     checkout: {
       kind: "shared",
       available: true,
-      execution_host: "gpu-host",
+      machine_id: "card-gpu",
       repository_paths: ["/srv/repo"],
     },
   };
@@ -126,7 +126,7 @@ test("a new Auto-research start lists runs live on other branches", () => {
   const html = render({ otherLiveRuns: [other] });
   assert.match(html, /data-overlap-episode-id="other-run"/);
   assert.match(html, /href="[^"]*other-run/);
-  assert.match(html, /gpu-host · \/srv\/repo/);
+  assert.match(html, /shared · \/srv\/repo/);
   assert.doesNotMatch(render({ otherLiveRuns: [] }), /data-overlap-episode-id/);
 });
 
