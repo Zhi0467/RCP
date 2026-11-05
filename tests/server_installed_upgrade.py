@@ -252,11 +252,9 @@ def dry_run() -> dict:
     wait_health()
     verdict = next(field["value"] for field in fields if field["name"] == "update_rehearsal")
     assert verdict == "ready", fields
-    return {
-        "verdict": verdict,
-        "warnings": [field["value"] for field in fields if field["name"] == "update_warning"],
-        "service_unchanged": True,
-    }
+    warnings = [field["value"] for field in fields if field["name"] == "update_warning"]
+    assert warnings == [], fields
+    return {"verdict": verdict, "warnings": warnings, "service_unchanged": True}
 
 
 def _backend_stage() -> dict[str, str]:
