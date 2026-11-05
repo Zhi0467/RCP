@@ -63,6 +63,10 @@ SSH selects the account through the route, so one host has one card:
 blank account on Add machine is filled from a batch-mode login as the service
 account; a personal card keeps it blank.
 
+The backend card is the machine RCP runs on: it has no host, and its host and
+account are not editable. Every other card has a host, so a blank host on edit
+is refused. The backend card is never deletable.
+
 Editing a card's host or account writes only that row. Its one check is a
 batch-mode login to the new host; the same failures as Add machine come back,
 and a team space fills a blank account from that login. The edit then forgets
