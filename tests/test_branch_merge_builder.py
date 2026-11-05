@@ -14,6 +14,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager, PatchRejected
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.branch_merge import (
     BranchMergeContext,
     BranchMergeEligibility,
@@ -196,7 +197,7 @@ async def _run(tmp_path: Path, history, load_context: Callable, launcher=None):
     frames = [
         frame
         async for frame in stream_branch_merge_run(
-            RunRequest(provider="codex", run_on="laptop"),
+            RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID),
             launcher or _NoProvider(),
             load_context=load_context,
             main_history=history,
@@ -459,7 +460,7 @@ def test_legacy_merge_request_without_binding_retains_main_dispatch():
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo-a"],
             "chat_scope": "project",
             "mode": "work",

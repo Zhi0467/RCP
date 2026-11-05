@@ -80,7 +80,6 @@ def rekey_project_machines(
                 key=("route",),
                 newest="probed_at",
             )
-            _rekey_column(connection, "result_views", "run_on", project_id, mapped)
             _rekey_column(
                 connection,
                 "agent_threads",

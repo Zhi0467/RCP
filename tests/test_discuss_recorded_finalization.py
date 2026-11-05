@@ -18,6 +18,7 @@ import rcp.runs.tasks.discuss as discuss_module
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.question_snapshots import question_snapshot
 from rcp.runs.shared import _sse
 from rcp.service import RunRequest
@@ -154,7 +155,7 @@ async def test_a_recorded_discuss_pass_answers_its_original_chat(tmp_path) -> No
     conversation. The recovered prompt carried the dismissal, so later turns stop repeating it.
     """
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     task = execution.store.agent_task(execution.operation_id)
     assert task is not None and request.chat_id is not None
@@ -228,7 +229,7 @@ async def test_recorded_discuss_finalization_can_resume_without_answering_twice(
     """
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(
         _retained_context(service, request, execution)
@@ -269,7 +270,7 @@ def test_a_discuss_task_routes_to_the_owner_that_retained_its_context(tmp_path) 
     store = execution.store
     assert recorded_finalizer(store, execution.operation_id) is None
 
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(
         _retained_context(service, request, execution)
@@ -285,12 +286,12 @@ def test_a_moved_discuss_stage_refuses_to_finalize(tmp_path) -> None:
     """Recovery attaches the stage the launch named, or none at all."""
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(
         _retained_context(service, request, execution)
     )
-    execution.checkpoint_stage("", str(tmp_path / "somewhere-else"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "somewhere-else"))
 
     with pytest.raises(ValueError, match="belongs to another stage"):
         discuss_module._load_discuss_finalization_context(service, request, execution)
@@ -300,7 +301,7 @@ def test_a_request_recorded_before_fork_fields_still_finalizes(tmp_path) -> None
     """An old writer's row omits later request fields; their defaults are its meaning."""
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(
         _retained_context(service, request, execution)
@@ -331,7 +332,7 @@ async def test_a_discard_interrupted_before_its_receipt_still_warns_once(tmp_pat
     """
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     (Path(execution.stage_root) / "workspace").mkdir(parents=True)
     context = _retained_context(service, request, execution)
     discuss_module._record_discuss_finalization_context(context)
@@ -379,7 +380,7 @@ async def test_a_discarded_patch_is_the_one_the_host_proved(tmp_path) -> None:
     """
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     workspace = Path(execution.stage_root) / "workspace"
     workspace.mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(
@@ -416,7 +417,7 @@ async def test_a_recorded_discard_never_reaches_the_host_a_second_time(tmp_path)
     """
 
     service, request, execution = _discuss_app(tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "stage"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "stage"))
     workspace = Path(execution.stage_root) / "workspace"
     workspace.mkdir(parents=True)
     discuss_module._record_discuss_finalization_context(

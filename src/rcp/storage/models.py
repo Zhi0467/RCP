@@ -3797,7 +3797,7 @@ class ProviderReadinessSnapshotRecord(BaseModel):
 
 
 class SpaceMachineHostInUse(ValueError):
-    """Another card already holds this SSH host; the API answers 409 `host_in_use`."""
+    """Another card already holds this SSH host; the API answers a plain 409."""
 
     def __init__(self, host: str) -> None:
         super().__init__("this space already has a machine for that host")

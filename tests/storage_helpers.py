@@ -46,7 +46,7 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE provider_login_states RENAME TO new_provider_login_states")
         AppStore._migrate_provider_login_states(connection)
         connection.execute(
-            "INSERT INTO provider_login_states SELECT provider,host,state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states WHERE login_id=''"
+            "INSERT INTO provider_login_states SELECT provider,machine_id,state,generation,detail,source,changed_at,changed_by FROM new_provider_login_states WHERE login_id=''"
         )
         connection.execute("DROP TABLE new_provider_login_states")
         connection.execute("DROP TABLE provider_readiness_snapshots")

@@ -2888,7 +2888,10 @@ class ProjectDisplayCache:
                     ]
                 },
             }
-            for machine_id in cast(list[str], manifest_machines)
+            for machine_id in (
+                machine if isinstance(machine, str) else machine["machine_id"]
+                for machine in cast(list[str | dict[str, str]], manifest_machines)
+            )
         ]
         _stamp_display_signals(payload)
         return payload

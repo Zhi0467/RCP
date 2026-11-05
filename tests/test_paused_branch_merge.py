@@ -17,6 +17,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs import branch_merge as merge_module
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.shared import _sse
@@ -79,7 +80,7 @@ async def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
     )
     merge = store.create_branch_merge_task(

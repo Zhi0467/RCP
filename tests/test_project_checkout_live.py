@@ -17,8 +17,8 @@ from rcp.server_ops.git_credentials import (
     target_account_argv,
 )
 from rcp.server_ops.github import GitHubRepositoryRef
+from rcp.server_ops.layout import MachineRoute
 from rcp.server_ops.project_checkout import ProjectCheckoutManager
-from rcp.storage import ProjectProvisioningMachineIntent
 
 from .test_git_credentials_live import (
     _GITHUB_ED25519_FINGERPRINT,
@@ -61,9 +61,8 @@ def test_local_central_checkout_with_repository_scoped_key(tmp_path: Path) -> No
     layout.credentials_root.chmod(0o700)
     layout.projects_root.mkdir(parents=True, mode=0o700)
     layout.projects_root.chmod(0o700)
-    machine = ProjectProvisioningMachineIntent.model_construct(
-        alias="checkout-local",
-        location="local",
+    machine = MachineRoute(
+        machine_id="checkout-local",
         host="",
         os_account=account.pw_name,
         central_root=str(layout.projects_root),
@@ -94,9 +93,8 @@ def test_ssh_central_checkout_with_remote_account_key(tmp_path: Path) -> None:
     layout = _live_layout(tmp_path, local_account.pw_name, Path(local_account.pw_dir))
     runner = _CurrentAccountRunner(local_account.pw_name)
     remote_root = f"/tmp/rcp-project-checkout-live-{_REMOTE_PROJECT_ID}"
-    machine = ProjectProvisioningMachineIntent(
-        alias="checkout-ssh",
-        location="ssh",
+    machine = MachineRoute(
+        machine_id="checkout-ssh",
         host=host,
         os_account=remote_account,
         central_root=remote_root,
@@ -126,10 +124,10 @@ class _StaticCredentialManager:
 
     def inspect_key(
         self,
-        machine: ProjectProvisioningMachineIntent,
+        machine: MachineRoute,
         material: DeployKeyMaterial,
     ) -> DeployKeyMaterial:
-        assert machine.alias == material.machine_alias
+        assert machine.machine_id == material.machine_id
         assert material == self.expected
         return material
 
@@ -157,7 +155,7 @@ def _drive_checkout(
     repository: GitHubRepositoryRef,
     *,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     runner: _CurrentAccountRunner,
     space_id: str,
     project_id: str,
@@ -367,7 +365,7 @@ else:
 def _remote_test_key(
     runner: _CurrentAccountRunner,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     *,
     repository: GitHubRepositoryRef,
     space_id: str,
@@ -423,7 +421,7 @@ def _remote_test_key(
         project_id=project_id,
         repository_alias=alias,
         repository=repository,
-        machine_alias=machine.alias,
+        machine_id=machine.machine_id,
         location=machine.location,
         host=machine.host,
         os_account=machine.os_account,
@@ -441,7 +439,7 @@ def _remote_test_key(
 def _remote_test_key_remove(
     runner: _CurrentAccountRunner,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     material: DeployKeyMaterial,
 ) -> None:
     result = runner(
@@ -470,7 +468,7 @@ def _drive_remote_checkout(
     repository: GitHubRepositoryRef,
     *,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     runner: _CurrentAccountRunner,
     space_id: str,
     project_id: str,
@@ -571,7 +569,7 @@ def _drive_remote_checkout(
 def _require_remote_published_github_host_key(
     runner: _CurrentAccountRunner,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     account_home: str,
 ) -> None:
     command = (
@@ -642,7 +640,7 @@ else:
 def _remote_test_root(
     runner: _CurrentAccountRunner,
     layout,
-    machine: ProjectProvisioningMachineIntent,
+    machine: MachineRoute,
     *,
     operation: str,
 ) -> None:

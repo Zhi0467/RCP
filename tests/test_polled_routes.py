@@ -174,7 +174,6 @@ def test_personal_polled_routes_stay_read_only(manifest, tmp_path, monkeypatch) 
         "thread_id": space_thread["thread_id"],
         "chat_id": project_thread["thread_id"],
         "machine_id": machine["machine_id"],
-        "machine_alias": machine["name"],
         "provider": "claude",
         "attempt_id": str(uuid.uuid4()),
     }
@@ -190,6 +189,7 @@ def test_personal_polled_routes_stay_read_only(manifest, tmp_path, monkeypatch) 
 def test_team_polled_routes_stay_read_only(tmp_path) -> None:
     data_dir = tmp_path / "team"
     store, _bootstrap = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Team Lab")
+    store.ensure_space_machines([("", "rcp", "Server")])
     member = store.preprovision_team_member("Alice")
     app = create_app(
         data_dir=data_dir,

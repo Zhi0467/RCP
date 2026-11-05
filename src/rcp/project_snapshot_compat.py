@@ -40,22 +40,10 @@ def _migrate_agent_profile_runtimes(snapshot: dict[str, object]) -> bool:
     profiles = snapshot.get("agent_profiles")
     if not isinstance(profiles, dict):
         return True
-    # Every agent runs on the base now. A cache written when the coach chose its
-    # own machine moves the coach to the base the other profiles share, as a
-    # manifest load does.
-    bases = {
-        profile.get("run_on")
-        for surface, profile in profiles.items()
-        if surface != "paper_coach" and isinstance(profile, dict)
-    }
-    if len(bases) > 1:
-        return False
-    coach = profiles.get("paper_coach")
-    if bases and isinstance(coach, dict):
-        coach["run_on"] = next(iter(bases))
     for profile in profiles.values():
         if not isinstance(profile, dict):
             return False
+        profile.pop("run_on", None)
         provider = profile.get("provider")
         if not isinstance(provider, str):
             return False

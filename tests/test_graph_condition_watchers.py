@@ -23,6 +23,7 @@ from rcp.core.models import (
     Proposal,
 )
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import _record_patch_applied_receipt
 from rcp.runs.watcher_admission import start_watcher_notification
@@ -197,7 +198,7 @@ def _continuation() -> WatcherContinuation:
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         patch_kind="work",
     )
@@ -225,6 +226,7 @@ def _binding(*, continuation: WatcherContinuation | None = None) -> WatcherBindi
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp/one",
+        machine_id=BACKEND_MACHINE_ID,
         continuation=continuation or _continuation(),
     )
 
@@ -246,6 +248,7 @@ def _graph_record(
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp/one",
+        machine_id=BACKEND_MACHINE_ID,
         condition=condition,
         armed_revision=armed_revision,
         continuation=continuation or _continuation(),
@@ -268,6 +271,7 @@ def _external_record(
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp/one",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="test -f /tmp/result.done",
         log_path="/tmp/result.log",
         cwd="/tmp",
@@ -295,7 +299,7 @@ def _notification_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo-a"],
             "mode": "work",
             "trigger": "watcher",
@@ -338,10 +342,9 @@ def _bind_episode_session(store, root, session_id, stage_root):
         project_id=root.project_id,
         control_node_id="exp/one",
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=session_id,
-        stage_host=None,
+        stage_machine_id=None,
         stage_root=stage_root,
         chat_id="chat",
         operation_id=root.operation_id,
@@ -2803,7 +2806,7 @@ def _experiment_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo-a"],
             "mode": "work",
             "trigger": "watcher" if watcher_ids else "experiment_run",

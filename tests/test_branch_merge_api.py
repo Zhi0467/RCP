@@ -39,6 +39,7 @@ from rcp.limits import (
     REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
@@ -241,7 +242,7 @@ def _create_branch_harness(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
     )
     root = AgentTaskRecord(
@@ -690,7 +691,7 @@ def test_restart_reconciles_an_already_published_reserved_branch(
         AutoResearchStartRequest(
             invocation_ceiling=2,
             provider="codex",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
         ),
         authorized_by=authorized_human(app),
@@ -1006,7 +1007,10 @@ def test_recovered_paused_turn_finishes_report_and_unlocks_branch_merge(
     stage.mkdir()
     store.mark_agent_task_running(root.operation_id)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="native-session", stage_root=str(stage)
+        root.operation_id,
+        native_session_id="native-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(stage),
     )
     store.pause_agent_task(root.operation_id, detail="Paused before recovery.")
     recovered = store.create_auto_research_recovery_task(
@@ -1016,6 +1020,7 @@ def test_recovered_paused_turn_finishes_report_and_unlocks_branch_merge(
                 "parent_operation_id": root.operation_id,
                 "attempt": root.attempt + 1,
                 "native_session_id": "native-session",
+                "stage_machine_id": BACKEND_MACHINE_ID,
                 "stage_root": str(stage),
                 "request": {**root.request, "session_id": "native-session"},
                 "created_at": store.now(),
@@ -1145,7 +1150,7 @@ def _create_main_graph_watcher(harness: _BranchHarness) -> str:
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
     )
     authority = resolve_dispatch_authority("project_chat", request)
@@ -1183,7 +1188,7 @@ def _create_main_graph_watcher(harness: _BranchHarness) -> str:
                     provider="codex",
                     model="",
                     reasoning="medium",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     run_truth_scope=["repo-a"],
                     patch_kind="work",
                 ),
@@ -1741,7 +1746,7 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
             operation_id=operation_id,
             store=harness.store,
             control=AgentProcessControl(),
-            stage_host=record.stage_host,
+            stage_machine_id=record.stage_machine_id,
             stage_root=record.stage_root,
         )
 

@@ -10,6 +10,7 @@ import pytest
 from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.runs.watcher_admission import start_watcher_notification
@@ -35,8 +36,8 @@ def _store(tmp_path: Path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / ".research"),
             added_at=store.now(),
         )
     )
@@ -105,13 +106,14 @@ def _create_auto_episode(
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="local",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
         ).model_dump(mode="json"),
         created_at=now,
         updated_at=now,
         status_message="Queued",
         native_session_id="branch-session" if stage_root is not None else None,
+        stage_machine_id=BACKEND_MACHINE_ID if stage_root is not None else None,
         stage_root=stage_root,
         authorized_by=authorizer,
         dispatch_authority=_orchestrator_authority(episode_id),
@@ -143,13 +145,13 @@ def _watcher(
         chat_id="shared-actor",
         episode_id=episode.episode_id,
         graph_target=episode.graph_target,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="true",
         log_path=f"/tmp/{watcher_id}.log",
         cwd="/tmp",
         continuation=WatcherContinuation(
             provider="codex",
-            run_on="local",
+            run_on=BACKEND_MACHINE_ID,
             run_truth_scope=["repo-a"],
             patch_kind="work",
         ),
@@ -283,6 +285,7 @@ def test_main_chat_cannot_reuse_a_branch_bound_conversation_or_session(tmp_path:
         updated_at=now,
         status_message="Stored branch conversation.",
         native_session_id=session_id,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(stage),
     )
     with store.connection() as connection:
@@ -416,7 +419,7 @@ def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
 def _ordinary_branch_chat(store, episode, *, status="succeeded", parent=None, mode="work"):
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=parent.request["chat_id"] if parent else str(uuid.uuid4()),
         chat_scope="project",
@@ -515,12 +518,12 @@ def test_ordinary_branch_watcher_wakes_after_episode_ends_without_episode_budget
         origin_task_kind=origin.kind,
         chat_id=origin.request["chat_id"],
         graph_target=episode.graph_target,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         check_command="true",
         log_path="/tmp/branch-review.log",
         cwd="/tmp",
         continuation=WatcherContinuation(
-            provider="codex", run_on="laptop", run_truth_scope=["repo-a"]
+            provider="codex", run_on=BACKEND_MACHINE_ID, run_truth_scope=["repo-a"]
         ),
         status="completed",
         created_at=store.now(),

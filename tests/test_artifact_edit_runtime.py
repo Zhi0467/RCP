@@ -8,6 +8,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.session_master import record_session_master
 from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
 from rcp.service import RunRequest
@@ -31,7 +32,7 @@ def _setup(manifest, tmp_path):
         provider="codex",
         reasoning="medium",
         model="",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id="chat-edit",
         message="Create chart",

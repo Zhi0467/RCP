@@ -10,6 +10,7 @@ import pytest
 from rcp.artifacts import descriptor_for, html_document_title
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_LIST_MAX_LIMIT, RUN_STAGE_RETENTION_DAYS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import _append_chat_exchange
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.service import RunRequest
@@ -158,7 +159,7 @@ def _create_chat_report(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="local",
+        run_on=BACKEND_MACHINE_ID,
         mode="work",
         patch_kind="experiment_loop",
         trigger="orchestrator" if parent else "experiment_run",

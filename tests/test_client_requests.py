@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.machine_cards import BACKEND_MACHINE_ID
 
 from .helpers import signed_in_client, wait_for_task
 from .test_api import _experiment_project
@@ -119,7 +120,7 @@ def test_client_request_key_cannot_cross_routes(request_app):
 def test_client_request_key_is_private_and_cannot_be_reused_by_another_member(tmp_path):
     app, client, store, people, acting = _team_app(tmp_path)
     for member in people:
-        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
+        store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "shared")
     project_id = _create_project(client, tmp_path / "repo")
     store.seat_project_member(project_id, people[1].user_id)
 
@@ -223,7 +224,7 @@ def test_second_member_retry_receipt_keeps_episode_authority(tmp_path):
 
     app, client, store, people, acting = _team_app(tmp_path)
     for member in people:
-        store.set_provider_login_setting(member.user_id, "codex", "", "shared")
+        store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "shared")
     project_id = _create_project(client, tmp_path / "repo")
     store.seat_project_member(project_id, people[1].user_id)
     service = app.state.catalog.open(project_id)

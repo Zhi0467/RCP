@@ -56,8 +56,11 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         no account, which checks nothing, as a Space turn without a card did.
         """
 
-        self.ensure_space_machines([("", "", "Backend")])
-        return self.space_machine(BACKEND_MACHINE_ID)
+        card = self.space_machine_for("")
+        if card is None:
+            self.ensure_space_machines([("", "", "Backend")])
+            card = self.space_machine(BACKEND_MACHINE_ID)
+        return card
 
     def provider_shell_timeout_seconds(self, provider: str, machine_id: str) -> int | None:
         """This machine's configured shell timeout for `provider`; None keeps its default."""

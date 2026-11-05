@@ -17,8 +17,8 @@ from fastapi.testclient import TestClient
 from rcp.agents import ProviderReadiness
 from rcp.browser import BrowserReadiness
 from rcp.config import load_manifest
-from rcp.projects import fill_space_machines, record_space_machines
-from rcp.storage.models import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
+from rcp.projects import fill_space_machines
 from tests.helpers import create_named_app, signed_in_client
 from tests.storage_helpers import downgrade_resource_watermarks
 from tests.test_project_membership import _create_project, _team_app
@@ -48,9 +48,14 @@ def _machine(client: TestClient, name: str) -> dict[str, object]:
     return next(machine for machine in machines if machine["name"] == name)
 
 
+def _backend(client: TestClient) -> dict[str, object]:
+    machines = client.get("/api/space/machines").json()["machines"]
+    return next(machine for machine in machines if machine["machine_id"] == BACKEND_MACHINE_ID)
+
+
 def test_listing_always_offers_the_backend_machine(app) -> None:
     client = signed_in_client(app)
-    _store(app).delete_space_machine(_machine(client, "laptop")["machine_id"])
+    _store(app).delete_space_machine(BACKEND_MACHINE_ID)
     machines = client.get("/api/space/machines").json()["machines"]
     assert [machine["host"] for machine in machines].count("") == 1
     backend = next(machine for machine in machines if not machine["host"])
@@ -61,21 +66,14 @@ def test_listing_always_offers_the_backend_machine(app) -> None:
 def test_repository_machine_cannot_be_deleted(app, manifest) -> None:
     client = signed_in_client(app)
     project_id = app.state.default_project_id
-    laptop = _machine(client, "laptop")
+    laptop = _backend(client)
     assert laptop["host"] == "" and laptop["in_use"] is True
-    assert laptop["projects"] == [
-        {"project_id": project_id, "project_name": "test-paper", "alias": "laptop"}
-    ]
+    assert laptop["projects"] == [{"project_id": project_id, "project_name": "test-paper"}]
     before = manifest.path.read_bytes()
     assert laptop["deletable"] is False
     assert client.delete(f"/api/space/machines/{laptop['machine_id']}").status_code == 409
     assert manifest.path.read_bytes() == before
-    assert _machine(client, "laptop") == laptop
-
-    store = _store(app)
-    store.delete_space_machine(str(laptop["machine_id"]))
-    fill_space_machines(store)
-    assert [machine.name for machine in store.space_machines()] == ["laptop"]
+    assert _backend(client) == laptop
 
 
 def _attach_gpu(client: TestClient, app) -> dict[str, object]:
@@ -85,7 +83,7 @@ def _attach_gpu(client: TestClient, app) -> dict[str, object]:
     ).json()
     response = client.post(
         f"/api/projects/{app.state.default_project_id}/machines",
-        json={"machine_id": machine["machine_id"], "alias": "gpu"},
+        json={"machine_id": machine["machine_id"]},
     )
     assert response.status_code == 200, response.text
     return machine
@@ -113,7 +111,7 @@ def test_delete_detaches_a_listed_machine_without_repositories(
 
     deleted = client.delete(f"/api/space/machines/{machine['machine_id']}")
     assert deleted.status_code == 200, deleted.text
-    assert "gpu" not in load_manifest(manifest.path).machine_map
+    assert machine["machine_id"] not in load_manifest(manifest.path).machines
     assert all(card.machine_id != machine["machine_id"] for card in _store(app).space_machines())
 
 
@@ -135,31 +133,18 @@ def test_delete_refuses_unreadable_projects_before_detaching(app, manifest, monk
 
 
 def test_failed_detachment_keeps_card_and_surfaces_error(app, manifest, monkeypatch) -> None:
-    import tomlkit
-
     from rcp.projects import ProjectDisplayCache
 
-    document = tomlkit.parse(manifest.path.read_text())
-    for alias in ("gpu", "gpu-two"):
-        document["machines"].append({"alias": alias, "host": "worker@gpu.example"})
-    manifest.path.write_text(tomlkit.dumps(document))
-    fill_space_machines(_store(app))
     client = signed_in_client(app)
-    machine = _machine(client, "gpu")
-    remove = ProjectDisplayCache.remove_machine
-    attempts = 0
+    machine = _attach_gpu(client, app)
 
-    def fail_second(self, project_id, alias):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 2:
-            raise OSError("detachment failed")
-        return remove(self, project_id, alias)
+    def fail(self, project_id, machine_id):
+        raise OSError("detachment failed")
 
-    monkeypatch.setattr(ProjectDisplayCache, "remove_machine", fail_second)
+    monkeypatch.setattr(ProjectDisplayCache, "remove_machine", fail)
     response = client.delete(f"/api/space/machines/{machine['machine_id']}")
     assert response.status_code == 422
-    assert len({"gpu", "gpu-two"} & set(load_manifest(manifest.path).machine_map)) == 1
+    assert machine["machine_id"] in load_manifest(manifest.path).machines
     assert _store(app).space_machine(str(machine["machine_id"]))
 
 
@@ -199,9 +184,50 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
     assert client.delete(path).status_code == 404
 
 
+def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
+    from rcp.machine_login import MachineLoginFailure
+
+    client = signed_in_client(app)
+    store = _store(app)
+    card = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    store.create_space_machine(name="Other", host="other.example", os_account="")
+    path = f"/api/space/machines/{card.machine_id}"
+    invalidated: list[str] = []
+    monkeypatch.setattr(
+        "rcp.api.space_machines.invalidate_machine",
+        lambda _store, machine_id, **_kwargs: invalidated.append(machine_id),
+    )
+
+    def unknown_key(host):
+        raise MachineLoginFailure("host_key_unknown", "SHA256:abc")
+
+    monkeypatch.setattr("rcp.api.space_machines.login_account", unknown_key)
+    refused = client.patch(path, json={"host": "new.example"})
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == {
+        "code": "host_key_unknown",
+        "message": "host_key_unknown",
+        "fingerprint": "SHA256:abc",
+    }
+    assert store.space_machine(card.machine_id).host == "gpu.example"
+    assert client.patch(path, json={"name": "Big GPU"}).status_code == 200
+    assert invalidated == []
+
+    logins: list[str] = []
+    monkeypatch.setattr(
+        "rcp.api.space_machines.login_account", lambda host: logins.append(host) or "carol"
+    )
+    moved = client.patch(path, json={"host": "new.example", "os_account": "bob"})
+    assert moved.status_code == 200, moved.text
+    assert (moved.json()["host"], moved.json()["os_account"]) == ("new.example", "bob")
+    assert logins == ["new.example"] and invalidated == [card.machine_id]
+    assert client.patch(path, json={"host": "other.example"}).status_code == 409
+    assert store.space_machine(card.machine_id).host == "new.example"
+
+
 def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     client = signed_in_client(app)
-    machine = _machine(client, "laptop")
+    machine = _backend(client)
     assert {option["provider"] for option in machine["autocompact_providers"]} == {
         "claude",
         "codex",
@@ -231,7 +257,7 @@ def test_machine_autocompact_round_trip_and_refusal(app) -> None:
 
 def test_machine_shell_timeout_round_trip_and_refusal(app) -> None:
     client = signed_in_client(app)
-    machine = _machine(client, "laptop")
+    machine = _backend(client)
     assert {
         option["provider"]: option["default_minutes"]
         for option in machine["shell_timeout_providers"]
@@ -264,7 +290,7 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
     client = signed_in_client(app)
     shared = tmp_path / "shared"
     shared.mkdir()
-    path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}"
+    path = f"/api/space/machines/{_backend(client)['machine_id']}"
 
     saved = client.patch(path, json={"writable_paths": [f"{shared}/", str(shared), str(tmp_path)]})
     assert saved.status_code == 200, saved.text
@@ -284,7 +310,7 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
         tmp_path / "cache",
     ):
         assert client.patch(path, json={"writable_paths": [str(refused)]}).status_code == 422
-    assert _machine(client, "laptop")["writable_paths"] == sorted([str(shared), str(tmp_path)])
+    assert _backend(client)["writable_paths"] == sorted([str(shared), str(tmp_path)])
 
     stage = Path("/tmp") / f"rcp-run.test-{uuid.uuid4().hex[:8]}"
     stage.mkdir(mode=0o700)
@@ -335,7 +361,7 @@ def test_directories_filter_before_paging_and_lock_rcp_storage(app, tmp_path, mo
     for index in range(5):
         (browse / f"alpha-file-{index}").write_text("", encoding="utf-8")
     monkeypatch.setattr("rcp.setup.MACHINE_DIRECTORY_PAGE_SIZE", 2)
-    path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}/directories"
+    path = f"/api/space/machines/{_backend(client)['machine_id']}/directories"
 
     first = client.post(path, json={"path": str(browse)}).json()
     assert [entry["name"] for entry in first["entries"]] == ["alpha", "Beta"]
@@ -366,26 +392,19 @@ def test_adding_a_space_machine_to_a_project_appends_it_to_the_manifest(app, man
     ).json()
     path = f"/api/projects/{project_id}/machines"
 
-    added = client.post(path, json={"machine_id": machine["machine_id"], "alias": "gpu"})
+    added = client.post(path, json={"machine_id": machine["machine_id"]})
     assert added.status_code == 200, added.text
-    machines = load_manifest(manifest.path).machine_map
-    assert (machines["gpu"].host, machines["gpu"].os_account) == ("alice@gpu.example", "alice")
-    assert machines["laptop"].host == ""
+    assert load_manifest(manifest.path).machines == [BACKEND_MACHINE_ID, machine["machine_id"]]
     assert {repository.machine for repository in load_manifest(manifest.path).repositories} == {
-        "laptop"
+        BACKEND_MACHINE_ID
     }
     assert _machine(client, "GPU")["projects"] == [
-        {"project_id": project_id, "project_name": "test-paper", "alias": "gpu"}
+        {"project_id": project_id, "project_name": "test-paper"}
     ]
 
-    again = client.post(path, json={"machine_id": machine["machine_id"], "alias": "gpu-two"})
-    assert again.status_code == 422
-    laptop = _machine(client, "laptop")
-    assert (
-        client.post(path, json={"machine_id": laptop["machine_id"], "alias": "gpu"}).status_code
-        == 422
-    )
-    assert client.post(path, json={"machine_id": "missing", "alias": "x"}).status_code == 404
+    assert client.post(path, json={"machine_id": machine["machine_id"]}).status_code == 422
+    assert client.post(path, json={"machine_id": BACKEND_MACHINE_ID}).status_code == 422
+    assert client.post(path, json={"machine_id": "missing"}).status_code == 404
 
 
 def test_team_machines_name_only_the_viewers_projects_and_fill_the_account(
@@ -414,6 +433,17 @@ def test_team_machines_name_only_the_viewers_projects_and_fill_the_account(
     monkeypatch.setattr("rcp.api.space_machines.login_account", lambda host: "bob")
     created = client.post("/api/space/machines", json=body)
     assert created.status_code == 200 and created.json()["os_account"] == "bob"
+    monkeypatch.setattr("rcp.api.space_machines.login_account", lambda host: "carol")
+    moved = client.patch(
+        f"/api/space/machines/{created.json()['machine_id']}",
+        json={"host": "gpu2.example", "os_account": ""},
+    )
+    assert moved.status_code == 200, moved.text
+    assert (moved.json()["host"], moved.json()["os_account"]) == ("gpu2.example", "carol")
+    monkeypatch.setattr("rcp.api.space_machines.login_account", lambda host: "bob")
+    created = client.patch(
+        f"/api/space/machines/{created.json()['machine_id']}", json={"host": "gpu.example"}
+    )
 
     monkeypatch.setattr(
         "rcp.api.space_machines.readiness",
@@ -443,7 +473,7 @@ def test_a_project_machine_finds_its_card_by_host(app) -> None:
 def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
     client = signed_in_client(app)
     repository = Path(load_manifest(manifest.path).repositories[0].path)
-    path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}/directories"
+    path = f"/api/space/machines/{_backend(client)['machine_id']}/directories"
 
     entries = client.post(path, json={"path": str(repository)}).json()["entries"]
 
@@ -469,7 +499,7 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
 
     monkeypatch.setattr("rcp.api.space_machines.install_browser", install)
     client = signed_in_client(app)
-    machine = _machine(client, "laptop")
+    machine = _backend(client)
     assert "browser" not in machine
     browser = client.get(f"/api/space/machines/{machine['machine_id']}/browser")
     assert browser.json()["status"] == "not_installed"
@@ -531,10 +561,12 @@ def test_machine_hidden_folders_round_trip_and_atomic_refusal(
     agents = tmp_path / "agents"
     agents.mkdir()
     monkeypatch.setattr(
-        ProjectCatalog, "provider_targets", lambda self: [("claude", "", str(agents / "claude"))]
+        ProjectCatalog,
+        "provider_targets",
+        lambda self: [("claude", BACKEND_MACHINE_ID, str(agents / "claude"))],
     )
     client = signed_in_client(app)
-    machine = _machine(client, "laptop")
+    machine = _backend(client)
     machine_id = machine["machine_id"]
     url = f"/api/space/machines/{machine_id}"
     secret = tmp_path / "private"
@@ -572,7 +604,7 @@ def test_machine_hidden_folders_validate_host_resolved_symlinks(
             },
         ).json()
     else:
-        machine = _machine(client, "laptop")
+        machine = _backend(client)
     calls = []
 
     def check(host, request, *, os_account):
@@ -726,10 +758,8 @@ def test_local_wrapper_readiness_cache_expires(monkeypatch):
     assert len(calls) == 2
 
 
-def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_path, monkeypatch):
-    """Startup registers the default project before the sweep; that read alone must not
-    settle a card another project shares.
-    """
+def test_older_manifest_machine_settings_move_onto_the_card_once(tmp_path, monkeypatch):
+    """A card settles only after every pending manifest naming it was read."""
     from types import SimpleNamespace
 
     import tomlkit
@@ -749,21 +779,22 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
             },
         ),
     ):
-        document = tomlkit.parse(manifest.path.read_text())
-        document["machines"].append({"alias": "gpu", "host": "gpu.example", **settings})
+        document = tomlkit.document()
+        document["machines"] = [{"alias": "gpu", "host": "gpu.example", **settings}]
         path = tmp_path / f"{name}.toml"
         path.write_text(tomlkit.dumps(document))
-        projects.append(SimpleNamespace(project_id=name, locator=str(path)))
-    monkeypatch.setattr(store, "projects", lambda: projects)
-
-    record_space_machines(store, load_manifest(projects[0].locator))
+        projects.append(
+            SimpleNamespace(project_id=name, locator=str(path), machine_ids_pending=True)
+        )
+    monkeypatch.setattr("rcp.projects.project_machine_upgrade_blocked", lambda *_: True)
+    unreadable = SimpleNamespace(
+        project_id="c", locator=str(tmp_path / "missing.toml"), machine_ids_pending=True
+    )
+    monkeypatch.setattr(store, "projects", lambda: [projects[0], unreadable])
+    fill_space_machines(store, tmp_path)
     assert store.space_machine_for("gpu.example").legacy_settings_pending
-    unreadable = SimpleNamespace(project_id="c", locator=str(tmp_path / "missing.toml"))
-    monkeypatch.setattr(store, "projects", lambda: [*projects, unreadable])
-    fill_space_machines(store)
-    assert store.space_machine_for("gpu.example").legacy_settings_pending
     monkeypatch.setattr(store, "projects", lambda: projects)
-    fill_space_machines(store)
+    fill_space_machines(store, tmp_path)
 
     card = store.space_machine_for("gpu.example")
     assert card is not None and not card.legacy_settings_pending
@@ -774,7 +805,7 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(manifest, tmp_p
     )
     assert card.provider_paths == {"codex": "/a/codex", "claude": "/b/claude"}
     store.update_space_machine(card.machine_id, access_hint="")
-    fill_space_machines(store)
+    fill_space_machines(store, tmp_path)
     assert store.space_machine_for("gpu.example").access_hint == ""
 
 
@@ -810,7 +841,7 @@ def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> 
     calls: list[str | None] = []
 
     def readiness(login: LoginKey, *, binary=None, refresh=False):
-        assert (login.provider, login.host, refresh) == ("codex", "", True)
+        assert (login.provider, login.machine_id, refresh) == ("codex", BACKEND_MACHINE_ID, True)
         calls.append(binary)
         return ProviderReadiness(
             provider=login.provider,
@@ -828,4 +859,4 @@ def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> 
     assert response.status_code == 200, response.text
     assert calls == [None, "/opt/new-agent/codex"]
     assert response.json()["provider_paths"] == {"codex": "/opt/new-agent/codex"}
-    assert _store(app).provider_binary("codex", "") == "/opt/new-agent/codex"
+    assert _store(app).provider_binary("codex", BACKEND_MACHINE_ID) == "/opt/new-agent/codex"
