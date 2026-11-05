@@ -40,7 +40,7 @@ test("external job Cancel uses one watcher and the machine card saves compute on
       autocompact_providers: [],
       shell_timeout_providers: [],
       hidden_read: null,
-      projects: [{ project_id: "project", project_name: "Project", alias }],
+      projects: [{ project_id: "project", project_name: "Project" }],
       in_use: true,
       job_manager: jobManager,
       jobs_root: "",
@@ -139,12 +139,12 @@ test("external job Cancel uses one watcher and the machine card saves compute on
     await page.locator('.settings-rail [data-settings-section="machines"]').click();
     const card = page.locator(".provider-machine");
     const compute = card.locator('[data-machine-fold="compute"]');
-    const open = async (alias) => {
-      await page.locator(`.machine-tiles [data-machine-tile="${alias}"]`).click();
+    const open = async (machineId) => {
+      await page.locator(`.machine-tiles [data-machine-tile="${machineId}"]`).click();
       await compute.locator("summary").click();
     };
     const route = (name) => compute.locator(`[data-compute-route="${name}"]`);
-    await open("cluster");
+    await open("m-cluster");
     assert.equal(await route("scheduler").count(), 0);
     // Off on an undecided card is still saved, so a later check cannot turn Slurm on.
     const slurm = compute.getByRole("group", { name: "Slurm" });
@@ -192,8 +192,8 @@ test("external job Cancel uses one watcher and the machine card saves compute on
             {
               from: "local",
               probe: {
-                compute_id: "cluster",
-                execution_machine: "local",
+                compute_id: "m-cluster",
+                machine_id: "m-local",
                 state: "opaque",
                 reachable: true,
                 diagnostic: "",
@@ -212,7 +212,7 @@ test("external job Cancel uses one watcher and the machine card saves compute on
     assert.equal(await route("scheduler").getAttribute("class"), "compute-probe ready");
     assert.equal(await route("helper").getAttribute("class"), "compute-probe error");
     assert.equal(await compute.locator('[data-compute-reach="local"]').count(), 1);
-    await open("local");
+    await open("m-local");
     assert.deepEqual(
       await compute
         .locator("[data-compute-route]")

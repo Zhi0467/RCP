@@ -39,7 +39,8 @@ const project = {
   ],
   project_truth_scope: writable,
   state_repository: "repo-a",
-  machines: [{ alias: "local", host: null }],
+  run_on: "local",
+  machines: [{ machine_id: "local" }],
 } as unknown as ProjectSnapshot;
 
 const authorized: unknown[][] = [];
