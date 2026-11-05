@@ -7,16 +7,18 @@ and has the member's turn add one schedule, ``M``: every minute, two fires.
 
 ``boot`` applies these instance patches: ``store.now`` reads the explorer clock;
 ``admit_provider_task`` admits, as the schedule tests' autouse fixture does;
-``_schedule_remote_reconciliation`` does nothing; ``launch_admitted`` validates
-the queued request as ``tests.helpers.fake_launch_admitted`` does and then
-records a worker without starting a thread. ``seams`` sets the consolidation
-module's ``seconds_until_automatic_launch`` to zero, so a tick never cools down.
+``_schedule_remote_reconciliation`` does nothing. ``seams`` sets the
+consolidation module's ``seconds_until_automatic_launch`` to zero, so a tick
+never cools down, and holds every worker thread (``workers.py``): the real
+``launch_admitted`` and ``_spawn_record`` dispatch each wake and write its
+dispatch receipts.
 
 A tick moves the clock and runs ``poll_once``, which advances due schedules and
-dispatches wakes as production does. A worker's turn runs only as ``settle``.
-A restart runs ``recover_at_startup``, the startup call ``api/app.py`` makes for
-queued wakes; the next tick relaunches them. Restart is offered only while a
-worker exists, since otherwise it only moves the clock a second.
+dispatches wakes as production does. A worker claims its wake (``run``), then
+the wake succeeds and the worker leaves (``settle``), so a restart can land
+between the two. A restart runs ``recover_at_startup``, the startup call
+``api/app.py`` makes for agent tasks. Restart is offered only while a worker
+exists, since otherwise it only moves the clock a second.
 
 Views name turns by lineage: ``W0``, ``W1`` for schedule wakes in creation
 order. Times are seconds from now. ``fence`` writes the source transfer row a
@@ -36,14 +38,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, NamedTuple, cast
 from unittest import mock
-
-import pytest
 
 from rcp.consolidation import ConsolidationPoller
 from rcp.limits import AGENT_SCHEDULE_MIN_GAP_MINUTES, AGENT_SCHEDULES_MAX_ACTIVE
@@ -58,8 +58,8 @@ from rcp.storage.agent_schedules import (
 from rcp.storage.agent_threads import AgentThreadStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
-from tests.helpers import fake_launch_admitted
 from tests.lifecycles.engine import RESTART, Action, Clock, Memory, Safety, Step
+from tests.lifecycles.workers import HeldWorker, held_workers
 
 THREAD = "thread"
 PROJECT = "project"
@@ -139,8 +139,12 @@ class World:
     tasks: Any
     poller: ConsolidationPoller
     clock: Clock
-    workers: set[str] = field(default_factory=set)
     last_action: str | None = None
+
+    @property
+    def workers(self) -> set[str]:
+        with self.tasks._controls_lock:
+            return set(self.tasks._workers)
 
     def wakes(self) -> dict[str, Any]:
         """Each schedule wake by lineage name."""
@@ -219,7 +223,10 @@ class Schedules:
 
     @contextmanager
     def seams(self) -> Iterator[None]:
-        with mock.patch("rcp.consolidation.seconds_until_automatic_launch", lambda: 0):
+        with (
+            mock.patch("rcp.consolidation.seconds_until_automatic_launch", lambda: 0),
+            held_workers(),
+        ):
             yield
 
     def databases(self, root: Path) -> list[Path]:
@@ -254,17 +261,12 @@ class Schedules:
         world = World(store, tasks, poller, clock)
         tasks.admit_provider_task = lambda *args, **kwargs: None
         tasks._schedule_remote_reconciliation = lambda **kwargs: None
-
-        def launch(operation_id: str):
-            record = store.agent_task(operation_id)
-            if record is not None and record.status == "queued":
-                world.workers.add(operation_id)
-            return store.agent_task(operation_id)
-
-        fake_launch_admitted(pytest.MonkeyPatch(), tasks, launch)
         return world
 
     def close(self, world: World) -> None:
+        with world.tasks._controls_lock:
+            world.tasks._controls.clear()
+            world.tasks._workers.clear()
         world.store.close()
 
     def save_memory(self, world: World) -> Memory:
@@ -274,8 +276,13 @@ class Schedules:
     def restore_memory(self, world: World, memory: Memory) -> None:
         if memory.engine is None:
             return
+        from rcp.agents import AgentProcessControl
+
         operation = {name: op for op, name in world.names().items()}
-        world.workers = {operation[name] for name in memory.engine}
+        with world.tasks._controls_lock:
+            for name in memory.engine:
+                world.tasks._controls[operation[name]] = AgentProcessControl()
+                world.tasks._workers[operation[name]] = HeldWorker()
 
     def actions(self, view: View) -> list[Action]:
         state, schedule, turns, closed, fenced, restored = view
@@ -283,6 +290,8 @@ class Schedules:
         found = [Action("tick", (str(minutes),)) for minutes in ticks]
         for name, status, worker in turns:
             if worker and status == "queued":
+                found.append(Action("run", (name,)))
+            elif worker and status == "running":
                 found.append(Action("settle", (name,)))
                 found.append(Action("add", (name,), environment=False))
         if not closed:
@@ -305,6 +314,8 @@ class Schedules:
         if action.name == "tick":
             world.clock.advance(int(action.args[0]) * 60)
             world.poller.poll_once()
+        elif action.name == "run":
+            assert store.mark_agent_task_running(world.wakes()[action.args[0]].operation_id)
         elif action.name == "settle":
             _settle(world, world.wakes()[action.args[0]].operation_id)
         elif action.name == "add":
@@ -358,15 +369,14 @@ def _seconds(value: str | None, now: datetime) -> int | None:
 
 
 def _settle(world: World, operation_id: str) -> None:
-    """The worker's wake runs and succeeds, then the worker leaves."""
+    """The worker's wake succeeds, then the worker leaves."""
 
-    world.store.mark_agent_task_running(operation_id)
     world.store.complete_agent_task(
         operation_id,
         applied_revision=None,
         result={"messages": ["Done"], "turn_outcome": {"status": "done"}},
     )
-    world.workers.discard(operation_id)
+    world.tasks._forget_control(operation_id)
 
 
 def _add_from_wake(world: World, operation_id: str) -> None:
