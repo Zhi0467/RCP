@@ -757,6 +757,9 @@ def create_app(
         process_environment=launcher.process_environment,
     )
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
+    catalog.remote_machine_upgrades_allowed = lambda: (
+        startup_effect_fence is None or not startup_effect_fence.active
+    )
 
     paper_live = catalog.paper_live
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
@@ -2350,6 +2353,7 @@ def create_app(
                 raise
         try:
             if fenced_startup:
+                await asyncio.to_thread(fill_space_machines, store, app_data, rewrite_remote=False)
                 app.state.startup_recovery_plan = background_tasks.plan_startup_recovery().as_dict()
                 if control_server is not None:
                     control_server.start()

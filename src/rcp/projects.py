@@ -325,13 +325,16 @@ def _record_legacy_machines(store: AppStore, legacy: LegacyManifest) -> None:
         )
 
 
-def fill_space_machines(store: AppStore, data_dir: Path) -> None:
+def fill_space_machines(store: AppStore, data_dir: Path, *, rewrite_remote: bool = True) -> None:
     """Upgrade every project whose manifest still names its machines by alias.
 
     Each pending manifest is read first: its machines become space cards and
     the settings older builds kept there merge into them. Cards settle only
     after every pending manifest merged, so a machine two projects share takes
     Slurm from either. Then each project is rewritten to name its cards by id.
+    Without ``rewrite_remote`` only projects whose state is on the backend are
+    rewritten: a fenced candidate may not write a remote manifest that an update
+    rollback could not restore.
     """
 
     pending = [project for project in store.projects() if project.machine_ids_pending]
@@ -350,6 +353,8 @@ def fill_space_machines(store: AppStore, data_dir: Path) -> None:
     if not unread:
         store.settle_legacy_machine_settings(hosts)
     for project in pending:
+        if not rewrite_remote and project.state_machine_id != BACKEND_MACHINE_ID:
+            continue
         if project_machine_upgrade_blocked(store, project.project_id):
             continue
         try:
@@ -872,6 +877,7 @@ class ProjectCatalog:
         )
         self.on_accepted_transition: Callable[[str, int], None] | None = None
         self.on_accepted_branch_transition: Callable[[str, str, int], None] | None = None
+        self.remote_machine_upgrades_allowed: Callable[[], bool] = lambda: True
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
         self._opening: dict[str, Future[tuple[ProjectService, MaterializationResult]]] = {}
@@ -2571,16 +2577,33 @@ class ProjectCatalog:
                 f"{identity.project_id!r}."
             )
 
+    def _upgrade_machine_ids_on_open(self, record: ProjectRecord) -> ProjectRecord:
+        """Run the startup machine-id rewrite for a project whose state came back."""
+
+        unavailable = StateUnavailable(
+            "This project still names its machines the old way until its state is reachable."
+        )
+        if (
+            record.state_machine_id != BACKEND_MACHINE_ID
+            and not self.remote_machine_upgrades_allowed()
+        ) or project_machine_upgrade_blocked(self.store, record.project_id):
+            raise unavailable
+        try:
+            upgrade_project_machine_ids(self.store, record, self.data_dir)
+        except (OSError, ValueError, StateUnavailable) as exc:
+            raise unavailable from exc
+        upgraded = self.store.project(record.project_id)
+        if upgraded is None:
+            raise KeyError(record.project_id)
+        return upgraded
+
     def _open_service(self, project_id: str) -> tuple[ProjectService, MaterializationResult]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
             raise KeyError(project_id)
         if record.machine_ids_pending:
-            raise StateUnavailable(
-                "This project still names its machines the old way; restart RCP once its "
-                "state is reachable."
-            )
+            record = self._upgrade_machine_ids_on_open(record)
         bootstrap = load_manifest(record.locator)
         manifest, workspace = prepare_state_workspace(bootstrap, self.data_dir, self.store)
         history = self._history_for_manifest(manifest, workspace, project_id=project_id)

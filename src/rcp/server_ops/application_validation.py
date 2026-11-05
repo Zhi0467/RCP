@@ -1060,7 +1060,11 @@ async def _verify_candidate(
             log.phase = "project reads"
             for project in overlay.projects:
                 headers = {"x-rcp-rehearsal-user": project_principals[project.project_id]}
-                if project.capture_status == "captured":
+                if project.capture_status == "captured" and _awaits_remote_machine_ids(
+                    app.state.catalog.store, project
+                ):
+                    results.append(_recorded_pending_project(cards[project.project_id], project))
+                elif project.capture_status == "captured":
                     results.append(await _verify_captured_project(client, project, headers, reads))
                 else:
                     results.append(_verify_unavailable_project(cards[project.project_id], project))
@@ -1408,6 +1412,24 @@ async def _verify_captured_project(
         status="verified",
         revision=revision,
         projection_sha256=_canonical_sha256(graph),
+    )
+
+
+def _awaits_remote_machine_ids(store: AppStore, project: RehearsalProjectOverlay) -> bool:
+    """Whether a remote project's manifest waits for rollback authority to end."""
+
+    record = store.project(project.project_id)
+    return record is not None and record.machine_ids_pending and project.original_remote
+
+
+def _recorded_pending_project(
+    listed: dict[str, object], project: RehearsalProjectOverlay
+) -> CandidateProjectVerification:
+    return CandidateProjectVerification(
+        project_id=project.project_id,
+        status="not_replay_verified",
+        revision=None,
+        projection_sha256=_canonical_sha256(listed),
     )
 
 
