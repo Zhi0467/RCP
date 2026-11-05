@@ -33,7 +33,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
-    _paper_changes_root,
+    _paper_write_roots,
     _provider_error_text,
     _require_project_write_scope,
     _usage_dedupe_key,
@@ -585,9 +585,9 @@ class ClaudeProfile(ProviderProfile):
                 ]
             )
         elif capability == "paper_suggest":
-            changes = _paper_changes_root(write_dirs)
+            roots = _paper_write_roots(write_dirs)
             self.validate_readiness_version(provider_version, capability=capability)
-            settings = _claude_paper_settings(changes, hidden_read_scope)
+            settings = _claude_paper_settings(roots, hidden_read_scope)
             command.extend(
                 [
                     "--setting-sources",
@@ -601,7 +601,7 @@ class ClaudeProfile(ProviderProfile):
                     "Grep",
                     "WebSearch",
                     "WebFetch",
-                    f"Edit({_claude_absolute_pattern(str(changes))})",
+                    *(f"Edit({_claude_absolute_pattern(str(root))})" for root in roots),
                 ]
             )
         else:
@@ -809,7 +809,7 @@ def _claude_context_window(model_usage: object, model: str | None) -> int | None
 
 
 def _claude_paper_settings(
-    changes: Path, hidden_read_scope: HiddenReadScope | None
+    roots: list[Path], hidden_read_scope: HiddenReadScope | None
 ) -> dict[str, object]:
     # Edit rules govern Write too. dontAsk denies every unlisted command/edit;
     # empty setting sources prevent ambient user grants from broadening this.
@@ -830,7 +830,7 @@ def _claude_paper_settings(
                 "Grep",
                 "WebSearch",
                 "WebFetch",
-                f"Edit({_claude_absolute_pattern(str(changes))})",
+                *(f"Edit({_claude_absolute_pattern(str(root))})" for root in roots),
             ],
             "deny": permissions.get("deny", []),
         },

@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, which RCP reviews or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
+| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
 
@@ -440,7 +440,8 @@ app-server checks the activated profile before starting a turn.
 Paper coach uses the `rcp_paper` permission profile in exec and app-server,
 for fresh and resumed sessions. Its shell runs any command, such as a figure
 converter. Its writable roots are the turn's changes folder and the temporary
-directories; the workspace receives no write grant.
+directories, plus the folder of each saved artifact attached to the message;
+the workspace receives no write grant.
 App-server verifies that this profile is active before delivering the turn.
 
 ### Browser grants
@@ -510,7 +511,8 @@ system prompt and Artifact tools to a turn started from inside it.
 
 Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
 native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
-`Edit` rules confine all file-writing tools, including `Write`, to that folder.
+`Edit` rules confine all file-writing tools, including `Write`, to that folder and
+the folder of each attached saved artifact.
 `Bash` is allowed, as for Work, and as for Work the `Edit` rules do not bound it.
 WebSearch and WebFetch remain available, subject to the resolved hidden-read
 policy.
@@ -567,7 +569,8 @@ Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carrie
 path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages, including the paper coach's, are
 outside Git. The coach's native read tools remain available, its edit rules
-allow only its task's changes folder, and its shell is allowed, as Work's is.
+allow only its task's changes folder and attached saved artifact folders, and its
+shell is allowed, as Work's is.
 Discuss and ingestion may edit only their workspace and their own
 write folders. Discuss and ingestion deny general shell commands, allowing only
 `python3 -I -S <staged-client-path> *` when their broker gate names that client.

@@ -114,10 +114,10 @@ spec, and executable test, not this registry.
    exact write roots to provider enforcement, which bounds every file-editing tool and
    bounds the shell only where a provider can do so without disabling compute
    ([why](docs/specs/providers-and-containment.md#claude)). Ingestion writes only
-   scratch. The paper coach runs commands as Work does; RCP turns its changes folder
-   into paper change cards. The per-chat browser grant is human
-   consent to a code-defined tool; a member's agent threads start with it on.
-   Each project's memory folder is a code-defined write root, never a grant.
+   scratch. The paper coach runs commands as Work does and writes only its own changes
+   folder and the saved artifacts the member attached to the message. The per-chat
+   browser grant is human consent to a code-defined tool; a member's agent threads start
+   with it on. Each project's memory folder is a code-defined write root, never a grant.
 4b. **The task stage is the only graph-change channel.** RCP collects the agent's Patch
    from its exact RCP-owned stage and nowhere else.
    A stage holds one Patch file per graph target; a Space-thread turn has one

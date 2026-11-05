@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tomllib
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -19,10 +20,12 @@ from rcp.providers import ProviderTurnRequest, profile_for
     ],
 )
 @pytest.mark.parametrize("session_id", [None, "native-session"])
-def test_coach_writes_only_its_changes_and_scratch_and_has_a_shell(
-    tmp_path, provider, runtime, session_id
+@pytest.mark.parametrize("attached", [False, True])
+def test_coach_writes_only_its_changes_attached_artifacts_and_scratch_and_has_a_shell(
+    tmp_path, provider, runtime, session_id, attached
 ):
     changes = tmp_path / "changes"
+    roots = [changes, tmp_path / "artifacts" / "figure"] if attached else [changes]
     request = ProviderTurnRequest(
         prompt="Review",
         binary=provider,
@@ -31,7 +34,7 @@ def test_coach_writes_only_its_changes_and_scratch_and_has_a_shell(
         reasoning=None,
         session_id=session_id,
         read_dirs=[tmp_path / "snapshot"],
-        write_dirs=[changes],
+        write_dirs=roots,
         write_scope=None,
         capability="paper_suggest",
         provider_version="2.200.0",
@@ -49,7 +52,7 @@ def test_coach_writes_only_its_changes_and_scratch_and_has_a_shell(
         fs = config["permissions"]["rcp_paper"]["filesystem"]
         assert fs[":root"] == "read"
         assert {p for p, mode in fs.items() if mode == "write"} == {
-            str(changes),
+            *map(str, roots),
             ":tmpdir",
             ":slash_tmp",
         }
@@ -81,15 +84,21 @@ def test_coach_writes_only_its_changes_and_scratch_and_has_a_shell(
         assert turn.command[turn.command.index("--setting-sources") + 1] == ""
         settings = json.loads(turn.command[turn.command.index("--settings") + 1])
         assert "Bash" in settings["permissions"]["allow"]
-        assert [p for p in settings["permissions"]["allow"] if p.startswith("Edit(")] == [
-            f"Edit(//{str(changes).lstrip('/')}/**)"
-        ]
+        edits = [f"Edit(//{str(root).lstrip('/')}/**)" for root in roots]
+        assert [p for p in settings["permissions"]["allow"] if p.startswith("Edit(")] == edits
+        assert [p for p in turn.command if p.startswith("Edit(")] == edits
     else:
         config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
         permissions = next(iter(config["agent"].values()))["permission"]
-        assert permissions["edit"] == {"*": "deny", f"{str(changes).strip('/')}/**": "allow"}
+        assert permissions["edit"] == {
+            "*": "deny",
+            **{f"{str(root).strip('/')}/**": "allow" for root in roots},
+        }
         assert permissions["bash"] == "allow"
     with pytest.raises(ValueError):
         profile.runtime(runtime).turn(replace(request, write_dirs=[]))
     with pytest.raises(ValueError):
         profile.runtime(runtime).turn(replace(request, write_dirs=[tmp_path / "changes*"]))
+    for unsafe in (tmp_path / "figure*", tmp_path / "a" / ".." / "b", Path("figure"), Path("/")):
+        with pytest.raises(ValueError):
+            profile.runtime(runtime).turn(replace(request, write_dirs=[*roots, unsafe]))

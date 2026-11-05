@@ -34,7 +34,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
-    _paper_changes_root,
+    _paper_write_roots,
     _require_project_write_scope,
     _require_provider_version,
     _usage_dedupe_key,
@@ -439,8 +439,8 @@ def _permission(
         }
 
     if capability == "paper_suggest":
-        changes = _paper_changes_root(write_dirs)
-        base["edit"] = {"*": "deny", _root_pattern(str(changes)): "allow"}
+        roots = _paper_write_roots(write_dirs)
+        base["edit"] = {"*": "deny", **{_root_pattern(str(root)): "allow" for root in roots}}
         base["bash"] = "allow"
         return base
     if scope is not None:
