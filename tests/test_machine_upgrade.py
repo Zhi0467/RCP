@@ -472,7 +472,9 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
     assert all(project.machine_ids_pending for project in projects.values())
     assert (providers / f"machine-{GPU}" / "setup-token").read_text(encoding="utf-8") == "token"
     assert (providers / f"machine-{backend}").is_dir()
-    assert not gpu_folder.exists()
+    assert (providers / "local" / "setup-token").read_text(encoding="utf-8") == "token"
+    assert (gpu_folder / "setup-token").read_text(encoding="utf-8") == "token"
+    assert gpu_folder.readlink() == Path(f"machine-{GPU}")
     with store.connection() as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM provider_readiness_snapshots").fetchone()[0]

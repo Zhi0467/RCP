@@ -862,7 +862,11 @@ def _migrate_artifact_edit_stages(connection: sqlite3.Connection, cards: _Cards)
 
 
 def _rename_credential_folders(file_root: Path, cards: _Cards) -> None:
-    """`<data>/providers/<provider>/{local,remote-<sha256 host>}` becomes `machine-<id>`."""
+    """`<data>/providers/<provider>/{local,remote-<sha256 host>}` becomes `machine-<id>`.
+
+    The old name stays as a link to the new folder: backups exclude `providers/`,
+    so a rolled-back release still finds every sign-in through its own path.
+    """
 
     providers = file_root / "providers"
     if not providers.is_dir():
@@ -882,6 +886,7 @@ def _rename_credential_folders(file_root: Path, cards: _Cards) -> None:
             target = provider / f"machine-{machine_id}"
             if machine_id and not target.exists():
                 source.rename(target)
+                source.symlink_to(target.name)
 
 
 def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) -> None:
