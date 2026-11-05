@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from rcp.api.dependencies import get_graph_service
+from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import Artifact
@@ -206,6 +207,21 @@ async def test_the_paper_coach_edits_an_attached_saved_artifact_in_place(manifes
         async def stream(self, _provider, _prompt, **kwargs):
             tracked = Path(kwargs["cwd"]) / "turns" / "origin" / "artifacts" / "report.txt"
             assert tracked.parent in kwargs["write_dirs"]
+            profile_for("codex").runtime("codex.exec-json.v1").turn(
+                ProviderTurnRequest(
+                    prompt="Review",
+                    binary="codex",
+                    cwd=Path(kwargs["cwd"]),
+                    model=None,
+                    reasoning=None,
+                    session_id=None,
+                    read_dirs=[],
+                    write_dirs=list(kwargs["write_dirs"]),
+                    write_scope=None,
+                    capability="paper_suggest",
+                    provider_version="2.200.0",
+                )
+            )
             assert tracked.read_bytes() == b"first draft"
             tracked.write_bytes(b"second draft")
             yield AgentEvent(event="session", session_id="coach-session")

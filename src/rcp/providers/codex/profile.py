@@ -24,7 +24,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderRuntime,
     _optional_usage_int,
-    _paper_changes_root,
+    _paper_write_roots,
     _require_project_write_scope,
     _usage_dedupe_key,
     _usage_int,
@@ -364,7 +364,7 @@ class CodexProfile(ProviderProfile):
                     'default_permissions="rcp_paper"',
                     "--config",
                     _codex_paper_permission_profile(
-                        _paper_changes_root(write_dirs), hidden_read_scope
+                        _paper_write_roots(write_dirs), hidden_read_scope
                     ),
                 ]
             )
@@ -587,13 +587,13 @@ def _codex_stage_permission_profile(cwd: Path, hidden_read_scope: HiddenReadScop
 
 
 def _codex_paper_permission_profile(
-    changes: Path, hidden_read_scope: HiddenReadScope | None = None
+    roots: list[Path], hidden_read_scope: HiddenReadScope | None = None
 ) -> str:
     denials = _codex_read_denials(hidden_read_scope)
     return (
         'permissions={rcp_paper={filesystem={":root"="read",'
-        + json.dumps(str(changes))
-        + '="write",":tmpdir"="write",":slash_tmp"="write"'
+        + "".join(f'{json.dumps(str(root))}="write",' for root in roots)
+        + '":tmpdir"="write",":slash_tmp"="write"'
         + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )

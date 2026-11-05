@@ -685,16 +685,18 @@ def _usage_dedupe_key(value: dict[str, object], raw: str, *fields: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _paper_changes_root(write_dirs: list[Path]) -> Path:
-    """The coach has exactly one already-resolved output root, never cwd or temp."""
-    if len(write_dirs) != 1 or not write_dirs[0].is_absolute():
-        raise ValueError("paper_suggest requires exactly one absolute changes directory")
-    path = write_dirs[0]
-    if path != path.resolve() or path == Path(path.anchor):
-        raise ValueError("paper_suggest changes directory must be a resolved non-root path")
-    if any(character in str(path) for character in "*?[]\\"):
-        raise ValueError("paper_suggest changes directory cannot contain permission wildcards")
-    return path
+def _paper_write_roots(write_dirs: list[Path]) -> list[Path]:
+    """The coach's changes folder and attached artifact folders, never cwd or temp."""
+    if not write_dirs:
+        raise ValueError("paper_suggest requires its changes directory")
+    for path in write_dirs:
+        if not path.is_absolute():
+            raise ValueError("paper_suggest write directories must be absolute")
+        if path != path.resolve() or path == Path(path.anchor):
+            raise ValueError("paper_suggest write directories must be resolved non-root paths")
+        if any(character in str(path) for character in "*?[]\\"):
+            raise ValueError("paper_suggest write directories cannot contain permission wildcards")
+    return list(dict.fromkeys(write_dirs))
 
 
 def _require_project_write_scope(

@@ -1625,7 +1625,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v9"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v10"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1656,7 +1656,7 @@ propose complete file changes in the one changes folder below.
 {_retry_context(retry_diagnostics_path)}
 Required inputs:
 - Saved paper snapshot (read-only folder): `{paper_path}`
-- Changes folder (your only writable location): `{changes_path}`
+- Changes folder (writable, as are the attached saved artifacts below): `{changes_path}`
 - Current graph: `{graph_path}`
 - Current research rendering: `{research_path}`
 - Human request: `{human_request_path}`
@@ -1687,7 +1687,8 @@ Authorship contract:
   saved Apply-directly choice. You have no direct paper-write authority.
 - You have a shell. Run whatever commands the request needs, such as converting or rendering
   figures, and write their outputs into the changes folder like any other file.
-- Do not write anywhere outside the named changes folder, including the snapshot.
+- Do not write anywhere outside the named changes folder and the attached saved artifacts,
+  including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.
 - The paper is a shared draft, not canonical graph truth. Distinguish its claims
   from each graph node's explicit accepted, asserted, or contested standing.
