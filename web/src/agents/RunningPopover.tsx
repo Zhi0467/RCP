@@ -20,12 +20,13 @@ const RUNNING_READ_GAP_MS = 2000;
  * The Running list, read once the open-card version is first reported and again
  * whenever it moves. Each read records the version it started under, so a move
  * during a read is read again. Reads are at least RUNNING_READ_GAP_MS apart, so a
- * burst of moves costs one read; a failed read keeps the last list and retries
- * with backoff.
+ * burst of moves costs one read; a failed read marks the last list stale and
+ * retries with backoff.
  */
-function useRunningList(): RunningList | null {
+function useRunningList(): { list: RunningList | null; stale: boolean } {
   const { scheduler } = useRefreshRuntime();
   const [list, setList] = useState<RunningList | null>(null);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     let stopped = false;
     let loading = false;
@@ -51,11 +52,14 @@ function useRunningList(): RunningList | null {
           failures = 0;
           read = version;
           setList(next);
+          setFailed(false);
           later(RUNNING_READ_GAP_MS);
         },
         () => {
           loading = false;
+          if (stopped) return;
           failures += 1;
+          setFailed(true);
           later(retryBackoffMs(failures));
         },
       );
@@ -70,7 +74,7 @@ function useRunningList(): RunningList | null {
       unwatch();
     };
   }, [scheduler]);
-  return list;
+  return { list, stale: failed };
 }
 
 function RunningEntry({ row, now, onOpen }: { row: RunningRow; now: number; onOpen: () => void }) {
@@ -103,7 +107,7 @@ function RunningEntry({ row, now, onOpen }: { row: RunningRow; now: number; onOp
  * running in their projects. Hidden when nothing runs; a row only opens its run.
  */
 export function RunningPopover() {
-  const list = useRunningList();
+  const { list, stale } = useRunningList();
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -116,16 +120,24 @@ export function RunningPopover() {
     <>
       <button
         ref={trigger}
-        className="upcoming-button running-button"
+        className={`upcoming-button running-button${stale ? " stale" : ""}`}
         type="button"
-        title="Running"
-        aria-label={`Running, ${list.needs} of ${list.total} need you`}
+        title={stale ? "Running couldn't load. Retrying." : "Running"}
+        aria-label={
+          stale
+            ? "Running couldn't load. Retrying."
+            : `Running, ${list.needs} of ${list.total} need you`
+        }
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
         <Activity size={14} aria-hidden="true" />
-        {list.needs}
-        <span className="running-total"> / {list.total}</span>
+        {!stale && (
+          <>
+            {list.needs}
+            <span className="running-total"> / {list.total}</span>
+          </>
+        )}
       </button>
       {open && (
         <div className="upcoming-popover" role="dialog" aria-label="Running" ref={panel}>

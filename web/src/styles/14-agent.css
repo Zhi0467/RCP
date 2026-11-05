@@ -338,6 +338,9 @@
 .running-total {
   color: var(--faint);
 }
+.running-button.stale {
+  color: var(--amber);
+}
 .running-row {
   color: inherit;
   text-decoration: none;
