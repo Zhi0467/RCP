@@ -32,7 +32,7 @@ class _Process:
         return self.returncode
 
 
-def _legacy_record(manager: TerminalManager, execution_host: str) -> None:
+def _legacy_record(manager: TerminalManager, execution_host: str, ended: bool) -> None:
     record = {
         "session_id": "legacy",
         "project_id": "project",
@@ -48,16 +48,19 @@ def _legacy_record(manager: TerminalManager, execution_host: str) -> None:
         "execution_host": execution_host,
         "containment": "mirrored",
         "state": "idle",
-        "ended_at": "end",
-        "termination_reason": "idle",
+        "ended_at": "end" if ended else None,
+        "termination_reason": "idle" if ended else None,
     }
     (manager.directory / "legacy.json").write_text(json.dumps(record))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("execution_host", "opens"), [("", True), ("gone.example", False)])
+@pytest.mark.parametrize(
+    ("execution_host", "ended", "opens"),
+    [("", False, True), ("gone.example", True, True), ("gone.example", False, False)],
+)
 async def test_an_old_writer_record_resolves_through_its_card(
-    manifest, tmp_path, monkeypatch, execution_host, opens
+    manifest, tmp_path, monkeypatch, execution_host, ended, opens
 ):
     slaves: list[int] = []
 
@@ -80,7 +83,7 @@ async def test_an_old_writer_record_resolves_through_its_card(
         tmp_path / "data", lambda _project, _member: True, AppStore(tmp_path / "app.sqlite3")
     )
     manager.directory.mkdir(parents=True)
-    _legacy_record(manager, execution_host)
+    _legacy_record(manager, execution_host, ended)
     arguments = dict(
         project_id="project",
         member_id="member",

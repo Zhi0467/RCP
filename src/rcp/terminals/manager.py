@@ -324,13 +324,17 @@ class TerminalManager:
         unit would then be cleaned up against a local one that was never
         there. Being unable to read a record is not evidence that its shell is
         gone, so whatever repository it still names stays blocked until the
-        file is resolved by hand or by the version that wrote it.
+        file is resolved by hand or by the version that wrote it. An older
+        build's record that already ended left no shell behind, so it is
+        skipped even when its machine's card is gone.
         """
         payload: object = None
         try:
             payload = json.loads(path.read_text())
             if isinstance(payload, dict):
                 payload = upgraded_terminal_record(payload, self.store.space_machines())
+                if "machine_id" not in payload and payload.get("ended_at"):
+                    return None
             if not isinstance(payload, dict) or payload.keys() < RECORD_FIELDS:
                 raise ValueError("does not name every field this version writes")
             for key, value in payload.items():
