@@ -224,11 +224,11 @@ def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
     from rcp.api import space_machines
 
     terminals = app.state.services.terminals
-    monkeypatch.setattr(terminals, "holds_machine", lambda machine_id: True)
+    terminals._opening_machines[card.machine_id] += 1
     held = client.patch(path, json={"host": "new.example", "os_account": "carol"})
     assert held.status_code == 409
     assert held.json()["detail"]["code"] == "machine_has_terminals"
-    monkeypatch.setattr(terminals, "holds_machine", lambda machine_id: False)
+    del terminals._opening_machines[card.machine_id]
     space_machines._REACH[(str(store.path), card.machine_id)] = [{"from": "Old", "probe": {}}]
     moved = client.patch(path, json={"host": "new.example", "os_account": "carol"})
     assert moved.status_code == 200, moved.text

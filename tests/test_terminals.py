@@ -1874,9 +1874,14 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
 
 
 @pytest.mark.asyncio
-async def test_a_retained_session_holds_its_card_route(unstarted) -> None:
-    assert not unstarted.holds_machine("worker-card")
+async def test_a_retained_or_opening_session_holds_its_card_route(unstarted) -> None:
+    with unstarted.route_change("worker-card") as held:
+        assert held
+        with unstarted.route_change("worker-card") as again:
+            assert not again
     unstarted._unresolved[("project", "repo-a")] = [SimpleNamespace(machine_id="worker-card")]
-
-    assert unstarted.holds_machine("worker-card")
-    assert not unstarted.holds_machine("other-card")
+    with unstarted.route_change("worker-card") as held:
+        assert not held
+    unstarted._opening_machines["other-card"] += 1
+    with unstarted.route_change("other-card") as held:
+        assert not held

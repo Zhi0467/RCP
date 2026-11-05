@@ -85,7 +85,13 @@ def check_codex_home(data: Path, fixture: dict | None, *, migrated: bool) -> Non
     assert (homes[0] / "auth.json").read_text() == fixture["credential"]
     if migrated:
         assert homes[0] == credentials.login_home("codex", fixture["login_ids"][0])
-        assert Path(fixture["home"]).readlink() == homes[0]
+        machine = _backend_machine()
+        recorded = (
+            credentials.account_dir("codex", machine, fixture["login_ids"][0]) / "codex-home"
+            if machine
+            else Path(fixture["home"])
+        )
+        assert recorded.readlink() == homes[0]
         retained = homes[0].with_name(homes[0].name + "-retained")
         copies = list(retained.rglob("state_5.sqlite"))
         assert any(

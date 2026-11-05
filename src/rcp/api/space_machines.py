@@ -6,6 +6,7 @@ they use (`rcp.api.project_state`).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -702,92 +703,98 @@ def update_space_machine(
     machine = _machine_or_404(store, machine_id)
     host, os_account = _checked_route(store, machine, body)
     route_changed = (host, os_account) != (machine.host, machine.os_account)
-    if route_changed and _api_services(request).terminals.holds_machine(machine_id):
-        raise HTTPException(
-            status_code=409,
-            detail={"code": "machine_has_terminals", "message": "machine_has_terminals"},
-        )
-    target = machine.model_copy(update={"host": host, "os_account": os_account})
-    writable_paths = None
-    if body.writable_paths is not None:
-        try:
-            writable_paths = _validated_writable_paths(target, body.writable_paths, catalog)
-        except (MachineBrowseFailure, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    hidden_folders = None
-    if body.hidden_folders is not None:
-        try:
-            hidden_folders = _validated_hidden_folders(target, body.hidden_folders, catalog)
-        except (MachineBrowseFailure, ValueError) as exc:
+    with contextlib.ExitStack() as route:
+        terminals = _api_services(request).terminals
+        if route_changed and not route.enter_context(terminals.route_change(machine_id)):
             raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": getattr(exc, "code", "hidden_folder_rejected"),
-                    "message": str(exc),
-                },
-            ) from exc
-    provider_paths = None
-    if body.provider_paths is not None:
+                status_code=409,
+                detail={"code": "machine_has_terminals", "message": "machine_has_terminals"},
+            )
+        target = machine.model_copy(update={"host": host, "os_account": os_account})
+        writable_paths = None
+        if body.writable_paths is not None:
+            try:
+                writable_paths = _validated_writable_paths(target, body.writable_paths, catalog)
+            except (MachineBrowseFailure, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        hidden_folders = None
+        if body.hidden_folders is not None:
+            try:
+                hidden_folders = _validated_hidden_folders(target, body.hidden_folders, catalog)
+            except (MachineBrowseFailure, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": getattr(exc, "code", "hidden_folder_rejected"),
+                        "message": str(exc),
+                    },
+                ) from exc
+        provider_paths = None
+        if body.provider_paths is not None:
+            try:
+                recorded = validate_machine_provider_paths(
+                    {
+                        provider: path
+                        for provider, path in body.provider_paths.items()
+                        if path.strip()
+                    },
+                    host=host,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            provider_paths = {provider: recorded.get(provider) for provider in body.provider_paths}
+        compute_changed = (
+            body.job_manager is not None and body.job_manager != machine.job_manager
+        ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
+        usage = _machine_usage(store)
+        projects = usage.projects.get(machine_id, [])
+        if compute_changed:
+            # Fail closed: no project keeps a route check made under the old settings.
+            for project in projects:
+                store.delete_compute_backend_probe(project["project_id"], machine_id)
+        # A human edit makes the card the owner: no later start refills a field
+        # this edit cleared from an older manifest.
+        store.settle_legacy_machine_settings([machine.host])
         try:
-            recorded = validate_machine_provider_paths(
-                {provider: path for provider, path in body.provider_paths.items() if path.strip()},
-                host=host,
+            updated = store.update_space_machine(
+                machine_id,
+                name=body.name,
+                host=host if route_changed else None,
+                os_account=os_account if route_changed else None,
+                writable_paths=writable_paths,
+                hidden_folders=hidden_folders,
+                provider_autocompact=body.provider_autocompact,
+                provider_shell_timeout=body.provider_shell_timeout,
+                job_manager=body.job_manager,
+                jobs_root=body.jobs_root,
+                access_hint=body.access_hint,
+                provider_paths=provider_paths,
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        provider_paths = {provider: recorded.get(provider) for provider in body.provider_paths}
-    compute_changed = (
-        body.job_manager is not None and body.job_manager != machine.job_manager
-    ) or (body.jobs_root is not None and body.jobs_root != machine.jobs_root)
-    usage = _machine_usage(store)
-    projects = usage.projects.get(machine_id, [])
-    if compute_changed:
-        # Fail closed: no project keeps a route check made under the old settings.
-        for project in projects:
-            store.delete_compute_backend_probe(project["project_id"], machine_id)
-    # A human edit makes the card the owner: no later start refills a field
-    # this edit cleared from an older manifest.
-    store.settle_legacy_machine_settings([machine.host])
-    try:
-        updated = store.update_space_machine(
-            machine_id,
-            name=body.name,
-            host=host if route_changed else None,
-            os_account=os_account if route_changed else None,
-            writable_paths=writable_paths,
-            hidden_folders=hidden_folders,
-            provider_autocompact=body.provider_autocompact,
-            provider_shell_timeout=body.provider_shell_timeout,
-            job_manager=body.job_manager,
-            jobs_root=body.jobs_root,
-            access_hint=body.access_hint,
-            provider_paths=provider_paths,
-        )
-    except SpaceMachineHostInUse:
-        raise HTTPException(
-            status_code=409, detail="This space already has that machine."
-        ) from None
-    if route_changed:
-        invalidate_machine(
-            store,
-            machine_id,
-            project_ids=[project["project_id"] for project in projects],
-            forget_display_snapshot=catalog.forget_display_snapshot,
-        )
-        with _REACH_LOCK:
-            _REACH.pop((str(store.path), machine_id), None)
-    for provider, path in (provider_paths or {}).items():
-        for binary in {machine.provider_paths.get(provider), path} - {None}:
-            catalog.launcher.invalidate_readiness(
-                LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=binary
+        except SpaceMachineHostInUse:
+            raise HTTPException(
+                status_code=409, detail="This space already has that machine."
+            ) from None
+        if route_changed:
+            invalidate_machine(
+                store,
+                machine_id,
+                project_ids=[project["project_id"] for project in projects],
+                forget_display_snapshot=catalog.forget_display_snapshot,
             )
-    if compute_changed:
-        # Checked now, so the card this returns already shows the new routes.
-        _refresh_machine_probes(store, catalog, updated)
-        updated = _machine_or_404(store, machine_id)
-    return _one_machine_view(
-        store, updated, _visible_project_ids(request, identity_access, store), catalog.launcher
-    )
+            with _REACH_LOCK:
+                _REACH.pop((str(store.path), machine_id), None)
+        for provider, path in (provider_paths or {}).items():
+            for binary in {machine.provider_paths.get(provider), path} - {None}:
+                catalog.launcher.invalidate_readiness(
+                    LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=binary
+                )
+        if compute_changed:
+            # Checked now, so the card this returns already shows the new routes.
+            _refresh_machine_probes(store, catalog, updated)
+            updated = _machine_or_404(store, machine_id)
+        return _one_machine_view(
+            store, updated, _visible_project_ids(request, identity_access, store), catalog.launcher
+        )
 
 
 def _refresh_machine_probes(

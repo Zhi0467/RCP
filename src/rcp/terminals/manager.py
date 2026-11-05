@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import fcntl
@@ -14,9 +15,10 @@ import signal
 import struct
 import subprocess
 import termios
+import threading
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
@@ -126,6 +128,9 @@ class TerminalManager:
         self._resource_generations: dict[str, int] = {}
         self._opening: set[tuple[str, str]] = set()
         self._opening_trees: set[tuple[str, str]] = set()
+        self._route_lock = threading.Lock()
+        self._opening_machines: collections.Counter[str] = collections.Counter()
+        self._route_changes: set[str] = set()
         # Records left unfinished because a unit could not be confirmed gone,
         # keyed by the alias each was filed under.
         self._unresolved: dict[tuple[str, str], list[TerminalSession]] = {}
@@ -552,6 +557,12 @@ class TerminalManager:
                 return existing
             if key in self._opening:
                 raise TerminalUnavailable("A terminal for this repository is already opening.")
+            repository = manifest.repository_map.get(repository_alias)
+            machine_id = repository.machine if repository is not None else ""
+            with self._route_lock:
+                if machine_id in self._route_changes:
+                    raise TerminalUnavailable("This machine's route is changing.")
+                self._opening_machines[machine_id] += 1
             self._opening.add(key)
         try:
             return await self._open(
@@ -569,6 +580,10 @@ class TerminalManager:
             )
         finally:
             self._opening.discard(key)
+            with self._route_lock:
+                self._opening_machines[machine_id] -= 1
+                if not self._opening_machines[machine_id]:
+                    del self._opening_machines[machine_id]
 
     def stop_thread(self, call: Callable[[], object]):
         """Run one blocking stop off the interpreter's shared pool.
@@ -825,12 +840,30 @@ class TerminalManager:
             return False
         return True
 
-    def holds_machine(self, machine_id: str) -> bool:
-        """Whether a live or retained session runs on the card, so its route must not move.
+    @contextlib.contextmanager
+    def route_change(self, machine_id: str) -> Iterator[bool]:
+        """Hold the card's route still while it changes; False when a session holds it.
 
-        A unit is stopped through the card's current route; a moved route would
-        find no unit and call a live one gone.
+        A unit is stopped through the card's current route, so a moved route
+        would find no unit and call a live one gone. Opens on the card wait
+        outside: they register under the same lock and are refused meanwhile.
         """
+        with self._route_lock:
+            if machine_id in self._route_changes or self._holds_machine(machine_id):
+                held = False
+            else:
+                self._route_changes.add(machine_id)
+                held = True
+        try:
+            yield held
+        finally:
+            if held:
+                with self._route_lock:
+                    self._route_changes.discard(machine_id)
+
+    def _holds_machine(self, machine_id: str) -> bool:
+        if self._opening_machines[machine_id]:
+            return True
         return any(
             runtime.session.machine_id == machine_id for runtime in self.sessions.values()
         ) or any(

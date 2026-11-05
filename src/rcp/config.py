@@ -8,6 +8,7 @@ import tomlkit
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from rcp.compute_jobs.text import COMPUTE_CREDENTIAL_PATH, validate_compute_metadata
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import (
     DEFAULT_PROVIDER,
     AgentCapability,
@@ -488,7 +489,7 @@ def manifest_from_text(
     project_root = path.parent.parent if project_root is None else project_root
     for repository in manifest.repositories:
         repository_path = _expand_local_user_path(repository.path, local_home=local_home)
-        if not repository_path.is_absolute():
+        if not repository_path.is_absolute() and repository.machine == BACKEND_MACHINE_ID:
             repository.path = str((project_root / repository_path).resolve())
     manifest.sources.claude_roots = [
         _resolve_local_source_root(project_root, root, local_home=local_home)

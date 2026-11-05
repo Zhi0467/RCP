@@ -255,17 +255,30 @@ def test_an_agent_proposed_repository_is_written_on_the_named_card(manifest, tmp
         )
 
 
+def _place_repo_b(manifest, machine: str, path: str) -> None:
+    text = manifest.path.read_text(encoding="utf-8")
+    text = text.replace(f'path = "{manifest.repository_map["repo-b"].path}"', f'path = "{path}"')
+    text = text.replace(f'machines = ["{BASE}"]', f'machines = ["{BASE}", "{machine}"]')
+    head, _, tail = text.partition('alias = "repo-b"')
+    tail = tail.replace(f'machine = "{BASE}"', f'machine = "{machine}"', 1)
+    manifest.path.write_text(head + 'alias = "repo-b"' + tail, encoding="utf-8")
+
+
 def test_a_relative_repository_path_resolves_beside_the_project(manifest) -> None:
-    manifest.path.write_text(
-        manifest.path.read_text(encoding="utf-8").replace(
-            f'path = "{manifest.repository_map["repo-b"].path}"', 'path = "../repo-b"'
-        ),
-        encoding="utf-8",
-    )
+    _place_repo_b(manifest, "backend", "../repo-b")
 
     loaded = load_manifest(manifest.path)
 
     assert loaded.repository_map["repo-b"].path == manifest.repository_map["repo-b"].path
+
+
+def test_a_relative_path_on_a_remote_card_stays_as_written(manifest) -> None:
+    _place_repo_b(manifest, GPU, "work/repo-b")
+
+    loaded = load_manifest(manifest.path)
+
+    assert loaded.repository_map["repo-b"].machine == GPU
+    assert loaded.repository_map["repo-b"].path == "work/repo-b"
 
 
 def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:
