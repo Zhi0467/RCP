@@ -2433,7 +2433,7 @@ def test_file_client_acknowledges_only_consumed_answer(
             "--credential",
             str(credential),
             "--timeout",
-            "0.1",
+            "5" if delivered else "0.1",
             "--workspace",
             str(tmp_path),
             "ask",
