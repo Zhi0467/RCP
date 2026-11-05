@@ -28,7 +28,6 @@ def _published_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         fixture["catalog"].data_dir,
         fixture["catalog"],
         AgentLauncher(),
-        machine_account=lambda host: "",
     )
     return fixture, request, setup
 
@@ -55,7 +54,7 @@ def test_incoming_transfer_finalizer_accepts_retained_history_without_publishing
     assert record.project_id == archive.project_id
     assert record.home_space_id == fixture["target"].space_id
     assert record.locator == str(target_state_root / "manifest.toml")
-    assert record.state_location == str(target_state_root)
+    assert record.state_path == str(target_state_root)
     assert fixture["target"].project(archive.project_id) is None
     patch_payloads_after = {
         path.relative_to(target_state_root).as_posix(): path.read_bytes()

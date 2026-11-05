@@ -74,18 +74,18 @@ def _register_completed_project(
     checked_at = "2026-08-29T12:00:00+00:00"
     central_root = data_dir.parent / "remote-central"
     repository_path = central_root / project_id / "repositories" / "paper"
+    worker = store.space_machine_for("gpu.example") or store.create_space_machine(
+        name="worker", host="gpu.example", os_account="rcp"
+    )
     machine = ProjectProvisioningMachineRecord(
-        alias="worker",
-        location="ssh",
-        host="gpu.example",
-        os_account="rcp",
+        machine_id=worker.machine_id,
         central_root=str(central_root),
         resolved_central_root=str(central_root),
     )
     repository = ProjectProvisioningRepositoryRecord(
         alias="paper",
         repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-        machine_alias="worker",
+        machine_id=worker.machine_id,
         intended_path=str(repository_path),
         resolved_path=str(repository_path),
         checkout_disposition="request_created",
@@ -105,7 +105,7 @@ def _register_completed_project(
             runtime_id="codex:exec",
             model="gpt-test",
             reasoning="medium",
-            machine_alias="worker",
+            machine_id=worker.machine_id,
             status="ready",
             binary_path="/usr/local/bin/codex",
             version="codex-cli 1.2.3",
@@ -159,8 +159,8 @@ def _register_completed_project(
         home_space_id=store.space_id,
         locator=str(locator),
         name=name,
-        state_location=f"gpu.example:{repository_path}/.research",
-        state_remote=True,
+        state_machine_id=worker.machine_id,
+        state_path=f"{repository_path}/.research",
         added_at=checked_at,
     )
     return store.upsert_project(record)
@@ -252,7 +252,7 @@ def _create_unresolved_kept_artifact_revision(
             source_operation_id=source_operation_id,
             source_artifact_id="d" * 24,
             revision_operation_id=revision_operation_id,
-            stage_host="",
+            stage_machine_id="backend",
             stage_root="/tmp/candidate-stage",
             artifact_scope_id=revision_operation_id,
             source_name="figure.png",

@@ -39,6 +39,7 @@ from rcp.transfer import (
     TransferGraphHead,
 )
 from rcp.transfer.configuration import build_transfer_target_configuration
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 from rcp.transport import StateUnavailable
 from tests.helpers import unchecked_write_authority
 
@@ -51,6 +52,7 @@ SOURCE_USER_ID = "66666666-6666-4666-8666-666666666666"
 TARGET_USER_ID = "77777777-7777-4777-8777-777777777777"
 ARCHIVE_ACTOR_ID = "88888888-8888-4888-8888-888888888888"
 BRANCH_ID = "99999999-9999-4999-8999-999999999999"
+TARGET_MACHINE_ID = "c" * 32
 
 
 def _actor(space_id: str, user_id: str, display_name: str) -> AuthorizedHuman:
@@ -136,7 +138,6 @@ def _configuration_fixture(manifest, tmp_path: Path):
         ProjectTransferRepositorySource(
             alias=alias,
             repository=parse_github_repository_ref(f"git@github.com:Example/{alias}.git"),
-            machine_alias="laptop",
         )
         for alias in ("repo-a", "repo-b")
     )
@@ -145,21 +146,18 @@ def _configuration_fixture(manifest, tmp_path: Path):
         source_rcp_version="0.1.0.dev0+main",
         source_schema_generation=1,
         supported_archive_codecs=(TRANSFER_ARCHIVE_CODEC,),
-        machine_aliases=("laptop",),
         repositories=repositories,
         state_repository="repo-a",
         project_truth_scope=("repo-a", "repo-b"),
         default_run_truth_scope=("repo-a",),
         source_manifest_sha256=hashlib.sha256(source_manifest_bytes).hexdigest(),
+        record_schema_version=TRANSFER_RECORD_SCHEMA_VERSION,
     )
     source_configuration_sha256 = project_transfer_source_configuration_sha256(source_configuration)
 
     target_root = "/srv/rcp/projects"
     machine = ProjectProvisioningMachineRecord(
-        alias="laptop",
-        location="ssh",
-        host="server.example",
-        os_account="rcp",
+        machine_id=TARGET_MACHINE_ID,
         central_root=target_root,
         resolved_central_root=target_root,
     )
@@ -168,7 +166,7 @@ def _configuration_fixture(manifest, tmp_path: Path):
         ProjectProvisioningRepositoryRecord(
             alias=item.alias,
             repository=item.repository,
-            machine_alias="laptop",
+            machine_id=TARGET_MACHINE_ID,
             intended_path=(f"{target_root}/{PROJECT_ID}/repositories/{item.alias}"),
             resolved_path=(f"{target_root}/{PROJECT_ID}/repositories/{item.alias}"),
             checkout_disposition="request_created",
@@ -190,7 +188,7 @@ def _configuration_fixture(manifest, tmp_path: Path):
             runtime_id="codex:exec",
             model="gpt-test",
             reasoning="medium",
-            machine_alias="laptop",
+            machine_id=TARGET_MACHINE_ID,
             status="ready",
             binary_path="/usr/local/bin/codex",
             version="codex-cli 1.2.3",
@@ -354,7 +352,7 @@ def test_target_configuration_uses_only_reviewed_target_execution_and_replays(
     assert target.repository_map["repo-a"].path == (
         f"/srv/rcp/projects/{PROJECT_ID}/repositories/repo-a"
     )
-    assert target.machine_map["laptop"].host == "server.example"
+    assert {item.machine for item in target.repositories} == {TARGET_MACHINE_ID}
     assert str(manifest.repository_map["repo-a"].path) not in configured.manifest_content
     assert configured.receipt.main_head == archive.main_head
     assert configured.receipt.final_review_sha256 == provisioning.final_review_digest
@@ -489,38 +487,6 @@ def test_target_configuration_refuses_scope_or_archive_binding_drift(
             source,
             link,
             rebound,
-            archive_root,
-        )
-
-
-def test_target_configuration_preserves_historical_machine_aliases(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    provisioning, source, link, archive, archive_root = _configuration_fixture(manifest, tmp_path)
-    renamed = provisioning.model_copy(
-        update={
-            "machines": [provisioning.machines[0].model_copy(update={"alias": "server"})],
-            "repositories": [
-                repository.model_copy(update={"machine_alias": "server"})
-                for repository in provisioning.repositories
-            ],
-            "provider_checks": [
-                check.model_copy(update={"machine_alias": "server"})
-                for check in provisioning.provider_checks
-            ],
-        }
-    )
-    renamed = renamed.model_copy(
-        update={"final_review_digest": project_provisioning_review_digest(renamed)}
-    )
-
-    with pytest.raises(ValueError, match="renames a historical repository machine alias"):
-        build_transfer_target_configuration(
-            renamed,
-            source,
-            link,
-            archive,
             archive_root,
         )
 

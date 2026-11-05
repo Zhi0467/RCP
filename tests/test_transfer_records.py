@@ -21,8 +21,11 @@ from rcp.transfer import (
     TransferArchiveActor,
     TransferArchiveAttribution,
 )
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 from .helpers import authorized_human, create_named_app
+
+SOURCE_MACHINE_ID = "source-gpu"
 
 
 def _store(
@@ -56,7 +59,7 @@ def _finished_task(
         provider="codex",
         model="gpt-5.6-sol",
         reasoning="high",
-        run_on="source-gpu",
+        run_on=SOURCE_MACHINE_ID,
         session_id="native-paper-session",
     )
     task = AgentTaskRecord(
@@ -80,7 +83,7 @@ def _finished_task(
             },
         },
         native_session_id="native-paper-session",
-        stage_host="source-gpu",
+        stage_machine_id=SOURCE_MACHINE_ID,
         stage_root="/source/stage",
         authorized_by=actor,
     )
@@ -97,7 +100,7 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
         "native_agent_checkpoint",
         {
             "provider": "codex",
-            "run_on": "source-gpu",
+            "run_on": SOURCE_MACHINE_ID,
             "native_session_id": "native-paper-session",
             "nested": {"stage_root": "/source/stage", "kept": True},
         },
@@ -134,7 +137,7 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
         connection.execute(
             """
             INSERT INTO writing_sessions (
-                native_session_id, provider, runtime_id, execution_machine,
+                native_session_id, provider, runtime_id, machine_id,
                 project_id, title, model, reasoning, created_at, last_resumed_at,
                 introduction_hash_examined, graph_revision_examined,
                 research_md_hash_examined
@@ -153,8 +156,7 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
         job_id="source-compute-job",
         project_id=project_id,
         origin_operation_id=task.operation_id,
-        execution_machine="source-gpu",
-        execution_host="gpu",
+        machine_id=SOURCE_MACHINE_ID,
         backend_id="slurm",
         backend_handle="source-scheduler-handle",
         job_root="/source/jobs/job",
@@ -169,7 +171,7 @@ def test_finished_project_export_is_inert_complete_and_repeatable(manifest, tmp_
     second = store.export_project_transfer_records(project_id, attributions=attributions)
 
     assert first.model_dump_json() == second.model_dump_json()
-    assert first.schema_version == 1
+    assert first.schema_version == TRANSFER_RECORD_SCHEMA_VERSION
     assert len(first.tasks) == 1
     exported = first.tasks[0]
     assert exported.history_only is True
@@ -237,7 +239,7 @@ def test_export_refuses_unfinished_task_without_changing_it(manifest, tmp_path: 
             request=CoachRequest(
                 message="Wait",
                 provider="codex",
-                run_on="source-gpu",
+                run_on=SOURCE_MACHINE_ID,
             ).model_dump(mode="json"),
             created_at=now,
             updated_at=now,
@@ -262,7 +264,7 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
             """
             INSERT INTO watchers (
                 watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, graph_target_json, execution_host, check_command,
+                chat_id, graph_target_json, machine_id, check_command,
                 log_path, cwd, continuation_json, status, created_at,
                 completed_at, notified
             ) VALUES (?, ?, ?, 'project_chat', 'chat-1',
@@ -331,7 +333,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
         provider="codex",
         model="gpt-5.6-sol",
         reasoning="high",
-        run_on="source-gpu",
+        run_on=SOURCE_MACHINE_ID,
         session_id="native-auto-session",
     ).model_dump(mode="json")
     instruction = "Investigate the blocker."
@@ -358,7 +360,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             INSERT INTO graph_runs (
                 operation_id, project_id, episode_id, kind, status, request_json,
                 created_at, updated_at, started_at, finished_at, status_message,
-                runtime_id, native_session_id, stage_host, stage_root,
+                runtime_id, native_session_id, stage_machine_id, stage_root,
                 graph_target_json, authorized_space_id, authorized_user_id,
                 authorized_display_name
             ) VALUES (?, ?, ?, 'auto_research', 'succeeded', ?, ?, ?, ?, ?, 'Finished',
@@ -418,7 +420,7 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
         connection.execute(
             """
             INSERT INTO experiment_episode_state (
-                episode_id, execution_host, last_watcher_ids_json,
+                episode_id, machine_id, last_watcher_ids_json,
                 context_baseline_json, created_at, updated_at
             ) VALUES (?, '', '[]', '{}', ?, ?)
             """,
@@ -621,9 +623,9 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
             "VALUES (?, ?, ?, 'node-1', 'cancelled', ?, '{}', ?, 'Legacy intent cancelled', ?, ?)",
             (cancelled_id, episode_id, project_id, child_episode_id, operation_id, now, now),
         )
-    if seat == "nested_fork":
-        with store.connection() as connection:
-            backfill_graph_branches(connection)
+    with store.connection() as connection:
+        backfill_graph_branches(connection)
+        if seat == "nested_fork":
             connection.execute("UPDATE graph_branches SET owner_episode_id = ?", (episode_id,))
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
     auto = next(item for item in bundle.episodes if item.episode_id == episode_id)
@@ -736,7 +738,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         provider="codex",
         model="gpt-5.6-sol",
         reasoning="high",
-        run_on="source-gpu",
+        run_on=SOURCE_MACHINE_ID,
         chat_scope="node",
         node_id="node-1",
         chat_id="chat-1",
@@ -753,8 +755,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         provider="codex",
         model="gpt-5.6-sol",
         reasoning="high",
-        run_on="source-gpu",
-        execution_host="source.example",
+        run_on=SOURCE_MACHINE_ID,
         session_id="native-experiment-session",
     ).model_dump(mode="json")
     receipt = json.dumps(
@@ -787,7 +788,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
                 INSERT INTO graph_runs (
                     operation_id, project_id, episode_id, kind, status, request_json,
                     created_at, updated_at, started_at, finished_at, status_message,
-                    runtime_id, native_session_id, stage_host, stage_root,
+                    runtime_id, native_session_id, stage_machine_id, stage_root,
                     graph_target_json, visible
                 ) VALUES (?, ?, ?, ?, 'succeeded', ?, ?, ?, ?, ?, 'Finished',
                           'codex.exec-json.v1', 'native-experiment-session', 'source-gpu',
@@ -825,12 +826,12 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         connection.execute(
             """
             INSERT INTO experiment_episode_state (
-                episode_id, provider, execution_machine, execution_host,
-                native_session_id, stage_host, stage_root, chat_id,
+                episode_id, provider, machine_id,
+                native_session_id, stage_machine_id, stage_root, chat_id,
                 last_turn_operation_id, last_turn_invocation, last_graph_result,
                 last_watcher_ids_json, context_baseline_json, session_diagnostic,
                 created_at, updated_at
-            ) VALUES (?, 'codex', 'source-gpu', 'source.example',
+            ) VALUES (?, 'codex', 'source-gpu',
                       'native-experiment-session', 'source-gpu', '/source/stage',
                       'chat-1', ?, 1, 'accepted', '[]',
                       '{"session_id":"native-experiment-session"}', 'Historical only.', ?, ?)
@@ -850,10 +851,10 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             """
             INSERT INTO episode_wrapups (
                 episode_id, ending, partial, concluding_operation_id,
-                allocation_operation_id, provider, run_on, execution_host,
-                native_session_id, stage_host, stage_root, output_name, output_path,
+                allocation_operation_id, provider, machine_id,
+                native_session_id, stage_machine_id, stage_root, output_name, output_path,
                 receipt_json, receipt_sha256, state, created_at, updated_at, finished_at
-            ) VALUES (?, 'completed', 0, ?, ?, 'codex', 'source-gpu', 'source.example',
+            ) VALUES (?, 'completed', 0, ?, ?, 'codex', 'source-gpu',
                       'native-experiment-session', 'source-gpu', '/source/stage',
                       'report.html', '/source/stage/report.html', ?, ?, 'ready', ?, ?, ?)
             """,
@@ -887,9 +888,8 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             ),
         )
 
-    legacy_bundle = store.export_project_transfer_records(project_id, attributions=attributions)
-    assert legacy_bundle.schema_version == 1
-    assert all("archive" not in episode for episode in legacy_bundle.model_dump()["episodes"])
+    unarchived = store.export_project_transfer_records(project_id, attributions=attributions)
+    assert all(episode.archive is None for episode in unarchived.episodes)
     with store.connection() as connection:
         connection.execute(
             """
@@ -906,7 +906,6 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             ),
         )
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
-    assert bundle.schema_version == 2
     episode = next(item for item in bundle.episodes if item.episode_id == episode_id)
     assert episode.archive is not None
     assert episode.archive.archived_by == archived_by
@@ -980,7 +979,7 @@ def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_pat
         "reply_episode_id": "episode",
         "episode_id": "episode",
         "stage_root": "/old/stage",
-        "stage_host": "old-host",
+        "stage_machine_id": "old-machine",
         "master_path": "/old/master",
     }
     store.create_agent_task(
@@ -1013,7 +1012,7 @@ def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_pat
     assert imported.request["artifact_edit"] == {
         key: value
         for key, value in edit.items()
-        if key not in {"stage_root", "stage_host", "master_path"}
+        if key not in {"stage_root", "stage_machine_id", "master_path"}
     }
     assert "session_id" not in imported.request
 
@@ -1079,7 +1078,7 @@ def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
         _saved_paper(connection, monkeypatch, project_id=project_id)
     exported = source.export_project_transfer_records(project_id, attributions=attributions)
     restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
-    assert restored.schema_version == 7
+    assert restored.schema_version == TRANSFER_RECORD_SCHEMA_VERSION
     assert restored.paper is not None
     assert restored.paper == exported.paper
     for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):

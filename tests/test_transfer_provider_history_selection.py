@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from rcp.config import MachineConfig
 from rcp.providers import PROVIDERS, ProviderProfile
 from rcp.providers.session_format import SessionFormat
 from rcp.sources import ConversationIndexer, OriginalConversationSource
 from rcp.sources import indexer as indexer_module
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transfer import provider_history as provider_history_module
 from rcp.transfer.provider_history import capture_provider_history
 
@@ -92,7 +92,9 @@ def test_provider_history_capture_preserves_matching_originals_and_summarizes_om
     )
 
     capture_root = tmp_path / "provider-history"
-    capture = capture_provider_history(ConversationIndexer(manifest), capture_root)
+    capture = capture_provider_history(
+        ConversationIndexer(manifest, machine_cards=dict), capture_root
+    )
 
     expected = {
         f"provider-history/codex/{hashlib.sha256(codex).hexdigest()}": codex,
@@ -117,8 +119,16 @@ def test_provider_history_capture_rechecks_remote_originals_on_the_exact_ssh_acc
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     host = "alice@research.example"
-    manifest.machines.append(MachineConfig(alias="remote-1", host=host))
-    manifest.repositories[0].machine = "remote-1"
+    remote = SpaceMachineRecord(
+        machine_id="a" * 32,
+        name="Remote",
+        host=host,
+        os_account="",
+        created_at="2026-08-31T12:00:00+00:00",
+        updated_at="2026-08-31T12:00:00+00:00",
+    )
+    manifest.machines.append(remote.machine_id)
+    manifest.repositories[0].machine = remote.machine_id
     manifest.repositories[0].path = "/remote/repo-a"
     manifest.sources.codex_roots = []
     manifest.sources.claude_roots = []
@@ -184,7 +194,11 @@ def test_provider_history_capture_rechecks_remote_originals_on_the_exact_ssh_acc
 
     capture_root = tmp_path / "remote-provider-history"
     capture = capture_provider_history(
-        ConversationIndexer(manifest, tmp_path / "source-cache"),
+        ConversationIndexer(
+            manifest,
+            tmp_path / "source-cache",
+            machine_cards=lambda: {remote.machine_id: remote},
+        ),
         capture_root,
     )
 
@@ -215,7 +229,7 @@ def test_provider_history_capture_keeps_going_when_one_selected_file_disappears(
     second = root / "second.jsonl"
     first.write_bytes(_codex_bytes("first", manifest.repository_map["repo-a"].path, "first"))
     second.write_bytes(_codex_bytes("second", manifest.repository_map["repo-a"].path, "second"))
-    indexer = ConversationIndexer(manifest)
+    indexer = ConversationIndexer(manifest, machine_cards=dict)
     original_build = indexer.build
 
     def build_then_remove(**kwargs):
@@ -265,7 +279,7 @@ def test_provider_history_selection_uses_the_provider_root_registry(
 
     monkeypatch.setitem(PROVIDERS, "fixture", FixtureProvider())
 
-    sessions = ConversationIndexer(manifest).build().sessions
+    sessions = ConversationIndexer(manifest, machine_cards=dict).build().sessions
 
     fixture = next(item for item in sessions if item.provider == "fixture")
     assert fixture.path == str(source)
@@ -277,7 +291,7 @@ def test_provider_history_rewritten_copy_is_omitted_without_partial_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    indexer = ConversationIndexer(manifest)
+    indexer = ConversationIndexer(manifest, machine_cards=dict)
     source = tmp_path / "rewritten.jsonl"
     data = _codex_bytes("rewritten", "/outside/project", "outside")
     source.write_bytes(data)
@@ -320,7 +334,7 @@ def test_provider_history_counts_distinct_files_with_identical_bytes(
     (root / "second.jsonl").write_bytes(content)
 
     capture = capture_provider_history(
-        ConversationIndexer(manifest),
+        ConversationIndexer(manifest, machine_cards=dict),
         tmp_path / "duplicate-provider-history",
     )
 
@@ -345,6 +359,6 @@ def test_provider_history_capture_storage_failure_discards_the_whole_root(
     monkeypatch.setattr(provider_history_module, "_fsync_directory", fail_directory_fsync)
 
     with pytest.raises(OSError, match="destination fsync failed"):
-        capture_provider_history(ConversationIndexer(manifest), capture_root)
+        capture_provider_history(ConversationIndexer(manifest, machine_cards=dict), capture_root)
 
     assert not capture_root.exists()

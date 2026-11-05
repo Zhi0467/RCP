@@ -29,7 +29,7 @@ def build_validation_context(
     return ValidationContext(
         project_truth_scope=tuple(state.project_truth_scope),
         repository_aliases=tuple(manifest.repository_map),
-        machine_aliases=tuple(manifest.machine_map),
+        machine_aliases=tuple(manifest.machines),
         state_repository=manifest.state.repository,
         mode=mode,
     )

@@ -365,8 +365,9 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
         )
         for m in store.active_team_member_authority()
     )
+    cards = {card.machine_id: card for card in store.space_machines()}
     request = RestorePrepareRequest(**value)
-    first = restore._recover_repositories(request, manifest, None, members)
+    first = restore._recover_repositories(request, manifest, None, members, cards)
     assert first["status"] == "continue"
     assert first["progress"][0]["state"] == "key_started"
 
@@ -382,15 +383,15 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
             }
         )
 
-    second = restore._recover_repositories(resumed(first), manifest, None, members)
+    second = restore._recover_repositories(resumed(first), manifest, None, members, cards)
     assert second["status"] == "continue" and second["progress"][0]["state"] == "key_ready"
-    pause = restore._recover_repositories(resumed(second), manifest, None, members)
+    pause = restore._recover_repositories(resumed(second), manifest, None, members, cards)
     assert pause["status"] == "operator_action_needed"
     granted = True
-    completed = restore._recover_repositories(resumed(pause), manifest, None, members)
+    completed = restore._recover_repositories(resumed(pause), manifest, None, members, cards)
     assert completed["status"] == "continue"
     assert completed["progress"][0]["state"] == "checkout_ready"
-    assert restore._recover_repositories(resumed(completed), manifest, None, members) is None
+    assert restore._recover_repositories(resumed(completed), manifest, None, members, cards) is None
 
 
 @pytest.mark.parametrize(
@@ -634,7 +635,7 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     restore_request, tmp_path, monkeypatch
 ):
     """Reviewing a restore never reaches a host, because the old deployment may still run."""
-    from rcp.storage.models import LoginKey
+    from rcp.machine_cards import LoginKey
 
     value, _, previous = restore_request
     proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
@@ -643,11 +644,12 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     database.chmod(0o600)
     store = AppStore(database)
     stale = store.preprovision_team_member("Departed member")
-    own = store.add_provider_login(
-        "codex", "worker.example", member_id=stale.user_id, added_by=stale.user_id
-    )
-    shared = store.add_provider_login("codex", "worker.example", added_by=stale.user_id)
-    store.set_provider_login_setting(stale.user_id, "codex", "worker.example", "own")
+    worker = store.create_space_machine(
+        name="worker", host="worker.example", os_account=""
+    ).machine_id
+    own = store.add_provider_login("codex", worker, member_id=stale.user_id, added_by=stale.user_id)
+    shared = store.add_provider_login("codex", worker, added_by=stale.user_id)
+    store.set_provider_login_setting(stale.user_id, "codex", worker, "own")
     store.close()
     manifest = _archive_manifest(value)
     snapshot = manifest.sqlite_snapshot.model_copy(
@@ -677,8 +679,8 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     assert cleanups == []
     result = prepare_restore(_confirm(value, review, tmp_path / "removed-member-ready"))
     assert result["status"] == "prepared"
-    assert result["provider_cleanup_unreached"] == ["worker.example"]
-    own_key = LoginKey("codex", "worker.example", own.login_id)
+    assert result["provider_cleanup_unreached"] == [worker]
+    own_key = LoginKey("codex", worker, own.login_id)
     assert cleanups == [own_key]
     roots = result["roots"]
     assert isinstance(roots, list)
@@ -688,9 +690,7 @@ def test_restore_removed_member_fences_own_logins_and_keeps_shared(
     assert removed_member.removed_at is not None
     assert candidate.provider_login_state(own_key).removed_at is not None
     assert (
-        candidate.provider_login_state(
-            LoginKey("codex", "worker.example", shared.login_id)
-        ).removed_at
+        candidate.provider_login_state(LoginKey("codex", worker, shared.login_id)).removed_at
         is None
     )
     with candidate.connection() as connection:

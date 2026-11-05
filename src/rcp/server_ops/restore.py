@@ -59,6 +59,19 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Agent tables (v68-73), pending fires (v74), thread queue (v75), coach steers (v76).
+        "b8ed2421e756253fdc93a4c5081236805bf8b33b08aeb67fb1d947334c4dc1c2",
+        "ddbc017f09a3e7ff4ce44bbd9e3c652dea2c2a39505bd136cbbc9ea90c5f9769",
+        "ba42e91552059c5d6614be09f7434f9d386b56c6194e6a388eb50647432c9c1b",
+        "02ea588a6ba12428b60bf6079960d1eccb34ac2dbd5fc12ac770bdca947cb218",
+        "8db62e09e7f221113d3d296ca3af0eda6e82261fa5c00bdd006cbf7eb1a8405a",
+        "5bae964f6c1d983e3fd12fdbb731130ff3c1463407b9fbbbc76d141901c5684b",
+        "90c0d362877c050f985f43403cee3738368edfc68d002c3c1f4a8cbeee4293c0",
+        "26b84f8266ebafd94fbe6dac85ea20ee34e9a4c559ba90d56600ceee8ad81dbe",
+        "1468246ff7b92da2c3063591cadc0607c524246ec81399eae82ed44c58b4b67a",
+        "5bc239ef3bbdf34eeb0ba8123bba10d88559eece98d5bd57cdb0cf2e92bdf0f8",
+        "64058d031291aa5f20cca4c2e1b823393a90580f976cb161a7f1761bcf6fbc23",
+        "804f3c4a2837f21aed2eb009aeedff26bac731a12fe80d17d53f0d2fb0154999",
+        "bb6bd418311c5b0a5caebd2eed8c9b0d738d2941e9604cacdbe992143a96df9f",
         "05095de94823752b75afb91025690d49f9608862332eaf96719980b941013b8c",
         "0603bc7a67307330641feb2885987bc6db72edf3aefd71dd0f88d806ac021dcc",
         "52fba32f73682c7c325cff1a359e6e8034dd56f34595c1749891bf33a22e8a50",
@@ -1227,6 +1240,7 @@ def _recover_repositories(request, manifest, previous_store, members, cards):
             existing_cards = previous_store.space_machines()
             registration = inspect_backup_project_registration(
                 existing,
+                store=previous_store,
                 data_dir=Path(request.data_dir),
                 provisioning_requests=previous_store.completed_project_provisioning_requests(
                     capture.project_id

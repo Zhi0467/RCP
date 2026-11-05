@@ -10,6 +10,7 @@ import pytest
 
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.storage import (
@@ -27,6 +28,7 @@ from rcp.storage import (
     ProjectTransferUploadCompleteReceipt,
 )
 from rcp.storage.provisioning import project_transfer_source_configuration_sha256
+from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 
 def _actor(store: AppStore, name: str) -> AuthorizedHuman:
@@ -35,6 +37,7 @@ def _actor(store: AppStore, name: str) -> AuthorizedHuman:
         assert owner is not None
         member = store.rename_space_user(owner.user_id, name)
     else:
+        store.ensure_space_machines([("", "rcp", "Server")])
         member = store.preprovision_team_member(name)
     return AuthorizedHuman(
         space_id=store.space_id,
@@ -48,18 +51,17 @@ def _source_configuration(**changes: object) -> ProjectTransferSourceConfigurati
         "source_rcp_version": "0.1.0.dev0+main",
         "source_schema_generation": 1,
         "supported_archive_codecs": ("rcp-transfer-v1", "future-transfer-codec"),
-        "machine_aliases": ("laptop",),
         "repositories": (
             ProjectTransferRepositorySource(
                 alias="paper",
                 repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-                machine_alias="laptop",
             ),
         ),
         "state_repository": "paper",
         "project_truth_scope": ("paper",),
         "default_run_truth_scope": ("paper",),
         "source_manifest_sha256": "a" * 64,
+        "record_schema_version": TRANSFER_RECORD_SCHEMA_VERSION,
     }
     values.update(changes)
     return ProjectTransferSourceConfiguration.model_validate(values)
@@ -72,8 +74,8 @@ def _project(store: AppStore, project_id: str) -> ProjectRecord:
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Transfer project",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=store.now(),
         )
     )
@@ -81,9 +83,7 @@ def _project(store: AppStore, project_id: str) -> ProjectRecord:
 
 def _machine() -> ProjectProvisioningMachineIntent:
     return ProjectProvisioningMachineIntent(
-        alias="server",
-        location="local",
-        os_account="rcp",
+        machine_id=BACKEND_MACHINE_ID,
         central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
     )
 
@@ -92,7 +92,7 @@ def _repository() -> ProjectProvisioningRepositoryIntent:
     return ProjectProvisioningRepositoryIntent(
         alias="paper",
         repository=parse_github_repository_ref("https://github.com/openai/rcp.git"),
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
     )
 
 
@@ -103,7 +103,7 @@ def _provider() -> ProjectProvisioningProviderIntent:
         runtime_id="codex:exec",
         model="gpt-5.6-luna",
         reasoning="medium",
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
     )
 
 
@@ -294,8 +294,8 @@ def _activation_project(target: AppStore, project_id: str) -> ProjectRecord:
         home_space_id=target.space_id,
         locator=f"/srv/rcp/projects/{project_id}/paper/.research/manifest.toml",
         name="Transfer project",
-        state_location=f"/srv/rcp/projects/{project_id}/paper/.research",
-        state_remote=False,
+        state_machine_id=BACKEND_MACHINE_ID,
+        state_path=f"/srv/rcp/projects/{project_id}/paper/.research",
         added_at=target.now(),
         revision=8,
     )
@@ -745,7 +745,7 @@ def test_no_common_codec_or_stale_source_identity_fails_before_linking(tmp_path:
     mismatched_repository = ProjectProvisioningRepositoryIntent(
         alias="paper",
         repository=parse_github_repository_ref("https://github.com/openai/other.git"),
-        machine_alias="server",
+        machine_id=BACKEND_MACHINE_ID,
     )
     other_target = AppStore(tmp_path / "other-team" / "rcp.sqlite3", space_kind="team")
     other_target_actor = _actor(other_target, "Alice")

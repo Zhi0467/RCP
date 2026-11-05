@@ -19,6 +19,7 @@ from rcp.config import (
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
+from rcp.machine_upgrade import read_backup_archive_manifest, upgraded_backup_manifest
 from rcp.projects import (
     BackupProjectUnavailable,
     inspect_backup_project_registration,
@@ -46,6 +47,7 @@ from rcp.server_ops.github import parse_github_repository_ref
 from rcp.setup import render_prepared_team_manifest
 from rcp.sources import ImportedProviderSourceStore
 from rcp.storage import (
+    AppStore,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineRecord,
     ProjectProvisioningProviderCheckRecord,
@@ -115,26 +117,31 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
     } == BACKUP_RESEARCH_EXCLUSIONS
 
 
+def _store(tmp_path: Path) -> AppStore:
+    path = tmp_path / "data" / "rcp.sqlite3"
+    path.parent.mkdir(exist_ok=True)
+    return AppStore(path)
+
+
 def _completed_registration(
     tmp_path: Path,
     *,
     unused_machine: bool = False,
 ) -> tuple[ProjectRecord, ProjectProvisioningRequestRecord]:
+    store = _store(tmp_path)
+    worker = store.create_space_machine(name="worker", host="gpu.example", os_account="alice")
     central_root = tmp_path / "remote-central"
     repository_path = central_root / PROJECT_ID / "repositories" / "paper"
     checked_at = CAPTURED_AT.isoformat()
     machine = ProjectProvisioningMachineRecord(
-        alias="worker",
-        location="ssh",
-        host="gpu.example",
-        os_account="alice",
+        machine_id=worker.machine_id,
         central_root=str(central_root),
         resolved_central_root=str(central_root),
     )
     repository = ProjectProvisioningRepositoryRecord(
         alias="paper",
         repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-        machine_alias="worker",
+        machine_id=worker.machine_id,
         intended_path=str(repository_path),
         resolved_path=str(repository_path),
         checkout_disposition="request_created",
@@ -154,7 +161,7 @@ def _completed_registration(
             runtime_id="codex:exec",
             model="gpt-test",
             reasoning="medium",
-            machine_alias="worker",
+            machine_id=worker.machine_id,
             status="ready",
             binary_path="/usr/local/bin/codex",
             version="codex-cli 1.2.3",
@@ -194,7 +201,9 @@ def _completed_registration(
     if unused_machine:
         base_values["machines"].append(
             ProjectProvisioningMachineRecord(
-                alias="unused", location="ssh", host="unused.example", os_account="bob"
+                machine_id=store.create_space_machine(
+                    name="unused", host="unused.example", os_account="bob"
+                ).machine_id
             )
         )
     draft = ProjectProvisioningRequestRecord.model_validate(base_values)
@@ -212,8 +221,8 @@ def _completed_registration(
         home_space_id=SPACE_ID,
         locator=str(locator),
         name="Shared paper",
-        state_location=f"gpu.example:{repository_path}/.research",
-        state_remote=True,
+        state_machine_id=worker.machine_id,
+        state_path=f"{repository_path}/.research",
         added_at=checked_at,
     )
     return record, request
@@ -223,6 +232,7 @@ def _captured_project(tmp_path: Path) -> BackupProjectCapture:
     record, request = _completed_registration(tmp_path)
     registration = inspect_backup_project_registration(
         record,
+        store=_store(tmp_path),
         data_dir=tmp_path / "data",
         provisioning_requests=[request],
     )
@@ -252,7 +262,6 @@ def test_an_agent_profile_whose_model_takes_no_reasoning_is_backed_up() -> None:
         runtime="run-json",
         model="opencode/big-pickle",
         reasoning="",
-        run_on="laptop",
         permissions=permissions_for("project_chat"),
     )
     assert BackupManifestAgentProfile.model_validate(profile.model_dump()).reasoning == ""
@@ -407,6 +416,7 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
 
     registration = inspect_backup_project_registration(
         record,
+        store=_store(tmp_path),
         data_dir=tmp_path / "data",
         provisioning_requests=[request],
     )
@@ -428,116 +438,84 @@ def test_completed_provisioning_builds_one_secret_free_recovery_descriptor(
     assert "token" not in payload
 
 
-def test_archive_with_a_coach_off_the_base_keeps_its_digest_and_restores(tmp_path: Path) -> None:
-    from rcp.projects import _render_restored_manifest
-
-    record, _ = _completed_registration(tmp_path)
-    manifest = load_manifest(record.locator)
-    payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
-    payload["machines"].append({**payload["machines"][0], "alias": "gpu", "host": "gpu.example"})
-    for profile in payload["agent_profiles"]:
-        if profile["profile"] == "paper_coach":
-            profile["run_on"] = "gpu"
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-    archived = BackupManifestConfiguration.model_validate_json(encoded)
-
-    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-    paths = {repository.alias: repository.path for repository in archived.repositories}
-    restored = Manifest.model_validate(
-        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
+def _archive(projects: tuple[BackupProjectCapture, ...]) -> BackupArchiveManifest:
+    return BackupArchiveManifest(
+        space_id=SPACE_ID,
+        space_name="Research lab",
+        rcp_source_commit="d" * 40,
+        database_schema_sha256="e" * 64,
+        captured_at=CAPTURED_AT,
+        sqlite_snapshot=BackupFileEntry(
+            archive_path="database/rcp.sqlite3",
+            source_relative_path="rcp.sqlite3",
+            group="sqlite_snapshot",
+            sha256="c" * 64,
+            size_bytes=31,
+        ),
+        encryption_recipient_fingerprint="f" * 64,
+        installation_id=INSTALLATION_ID,
+        excluded_app_data_entries=(),
+        uncaptured_app_data_entries=(),
+        projects=projects,
+        status="complete",
+        total_bytes=48,
     )
-    base = restored.repository_map[restored.state.repository].machine
-    assert restored.agent_profile("paper_coach").run_on == base
-    assert archived.matches_configuration(BackupManifestConfiguration.from_manifest(restored))
-    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def test_archive_with_retired_compute_connections_keeps_its_digest_and_restores(
+def test_a_format_1_archive_names_its_machines_by_the_card_for_each_host(
     tmp_path: Path,
 ) -> None:
-    from rcp.projects import _render_restored_manifest
-    from rcp.server_ops.application_validation import _render_overlay_manifest
-
-    record, _ = _completed_registration(tmp_path)
-    manifest = load_manifest(record.locator)
-    current = BackupManifestConfiguration.from_manifest(manifest)
-    assert "compute_connections" not in current.model_dump(mode="json")
-    payload = current.model_dump(mode="json")
-    payload["compute_connections"] = [
+    current = _archive((_captured_project(tmp_path),))
+    machine_id = current.projects[0].recovery.machines[0].machine_id
+    legacy = current.model_dump(mode="json")
+    legacy["schema_version"] = 1
+    recovery = legacy["projects"][0]["recovery"]
+    configuration = recovery["configuration"]
+    configuration["machines"] = [
+        {"alias": "worker", "host": "gpu.example", "os_account": "alice", "provider_paths": {}},
+        {"alias": "gpu", "host": "retired.example", "os_account": "bob", "provider_paths": {}},
+    ]
+    configuration["compute_connections"] = [
         {
             "id": "gpu",
             "name": "GPU VM",
             "kind": "ssh",
-            "ssh_target": "alice@gpu.example",
+            "ssh_target": "bob@retired.example",
             "access_hint": "Use /scratch/shared",
         }
     ]
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    for repository in configuration["repositories"]:
+        repository["machine"] = "worker"
+    for profile in configuration["agent_profiles"]:
+        profile["run_on"] = "gpu" if profile["profile"] == "paper_coach" else "worker"
+    encoded = json.dumps(configuration, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    recovery["configuration_sha256"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    recovery["machines"] = [
+        {
+            "alias": "worker",
+            "location": "ssh",
+            "host": "gpu.example",
+            "os_account": "alice",
+            "resolved_central_root": recovery["machines"][0]["resolved_central_root"],
+        },
+        {
+            "alias": "gpu",
+            "location": "ssh",
+            "host": "retired.example",
+            "os_account": "bob",
+            "resolved_central_root": None,
+        },
+    ]
+    for repository in recovery["repositories"]:
+        repository["machine_alias"] = "worker"
+        del repository["machine_id"]
 
-    archived = BackupManifestConfiguration.model_validate_json(encoded)
+    archived = read_backup_archive_manifest(json.dumps(legacy).encode("utf-8"))
+    upgraded = upgraded_backup_manifest(archived, _store(tmp_path).space_machines())
 
-    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-    assert archived.matches_manifest(manifest)
-    paths = {repository.alias: repository.path for repository in archived.repositories}
-    restored = _render_restored_manifest(archived, paths)
-    overlay = _render_overlay_manifest(
-        archived, {alias: Path(root) for alias, root in paths.items()}, tmp_path / "overlay"
-    )
-    for content in (restored, overlay):
-        assert "compute_connections" not in tomlkit.parse(content).unwrap()
-
-
-def test_machine_access_hint_and_compute_survive_backup_and_restore(tmp_path: Path) -> None:
-    from rcp.projects import _render_restored_manifest
-
-    record, _ = _completed_registration(tmp_path)
-    path = Path(record.locator)
-    document = tomlkit.parse(path.read_text(encoding="utf-8"))
-    document["machines"][0]["access_hint"] = "Use /scratch/shared"
-    document["machines"][0]["compute"] = {"job_manager": "slurm", "jobs_root": "/jobs"}
-    path.write_text(tomlkit.dumps(document), encoding="utf-8")
-    manifest = load_manifest(path)
-    encoded = BackupManifestConfiguration.from_manifest(manifest).model_dump_json()
-
-    archived = BackupManifestConfiguration.model_validate_json(encoded)
-    paths = {repository.alias: repository.path for repository in archived.repositories}
-    restored = Manifest.model_validate(
-        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
-    )
-
-    assert restored.machines[0].legacy_access_hint == "Use /scratch/shared"
-    assert restored.machines[0].legacy_compute == manifest.machines[0].legacy_compute
-
-
-def test_archive_without_machine_hints_keeps_its_bytes_and_restores(tmp_path: Path) -> None:
-    """Every earlier archive recorded this machine shape, even for a Slurm machine."""
-    from rcp.projects import _render_restored_manifest
-
-    record, _ = _completed_registration(tmp_path)
-    path = Path(record.locator)
-    document = tomlkit.parse(path.read_text(encoding="utf-8"))
-    document["machines"][0]["compute"] = {"job_manager": "slurm", "jobs_root": "/jobs"}
-    path.write_text(tomlkit.dumps(document), encoding="utf-8")
-    manifest = load_manifest(path)
-    payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
-    for machine in payload["machines"]:
-        machine.pop("compute", None)
-    assert {frozenset(machine) for machine in payload["machines"]} == {
-        frozenset({"alias", "host", "os_account", "provider_paths"})
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-    archived = BackupManifestConfiguration.model_validate_json(encoded)
-    paths = {repository.alias: repository.path for repository in archived.repositories}
-    restored = Manifest.model_validate(
-        tomlkit.parse(_render_restored_manifest(archived, paths)).unwrap()
-    )
-
-    assert archived.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-    assert archived.matches_manifest(manifest)
-    assert restored.machines[0].legacy_access_hint == ""
-    assert restored.machines[0].legacy_compute is None
+    assert upgraded.schema_version == BACKUP_MANIFEST_SCHEMA_VERSION
+    assert upgraded.projects[0].recovery == current.projects[0].recovery
+    assert upgraded.projects[0].recovery.configuration.machines == (machine_id,)
 
 
 def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path) -> None:
@@ -593,6 +571,7 @@ def test_backup_needs_a_recovery_proof_but_snapshots_later_manifest_edits(
     with pytest.raises(BackupProjectUnavailable):
         inspect_backup_project_registration(
             record,
+            store=_store(tmp_path),
             data_dir=tmp_path / "data",
             provisioning_requests=[],
         )
@@ -609,6 +588,7 @@ def test_backup_needs_a_recovery_proof_but_snapshots_later_manifest_edits(
     changed_record = record.model_copy(update={"name": "Changed later"})
     registration = inspect_backup_project_registration(
         changed_record,
+        store=_store(tmp_path),
         data_dir=tmp_path / "data",
         provisioning_requests=[request],
     )
@@ -721,7 +701,7 @@ def test_manifest_refuses_newer_schema_materialized_outputs_and_extra_fields(
         "total_bytes": 48,
     }
     with pytest.raises(ValidationError):
-        BackupArchiveManifest.model_validate({**values, "schema_version": 2})
+        BackupArchiveManifest.model_validate({**values, "schema_version": 3})
     with pytest.raises(ValidationError, match="extra_forbidden"):
         BackupArchiveManifest.model_validate({**values, "private_identity": "secret"})
     with pytest.raises(ValidationError, match="retained research inputs"):
@@ -791,6 +771,7 @@ def test_locator_manifest_is_loaded_without_refreshing_remote_state(
     monkeypatch.setattr("rcp.transport.state.SSHStateWorkspace.refresh", fail_refresh)
     registration = inspect_backup_project_registration(
         record,
+        store=_store(tmp_path),
         data_dir=tmp_path / "data",
         provisioning_requests=[request],
     )
@@ -802,12 +783,12 @@ def test_locator_manifest_is_loaded_without_refreshing_remote_state(
 def test_backup_preserves_unresolved_unused_machine(tmp_path: Path) -> None:
     record, request = _completed_registration(tmp_path, unused_machine=True)
     registration = inspect_backup_project_registration(
-        record, data_dir=tmp_path / "data", provisioning_requests=[request]
+        record, store=_store(tmp_path), data_dir=tmp_path / "data", provisioning_requests=[request]
     )
-    machines = {item.alias: item for item in registration.recovery.machines}
-    assert set(machines) == {"worker", "unused"}
-    assert machines["unused"].resolved_central_root is None
-    assert machines["unused"].host == "unused.example"
+    unused = request.machines[1].machine_id
+    machines = {item.machine_id: item for item in registration.recovery.machines}
+    assert set(machines) == {request.machines[0].machine_id, unused}
+    assert machines[unused].resolved_central_root is None
     assert registration.recovery.configuration == BackupManifestConfiguration.from_manifest(
         load_manifest(record.locator)
     )
@@ -817,27 +798,25 @@ def test_backup_preserves_unresolved_unused_machine(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("change", ["missing-owner", "missing-root", "host", "account"])
+@pytest.mark.parametrize("change", ["missing-owner", "missing-root"])
 def test_unused_machine_does_not_weaken_checkout_recovery_proof(
     tmp_path: Path, change: str
 ) -> None:
     record, request = _completed_registration(tmp_path, unused_machine=True)
     recovery = inspect_backup_project_registration(
-        record, data_dir=tmp_path / "data", provisioning_requests=[request]
+        record, store=_store(tmp_path), data_dir=tmp_path / "data", provisioning_requests=[request]
     ).recovery
     payload = recovery.model_dump(mode="python")
+    owner = request.machines[0].machine_id
     if change == "missing-owner":
         payload["machines"] = tuple(
-            item for item in payload["machines"] if item["alias"] != "worker"
+            item for item in payload["machines"] if item["machine_id"] != owner
         )
-    elif change == "missing-root":
-        payload["machines"][0]["resolved_central_root"] = None
     else:
-        unused = next(item for item in payload["machines"] if item["alias"] == "unused")
-        unused["host" if change == "host" else "os_account"] = "changed"
-    with pytest.raises(
-        ValidationError, match="machines differ|no resolved central root|route differs"
-    ):
+        next(item for item in payload["machines"] if item["machine_id"] == owner)[
+            "resolved_central_root"
+        ] = None
+    with pytest.raises(ValidationError):
         type(recovery).model_validate(payload)
 
 

@@ -10,6 +10,7 @@ import pytest
 
 import rcp.server_ops.restore as restore_code
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.backup_capture import _database_schema_sha256
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
@@ -28,6 +29,7 @@ CAPTURED_AT = datetime(2026, 8, 29, 12, tzinfo=UTC)
 
 def _provisioning_request(store: AppStore):
     member = store.preprovision_team_member("Alice")
+    store.ensure_space_machines([("", DEFAULT_SERVER_LAYOUT.service_account, "Server")])
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=AuthorizedHuman(
@@ -41,9 +43,7 @@ def _provisioning_request(store: AppStore):
         default_run_truth_scope=["paper"],
         machines=[
             ProjectProvisioningMachineIntent(
-                alias="server",
-                location="local",
-                os_account="rcp",
+                machine_id=BACKEND_MACHINE_ID,
                 central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
             )
         ],
@@ -51,7 +51,7 @@ def _provisioning_request(store: AppStore):
             ProjectProvisioningRepositoryIntent(
                 alias="paper",
                 repository=parse_github_repository_ref("git@github.com:OpenAI/RCP-paper.git"),
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
         ],
         provider_checks=[
@@ -61,7 +61,7 @@ def _provisioning_request(store: AppStore):
                 runtime_id="codex:exec",
                 model="gpt-test",
                 reasoning="medium",
-                machine_alias="server",
+                machine_id=BACKEND_MACHINE_ID,
             )
         ],
     )

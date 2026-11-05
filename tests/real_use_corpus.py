@@ -9,8 +9,8 @@ from pathlib import Path
 
 from rcp.api import create_app
 from rcp.artifacts import descriptor_for
-from rcp.config import MachineConfig
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import project_chat_question_answer
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, Artifact
@@ -29,11 +29,9 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
     store = AppStore(data_dir / "rcp.sqlite3")
     app = create_app(data_dir=data_dir)
     service = app.state.catalog.open(state["project_id"])
-    service.history.add_machine(
-        MachineConfig(
-            alias="GPU_lab", host="gpu.example", provider_paths={"codex": "/tmp/sk-learn-exps"}
-        )
-    )
+    gpu = store.create_space_machine(name="GPU_lab", host="gpu.example", os_account="")
+    store.update_space_machine(gpu.machine_id, provider_paths={"codex": "/tmp/sk-learn-exps"})
+    service.history.add_machine(gpu.machine_id)
     actor = AuthorizedHuman(
         space_id=store.space_id,
         user_id=state["member_id"],
@@ -47,7 +45,7 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
     operation_id = str(uuid.uuid4())
     run = RunRequest(
         provider="codex",
-        run_on="server",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
         message="Which comparison?",
@@ -71,7 +69,7 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
     store.checkpoint_agent_task(
         operation_id,
         native_session_id="corpus-session",
-        stage_host="",
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=str(data_dir / "run-stage" / operation_id),
     )
     store.complete_agent_task(operation_id, applied_revision=None, result={})
@@ -84,7 +82,7 @@ def seed_real_use_corpus(data_dir: Path, projects_root: Path) -> dict:
             provider="codex",
             native_session_id="corpus-session",
             stage_root=str(data_dir / "run-stage" / operation_id),
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             capability="discuss",
             graph_target=task.graph_target,
         ),

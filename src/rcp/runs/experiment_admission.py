@@ -112,7 +112,6 @@ def experiment_operational_state(runtime: ExperimentLoopRuntime) -> ExperimentOp
             model=runtime.model,
             reasoning=runtime.reasoning,
             run_on=runtime.run_on,
-            execution_host=runtime.execution_host,
             run_truth_scope=runtime.run_truth_scope,
             native_session_bound=runtime.session_bound,
             diagnostic=runtime.session_diagnostic,

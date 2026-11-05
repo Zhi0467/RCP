@@ -40,7 +40,8 @@ def _capture(data: Path, destination: Path, *, stale_transcript: bool = False):
             "INSERT INTO memory_migrations VALUES (?,?,?)", ("project", store.now(), 1)
         )
         connection.execute(
-            "INSERT INTO memory_deletions VALUES (?,?,?,?)", ("pending", "/old", "{}", None)
+            "INSERT INTO memory_deletions VALUES (?,?,?,?,?)",
+            ("pending", "backend", "/old", "{}", None),
         )
     snapshot = BackupCaptureCoordinator(store, data, _metadata(data)).capture_sqlite()
     store.close()

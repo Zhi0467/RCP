@@ -59,7 +59,6 @@ def _coordinator_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPat
         fixture["catalog"].data_dir,
         fixture["catalog"],
         AgentLauncher(),
-        machine_account=lambda host: "",
     )
     coordinator = TargetTransferActivationCoordinator(
         target,

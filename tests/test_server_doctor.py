@@ -23,6 +23,7 @@ import pytest
 from rcp import limits
 from rcp.__main__ import build_parser
 from rcp.core.models import DependencyStatus, MissingProgram
+from rcp.machine_cards import LoginKey
 from rcp.server_ops import backup as backup_owner
 from rcp.server_ops import doctor as server_doctor
 from rcp.server_ops.backup import BackupArchiveReceipt, BackupRunOutcome
@@ -50,7 +51,7 @@ from rcp.server_runtime import (
     metadata_path,
     web_build_identity,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
@@ -969,21 +970,23 @@ def test_provider_login_summary_reads_the_durable_state_read_only(tmp_path: Path
 
     database = tmp_path / "rcp.sqlite3"
     store = AppStore(database)
+    backend = store.backend_space_machine()
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="rcp")
     failed = store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", backend.machine_id, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused " + "x" * 400,
         source="turn",
     )
     verified = store.mark_provider_login_verified(
-        LoginKey("claude", "gpu.example", MACHINE_LOGIN_ID),
+        LoginKey("claude", gpu.machine_id, MACHINE_LOGIN_ID),
         member_id="member",
         detail="Authenticated request succeeded.",
     )
     summary = provider_login_summary(database)
     assert summary == (
-        f"claude@gpu.example=signed_in(verify,{verified.changed_at});"
-        f"codex@local=signed_out(turn,{failed.changed_at})"
+        f"claude@{gpu.name}=signed_in(verify,{verified.changed_at});"
+        f"codex@{backend.name}=signed_out(turn,{failed.changed_at})"
     )
     assert "xxxx" not in summary
 
