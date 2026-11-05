@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pwd
 import shlex
@@ -769,7 +770,7 @@ def test_local_wrapper_readiness_cache_expires(monkeypatch):
     assert len(calls) == 2
 
 
-def test_older_manifest_machine_settings_move_onto_the_card_once(tmp_path, monkeypatch):
+def test_older_manifest_machine_settings_move_onto_the_card_once(tmp_path, monkeypatch, caplog):
     """A card settles only after every pending manifest naming it was read."""
     from types import SimpleNamespace
 
@@ -802,7 +803,9 @@ def test_older_manifest_machine_settings_move_onto_the_card_once(tmp_path, monke
         project_id="c", locator=str(tmp_path / "missing.toml"), machine_ids_pending=True
     )
     monkeypatch.setattr(store, "projects", lambda: [projects[0], unreadable])
-    fill_space_machines(store, tmp_path)
+    with caplog.at_level(logging.WARNING, logger="rcp.projects"):
+        fill_space_machines(store, tmp_path)
+    assert not caplog.records
     assert store.space_machine_for("gpu.example").legacy_settings_pending
     monkeypatch.setattr(store, "projects", lambda: projects)
     fill_space_machines(store, tmp_path)

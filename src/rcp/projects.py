@@ -334,15 +334,21 @@ def fill_space_machines(store: AppStore, data_dir: Path, *, rewrite_remote: bool
     Slurm from either. Then each project is rewritten to name its cards by id.
     Without ``rewrite_remote`` only projects whose state is on the backend are
     rewritten: a fenced candidate may not write a remote manifest that an update
-    rollback could not restore.
+    rollback could not restore. A project whose manifest is absent stays pending,
+    and opening it reports its state unavailable.
     """
 
     pending = [project for project in store.projects() if project.machine_ids_pending]
     hosts: set[str] = set()
     unread = False
+    absent: set[str] = set()
     for project in pending:
         try:
             legacy = read_legacy_manifest(Path(project.locator))
+        except FileNotFoundError:
+            absent.add(project.project_id)
+            unread = True
+            continue
         except (OSError, ValueError) as exc:
             _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
             unread = True
@@ -353,6 +359,8 @@ def fill_space_machines(store: AppStore, data_dir: Path, *, rewrite_remote: bool
     if not unread:
         store.settle_legacy_machine_settings(hosts)
     for project in pending:
+        if project.project_id in absent:
+            continue
         if not rewrite_remote and project.state_machine_id != BACKEND_MACHINE_ID:
             continue
         if project_machine_upgrade_blocked(store, project.project_id):
