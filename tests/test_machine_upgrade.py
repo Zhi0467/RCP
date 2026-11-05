@@ -569,3 +569,20 @@ def test_a_card_cannot_take_a_host_another_card_holds(tmp_path) -> None:
     assert (moved.host, moved.os_account, moved.name) == ("gpu2.example", "bob", "GPU")
     assert store.space_machine(second.machine_id).host == "cpu.example"
     store.close()
+
+
+def test_a_repeated_project_rekey_keeps_backend_rows_before_the_card_exists(tmp_path) -> None:
+    from rcp.storage.machine_rekey import rekey_project_machines
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO compute_backend_probes VALUES ('p', ?, 'helper', '{}', ?)",
+            (BACKEND, NOW),
+        )
+
+    rekey_project_machines(store, "p", {"laptop": BACKEND})
+
+    with store.connection() as connection:
+        rows = connection.execute("SELECT machine_id FROM compute_backend_probes").fetchall()
+    assert [row["machine_id"] for row in rows] == [BACKEND]

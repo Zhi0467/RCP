@@ -586,7 +586,9 @@ state and truth provenance and manifest digest. Source repositories carry no
 machine; the target maps each repository to one of its own cards, and the state
 machine is the state repository's card. Transfer records are format 8
 ([records.py](../../src/rcp/transfer/records.py)). A transfer begun before the
-machine identity upgrade is refused with "Restart the transfer". The target rebuilds configuration without
+machine identity upgrade is refused with "Restart the transfer", and the desktop
+sets its saved preparation aside as `<coordinator>.v1.json` and starts clean.
+The target rebuilds configuration without
 source paths. Drift causes refusal before source fencing. Final desktop review
 records target admission then source release through independently authenticated
 actors. Target confirmation alone creates nothing and leaves the source

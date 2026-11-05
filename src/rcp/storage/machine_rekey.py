@@ -18,6 +18,7 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_upgrade import machine_id_for_alias, upgraded_worktree_binding
 
 if TYPE_CHECKING:
@@ -54,7 +55,7 @@ def rekey_project_machines(
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         try:
-            card_ids = {
+            card_ids = {BACKEND_MACHINE_ID} | {
                 str(row[0]) for row in connection.execute("SELECT machine_id FROM space_machines")
             }
 

@@ -44,7 +44,7 @@ const SOURCE_REQUEST_PATH_PREFIX: &str = "/api/project-transfers/requests/";
 const SOURCE_ARCHIVE_PATH_PREFIX: &str = "/api/native/project-transfers/source-requests/";
 const SOURCE_CREATE_PATH: &str = "/api/project-transfers/source-requests";
 const SOURCE_LINK_PATH_PREFIX: &str = "/api/project-transfers/source-requests/";
-const COORDINATOR_VERSION: u32 = 1;
+const COORDINATOR_VERSION: u32 = 2;
 const BACKEND_MACHINE_ID: &str = "backend";
 const COORDINATOR_FILENAME: &str = "project-transfer-coordinator.json";
 const MAX_COORDINATOR_BYTES: u64 = 1024 * 1024;
@@ -294,6 +294,21 @@ impl ProjectTransferCoordinatorState {
         };
         if bytes.len() as u64 > MAX_COORDINATOR_BYTES {
             return Err("the project transfer coordinator is too large".into());
+        }
+        #[derive(Deserialize)]
+        struct StoredVersion {
+            version: u32,
+        }
+        let stored = serde_json::from_slice::<StoredVersion>(&bytes)
+            .map_err(|error| format!("the project transfer coordinator is invalid: {error}"))?;
+        if stored.version < COORDINATOR_VERSION {
+            let retired = self
+                .coordinator_path
+                .with_extension(format!("v{}.json", stored.version));
+            fs::rename(&self.coordinator_path, &retired).map_err(|error| {
+                format!("cannot set aside the old project transfer coordinator: {error}")
+            })?;
+            return Ok(ProjectTransferCoordinatorFile::default());
         }
         let file: ProjectTransferCoordinatorFile = serde_json::from_slice(&bytes)
             .map_err(|error| format!("the project transfer coordinator is invalid: {error}"))?;
@@ -4923,6 +4938,30 @@ mod tests {
         let mut changed = request.clone();
         changed.target_request_id = "77777777-7777-4777-8777-777777777777".into();
         assert!(state.save_or_validate(&changed, TARGET_SPACE_ID).is_err());
+        assert_eq!(
+            state.load(REQUEST_ID).unwrap().unwrap().as_request(),
+            request
+        );
+    }
+
+    #[test]
+    fn coordinator_sets_aside_records_from_before_machine_card_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let coordinator_path = directory.path().join(COORDINATOR_FILENAME);
+        let old = serde_json::json!({
+            "version": 1,
+            "records": [{"source_request_id": REQUEST_ID, "machines": [{"alias": "laptop"}]}],
+        });
+        fs::write(&coordinator_path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let state = ProjectTransferCoordinatorState::new(coordinator_path.clone());
+        assert!(state.load(REQUEST_ID).unwrap().is_none());
+        let retired = coordinator_path.with_extension("v1.json");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(retired).unwrap()).unwrap(),
+            old
+        );
+        let request = prepare_request();
+        state.save_or_validate(&request, TARGET_SPACE_ID).unwrap();
         assert_eq!(
             state.load(REQUEST_ID).unwrap().unwrap().as_request(),
             request
