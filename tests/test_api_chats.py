@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.api.dependencies import get_graph_service
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import _append_chat_exchange
 from rcp.service import ChatSummary, RunRequest
 from rcp.transport import StateUnavailable
@@ -428,7 +429,7 @@ def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
     )
     store.record_browser_owner(
         owner,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         workspace_dir="/stage/workspace",
         stage_root="/stage",
         chat_id=chat_id,
@@ -475,13 +476,13 @@ def test_reenabling_browser_cancels_deferred_delete_unless_archived(
         app, RunRequest(chat_id=chat_id, chat_scope="project", message="hello"), "browser-toggle"
     )
     stage = tmp_path / "data" / "run-stage" / "stage"
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     owner = BrowserOwnerKey(
         space_id=store.space_id, project_id=project_id, stage_name="stage", host_key="local"
     )
     store.record_browser_owner(
         owner,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         workspace_dir=str(stage / "workspace"),
         stage_root=str(stage),
         chat_id=chat_id,

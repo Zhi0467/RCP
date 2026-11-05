@@ -194,6 +194,28 @@ def cards_by_id(cards: Iterable[SpaceMachineRecord]) -> dict[str, SpaceMachineRe
     return {BACKEND_MACHINE_ID if not card.host else card.machine_id: card for card in cards}
 
 
+def snapshot_cards(connection: sqlite3.Connection) -> dict[str, SpaceMachineRecord]:
+    """Each card in a snapshot of any release by id, reading only the identity columns.
+
+    An update captures the outgoing release's database before migrating it, so
+    later card columns may be absent.
+    """
+
+    return cards_by_id(
+        SpaceMachineRecord(
+            machine_id=str(machine_id),
+            name=str(name),
+            host=str(host),
+            os_account=str(account),
+            created_at=str(created),
+            updated_at=str(updated),
+        )
+        for machine_id, name, host, account, created, updated in connection.execute(
+            "SELECT machine_id, name, host, os_account, created_at, updated_at FROM space_machines"
+        )
+    )
+
+
 def load_upgraded_manifest(
     value: str | Path, cards: Iterable[SpaceMachineRecord], *, project_root: Path | None = None
 ) -> Manifest:

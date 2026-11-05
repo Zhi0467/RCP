@@ -20,7 +20,9 @@ from rcp.agents.write_scope import (
 )
 from rcp.config import Manifest
 from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding, WorktreeBinding
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from rcp.storage.models import SpaceMachineRecord
 from tests.storage_helpers import downgrade_resource_watermarks
 
 
@@ -34,8 +36,7 @@ def _binding(manifest: Manifest, tmp_path: Path) -> ConversationWorktreeBinding:
         chat_id=str(uuid.uuid4()),
         chat_scope="project",
         repository_alias="repo-a",
-        machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         shared_path=str(Path(manifest.repository_map["repo-a"].path).resolve()),
         worktree_path=str(worktree.resolve()),
         git_common_dir=str(metadata.resolve()),
@@ -66,7 +67,14 @@ def _resolve(
         manifest=manifest,
         truth_scope=manifest.project.truth_scope,
         project_id="project",
-        execution_machine="laptop",
+        machine=SpaceMachineRecord(
+            machine_id=BACKEND_MACHINE_ID,
+            name="Backend",
+            host="",
+            os_account="",
+            created_at="",
+            updated_at="",
+        ),
         capability=capability,
         stage_root=str(stage),
         workspace_root=str(workspace),
@@ -74,7 +82,7 @@ def _resolve(
         repository_pointers=[
             RepositoryPointer(
                 alias="repo-a",
-                machine="laptop",
+                machine=BACKEND_MACHINE_ID,
                 path=pointer_path or binding.worktree_path,
             )
         ],
@@ -154,8 +162,7 @@ def test_legacy_scope_fingerprint_omits_empty_git_metadata_roots() -> None:
     legacy = {
         "schema_generation": 1,
         "project_id": "project",
-        "execution_machine": "local",
-        "execution_host": "",
+        "machine_id": BACKEND_MACHINE_ID,
         "capability": "work_auto",
         "stage_root": "/stage",
         "workspace_root": "/stage/workspace",
@@ -193,8 +200,7 @@ def test_git_metadata_root_retargeting_and_foreign_ownership_fail_closed(
         RegisteredRepositoryRoot(
             project_id="foreign",
             alias="foreign",
-            machine="local",
-            execution_host="",
+            machine=BACKEND_MACHINE_ID,
             path=str(foreign_path),
         )
     )
@@ -221,9 +227,8 @@ def test_unbound_scope_cannot_admit_arbitrary_pointer_or_merge_exception(
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"project_id": "foreign"}, "different project or execution host"),
-        ({"machine": "elsewhere"}, "different project or execution host"),
-        ({"execution_host": "somewhere"}, "different project or execution host"),
+        ({"project_id": "foreign"}, "different project or execution machine"),
+        ({"machine_id": "elsewhere"}, "different project or execution machine"),
         ({"status": "removed"}, "not ready"),
         ({"status": "creating"}, "not ready"),
         ({"repository_alias": "repo-b"}, "exact single repository"),
@@ -274,8 +279,7 @@ def test_worktree_retains_catalog_ownership_and_data_directory_protections(
     foreign = RegisteredRepositoryRoot(
         project_id="foreign",
         alias="foreign",
-        machine="local",
-        execution_host="",
+        machine=BACKEND_MACHINE_ID,
         path=binding.worktree_path,
     )
     with pytest.raises(ValueError, match="overlaps another project"):
@@ -361,8 +365,8 @@ def _register_project(
             home_space_id=store.space_id if canonical else None,
             locator=str(tmp_path / project_id / "research.yaml"),
             name=project_id,
-            state_location=str(tmp_path / project_id / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / project_id / ".research"),
             added_at=store.now(),
         )
     )

@@ -10,6 +10,7 @@ import pytest
 
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import (
     _chat_stage_name,
     _local_chat_artifact_directory,
@@ -34,8 +35,8 @@ def _register_legacy_project(store: AppStore, project_id: str) -> None:
             project_id=project_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Legacy project",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at="2026-08-01T00:00:00+00:00",
         )
     )
@@ -72,7 +73,7 @@ def _task(
     chat_id: str,
     *,
     status: str = "succeeded",
-    stage_host: str | None = None,
+    stage_machine_id: str | None = None,
     stage_root: str | None = None,
     parent_operation_id: str | None = None,
     native_session_id: str | None = None,
@@ -95,7 +96,7 @@ def _task(
         attempt=2 if parent_operation_id else 1,
         parent_operation_id=parent_operation_id,
         native_session_id=native_session_id,
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=stage_root,
     )
 
@@ -114,10 +115,12 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(
     stage_name = f"chat-pre-adoption-{chat_id}"
     native_session_id = str(uuid.uuid4())
     if remote:
-        stage_host = "worker.example"
+        stage_machine_id = store.create_space_machine(
+            name="worker", host="worker.example", os_account=""
+        ).machine_id
         stage_root = f"{remote}/rcp-run.{stage_name}"
     else:
-        stage_host = None
+        stage_machine_id = None
         local_stage = tmp_path / "data" / "run-stage" / stage_name
         local_stage.mkdir(parents=True)
         stage_root = str(local_stage)
@@ -129,7 +132,7 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(
             "turn-before-adoption",
             legacy_id,
             chat_id,
-            stage_host=stage_host,
+            stage_machine_id=stage_machine_id,
             stage_root=stage_root,
             native_session_id=native_session_id,
         )
@@ -146,22 +149,22 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(
     )
     next_turn = store.create_agent_task(candidate)
 
-    assert candidate.stage_host is None
+    assert candidate.stage_machine_id is None
     assert candidate.stage_root is None
-    assert next_turn.stage_host == stage_host
+    assert next_turn.stage_machine_id == stage_machine_id
     assert next_turn.stage_root == stage_root
     execution = AgentTaskExecution(
         operation_id=next_turn.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=next_turn.stage_host,
+        stage_machine_id=next_turn.stage_machine_id,
         stage_root=next_turn.stage_root,
     )
     request = RunRequest(chat_scope="project", chat_id=chat_id, message="Continue.")
     assert _chat_stage_name(None, request, execution) == stage_name  # type: ignore[arg-type]
     if remote:
         assert (
-            _validated_remote_chat_resume_stage(execution, "worker.example", stage_name)
+            _validated_remote_chat_resume_stage(execution, stage_machine_id, stage_name)
             == stage_root
         )
     else:
@@ -240,7 +243,7 @@ def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_rece
             project_id=project_id,
             kind="project_chat",
             chat_id=chat_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
         == "split-v1"
@@ -251,7 +254,7 @@ def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_rece
         "chat_stage_layout",
         {
             "layout": "split-v1",
-            "stage_host": "",
+            "stage_machine_id": BACKEND_MACHINE_ID,
             "stage_root": str(stage),
             "workspace_root": str(workspace),
         },
@@ -261,7 +264,7 @@ def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_rece
             project_id=project_id,
             kind="project_chat",
             chat_id=chat_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
 
@@ -275,7 +278,7 @@ def test_split_chat_stage_layout_marker_is_idempotent_and_repairs_duplicate_rece
             project_id=project_id,
             kind="project_chat",
             chat_id=chat_id,
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
         == "split-v1"
@@ -302,7 +305,7 @@ def test_second_fresh_sessionless_chat_reuses_one_split_layout_and_artifact_root
         execution=first_execution,
         saved_stage=False,
     )
-    first_execution.checkpoint_stage("", str(stage))
+    first_execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     artifact = workspace / "turns" / "first" / "artifacts" / "result.html"
     artifact.parent.mkdir(parents=True)
     artifact.write_text("<html>retained</html>", encoding="utf-8")
@@ -329,7 +332,7 @@ def test_second_fresh_sessionless_chat_reuses_one_split_layout_and_artifact_root
         )
         == workspace
     )
-    second_execution.checkpoint_stage("", str(stage))
+    second_execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     resumed = store.create_agent_task(
         _task(
             store,
@@ -378,7 +381,7 @@ def test_fresh_sessionless_task_preserves_an_exact_legacy_stage_layout(tmp_path:
         )
         == stage
     )
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     assert not (stage / "workspace").exists()
     assert all(
         receipt.category != "chat_stage_layout"
@@ -429,7 +432,7 @@ def test_split_layout_marker_survives_crash_before_stage_checkpoint(tmp_path: Pa
         )
         == workspace
     )
-    retry_execution.checkpoint_stage("", str(stage))
+    retry_execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     artifact = workspace / "turns" / "retry" / "artifacts" / "result.html"
     artifact.parent.mkdir(parents=True)
     artifact.write_text("<html>recovered</html>", encoding="utf-8")
@@ -478,7 +481,7 @@ def test_clean_turn_recreates_swept_split_workspace_but_saved_turn_fails_closed(
         execution=first_execution,
         saved_stage=False,
     )
-    first_execution.checkpoint_stage("", str(stage))
+    first_execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
 
     shutil.rmtree(stage)
     stage.mkdir()
@@ -507,7 +510,7 @@ def test_clean_turn_recreates_swept_split_workspace_but_saved_turn_fails_closed(
         == 1
     )
 
-    fresh_execution.checkpoint_stage("", str(stage))
+    fresh_execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     shutil.rmtree(workspace)
     saved = store.create_agent_task(
         _task(
@@ -602,7 +605,7 @@ def test_split_layout_marker_follows_project_identity_adoption(tmp_path: Path) -
         execution=execution,
         saved_stage=False,
     )
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
 
     store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
 
@@ -673,7 +676,7 @@ def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path
 
     assert queued is not None
     assert wake.stage_root is None
-    assert queued.stage_host is None
+    assert queued.stage_machine_id is None
     assert queued.stage_root == str(stage)
 
 

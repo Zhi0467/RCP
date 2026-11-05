@@ -19,6 +19,7 @@ from rcp.runs.tasks.auto_research_stream import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from tests.helpers import seed_patch, unchecked_write_authority
 from tests.test_branch_history import _branch_metadata, _branch_patch
 
@@ -73,7 +74,14 @@ def test_orchestrator_context_and_refresh_keep_branch_pointer(branch_services, t
         local=tmp_path,
         remote=None,
         workspace=tmp_path,
-        execution_host="",
+        machine=SpaceMachineRecord(
+            machine_id=BACKEND_MACHINE_ID,
+            name="Backend",
+            host="",
+            os_account="",
+            created_at="",
+            updated_at="",
+        ),
         provider_binary=None,
     )
     context = _auto_research_context(branch, request, stage)

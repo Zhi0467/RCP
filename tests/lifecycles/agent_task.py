@@ -56,7 +56,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.attachments import ChatAttachmentDescriptor
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
-from rcp.machine_upgrade import _Cards, _migrate_chat_stage_layouts
+from rcp.machine_upgrade import _Cards, _migrate_artifact_edit_stages, _migrate_chat_stage_layouts
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -325,6 +325,7 @@ class AgentTask:
         migrate_per_member_provider_logins,
         _Cards.__init__,
         _migrate_chat_stage_layouts,
+        _migrate_artifact_edit_stages,
         ProjectTransferStoreMixin._insert_transfer_tasks,
         ProjectTransferStoreMixin.settle_source_transfer_tasks,
     )
@@ -401,6 +402,7 @@ class AgentTask:
         migrate_per_member_provider_logins: _MIGRATION,
         _Cards.__init__: _MIGRATION,
         _migrate_chat_stage_layouts: _MIGRATION,
+        _migrate_artifact_edit_stages: _MIGRATION,
     }
 
     def __init__(self) -> None:

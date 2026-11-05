@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from rcp.watchers import (
     WatcherCheckResult,
@@ -27,7 +28,7 @@ from .test_watchers import _binding, _record
 def test_probe_storage_is_latest_per_project_and_machine(tmp_path):
     store = AppStore(tmp_path / "app.sqlite")
     probe = ComputeBackendProbe(
-        execution_machine="local",
+        machine_id="local",
         backend_id="systemd_user",
         state="ready",
         ready=True,
@@ -81,8 +82,13 @@ def _active(*_):
 
 
 def _cancel_record(store, *, host="", command="true", cwd="/tmp"):
+    machine_id = (
+        store.create_space_machine(name="cluster", host=host, os_account="").machine_id
+        if host
+        else BACKEND_MACHINE_ID
+    )
     record = _record("cancel-work").model_copy(
-        update={"cancel_command": command, "execution_host": host, "cwd": cwd}
+        update={"cancel_command": command, "machine_id": machine_id, "cwd": cwd}
     )
     store.create_watchers([record])
     return record
@@ -239,6 +245,7 @@ def test_cancel_process_is_bounded(tmp_path):
 
 def test_watcher_actions_upgrade_preserves_old_shell_rows_and_indexes(tmp_path):
     store = AppStore(tmp_path / "app.sqlite")
+    store.backend_space_machine()
     shell = _record("old-shell")
     store.create_watchers([shell])
     expected = store.watcher(shell.watcher_id)

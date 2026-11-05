@@ -4,6 +4,7 @@ import pytest
 
 from rcp.compute_jobs.probe import _result
 from rcp.config import load_manifest
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from tests.helpers import resource_watermark_tokens, signed_in_client
 
 from .helpers import create_named_app
@@ -40,10 +41,11 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
     project_id = app.state.default_project_id
     calls = []
 
-    def run(manifest, machine, route, *, data_dir, compute):
-        calls.append((machine, route, compute.job_manager if compute else None))
+    def run(machine, route, *, data_dir):
+        compute = machine.compute_config()
+        calls.append((machine.machine_id, route, compute.job_manager if compute else None))
         return _result(
-            machine, {"helper": "systemd_user", "scheduler": "slurm"}[route], "ready", ""
+            machine.machine_id, {"helper": "systemd_user", "scheduler": "slurm"}[route], "ready", ""
         )
 
     monkeypatch.setattr(probe_module, "probe_compute_backend", run)
@@ -56,7 +58,8 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
         )
         assert response.status_code == 200, response.text
         assert calls == [
-            ("laptop", route, "slurm" if job_manager == "slurm" else None) for route in routes
+            (BACKEND_MACHINE_ID, route, "slurm" if job_manager == "slurm" else None)
+            for route in routes
         ]
         assert [route for route, probe in response.json()["compute_probes"].items() if probe] == (
             sorted(routes, key=["scheduler", "helper"].index)
@@ -76,7 +79,7 @@ def test_card_compute_change_rechecks_the_routes_of_every_project_on_it(compute_
     )
     assert hinted.status_code == 200 and hinted.json()["access_hint"] == "Use /shared"
     assert calls == []
-    assert store.compute_backend_probe(project_id, "laptop", "helper") is not None
+    assert store.compute_backend_probe(project_id, BACKEND_MACHINE_ID, "helper") is not None
 
 
 @pytest.mark.parametrize("found", [True, False, None])
@@ -92,7 +95,7 @@ def test_an_undecided_card_turns_slurm_on_only_when_the_machine_has_it(
     monkeypatch.setattr(
         probe_module,
         "probe_compute_backend",
-        lambda manifest, machine, route, **_: _result(machine, "launchd", "ready", ""),
+        lambda machine, route, **_: _result(machine.machine_id, "launchd", "ready", ""),
     )
     monkeypatch.setattr("rcp.api.space_machines.probe_machine_reach", lambda *_a, **_k: [])
     assert store.space_machine_for("").job_manager is None
@@ -120,17 +123,19 @@ def test_only_the_base_machine_offers_the_helper_route(compute_api, monkeypatch)
     app, client, _ = compute_api
     store = app.state.services.store
     project_id = app.state.default_project_id
-    app.state.service.add_machine("gpu", "gpu.example", "alice")
     gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="alice")
+    app.state.service.add_machine(gpu.machine_id)
     store.update_space_machine(gpu.machine_id, job_manager="slurm")
     store.record_compute_backend_probe(
-        project_id, _result("gpu", "systemd_user", "ready", ""), "helper"
+        project_id, _result(gpu.machine_id, "systemd_user", "ready", ""), "helper"
     )
     calls = []
 
-    def run(manifest, machine, route, *, data_dir, compute):
-        calls.append((machine, route))
-        return _result(machine, {"helper": "launchd", "scheduler": "slurm"}[route], "ready", "")
+    def run(machine, route, *, data_dir):
+        calls.append((machine.machine_id, route))
+        return _result(
+            machine.machine_id, {"helper": "launchd", "scheduler": "slurm"}[route], "ready", ""
+        )
 
     monkeypatch.setattr(probe_module, "probe_compute_backend", run)
     monkeypatch.setattr(probe_module, "detect_slurm", lambda host: None)
@@ -140,9 +145,9 @@ def test_only_the_base_machine_offers_the_helper_route(compute_api, monkeypatch)
         project_id,
         data_dir=app.state.catalog.data_dir,
     )
-    assert sorted(calls) == [("gpu", "scheduler"), ("laptop", "helper")]
-    assert store.compute_backend_probe(project_id, "gpu", "helper") is None
-    assert store.compute_backend_probe(project_id, "gpu", "scheduler") is not None
+    assert sorted(calls) == sorted([(gpu.machine_id, "scheduler"), (BACKEND_MACHINE_ID, "helper")])
+    assert store.compute_backend_probe(project_id, gpu.machine_id, "helper") is None
+    assert store.compute_backend_probe(project_id, gpu.machine_id, "scheduler") is not None
     cards = {card["host"]: card for card in client.get("/api/space/machines").json()["machines"]}
     assert (cards[""]["agents_run_here"], cards["gpu.example"]["agents_run_here"]) == (True, False)
 
@@ -153,22 +158,22 @@ def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch)
     app, client, url = compute_api
     calls = []
 
-    def run(manifest, machine, route, *, data_dir, compute):
-        calls.append((machine, route))
-        return _result(machine, "launchd", "ready", "")
+    def run(machine, route, *, data_dir):
+        calls.append((machine.machine_id, route))
+        return _result(machine.machine_id, "launchd", "ready", "")
 
     monkeypatch.setattr(probe_module, "probe_compute_backend", run)
     monkeypatch.setattr(
         "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
     )
     before = resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
-    response = client.post(f"{url}/machines/laptop/compute/check", json={})
+    response = client.post(f"{url}/machines/{BACKEND_MACHINE_ID}/compute/check", json={})
     assert (
         resource_watermark_tokens(client, app.state.default_project_id, {"name": "settings"})
         != before
     )
     assert response.status_code == 200, response.text
-    assert calls == [("laptop", "helper")]
+    assert calls == [(BACKEND_MACHINE_ID, "helper")]
     assert response.json()["scheduler"] is None and response.json()["helper"]["ready"]
     assert client.post(f"{url}/machines/missing/compute/check", json={}).status_code == 422
 
@@ -177,7 +182,7 @@ def test_project_machine_browser_reads_that_machines_account(compute_api, manife
     from rcp.browser import BrowserReadiness
 
     app, client, url = compute_api
-    laptop = load_manifest(manifest.path).machine_map["laptop"]
+    laptop = app.state.services.store.backend_space_machine()
     calls = []
 
     def readiness(*, host, os_account, data_dir):
@@ -185,7 +190,7 @@ def test_project_machine_browser_reads_that_machines_account(compute_api, manife
         return BrowserReadiness(status="not_installed")
 
     monkeypatch.setattr("rcp.api.project_state.browser_readiness", readiness)
-    response = client.get(f"{url}/machines/laptop/browser")
+    response = client.get(f"{url}/machines/{BACKEND_MACHINE_ID}/browser")
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "not_installed"
     assert calls == [(laptop.host, laptop.os_account, app.state.catalog.data_dir)]

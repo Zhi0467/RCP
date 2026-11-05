@@ -11,6 +11,7 @@ from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.space_chat import SpaceThreadOwner, stream_space_chat_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
@@ -38,8 +39,7 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
     owner = SpaceThreadOwner(store, app.state.catalog, thread.thread_id)
     store_test_claude_token(store)
     policy = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         os_account="test",
         hidden_directories=(str(tmp_path / "other-member"),),
         enforcement=HiddenReadStatus(status="enforced"),
@@ -125,9 +125,7 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
             "chat_id": thread.thread_id,
             "provider": "claude",
             "browser_requested": False,
-            "run_on": (
-                store.backend_space_machine().machine_id if kind == "space_chat" else "laptop"
-            ),
+            "run_on": BACKEND_MACHINE_ID,
         }
     )
     asyncio.run(run(request))

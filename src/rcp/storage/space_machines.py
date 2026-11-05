@@ -66,7 +66,12 @@ class SpaceMachineStoreMixin(StoreMixinBase):
     def provider_shell_timeout_seconds(self, provider: str, machine_id: str) -> int | None:
         """This machine's configured shell timeout for `provider`; None keeps its default."""
 
-        value = self.space_machine(machine_id).provider_shell_timeout.get(provider, "")
+        card = (
+            self.backend_space_machine()
+            if machine_id == BACKEND_MACHINE_ID
+            else self.space_machine(machine_id)
+        )
+        value = card.provider_shell_timeout.get(provider, "")
         return int(value) * 60 if value else None
 
     def machine_compute(self, machine_id: str) -> MachineComputeConfig | None:

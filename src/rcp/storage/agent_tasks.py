@@ -2367,7 +2367,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 SELECT 1 FROM graph_runs
                 WHERE operation_id != ? AND project_id = ? AND kind = ?
                   AND json_extract(request_json, '$.chat_id') = ?
-                  AND COALESCE(stage_machine_id, '') = ? AND stage_root = ?
+                  AND COALESCE(NULLIF(stage_machine_id, ''), 'backend') = ? AND stage_root = ?
                 LIMIT 1
                 """,
                 (operation_id, project_id, kind, chat_id, stage_machine_id, stage_root),

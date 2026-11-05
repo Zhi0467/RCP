@@ -23,7 +23,9 @@ from rcp import __main__
 from rcp.agents.write_scope import protected_repository_paths, registered_repository_roots
 from rcp.api.terminal_projection import terminal_session_payload
 from rcp.limits import TERMINAL_IDLE_TIMEOUT_SECONDS, TERMINAL_OUTPUT_BUFFER_BYTES
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
+from rcp.storage.models import SpaceMachineRecord
 from rcp.terminals import (
     TerminalManager,
     TerminalSession,
@@ -40,7 +42,7 @@ from rcp.terminals.runtime import read_ready
 from rcp.terminals.utilities import local_grants, record_path, resolve_repository, save_metadata
 from rcp.transport.remote_terminal import EXIT_PREFIX, EXIT_SUFFIX
 
-from .test_write_scope import _remote_manifest, _RemoteScopeStage
+from .test_write_scope import _RemoteScopeStage
 
 RECORD_FIELDS = {field.name for field in fields(TerminalSession)}
 
@@ -95,10 +97,37 @@ def arguments(manifest, repository_alias="repo-a", project_id="project"):
     )
 
 
+def card_record(host: str = "", machine_id: str = BACKEND_MACHINE_ID) -> SpaceMachineRecord:
+    return SpaceMachineRecord(
+        machine_id=machine_id,
+        name="Machine",
+        host=host,
+        os_account="",
+        created_at="",
+        updated_at="",
+    )
+
+
+def remote_card(store: AppStore, host: str = "worker.invalid") -> str:
+    """A remote card in the manager's space, for records and repositories to name."""
+    return store.create_space_machine(name=host, host=host, os_account="worker").machine_id
+
+
+def remote_manifest(manifest, machine_id: str):
+    """Both repositories declared on the remote card, at paths only that machine resolves."""
+    remote = manifest.model_copy(deep=True)
+    remote.machines = [*remote.machines, machine_id]
+    for alias in ("repo-a", "repo-b"):
+        remote.repository_map[alias].machine = machine_id
+        remote.repository_map[alias].path = f"/declared/{alias}"
+    return remote
+
+
 def session_record(manager, name, **overrides) -> TerminalSession:
     """A session as this manager persists one: local and mirrored unless told otherwise."""
     values = dict(
         session_id=name,
+        machine_id=BACKEND_MACHINE_ID,
         project_id="project",
         member_id="member",
         repository_id="repo-a",
@@ -198,8 +227,13 @@ async def remote_machine(manifest, manager, doubles, monkeypatch):
     `overrides` maps declared paths to what the execution machine resolves,
     `stops` records confirmed unit stops, and `failure` makes them unconfirmed.
     """
+    machine_id = remote_card(manager.store, "worker.example")
     setup = SimpleNamespace(
-        manifest=_remote_manifest(manifest), overrides={}, stops=[], failure=None
+        manifest=remote_manifest(manifest, machine_id),
+        card=manager.store.space_machine(machine_id),
+        overrides={},
+        stops=[],
+        failure=None,
     )
     replaced = manager.probes
     manager.probes = TerminalProbeCache(
@@ -365,20 +399,8 @@ def test_canonical_state_cannot_be_a_terminal_root(manifest, tmp_path):
         )
 
 
-def test_remote_repository_requires_matching_remote_stage(manifest, tmp_path):
-    manifest.machine_map["laptop"].host = "worker.invalid"
-    with pytest.raises(TerminalUnavailable):
-        resolve_repository(
-            manifest=manifest,
-            project_id="project",
-            repository_id="repo-a",
-            inventory=registered_repository_roots(manifest, project_id="project"),
-            data_dir=tmp_path / "data",
-        )
-
-
 def test_remote_paths_refuse_canonical_state_and_protect_symlinks(manifest, tmp_path):
-    manifest = _remote_manifest(manifest)
+    manifest = remote_manifest(manifest, "worker-card")
     stage = _RemoteScopeStage(
         overrides={
             "/declared/repo-a": "/srv/repo-a",
@@ -665,7 +687,7 @@ def test_backend_selection_belongs_to_machine(os_name, is_remote):
 def test_linux_missing_prerequisite_is_unavailable(manifest, monkeypatch, missing):
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Linux")
     monkeypatch.setattr(launch.shutil, "which", lambda name: None if name == missing else name)
-    capability = machine_capability(manifest.machine_map["laptop"])
+    capability = machine_capability(card_record())
     assert capability.backend is None
     assert missing in capability.reason
 
@@ -681,7 +703,7 @@ def test_linux_unreachable_manager_is_unavailable(manifest, monkeypatch):
             command, 1 if command[0] == "systemctl" else 0, "", "Cannot connect to user bus"
         ),
     )
-    capability = machine_capability(manifest.machine_map["laptop"])
+    capability = machine_capability(card_record())
     assert capability.backend is None
     assert "systemctl" in capability.reason
     assert "Cannot connect to user bus" in capability.reason
@@ -693,15 +715,14 @@ def test_a_local_machine_without_a_runnable_shell_is_not_offered(manifest, monke
     """
     monkeypatch.setattr("rcp.terminals.backends.platform.system", lambda: "Darwin")
     monkeypatch.setattr("rcp.terminals.backends.os.access", lambda path, mode: False)
-    capability = machine_capability(manifest.machine_map["laptop"])
+    capability = machine_capability(card_record())
     assert capability.backend is None
     assert "/bin/bash" in capability.reason
 
 
 @pytest.mark.parametrize("remote_os,expected", [("Linux", "mirrored"), ("Darwin", "cooperative")])
-def test_remote_capability_uses_probed_os(manifest, monkeypatch, remote_os, expected):
-    machine = manifest.machine_map["laptop"]
-    machine.host = "worker.invalid"
+def test_remote_capability_uses_probed_os(monkeypatch, remote_os, expected):
+    machine = card_record("worker.invalid", "worker-card")
     monkeypatch.setattr(
         "rcp.terminals.backends.platform.system",
         lambda: "Darwin" if remote_os == "Linux" else "Linux",
@@ -752,7 +773,7 @@ async def test_mirrored_launch_failure_never_creates_cooperative_session(
 
 @pytest.mark.asyncio
 async def test_remote_linux_probe_failure_cannot_launch_cooperative(manifest, manager, monkeypatch):
-    manifest.machine_map["laptop"].host = "worker.invalid"
+    manifest = remote_manifest(manifest, remote_card(manager.store))
     manager.probes = TerminalProbeCache(
         lambda machine: TerminalProbe("Linux", "incapable", "Linger is disabled.")
     )
@@ -1359,16 +1380,18 @@ async def test_moving_a_repository_to_another_account_does_not_hand_back_the_old
     manifest, manager, doubles
 ):
     """Two machines can share a path string, so the declared path alone does
-    not identify a registration; the machine and its account belong to it too.
+    not identify a registration; the machine belongs to it too.
     """
     first = await manager.open(**arguments(manifest))
-    assert first.declared_machine == manifest.repository_map["repo-a"].machine
-    machine = manifest.machine_map[manifest.repository_map["repo-a"].machine]
-    machine.os_account = "someone-else"
+    assert first.machine_id == manifest.repository_map["repo-a"].machine
+    manifest.repository_map["repo-a"].machine = remote_card(manager.store)
     assert manifest_registration(manifest, "repo-a") != session_registration(first)
-    second = await manager.open(**arguments(manifest))
-    assert second.session_id != first.session_id
-    assert second.declared_account == "someone-else"
+    manager.probes = TerminalProbeCache(
+        lambda machine: TerminalProbe("Linux", "incapable", "Linger is disabled.")
+    )
+    with pytest.raises(TerminalUnavailable):
+        await manager.open(**arguments(manifest))
+    assert manager.list("project") == []
     assert read_record(manager, first.session_id)["termination_reason"] == "repository_repointed"
 
 
@@ -1451,7 +1474,7 @@ async def test_a_retained_record_blocks_the_tree_it_resolved(
             repository_id="alias-since-dropped",
             path=str(Path(repository.path).resolve()),
             declared_path=str(link),
-            declared_machine=repository.machine,
+            machine_id=repository.machine,
         )
     )
     link.unlink()
@@ -1473,7 +1496,6 @@ async def test_a_retained_remote_record_blocks_its_tree_under_another_spelling(
     remote_machine.overrides.update(
         {"/declared/repo-b": "/canonical/tree", "/declared/moved": "/canonical/tree"}
     )
-    machine = manifest.machine_map["laptop"]
     manager.mark_unresolved(
         session_record(
             manager,
@@ -1481,9 +1503,7 @@ async def test_a_retained_remote_record_blocks_its_tree_under_another_spelling(
             repository_id="repo-b",
             path="/canonical/tree",
             declared_path="/declared/repo-b",
-            declared_machine="laptop",
-            declared_account=machine.os_account,
-            execution_host=machine.host,
+            machine_id=remote_machine.card.machine_id,
         )
     )
     remote_machine.failure = TerminalUnavailable("The execution machine is unreachable.")
@@ -1549,7 +1569,7 @@ async def test_a_record_whose_unit_cannot_be_stopped_is_retained_and_blocks(
     record rather than refuse the boot; the retained record is the retry, and
     it refuses a reopen until the unit is confirmed gone.
     """
-    write_record(unstarted, "stranded", execution_host="worker.invalid")
+    write_record(unstarted, "stranded", machine_id=remote_card(unstarted.store))
 
     def unreachable(*args):
         raise TerminalUnavailable("The execution machine is unreachable.")
@@ -1638,13 +1658,14 @@ async def test_startup_reconciles_records_together(unstarted, monkeypatch):
         meeting.wait(timeout=5)
         met.append(unit)
 
+    machine_id = remote_card(unstarted.store)
     for name in ("first", "second"):
         write_record(
             unstarted,
             name,
             repository_id=f"repo-{name}",
             path=f"/checkout/{name}",
-            execution_host="worker.invalid",
+            machine_id=machine_id,
         )
     monkeypatch.setattr(remote, "stop_remote_unit", stop)
     try:
@@ -1677,7 +1698,7 @@ async def test_startup_gives_up_on_a_record_that_outlasts_its_budget(
 
     monkeypatch.setattr(remote, "stop_remote_unit", stop)
     monkeypatch.setattr("rcp.terminals.manager.TERMINAL_STARTUP_RECONCILE_TIMEOUT_SECONDS", 0.25)
-    write_record(unstarted, "wedged", execution_host="worker.invalid")
+    write_record(unstarted, "wedged", machine_id=remote_card(unstarted.store))
     try:
         await unstarted.start()
     finally:
@@ -1695,8 +1716,8 @@ UNREADABLE_RECORDS = {
     "unparsable": ("{ not json", False),
     "unknown_field": ({"a_field_from_another_version": True}, True),
     "wrong_typed_project": ({"project_id": []}, False),
-    "missing_host": ({"execution_host": ...}, True),
-    "wrong_typed_host": ({"execution_host": []}, True),
+    "missing_machine": ({"machine_id": ...}, True),
+    "wrong_typed_machine": ({"machine_id": []}, True),
     "names_another_file": ({"session_id": "../rcp-server"}, True),
     "unknown_containment": ({"containment": "mirrored-with-something-new"}, True),
 }
@@ -1765,11 +1786,11 @@ async def test_every_unresolved_record_has_to_be_accounted_for(
 async def test_a_record_that_cannot_be_reconciled_at_all_blocks_its_repository(
     manifest, unstarted, doubles
 ):
-    """An `execution_host` can be a string and still be one `ssh` refuses, which
+    """A card's host can be a string and still be one `ssh` refuses, which
     raises where no branch expects it. Whatever the reason, the record names a
     unit this startup could not account for.
     """
-    write_record(unstarted, "unreachable", execution_host="bad\nhost")
+    write_record(unstarted, "unreachable", machine_id=remote_card(unstarted.store, "bad\nhost"))
     await unstarted.start()
     assert read_record(unstarted, "unreachable")["ended_at"] is None
     with pytest.raises(TerminalUnavailable):
@@ -1835,7 +1856,7 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     nothing acknowledges that. An unconfirmed stop must leave the intent
     unfinished so the next startup reconciles the unit instead of skipping it.
 
-    Cleanup carries the recorded account so it cannot run as another one.
+    Cleanup runs through the card's current host and account.
     """
     manifest = remote_machine.manifest
     if not confirmed:
@@ -1844,7 +1865,7 @@ async def test_hanging_up_a_live_remote_shell_finishes_only_on_a_confirmed_stop(
     await manager.end("project", session.session_id)
     if confirmed:
         assert remote_machine.stops == [
-            (session.execution_host, session.unit, session.declared_account)
+            (remote_machine.card.host, session.unit, remote_machine.card.os_account)
         ]
     assert manager.list("project") == []
     receipt = read_record(manager, session.session_id)

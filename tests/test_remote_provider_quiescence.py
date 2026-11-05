@@ -21,24 +21,25 @@ def test_remote_checkpoint_refuses_live_or_unknown_before_mutating_stage(
     tmp_path, monkeypatch, stopped
 ):
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid")
+    remote = store.create_space_machine(name="Remote", host="remote", os_account="").machine_id
+    store.begin_remote_provider_pass("first", remote, "/stage", "/stage/one.pid")
     store.fail_agent_task("first", "SSH disconnected")
     reopened = AppStore(tmp_path / "state.sqlite3")
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: stopped)
     execution = AgentTaskExecution("second", reopened, AgentProcessControl())
 
     with pytest.raises(ValueError, match="confirmed stopped"):
-        execution.checkpoint_stage("remote", "/stage")
+        execution.checkpoint_stage(remote, "/stage")
 
     assert execution.stage_root is None
     assert reopened.agent_task("second").stage_root is None
-    assert reopened.unresolved_remote_provider_passes("remote", "/stage") == [
+    assert reopened.unresolved_remote_provider_passes(remote, "/stage") == [
         ("first", "/stage/one.pid")
     ]
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", lambda *_args, **_kwargs: True)
-    execution.checkpoint_stage("remote", "/stage")
+    execution.checkpoint_stage(remote, "/stage")
     assert reopened.agent_task("second").stage_root == "/stage"
-    assert reopened.unresolved_remote_provider_passes("remote", "/stage") == []
+    assert reopened.unresolved_remote_provider_passes(remote, "/stage") == []
 
 
 @pytest.mark.parametrize("stopped", [False, None])
@@ -47,11 +48,12 @@ def test_experiment_retry_checks_remote_pass_before_admission(
     tmp_path, monkeypatch, stopped, switch
 ):
     store = AppStore(tmp_path / "state.sqlite3")
-    store_test_claude_token(store, "remote")
+    remote = store.create_space_machine(name="Remote", host="remote", os_account="").machine_id
+    store_test_claude_token(store, remote)
     episode_id, root = _admit_root(store)
-    store.checkpoint_agent_task(root.operation_id, stage_host="remote", stage_root="/stage")
+    store.checkpoint_agent_task(root.operation_id, stage_machine_id=remote, stage_root="/stage")
     record_launched_experiment_turn(store, root.operation_id)
-    store.begin_remote_provider_pass(root.operation_id, "remote", "/stage", "/stage/one.pid")
+    store.begin_remote_provider_pass(root.operation_id, remote, "/stage", "/stage/one.pid")
     store.fail_agent_task(root.operation_id, "session limit")
     reopened = AppStore(tmp_path / "state.sqlite3")
 
@@ -72,9 +74,10 @@ def test_quiescence_settles_only_verified_pass_and_preserves_stage_until_then(
     tmp_path, monkeypatch
 ):
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/one.pid")
+    remote = store.create_space_machine(name="Remote", host="remote", os_account="").machine_id
+    store.begin_remote_provider_pass("first", remote, "/stage", "/stage/one.pid")
     store.fail_agent_task("first", "SSH disconnected")
-    assert "/stage" in store.protected_run_stage_roots("remote")
+    assert "/stage" in store.protected_run_stage_roots(remote)
     lifecycle = next(item for item in store.run_stage_lifecycles() if item.stage_root == "/stage")
     assert lifecycle.must_exist
     observed = []
@@ -84,11 +87,11 @@ def test_quiescence_settles_only_verified_pass_and_preserves_stage_until_then(
         return True
 
     monkeypatch.setattr(AgentProcessControl, "remote_stopped", confirmed)
-    require_remote_provider_quiescence(store, "remote", "/stage")
+    require_remote_provider_quiescence(store, remote, "/stage")
     assert observed == [("remote", "/stage/one.pid")]
-    assert store.unresolved_remote_provider_passes("remote", "/stage") == []
-    assert "/stage" not in store.protected_run_stage_roots("remote")
-    store.begin_remote_provider_pass("second", "remote", "/stage", "/stage/two.pid")
+    assert store.unresolved_remote_provider_passes(remote, "/stage") == []
+    assert "/stage" not in store.protected_run_stage_roots(remote)
+    store.begin_remote_provider_pass("second", remote, "/stage", "/stage/two.pid")
 
 
 def test_a_pass_that_never_started_stops_fencing_its_stage(tmp_path, monkeypatch):
@@ -103,7 +106,8 @@ def test_a_pass_that_never_started_stops_fencing_its_stage(tmp_path, monkeypatch
     stage.mkdir(mode=0o700)
     pid_file = str(stage / "one.pid")
     store = _store(tmp_path)
-    store.begin_remote_provider_pass("first", "remote", str(stage), pid_file)
+    remote = store.create_space_machine(name="Remote", host="remote", os_account="").machine_id
+    store.begin_remote_provider_pass("first", remote, str(stage), pid_file)
     store.fail_agent_task("first", "SSH disconnected")
 
     monkeypatch.setattr(
@@ -111,6 +115,6 @@ def test_a_pass_that_never_started_stops_fencing_its_stage(tmp_path, monkeypatch
         "ssh_arguments",
         lambda _host, remote_command: [sys.executable, *shlex.split(remote_command)[1:]],
     )
-    require_remote_provider_quiescence(store, "remote", str(stage))
+    require_remote_provider_quiescence(store, remote, str(stage))
 
-    assert store.unresolved_remote_provider_passes("remote", str(stage)) == []
+    assert store.unresolved_remote_provider_passes(remote, str(stage)) == []

@@ -7,6 +7,7 @@ import pytest
 
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.space_chat import SpaceThreadOwner
 from tests.helpers import agent_patch_json, create_named_app, seed_patch
 from tests.test_dispatch_authority import _authorizer, _work_authority, _work_request
@@ -58,7 +59,7 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
     execution = AgentTaskExecution(
         retry.operation_id, store, AgentProcessControl(), continuation="retry"
     )
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     found = _prepared(owner, request, execution, stage)
     projects = found.writers
     project = projects[0]
@@ -110,7 +111,7 @@ def _space_turn(manifest, tmp_path, operation_id="space-test", *, more=()):
     stage = tmp_path / "data" / "run-stage" / operation_id
     stage.mkdir(parents=True)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
-    execution.checkpoint_stage("", str(stage))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
     return owner, request, execution, stage, _prepared(owner, request, execution, stage)
 
 
@@ -209,11 +210,12 @@ def test_space_remote_base_project_gets_a_read_only_client(manifest, tmp_path, m
     (writer,) = found.writers
     assert writer.read_scope.verbs | {"bulletin", "validate"} == writer.verbs
     loaded = ProjectService.manifest.fget
+    gpu = owner.store.create_space_machine(name="gpu", host="gpu.example", os_account="")
 
     def remote_base(service):
-        local = loaded(service)
-        machines = [item.model_copy(update={"host": "gpu.example"}) for item in local.machines]
-        return local.model_copy(update={"machines": machines})
+        remote = loaded(service).model_copy(deep=True)
+        remote.repository_map[remote.state.repository].machine = gpu.machine_id
+        return remote
 
     with monkeypatch.context() as patch:
         patch.setattr(ProjectService, "manifest", property(remote_base))

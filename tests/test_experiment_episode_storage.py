@@ -712,6 +712,7 @@ def test_stop_fences_then_skips_report_only_after_quiescence(tmp_path: Path) -> 
                 chat_id="episode-chat",
                 node_id="exp-one",
                 episode_id=episode_id,
+                machine_id=BACKEND_MACHINE_ID,
                 check_command="true",
                 log_path="/tmp/stop-pending-completion.log",
                 cwd="/tmp",

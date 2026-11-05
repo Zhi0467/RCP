@@ -9,6 +9,15 @@ import uuid
 from pathlib import Path
 
 
+def _backend_machine() -> str:
+    """The backend's own machine as this release names it: its card id, or "" before cards."""
+    try:
+        from rcp.machine_cards import BACKEND_MACHINE_ID
+    except ImportError:
+        return ""
+    return BACKEND_MACHINE_ID
+
+
 def seed_codex_home(data: Path, member_id: str) -> dict | None:
     """A synthetic stand-in; the harness never holds a real Codex sign-in."""
     from rcp.agents.provider_environment import ProviderCredentialStore
@@ -18,8 +27,9 @@ def seed_codex_home(data: Path, member_id: str) -> dict | None:
     if not hasattr(store, "add_provider_login"):
         return None
     credentials = ProviderCredentialStore.for_data_dir(data)
-    logins = [store.add_provider_login("codex", "", added_by=member_id) for _ in range(2)]
-    home = credentials.account_dir("codex", "", logins[0].login_id) / "codex-home"
+    machine = _backend_machine()
+    logins = [store.add_provider_login("codex", machine, added_by=member_id) for _ in range(2)]
+    home = credentials.account_dir("codex", machine, logins[0].login_id) / "codex-home"
     home.mkdir(parents=True, mode=0o700)
     credential = json.dumps({"synthetic": str(uuid.uuid4())})
     (home / "auth.json").write_text(credential)
@@ -59,7 +69,13 @@ def check_codex_home(data: Path, fixture: dict | None, *, migrated: bool) -> Non
     credentials = ProviderCredentialStore.for_data_dir(data)
     homes = []
     for login_id in fixture["login_ids"]:
-        environment = CodexAuthentication().process_environment(credentials, "", login_id)
+        machine = _backend_machine()
+        if machine:
+            environment = CodexAuthentication().process_environment(
+                credentials, machine, login_id, host=""
+            )
+        else:
+            environment = CodexAuthentication().process_environment(credentials, "", login_id)
         assert environment.local_env is not None
         homes.append(Path(environment.local_env["CODEX_HOME"]))
     for home in homes:

@@ -17,6 +17,7 @@ from rcp.repository_preview import (
     load_repository_source_for_path,
     repository_source_document,
 )
+from rcp.storage import AppStore
 from rcp.transport import StateUnavailable
 from rcp.transport.ssh import SSH_OPTIONS
 from tests.helpers import signed_in_client
@@ -24,7 +25,18 @@ from tests.helpers import signed_in_client
 from .helpers import create_named_app as create_app
 
 
+@pytest.fixture
+def store(tmp_path) -> AppStore:
+    return AppStore(tmp_path / "preview.sqlite3")
+
+
+def _remote(manifest, store: AppStore) -> None:
+    machine = store.create_space_machine(name="laptop", host="research@example.test", os_account="")
+    manifest.repository_map["repo-a"].machine = machine.machine_id
+
+
 def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(
+    store,
     manifest,
 ) -> None:
     root = Path(manifest.repository_map["repo-a"].path)
@@ -32,65 +44,68 @@ def test_local_repository_source_is_bounded_utf8_and_does_not_follow_symlinks(
     nested.mkdir()
     (nested / "safe.py").write_text("print('safe')\n", encoding="utf-8")
 
-    source = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=64)
+    source = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=64, store=store)
 
     assert source.text == "print('safe')\n"
     assert source.complete
     assert source.start_line == 1
-    bounded = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=4)
+    bounded = load_repository_source(manifest, "repo-a", "src/safe.py", max_bytes=4, store=store)
     assert bounded.text == "prin"
     assert not bounded.complete
     assert bounded.total_bytes == 14
     (nested / "binary.dat").write_bytes(b"\xff")
     with pytest.raises(ValueError, match="UTF-8"):
-        load_repository_source(manifest, "repo-a", "src/binary.dat")
+        load_repository_source(manifest, "repo-a", "src/binary.dat", store=store)
     for name, content in (("nul.txt", b"safe\x00unsafe"), ("escape.txt", b"safe\x1bunsafe")):
         (nested / name).write_bytes(content)
         with pytest.raises(ValueError, match="control"):
-            load_repository_source(manifest, "repo-a", f"src/{name}")
+            load_repository_source(manifest, "repo-a", f"src/{name}", store=store)
     (nested / "ordinary-controls.txt").write_bytes(b"tab\tok\r\n")
     assert (
-        load_repository_source(manifest, "repo-a", "src/ordinary-controls.txt").text
+        load_repository_source(manifest, "repo-a", "src/ordinary-controls.txt", store=store).text
         == "tab\tok\r\n"
     )
     with pytest.raises(ValueError, match="bounded"):
-        load_repository_source(manifest, "repo-a", "src")
+        load_repository_source(manifest, "repo-a", "src", store=store)
     (nested / "linked.py").symlink_to(nested / "safe.py")
     with pytest.raises(ValueError, match="safely"):
-        load_repository_source(manifest, "repo-a", "src/linked.py")
+        load_repository_source(manifest, "repo-a", "src/linked.py", store=store)
     (root / "linked-src").symlink_to(nested, target_is_directory=True)
     with pytest.raises(ValueError, match="regular file|safely"):
-        load_repository_source(manifest, "repo-a", "linked-src/safe.py")
+        load_repository_source(manifest, "repo-a", "linked-src/safe.py", store=store)
 
 
 @pytest.mark.parametrize(
     "path",
     ["", ".", "..", "/etc/passwd", "src/../secret", "src/./safe.py", "src//safe.py"],
 )
-def test_repository_source_rejects_unsafe_paths(manifest, path: str) -> None:
+def test_repository_source_rejects_unsafe_paths(store, manifest, path: str) -> None:
     with pytest.raises(ValueError, match="relative|unsafe"):
-        load_repository_source(manifest, "repo-a", path)
+        load_repository_source(manifest, "repo-a", path, store=store)
 
 
-def test_absolute_repository_path_resolves_one_segment_boundary_match(manifest) -> None:
+def test_absolute_repository_path_resolves_one_segment_boundary_match(store, manifest) -> None:
     root = Path(manifest.repository_map["repo-a"].path)
     target = root / "src" / "safe.py"
     target.parent.mkdir()
     target.write_text("safe", encoding="utf-8")
 
-    source = load_repository_source_for_path(manifest, target.as_posix())
+    source = load_repository_source_for_path(manifest, target.as_posix(), store=store)
 
     assert source.repository_alias == "repo-a"
     assert source.relative_path == "src/safe.py"
     assert source.text == "safe"
     with pytest.raises(ValueError, match="outside every"):
-        load_repository_source_for_path(manifest, "/outside/configured/repositories.py")
+        load_repository_source_for_path(
+            manifest, "/outside/configured/repositories.py", store=store
+        )
     with pytest.raises(ValueError, match="outside every"):
-        load_repository_source_for_path(manifest, f"{root}-sibling/file.py")
+        load_repository_source_for_path(manifest, f"{root}-sibling/file.py", store=store)
 
 
 @pytest.mark.parametrize("nested", [False, True], ids=["equal-roots", "nested-roots"])
 def test_absolute_repository_path_refuses_ambiguous_roots_before_reading(
+    store,
     manifest,
     monkeypatch,
     nested: bool,
@@ -106,7 +121,7 @@ def test_absolute_repository_path_refuses_ambiguous_roots_before_reading(
     monkeypatch.setattr(preview_module, "_read_remote_file", unexpected_reader)
 
     with pytest.raises(ValueError, match="repo-a, repo-b"):
-        load_repository_source_for_path(manifest, target.as_posix())
+        load_repository_source_for_path(manifest, target.as_posix(), store=store)
 
 
 def test_repository_source_document_escapes_content_and_highlights_requested_line() -> None:
@@ -130,16 +145,14 @@ def _numbered_lines(count: int) -> str:
     return "".join(f"line {number:04d}\n" for number in range(1, count + 1))
 
 
-def test_oversized_repository_file_returns_the_window_around_the_cited_line(manifest) -> None:
+def test_oversized_repository_file_returns_the_window_around_the_cited_line(
+    store, manifest
+) -> None:
     root = Path(manifest.repository_map["repo-a"].path)
     (root / "trajectory.jsonl").write_text(_numbered_lines(500), encoding="utf-8")
 
     source = load_repository_source(
-        manifest,
-        "repo-a",
-        "trajectory.jsonl",
-        line=250,
-        max_bytes=3000,
+        manifest, "repo-a", "trajectory.jsonl", line=250, max_bytes=3000, store=store
     )
 
     assert not source.complete
@@ -149,35 +162,43 @@ def test_oversized_repository_file_returns_the_window_around_the_cited_line(mani
     assert lines[0] == "line 0150"
     assert lines[-1] == "line 0350"
 
-    tight = load_repository_source(manifest, "repo-a", "trajectory.jsonl", line=250, max_bytes=300)
+    tight = load_repository_source(
+        manifest, "repo-a", "trajectory.jsonl", line=250, max_bytes=300, store=store
+    )
     assert tight.start_line == 250
     assert tight.text.split("\n")[0] == "line 0250"
     assert len(tight.text) <= 300
 
-    without_line = load_repository_source(manifest, "repo-a", "trajectory.jsonl", max_bytes=3000)
+    without_line = load_repository_source(
+        manifest, "repo-a", "trajectory.jsonl", max_bytes=3000, store=store
+    )
     assert without_line.start_line == 1
     assert without_line.text.split("\n")[0] == "line 0001"
     assert len(without_line.text.split("\n")) == 2 * preview_module.REPOSITORY_PREVIEW_WINDOW_LINES
 
 
-def test_oversized_lines_stay_bounded_and_keep_whole_characters(manifest) -> None:
+def test_oversized_lines_stay_bounded_and_keep_whole_characters(store, manifest) -> None:
     root = Path(manifest.repository_map["repo-a"].path)
     (root / "one-line.log").write_text("x" * 5000, encoding="utf-8")
     (root / "multibyte.log").write_text(("é" * 1000 + "\n") * 3, encoding="utf-8")
 
-    undelimited = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=300)
+    undelimited = load_repository_source(
+        manifest, "repo-a", "one-line.log", max_bytes=300, store=store
+    )
     assert undelimited.text == "x" * 300
     assert not undelimited.complete
 
-    multibyte = load_repository_source(manifest, "repo-a", "multibyte.log", max_bytes=1001)
+    multibyte = load_repository_source(
+        manifest, "repo-a", "multibyte.log", max_bytes=1001, store=store
+    )
     assert multibyte.text == "é" * 500
 
     (root / "binary.log").write_bytes(b"text\xff" * 200)
     with pytest.raises(ValueError, match="UTF-8"):
-        load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100)
+        load_repository_source(manifest, "repo-a", "binary.log", max_bytes=100, store=store)
 
 
-def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch) -> None:
+def test_a_cited_line_that_fills_the_budget_stops_the_scan(store, manifest, monkeypatch) -> None:
     root = Path(manifest.repository_map["repo-a"].path)
     (root / "one-line.log").write_bytes(b"x" * 20_000_000)
     reads = 0
@@ -189,7 +210,7 @@ def test_a_cited_line_that_fills_the_budget_stops_the_scan(manifest, monkeypatch
         return real_read(fd, size)
 
     monkeypatch.setattr(window_module.os, "read", counted_read)
-    source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024)
+    source = load_repository_source(manifest, "repo-a", "one-line.log", max_bytes=1024, store=store)
 
     assert source.text == "x" * 1024
     assert reads <= 2
@@ -294,10 +315,11 @@ def test_repository_preview_route_windows_an_oversized_file(
 
 
 def test_remote_repository_source_uses_multiplexed_ssh_reader(
+    store,
     manifest,
     monkeypatch,
 ) -> None:
-    manifest.machine_map["laptop"].host = "research@example.test"
+    _remote(manifest, store)
     captured: dict[str, object] = {}
 
     def run(arguments, **kwargs):
@@ -316,6 +338,7 @@ def test_remote_repository_source_uses_multiplexed_ssh_reader(
         manifest,
         f"{manifest.repository_map['repo-a'].path}/nested/file.py",
         max_bytes=123,
+        store=store,
     )
 
     assert source.text == "remote text\n"
@@ -350,12 +373,13 @@ def test_remote_repository_source_uses_multiplexed_ssh_reader(
     ],
 )
 def test_remote_repository_source_maps_reader_failures(
+    store,
     manifest,
     monkeypatch,
     returncode: int,
     error: type[Exception],
 ) -> None:
-    manifest.machine_map["laptop"].host = "research@example.test"
+    _remote(manifest, store)
 
     def run(arguments, **_kwargs):
         return subprocess.CompletedProcess(arguments, returncode, b"", b"unavailable")
@@ -363,7 +387,7 @@ def test_remote_repository_source_maps_reader_failures(
     monkeypatch.setattr(preview_module.subprocess, "run", run)
 
     with pytest.raises(error):
-        load_repository_source(manifest, "repo-a", "nested/file.py")
+        load_repository_source(manifest, "repo-a", "nested/file.py", store=store)
 
 
 def test_repository_preview_route_returns_escaped_get_and_empty_head(manifest, tmp_path) -> None:

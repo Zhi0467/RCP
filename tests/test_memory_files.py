@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents.memory_files import member_memory_root, prepare_project_memory, project_memory_root
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import StateUnavailable
@@ -315,8 +316,12 @@ def test_project_identity_moves_and_deletes_memory(tmp_path, monkeypatch, remote
             project_id="project",
             locator="/project/manifest.toml",
             name="Project",
-            state_location="base:/project/.research" if remote else "/project/.research",
-            state_remote=remote,
+            state_machine_id=(
+                store.create_space_machine(name="Base", host="base", os_account="").machine_id
+                if remote
+                else BACKEND_MACHINE_ID
+            ),
+            state_path="/project/.research",
             added_at=store.now(),
         )
     )
@@ -342,10 +347,7 @@ def test_project_identity_moves_and_deletes_memory(tmp_path, monkeypatch, remote
         ] == [canonical]
     prepare_project_memory(store, canonical, stage)
     assert (moved / "shared/MEMORY.md").read_text() == "edited index"
-    from rcp.runs import browser_lifecycle
-
-    monkeypatch.setattr(browser_lifecycle, "browser_host_key", lambda _: "original")
-    store.delete_project_records(canonical, memory_host_key="original")
+    store.delete_project_records(canonical)
     assert moved.exists()
     from rcp.runs.browser_lifecycle import retry_browser_cleanup
 
@@ -367,8 +369,10 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
             project_id="project",
             locator="/project/manifest.toml",
             name="Project",
-            state_location="base:/project/.research",
-            state_remote=True,
+            state_machine_id=store.create_space_machine(
+                name="Base", host="base", os_account=""
+            ).machine_id,
+            state_path="/project/.research",
             added_at=store.now(),
         )
     )
@@ -380,9 +384,6 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
         assert store.project("project") is None
         return subprocess.CompletedProcess([], 255, b"", b"offline")
 
-    from rcp.runs import browser_lifecycle
-
-    monkeypatch.setattr(browser_lifecycle, "browser_host_key", lambda _: "original")
     monkeypatch.setattr(RemoteRunStage, "_ssh_bytes", offline)
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
     catalog.delete("project")
@@ -393,11 +394,6 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(
         RemoteRunStage, "_ssh_bytes", lambda *a, **k: subprocess.CompletedProcess([], 0, b"{}", b"")
     )
-    monkeypatch.setattr(browser_lifecycle, "browser_host_key", lambda _: "repointed")
-    retry_browser_cleanup(AppStore(store.path))
-    with store.connection() as connection:
-        assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 1
-    monkeypatch.setattr(browser_lifecycle, "browser_host_key", lambda _: "original")
     retry_browser_cleanup(AppStore(store.path))
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 0
@@ -411,21 +407,22 @@ def test_a_deletion_owed_on_another_base_does_not_block_launch(tmp_path):
         project_id="project",
         locator="/project/manifest.toml",
         name="Project",
-        state_location=str(tmp_path / "new" / ".research"),
-        state_remote=False,
+        state_machine_id=BACKEND_MACHINE_ID,
+        state_path=str(tmp_path / "new" / ".research"),
         added_at=store.now(),
     )
     store.upsert_project(project)
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO memory_deletions VALUES (?,?,?,?)",
-            ("project", "gone:/old/.research", project.model_dump_json(), None),
+            "INSERT INTO memory_deletions VALUES (?,?,?,?,?)",
+            ("project", "gone", "/old/.research", project.model_dump_json(), None),
         )
     shared, _size = prepare_project_memory(store, "project")
     assert Path(shared).is_dir()
     with store.connection() as connection:
         connection.execute(
-            "UPDATE memory_deletions SET state_location=?", (project.state_location,)
+            "UPDATE memory_deletions SET state_machine_id=?, state_path=?",
+            (project.state_machine_id, project.state_path),
         )
     with pytest.raises(ValueError, match="deletion remains pending"):
         prepare_project_memory(store, "project")
@@ -458,8 +455,10 @@ def test_rename_retries_on_next_launch_after_remote_failure(tmp_path, monkeypatc
             project_id="project",
             locator="/project/manifest.toml",
             name="Project",
-            state_location="base:/project/.research",
-            state_remote=True,
+            state_machine_id=store.create_space_machine(
+                name="Base", host="base", os_account=""
+            ).machine_id,
+            state_path="/project/.research",
             added_at=store.now(),
         )
     )

@@ -13,6 +13,7 @@ from rcp.digest import DigestProjector, _merged_revision, assemble_digest, attri
 from rcp.history.delta import semantic_delta
 from rcp.history.engine import ProjectHistoryEngine
 from rcp.history.queries import StepRecord
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import AppStore, ProjectRecord
 from rcp.storage.digest import append_digest_event, digest_event
@@ -27,8 +28,8 @@ def _project_store(tmp_path):
             project_id="p",
             locator=str(tmp_path / "research.yaml"),
             name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / ".research"),
             added_at=store.now(),
         )
     )

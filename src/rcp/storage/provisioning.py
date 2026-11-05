@@ -244,7 +244,11 @@ def _require_provisioning_cards(
     machines: list[ProjectProvisioningMachineRecord],
     cards: dict[str, SpaceMachineRecord],
 ) -> None:
-    """Every machine is a card of this space; the backend runs as rcp in the installed root."""
+    """Every machine is a card of this space; the backend runs as rcp in the installed root.
+
+    A backend card with no account checks nothing: the backend process is the
+    installed service account.
+    """
 
     for machine in machines:
         card = cards.get(machine.machine_id)
@@ -252,7 +256,7 @@ def _require_provisioning_cards(
             raise ValueError("provisioning machine names no machine in this space")
         if machine.machine_id == BACKEND_MACHINE_ID:
             layout = storage_models.DEFAULT_SERVER_LAYOUT
-            if card.os_account != layout.service_account:
+            if card.os_account not in ("", layout.service_account):
                 raise ValueError("the server-local provisioning machine must execute as rcp")
             if machine.central_root != str(layout.projects_root):
                 raise ValueError("the server-local provisioning root is fixed by the installation")

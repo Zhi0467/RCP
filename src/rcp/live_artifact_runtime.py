@@ -119,7 +119,7 @@ def _graph_history(service, task):
 def _stage_host(store, task) -> str | None:
     """The route to the task's stage, read from its card now; None on the backend."""
     machine_id = task.stage_machine_id
-    if machine_id == BACKEND_MACHINE_ID:
+    if machine_id in (None, "", BACKEND_MACHINE_ID):
         return None
     return host_of(store, machine_id)
 

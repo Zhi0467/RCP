@@ -58,7 +58,7 @@ def _continuation() -> WatcherContinuation:
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["state"],
         patch_kind="work",
     )
@@ -71,6 +71,7 @@ def _binding(origin: str = "origin") -> WatcherBinding:
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp-one",
+        machine_id="backend",
         continuation=_continuation(),
     )
 
@@ -99,6 +100,7 @@ def _record(
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp-one",
+        machine_id="backend",
         check_command="true",
         log_path=f"/tmp/{watcher_id}.log",
         cwd="/tmp",
@@ -132,7 +134,7 @@ def _task(store: AppStore, operation_id: str, watcher_ids: list[str]) -> AgentTa
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": "backend",
             "run_truth_scope": ["state"],
             "mode": "work",
             "trigger": "watcher",
@@ -174,7 +176,7 @@ def _loop_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": "backend",
             "run_truth_scope": ["state"],
             "mode": "work",
             "trigger": "watcher" if watcher_ids else "experiment_run",
@@ -299,10 +301,9 @@ def _bound_episode(store: AppStore, episode_id: str, *, operation_id: str = "loo
         project_id="project",
         control_node_id="exp-one",
         provider="codex",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id="backend",
         native_session_id="native-loop-session",
-        stage_host=None,
+        stage_machine_id=None,
         stage_root="/tmp/loop-stage",
         chat_id="chat",
         operation_id=operation_id,
@@ -359,7 +360,7 @@ def _maintenance_binding(resource) -> WatcherBinding:
         origin_task_kind="project_chat",
         chat_id="maintenance-chat",
         node_id="exp-one",
-        execution_host=resource.execution_host,
+        machine_id=resource.machine_id,
         continuation=resource.continuation,
     )
 
@@ -374,7 +375,7 @@ def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(s
     assert store.admit_experiment_watcher_maintenance(binding) == resource
     assert resource.wake_chat_id == "chat"
     assert resource.continuation.provider == "codex"
-    assert resource.continuation.run_on == "laptop"
+    assert resource.continuation.run_on == "backend"
 
     store.create_agent_task(
         _maintenance_task(
@@ -443,7 +444,7 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(
     assert stored[0].origin_task_kind == "project_chat"
     assert stored[0].node_id == "exp-one"
     assert stored[0].episode_id == episode_id
-    assert stored[0].execution_host == resource.execution_host
+    assert stored[0].machine_id == resource.machine_id
     assert stored[0].continuation.provider == "codex"
     assert store.watcher("old").status == "stopped"
     assert store.watcher("old").stop_operation_id == "maintenance"
@@ -515,7 +516,7 @@ def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
             origin_task_kind="project_chat",
             chat_id=chat_id,
             node_id="exp-one",
-            execution_host=resource.execution_host,
+            machine_id=resource.machine_id,
             continuation=resource.continuation,
         )
 
@@ -1329,7 +1330,8 @@ def test_runtime_error_degrades_only_that_watcher_and_later_clears(store) -> Non
 
 
 def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(store) -> None:
-    record = _record("manual").model_copy(update={"execution_host": "gpu.example"})
+    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
+    record = _record("manual").model_copy(update={"machine_id": gpu.machine_id})
     store.create_watchers([record])
     degraded = store.record_watcher_check(
         "manual",
@@ -1571,7 +1573,7 @@ def _completed_chat_turn(
     store.checkpoint_agent_task(
         operation_id,
         native_session_id=session_id,
-        stage_host="",
+        stage_machine_id="",
         stage_root=str(store.path.parent / "chat-stage"),
     )
     if status == "failed":
@@ -1601,8 +1603,8 @@ def test_chat_wake_and_following_human_turn_share_the_current_native_session(sto
     assert wake is not None
     assert wake.request["session_id"] == previous.native_session_id
     assert wake.native_session_id == previous.native_session_id
-    assert (wake.stage_host or "", wake.stage_root) == (
-        previous.stage_host or "",
+    assert (wake.stage_machine_id or "", wake.stage_root) == (
+        previous.stage_machine_id or "",
         previous.stage_root,
     )
     assert _session_resolution(store, wake.operation_id)["outcome"] == "continued"
@@ -1817,7 +1819,7 @@ def test_artifact_edit_does_not_become_the_chat_session(store) -> None:
                 "artifact_id": "a" * 24,
                 "base_version": 1,
                 "origin_operation_id": origin.operation_id,
-                "stage_host": origin.stage_host,
+                "stage_machine_id": origin.stage_machine_id,
                 "stage_root": origin.stage_root,
             },
         },

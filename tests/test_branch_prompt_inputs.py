@@ -4,6 +4,7 @@ import hashlib
 import json
 import subprocess
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from rcp.runs.shared import (
     stage_branch_read_context,
 )
 from rcp.service import RunRequest
+from rcp.storage import AppStore
 from rcp.transport import RemoteRunStage
 
 from .test_branch_context import branch_services as branch_services
@@ -374,7 +376,9 @@ async def test_branch_turn_prepares_hidden_reads_with_its_project_identity(
         RunRequest(run_on=BACKEND_MACHINE_ID),
         workspace=tmp_path / "stage" / "workspace",
         remote_stage=None,
-        execution=None,
+        execution=SimpleNamespace(
+            store=AppStore(tmp_path / "rcp.sqlite3"), operation_id="op", git_access=None
+        ),
         capability="work_auto",
         data_dir=tmp_path / "data",
     )

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl, ProviderReadiness
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSteeringState, ProviderSteerReceipt
 from rcp.runs.chat import _append_chat_exchange
 from rcp.runs.steering import chat_steering_state, chat_steering_visible
@@ -627,7 +628,10 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     store = run.background.store
     task = store.agent_task(run.operation_id)
     store.checkpoint_agent_task(
-        run.operation_id, native_session_id="live-session", stage_root=task.stage_root or "/stage"
+        run.operation_id,
+        native_session_id="live-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=task.stage_root or "/stage",
     )
     task = store.agent_task(run.operation_id)
     with store.connection() as connection:
@@ -651,7 +655,7 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
             provider="codex",
             native_session_id="live-session",
             stage_root=task.stage_root,
-            stage_host=task.stage_host,
+            stage_machine_id=task.stage_machine_id,
             capability=task.dispatch_authority.task_contract,
             graph_target=task.graph_target,
         ),

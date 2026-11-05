@@ -61,7 +61,7 @@ def test_catalog_delete_reclaims_only_app_owned_files_and_persists(
             created_at=now,
             updated_at=now,
             status_message="failed",
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(stage),
         )
     )
@@ -99,6 +99,7 @@ def test_catalog_delete_warns_when_remote_cleanup_fails_after_commit(
     store = AppStore(data_dir / "rcp.sqlite3")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
     record = catalog.register(str(manifest.path), identity_action="adopted")
+    remote = store.create_space_machine(name="Research", host="research-host", os_account="")
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -110,7 +111,7 @@ def test_catalog_delete_warns_when_remote_cleanup_fails_after_commit(
             created_at=now,
             updated_at=now,
             status_message="failed",
-            stage_host="research-host",
+            stage_machine_id=remote.machine_id,
             stage_root="/tmp/rcp-run.saved-remote-operation",
         )
     )
@@ -153,7 +154,7 @@ def test_catalog_delete_rejects_local_stage_outside_app_boundary(manifest, tmp_p
             created_at=now,
             updated_at=now,
             status_message="failed",
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(outside),
         )
     )
@@ -375,7 +376,7 @@ def test_delete_compute_jobs_preserves_job_directories(manifest, tmp_path, monke
         )
     other = store.create_compute_job(job_record("other", project_id="other-project"))
     probe = ComputeBackendProbe(
-        execution_machine="laptop",
+        machine_id="laptop",
         backend_id="systemd_user",
         state="ready",
         ready=True,
@@ -492,6 +493,7 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
                 cancel_command=cancel_command,
                 log_path=str(tmp_path / "external.log"),
                 cwd=str(tmp_path),
+                machine_id=BACKEND_MACHINE_ID,
                 continuation=WatcherContinuation(provider="codex", run_on="local"),
                 created_at=now,
             )
@@ -589,6 +591,7 @@ def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
                 cancel_command=f"touch {cancelled}",
                 log_path=str(tmp_path / "watched.log"),
                 cwd=str(tmp_path),
+                machine_id=BACKEND_MACHINE_ID,
                 continuation=WatcherContinuation(provider="codex", run_on="local"),
                 created_at=now,
             )

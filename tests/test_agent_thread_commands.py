@@ -1030,6 +1030,8 @@ def test_a_deferred_queued_message_retries_itself_until_it_starts_or_times_out(
 def test_an_admitted_queued_message_restarts_with_the_backend(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
+    from tests.helpers import fake_launch_admitted
+
     world = _queue_world(manifest, tmp_path, monkeypatch)
     store, background = world.store, world.background
     queued = world.queue("key", "Next")
@@ -1037,7 +1039,7 @@ def test_an_admitted_queued_message_restarts_with_the_backend(
     assert store.agent_thread_queue_item(queued.queue_id).operation_id == operation_id
     relaunched: list[str] = []
     monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **kwargs: None)
-    monkeypatch.setattr(background, "launch_admitted", relaunched.append)
+    fake_launch_admitted(monkeypatch, background, relaunched.append)
     background.recover_at_startup()
     task = store.agent_task(operation_id)
     assert task is not None and task.status == "queued"

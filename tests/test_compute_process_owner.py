@@ -42,7 +42,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
     launchctl.chmod(0o700)
     request = ComputeLaunchRequest(argv=["true"], cwd=str(tmp_path))
     prepare_job_root(
-        BackendContext(execution_host="", execution_machine="local", compute=None),
+        BackendContext(execution_host="", machine_id="backend", compute=None),
         str(root),
         request,
         project_id="project",
@@ -53,7 +53,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
         job_id="job",
         project_id="project",
         origin_operation_id="turn",
-        execution_machine="local",
+        machine_id="backend",
         backend_id=backend_id,
         backend_handle="rcp-job-test",
         job_root=str(root),

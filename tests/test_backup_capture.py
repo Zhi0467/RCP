@@ -602,7 +602,7 @@ def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(
     target = repository / "artifacts" / "kept-figure.png"
     candidate = b"agent rewrite"
     assert len(candidate) == target.stat().st_size
-    local_workspace = project_files.state_workspace_for_probe(
+    local_workspace = state_module.state_workspace_for_probe(
         load_manifest(inventory.locator or ""),
         data_dir,
         AppStore(data_dir / "rcp.sqlite3"),
@@ -647,7 +647,7 @@ def test_unresolved_kept_artifact_revision_race_marks_project_uncaptured(
 
         monkeypatch.setattr(workspace, "read_kept_artifact", local_read)
 
-    monkeypatch.setattr(project_files, "state_workspace_for_probe", lambda *_args: workspace)
+    monkeypatch.setattr(project_files, "state_workspace_on_hosts", lambda *_args: workspace)
 
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)

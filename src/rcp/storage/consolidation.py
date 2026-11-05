@@ -549,7 +549,7 @@ class ConsolidationStoreMixin(StoreMixinBase):
             "SELECT DISTINCT stage_root FROM graph_runs "
             "WHERE project_id=? AND kind=? AND history_only=0 "
             "AND json_extract(request_json, '$.chat_id')=? "
-            "AND stage_machine_id=? "
+            "AND COALESCE(NULLIF(stage_machine_id, ''), 'backend')=? "
             "AND stage_root IS NOT NULL AND stage_root != ''",
             (task.project_id, task.kind, task.request.get("chat_id"), machine_id),
         ).fetchall()

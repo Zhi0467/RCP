@@ -10,8 +10,10 @@ import pytest
 from rcp.agents import AgentLauncher
 from rcp.attachments import ChatAttachmentStore
 from rcp.config import load_manifest
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.history.manager import ProjectIdentityConflict
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore, ProjectRecord
 from tests.helpers import unchecked_write_authority
@@ -19,18 +21,17 @@ from tests.helpers import unchecked_write_authority
 
 def _legacy_record(manifest, store: AppStore, project_id: str) -> ProjectRecord:
     repository = manifest.repository_map[manifest.state.repository]
-    machine = manifest.machine_map[repository.machine]
     return store.upsert_project(
         ProjectRecord(
             project_id=project_id,
             locator=str(manifest.path),
             name=manifest.name,
-            state_location=(
-                f"{machine.host}:{repository.path}/.research"
-                if machine.host
-                else str(manifest.research_dir)
+            state_machine_id=repository.machine,
+            state_path=(
+                str(manifest.research_dir)
+                if repository.machine == BACKEND_MACHINE_ID
+                else f"{repository.path}/.research"
             ),
-            state_remote=bool(machine.host),
             added_at=store.now(),
         )
     )
@@ -45,7 +46,7 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
         "last_remote_sync_at": None,
         "state_repository": "repo-a",
         "canonical_state": {"remote": False, "reachable": True, "error": None},
-        "run_on": "laptop",
+        "run_on": "backend",
         "project_truth_scope": [],
         "default_run_truth_scope": [],
         "default_campaign_invocation_ceiling": 10,
@@ -56,6 +57,9 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
         "counts": {},
         "coverage": {},
         "graph": {"revision": 0, "coverage": {"note": "Historical reading report."}},
+        "graph_target": GraphTargetRef().model_dump(mode="json"),
+        "graph_head": GraphHeadRef(revision=0).model_dump(mode="json"),
+        "graph_changes": None,
         "paper": {},
         "paper_coach": {},
         "agent_profiles": {},
@@ -66,7 +70,7 @@ def _write_legacy_display(path: Path, project_id: str) -> None:
         "validation_messages": [],
     }
     envelope = {
-        "schema_version": 2,
+        "schema_version": 6,
         "project_id": project_id,
         "canonical_patch_head": None,
         "snapshot": snapshot,
@@ -443,8 +447,8 @@ def test_open_refuses_manifest_name_owned_by_another_project(
             home_space_id=store.space_id,
             locator=str(tmp_path / "foreign" / "research.yaml"),
             name="Foreign project",
-            state_location=str(tmp_path / "foreign" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "foreign" / ".research"),
             added_at=store.now(),
         )
     )

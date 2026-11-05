@@ -20,8 +20,7 @@ OPENCODE = profile_for("opencode")
 def _scope(capability="work_auto") -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability=capability,
         stage_root="/home/rcp/data/stages/s",
         workspace_root="/home/rcp/data/stages/s/workspace",
@@ -275,8 +274,7 @@ def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 
     scope = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         os_account="tester",
         account_home="/home/tester",
         hidden_directories=("/secrets",),

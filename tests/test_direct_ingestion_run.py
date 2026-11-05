@@ -10,6 +10,7 @@ import pytest
 import rcp.runs.tasks.graph as graph_run
 from rcp.agents import AgentEvent
 from rcp.agents.prompts import compute_connection_section
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_loop import experiment_loop_semantic_ending
 from rcp.runs.tasks.graph import (
     _agent_read_dirs,
@@ -102,7 +103,7 @@ def test_successful_ingest_answer_is_persisted_and_readable(
     contract = app.state.background_tasks.store.agent_task_contract(
         completed["operation_id"], "base"
     )
-    machines = compute_connection_section(service.machine_prompt_profiles("laptop"))
+    machines = compute_connection_section(service.machine_prompt_profiles(BACKEND_MACHINE_ID))
     assert machines and machines in (contract or "")
 
 
@@ -191,7 +192,7 @@ def test_remote_graph_context_rebinds_metadata_without_staging_provider_logs(
         def write_workspace_text(self, name: str, content: str) -> None:
             self.last_workspace_write = (name, content)
 
-    staged = _stage_graph_context(context, service, NoTransferStage(), "laptop")
+    staged = _stage_graph_context(context, service, NoTransferStage(), BACKEND_MACHINE_ID)
 
     assert staged.source_roots == context.source_roots
     assert staged.ingestion_watermark == context.ingestion_watermark
@@ -212,7 +213,7 @@ def test_graph_read_dirs_expose_each_provider_root_exactly(manifest, tmp_path) -
     }
     context = context.model_copy(update={"source_roots": roots})
 
-    read_dirs = _agent_read_dirs(context, None, service, "laptop")
+    read_dirs = _agent_read_dirs(context, None, service, BACKEND_MACHINE_ID)
 
     for root in roots["claude"] + roots["codex"]:
         assert Path(root).expanduser() in read_dirs
@@ -234,13 +235,13 @@ def test_prepared_context_and_receipt_preserve_project_watermark(manifest, tmp_p
         project_id="project",
         kind="refresh",
         graph_revision=context.graph_revision,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         original_contract_path=str(stage / "inputs/task.md"),
         context=context,
     )
 
     payload = json.loads((stage / "inputs/prepared-context.json").read_text(encoding="utf-8"))
-    assert payload["version"] == 2
+    assert payload["version"] == 3
     assert (
         datetime.fromisoformat(payload["context"]["ingestion_watermark"].replace("Z", "+00:00"))
         == watermark
@@ -292,7 +293,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
     )
     imported_inventory = service.imported_source_inventory(
         "refresh",
-        manifest.machine_map["laptop"],
+        BACKEND_MACHINE_ID,
     )
     assert imported_inventory is not None
     context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
@@ -304,7 +305,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
         project_id="project",
         kind="refresh",
         graph_revision=context.graph_revision,
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         original_contract_path=str(parent_stage / "inputs/task.md"),
         context=context,
     )
@@ -332,6 +333,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
             status_message="failed",
             attempt=1,
             native_session_id="provider-native-session",
+            stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(parent_stage),
         ),
     }
@@ -373,7 +375,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
         execution,
         kind="refresh",
         request=RunRequest(run_truth_scope=["repo-a"]),
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         imported_source_inventory=imported_inventory,
     )
 
@@ -398,7 +400,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
         resume_execution,
         kind="refresh",
         request=RunRequest(run_truth_scope=["repo-a"]),
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         imported_source_inventory=imported_inventory,
     )
     assert resumed.context.imported_source_fingerprint == imported_inventory.fingerprint
@@ -406,14 +408,14 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
     assert service.imported_sources.discard(expected_inventory=imported_inventory)
     empty_inventory = service.imported_source_inventory(
         "refresh",
-        manifest.machine_map["laptop"],
+        BACKEND_MACHINE_ID,
     )
     changed_retry = _try_reuse_graph_context(
         service,
         execution,
         kind="refresh",
         request=RunRequest(run_truth_scope=["repo-a"]),
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         imported_source_inventory=empty_inventory,
     )
     assert changed_retry is not None
@@ -425,7 +427,7 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
             resume_execution,
             kind="refresh",
             request=RunRequest(run_truth_scope=["repo-a"]),
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             imported_source_inventory=empty_inventory,
         )
 

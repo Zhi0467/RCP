@@ -344,7 +344,7 @@ def _bind_episode_session(store, root, session_id, stage_root):
         provider="codex",
         machine_id=BACKEND_MACHINE_ID,
         native_session_id=session_id,
-        stage_machine_id=None,
+        stage_machine_id=BACKEND_MACHINE_ID,
         stage_root=stage_root,
         chat_id="chat",
         operation_id=root.operation_id,
@@ -2493,6 +2493,7 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(store) -> None:
     ).model_copy(
         update={
             "native_session_id": "native-loop-session",
+            "stage_machine_id": BACKEND_MACHINE_ID,
             "stage_root": "/tmp/loop-stage",
         }
     )

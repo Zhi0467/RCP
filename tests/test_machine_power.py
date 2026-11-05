@@ -13,6 +13,7 @@ from unittest.mock import Mock
 import pytest
 
 from rcp import machine_power as power
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_power_macos import InstallError, InstallStatus, MacOSProfile
 from rcp.storage import AppStore
 from tests.helpers import wait_for_entry, wait_until
@@ -199,7 +200,7 @@ def test_task_demand_rows(demand_inputs, status, refused, expected):
         SimpleNamespace(
             status=status,
             request={"provider": "codex"},
-            stage_host="",
+            stage_machine_id=BACKEND_MACHINE_ID,
             authorized_by=None,
             native_session_id=None,
         )

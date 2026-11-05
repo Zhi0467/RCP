@@ -10,8 +10,7 @@ from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 def _project(stage, project_id, *, memory_roots=None):
     return ProjectWriteScope.create(
         project_id=project_id,
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability="work_auto",
         stage_root=str(stage / "projects" / project_id),
         workspace_root=str(stage / "projects" / project_id),
@@ -68,8 +67,7 @@ def test_hidden_union_refuses_over_budget(tmp_path, monkeypatch):
 
     def scope(path):
         return HiddenReadScope(
-            execution_machine="local",
-            execution_host="",
+            machine_id="backend",
             os_account="user",
             hidden_directories=(path,),
             enforcement=HiddenReadStatus(status="enforced"),
@@ -120,8 +118,7 @@ def test_merged_hidden_policy_installs_its_own_wrapper(tmp_path):
 
     scopes = [
         HiddenReadScope(
-            execution_machine="local",
-            execution_host="",
+            machine_id="backend",
             os_account="fixture",
             account_home=str(tmp_path),
             hidden_directories=(f"/private/{name}",),

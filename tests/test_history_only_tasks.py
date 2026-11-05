@@ -56,7 +56,7 @@ def _insert_session_indexes(
         connection.execute(
             """
             INSERT INTO writing_sessions (
-                native_session_id, provider, runtime_id, execution_machine,
+                native_session_id, provider, runtime_id, machine_id,
                 project_id, title, model, reasoning, created_at, last_resumed_at,
                 introduction_hash_examined, graph_revision_examined,
                 research_md_hash_examined
@@ -67,7 +67,7 @@ def _insert_session_indexes(
         connection.execute(
             """
             INSERT INTO chat_session_contexts (
-                provider, execution_machine, native_session_id, project_id,
+                provider, machine_id, native_session_id, project_id,
                 kind, chat_id, node_id, protocol_version, snapshot_json,
                 snapshot_sha256, committed_operation_id, created_at, updated_at
             ) VALUES ('codex', 'laptop', ?, ?, 'project_chat', ?, NULL, 1,
@@ -197,7 +197,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         connection.execute(
             """
             INSERT INTO writing_sessions (
-                native_session_id, provider, runtime_id, execution_machine,
+                native_session_id, provider, runtime_id, machine_id,
                 project_id, title, model, reasoning, created_at, last_resumed_at,
                 introduction_hash_examined, graph_revision_examined,
                 research_md_hash_examined

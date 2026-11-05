@@ -22,7 +22,7 @@ from rcp.config import resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.machine_upgrade import cards_by_id, load_upgraded_manifest
+from rcp.machine_upgrade import load_upgraded_manifest, snapshot_cards
 from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
@@ -66,7 +66,7 @@ from rcp.sources.imported import (
 )
 from rcp.storage import AppStore
 from rcp.transport.remote_backup_checkout import CheckoutInspectionError
-from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_for_probe
+from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_on_hosts
 
 logger = logging.getLogger(__name__)
 
@@ -592,8 +592,11 @@ class BackupProjectFileCaptureCoordinator:
         copied_root = self.local_project_copies.get(inventory.project_id)
         # A locator may name the project folder or its manifest; relative
         # repository paths resolve against the live project either way.
-        with closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store:
-            cards = cards_by_id(store.space_machines())
+        with (
+            closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
+            store.connection() as connection,
+        ):
+            cards = snapshot_cards(connection)
             manifest = (
                 load_upgraded_manifest(
                     copied_root / "manifest.toml",
@@ -611,7 +614,9 @@ class BackupProjectFileCaptureCoordinator:
             workspace = (
                 LocalStateWorkspace(copied_root, str(copied_root))
                 if copied_root is not None
-                else state_workspace_for_probe(manifest, self.data_dir, store)
+                else state_workspace_on_hosts(
+                    manifest, self.data_dir, lambda card: cards[card].host
+                )
             )
 
         with tempfile.TemporaryDirectory(

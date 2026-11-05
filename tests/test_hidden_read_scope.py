@@ -23,6 +23,8 @@ from rcp.limits import (
     HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.storage.models import SpaceMachineRecord
 
 
 def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
@@ -136,6 +138,20 @@ def test_folder_validation_never_resolves_on_this_host(tmp_path: Path) -> None:
     ]
 
 
+def _card(**changes) -> SpaceMachineRecord:
+    return SpaceMachineRecord.model_validate(
+        {
+            "machine_id": BACKEND_MACHINE_ID,
+            "name": "Backend",
+            "host": "",
+            "os_account": "research",
+            "created_at": "",
+            "updated_at": "",
+            **changes,
+        }
+    )
+
+
 def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
     def facts(remote_stage, paths):
         return {
@@ -152,7 +168,7 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
     return resolve_hidden_read_scope(
         **{
             "manifest": manifest,
-            "execution_machine": "laptop",
+            "machine": _card(),
             "provider": "claude",
             "capability": "discuss",
             "stage_root": str(tmp_path / "data/run-stage/task"),
@@ -360,11 +376,10 @@ def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeyp
             "",
         )
 
-    manifest.machines[0].host = "remote.example"
     remote = SimpleNamespace(host="remote.example", _ssh=ssh)
     scope = resolve_hidden_read_scope(
         manifest=manifest,
-        execution_machine="laptop",
+        machine=_card(machine_id="remote-card", host="remote.example", os_account="remote"),
         provider="claude",
         capability="discuss",
         stage_root="/remote/stage",
@@ -414,7 +429,7 @@ def test_private_transcripts_are_hidden_for_every_launch(manifest, tmp_path, mon
         monkeypatch,
         repository_inventory=[
             RegisteredRepositoryRoot(
-                project_id="other", alias="repo", machine="laptop", execution_host="", path=other
+                project_id="other", alias="repo", machine=BACKEND_MACHINE_ID, path=other
             )
         ],
     )

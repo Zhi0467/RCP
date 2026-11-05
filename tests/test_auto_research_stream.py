@@ -3450,7 +3450,7 @@ def test_orchestrator_launch_context_is_inline_once_and_never_in_master(
             store.checkpoint_agent_task(root.operation_id, native_session_id="orchestrator-session")
             execution.continuation = "resume"
             overlap = LoopOverlap()
-            gpu_id = _with_gpu_machine(manifest, store)
+            gpu_id = _with_gpu_machine(manifest, service.paper.store)
             service.history.manifest = load_manifest(manifest.path)
             service.launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
         binding = store.auto_research_actor_binding(root.operation_id)

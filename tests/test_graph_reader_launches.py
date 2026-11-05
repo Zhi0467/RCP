@@ -310,6 +310,7 @@ async def test_child_history_launch(manifest, tmp_path, history_handlers):
         }
     )
     store.create_auto_research_child_work(route, task)
+    store.backend_space_machine()
     launcher = _HistoryLauncher(service, history_handlers, kind="auto_child")
     await _check_launch(
         launcher,

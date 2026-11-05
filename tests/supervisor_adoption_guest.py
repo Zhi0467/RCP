@@ -463,7 +463,7 @@ def doctor_diagnostic(output: str, exit_code: int) -> dict:
             continue
         step = event.get("step")
         if (
-            event.get("version") != 1
+            event.get("version") not in (1, 2)
             or event.get("event") != "step"
             or not isinstance(step, dict)
             or step.get("phase") != "server_doctor"

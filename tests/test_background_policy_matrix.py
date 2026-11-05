@@ -13,6 +13,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
@@ -220,8 +221,8 @@ def _store(tmp_path: Path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / ".research"),
             added_at=store.now(),
         )
     )
@@ -318,7 +319,6 @@ def _report_request() -> EpisodeReportRunRequest:
         model="",
         reasoning="medium",
         run_on="laptop",
-        execution_host="",
         session_id="report-session",
     )
 
@@ -466,7 +466,7 @@ def _experiment_parent(
     terminal_event: str,
 ) -> AgentTaskRecord:
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id="experiment-session"))
         yield _sse(AgentEvent(event=terminal_event, text="provider paused or failed"))
@@ -495,7 +495,7 @@ def _auto_parent(
 ) -> AgentTaskRecord:
     async def stream(_project_id, _kind, _request, execution):
         if terminal_event == "paused":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             yield _sse(AgentEvent(event="session", session_id="auto-session"))
         yield _sse(AgentEvent(event=terminal_event, text="provider paused or failed"))
 

@@ -160,7 +160,18 @@ def test_probe_route_migration_retains_backend_readiness(tmp_path, backend_id, r
             ("project", "local", probe.model_dump_json(), previous.now()),
         )
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 24")
+        AppStore._migrate_compute_probe_routes(connection)
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT route, probe_json FROM compute_backend_probes "
+                "WHERE project_id = ? AND execution_machine = ?",
+                ("project", "local"),
+            ).fetchall()
+        ] == [(route, probe.model_dump_json())]
     upgraded = AppStore(path)
+    assert upgraded.compute_backend_probe("project", "local", route) is None
+    upgraded.record_compute_backend_probe("project", probe, route)
     assert upgraded.compute_backend_probe("project", "local", route) == probe
     assert upgraded.compute_backend_probe("project", "local", other_route) is None
     failed = probe.model_copy(

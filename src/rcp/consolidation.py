@@ -18,6 +18,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.history.queries import HeadSpec, HistoryEngine, StepRecord
 from rcp.limits import AGENT_SCHEDULE_SEARCH_DAYS, CONSOLIDATION_POLL_SECONDS
+from rcp.machine_cards import card
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS, consolidation_skill_selection
 from rcp.runs.evidence_flag_commands import hold_consolidation_additions
@@ -392,6 +393,7 @@ class ConsolidationPoller:
             if changed:
                 failure_code = "consolidation_launch_unavailable"
                 task = self._task(schedule, service, target, name)
+                card(self.store, str(task.request["run_on"]))
             else:
                 skipped = True
         except (ValueError, KeyError, OSError, ReplayHalted, StateUnavailable) as exc:

@@ -98,7 +98,7 @@ def test_shipped_confirmation_uses_separate_agents_and_verified_pairs(home, monk
             assert result[0]["visibility"] == "readable"
             return
         evidence = ssh_agent.confirm_remote_key_evidence(
-            remote_stage=LocalStage(environment), home=str(home)
+            remote_stage=LocalStage(environment), machine_id="test-machine", home=str(home)
         )
         by_path = {item.path: item for item in evidence}
         assert len(evidence) == len(by_path) == 2
@@ -151,13 +151,15 @@ def test_remote_failure_returns_readable_inventory(home, monkeypatch, failure, p
         monkeypatch.setattr(ssh_agent, "AGENT_COMMAND_TIMEOUT_SECONDS", 0.2)
     try:
         stage = Stage(dict(os.environ))
-        (evidence,) = ssh_agent.confirm_remote_key_evidence(remote_stage=stage, home=str(home))
+        (evidence,) = ssh_agent.confirm_remote_key_evidence(
+            remote_stage=stage, machine_id="test-machine", home=str(home)
+        )
         assert evidence.path == str(deploy)
         assert evidence.visibility == ("hidden" if failure == "started" else "readable")
         if failure == "started":
-            assert ssh_agent.confirm_remote_key_evidence(remote_stage=stage, home=str(home)) == (
-                evidence,
-            )
+            assert ssh_agent.confirm_remote_key_evidence(
+                remote_stage=stage, machine_id="test-machine", home=str(home)
+            ) == (evidence,)
             import fcntl
 
             with (
@@ -191,7 +193,7 @@ def test_account_service_duplicate_never_cancels_owner(backend):
         )
 
     context = BackendContext(
-        execution_host="", execution_machine="test", compute=None, runner=runner, uid="123"
+        execution_host="", machine_id="test", compute=None, runner=runner, uid="123"
     )
     backend().start_account_service("/account/.rcp/ssh-agent", ["ssh-agent", "-D"], context)
     if backend is SystemdUserBackend:

@@ -279,7 +279,7 @@ def test_execution_reloads_authoritative_manifest_before_resolving_write_scope(
     scope = _project_write_scope(
         context,
         execution,
-        "laptop",
+        catalog.store.backend_space_machine(),
         workspace=run_stage,
         local_stage=run_stage,
         remote_stage=None,

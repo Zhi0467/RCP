@@ -31,7 +31,7 @@ def session(tmp_path):
     stage = tmp_path / "stage"
     stage.mkdir()
     request = RunRequest(
-        chat_scope="project", chat_id="chat", provider="codex", run_on="laptop", message="turn"
+        chat_scope="project", chat_id="chat", provider="codex", run_on="backend", message="turn"
     )
 
     def task(operation_id, *, episode=False, kind="project_chat", launch_kind=None, repairs=None):
@@ -180,7 +180,7 @@ def test_experiment_repair_keeps_own_values_and_owner_revocation(session, edit):
 
         def pending():
             return store.episode_report_rebootstrap_pending(
-                "project", "session", stage_host=None, stage_root=str(stage)
+                "project", "session", stage_machine_id=None, stage_root=str(stage)
             )
 
         assert pending()
@@ -203,7 +203,7 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
         now = store.now()
         request = RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on="backend",
             session_id=report.session_id,
             control_episode_id=report.episode_id if episode else None,
         )
@@ -215,6 +215,7 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
                 status="running",
                 request=request.model_dump(mode="json"),
                 native_session_id=report.session_id,
+                stage_machine_id="backend",
                 stage_root=str(stage),
                 created_at=now,
                 updated_at=now,
@@ -239,7 +240,11 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
     assert master.bootstrap and master.after_report
     store.complete_agent_task("human", applied_revision=None, result={})
     assert not store.episode_report_rebootstrap_pending(
-        "project", report.session_id, stage_host=None, stage_root=str(stage), owner="chat"
+        "project",
+        report.session_id,
+        stage_machine_id="backend",
+        stage_root=str(stage),
+        owner="chat",
     )
     _, continuation = operational("continued", episode=True)
     master = _experiment_master(
@@ -255,5 +260,5 @@ async def test_report_human_success_preserves_experiment_report_rebootstrap(mani
     assert master.bootstrap and master.after_report and master.replaces
     store.complete_agent_task("continued", applied_revision=None, result={})
     assert not store.episode_report_rebootstrap_pending(
-        "project", report.session_id, stage_host=None, stage_root=str(stage)
+        "project", report.session_id, stage_machine_id="backend", stage_root=str(stage)
     )

@@ -17,6 +17,7 @@ from rcp.live_artifact_runtime import (
     reconcile_artifact_live_snapshots,
     resolve_artifact_live_version,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.regular_file_reader import read_local_regular_file
 from rcp.storage import AgentTaskRecord, AppStore, Artifact, ProjectRecord
 
@@ -32,8 +33,8 @@ def live(tmp_path, manifest):
             project_id="project",
             locator=str(manifest.path),
             name="project",
-            state_location=str(tmp_path),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path),
             added_at=store.now(),
         )
     )
@@ -47,6 +48,7 @@ def live(tmp_path, manifest):
             created_at=store.now(),
             updated_at=store.now(),
             status_message="",
+            stage_machine_id=BACKEND_MACHINE_ID,
         )
     )
     root = Path(manifest.repositories[0].path)
@@ -139,7 +141,7 @@ def job(live):
             job_id="job",
             project_id="project",
             origin_operation_id="turn",
-            execution_machine="laptop",
+            machine_id=BACKEND_MACHINE_ID,
             backend_id="systemd_user",
             backend_handle="handle",
             job_root=str(live.root),
@@ -215,7 +217,7 @@ def test_server_final_capture_survives_deleted_sources_and_history_transfer(live
     Path(record.log_path).unlink()
     with live.store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET history_only=1, stage_host=NULL, stage_root=NULL WHERE operation_id='turn'"
+            "UPDATE graph_runs SET history_only=1, stage_machine_id=NULL, stage_root=NULL WHERE operation_id='turn'"
         )
         connection.execute("DELETE FROM compute_jobs")
     live.service.manifest.repositories = []
@@ -326,8 +328,7 @@ def test_bound_conversation_worktree_is_readable_and_removal_revokes(live, tmp_p
         chat_id=chat_id,
         chat_scope="project",
         repository_alias=repo.alias,
-        machine=repo.machine,
-        execution_host="",
+        machine_id=repo.machine,
         shared_path=str(live.root),
         worktree_path=str(root),
         git_common_dir=str(live.root / ".git"),
@@ -390,6 +391,11 @@ def test_discovery_from_real_branch_service_resolves_own_node(manifest, tmp_path
 
     app, main, episode, task = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id=? WHERE operation_id=?",
+            (BACKEND_MACHINE_ID, task.operation_id),
+        )
     branch = main.for_graph_target(episode.graph_target)
     directory = tmp_path.resolve() / "artifacts"
     directory.mkdir()
@@ -480,7 +486,7 @@ def test_final_capture_stops_after_bounded_attempts(live, monkeypatch):
     "revocation",
     [
         "UPDATE graph_runs SET history_only=1",
-        "UPDATE graph_runs SET stage_host='changed-host'",
+        "UPDATE graph_runs SET stage_machine_id='{changed}'",
         "UPDATE graph_runs SET project_id='other'",
         "UPDATE graph_runs SET episode_id='other'",
         "UPDATE compute_jobs SET origin_operation_id='other'",
@@ -489,8 +495,9 @@ def test_final_capture_stops_after_bounded_attempts(live, monkeypatch):
 def test_revoked_sources_refuse_reads_and_final_capture(live, revocation):
     job(live)
     artifact = live.create([{"kind": "job", "key": "train"}])
+    changed = live.store.create_space_machine(name="changed", host="changed-host", os_account="")
     with live.store.connection() as connection:
-        connection.execute(revocation)
+        connection.execute(revocation.format(changed=changed.machine_id))
     with pytest.raises(ValueError):
         read(live, artifact)
     capture(live)
@@ -703,10 +710,14 @@ def test_remote_folder_uses_one_shipped_reader_call_per_snapshot(live, monkeypat
 
     (live.root / "status.json").write_text("ready\n")
     host = "execution-host"
-    repo = live.service.manifest.repositories[0]
-    live.service.manifest.machine_map[repo.machine].host = host
+    remote = live.store.create_space_machine(name="execution", host=host, os_account="")
+    live.service.manifest.machines.append(remote.machine_id)
+    live.service.manifest.repositories[0].machine = remote.machine_id
     with live.store.connection() as connection:
-        connection.execute("UPDATE graph_runs SET stage_host=? WHERE operation_id='turn'", (host,))
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id=? WHERE operation_id='turn'",
+            (remote.machine_id,),
+        )
     calls = []
 
     def ssh(self, arguments, **kwargs):
@@ -866,7 +877,7 @@ def test_fork_child_live_artifact_keeps_its_own_target(live):
     parent, root = _auto_parent(live.store)
     target = _owned_fork(live.store, parent)
     route, task = _work_pair(live.store, parent, root, worker_id="artifact-worker")
-    task = task.model_copy(update={"graph_target": target})
+    task = task.model_copy(update={"graph_target": target, "stage_machine_id": BACKEND_MACHINE_ID})
     live.store.create_auto_research_child_work(route, task)
     artifact = live.store.create_artifact(
         Artifact(

@@ -29,6 +29,7 @@ from rcp.core.validation.experiment_loop import (
     _PINNED_DECISION_FIELDS,
     PINNED_DECISION_BALLOT_FIELDS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkillReference
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
@@ -361,7 +362,7 @@ async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path)
             watcher_id=watcher_id,
             origin_operation_id="older-operation",
             graph_target=GraphTargetRef(),
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             check_command="test -f complete",
             cancel_command=None,
             cancel_requested_by=None,
@@ -655,8 +656,7 @@ def test_work_patch_legality_reuses_the_non_ingest_boundary() -> None:
 def _work_write_scope() -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id="project-1",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id="laptop",
         capability="work_auto",
         stage_root="/stage",
         workspace_root="/stage",

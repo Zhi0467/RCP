@@ -500,7 +500,7 @@ def _insert_watcher(
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, execution_host, check_command, "
+            "origin_task_kind, chat_id, episode_id, machine_id, check_command, "
             "log_path, cwd, continuation_json, status, created_at) "
             "VALUES (?, ?, 'origin', 'project_chat', ?, ?, '', 'true', '/tmp/log', "
             "'/tmp', '{}', ?, ?)",

@@ -66,8 +66,7 @@ def test_episode_report_and_unknown_task_kinds_are_not_graph_capable() -> None:
         provider="codex",
         model="gpt-5",
         reasoning="high",
-        run_on="local",
-        execution_host="local",
+        run_on="backend",
         session_id="session-1",
     )
 

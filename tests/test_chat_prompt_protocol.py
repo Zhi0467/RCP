@@ -19,6 +19,7 @@ from rcp.agents.prompts import (
 )
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
@@ -137,6 +138,12 @@ def _enable_graph_audit(service) -> None:
     )
 
 
+def _add_card(app, service, name: str, host: str):
+    card = app.state.catalog.store.create_space_machine(name=name, host=host, os_account="alice")
+    service.add_machine(card.machine_id)
+    return card
+
+
 def _set_access_hint(app, host: str, hint: str) -> None:
     store = app.state.catalog.store
     card = store.space_machine_for(host) or store.create_space_machine(
@@ -187,7 +194,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         pass
     store.complete_agent_task(first_execution.operation_id, applied_revision=None, result={})
 
-    current = store.chat_session_context("codex", "laptop", session_id)
+    current = store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id)
     assert current is not None
     stale_snapshot = json.loads(current.snapshot_json)
     stale_version = CHAT_MASTER_CONTEXT_VERSION - (stale == "version")
@@ -204,7 +211,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
     store.commit_chat_session_context(
         provider="codex",
-        execution_machine="laptop",
+        machine_id=BACKEND_MACHINE_ID,
         native_session_id=session_id,
         project_id=project_id,
         kind="project_chat",
@@ -239,7 +246,7 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     second_prompt = launcher.prompts[1]
     master_line = second_prompt.split("\n\n")[-1].splitlines()[1]
     assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in master_line
-    committed = store.chat_session_context("codex", "laptop", session_id)
+    committed = store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id)
     assert committed is not None
     assert committed.protocol_version == CHAT_MASTER_CONTEXT_VERSION
     assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key(
@@ -291,7 +298,7 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     master_path = Path(launcher.prompts[0].splitlines()[1])
     recorded = store.agent_task_contract("session-master-first", "session_master")
     assert recorded == master_path.read_text(encoding="utf-8")
-    baseline = store.chat_session_context("codex", "laptop", session_id)
+    baseline = store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id)
     assert baseline is not None
     snapshot = json.loads(baseline.snapshot_json)
     assert snapshot["master_operation_id"] == "session-master-first"
@@ -306,7 +313,7 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
         legacy_json = json.dumps(legacy, separators=(",", ":"))
         store.commit_chat_session_context(
             provider="codex",
-            execution_machine="laptop",
+            machine_id=BACKEND_MACHINE_ID,
             native_session_id=session_id,
             project_id=project_id,
             kind="project_chat",
@@ -334,7 +341,7 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     )
     assert launcher.sessions == [None, session_id]
     assert (
-        store.chat_session_context("codex", "laptop", session_id).committed_operation_id
+        store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id).committed_operation_id
         == "session-master-second"
     )
     prompt_receipt = next(
@@ -347,7 +354,9 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
     assert store.agent_task_contract("session-master-second", "chat_turn") == launcher.prompts[1]
     last_section = launcher.prompts[1].split("\n\n")[-1]
     captured = store.agent_task_contract("session-master-second", "session_master")
-    committed = json.loads(store.chat_session_context("codex", "laptop", session_id).snapshot_json)
+    committed = json.loads(
+        store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id).snapshot_json
+    )
     if state == "legacy_missing":
         master_path = Path(committed["master_context_path"])
         assert last_section == SECTIONS["master_rebootstrap"].format(path=master_path)
@@ -416,7 +425,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
     assert [path.name for path in inputs.glob("task-*.md")] == [
         f"task-{execution.operation_id}-prompt.md"
     ]
-    baseline = store.chat_session_context("codex", "laptop", session_id)
+    baseline = store.chat_session_context("codex", BACKEND_MACHINE_ID, session_id)
     assert baseline is not None
     snapshot = json.loads(baseline.snapshot_json)
     assert set(snapshot["values"]) == {
@@ -438,7 +447,7 @@ async def test_fresh_discuss_stages_one_master_and_turn_inputs(manifest, tmp_pat
         project_id, f"chat:{request.chat_id}", session_id, service.history.graph_target
     )
     assert seen is not None and seen.revision == service.graph_snapshot()["revision"]
-    assert [item["id"] for item in snapshot["values"]["compute"]["active"]] == ["laptop"]
+    assert [item["id"] for item in snapshot["values"]["compute"]["active"]] == [BACKEND_MACHINE_ID]
     assert "artifacts" not in snapshot["values"]
     launch_receipt = next(
         item
@@ -457,7 +466,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.add_machine("gpu", "gpu.example", "alice")
+    gpu = _add_card(app, service, "gpu", "gpu.example")
     _set_access_hint(app, "gpu.example", "Use /scratch/shared for temporary outputs")
     project_id = app.state.default_project_id
     chat_id = "3f3eea3f-0e1d-4c92-a1c2-71c877be342d"
@@ -497,15 +506,15 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     expected = {
         "active": [
             {
-                "id": "laptop",
-                "name": "laptop",
+                "id": BACKEND_MACHINE_ID,
+                "name": app.state.catalog.store.backend_space_machine().name,
                 "kind": "local",
                 "ssh_target": "",
                 "access_hint": "",
                 "job_manager": "",
             },
             {
-                "id": "gpu",
+                "id": gpu.machine_id,
                 "name": "gpu",
                 "kind": "ssh",
                 "ssh_target": "alice@gpu.example",
@@ -516,7 +525,7 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     }
     task = app.state.background_tasks.store.agent_task(operation_id)
     assert task is not None
-    assert task.request["run_on"] == "laptop"
+    assert task.request["run_on"] == BACKEND_MACHINE_ID
     assert "active_compute_ids" not in task.request
     assert "resolved_compute_context" not in task.request
     assert launcher.launch_kwargs[0].get("host", "") == ""
@@ -527,7 +536,9 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
     assert "forged" not in master
     assert ".ssh/" not in master
 
-    baseline = app.state.background_tasks.store.chat_session_context("codex", "laptop", session_id)
+    baseline = app.state.background_tasks.store.chat_session_context(
+        "codex", BACKEND_MACHINE_ID, session_id
+    )
     assert baseline is not None
     assert json.loads(baseline.snapshot_json)["values"]["compute"] == expected
 
@@ -536,7 +547,7 @@ def test_launch_states_the_machines_current_at_launch_not_at_admission(manifest,
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.add_machine("gpu", "gpu.example", "alice")
+    _add_card(app, service, "gpu", "gpu.example")
     _set_access_hint(app, "gpu.example", "Use /scratch/admitted")
     project_id = app.state.default_project_id
     launch_gate = threading.Event()
@@ -579,7 +590,7 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.add_machine("gpu", "gpu.example", "alice")
+    _add_card(app, service, "gpu", "gpu.example")
     _set_access_hint(app, "gpu.example", "Use /scratch/old")
     project_id = app.state.default_project_id
     chat_id = "943025d2-e23d-4a6c-a48e-6d16ded8d870"
@@ -624,7 +635,7 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
     turn("The hint changed.")
     assert "Use /scratch/new" in launcher.prompts[2]
 
-    service.add_machine("cluster", "cluster.example", "alice")
+    _add_card(app, service, "cluster", "cluster.example")
     turn("A machine was added.")
     assert "alice@cluster.example" in launcher.prompts[3]
     assert ".ssh/" not in launcher.prompts[3]
@@ -636,7 +647,7 @@ def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
-    service.add_machine("gpu", "gpu.example", "alice")
+    _add_card(app, service, "gpu", "gpu.example")
     project_id = app.state.default_project_id
     launcher = _RecordingLauncher("legacy-retry-session")
 
@@ -650,7 +661,7 @@ def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest
     store = app.state.catalog.store
     legacy = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id="0c6f2d0e-5d43-4f4e-9d5b-6f1d8c1d2a11",
         message="Use the old GPU.",

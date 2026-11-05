@@ -16,14 +16,14 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.models import HiddenReadKeyEvidence, HiddenReadScope, HiddenReadStatus
 from rcp.providers import profile_for
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.storage.models import SpaceMachineRecord
 
 CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch", "paper_suggest")
 
 
 def _scope(home: str = "/home/research") -> HiddenReadScope:
     return HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         os_account="research",
         account_home=home,
         hidden_directories=("/secret/folder",),
@@ -39,8 +39,7 @@ def _write_scope(cwd, capability):
         return None
     return ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability=capability,
         stage_root=str(cwd),
         workspace_root=str(cwd),
@@ -117,6 +116,8 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
             cwd=tmp_path,
             capability=capability,
             runtime_id=profile.legacy_runtime_id,
+            machine_id="backend",
+            host="",
             hidden_read_scope=scope,
             browser_grant=BrowserGrant(
                 requested=True, status="granted", hidden_read_enforcement=browser_status
@@ -180,7 +181,7 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         ),
     )
 
-    def confirm_remote(*, remote_stage, home):
+    def confirm_remote(*, remote_stage, machine_id, home):
         order.append({"remote": home})
         return remote_evidence
 
@@ -213,7 +214,14 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
     stage = Stage() if remote else None
     scope = prepare_hidden_read_launch(
         manifest=manifest,
-        execution_machine="laptop",
+        machine=SpaceMachineRecord(
+            machine_id="gpu",
+            name="gpu",
+            host="gpu-host" if remote else "",
+            os_account="",
+            created_at="",
+            updated_at="",
+        ),
         provider=provider,
         capability="discuss",
         stage_root=str(tmp_path),
@@ -341,10 +349,11 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
         hidden_read_scope=scope,
         stage=tmp_path,
     )
-    stage = SimpleNamespace(workspace=tmp_path, execution_host="", remote=None)
+    machine = SimpleNamespace(machine_id="backend")
+    stage = SimpleNamespace(workspace=tmp_path, execution_host="", remote=None, machine=machine)
     admission = eval(
         compile(ast.Expression(call), str(path), "eval"),
-        {"browser_turn": browser_lifecycle.browser_turn},
+        {"browser_turn": browser_lifecycle.browser_turn, "BACKEND_MACHINE_ID": "backend"},
         dict(
             request=request,
             turn=turn,
@@ -354,6 +363,8 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
             execution=None,
             remote_stage=None,
             hidden_read_scope=scope,
+            machine=machine,
+            service=SimpleNamespace(manifest=SimpleNamespace(base_machine="backend")),
         ),
     )
     async with admission:

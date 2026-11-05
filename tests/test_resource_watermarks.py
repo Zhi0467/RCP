@@ -73,7 +73,7 @@ def endpoint(tmp_path, monkeypatch, request):
             )
         for project_id in (project, forbidden):
             connection.execute(
-                "INSERT INTO projects(project_id, locator, name, state_location, state_remote, added_at) VALUES(?, ?, 'test', 'local', 0, ?)",
+                "INSERT INTO projects(project_id, locator, name, state_machine_id, state_path, added_at) VALUES(?, ?, 'test', 'backend', 'local', ?)",
                 (project_id, project_id, now.isoformat()),
             )
         connection.execute(
@@ -441,7 +441,7 @@ def test_agent_cards_follow_main_graphs_of_open_project_threads(endpoint, monkey
     idle = str(uuid.uuid4())
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO projects(project_id, locator, name, state_location, state_remote, added_at) VALUES(?, ?, 'idle', 'local', 0, ?)",
+            "INSERT INTO projects(project_id, locator, name, state_machine_id, state_path, added_at) VALUES(?, ?, 'idle', 'backend', 'local', ?)",
             (idle, idle, endpoint.now.isoformat()),
         )
         connection.execute(

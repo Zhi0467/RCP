@@ -778,7 +778,9 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
         monkeypatch.setattr(
             store,
             "project",
-            lambda project_id: project(project_id).model_copy(update={"state_remote": True}),
+            lambda project_id: project(project_id).model_copy(
+                update={"state_machine_id": "remote-card"}
+            ),
         )
     opened = []
     open_snapshot = live.state.catalog.open_snapshot
@@ -1275,7 +1277,7 @@ def test_prepare_refuses_checkout_identity_mismatch(captured, monkeypatch):
     from rcp.server_ops import backup_project_files
     from rcp.transport.remote_backup_checkout import CheckoutInspectionError
 
-    def mismatch(_recovery):
+    def mismatch(_recovery, _cards):
         raise CheckoutInspectionError("Checkout origin does not match.")
 
     monkeypatch.setattr(backup_project_files, "verify_checkout_identities", mismatch)
@@ -1553,6 +1555,7 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
 
     from rcp.consolidation import consolidation_chat_id
     from rcp.core.authority import AuthorizedHuman
+    from rcp.machine_cards import BACKEND_MACHINE_ID
     from rcp.storage import AgentTaskRecord
     from tests.server_upgrade_state import seed_shared_consolidation_workspace
 
@@ -1583,6 +1586,7 @@ def test_rehearsal_preserves_consolidation_workspace_identity(captured, tmp_path
                         kind="project_chat",
                         status="succeeded",
                         request={"chat_id": consolidation_chat_id(state["project_id"])},
+                        stage_machine_id=BACKEND_MACHINE_ID,
                         stage_root=str(Path(request.data_dir) / "run-stage" / str(index)),
                         created_at=now,
                         updated_at=now,

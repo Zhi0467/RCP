@@ -3337,7 +3337,17 @@ def state_workspace_for_probe(
     host. The mirror is keyed by card id and path, so a new host keeps its mirror.
     """
 
-    from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+    from rcp.machine_cards import host_of
+
+    return state_workspace_on_hosts(bootstrap, data_dir, lambda card: host_of(store, card))
+
+
+def state_workspace_on_hosts(
+    bootstrap: Manifest, data_dir: Path, host_of: Callable[[str], str]
+) -> StateWorkspace:
+    """`state_workspace_for_probe` with each card's host from `host_of`."""
+
+    from rcp.machine_cards import BACKEND_MACHINE_ID
 
     state_repository = bootstrap.repository_map[bootstrap.state.repository]
     machine_id = state_repository.machine
@@ -3352,7 +3362,7 @@ def state_workspace_for_probe(
     cache_root = data_dir / "state-cache" / cache_key / ".research"
     return SSHStateWorkspace(
         cache_root,
-        host_of(store, machine_id),
+        host_of(machine_id),
         state_repository.path,
         expected_project_name=bootstrap.name,
         expected_machine_id=machine_id,

@@ -2771,7 +2771,7 @@ def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
     stage.mkdir()
 
     async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _event_frame(AgentEvent(event="session", session_id="owned-session"))
         yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
 
@@ -2824,7 +2824,7 @@ def test_same_provider_unusable_session_retry_starts_clean(
     stage.mkdir()
 
     async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _event_frame(AgentEvent(event="session", session_id=session_id))
         yield _event_frame(AgentEvent(event="error", text=error))
 
@@ -7000,6 +7000,8 @@ def _chat_task_execution(app, request: RunRequest, operation_id: str) -> AgentTa
     kind = "node_chat" if request.chat_scope == "node" else "project_chat"
     dispatch_authority = resolve_dispatch_authority(kind, request)
     assert dispatch_authority is not None
+    if request.patch_kind == "experiment_loop" and request.run_on is None:
+        request = request.model_copy(update={"run_on": BACKEND_MACHINE_ID})
     record = AgentTaskRecord(
         operation_id=operation_id,
         project_id=project_id,
@@ -7282,6 +7284,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
                 origin_task_kind="project_chat",
                 chat_id=maintenance_chat_id,
                 node_id="exp/bounded-loop",
+                machine_id=BACKEND_MACHINE_ID,
                 check_command="true",
                 log_path="/tmp/pending-loop.log",
                 cwd="/tmp",

@@ -39,7 +39,7 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
                 yield event
 
     launcher = Launcher("source-session")
-    redirect_host = False
+    redirect_machine = False
 
     async def stream(_project_id, _kind, request, execution):
         service = get_graph_service(
@@ -48,17 +48,10 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
             store.agent_task(execution.operation_id).graph_target.branch_id,
         )
         run = stream_work_run if request.mode == "work" else stream_discuss_run
-        machine = service.manifest.machine_map[request.run_on]
-        original_host = machine.host
-        if redirect_host:
-            machine.host = "changed-execution-host"
-        try:
-            async for frame in run(
-                service, launcher, request, tmp_path / "data", execution=execution
-            ):
-                yield frame
-        finally:
-            machine.host = original_host
+        if redirect_machine:
+            request = request.model_copy(update={"fork_source_machine_id": "changed-machine"})
+        async for frame in run(service, launcher, request, tmp_path / "data", execution=execution):
+            yield frame
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
@@ -157,13 +150,13 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         assert launcher.failed_kwargs["fork_session_id"] == "source-session"
         assert launcher.failed_kwargs.get("session_id") is None
         assert forked.native_session_id is None
-        redirect_host = True
+        redirect_machine = True
         refused_retry = client.post(
             f"/api/projects/{project_id}/tasks/{forked.operation_id}/retry", json={}
         )
         assert refused_retry.status_code == 202, refused_retry.text
         refused = wait_for_task_response(client, project_id, refused_retry.json()["operation_id"])
-        redirect_host = False
+        redirect_machine = False
         assert refused["status"] == "failed", refused
         assert refused["can_retry"]
         assert refused["native_session_id"] is None
@@ -236,11 +229,11 @@ def test_node_chat_branches_to_project_scope_when_target_lacks_node(manifest, tm
             provider="codex",
             model="",
             reasoning="medium",
-            run_on="laptop",
+            run_on="backend",
         ),
         "source-node-turn",
     )
-    execution.checkpoint_stage("", str(tmp_path / "source-stage"))
+    execution.checkpoint_stage("backend", str(tmp_path / "source-stage"))
     store.checkpoint_agent_task(execution.operation_id, native_session_id="node-session")
     store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
     client = signed_in_client(app)
@@ -269,12 +262,12 @@ def test_first_fork_turn_records_the_remote_source_workspace(manifest, tmp_path)
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     source_id = str(uuid4())
     source = _chat_task_execution(
         app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "remote-source"
     )
-    source.checkpoint_stage("gpu-host", "/remote/stage")
+    source.checkpoint_stage("gpu-card", "/remote/stage")
     store.checkpoint_agent_task(source.operation_id, native_session_id="remote-session")
     store.complete_agent_task(source.operation_id, applied_revision=None, result={})
     fork = store.create_chat_fork(project_id, source_id, GraphTargetRef(), str(uuid4()))
@@ -283,7 +276,7 @@ def test_first_fork_turn_records_the_remote_source_workspace(manifest, tmp_path)
     )
     request = store.agent_task("fork-turn").request
     assert request["fork_session_id"] == "remote-session"
-    assert request["fork_source_host"] == "gpu-host"
+    assert request["fork_source_machine_id"] == "gpu-card"
     assert request["fork_source_cwd"] == "/remote/stage/workspace"
 
 
@@ -293,12 +286,12 @@ def test_fork_turn_retry_after_pause_continues_its_own_session(manifest, tmp_pat
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     first = _chat_task_execution(
         app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
     )
-    first.checkpoint_stage("", str(tmp_path / "fork-stage"))
+    first.checkpoint_stage("backend", str(tmp_path / "fork-stage"))
     store.checkpoint_agent_task(first.operation_id, native_session_id="forked-session")
     store.pause_agent_task(first.operation_id)
 
@@ -319,7 +312,7 @@ def test_a_first_fork_turn_refuses_a_source_without_a_usable_session(manifest, t
     from tests.test_api import _chat_task_execution
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     app.state.catalog.store.mark_agent_tasks_history_only(["source-turn"])
     with pytest.raises(ValueError):
@@ -337,7 +330,7 @@ def _settled_source_and_fork(app, tmp_path, profile):
     source = _chat_task_execution(
         app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "source-turn"
     )
-    source.checkpoint_stage("", str(tmp_path / "source-stage"))
+    source.checkpoint_stage("backend", str(tmp_path / "source-stage"))
     store.checkpoint_agent_task(source.operation_id, native_session_id="source-session")
     store.complete_agent_task(source.operation_id, applied_revision=None, result={})
     fork = store.create_chat_fork(
@@ -354,7 +347,7 @@ def test_a_failed_first_fork_never_reforks_a_changed_source(manifest, tmp_path, 
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     first = _chat_task_execution(
         app, RunRequest(chat_id=fork.chat_id, chat_scope="project", **profile), "fork-turn"
@@ -401,7 +394,7 @@ def test_a_fork_whose_source_moves_after_admission_fails_without_retry(manifest,
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
 
     def move_source():
@@ -453,7 +446,7 @@ def test_restore_detaches_unfinished_forks_to_fresh_sessions(manifest, tmp_path)
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     source_id, failed_fork = _settled_source_and_fork(app, tmp_path, profile)
     unsent_fork = store.create_chat_fork(
         app.state.default_project_id, source_id, GraphTargetRef(), str(uuid4())
@@ -485,7 +478,7 @@ def test_a_pre_release_fork_row_still_lists(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     retired = {"native_session_id": "s", "source_cwd": "/w", "source_host": "h", "runtime_id": "r"}
     with store.connection() as connection:
@@ -504,7 +497,7 @@ def test_the_origin_link_names_the_source_as_it_is_called_now(manifest, tmp_path
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.catalog.store
     project_id = app.state.default_project_id
-    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "laptop"}
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
     source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
     client = signed_in_client(app)
     client.post(f"/api/projects/{project_id}/chats/{source_id}/title", json={"title": "Renamed"})

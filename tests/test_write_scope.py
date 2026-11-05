@@ -24,12 +24,29 @@ from rcp.agents.write_scope import (
 from rcp.background import AgentTaskExecution
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import Patch
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.runs.shared import _stage_context_paths
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
+from rcp.storage.models import SpaceMachineRecord
 from rcp.transport import RemoteRunStage, StateUnavailable, prepare_state_workspace
 from rcp.transport.state import SSHStateWorkspace, state_workspace_for_probe
 from tests.helpers import append_fixture_patch
+
+
+def _card(machine_id: str = BACKEND_MACHINE_ID, host: str = "") -> SpaceMachineRecord:
+    return SpaceMachineRecord(
+        machine_id=machine_id,
+        name=machine_id,
+        host=host,
+        os_account="",
+        created_at="",
+        updated_at="",
+    )
+
+
+def _on_card(text: str, machine_id: str) -> str:
+    return text.replace(f'"{BACKEND_MACHINE_ID}"', f'"{machine_id}"')
 
 
 def _local_pointers(manifest: Manifest, aliases: list[str]) -> list[RepositoryPointer]:
@@ -37,7 +54,7 @@ def _local_pointers(manifest: Manifest, aliases: list[str]) -> list[RepositoryPo
         RepositoryPointer(
             alias=alias,
             machine=manifest.repository_map[alias].machine,
-            host=manifest.machine_map[manifest.repository_map[alias].machine].host,
+            host="",
             path=manifest.repository_map[alias].path,
         )
         for alias in aliases
@@ -67,7 +84,7 @@ def _resolve_local(
         manifest=manifest,
         truth_scope=manifest.project.truth_scope if truth_scope is None else truth_scope,
         project_id=project_id,
-        execution_machine="laptop",
+        machine=_card(),
         capability="work_auto",
         stage_root=str(stage),
         workspace_root=str(workspace),
@@ -164,7 +181,7 @@ def test_a_scope_without_repositories_gets_no_grants(manifest: Manifest, tmp_pat
         manifest=manifest,
         truth_scope=manifest.project.truth_scope,
         project_id="project",
-        execution_machine="laptop",
+        machine=_card(),
         capability="orchestrate",
         stage_root=str(stage),
         workspace_root=str(stage / "workspace"),
@@ -241,14 +258,16 @@ def _register_catalog_project(
     locator: str | None = None,
 ) -> None:
     state_repository = manifest.repository_map[manifest.state.repository]
-    state_machine = manifest.machine_map[state_repository.machine]
+    remote = state_repository.machine != BACKEND_MACHINE_ID
     store.upsert_project(
         ProjectRecord(
             project_id=project_id,
             locator=locator or str(manifest.path),
             name=manifest.name,
-            state_location=str(manifest.research_dir),
-            state_remote=bool(state_machine.host),
+            state_machine_id=state_repository.machine,
+            state_path=(
+                f"{state_repository.path}/.research" if remote else str(manifest.research_dir)
+            ),
             added_at=store.now(),
         )
     )
@@ -296,7 +315,11 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
                 {
                     "op": "set_project_truth_scope",
                     "truth_scope": ["repo-a", "repo-b", "repo-c"],
-                    "repository": {"alias": "repo-c", "machine": "laptop", "path": str(added_root)},
+                    "repository": {
+                        "alias": "repo-c",
+                        "machine": BACKEND_MACHINE_ID,
+                        "path": str(added_root),
+                    },
                 }
             ],
         ),
@@ -306,25 +329,34 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
     assert "repo-c" not in load_manifest(bootstrap).repository_map
     canonical = service.manifest
     if restart:
+        state_host = store.create_space_machine(
+            name="state-host", host="compute.example", os_account=""
+        ).machine_id
 
         def remote_home(text):
-            return (
-                text.replace(
-                    'alias = "repo-a"\nmachine = "laptop"',
-                    'alias = "repo-a"\nmachine = "state-host"',
-                ).replace('run_on = "laptop"', 'run_on = "state-host"')
-                + '\n[[machines]]\nalias = "state-host"\nhost = "compute.example"\n'
+            return text.replace(
+                f'alias = "repo-a"\nmachine = "{BACKEND_MACHINE_ID}"',
+                f'alias = "repo-a"\nmachine = "{state_host}"',
+            ).replace(
+                f'machines = ["{BACKEND_MACHINE_ID}"]',
+                f'machines = ["{BACKEND_MACHINE_ID}", "{state_host}"]',
             )
 
         bootstrap.write_text(remote_home(bootstrap.read_text()))
-        workspace = state_workspace_for_probe(load_manifest(bootstrap), data_dir)
+        workspace = state_workspace_for_probe(load_manifest(bootstrap), data_dir, store)
         workspace.root.mkdir(parents=True)
         mirror = workspace.root / "manifest.toml"
         mirror.write_text(remote_home(canonical.path.read_text()))
         canonical = load_manifest(mirror)
         store = AppStore(data_dir / "rcp.sqlite3")
         store.upsert_project(
-            record.model_copy(update={"locator": str(bootstrap), "state_remote": True})
+            record.model_copy(
+                update={
+                    "locator": str(bootstrap),
+                    "state_machine_id": state_host,
+                    "state_path": f"{canonical.repository_map['repo-a'].path}/.research",
+                }
+            )
         )
         catalog = ProjectCatalog(data_dir, store, AgentLauncher())
         assert catalog.loaded_service(record.project_id) is None
@@ -360,20 +392,28 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
 def test_remote_inventory_resolves_relative_local_roots_from_registered_project(
     manifest: Manifest, tmp_path: Path, monkeypatch, opened: bool, canonical_added: bool
 ) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    state_host = store.create_space_machine(
+        name="state-host", host="compute.example", os_account=""
+    ).machine_id
     bootstrap_path = manifest.path.with_name("remote-bootstrap.toml")
     bootstrap_path.write_text(
         manifest.path.read_text()
-        .replace('alias = "repo-a"\nmachine = "laptop"', 'alias = "repo-a"\nmachine = "state-host"')
-        .replace('run_on = "laptop"', 'run_on = "state-host"')
+        .replace(
+            f'alias = "repo-a"\nmachine = "{BACKEND_MACHINE_ID}"',
+            f'alias = "repo-a"\nmachine = "{state_host}"',
+        )
+        .replace(
+            f'machines = ["{BACKEND_MACHINE_ID}"]',
+            f'machines = ["{BACKEND_MACHINE_ID}", "{state_host}"]',
+        )
         .replace(f'path = "{manifest.repository_map["repo-b"].path}"', 'path = "../repo-b"')
-        + '\n[[machines]]\nalias = "state-host"\nhost = "compute.example"\n'
     )
     bootstrap = load_manifest(bootstrap_path)
-    data_dir = tmp_path / "data"
-    store = AppStore(data_dir / "rcp.sqlite3")
     _register_catalog_project(store, bootstrap, project_id="remote-project")
     _register_catalog_project(store, manifest, project_id="local-project")
-    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    workspace = state_workspace_for_probe(bootstrap, data_dir, store)
     workspace.root.mkdir(parents=True)
     mirror = workspace.root / "manifest.toml"
     mirror.write_text(bootstrap_path.read_text())
@@ -385,7 +425,7 @@ def test_remote_inventory_resolves_relative_local_roots_from_registered_project(
         expected_root.mkdir()
         mirror.write_text(
             mirror.read_text()
-            + '\n[[repositories]]\nalias = "repo-c"\nmachine = "laptop"\npath = "../repo-b/child"\n'
+            + '\n[[repositories]]\nalias = "repo-c"\nmachine = "backend"\npath = "../repo-b/child"\n'
         )
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
     if opened:
@@ -415,14 +455,15 @@ def test_remote_inventory_resolves_relative_local_roots_from_registered_project(
 def test_unopened_remote_inventory_requires_readable_canonical_mirror(
     manifest: Manifest, tmp_path: Path, monkeypatch, malformed: bool
 ) -> None:
-    bootstrap = tmp_path / "remote-bootstrap.toml"
-    bootstrap.write_text(manifest.path.read_text().replace('host = ""', 'host = "compute.example"'))
-    remote = load_manifest(bootstrap)
     data_dir = tmp_path / "data"
     store = AppStore(data_dir / "rcp.sqlite3")
+    compute = store.create_space_machine(name="compute", host="compute.example", os_account="")
+    bootstrap = tmp_path / "remote-bootstrap.toml"
+    bootstrap.write_text(_on_card(manifest.path.read_text(), compute.machine_id))
+    remote = load_manifest(bootstrap)
     _register_catalog_project(store, remote, project_id="remote-project")
     if malformed:
-        workspace = state_workspace_for_probe(remote, data_dir)
+        workspace = state_workspace_for_probe(remote, data_dir, store)
         workspace.root.mkdir(parents=True)
         (workspace.root / "manifest.toml").write_text("not a manifest")
 
@@ -440,20 +481,19 @@ def test_inventory_waits_for_speculative_manifest_rollback(
     manifest: Manifest, tmp_path: Path, monkeypatch, remote: bool, opened: bool
 ) -> None:
     data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
     bootstrap_path = manifest.path
     if remote:
+        compute = store.create_space_machine(name="compute", host="compute.example", os_account="")
         bootstrap_path = tmp_path / "remote-bootstrap.toml"
-        bootstrap_path.write_text(
-            manifest.path.read_text().replace('host = ""', 'host = "compute.example"')
-        )
+        bootstrap_path.write_text(_on_card(manifest.path.read_text(), compute.machine_id))
     bootstrap = load_manifest(bootstrap_path)
-    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    workspace = state_workspace_for_probe(bootstrap, data_dir, store)
     canonical_path = workspace.root / "manifest.toml"
     if remote:
         workspace.root.mkdir(parents=True)
         canonical_path.write_text(bootstrap_path.read_text())
     committed = canonical_path.read_text()
-    store = AppStore(data_dir / "rcp.sqlite3")
     _register_catalog_project(store, bootstrap, project_id="project")
     catalog = ProjectCatalog(data_dir, store, AgentLauncher())
     if opened:
@@ -462,8 +502,8 @@ def test_inventory_waits_for_speculative_manifest_rollback(
         )
     resolved_workspace = Event()
 
-    def resolve_workspace(bootstrap, data_dir):
-        result = state_workspace_for_probe(bootstrap, data_dir)
+    def resolve_workspace(bootstrap, data_dir, store):
+        result = state_workspace_for_probe(bootstrap, data_dir, store)
         resolved_workspace.set()
         return result
 
@@ -488,23 +528,24 @@ def test_inventory_waits_for_speculative_manifest_rollback(
 def test_remote_manifest_validation_preserves_literal_trailing_slash(
     manifest: Manifest, tmp_path: Path, monkeypatch
 ) -> None:
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    compute = store.create_space_machine(name="compute", host="compute.example", os_account="")
     bootstrap_path = tmp_path / "remote-bootstrap.toml"
     state_path = manifest.repository_map["repo-a"].path
     bootstrap_path.write_text(
-        manifest.path.read_text()
-        .replace('host = ""', 'host = "compute.example"')
-        .replace(f'path = "{state_path}"', f'path = "{state_path}/"')
+        _on_card(manifest.path.read_text(), compute.machine_id).replace(
+            f'path = "{state_path}"', f'path = "{state_path}/"'
+        )
     )
     bootstrap = load_manifest(bootstrap_path)
-    data_dir = tmp_path / "data"
-    workspace = state_workspace_for_probe(bootstrap, data_dir)
+    workspace = state_workspace_for_probe(bootstrap, data_dir, store)
     workspace.root.mkdir(parents=True)
     (workspace.root / "manifest.toml").write_text(bootstrap_path.read_text())
     monkeypatch.setattr(SSHStateWorkspace, "refresh", lambda _self: True)
 
-    canonical, _workspace = prepare_state_workspace(bootstrap, data_dir)
+    canonical, _workspace = prepare_state_workspace(bootstrap, data_dir, store)
     assert canonical.repository_map["repo-a"].path == f"{state_path}/"
-    store = AppStore(data_dir / "rcp.sqlite3")
     _register_catalog_project(store, bootstrap, project_id="remote-project")
     inventory = ProjectCatalog(data_dir, store, AgentLauncher()).repository_ownership_inventory()
     assert next(root.path for root in inventory if root.alias == "repo-a") == f"{state_path}/"
@@ -515,13 +556,15 @@ def test_remote_manifest_validation_preserves_literal_trailing_slash(
 def test_remote_inventory_rejects_valid_manifest_for_different_canonical_home(
     manifest: Manifest, tmp_path: Path, monkeypatch, opened: bool, mismatch: str
 ) -> None:
-    bootstrap = tmp_path / "remote-bootstrap.toml"
-    bootstrap.write_text(manifest.path.read_text().replace('host = ""', 'host = "compute.example"'))
-    remote = load_manifest(bootstrap)
     data_dir = tmp_path / "data"
     store = AppStore(data_dir / "rcp.sqlite3")
+    compute = store.create_space_machine(name="compute", host="compute.example", os_account="")
+    other = store.create_space_machine(name="other", host="other.example", os_account="")
+    bootstrap = tmp_path / "remote-bootstrap.toml"
+    bootstrap.write_text(_on_card(manifest.path.read_text(), compute.machine_id))
+    remote = load_manifest(bootstrap)
     _register_catalog_project(store, remote, project_id="remote-project")
-    workspace = state_workspace_for_probe(remote, data_dir)
+    workspace = state_workspace_for_probe(remote, data_dir, store)
     workspace.root.mkdir(parents=True)
     mirror = workspace.root / "manifest.toml"
     mirror.write_text(bootstrap.read_text())
@@ -530,7 +573,7 @@ def test_remote_inventory_rejects_valid_manifest_for_different_canonical_home(
         catalog._services["remote-project"] = SimpleNamespace(manifest=load_manifest(mirror))
     original, replacement = {
         "name": ('name = "test-paper"', 'name = "different-project"'),
-        "host": ('host = "compute.example"', 'host = "other.example"'),
+        "host": (f'"{compute.machine_id}"', f'"{other.machine_id}"'),
         "path": (str(remote.repository_map["repo-a"].path), str(tmp_path / "other-root")),
     }[mismatch]
     mirror.write_text(mirror.read_text().replace(original, replacement))
@@ -585,7 +628,7 @@ def test_catalog_repository_inventory_fails_closed_for_unavailable_registration(
         ([], "missing repository pointer"),
         (
             [
-                RepositoryPointer(alias="repo-b", machine="laptop", path="/unused"),
+                RepositoryPointer(alias="repo-b", machine=BACKEND_MACHINE_ID, path="/unused"),
             ],
             "missing repository pointer",
         ),
@@ -613,7 +656,7 @@ def test_scope_rejects_pointer_symlink_escape(manifest: Manifest, tmp_path: Path
     escaped.symlink_to(Path(manifest.repository_map["repo-b"].path), target_is_directory=True)
     pointer = RepositoryPointer(
         alias="repo-a",
-        machine="laptop",
+        machine=BACKEND_MACHINE_ID,
         path=str(escaped),
     )
 
@@ -637,7 +680,9 @@ def test_scope_rejects_broad_local_repository_roots(
 ) -> None:
     changed = manifest.model_copy(deep=True)
     changed.repository_map["repo-a"].path = str(repository_root)
-    pointer = RepositoryPointer(alias="repo-a", machine="laptop", path=str(repository_root))
+    pointer = RepositoryPointer(
+        alias="repo-a", machine=BACKEND_MACHINE_ID, path=str(repository_root)
+    )
 
     with pytest.raises(ValueError, match=message):
         _resolve_local(changed, tmp_path, pointers=[pointer])
@@ -690,8 +735,7 @@ def test_scope_rejects_overlap_with_repository_owned_by_another_project(
         RegisteredRepositoryRoot(
             project_id="other-project",
             alias="foreign",
-            machine="local",
-            execution_host="",
+            machine=BACKEND_MACHINE_ID,
             path=str(foreign),
         )
     )
@@ -719,8 +763,7 @@ def test_scope_rejects_canonical_symlink_overlap_hidden_by_distinct_lexical_root
         RegisteredRepositoryRoot(
             project_id="other-project",
             alias="foreign",
-            machine="local",
-            execution_host="",
+            machine=BACKEND_MACHINE_ID,
             path=str(foreign_alias),
         )
     )
@@ -792,14 +835,14 @@ def test_scope_accepts_the_transport_host_the_staged_context_actually_carries(
 
     pointer = RepositoryPointer(
         alias="repo-a",
-        machine="laptop",
+        machine=BACKEND_MACHINE_ID,
         host="unexpected-host",
         path=manifest.repository_map["repo-a"].path,
     )
 
     scope = _resolve_local(manifest, tmp_path, pointers=[pointer])
 
-    assert scope.execution_host == ""
+    assert scope.machine_id == BACKEND_MACHINE_ID
     assert scope.repository_roots == [str(Path(manifest.repository_map["repo-a"].path).resolve())]
 
 
@@ -839,9 +882,14 @@ class _RemoteScopeStage:
         self.last_workspace_write = (name, content)
 
 
+_WORKER = _card("worker-card", "worker.example")
+
+
 def _remote_manifest(manifest: Manifest) -> Manifest:
     remote = manifest.model_copy(deep=True)
-    remote.machine_map["laptop"].host = "worker.example"
+    remote.machines = [_WORKER.machine_id]
+    for repository in remote.repositories:
+        repository.machine = _WORKER.machine_id
     remote.repository_map["repo-a"].path = "/declared/repo-a"
     remote.repository_map["repo-b"].path = "/declared/repo-b"
     return remote
@@ -858,7 +906,7 @@ def _resolve_remote(
         manifest=manifest,
         truth_scope=manifest.project.truth_scope,
         project_id="project",
-        execution_machine="laptop",
+        machine=_WORKER,
         capability="orchestrate",
         stage_root=str(stage.root),
         workspace_root=str(stage.workspace),
@@ -866,8 +914,8 @@ def _resolve_remote(
         repository_pointers=[
             RepositoryPointer(
                 alias="repo-a",
-                machine="laptop",
-                host="worker.example",
+                machine=_WORKER.machine_id,
+                host=_WORKER.host,
                 path=pointer_path,
             )
         ],
@@ -904,8 +952,8 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
         repositories=[
             RepositoryPointer(
                 alias="repo-a",
-                machine="laptop",
-                host=remote.machine_map["laptop"].host,
+                machine=_WORKER.machine_id,
+                host=_WORKER.host,
                 path=remote.repository_map["repo-a"].path,
             )
         ],
@@ -919,7 +967,7 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
     service = SimpleNamespace(manifest=remote)
 
     context = context.model_copy(
-        update=_stage_context_paths(context, service, stage, "laptop")  # type: ignore[arg-type]
+        update=_stage_context_paths(context, service, stage, _WORKER.machine_id)  # type: ignore[arg-type]
     )
     assert context.repositories[0].host == ""
 
@@ -927,7 +975,7 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
         manifest=remote,
         truth_scope=remote.project.truth_scope,
         project_id="project",
-        execution_machine="laptop",
+        machine=_WORKER,
         capability="work_auto",
         stage_root=str(stage.root),
         workspace_root=str(stage.workspace),
@@ -938,7 +986,7 @@ def test_remote_scope_accepts_the_pointer_the_real_staging_step_produces(
         repository_inventory=registered_repository_roots(remote, project_id="project"),
     )
 
-    assert scope.execution_host == "worker.example"
+    assert scope.machine_id == _WORKER.machine_id
     assert scope.repository_roots == ["/srv/repo-a"]
 
 
@@ -957,7 +1005,7 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
 
     scope = _resolve_remote(remote, stage)
 
-    assert scope.execution_host == "worker.example"
+    assert scope.machine_id == _WORKER.machine_id
     assert scope.repository_roots == ["/srv/repo-a"]
     assert scope.protected_write_paths == [
         "/declared/repo-a/.research",
@@ -1025,8 +1073,7 @@ def test_remote_scope_compares_only_the_exact_execution_host_identity(
     foreign = RegisteredRepositoryRoot(
         project_id="other-project",
         alias="foreign",
-        machine="worker",
-        execution_host="other.example",
+        machine="other-card",
         path="/srv/repo-a",
     )
     stage = _RemoteScopeStage(
@@ -1049,8 +1096,7 @@ def test_remote_scope_rejects_overlap_on_same_execution_host_identity(
     foreign = RegisteredRepositoryRoot(
         project_id="other-project",
         alias="foreign",
-        machine="worker",
-        execution_host="worker.example",
+        machine=_WORKER.machine_id,
         path="/declared/foreign",
     )
     stage = _RemoteScopeStage(
@@ -1146,17 +1192,20 @@ def test_durable_task_scope_binding_rejects_identity_mismatch(tmp_path: Path) ->
     bind = dict(operation_id="operation", stage_root="/tmp/rcp-run.scope", fingerprint="a" * 64)
 
     with pytest.raises(ValueError, match="different project"):
-        store.bind_agent_task_write_scope(**bind, project_id="other-project", stage_host="")
+        store.bind_agent_task_write_scope(
+            **bind, project_id="other-project", stage_machine_id=BACKEND_MACHINE_ID
+        )
     with pytest.raises(ValueError, match="saved execution stage"):
-        store.bind_agent_task_write_scope(**bind, project_id="project", stage_host="other-host")
+        store.bind_agent_task_write_scope(
+            **bind, project_id="project", stage_machine_id="other-card"
+        )
     assert store.agent_task("operation").write_scope_fingerprint is None
 
 
 def _stage_scope(stage: str, *, protected: list[str]) -> ProjectWriteScope:
     return ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=stage,
         workspace_root=stage,
