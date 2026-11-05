@@ -135,8 +135,10 @@ def assert_serves(fixture: dict, version: str) -> None:
     assert os.readlink("/etc/rcp/current") == selected["release_directory"]
     with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
         assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        columns = {row[1] for row in database.execute("PRAGMA table_info(provider_login_states)")}
+        backend = "machine_id='backend'" if "machine_id" in columns else "host=''"
         assert database.execute(
-            "SELECT state FROM provider_login_states WHERE provider='codex' AND host=''"
+            f"SELECT state FROM provider_login_states WHERE provider='codex' AND {backend}"
         ).fetchone() == ("signed_in",)
     assert (DATA / "providers/claude/qualification/setup-token").read_text() == "synthetic-login\n"
     assert json.loads((DATA / "jobs/completed/receipt.json").read_text()) == {"status": "completed"}
