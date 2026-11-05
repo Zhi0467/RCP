@@ -23,6 +23,7 @@ from rcp.limits import (
     TEAM_SESSION_LABEL_MAX_LENGTH,
     TEAM_SESSION_TOUCH_INTERVAL_SECONDS,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.config import ServerTeamConfig, render_team_access_config
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import (
@@ -568,8 +569,8 @@ def test_rotation_and_revocation_are_member_scoped_and_preserve_authorized_work(
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Authorized work",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )
@@ -640,8 +641,8 @@ def test_raw_credentials_never_enter_sqlite_or_task_and_patch_fixtures(tmp_path)
             home_space_id=store.space_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name="Redaction",
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=now,
         )
     )

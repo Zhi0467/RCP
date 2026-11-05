@@ -10,6 +10,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.loop_status import other_branch_auto_research
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
@@ -44,8 +45,8 @@ def _project(store: AppStore, project_id: str = "project") -> None:
             project_id=project_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name=project_id,
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=store.now(),
         )
     )

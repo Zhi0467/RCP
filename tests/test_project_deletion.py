@@ -11,6 +11,7 @@ import pytest
 from rcp.agents import AgentLauncher
 from rcp.core.models import AuthorizedHuman
 from rcp.history import ProjectIdentityConflict
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.runs import project_deletion
 from rcp.sources import ImportedProviderSourceStore, project_cache_roots
@@ -275,8 +276,8 @@ def test_catalog_delete_accepts_legacy_non_uuid_project_id(tmp_path) -> None:
             project_id=project_id,
             locator=str(tmp_path / "legacy" / ".research" / "manifest.toml"),
             name="Legacy project",
-            state_location=str(tmp_path / "legacy" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "legacy" / ".research"),
             added_at=store.now(),
         )
     )

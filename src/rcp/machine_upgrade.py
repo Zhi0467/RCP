@@ -661,6 +661,24 @@ def _migrate_chat_stage_layouts(connection: sqlite3.Connection, cards: _Cards) -
         )
 
 
+def _migrate_artifact_edit_stages(connection: sqlite3.Connection, cards: _Cards) -> None:
+    rows = connection.execute(
+        "SELECT operation_id, request_json FROM graph_runs "
+        "WHERE json_type(request_json, '$.artifact_edit.stage_host') IS NOT NULL"
+    ).fetchall()
+    for operation_id, request_json in rows:
+        request = json.loads(request_json)
+        edit = request["artifact_edit"]
+        host = edit.pop("stage_host")
+        edit["stage_machine_id"] = (
+            cards.id_for_host(host or "") if host or edit.get("stage_root") else None
+        )
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+            (json.dumps(request), operation_id),
+        )
+
+
 def _rename_credential_folders(file_root: Path, cards: _Cards) -> None:
     """`<data>/providers/<provider>/{local,remote-<sha256 host>}` becomes `machine-<id>`."""
 
@@ -730,6 +748,7 @@ def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) ->
     for cache in ("provider_readiness_snapshots", "provider_skill_inventories"):
         connection.execute(f"DELETE FROM {cache}")
         _rekey(connection, cache, "host", "machine_id", None)
+    connection.execute("DELETE FROM compute_backend_probes")
     for table in ("chat_session_contexts", "writing_sessions", "compute_backend_probes"):
         _rekey(connection, table, "execution_machine", "machine_id", None)
     for table in ("compute_jobs", "watchers", "browser_owners"):
@@ -740,6 +759,18 @@ def migrate_machine_identity(connection: sqlite3.Connection, file_root: Path) ->
     for table in ("episode_wrapups", "experiment_episode_state"):
         _rekey(connection, table, "execution_host", "machine_id", cards)
         _rekey(connection, table, "stage_host", "stage_machine_id", cards)
+    for table in (
+        "graph_runs",
+        "artifact_revision_candidates",
+        "episode_wrapups",
+        "experiment_episode_state",
+    ):
+        connection.execute(
+            f'UPDATE "{table}" SET stage_machine_id = ? '
+            "WHERE stage_machine_id IS NULL AND stage_root IS NOT NULL",
+            (BACKEND_MACHINE_ID,),
+        )
+    _migrate_artifact_edit_stages(connection, cards)
     _drop_column(connection, "episode_wrapups", "run_on")
     if "execution_machine" in _columns(connection, "experiment_episode_state"):
         connection.execute(

@@ -354,6 +354,22 @@ def _seed(connection: sqlite3.Connection) -> None:
         (json.dumps({"run_on": "laptop", "chat_id": "chat"}), NOW, NOW),
     )
     connection.execute(
+        "INSERT INTO graph_runs (operation_id, project_id, kind, status, request_json, "
+        "created_at, updated_at, status_message, stage_host, stage_root) "
+        "VALUES ('edit', 'remote', 'artifact_edit', 'failed', ?, ?, ?, 'Failed', NULL, '/local')",
+        (
+            json.dumps(
+                {"artifact_edit": {"stage_host": "gpu.example", "stage_root": "/s"}, "run_on": ""}
+            ),
+            NOW,
+            NOW,
+        ),
+    )
+    connection.execute(
+        "INSERT INTO compute_backend_probes VALUES ('remote', 'gpu', 'scheduler', ?, ?)",
+        (json.dumps({"execution_machine": "gpu"}), NOW),
+    )
+    connection.execute(
         "INSERT INTO graph_run_receipts (operation_id, created_at, tier, category, payload_json) "
         "VALUES ('op', ?, 'diagnostic', 'chat_stage_layout', ?)",
         (NOW, json.dumps({"layout": "split-v1", "stage_host": "gpu.example", "stage_root": "/s"})),
@@ -443,6 +459,15 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
             ).fetchone()[0]
             == backend
         )
+        edit = connection.execute(
+            "SELECT stage_machine_id, request_json FROM graph_runs WHERE operation_id = 'edit'"
+        ).fetchone()
+        assert edit["stage_machine_id"] == backend
+        assert json.loads(edit["request_json"])["artifact_edit"] == {
+            "stage_machine_id": GPU,
+            "stage_root": "/s",
+        }
+        assert connection.execute("SELECT COUNT(*) FROM compute_backend_probes").fetchone()[0] == 0
         receipt = json.loads(
             connection.execute("SELECT payload_json FROM graph_run_receipts").fetchone()[0]
         )
