@@ -20,10 +20,12 @@ import json
 import re
 import sqlite3
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import quote
 
 import tomlkit
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -34,6 +36,9 @@ from rcp.config import (
     Manifest,
     PaperCoachConfig,
     is_legacy_manifest_document,
+    load_manifest,
+    manifest_from_text,
+    resolve_manifest_path,
     validate_machine_access_hint,
     validate_machine_provider_paths,
 )
@@ -177,6 +182,33 @@ def upgraded_manifest_text(legacy: LegacyManifest, machine_ids: Mapping[str, str
     content = tomlkit.dumps(document)
     Manifest.model_validate(tomlkit.parse(content).unwrap())
     return content
+
+
+def cards_by_id(cards: Iterable[SpaceMachineRecord]) -> dict[str, SpaceMachineRecord]:
+    """Each card by its id, the backend's own card by `BACKEND_MACHINE_ID` in either schema.
+
+    A snapshot from before migration 77 may hold the card with no host under
+    another id; migration 77 re-keys it, so a reader of the snapshot does too.
+    """
+
+    return {BACKEND_MACHINE_ID if not card.host else card.machine_id: card for card in cards}
+
+
+def load_upgraded_manifest(
+    value: str | Path, cards: Iterable[SpaceMachineRecord], *, project_root: Path | None = None
+) -> Manifest:
+    """The manifest at `value`, a legacy one upgraded in memory and left on disk as written.
+
+    An update prepares from the outgoing release's live projects, whose manifests
+    the candidate may read but not rewrite before it serves.
+    """
+
+    path = resolve_manifest_path(value)
+    legacy = read_legacy_manifest(path)
+    if legacy is None:
+        return load_manifest(path, project_root=project_root)
+    content = upgraded_manifest_text(legacy, legacy.machine_ids(cards))
+    return manifest_from_text(content, path, project_root=project_root)
 
 
 def machine_id_for_alias(
@@ -426,7 +458,9 @@ def upgraded_backup_manifest(
     for project in manifest.projects:
         payload = project.model_dump(exclude={"recovery"})
         if project.recovery is not None:
-            payload["recovery"] = _upgraded_recovery(project.recovery, cards)
+            payload["recovery"] = _upgraded_recovery(
+                project.recovery, lambda host: machine_id_for_host(host, cards)
+            )
         projects.append(BackupProjectCapture.model_validate(payload))
     payload = manifest.model_dump(exclude={"schema_version", "projects"})
     payload["projects"] = tuple(projects)
@@ -437,13 +471,76 @@ def upgraded_backup_manifest(
     return upgraded
 
 
+def upgraded_capture_receipt(document: dict[str, Any], snapshot: Path) -> dict[str, Any]:
+    """An SQLite capture receipt from an older release, its recovery named by card ids.
+
+    The outgoing release of an update wrote the receipt; each archived alias maps
+    by its host to a card in the receipt's own SQLite snapshot, read without
+    migration. A receipt that already names cards is returned unchanged.
+    """
+
+    projects = document.get("projects")
+    if not isinstance(projects, list) or not any(
+        _is_legacy_recovery(project.get("recovery")) for project in projects
+    ):
+        return document
+    with closing(
+        sqlite3.connect(f"file:{quote(str(snapshot))}?mode=ro&immutable=1", uri=True)
+    ) as connection:
+        by_host = {
+            str(host): str(machine_id)
+            for machine_id, host in connection.execute(
+                "SELECT machine_id, host FROM space_machines"
+            )
+        }
+
+    def id_for_host(host: str) -> str:
+        return BACKEND_MACHINE_ID if not host else by_host.get(host, "")
+
+    upgraded = []
+    for project in projects:
+        if _is_legacy_recovery(project.get("recovery")):
+            legacy = _LegacyBackupRecoveryDescriptor.model_validate_json(
+                json.dumps(project["recovery"])
+            )
+            project = {
+                **project,
+                "recovery": _upgraded_recovery(legacy, id_for_host).model_dump(mode="json"),
+            }
+        upgraded.append(project)
+    return {**document, "projects": upgraded}
+
+
+def local_project_state_paths(connection: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Each project whose state is on the backend, with its state path, in either schema.
+
+    An update reads the outgoing release's snapshot, which may predate migration 77.
+    """
+
+    if "state_machine_id" in _columns(connection, "projects"):
+        query = (
+            "SELECT project_id, state_path FROM projects WHERE state_machine_id = ? "
+            "ORDER BY project_id"
+        )
+        return [(str(a), str(b)) for a, b in connection.execute(query, (BACKEND_MACHINE_ID,))]
+    query = (
+        "SELECT project_id, state_location FROM projects WHERE NOT state_remote ORDER BY project_id"
+    )
+    return [(str(a), str(b)) for a, b in connection.execute(query)]
+
+
+def _is_legacy_recovery(recovery: object) -> bool:
+    machines = recovery.get("machines") if isinstance(recovery, dict) else None
+    return isinstance(machines, list) and any(
+        isinstance(machine, dict) and "alias" in machine for machine in machines
+    )
+
+
 def _upgraded_recovery(
-    legacy: _LegacyBackupRecoveryDescriptor, cards: list[SpaceMachineRecord]
+    legacy: _LegacyBackupRecoveryDescriptor, id_for_host: Callable[[str], str]
 ) -> BackupCheckoutRecoveryDescriptor:
     archived = legacy.configuration
-    machine_ids = {
-        machine.alias: machine_id_for_host(machine.host, cards) for machine in archived.machines
-    }
+    machine_ids = {machine.alias: id_for_host(machine.host) for machine in archived.machines}
     configuration = BackupManifestConfiguration.model_validate(
         {
             **archived.model_dump(

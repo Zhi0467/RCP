@@ -1,12 +1,14 @@
 """Representative synthetic team data owned only by the disposable guest drive.
 
 The candidate test policy is imported only when its constructor exists, since older
-releases lack the authority argument.
+releases lack the authority argument. Releases before space-card machine ids name the
+server machine by a project alias, so the machine shape follows `rcp.machine_cards`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import inspect
 import io
 import os
@@ -21,7 +23,6 @@ from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
-from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import inspect_backup_project_registration
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.backup_checkout import verify_checkout_identities
@@ -42,6 +43,16 @@ if "write_authority" in inspect.signature(HistoryManager).parameters:
     from tests.helpers import unchecked_write_authority
 
     _HISTORY_AUTHORITY["write_authority"] = unchecked_write_authority()
+
+_MACHINE_IDS = importlib.util.find_spec("rcp.machine_cards") is not None
+if _MACHINE_IDS:
+    from rcp.machine_cards import BACKEND_MACHINE_ID
+
+    _SERVER_MACHINE = BACKEND_MACHINE_ID
+    _MACHINE_REFERENCE = {"machine_id": BACKEND_MACHINE_ID}
+else:
+    _SERVER_MACHINE = "server"
+    _MACHINE_REFERENCE = {"machine_alias": "server"}
 
 
 def prepare_data(
@@ -108,7 +119,11 @@ def _prepare_data(
         space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
     )
     repository_ref = parse_github_repository_ref("git@github.com:qualification/fixture.git")
-    store.ensure_space_machines([("", account, "Server")])
+    if _MACHINE_IDS:
+        store.ensure_space_machines([("", account, "Server")])
+        machine_intent = {"machine_id": BACKEND_MACHINE_ID}
+    else:
+        machine_intent = {"alias": "server", "location": "local", "os_account": account}
     request = store.create_project_provisioning_request(
         kind="create_team_project",
         authorized_by=authority,
@@ -117,13 +132,11 @@ def _prepare_data(
         project_truth_scope=["paper"],
         default_run_truth_scope=["paper"],
         machines=[
-            ProjectProvisioningMachineIntent(
-                machine_id=BACKEND_MACHINE_ID, central_root=str(projects_root)
-            )
+            ProjectProvisioningMachineIntent(**machine_intent, central_root=str(projects_root))
         ],
         repositories=[
             ProjectProvisioningRepositoryIntent(
-                alias="paper", repository=repository_ref, machine_id=BACKEND_MACHINE_ID
+                alias="paper", repository=repository_ref, **_MACHINE_REFERENCE
             )
         ],
         provider_checks=[
@@ -133,7 +146,7 @@ def _prepare_data(
                 runtime_id="codex:exec",
                 model="qualification",
                 reasoning="medium",
-                machine_id=BACKEND_MACHINE_ID,
+                **_MACHINE_REFERENCE,
             )
             for profile in AGENT_EXECUTION_PROFILES
         ],
@@ -241,13 +254,16 @@ def _prepare_data(
     assert project is not None
     registration = inspect_backup_project_registration(
         project,
-        store=store,
+        **({"store": store} if _MACHINE_IDS else {}),
         data_dir=data_dir,
         provisioning_requests=store.completed_project_provisioning_requests(project.project_id),
     )
-    verify_checkout_identities(
-        registration.recovery, {card.machine_id: card for card in store.space_machines()}
-    )
+    if _MACHINE_IDS:
+        verify_checkout_identities(
+            registration.recovery, {card.machine_id: card for card in store.space_machines()}
+        )
+    else:
+        verify_checkout_identities(registration.recovery)
     assert registration.workspace.backup_canonical_source_plan().complete
     history = HistoryManager(registration.manifest, **_HISTORY_AUTHORITY)
     history.append(
@@ -477,7 +493,7 @@ def _prepare_data(
         provider="codex",
         model="qualification",
         reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
+        run_on=_SERVER_MACHINE,
         run_truth_scope=["paper"],
         chat_scope="project",
         chat_id=chat_id,
@@ -497,7 +513,7 @@ def _prepare_data(
             status_message="Paused fixture",
             authorized_by=authority,
             dispatch_authority=resolve_dispatch_authority("project_chat", run),
-            stage_machine_id=BACKEND_MACHINE_ID,
+            **({"stage_machine_id": BACKEND_MACHINE_ID} if _MACHINE_IDS else {"stage_host": ""}),
             stage_root=str(stage),
         )
     )
