@@ -267,7 +267,7 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
     root = next(task for task in tasks if task.parent_operation_id is None)
     report_task = _assert_corrected_report(store, episode_id)
     assert report_task.native_session_id == root.native_session_id
-    assert report_task.stage_host == root.stage_host
+    assert report_task.stage_machine_id == root.stage_machine_id
     assert report_task.stage_root == root.stage_root
     assert store.agent_command_by_key(episode_id, "acceptance-spawn") is not None
     assert store.agent_command_by_key(episode_id, "acceptance-harvest-before-finish") is not None
@@ -365,10 +365,10 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
     assert retry is not None and retry.status == "succeeded"
     assert retry.parent_operation_id == root_operation_id
     assert retry.native_session_id == interrupted.native_session_id
-    assert retry.stage_host == interrupted.stage_host
+    assert retry.stage_machine_id == interrupted.stage_machine_id
     assert retry.stage_root == interrupted.stage_root == str(root_stage)
     assert report_task.native_session_id == interrupted.native_session_id
-    assert report_task.stage_host == interrupted.stage_host
+    assert report_task.stage_machine_id == interrupted.stage_machine_id
     assert report_task.stage_root == interrupted.stage_root
     spawn = restarted_store.agent_command_by_key(episode_id, "acceptance-interrupt-spawn")
     assert spawn is not None and spawn.status == "ok"
@@ -711,7 +711,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
                     episode_id=episode_id,
                     continuation=WatcherContinuation(
                         provider="codex",
-                        run_on="laptop",
+                        run_on="backend",
                         run_truth_scope=["repo-a"],
                         patch_kind="work",
                     ),
@@ -825,7 +825,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
     report_task = _assert_corrected_report(store, episode_id)
     assert report_task.status == "succeeded"
     assert report_task.native_session_id == root.native_session_id
-    assert report_task.stage_host == root.stage_host
+    assert report_task.stage_machine_id == root.stage_machine_id
     assert report_task.stage_root == root.stage_root
     structural = [
         receipt

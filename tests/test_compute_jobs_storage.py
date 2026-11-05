@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.server_ops.application_validation import (
     CandidateRehearsalRefused,
     _rebind_local_stage_paths,
@@ -22,7 +23,7 @@ def job_record(job_id: str = "job-1", **updates) -> ComputeJobRecord:
             "job_id": job_id,
             "project_id": "project",
             "origin_operation_id": "operation",
-            "execution_machine": "local",
+            "machine_id": BACKEND_MACHINE_ID,
             "backend_id": "systemd_user",
             "backend_handle": f"rcp-job-{job_id}",
             "job_root": f"/jobs/{job_id}",
@@ -83,7 +84,7 @@ def test_compute_jobs_migration_upgrades_version_eight_without_changing_records(
 def test_restore_rebinds_all_local_job_paths_and_preserves_remote_paths(tmp_path) -> None:
     store = AppStore(tmp_path / "app.sqlite")
     local = job_record()
-    remote = job_record("remote", execution_host="worker", execution_machine="worker")
+    remote = job_record("remote", machine_id="worker")
     store.create_compute_job(local)
     store.create_compute_job(remote)
     absent = tmp_path / "absent"
@@ -136,7 +137,7 @@ def test_probe_route_migration_retains_backend_readiness(tmp_path, backend_id, r
     path = tmp_path / "app.sqlite"
     previous = AppStore(path)
     probe = ComputeBackendProbe(
-        execution_machine="local",
+        machine_id="local",
         backend_id=backend_id,
         state="ready",
         ready=True,

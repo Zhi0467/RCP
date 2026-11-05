@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.work import stream_work_run
 
 from .helpers import append_fixture_patch, seed_patch
@@ -29,6 +30,7 @@ async def test_work_comment_on_another_stage_edits_it_for_one_turn(manifest, tmp
     request = request.model_copy(
         update={
             "mode": "work",
+            "run_on": BACKEND_MACHINE_ID,
             "session_id": None,
             "run_truth_scope": ["repo-a"],
             "artifact_edit": None,
@@ -90,7 +92,7 @@ async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_vers
         provider="codex",
         reasoning="medium",
         model="",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id="0f6c2a6e-3b0d-4a4e-9a51-3d3f3c1f5b10",
         message="Draw it",

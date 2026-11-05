@@ -9,8 +9,10 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentLauncher
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
+from rcp.storage import AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport import provider_discovery
 from rcp.transport.state import _remote_script
@@ -58,7 +60,7 @@ def isolated_script(account: Path, source: str, *arguments: str) -> list[str]:
 
 @pytest.mark.parametrize("host", ["", "execution.example"])
 def test_native_install_is_ready_without_path_or_symlink(
-    account: Path, monkeypatch: pytest.MonkeyPatch, host: str
+    account: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
     """Only the SSH transport and OS account database are replaced, so no human account
     is touched.
@@ -72,7 +74,15 @@ def test_native_install_is_ready_without_path_or_symlink(
             return subprocess.run(command, capture_output=True, text=True, check=False)
 
         monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
-    readiness = AgentLauncher().readiness(LoginKey("opencode", host, MACHINE_LOGIN_ID))
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    machine_id = (
+        store.create_space_machine(name=host, host=host, os_account="").machine_id
+        if host
+        else BACKEND_MACHINE_ID
+    )
+    readiness = AgentLauncher(accounts=ProviderAccounts.for_store(store)).readiness(
+        LoginKey("opencode", machine_id, MACHINE_LOGIN_ID)
+    )
     assert readiness.installed and readiness.authenticated
     assert readiness.binary_path == str(binary)
     assert readiness.version == "1.18.33"

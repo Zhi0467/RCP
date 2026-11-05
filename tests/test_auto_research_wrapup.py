@@ -140,6 +140,7 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="session-1",
+        stage_machine_id="backend",
         stage_root=stage,
     )
     store.fail_agent_task(root.operation_id, "temporary provider failure")
@@ -164,6 +165,7 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
             attempt=2,
             parent_operation_id=root.operation_id,
             native_session_id="session-1",
+            stage_machine_id="backend",
             stage_root=stage,
             authorized_by=episode.authorized_by,
             dispatch_authority=root.dispatch_authority,
@@ -332,7 +334,10 @@ def _stored_receipt(spec):
 def test_oversized_receipt_compacts_to_the_actual_stored_envelope(tmp_path, monkeypatch, payload):
     store, episode, root = _episode(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="session", stage_root=str(tmp_path / "stage")
+        root.operation_id,
+        native_session_id="session",
+        stage_machine_id="backend",
+        stage_root=str(tmp_path / "stage"),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     signal = auto_research_exhaustion_signal(store, episode.episode_id, diagnostic="Turns spent.")
@@ -431,7 +436,10 @@ def test_last_resort_receipt_preserves_shape_and_exact_counts(tmp_path, monkeypa
 def test_last_resort_compacts_unicode_envelope_diagnostic_without_changing_fence(tmp_path):
     store, episode, root = _episode(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="session", stage_root=str(tmp_path / "stage")
+        root.operation_id,
+        native_session_id="session",
+        stage_machine_id="backend",
+        stage_root=str(tmp_path / "stage"),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     diagnostic = "🔬" * 2_000

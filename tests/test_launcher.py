@@ -102,8 +102,7 @@ def _project_write_scope(
     ]
     return ProjectWriteScope.create(
         project_id="project-1",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability=capability,
         stage_root=stage,
         workspace_root=stage,
@@ -157,7 +156,14 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
         )
         assert forced_entered.wait(timeout=1)
         with launcher._readiness_lock:
-            forced_probe = launcher._readiness_probes[("codex", "", binary, "", True)]
+            forced_probe = launcher._readiness_probes[
+                (
+                    *launcher._readiness_key(
+                        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary
+                    ),
+                    True,
+                )
+            ]
         follower_waiting = threading.Event()
         wait_for_forced = forced_probe.completed.wait
 
@@ -282,6 +288,8 @@ async def test_campaign_broker_wraps_provider_and_preserves_effective_prompt(
                 "codex",
                 "exact provider prompt",
                 cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="orchestrate",
                 invocation_gate=staged.invocation_gate,
             )
@@ -389,6 +397,8 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
                 "codex",
                 "must not be delivered",
                 cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="orchestrate",
                 invocation_gate=staged.invocation_gate,
             )
@@ -437,6 +447,8 @@ async def test_campaign_broker_peer_inspection_failure_prevents_provider_prompt_
                 "codex",
                 "must not be delivered",
                 cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="orchestrate",
                 invocation_gate=gate,
             )
@@ -522,7 +534,12 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
     events = [
         event
         async for event in launcher.stream(
-            "codex", "prompt", cwd=Path("/tmp"), capability="scratch_patch"
+            "codex",
+            "prompt",
+            cwd=Path("/tmp"),
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         )
     ]
 
@@ -568,6 +585,8 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
                 "codex",
                 prompt,
                 cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="scratch_patch",
             )
         ]
@@ -640,6 +659,8 @@ async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
             "prompt",
             cwd=tmp_path,
             reasoning="ultra",
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="scratch_patch",
         )
     ]
@@ -662,7 +683,12 @@ async def test_stream_records_explicit_terminal_provider_event(
     events = [
         event
         async for event in launcher.stream(
-            "claude", "prompt", cwd=tmp_path, capability="scratch_patch"
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         )
     ]
 
@@ -696,7 +722,12 @@ async def test_stream_records_nonzero_provider_exit_before_error(
     events = [
         event
         async for event in launcher.stream(
-            "codex", "prompt", cwd=tmp_path, capability="scratch_patch"
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         )
     ]
 
@@ -745,6 +776,8 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
             "prompt",
             cwd=tmp_path,
             binary=binary,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="scratch_patch",
         )
     ]
@@ -781,7 +814,12 @@ async def test_stream_launches_an_authenticated_discovered_path_without_manual_r
     events = [
         event
         async for event in launcher.stream(
-            "codex", "prompt", cwd=tmp_path, capability="scratch_patch"
+            "codex",
+            "prompt",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         )
     ]
 
@@ -802,12 +840,17 @@ async def test_cold_readiness_does_not_block_stream_event_loop(tmp_path: Path) -
             provider=login.provider,
             installed=False,
             authenticated=False,
-            reason=f"{login.host or 'local'} unavailable",
+            reason=f"{login.machine_id} unavailable",
         )
 
     launcher.readiness = readiness
     stream = launcher.stream(
-        "codex", "prompt", cwd=tmp_path, host="slow.example", capability="scratch_patch"
+        "codex",
+        "prompt",
+        cwd=tmp_path,
+        host="slow.example",
+        machine_id=BACKEND_MACHINE_ID,
+        capability="scratch_patch",
     )
     first_event = asyncio.create_task(anext(stream))
     try:
@@ -844,6 +887,8 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
         "p" * (2 * 1024 * 1024),
         cwd=tmp_path,
         control=control,
+        machine_id=BACKEND_MACHINE_ID,
+        host="",
         capability="scratch_patch",
         runtime_id="exec",
     )
@@ -1118,8 +1163,7 @@ def test_codex_is_told_only_about_paths_that_exist() -> None:
     """
     scope = ProjectWriteScope.create(
         project_id="project-1",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root="/data/chat-stage",
         workspace_root="/data/chat-stage",
@@ -1131,8 +1175,7 @@ def test_codex_is_told_only_about_paths_that_exist() -> None:
         absent_protected_paths=["/project/repo-b/.research"],
     )
     hidden = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         os_account="rcp",
         hidden_files=("/home/rcp/.codex/auth.json", "/home/rcp/.config/rcp/claude-setup-token"),
         hidden_globs=("/data/rcp.sqlite3*",),
@@ -1416,8 +1459,7 @@ def test_claude_split_chat_reads_outer_inputs_without_write_authority() -> None:
     )
     scope = ProjectWriteScope.create(
         project_id="project-1",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=stage,
         workspace_root=workspace,
@@ -1594,6 +1636,8 @@ async def test_stream_refuses_an_unusable_recorded_path_before_subprocess_launch
             "prompt",
             cwd=tmp_path,
             binary=str(binary),
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="scratch_patch",
         )
     ]
@@ -1701,9 +1745,7 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
         lambda host, command, **kwargs: ["sh", "-c", shlex.split(command)[2]],
     )
     scope = (
-        _project_write_scope(
-            capability="work_auto", stage=str(tmp_path), repository_paths=[]
-        ).model_copy(update={"execution_host": host})
+        _project_write_scope(capability="work_auto", stage=str(tmp_path), repository_paths=[])
         if capability == "work_auto"
         else None
     )
@@ -1714,10 +1756,13 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
             "prompt",
             cwd=tmp_path,
             host=host,
+            machine_id=BACKEND_MACHINE_ID,
             capability=capability,
             write_scope=scope,
             runtime_id=profile_for("codex").legacy_runtime_id,
-            git_access=ProviderGitAccess(GitIdentity("member", "Member Name"), tmp_path, host),
+            git_access=ProviderGitAccess(
+                GitIdentity("member", "Member Name"), tmp_path, BACKEND_MACHINE_ID, host
+            ),
         )
     ]
     assert events[-1].event == "done", [event.text for event in events]
@@ -1736,12 +1781,14 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
             "prompt",
             cwd=tmp_path,
             host=host,
+            machine_id=BACKEND_MACHINE_ID,
             capability=capability,
             write_scope=scope,
             runtime_id=profile_for("codex").legacy_runtime_id,
             git_access=ProviderGitAccess(
                 GitIdentity("member", "Member Name"),
                 tmp_path,
+                BACKEND_MACHINE_ID,
                 host,
                 ((str(tmp_path), str(tmp_path / "missing-key")),),
             ),
@@ -1803,7 +1850,13 @@ async def test_machine_autocompact_reaches_its_provider_argv(
     monkeypatch.setattr(type(profile.runtime(runtime_id)), "turn", turn)
     with pytest.raises(Captured):
         async for _ in launcher.stream(
-            provider, "task", cwd=tmp_path, capability="discuss", runtime_id=runtime_id
+            provider,
+            "task",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
+            runtime_id=runtime_id,
         ):
             pass
     command = captured[0]
@@ -1841,16 +1894,18 @@ async def test_machine_shell_timeout_reaches_provider_environment(
     for name in names:
         monkeypatch.delenv(name, raising=False)
     store = AppStore(tmp_path / "rcp.sqlite3")
-    store.ensure_space_machines([(host, "", "Execution machine")])
-    card = store.space_machine_for(host)
-    assert card is not None
+    card = (
+        store.create_space_machine(name="Execution machine", host=host, os_account="")
+        if host
+        else store.backend_space_machine()
+    )
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
-    assert launcher.shell_timeout_seconds(provider, host) is None
+    assert launcher.shell_timeout_seconds(provider, card.machine_id) is None
     if configured:
         store.update_space_machine(
             card.machine_id, provider_shell_timeout={provider: str(configured // 60)}
         )
-    resolved_timeout = launcher.shell_timeout_seconds(provider, host)
+    resolved_timeout = launcher.shell_timeout_seconds(provider, card.machine_id)
     assert resolved_timeout == configured
     if staged:
         store.update_space_machine(
@@ -1924,6 +1979,7 @@ async def test_machine_shell_timeout_reaches_provider_environment(
             "task",
             cwd=tmp_path,
             host=host,
+            machine_id=card.machine_id,
             capability="discuss",
             runtime_id=runtime_id,
             shell_timeout_seconds=resolved_timeout if staged else ...,

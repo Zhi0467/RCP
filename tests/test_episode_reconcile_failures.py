@@ -25,7 +25,10 @@ from .test_auto_research_wrapup import _episode
 def _ending(tmp_path, monkeypatch):
     store, episode, root = _episode(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="session", stage_root=str(tmp_path / "stage")
+        root.operation_id,
+        native_session_id="session",
+        stage_machine_id="backend",
+        stage_root=str(tmp_path / "stage"),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.fence_episode_ending(episode.episode_id, "exhausted")
@@ -289,7 +292,10 @@ def _experiment_ending(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "experiment.sqlite3")
     episode_id, root = _admit_root(store)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="native-session", stage_root=str(tmp_path / "stage")
+        root.operation_id,
+        native_session_id="native-session",
+        stage_machine_id="backend",
+        stage_root=str(tmp_path / "stage"),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     _bind(

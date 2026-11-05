@@ -13,6 +13,7 @@ from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.launcher import AgentProcessControl
 from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
 from rcp.background import AgentTaskExecution
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperOp
 from rcp.paper.changes import read_paper_changes
 from rcp.project_references import ResolvedProjectReference
@@ -365,14 +366,28 @@ async def test_stop_prevents_refresh_and_direct_application(coach):
     assert not list((data / "run-stage").glob("*/paper-base-*"))
 
 
+def _remote_base(service) -> str:
+    card = service.paper.store.create_space_machine(
+        name="Base", host="base.example", os_account="rcp"
+    )
+    path = service.manifest.path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(f'"{BACKEND_MACHINE_ID}"', f'"{card.machine_id}"'),
+        encoding="utf-8",
+    )
+    service.manifest.machines.append(card.machine_id)
+    for repository in service.manifest.repositories:
+        repository.machine = card.machine_id
+    return card.machine_id
+
+
 @pytest.mark.asyncio
 async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypatch, tmp_path):
     from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.runs.tasks import coach as coach_module
 
     service, live, data = coach
-    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
-    service.manifest.machine_map[base_machine].host = "base.example"
+    base_machine = _remote_base(service)
     state_repository = service.manifest.repository_map[service.manifest.state.repository]
     state_repository.path = str(tmp_path / "base-repository")
     staged_snapshots = []
@@ -402,7 +417,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
     async def hidden_scope(_service, _request, **kwargs):
         assert kwargs["remote_stage"] is stages[-1]
         assert kwargs["workspace"] == stages[-1].workspace
-        return unhidden_read_scope(execution_machine=base_machine, host="base.example")
+        return unhidden_read_scope(machine_id=base_machine)
 
     monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", RemoteStage)
     monkeypatch.setattr(coach_module, "_prepare_hidden_read_scope", hidden_scope)
@@ -419,7 +434,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
             provider_pids.append(pid)
             yield AgentEvent(event="remote_process_start", text=pid)
             assert execution.store.unresolved_remote_provider_passes(
-                "base.example", str(stage.root)
+                base_machine, str(stage.root)
             ) == [(execution.operation_id, pid)]
             provider_folders.append(kwargs["cwd"])
             assert kwargs["host"] == "base.example"
@@ -448,7 +463,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
             yield AgentEvent(event="session", session_id="remote-native")
             yield AgentEvent(event="remote_process_stop", text=pid)
             assert (
-                execution.store.unresolved_remote_provider_passes("base.example", str(stage.root))
+                execution.store.unresolved_remote_provider_passes(base_machine, str(stage.root))
                 == []
             )
             yield AgentEvent(event="done")
@@ -466,7 +481,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
     )
     assert not [event for event in events if event.event == "error"]
     assert any(event.event == "done" for event in events)
-    assert execution.stage_host == "base.example"
+    assert execution.stage_machine_id == base_machine
     assert execution.stage_root == str(stages[0].root)
     assert len(collected) == len(staged_snapshots) == 2
     assert provider_folders[0] == provider_folders[1]
@@ -476,7 +491,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
     assert len(groups) == 1
     assert groups[0].state == "pending"
     assert groups[0].changes[0].after == "Remote proposed text\n"
-    assert service.paper.sessions()[0].execution_machine == base_machine
+    assert service.paper.sessions()[0].machine_id == base_machine
 
 
 @pytest.mark.asyncio
@@ -488,8 +503,7 @@ async def test_remote_coach_stage_failure_classifies_transport_loss(
     from rcp.transport import StateUnavailable, StateUnreachable
 
     service, _live, data = coach
-    machine = service.manifest.repository_map[service.manifest.state.repository].machine
-    service.manifest.machine_map[machine].host = "base.example"
+    _remote_base(service)
     failure = StateUnreachable("connection lost") if link_lost else StateUnavailable("refused")
 
     class RemoteStage(_LocalBackedRemoteStage):
@@ -526,14 +540,13 @@ def detached_coach(coach, monkeypatch, tmp_path):
     from rcp.runs.tasks import work_turn_runtime
 
     service, _live, data = coach
-    base_machine = service.manifest.repository_map[service.manifest.state.repository].machine
-    service.manifest.machine_map[base_machine].host = "base.example"
+    base_machine = _remote_base(service)
 
     class RemoteStage(CoachRemoteStage):
         base = tmp_path / "remote-stage"
 
     async def hidden_scope(_service, _request, **_kwargs):
-        return unhidden_read_scope(execution_machine=base_machine, host="base.example")
+        return unhidden_read_scope(machine_id=base_machine)
 
     async def link_lost(*_args, **kwargs):
         """The provider writes its changes, then the link drops before it exits; like a controller
@@ -706,8 +719,8 @@ async def test_stored_coach_on_another_machine_starts_fresh_on_base(
     assert not [event for event in events if event.event == "error"]
     assert len(launches) == 1
     assert launches[0]["session_id"] is None
-    assert launches[0]["host"] == service.manifest.machine_map[base].host
-    assert service.paper.sessions()[0].execution_machine == base
+    assert launches[0]["host"] == ""
+    assert service.paper.sessions()[0].machine_id == base
 
 
 @pytest.mark.asyncio

@@ -54,7 +54,7 @@ def _idle_root(tmp_path):
     stage.mkdir()
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
         yield _sse(AgentEvent(event="done"))
 
@@ -90,7 +90,7 @@ def test_signed_out_child_work_creates_no_task_or_budget(tmp_path):
             episode.episode_id,
             RunRequest(
                 provider="codex",
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
                 run_truth_scope=["repo-a"],
                 chat_scope="node",
                 node_id="blk/result",
@@ -220,7 +220,7 @@ def test_signed_out_experiment_start_creates_no_task_or_budget(manifest, tmp_pat
     _service, store, tasks, _coordinator, _parent_id, _root_id = _setup(manifest, tmp_path)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="node",
         node_id=EXPERIMENT_ID,
@@ -261,7 +261,7 @@ def test_signed_out_ordinary_chat_creates_no_task(tmp_path, kind, mode):
     _signed_out(store)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="node" if kind == "node_chat" else "project",
         node_id="blk/result" if kind == "node_chat" else None,
         message="Inspect the result.",
@@ -297,7 +297,7 @@ def test_committed_task_waits_for_verify_without_poll_writes(
         if experiment
         else RunRequest(
             provider="codex",
-            run_on="laptop",
+            run_on=BACKEND_MACHINE_ID,
             chat_scope="node",
             node_id="blk/result",
             chat_id="ordinary-chat",
@@ -318,12 +318,16 @@ def test_committed_task_waits_for_verify_without_poll_writes(
         assert calls == []
         assert not tasks._workers
     client = _verify_client(store, tasks, monkeypatch)
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, queued.operation_id, expect="succeeded")
     wait_until(lambda: queued.operation_id not in tasks._workers)
-    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    again = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] == int(experiment)
     assert calls == [queued.operation_id]
@@ -366,13 +370,17 @@ def test_verify_dispatches_committed_lifecycle_wake_once(manifest, tmp_path, mon
         assert store.agent_task_receipts(operation_id) == receipts
         assert not tasks._workers
     client = _verify_client(store, tasks, monkeypatch)
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     wait_for_task(store, operation_id, expect="succeeded")
     wait_until(lambda: operation_id not in tasks._workers)
     assert _counts(store) == before
-    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    again = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
     assert _counts(store) == before
@@ -398,7 +406,7 @@ def test_missing_managed_credential_refuses_without_existing_login_state(tmp_pat
             "project_chat",
             RunRequest(
                 provider="claude",
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
                 chat_scope="project",
                 message="Inspect results",
                 mode="work",
@@ -409,16 +417,12 @@ def test_missing_managed_credential_refuses_without_existing_login_state(tmp_pat
     assert store.provider_login_states() == []
 
 
-def test_run_on_resolves_through_the_owner_of_its_machine(tmp_path):
-    from rcp.runs.provider_login import run_on_host
+def test_run_on_names_its_card_and_defaults_to_the_base_machine(tmp_path):
+    from rcp.runs.provider_login import run_on_machine
 
     store = _store(tmp_path)
-    with (tmp_path / "manifest.toml").open("a", encoding="utf-8") as manifest:
-        manifest.write('[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n')
-    assert run_on_host(store, "project", "gpu") == "gpu.example"
-    assert run_on_host(store, "project", None) == run_on_host(store, "project", "laptop") == ""
     gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
-    for run_on in (store.backend_space_machine().machine_id, gpu.machine_id, "gone", None):
-        assert run_on_host(store, store.space_id, run_on) == ""
-    with pytest.raises(ValueError, match="unknown execution machine: local"):
-        run_on_host(store, "project", "local")
+    assert run_on_machine(store, "project", gpu.machine_id) == gpu.machine_id
+    assert run_on_machine(store, "project", None) == BACKEND_MACHINE_ID
+    for run_on in (gpu.machine_id, None):
+        assert run_on_machine(store, store.space_id, run_on) == BACKEND_MACHINE_ID

@@ -49,7 +49,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     monkeypatch.setattr(
         launcher.credential_gate,
         "hold_blocking",
-        lambda key: holds.append((key.provider, key.host)) or nullcontext(),
+        lambda key: holds.append((key.provider, key.machine_id)) or nullcontext(),
     )
 
     def probe(host, command, *, timeout, **_):
@@ -76,9 +76,11 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
-    response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = TestClient(app).post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == (200 if success else 409)
-    assert holds == [("codex", "")]
+    assert holds == [("codex", BACKEND_MACHINE_ID)]
     assert len(probes) == 1
     assert probes[0][1][1] == "exec"
     state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
@@ -114,7 +116,9 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
         store, launcher, launcher.accounts
     )
-    response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = TestClient(app).post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 409
     assert (
         store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
@@ -142,7 +146,7 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     credentials = ProviderCredentialStore(tmp_path / "providers")
     credentials.store_token(
         "claude",
-        "",
+        BACKEND_MACHINE_ID,
         "sk-ant-oat01-list-test",
         member_id="member",
         now=store.now(),
@@ -160,7 +164,10 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     app.dependency_overrides[get_store] = lambda: store
     app.dependency_overrides[get_launcher] = lambda: launcher
     app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
-        provider_targets=lambda: [("claude", "", None), ("codex", "", None)]
+        provider_targets=lambda: [
+            ("claude", BACKEND_MACHINE_ID, None),
+            ("codex", BACKEND_MACHINE_ID, None),
+        ]
     )
     app.dependency_overrides[get_provider_credentials] = lambda: credentials
     app.dependency_overrides[get_provider_sign_ins] = lambda: ProviderSignInRunner(
@@ -168,10 +175,10 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
     )
     response = TestClient(app).get("/api/providers/logins")
     assert response.status_code == 200, response.text
-    accounts = response.json()
-    assert [(a["provider"], a["host"], a["state"]) for a in accounts] == [
-        ("claude", "", "signed_in"),
-        ("codex", "", "signed_out"),
+    accounts = [a for a in response.json() if a["provider"] in {"claude", "codex"}]
+    assert [(a["provider"], a["machine_id"], a["state"]) for a in accounts] == [
+        ("claude", BACKEND_MACHINE_ID, "signed_in"),
+        ("codex", BACKEND_MACHINE_ID, "signed_out"),
     ]
     token = accounts[0]["token"]
     assert token["pasted_by"] == "member" and token["verified_at"] is None
@@ -213,18 +220,22 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     app.dependency_overrides[get_provider_credentials] = lambda: runner.credentials
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
-        provider_targets=lambda: [(ThirdProvider.id, "", None)]
+        provider_targets=lambda: [(ThirdProvider.id, BACKEND_MACHINE_ID, None)]
     )
     client = TestClient(app)
-    account = client.get("/api/providers/logins").json()[0]
+    (account,) = (
+        a for a in client.get("/api/providers/logins").json() if a["provider"] == ThirdProvider.id
+    )
     assert account["label"] == ThirdProvider.label
     assert account["sign_in_methods"] == ["device_code"]
     assert account["token"] is None
     route = f"/api/providers/{ThirdProvider.id}/logins"
-    started = client.post(f"{route}/sign-in", json={"host": ""})
+    started = client.post(f"{route}/sign-in", json={"machine_id": BACKEND_MACHINE_ID})
     assert started.status_code == 200, started.text
     operation = started.json()["attempt_id"]
-    assert client.post(f"{route}/sign-in", json={}).status_code == 409
+    assert (
+        client.post(f"{route}/sign-in", json={"machine_id": BACKEND_MACHINE_ID}).status_code == 409
+    )
     (tmp_path / "signed-in").write_text("")
     wait_until(lambda: runner.sign_in_status(operation).state == "succeeded" or None, timeout=10)
     runner.reconcile_recovery()
@@ -236,8 +247,15 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     assert client.get(f"{route}/sign-in/{operation}").json() == status.json()
     assert completions == [(LoginKey(ThirdProvider.id, BACKEND_MACHINE_ID, ""),)]
     assert client.get(f"/api/providers/codex/logins/sign-in/{operation}").status_code == 404
-    assert client.post(f"{route}/token", json={"token": "private-value"}).status_code == 422
-    invalid = client.post(f"{route}/sign-in", json={"host": "", "unexpected": True})
+    assert (
+        client.post(
+            f"{route}/token", json={"machine_id": BACKEND_MACHINE_ID, "token": "private-value"}
+        ).status_code
+        == 422
+    )
+    invalid = client.post(
+        f"{route}/sign-in", json={"machine_id": BACKEND_MACHINE_ID, "unexpected": True}
+    )
     assert invalid.status_code == 422
     assert client.post("/api/providers/unknown/logins/sign-in", json={}).status_code == 422
 
@@ -248,7 +266,7 @@ def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_
     runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
     accounts = provider_login.provider_login_accounts(
         store,
-        SimpleNamespace(provider_targets=lambda: [("claude", "", None)]),
+        SimpleNamespace(provider_targets=lambda: [("claude", BACKEND_MACHINE_ID, None)]),
         accounts.credentials,
         runner,
         set(),
@@ -264,7 +282,7 @@ def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_
     [
         {"token": {"secret": "private-value"}},
         {"token": "private-value", "unexpected": "private-value"},
-        {"host": ["private-value"], "token": "private-value"},
+        {"machine_id": ["private-value"], "token": "private-value"},
     ],
 )
 def test_invalid_account_requests_do_not_echo_credentials(tmp_path, body):
@@ -281,7 +299,7 @@ def test_invalid_account_requests_do_not_echo_credentials(tmp_path, body):
 
 def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "login.sqlite3")
-    store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice").machine_id
     credentials = ProviderCredentialStore(tmp_path / "providers")
     accounts = ProviderAccounts(store, credentials)
     launcher = AgentLauncher(accounts=accounts)
@@ -299,7 +317,7 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
 
     listed = TestClient(app).get("/api/providers/logins").json()
-    remote = [account for account in listed if account["host"] == "gpu.example"]
+    remote = [account for account in listed if account["machine_id"] == gpu]
     assert {account["provider"] for account in remote} == set(PROVIDER_IDS)
     assert all(account["machines"] == ["GPU"] for account in remote)
     assert all(account["provider_path"] is None for account in remote)
@@ -316,7 +334,7 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
         "discover_provider",
         lambda provider, *, host: f"/home/{reached['account']}/.local/bin/{provider}",
     )
-    assert runner.provider_binary("codex", "gpu.example") == (
+    assert runner.provider_binary("codex", gpu) == (
         "/home/alice/.local/bin/codex",
         set(),
     )
@@ -327,13 +345,13 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
 
     monkeypatch.setattr(launcher, "discover_provider", unanswered)
     with pytest.raises(ProviderLoginRefused) as refused:
-        runner.provider_binary("codex", "gpu.example")
+        runner.provider_binary("codex", gpu)
     assert refused.value.detail == "gpu.example did not answer the discovery probe."
     with pytest.raises(ProviderLoginRefused):
-        runner.provider_binary("codex", "unknown.example")
+        runner.provider_binary("codex", "unknown")
     reached["account"] = "bob"
     with pytest.raises(ProviderLoginRefused):
-        runner.provider_binary("codex", "gpu.example")
+        runner.provider_binary("codex", gpu)
 
 
 @pytest.mark.parametrize(
@@ -351,7 +369,7 @@ def test_sign_in_preserves_remote_discovery_failure(
     tmp_path, monkeypatch, returncode, stdout, stderr, detail, action
 ):
     store = AppStore(tmp_path / "login.sqlite3")
-    store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="").machine_id
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     probes = []
 
@@ -372,7 +390,7 @@ def test_sign_in_preserves_remote_discovery_failure(
     app.include_router(provider_login.router)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     response = TestClient(app).post(
-        f"/api/providers/codex/logins/{action}", json={"host": "gpu.example"}
+        f"/api/providers/codex/logins/{action}", json={"machine_id": gpu}
     )
     assert response.status_code == 409
     assert detail in response.json()["detail"]
@@ -384,7 +402,7 @@ def test_an_unmanaged_login_note_names_the_machine_card_executable(tmp_path):
     store = AppStore(tmp_path / "login.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
     accounts = ProviderAccounts(store, credentials)
-    catalog = SimpleNamespace(provider_targets=lambda: [("opencode", "", None)])
+    catalog = SimpleNamespace(provider_targets=lambda: [("opencode", BACKEND_MACHINE_ID, None)])
     runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
 
     def note():
@@ -399,15 +417,14 @@ def test_an_unmanaged_login_note_names_the_machine_card_executable(tmp_path):
         return account.login_command
 
     assert note() == "opencode providers login"
-    card = store.create_space_machine(name="local", host="", os_account="")
+    card = store.backend_space_machine()
     store.update_space_machine(card.machine_id, provider_paths={"opencode": "/opt/oc bin/opencode"})
     assert note() == "'/opt/oc bin/opencode' providers login"
 
 
 def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monkeypatch, manifest):
-    with manifest.path.open("a", encoding="utf-8") as handle:
-        handle.write('\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n')
     store = AppStore(tmp_path / "login.sqlite3")
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="").machine_id
     monkeypatch.setattr(
         store,
         "projects",
@@ -428,7 +445,9 @@ def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monk
     app.dependency_overrides[get_launcher] = lambda: launcher
     app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
         provider_targets=lambda: [
-            (provider, host, None) for provider in PROVIDER_IDS for host in ("", "gpu.example")
+            (provider, machine_id, None)
+            for provider in PROVIDER_IDS
+            for machine_id in (BACKEND_MACHINE_ID, gpu)
         ]
     )
     app.dependency_overrides[get_provider_credentials] = lambda: credentials
@@ -436,9 +455,9 @@ def test_only_accounts_an_agent_launches_on_are_marked_agent_used(tmp_path, monk
         store, launcher, accounts
     )
     listed = TestClient(app).get("/api/providers/logins").json()
-    used = {(a["provider"], a["host"]) for a in listed if a["agent_used"]}
-    assert {a["host"] for a in listed} == {"", "gpu.example"}
-    assert used and all(host == "" for _provider, host in used)
+    used = {(a["provider"], a["machine_id"]) for a in listed if a["agent_used"]}
+    assert {a["machine_id"] for a in listed} == {BACKEND_MACHINE_ID, gpu}
+    assert used and all(machine_id == BACKEND_MACHINE_ID for _provider, machine_id in used)
 
 
 @pytest.fixture
@@ -463,7 +482,10 @@ def member_login_api(tmp_path, monkeypatch):
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     app.dependency_overrides[get_provider_credentials] = lambda: accounts.credentials
     app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(
-        provider_targets=lambda: [("claude", "", None), ("codex", "", None)]
+        provider_targets=lambda: [
+            ("claude", BACKEND_MACHINE_ID, None),
+            ("codex", BACKEND_MACHINE_ID, None),
+        ]
     )
     return TestClient(app), store, runner, viewer
 
@@ -472,20 +494,27 @@ def test_member_rows_filter_private_evidence_and_attempt_codes(member_login_api)
     from rcp.runs.provider_sign_in import ProviderSignInStatus
 
     client, store, runner, viewer = member_login_api
-    own = store.add_provider_login("claude", "", member_id="alice", added_by="alice")
+    own = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, member_id="alice", added_by="alice"
+    )
     key = LoginKey("claude", BACKEND_MACHINE_ID, own.login_id)
     runner.credentials.store_token(
-        "claude", "", "secret", member_id="alice", now=store.now(), login_id=own.login_id
+        "claude",
+        BACKEND_MACHINE_ID,
+        "secret",
+        member_id="alice",
+        now=store.now(),
+        login_id=own.login_id,
     )
     store.mark_provider_login_failed(
         key, generation=0, detail="private@example.invalid", source="probe"
     )
-    shared = store.add_provider_login("codex", "", added_by="alice")
+    shared = store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="alice")
     runner._sign_ins["attempt"] = ProviderSignInStatus(
         attempt_id="attempt",
         login_id=shared.login_id,
         provider="codex",
-        host="",
+        machine_id=BACKEND_MACHINE_ID,
         state="pending",
         user_code="CODE",
         verification_url="https://example.invalid/verify",
@@ -516,39 +545,62 @@ def test_member_rows_filter_private_evidence_and_attempt_codes(member_login_api)
 def test_add_own_conflict_owner_actions_and_remove_rules(member_login_api):
     client, store, runner, viewer = member_login_api
     route = "/api/providers/claude/logins"
-    added = client.post(f"{route}/add", json={"kind": "own"})
+    added = client.post(f"{route}/add", json={"machine_id": BACKEND_MACHINE_ID, "kind": "own"})
     assert added.status_code == 200
     login_id = added.json()["login_id"]
     assert added.json()["sign_in"] is None
-    assert client.post(f"{route}/add", json={"kind": "own"}).status_code == 409
-    assert client.post(f"{route}/remove", json={"login_id": ""}).status_code == 422
-    assert client.post(f"{route}/remove", json={"login_id": login_id}).status_code == 403
+    assert (
+        client.post(
+            f"{route}/add", json={"machine_id": BACKEND_MACHINE_ID, "kind": "own"}
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"{route}/remove", json={"machine_id": BACKEND_MACHINE_ID, "login_id": ""}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.post(
+            f"{route}/remove", json={"machine_id": BACKEND_MACHINE_ID, "login_id": login_id}
+        ).status_code
+        == 403
+    )
     viewer["id"] = "bob"
     for action in ("verify", "sign-in", "sign-out", "remove", "token"):
-        body = {"login_id": login_id}
+        body = {"machine_id": BACKEND_MACHINE_ID, "login_id": login_id}
         if action == "token":
             body["token"] = "private-token"
         assert client.post(f"{route}/{action}", json=body).status_code == 403
     viewer["id"] = "alice"
     store.finish_provider_login_removal(LoginKey("claude", BACKEND_MACHINE_ID, login_id))
-    assert client.post(f"{route}/verify", json={"login_id": login_id}).status_code == 409
     assert (
         client.post(
-            f"{route}/token", json={"login_id": login_id, "token": "private-token"}
+            f"{route}/verify", json={"machine_id": BACKEND_MACHINE_ID, "login_id": login_id}
         ).status_code
         == 409
     )
-    assert runner.credentials.token("claude", "", login_id) is None
+    assert (
+        client.post(
+            f"{route}/token",
+            json={"machine_id": BACKEND_MACHINE_ID, "login_id": login_id, "token": "private-token"},
+        ).status_code
+        == 409
+    )
+    assert runner.credentials.token("claude", BACKEND_MACHINE_ID, login_id) is None
 
 
 @pytest.mark.parametrize(("provider", "action"), [("claude", "sign-in"), ("codex", "token")])
 def test_authorization_precedes_unsupported_method(member_login_api, provider, action):
     client, store, _, viewer = member_login_api
-    row = store.add_provider_login(provider, "", member_id="alice", added_by="alice")
+    row = store.add_provider_login(
+        provider, BACKEND_MACHINE_ID, member_id="alice", added_by="alice"
+    )
     body = (
-        {"login_id": row.login_id, "token": "private-token"}
+        {"machine_id": BACKEND_MACHINE_ID, "login_id": row.login_id, "token": "private-token"}
         if action == "token"
-        else {"login_id": row.login_id}
+        else {"machine_id": BACKEND_MACHINE_ID, "login_id": row.login_id}
     )
     route = f"/api/providers/{provider}/logins/{action}"
     assert client.post(route, json=body).status_code == 422
@@ -565,7 +617,10 @@ def test_authorization_precedes_unsupported_method(member_login_api, provider, a
 @pytest.mark.parametrize("setting", ["own", "own_then_shared", "shared_then_own", "shared"])
 def test_setting_round_trip(member_login_api, setting):
     client, store, runner, viewer = member_login_api
-    saved = client.put("/api/providers/claude/logins/setting", json={"setting": setting})
+    saved = client.put(
+        "/api/providers/claude/logins/setting",
+        json={"machine_id": BACKEND_MACHINE_ID, "setting": setting},
+    )
     assert saved.status_code == 200
     assert saved.json()["resumed"] == {"checked": 2}
     item = next(
@@ -580,7 +635,10 @@ def test_setting_round_trip(member_login_api, setting):
 def test_setting_invalid_value_is_422(member_login_api, setting):
     client, *_ = member_login_api
     assert (
-        client.put("/api/providers/claude/logins/setting", json={"setting": setting}).status_code
+        client.put(
+            "/api/providers/claude/logins/setting",
+            json={"machine_id": BACKEND_MACHINE_ID, "setting": setting},
+        ).status_code
         == 422
     )
 
@@ -602,7 +660,7 @@ def test_settings_get_precedence(member_login_api):
             ("alice", "claude", "*", "own_then_shared", store.now()),
         )
     assert current()["setting"] == "own_then_shared" and current()["stored"] is True
-    store.set_provider_login_setting("alice", "claude", "", "shared_then_own")
+    store.set_provider_login_setting("alice", "claude", BACKEND_MACHINE_ID, "shared_then_own")
     assert current()["setting"] == "shared_then_own"
 
 
@@ -620,21 +678,39 @@ def test_personal_login_rules(tmp_path, monkeypatch):
     app.include_router(provider_login.router)
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
-    assert client_store.provider_login_setting("member", "claude", "").setting == "shared"
-    assert client.post("/api/providers/claude/logins/add", json={"kind": "own"}).status_code == 200
     assert (
-        client.put("/api/providers/claude/logins/setting", json={"setting": "own"}).status_code
+        client_store.provider_login_setting("member", "claude", BACKEND_MACHINE_ID).setting
+        == "shared"
+    )
+    assert (
+        client.post(
+            "/api/providers/claude/logins/add",
+            json={"machine_id": BACKEND_MACHINE_ID, "kind": "own"},
+        ).status_code
         == 200
     )
     assert (
-        client.post("/api/providers/opencode/logins/add", json={"kind": "shared"}).status_code
+        client.put(
+            "/api/providers/claude/logins/setting",
+            json={"machine_id": BACKEND_MACHINE_ID, "setting": "own"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            "/api/providers/opencode/logins/add",
+            json={"machine_id": BACKEND_MACHINE_ID, "kind": "shared"},
+        ).status_code
         == 422
     )
 
 
 def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api, monkeypatch):
     client, store, runner, _viewer = member_login_api
-    added = client.post("/api/providers/claude/logins/add", json={"kind": "shared"}).json()
+    added = client.post(
+        "/api/providers/claude/logins/add",
+        json={"machine_id": BACKEND_MACHINE_ID, "kind": "shared"},
+    ).json()
     key = LoginKey("claude", BACKEND_MACHINE_ID, added["login_id"])
     calls = []
 
@@ -651,7 +727,10 @@ def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api,
         "bound_running_count",
         lambda _store, login: 2 if login == key else 0,
     )
-    response = client.post("/api/providers/claude/logins/remove", json={"login_id": key.login_id})
+    response = client.post(
+        "/api/providers/claude/logins/remove",
+        json={"machine_id": BACKEND_MACHINE_ID, "login_id": key.login_id},
+    )
     assert response.status_code == 200
     assert calls == [(key, "alice")]
     assert response.json()["bound_running"] == 2

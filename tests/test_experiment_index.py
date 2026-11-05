@@ -128,7 +128,7 @@ def _record_loop(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -282,7 +282,7 @@ def _record_branch_target_child_experiment(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=child_id,
         chat_scope="node",
@@ -438,7 +438,7 @@ def test_space_runs_aggregates_experiment_and_auto_research_parents(
         parent.root_operation_id,
         "agent_launch",
         {
-            "execution_host": "",
+            "machine_id": BACKEND_MACHINE_ID,
             "canonical_repository_roots": [manifest.repository_map["repo-a"].path],
         },
     )
@@ -1359,7 +1359,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
                 episode_id=parent.episode_id,
                 continuation=WatcherContinuation(
                     provider="codex",
-                    run_on="laptop",
+                    run_on=BACKEND_MACHINE_ID,
                     run_truth_scope=["repo-a"],
                     patch_kind="work",
                 ),
@@ -1561,7 +1561,7 @@ def test_graph_capable_background_stream_refreshes_cached_experiment_semantics(
     monkeypatch.setattr(app.state.catalog, "commit_cached_snapshot", capture_commit)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1702,7 +1702,7 @@ def test_display_cache_refresh_failure_is_diagnostic_not_task_failure(
     store = app.state.background_tasks.store
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1760,7 +1760,7 @@ def test_completed_graph_turn_rebuilds_an_unusable_display_cache(
     monkeypatch.setattr(api_app_module, "stream_work_run", finish_work)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),
@@ -1957,7 +1957,7 @@ def test_experiment_loop_cache_blocks_terminal_runtime_until_graph_is_visible(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -2025,7 +2025,7 @@ def test_persisted_experiment_request_selects_owner_without_work_fallback(
         provider="codex",
         model="gpt-5",
         reasoning="medium",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_id=str(uuid.uuid4()),
         chat_scope="node",
@@ -2075,7 +2075,7 @@ def test_stream_closed_cache_hook_runs_before_error_and_pause_verdicts(
     monkeypatch.setattr(api_app_module, "stream_work_run", update_then_stop)
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
         chat_scope="project",
         chat_id=str(uuid.uuid4()),

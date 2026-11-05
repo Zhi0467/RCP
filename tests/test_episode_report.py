@@ -254,8 +254,7 @@ def _setup_report(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
-        execution_host="",
+        run_on="backend",
         session_id="native-session",
     )
     receipt_json, receipt_sha256 = compact_episode_receipt(
@@ -274,10 +273,9 @@ def _setup_report(
         concluding_operation_id=operational.operation_id,
         allocation_operation_id=allocation_operation_id,
         provider=request.provider,
-        run_on=request.run_on,
-        execution_host=request.execution_host,
+        machine_id=request.run_on,
         native_session_id=request.session_id,
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
         skill_id=skill.id,
         skill_version=skill.version,
@@ -301,7 +299,7 @@ def _setup_report(
         status_message="Wrapping up visualization and report",
         parent_operation_id=operational.operation_id,
         native_session_id=request.session_id,
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
         visible=False,
         authorized_by=store.episode(episode_id).authorized_by,
@@ -325,7 +323,7 @@ def _setup_report(
         operation_id=hidden.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
     return (
@@ -352,8 +350,7 @@ def test_episode_report_request_is_strict() -> None:
                 "provider": "codex",
                 "model": "",
                 "reasoning": "medium",
-                "run_on": "laptop",
-                "execution_host": "",
+                "run_on": "backend",
                 "session_id": "native-session",
                 "graph_path": "/forbidden/graph.json",
             }
@@ -363,7 +360,7 @@ def test_episode_report_request_is_strict() -> None:
 def test_pending_episode_report_stage_is_protected_from_age_cleanup(manifest, tmp_path) -> None:
     _service, store, _request, _execution, stage = _setup_report(manifest, tmp_path)
 
-    assert store.protected_run_stage_roots("") == (str(stage),)
+    assert store.protected_run_stage_roots("backend") == (str(stage),)
 
 
 @pytest.mark.asyncio
@@ -805,7 +802,7 @@ async def test_shutdown_pause_retries_on_a_new_hidden_task_and_resumes_automatic
         operation_id=retried.operation_id,
         store=store,
         control=AgentProcessControl(),
-        stage_host=None,
+        stage_machine_id="backend",
         stage_root=str(stage),
     )
 
@@ -868,9 +865,7 @@ async def test_report_login_failure_marks_account_and_parks_without_retry(manife
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert launcher.calls == 1
     assert [event.event for event in events] == ["error"]
-    state = store.provider_login_state(
-        LoginKey(request.provider, request.execution_host, MACHINE_LOGIN_ID)
-    )
+    state = store.provider_login_state(LoginKey(request.provider, request.run_on, MACHINE_LOGIN_ID))
     assert state.state == "signed_out"
     assert state.source == "report"
     assert state.generation == execution.login_generation == 1
@@ -1399,7 +1394,7 @@ async def test_fresh_report_retry_recovers_queued_or_login_blocked_call(
         assert operation_id != execution.operation_id
 
     restarted = AgentTaskExecution(operation_id, store, AgentProcessControl())
-    restarted.stage_host = execution.stage_host
+    restarted.stage_machine_id = execution.stage_machine_id
     restarted.stage_root = execution.stage_root
     events = await _events(stream_episode_report_run(service, launcher, request, restarted))
     assert [event.event for event in events] == ["message", "done"]

@@ -20,6 +20,7 @@ from rcp.background import AgentTaskExecution
 from rcp.compute_jobs import jobs
 from rcp.compute_jobs.backend_context import BackendContext
 from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks import compute_commands
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.storage import AgentTaskRecord, AppStore
@@ -61,15 +62,14 @@ def commands(tmp_path, manifest, monkeypatch):
     protected.mkdir()
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="laptop",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root=str(workspace),
         workspace_root=str(workspace),
         repositories=[],
         protected_write_paths=[str(protected)],
     )
-    context = BackendContext(execution_host="", execution_machine="laptop", compute=None)
+    context = BackendContext(execution_host="", machine_id=BACKEND_MACHINE_ID, compute=None)
 
     class Backend:
         id = "systemd_user"
@@ -100,7 +100,7 @@ def commands(tmp_path, manifest, monkeypatch):
     monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
     probe = ComputeBackendProbe(
-        execution_machine="laptop",
+        machine_id=BACKEND_MACHINE_ID,
         backend_id="systemd_user",
         state="ready",
         ready=True,
@@ -261,10 +261,20 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
                 (root / "log").write_text("rcp-probe\n")
         return subprocess.CompletedProcess(command, code, output, error)
 
-    machine = commands.handler.manifest.machines[0]
-    machine.host = "rcp@slow-compute.example"
-    card = commands.store.create_space_machine(name="slow", host=machine.host, os_account="")
+    card = commands.store.create_space_machine(
+        name="slow", host="rcp@slow-compute.example", os_account=""
+    )
     commands.store.update_space_machine(card.machine_id, jobs_root=str(commands.workspace / "jobs"))
+    scope = commands.handler.write_scope
+    remote_scope = ProjectWriteScope.create(
+        project_id=scope.project_id,
+        machine_id=card.machine_id,
+        capability=scope.capability,
+        stage_root=scope.stage_root,
+        workspace_root=scope.workspace_root,
+        repositories=[],
+        protected_write_paths=list(scope.protected_write_paths),
+    )
     monkeypatch.setattr(
         probe_module,
         "time",
@@ -276,17 +286,17 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
     monkeypatch.setattr(
         compute_commands,
         "probe_compute_backend",
-        lambda manifest, alias, route, **kwargs: probe_module.probe_compute_backend(
-            manifest, alias, route, runner=runner, **kwargs
+        lambda machine, route, **kwargs: probe_module.probe_compute_backend(
+            machine, route, runner, **kwargs
         ),
     )
     resolutions = 0
 
-    def resolve_launch_context(manifest, alias, compute):
+    def resolve_launch_context(machine):
         """Exercises the existing fresh-probe retry before any real launch."""
         nonlocal resolutions
         resolutions += 1
-        context, backend = backend_context.resolve_context(manifest, alias, compute, runner)
+        context, backend = backend_context.resolve_context(machine, runner)
         return context, SimpleNamespace(id="changed-owner") if resolutions == 1 else backend
 
     monkeypatch.setattr(jobs, "resolve_context", resolve_launch_context)
@@ -299,6 +309,7 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
 
     handler = replace(
         commands.handler,
+        write_scope=remote_scope,
         remote_stage=SimpleNamespace(
             canonical_directories=canonical_directories,
             legacy_stage_roots=lambda: [],
@@ -508,7 +519,7 @@ def test_each_new_helper_launch_checks_current_readiness(commands, monkeypatch):
     assert not commands.backend.starts
     monkeypatch.setattr(compute_commands, "probe_compute_backend", lambda *a, **kw: commands.probe)
     assert commands.launch("second").status == "ok"
-    assert commands.store.compute_backend_probe("project", "laptop", "helper").ready
+    assert commands.store.compute_backend_probe("project", BACKEND_MACHINE_ID, "helper").ready
 
 
 @pytest.mark.parametrize("target", ["outside", "symlink", "protected", "missing"])
@@ -600,12 +611,8 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
 def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
 
     manifest = commands.handler.manifest.model_copy(deep=True)
-    card = commands.store.space_machine_for(
-        manifest.machine_map["laptop"].host
-    ) or commands.store.create_space_machine(
-        name="laptop", host=manifest.machine_map["laptop"].host, os_account=""
-    )
-    commands.store.update_space_machine(card.machine_id, job_manager="slurm")
+    commands.store.backend_space_machine()
+    commands.store.update_space_machine(BACKEND_MACHINE_ID, job_manager="slurm")
     scheduler = commands.probe.model_copy(update={"backend_id": "slurm"})
     commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)
@@ -615,9 +622,15 @@ def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
     )
     assert response.status == "ok"
-    assert commands.probe_calls[0][0][2] == "helper"
-    assert commands.store.compute_backend_probe("project", "laptop", "scheduler") == scheduler
-    assert commands.store.compute_backend_probe("project", "laptop", "helper") == commands.probe
+    assert commands.probe_calls[0][0][1] == "helper"
+    assert (
+        commands.store.compute_backend_probe("project", BACKEND_MACHINE_ID, "scheduler")
+        == scheduler
+    )
+    assert (
+        commands.store.compute_backend_probe("project", BACKEND_MACHINE_ID, "helper")
+        == commands.probe
+    )
 
 
 def test_missing_helper_owner_disables_only_helper_verb(commands, monkeypatch):
@@ -641,8 +654,7 @@ def test_compute_cwd_in_own_workspace_passes_a_granted_rcp_parent(commands, tmp_
         commands.handler,
         write_scope=ProjectWriteScope.create(
             project_id=scope.project_id,
-            execution_machine=scope.execution_machine,
-            execution_host=scope.execution_host,
+            machine_id=scope.machine_id,
             capability=scope.capability,
             stage_root=scope.stage_root,
             workspace_root=scope.workspace_root,

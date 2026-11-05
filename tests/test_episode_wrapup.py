@@ -38,7 +38,10 @@ def _store_with_episode(tmp_path: Path) -> tuple[AppStore, Path]:
     )
     store.mark_agent_task_running("operation")
     store.checkpoint_agent_task(
-        "operation", native_session_id="native-session", stage_root=str(stage)
+        "operation",
+        native_session_id="native-session",
+        stage_machine_id="backend",
+        stage_root=str(stage),
     )
     store.complete_agent_task("operation", applied_revision=None, result={})
     return store, stage

@@ -8,7 +8,7 @@ from rcp.api.app import _auto_research_worker_request
 from rcp.config import write_agent_settings
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import ModelChoice
 from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
 from rcp.storage import AgentTaskRecord, EpisodeRecord
@@ -97,7 +97,7 @@ def test_episode_start_uses_the_dedicated_orchestrator_profile(manifest, tmp_pat
         assert request.provider == "codex"
         assert request.model == "orchestrator-only"
         assert request.reasoning == "high"
-        assert request.run_on == "laptop"
+        assert request.run_on == "backend"
         assert request.run_truth_scope == ["repo-a", "repo-b"]
         assert request.instruction == "Investigate the unresolved evidence."
         assert root.kind == "auto_research"
@@ -149,7 +149,7 @@ def test_episode_start_takes_the_humans_pick_over_the_orchestrator_profile(
             "picked-model",
             "max",
         )
-        assert request.run_on == "laptop"
+        assert request.run_on == "backend"
         wait_for_task(store, operation_id, expect="succeeded")
 
 
@@ -193,14 +193,16 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     tasks = app.state.background_tasks
     store = tasks.store
     service = app.state.catalog.open(project_id)
-    machine = service.manifest.machine_map["laptop"]
-    machine.host = host
     card = store.create_space_machine(name="compute", host=host, os_account="")
     store.update_space_machine(card.machine_id, provider_paths={"codex": binary})
-    monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
+    manifest.path.write_text(
+        manifest.path.read_text(encoding="utf-8").replace(BACKEND_MACHINE_ID, card.machine_id),
+        encoding="utf-8",
+    )
+    service.history._reload_manifest()
 
     async def failing_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage(host, "/tmp/rcp-run.remote-retry")
+        execution.checkpoint_stage(card.machine_id, "/tmp/rcp-run.remote-retry")
         yield f"data: {AgentEvent(event='session', session_id='remote-retry-session').model_dump_json()}\n\n"
         yield f"data: {AgentEvent(event='error', text='Host unreachable.').model_dump_json()}\n\n"
 
@@ -215,7 +217,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     operation_id = started.json()["root_operation_id"]
     failed = wait_for_task(store, operation_id, expect="failed")
     assert failed.can_retry is True
-    assert failed.stage_host == machine.host == host
+    assert failed.stage_machine_id == card.machine_id
     before = [task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)]
 
     readiness_calls: list[tuple[str, str, str | None, bool]] = []
@@ -223,14 +225,14 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     def unreachable_readiness(
         login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((login.provider, login.host, binary, refresh))
+        readiness_calls.append((login.provider, login.machine_id, binary, refresh))
         return ProviderReadiness(
             provider=login.provider,
             installed=False,
             authenticated=False,
             binary_path=binary,
             path_state="unreachable",
-            reason=f"{login.host} is unreachable, so {binary} could not be checked.",
+            reason=f"{login.machine_id} is unreachable, so {binary} could not be checked.",
         )
 
     monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
@@ -243,11 +245,11 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         json={},
     )
 
-    assert blocked.status_code == 503
+    assert blocked.status_code == 503, blocked.text
     assert readiness_calls == [
         (
             "codex",
-            "compute.example",
+            card.machine_id,
             "/opt/codex/bin/codex",
             True,
         )
@@ -264,14 +266,14 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     def unauthenticated_readiness(
         login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((login.provider, login.host, binary, refresh))
+        readiness_calls.append((login.provider, login.machine_id, binary, refresh))
         return ProviderReadiness(
             provider=login.provider,
             installed=True,
             authenticated=False,
             binary_path=binary,
             path_state="resolved",
-            reason=f"{login.provider} is not authenticated on {login.host}.",
+            reason=f"{login.provider} is not authenticated on {login.machine_id}.",
         )
 
     monkeypatch.setattr(service.launcher, "readiness", unauthenticated_readiness)
@@ -290,7 +292,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
         json={},
     )
     assert unauthenticated.status_code == 409
-    assert readiness_calls == [("codex", host, binary, True)]
+    assert readiness_calls == [("codex", card.machine_id, binary, True)]
     assert [
         task.operation_id for task in store.episode_tasks(episode_id, include_hidden=True)
     ] == before
@@ -304,7 +306,7 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     def ready(
         login: LoginKey, *, binary: str | None = None, refresh: bool = False
     ) -> ProviderReadiness:
-        readiness_calls.append((login.provider, login.host, binary, refresh))
+        readiness_calls.append((login.provider, login.machine_id, binary, refresh))
         return ProviderReadiness(
             provider=login.provider,
             installed=True,
@@ -439,7 +441,7 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         "current-worker",
         "low",
     )
-    assert worker.run_on == profiles["node_chat"].run_on
+    assert worker.run_on == manifest.base_machine
     assert worker.run_truth_scope == request.run_truth_scope
     assert worker.chat_id == worker_id
     assert worker.chat_scope == "node"
@@ -480,5 +482,5 @@ def test_worker_request_uses_the_node_work_profile_or_the_orchestrator_pick(
         "codex",
         "reviewer",
         "xhigh",
-        profiles["node_chat"].run_on,
+        manifest.base_machine,
     )

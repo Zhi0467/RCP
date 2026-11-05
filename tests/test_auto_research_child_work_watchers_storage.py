@@ -25,7 +25,10 @@ def _waiting_child(tmp_path, *, ceiling=5, fork=False):
         task = task.model_copy(update={"graph_target": _owned_fork(store, parent)})
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
-        task.operation_id, native_session_id="saved-child-session", stage_root="/tmp/child-stage"
+        task.operation_id,
+        native_session_id="saved-child-session",
+        stage_machine_id="backend",
+        stage_root="/tmp/child-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     current = store.agent_task(task.operation_id)

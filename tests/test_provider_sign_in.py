@@ -258,15 +258,17 @@ def test_claude_token_paste_stores_privately_verifies_and_never_leaks(
             member_id="member",
         )
     assert refused.value.status_code == 422
-    assert runner.credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) is None
+    assert runner.credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) is None
 
     state = runner.save_token(
         LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), TOKEN, member_id="member"
     )
     assert state.state == "signed_in" and state.changed_by == "member"
-    path = runner.credentials.token_path("claude", "", login_id=MACHINE_LOGIN_ID)
+    path = runner.credentials.token_path("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
-    record = runner.credentials.token_record("claude", "", login_id=MACHINE_LOGIN_ID)
+    record = runner.credentials.token_record(
+        "claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID
+    )
     assert record is not None and record.verified_at is not None
     assert _argv_log(tmp_path)[-1][0] == "--print", "success was not proven by a request"
 
@@ -286,6 +288,7 @@ def test_remote_token_travels_on_stdin_of_the_placement_transport(
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
     host = "gpu.example"
+    gpu = runner.store.create_space_machine(name="GPU", host=host, os_account="").machine_id
     monkeypatch.setattr(runner, "provider_binary", lambda _provider, _host: ("claude", set()))
     transports: list[tuple[list[str], str]] = []
 
@@ -302,11 +305,11 @@ def test_remote_token_travels_on_stdin_of_the_placement_transport(
 
     monkeypatch.setattr(runner.launcher, "_probe", probe)
 
-    state = runner.save_token(LoginKey("claude", host, MACHINE_LOGIN_ID), TOKEN, member_id="member")
-    assert state.state == "signed_in" and state.host == host
+    state = runner.save_token(LoginKey("claude", gpu, MACHINE_LOGIN_ID), TOKEN, member_id="member")
+    assert state.state == "signed_in" and state.machine_id == gpu
     assert (
         stat.S_IMODE(
-            runner.credentials.token_path("claude", host, login_id=MACHINE_LOGIN_ID).stat().st_mode
+            runner.credentials.token_path("claude", gpu, login_id=MACHINE_LOGIN_ID).stat().st_mode
         )
         == 0o600
     )
@@ -346,7 +349,12 @@ def test_sign_out_fences_launches_like_a_failed_login(
 
     credentials = runner.credentials
     credentials.store_token(
-        "claude", "", TOKEN, member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+        "claude",
+        BACKEND_MACHINE_ID,
+        TOKEN,
+        member_id="member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
     monkeypatch.setattr(
         launcher_module, "_discover_local_provider", lambda _p: str(tmp_path / "claude")
@@ -355,8 +363,8 @@ def test_sign_out_fences_launches_like_a_failed_login(
         LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), member_id="member"
     )
     assert claude.state == "signed_out"
-    assert credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) is None
-    assert credentials.token_record("claude", "", login_id=MACHINE_LOGIN_ID) is None
+    assert credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) is None
+    assert credentials.token_record("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) is None
 
 
 def test_restore_resets_claude_logins_whose_token_did_not_come_back(tmp_path: Path) -> None:
@@ -386,7 +394,9 @@ def test_restore_resets_claude_logins_whose_token_did_not_come_back(tmp_path: Pa
 
     reset = reset_logins_without_credentials(store, credentials)
 
-    assert [(state.provider, state.host) for state in reset] == [("claude", "")]
+    assert [(state.provider, state.machine_id) for state in reset] == [
+        ("claude", BACKEND_MACHINE_ID)
+    ]
     local = store.provider_login_state(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert local.state == "signed_out" and local.source == "restore" and local.generation == 2
     assert (
@@ -502,14 +512,17 @@ def test_token_replacement_and_sign_out_wait_for_verification_publication(
             member_id="other",
         )
         assert not signed_out.done()
-        assert runner.credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == TOKEN
+        assert (
+            runner.credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
+            == TOKEN
+        )
         release.set()
         verified = saved.result(10)
         final = signed_out.result(10)
     assert observed == [TOKEN]
     assert verified.state == "signed_in"
     assert final.state == "signed_out" and final.generation > verified.generation
-    assert runner.credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) is None
+    assert runner.credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID) is None
     assert (
         runner.store.provider_login_state(
             LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
@@ -578,7 +591,7 @@ def test_verification_waiting_for_token_replacement_reads_the_new_credential(
     runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
     runner.credentials.store_token(
         "claude",
-        "",
+        BACKEND_MACHINE_ID,
         "old-token",
         member_id="member",
         now=runner.store.now(),
@@ -673,7 +686,10 @@ def test_credential_write_interruption_leaves_account_fenced(
         LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
     assert state.state == "signed_out" and state.generation > old.generation
-    assert runner.credentials.token("claude", "", login_id=MACHINE_LOGIN_ID) == "replacement-token"
+    assert (
+        runner.credentials.token("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
+        == "replacement-token"
+    )
 
 
 def test_registered_provider_without_sign_out_explicitly_refuses_action(
@@ -741,7 +757,7 @@ def test_verification_rejects_zero_exit_provider_errors_without_revoking_login(
     if provider == "claude":
         runner.credentials.store_token(
             "claude",
-            "",
+            BACKEND_MACHINE_ID,
             TOKEN,
             member_id="member",
             now=runner.store.now(),
@@ -792,7 +808,9 @@ def test_zero_exit_provider_errors_cannot_verify_replacement_credentials(
                 LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), TOKEN, member_id="member"
             )
         assert (
-            runner.credentials.token_record(provider, "", login_id=MACHINE_LOGIN_ID).verified_at
+            runner.credentials.token_record(
+                provider, BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID
+            ).verified_at
             is None
         )
     else:
@@ -1142,14 +1160,17 @@ def test_sign_in_uses_the_machine_card_provider_path(tmp_path: Path) -> None:
     card = store.create_space_machine(name="laptop", host="", os_account="")
     store.update_space_machine(card.machine_id, provider_paths={"codex": "/opt/first/codex"})
 
-    assert runner.provider_binary("codex", "") == ("/opt/first/codex", {"/opt/first/codex"})
+    assert runner.provider_binary("codex", BACKEND_MACHINE_ID) == (
+        "/opt/first/codex",
+        {"/opt/first/codex"},
+    )
 
 
 def test_added_codex_sign_in_verify_and_logout_share_prepared_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    added = runner.store.add_provider_login("codex", "", added_by="member")
+    added = runner.store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, added.login_id)
     environments = []
     original_popen = runner._popen
@@ -1199,7 +1220,7 @@ def test_removed_login_refuses_verify_token_and_device_start_before_provider_wor
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
     for provider in ("codex", "claude"):
-        added = runner.store.add_provider_login(provider, "", added_by="member")
+        added = runner.store.add_provider_login(provider, BACKEND_MACHINE_ID, added_by="member")
         key = LoginKey(provider, BACKEND_MACHINE_ID, added.login_id)
         removed = runner.store.finish_provider_login_removal(key)
         with pytest.raises(ProviderLoginRefused):
@@ -1218,7 +1239,7 @@ def test_removed_login_refuses_verify_token_and_device_start_before_provider_wor
                     LoginKey(provider, BACKEND_MACHINE_ID, added.login_id), member_id="member"
                 )
         assert runner.store.provider_login_state(key) == removed
-        assert runner.credentials.token(provider, "", added.login_id) is None
+        assert runner.credentials.token(provider, BACKEND_MACHINE_ID, added.login_id) is None
     assert not (tmp_path / "argv.jsonl").exists()
 
 
@@ -1226,7 +1247,7 @@ def test_verify_finishing_after_removal_cannot_revive_login(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    added = runner.store.add_provider_login("codex", "", added_by="member")
+    added = runner.store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, added.login_id)
 
     home = runner.credentials.login_home("codex", added.login_id)
@@ -1253,7 +1274,7 @@ def test_late_credential_after_removal_is_retried_by_reconciler(
     from rcp.runs import provider_login
 
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    added = runner.store.add_provider_login("codex", "", added_by="member")
+    added = runner.store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, added.login_id)
     home = runner.credentials.login_home("codex", added.login_id)
 
@@ -1281,7 +1302,10 @@ def test_interrupted_sign_ins_and_missing_tokens_reset_each_login_independently(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    logins = [runner.store.add_provider_login("claude", "", added_by="member") for _ in range(2)]
+    logins = [
+        runner.store.add_provider_login("claude", BACKEND_MACHINE_ID, added_by="member")
+        for _ in range(2)
+    ]
     keys = [LoginKey("claude", BACKEND_MACHINE_ID, login.login_id) for login in logins]
     runner.store.mark_provider_login_signed_out(
         keys[0],
@@ -1304,7 +1328,7 @@ def test_shared_removal_synchronously_settles_device_sign_in(tmp_path, monkeypat
     from rcp.runs.provider_login import remove_shared_login
 
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    row = runner.store.add_provider_login("codex", "", added_by="member")
+    row = runner.store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, row.login_id)
     started = runner.start_sign_in(
         LoginKey("codex", BACKEND_MACHINE_ID, key.login_id), member_id="member"
@@ -1327,7 +1351,7 @@ def test_shared_removal_synchronously_settles_device_sign_in(tmp_path, monkeypat
 
 def test_runner_recovery_finishes_shared_drain(tmp_path, monkeypatch):
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    row = runner.store.add_provider_login("codex", "", added_by="member")
+    row = runner.store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, row.login_id)
     runner.store.set_provider_login_draining(key)
     runner.reconcile_recovery()

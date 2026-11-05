@@ -181,7 +181,12 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
 
     async def turn() -> None:
         async for _ in launcher.stream(
-            "codex", "prompt", cwd=Path("/tmp"), capability="scratch_patch"
+            "codex",
+            "prompt",
+            cwd=Path("/tmp"),
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         ):
             pass
 
@@ -589,6 +594,7 @@ async def test_closing_the_stream_at_the_remote_reservation_frees_the_credential
         "claude",
         "prompt",
         cwd=Path("/tmp"),
+        machine_id=BACKEND_MACHINE_ID,
         capability="scratch_patch",
         host="agent-host",
         binary="/opt/claude",
@@ -654,7 +660,12 @@ async def test_waiting_launch_captures_environment_and_generation_together(
     store = AppStore(tmp_path / "app.sqlite3")
     credentials = ProviderCredentialStore(tmp_path / "providers")
     credentials.store_token(
-        "claude", "", "old-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+        "claude",
+        BACKEND_MACHINE_ID,
+        "old-token",
+        member_id="member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
     accounts = ProviderAccounts(store, credentials)
     launcher = AgentLauncher(accounts=accounts)
@@ -694,14 +705,25 @@ async def test_waiting_launch_captures_environment_and_generation_together(
         return [
             event
             async for event in launcher.stream(
-                "claude", "prompt", cwd=tmp_path, capability="scratch_patch", before_start=capture
+                "claude",
+                "prompt",
+                cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
+                capability="scratch_patch",
+                before_start=capture,
             )
         ]
 
     pending = asyncio.create_task(consume())
     await asyncio.wait_for(waiting.wait(), timeout=5)
     credentials.store_token(
-        "claude", "", "new-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+        "claude",
+        BACKEND_MACHINE_ID,
+        "new-token",
+        member_id="member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
     repaired = store.mark_provider_login_verified(
         LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
@@ -747,7 +769,12 @@ async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
     events = [
         event
         async for event in launcher.stream(
-            "claude", "prompt", cwd=tmp_path, capability="scratch_patch"
+            "claude",
+            "prompt",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="scratch_patch",
         )
     ]
     elapsed = time.monotonic() - started
@@ -815,6 +842,7 @@ time.sleep(30)
             "claude",
             "prompt",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
             capability="discuss",
             host="fixture-only",
             remote_pid_file="fixture.pid",

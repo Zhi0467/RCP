@@ -65,7 +65,7 @@ def test_code_admission_requires_one_repository(manifest, tmp_path) -> None:
             "project",
             RunRequest(
                 code_worktree=True,
-                run_on="laptop",
+                run_on="backend",
                 run_truth_scope=["repo-a", "repo-b"],
             ),
         )
@@ -214,7 +214,6 @@ def test_code_admission_resolves_the_profile_machine(manifest, tmp_path, monkeyp
         "rcp.conversation_worktrees.worktree_command",
         lambda *a, **kw: {"version": [2, 38, 0], "supported": True},
     )
-    assert "local" not in manifest.machine_map
     validate_episode_admission(
         _store(manifest, tmp_path),
         "project",
@@ -235,7 +234,7 @@ def test_code_admission_refuses_old_execution_host_git(manifest, tmp_path, monke
         validate_episode_admission(
             store,
             "project",
-            RunRequest(code_worktree=True, run_on="laptop", run_truth_scope=["repo-a"]),
+            RunRequest(code_worktree=True, run_on="backend", run_truth_scope=["repo-a"]),
         )
     assert error.value.args == ("episode_isolation_git_version",)
     assert operations == ["git_version"]
@@ -308,8 +307,7 @@ def test_branch_experiment_host_must_match_owner(manifest, tmp_path) -> None:
             worktree=EpisodeWorktreeBinding(
                 owner_episode_id="owner",
                 repository_alias="repo-a",
-                machine="laptop",
-                execution_host="another-host",
+                machine_id="another-machine",
                 shared_path=manifest.repository_map["repo-a"].path,
                 worktree_path=str(tmp_path / "worktree"),
                 git_common_dir=str(tmp_path / "git"),
@@ -324,7 +322,7 @@ def test_branch_experiment_host_must_match_owner(manifest, tmp_path) -> None:
             store,
             "project",
             RunRequest(
-                run_on="laptop",
+                run_on="backend",
                 run_truth_scope=["repo-a"],
                 patch_kind="experiment_loop",
             ),
@@ -344,9 +342,7 @@ def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, t
     )
     store.create_episode(owner)
     facts = worktree_fixture.run("plan", shared_path=str(repository), owner_episode_id="owner")
-    binding = EpisodeWorktreeBinding(
-        **facts, repository_alias="repo", machine="local", execution_host=""
-    )
+    binding = EpisodeWorktreeBinding(**facts, repository_alias="repo", machine_id="backend")
     store.create_episode_isolation(
         "project", EpisodeIsolation(owner_episode_id="owner", worktree=binding)
     )
@@ -356,8 +352,7 @@ def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, t
     )
     scope = ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id="backend",
         capability="work_auto",
         stage_root=str(tmp_path / "stage"),
         workspace_root=str(tmp_path / "stage" / "workspace"),
@@ -460,7 +455,7 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
             project_id="project",
             origin_operation_id="origin",
             episode_id="child",
-            execution_machine="local",
+            machine_id="backend",
             backend_id="local",
             backend_handle="handle",
             job_root="/tmp/job",
@@ -500,9 +495,9 @@ def test_merge_job_gate_sees_scheduler_watchers(
             )
         connection.execute(
             "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, execution_host, check_command, log_path, "
+            "origin_task_kind, chat_id, episode_id, machine_id, check_command, log_path, "
             "cwd, continuation_json, status, created_at, graph_condition_json) "
-            "VALUES ('w', 'project', 'origin', 'node_chat', 'chat', 'owner', '', 'squeue', "
+            "VALUES ('w', 'project', 'origin', 'node_chat', 'chat', 'owner', 'backend', 'squeue', "
             "'/tmp/log', '/tmp', '{}', ?, ?, ?)",
             (status, store.now(), condition),
         )
@@ -633,8 +628,7 @@ def test_only_reserved_merge_task_can_be_admitted(manifest, tmp_path, monkeypatc
     assert record.operation_id == attempt_id
     scope = ProjectWriteScope.create(
         project_id=harness.project_id,
-        execution_machine="laptop",
-        execution_host="",
+        machine_id="backend",
         capability="orchestrate",
         stage_root=str(tmp_path / "merge-stage"),
         workspace_root=str(tmp_path / "merge-stage" / "workspace"),

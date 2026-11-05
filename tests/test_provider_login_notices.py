@@ -20,20 +20,20 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)
     accounts = ProviderAccounts.for_store(store)
-    own = store.add_provider_login("codex", "", member_id="owner", added_by="owner")
+    own = store.add_provider_login("codex", BACKEND_MACHINE_ID, member_id="owner", added_by="owner")
     key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_signed_out(
         key, member_id="owner", source="sign_out", detail="private@example.test"
     )
-    store.set_provider_login_setting("viewer", "codex", "", "shared")
-    store.set_provider_login_setting("owner", "codex", "", "own")
+    store.set_provider_login_setting("viewer", "codex", BACKEND_MACHINE_ID, "shared")
+    store.set_provider_login_setting("owner", "codex", BACKEND_MACHINE_ID, "own")
     now = store.now()
     task = AgentTaskRecord(
         operation_id="bound-task",
         project_id="project",
         kind="project_chat",
         status="queued",
-        request={"provider": "codex", "run_on": "local", "chat_id": "bound-chat"},
+        request={"provider": "codex", "run_on": BACKEND_MACHINE_ID, "chat_id": "bound-chat"},
         login_id=key.login_id,
         created_at=now,
         updated_at=now,
@@ -41,7 +41,10 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
     )
     store.create_agent_task(task)
     store.checkpoint_agent_task(
-        task.operation_id, native_session_id="bound-session", stage_root=str(tmp_path / "stage")
+        task.operation_id,
+        native_session_id="bound-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(tmp_path / "stage"),
     )
     store.record_agent_task_receipt(
         task.operation_id, tier="summary", category="provider_runtime_selected", payload={}
@@ -66,10 +69,12 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
 def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)
-    own = store.add_provider_login("codex", "", member_id="viewer", added_by="viewer")
+    own = store.add_provider_login(
+        "codex", BACKEND_MACHINE_ID, member_id="viewer", added_by="viewer"
+    )
     key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id="viewer", detail="verified")
-    store.set_provider_login_setting("viewer", "codex", "", "own")
+    store.set_provider_login_setting("viewer", "codex", BACKEND_MACHINE_ID, "own")
     selected = agent_login_accounts(manifest, store, "project", viewer_id="viewer")
     assert key in selected
     assert LoginKey("codex", BACKEND_MACHINE_ID, "") not in selected
@@ -80,23 +85,25 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     cached = {
         "provider_readiness": {
-            "laptop": {"codex": {"installed": True, "authenticated": False, "models": []}}
+            BACKEND_MACHINE_ID: {"codex": {"installed": True, "authenticated": False, "models": []}}
         }
     }
-    store.set_provider_login_setting("other", "codex", "", "shared")
+    store.set_provider_login_setting("other", "codex", BACKEND_MACHINE_ID, "shared")
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
-    assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
+    assert other["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["authenticated"] is False
     store.mark_provider_login_signed_out(
         LoginKey("codex", BACKEND_MACHINE_ID, ""),
         member_id=None,
         source="sign_out",
         detail="machine",
     )
-    own = store.add_provider_login("codex", "", member_id="viewer", added_by="viewer")
+    own = store.add_provider_login(
+        "codex", BACKEND_MACHINE_ID, member_id="viewer", added_by="viewer"
+    )
     store.mark_provider_login_verified(
         LoginKey("codex", BACKEND_MACHINE_ID, own.login_id), member_id="viewer", detail="verified"
     )
-    store.set_provider_login_setting("viewer", "codex", "", "own")
+    store.set_provider_login_setting("viewer", "codex", BACKEND_MACHINE_ID, "own")
     probed = []
 
     def readiness(login: LoginKey, *, binary, refresh):
@@ -108,10 +115,12 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "readiness", readiness)
     monkeypatch.setattr(launcher, "provider_binary", lambda *_: "codex")
     snapshot = ProjectService.viewer_readiness(cached, manifest, launcher, "viewer", refresh=True)
-    assert snapshot["provider_readiness"]["laptop"]["codex"]["models"] == [{"id": own.login_id}]
+    assert snapshot["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["models"] == [
+        {"id": own.login_id}
+    ]
     assert probed == [("codex", own.login_id, True)]
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
-    assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
+    assert other["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["authenticated"] is False
     assert len(probed) == 1
 
 
@@ -121,9 +130,9 @@ def test_report_admission_uses_episode_authorizer_login(tmp_path):
     episode, root = _auto_episode(store, "own-report")
     assert episode.authorized_by is not None
     member = episode.authorized_by.user_id
-    own = store.add_provider_login("codex", "", member_id=member, added_by=member)
+    own = store.add_provider_login("codex", BACKEND_MACHINE_ID, member_id=member, added_by=member)
     key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
-    store.set_provider_login_setting(member, "codex", "", "own")
+    store.set_provider_login_setting(member, "codex", BACKEND_MACHINE_ID, "own")
     _begin_report(store, episode, root, ending="completed")
     episode = store.episode(episode.episode_id)
     assert episode is not None
@@ -148,10 +157,12 @@ def test_project_response_refreshes_viewer_logins_without_rewriting_shared_cache
     assert owner is not None
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     before = app.state.catalog.cached_snapshot(project_id)
-    own = store.add_provider_login("codex", "", member_id=owner.user_id, added_by=owner.user_id)
+    own = store.add_provider_login(
+        "codex", BACKEND_MACHINE_ID, member_id=owner.user_id, added_by=owner.user_id
+    )
     key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id=owner.user_id, detail="verified")
-    store.set_provider_login_setting(owner.user_id, "codex", "", "own")
+    store.set_provider_login_setting(owner.user_id, "codex", BACKEND_MACHINE_ID, "own")
     response = client.get(f"/api/projects/{project_id}{suffix}")
     assert response.status_code == 200
     assert {
@@ -166,7 +177,9 @@ def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, ex
     store = AppStore(tmp_path / "app.sqlite3", space_kind="team")
     accounts = ProviderAccounts.for_store(store)
     own = (
-        store.add_provider_login("codex", "", member_id="new-member", added_by="new-member")
+        store.add_provider_login(
+            "codex", BACKEND_MACHINE_ID, member_id="new-member", added_by="new-member"
+        )
         if existing
         else None
     )
@@ -180,16 +193,18 @@ def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, ex
     assert row["kind"] == "own"
     assert row["owner_user_id"] == "new-member"
     assert row["state"] == "signed_out"
-    assert row["host"] == ""
+    assert row["machine_id"] == BACKEND_MACHINE_ID
     assert row["label"]
     if existing:
         return
     assert all(
         value in (None, [], 0)
         for field, value in row.items()
-        if field not in {"provider", "host", "kind", "owner_user_id", "state", "label"}
+        if field not in {"provider", "machine_id", "kind", "owner_user_id", "state", "label"}
     )
-    assert not any(row.member_id == "new-member" for row in store.provider_logins("codex", ""))
+    assert not any(
+        row.member_id == "new-member" for row in store.provider_logins("codex", BACKEND_MACHINE_ID)
+    )
 
 
 @pytest.mark.parametrize(
@@ -212,10 +227,10 @@ def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
     store = AppStore(tmp_path / "shared.sqlite3")
     accounts = ProviderAccounts.for_store(store)
     shared = _login(accounts, "codex")
-    store.set_provider_login_setting("viewer", "codex", "", "shared")
+    store.set_provider_login_setting("viewer", "codex", BACKEND_MACHINE_ID, "shared")
     launcher = AgentLauncher(accounts=accounts)
     machine = LoginKey("codex", BACKEND_MACHINE_ID, "")
-    assert accounts.resolve_login("codex", "", "viewer")[0] == machine
+    assert accounts.resolve_login("codex", BACKEND_MACHINE_ID, "viewer")[0] == machine
     monkeypatch.setattr(
         launcher, "_configured_path_state", lambda *a, **kw: ("resolved", None, False)
     )
@@ -239,10 +254,10 @@ def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
 
     monkeypatch.setattr(launcher, "readiness", added_ready)
     snapshot = ProjectService.viewer_readiness(
-        {"provider_readiness": {"laptop": {"codex": readiness.model_dump(mode="json")}}},
+        {"provider_readiness": {BACKEND_MACHINE_ID: {"codex": readiness.model_dump(mode="json")}}},
         manifest,
         launcher,
         "viewer",
     )
-    assert snapshot["provider_readiness"]["laptop"]["codex"]["authenticated"]
+    assert snapshot["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["authenticated"]
     assert seen == [shared.login_id]

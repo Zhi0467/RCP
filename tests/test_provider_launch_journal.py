@@ -10,6 +10,7 @@ import pytest
 
 from rcp.__main__ import _configure_logging
 from rcp.agents import AgentLauncher, AgentProcessControl, ProviderReadiness
+from rcp.machine_cards import BACKEND_MACHINE_ID
 
 _TOKEN_SHAPED = "sk-ant-oat01-SECRETSECRETSECRETSECRET"
 _LAUNCHER_LOGGER = "rcp.agents.launcher"
@@ -47,6 +48,8 @@ async def _drain(launcher: AgentLauncher, tmp_path: Path) -> list:
             "codex",
             "inspect the task",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="scratch_patch",
             operation_id="op-journal",
         )
@@ -111,6 +114,8 @@ async def test_a_paused_provider_exit_is_logged_at_info(
             "codex",
             "inspect the task",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="scratch_patch",
             operation_id="op-pause",
             control=control,

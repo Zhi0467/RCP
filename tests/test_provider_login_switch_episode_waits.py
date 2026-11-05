@@ -5,6 +5,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.provider_login import resume_provider_account
@@ -33,12 +34,12 @@ def test_episode_retry_waits_for_login_without_spending_allocation(
     human = fabricated_authorizer()
     original_login = _login(accounts, provider, own=True, member=human.user_id)
     replacement = _login(accounts, provider, machine=True)
-    store.set_provider_login_setting(human.user_id, provider, "", "own_then_shared")
+    store.set_provider_login_setting(human.user_id, provider, BACKEND_MACHINE_ID, "own_then_shared")
     stage = tmp_path / "stage"
     stage.mkdir()
 
     async def initial_stream(_project, _kind, request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         store.assign_provider_login(execution.operation_id, lambda _: original_login)
         store.record_agent_task_receipt(execution.operation_id, "provider_runtime_selected", {})
         if mode == "experiment_loop":
@@ -52,7 +53,10 @@ def test_episode_retry_waits_for_login_without_spending_allocation(
             tasks,
             "project",
             AutoResearchStartRequest(
-                invocation_ceiling=4, provider=provider, run_on="laptop", run_truth_scope=["repo"]
+                invocation_ceiling=4,
+                provider=provider,
+                run_on=BACKEND_MACHINE_ID,
+                run_truth_scope=["repo"],
             ),
             authorized_by=human,
             graph_base_head=GraphHeadRef(revision=0),
@@ -62,7 +66,9 @@ def test_episode_retry_waits_for_login_without_spending_allocation(
         root = tasks.start(
             "project",
             "node_chat",
-            _experiment_request().model_copy(update={"provider": provider, "run_on": "laptop"}),
+            _experiment_request().model_copy(
+                update={"provider": provider, "run_on": BACKEND_MACHINE_ID}
+            ),
             authorized_by=human,
         )
     failed = wait_for_task(store, root.operation_id, expect="failed")

@@ -12,6 +12,7 @@ import pytest
 
 from rcp.agents import AgentLauncher, AgentProcessControl
 from rcp.agents.steering import LiveProviderSteering
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderTurnRequest, profile_for
 from tests.helpers import async_wait_until
 
@@ -400,6 +401,8 @@ async def test_live_pipe_receipts_completion_and_disconnect_never_resend(
             provider,
             "Original prompt",
             cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="discuss",
             control=control,
             runtime_id="codex.app-server-stdio.v1"
@@ -500,6 +503,7 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
                 "claude",
                 "Original prompt",
                 cwd=tmp_path,
+                machine_id=BACKEND_MACHINE_ID,
                 capability="discuss",
                 control=control,
                 host="fixture-only",

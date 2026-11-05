@@ -123,7 +123,7 @@ def test_failure_atomically_invalidates_only_its_generation_readiness(tmp_path):
     )
     snapshot = ProviderReadinessSnapshotRecord(
         provider="codex",
-        host="",
+        machine_id=BACKEND_MACHINE_ID,
         binary="/fake/provider",
         version="1",
         readiness_json="{}",
@@ -180,10 +180,14 @@ def test_limit_marks_require_a_later_provider_start(tmp_path, monkeypatch):
 
 def test_removed_login_cannot_be_revived_and_restore_keeps_ownership(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
-    login = store.add_provider_login("claude", "", member_id="member", added_by="member")
-    key = LoginKey(login.provider, login.host, login.login_id)
+    login = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, member_id="member", added_by="member"
+    )
+    key = LoginKey(login.provider, login.machine_id, login.login_id)
     with pytest.raises(ValueError):
-        store.add_provider_login("claude", "", member_id="member", added_by="member")
+        store.add_provider_login(
+            "claude", BACKEND_MACHINE_ID, member_id="member", added_by="member"
+        )
     store.mark_provider_login_verified(key, member_id="member", detail="ok")
     with store.connection() as connection:
         store.detach_provider_logins_for_restore(connection, now=store.now())
@@ -231,8 +235,8 @@ def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
             )
     upgraded = AppStore(path)
     assert [
-        (row.host, row.login_id, row.generation) for row in upgraded.provider_login_states()
-    ] == [("", "", 3), ("worker", "", 3)]
+        (row.machine_id, row.login_id, row.generation) for row in upgraded.provider_login_states()
+    ] == [("", "", 3), (BACKEND_MACHINE_ID, "", 3)]
     with upgraded.connection() as connection:
         assert [
             tuple(row)
@@ -243,7 +247,7 @@ def test_old_0435_writer_migrates_login_and_session_rows(tmp_path):
         assert [
             tuple(row)
             for row in connection.execute(
-                "SELECT provider,host,setting FROM provider_login_settings WHERE user_id='member' ORDER BY provider"
+                "SELECT provider,machine_id,setting FROM provider_login_settings WHERE user_id='member' ORDER BY provider"
             )
         ] == [(provider, "*", "own_then_shared") for provider in sorted(PROVIDER_IDS)]
         assert (
@@ -297,7 +301,7 @@ def test_setting_lookup_prefers_host_then_fallback_then_space_default(tmp_path, 
 def test_removed_own_login_can_be_replaced_without_losing_history(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
     original = store.add_provider_login("claude", "worker", member_id="member", added_by="member")
-    key = LoginKey(original.provider, original.host, original.login_id)
+    key = LoginKey(original.provider, original.machine_id, original.login_id)
     store.set_provider_login_draining(key)
     with pytest.raises(ValueError, match="already has an own login"):
         store.add_provider_login("claude", "worker", member_id="member", added_by="member")

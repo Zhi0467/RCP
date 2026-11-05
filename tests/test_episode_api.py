@@ -50,7 +50,7 @@ def settling_auto_research_stream(stage: Path):
     ) -> AsyncIterator[str]:
         assert kind == "auto_research"
         assert isinstance(request, AutoResearchRunRequest)
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id=f"session-{execution.operation_id}"))
         yield _sse(AgentEvent(event="done"))
 
@@ -67,7 +67,7 @@ def exact_recovery_stream(stage: Path):
         assert kind == "auto_research"
         assert isinstance(request, AutoResearchRunRequest)
         assert request.session_id == "recoverable-session"
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id=request.session_id))
         yield _sse(AgentEvent(event="done"))
 
@@ -82,7 +82,7 @@ def create_recoverable_auto_episode(
     episode_id: str,
     status: str,
     stage: Path,
-    stage_host: str | None = None,
+    stage_machine_id: str = "backend",
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
     episode_id = str(
         uuid.UUID(bytes=hashlib.sha256(episode_id.encode("utf-8")).digest()[:16], version=4)
@@ -113,7 +113,7 @@ def create_recoverable_auto_episode(
         provider="codex",
         model="test-model",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         instruction="Recover the exact authorized turn.",
     )
@@ -164,7 +164,7 @@ def create_recoverable_auto_episode(
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="recoverable-session",
-        stage_host=stage_host,
+        stage_machine_id=stage_machine_id,
         stage_root=str(stage),
     )
     if status == "failed":
@@ -220,7 +220,7 @@ def create_terminal_auto_episode(
         provider="codex",
         model="test-model",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         instruction=starting_instruction,
     )
@@ -273,6 +273,7 @@ def create_terminal_auto_episode(
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id=native_session_id,
+        stage_machine_id="backend",
         stage_root=stage_root,
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
@@ -560,7 +561,9 @@ def test_stopping_episode_remote_outage_preserves_recovery(
             episode_id=f"remote-{action}",
             status=status,
             stage=stage,
-            stage_host="worker.example",
+            stage_machine_id=store.create_space_machine(
+                name="Worker", host="worker.example", os_account=""
+            ).machine_id,
         )
         stopped = client.post(
             f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
@@ -626,7 +629,13 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
             episode_id=unusable,
             status="failed",
             stage=stage,
-            stage_host="worker.example" if unusable == "missing_remote_stage" else None,
+            stage_machine_id=(
+                store.create_space_machine(
+                    name="Worker", host="worker.example", os_account=""
+                ).machine_id
+                if unusable == "missing_remote_stage"
+                else "backend"
+            ),
         )
         if unusable == "clean_session":
             store.record_agent_task_receipt(
@@ -669,9 +678,8 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
     assert project_id is not None
     service = app.state.catalog.open(project_id)
     host = "worker.example"
-    service.manifest.machine_map["laptop"].host = host
-    monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
     store = app.state.background_tasks.store
+    worker = store.create_space_machine(name="Worker", host=host, os_account="")
     stage = tmp_path / "remote-known-failure-stage"
     stage.mkdir()
 
@@ -683,7 +691,7 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
             episode_id="known-failure-remote-outage",
             status="failed",
             stage=stage,
-            stage_host=host,
+            stage_machine_id=worker.machine_id,
         )
         store.record_agent_task_receipt(
             root.operation_id,
@@ -691,8 +699,8 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
             {"retry_required": True},
         )
         request = AutoResearchRunRequest.model_validate(root.request)
-        assert request.run_on == "laptop"
-        assert root.stage_host == service.manifest.machine_map[request.run_on].host == host
+        assert request.run_on == "backend"
+        assert root.stage_machine_id == worker.machine_id
         stage_probes: list[str] = []
         readiness_probes: list[str] = []
 
@@ -763,7 +771,9 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
             episode_id="remote-stage-stop-race",
             status="failed",
             stage=stage,
-            stage_host="worker.example",
+            stage_machine_id=store.create_space_machine(
+                name="Worker", host="worker.example", os_account=""
+            ).machine_id,
         )
         retry_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/retry"
         stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"

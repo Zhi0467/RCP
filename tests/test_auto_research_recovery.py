@@ -120,7 +120,7 @@ def test_transient_orchestrator_failure_retries_exact_session_without_spend(tmp_
     async def stream(_project_id, _kind, request, execution):
         observed.append((execution.continuation, request.session_id))
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
             yield _sse(AgentEvent(event="session", session_id="session-1"))
             yield _sse(AgentEvent(event="error", text="temporary provider failure"))
             return
@@ -160,7 +160,7 @@ def test_due_recovery_adopts_existing_human_retry_without_spawning_or_deferring(
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         if execution.continuation == "fresh":
             yield _sse(AgentEvent(event="error", text="provider unavailable"))
@@ -203,7 +203,7 @@ def test_automatic_recovery_adopts_human_child_that_wins_admission_race(
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         if execution.continuation == "fresh":
             yield _sse(AgentEvent(event="error", text="provider unavailable"))
@@ -265,7 +265,7 @@ def test_precheckpoint_failure_retries_clean_orchestrator_session_and_survives_r
     async def stream(_project_id, _kind, request, execution):
         observed.append(request.session_id)
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
             yield _sse(AgentEvent(event="error", text="network unavailable"))
             return
         yield _sse(AgentEvent(event="session", session_id="clean-session"))
@@ -299,7 +299,7 @@ def test_worker_failure_never_becomes_auto_research_verdict(tmp_path: Path) -> N
     store = _store(tmp_path)
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(tmp_path))
+        execution.checkpoint_stage("backend", str(tmp_path))
         yield _sse(AgentEvent(event="session", session_id=f"session-{request.role}"))
         if request.role == "worker":
             yield _sse(AgentEvent(event="error", text="worker failed"))
@@ -338,7 +338,7 @@ def test_only_the_orchestrator_recovery_can_be_rebound(tmp_path: Path) -> None:
     store = _store(tmp_path)
 
     async def stream(_project_id, _kind, request, execution):
-        execution.checkpoint_stage("", str(tmp_path))
+        execution.checkpoint_stage("backend", str(tmp_path))
         yield _sse(AgentEvent(event="session", session_id=f"session-{request.role}"))
         if request.role == "worker":
             yield _sse(AgentEvent(event="error", text="worker failed"))
@@ -375,7 +375,7 @@ def test_session_limit_recovery_resumes_its_checkpoint(tmp_path: Path) -> None:
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="limited-session"))
         yield _sse(AgentEvent(event="error", text="provider session limit reached"))
 
@@ -403,7 +403,7 @@ def test_repeated_provider_failures_share_one_bounded_allocation_recovery(
         repeated-error stop rule.
         """
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
@@ -513,7 +513,7 @@ def test_admission_and_provider_failures_share_durable_allocation_attempt_cap(
         repeated-error stop rule.
         """
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text=f"provider unavailable {next(attempts)}"))
 
@@ -594,7 +594,7 @@ def test_typed_structural_orchestrator_failure_fences_atomically(tmp_path: Path)
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="orchestrator-session"))
         raise AutoResearchOrchestratorTerminalFailure(
             "typed structural failure",
@@ -634,7 +634,7 @@ def test_recovery_admission_whose_launch_fails_records_a_durable_receipt(
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text="provider unavailable"))
 
@@ -675,7 +675,7 @@ def test_a_vanished_session_retries_clean_rather_than_resuming_it(tmp_path: Path
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="gone-session"))
         yield _sse(
             AgentEvent(
@@ -702,7 +702,7 @@ def test_a_revoked_login_is_parked_until_verified(tmp_path: Path) -> None:
     stage.mkdir()
 
     async def stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="revoked-session"))
         yield _sse(
             AgentEvent(
@@ -753,7 +753,7 @@ def test_signed_out_pending_recovery_retains_queued_paid_child(tmp_path):
     stage.mkdir()
 
     async def stream(_project, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="saved-session"))
         yield _sse(AgentEvent(event="error", text="Temporary provider failure"))
 
@@ -803,7 +803,7 @@ def test_a_different_failure_after_the_human_took_over_gets_its_own_ladder(
 
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text=next(errors, "Unexpected extra turn.")))
 
@@ -847,7 +847,7 @@ def test_signed_out_human_retry_releases_verdict_to_queued_paid_child(tmp_path: 
 
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text=capped))
 
@@ -901,7 +901,7 @@ def test_a_committed_child_keeps_the_release_that_a_later_write_failure_follows(
 
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         if next(turns) >= 2:
             hold.wait(10)
@@ -958,7 +958,7 @@ def test_a_retry_that_fails_the_same_way_stops_and_waits_for_the_human(
 
     async def stream(_project_id, _kind, _request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
         yield _sse(AgentEvent(event="session", session_id="session-1"))
         yield _sse(AgentEvent(event="error", text=capped))
 

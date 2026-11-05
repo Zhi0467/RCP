@@ -10,6 +10,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.base import ProviderTurnRequest
 from rcp.providers.codex.auth import CodexAuthentication
 from rcp.providers.codex.profile import CodexProfile
@@ -33,7 +34,9 @@ def test_login_switch_preserves_session_command_and_execution_home(
 
     monkeypatch.setattr("rcp.providers.codex.auth.subprocess.run", prepare_remote)
     environments = [
-        CodexAuthentication().process_environment(credentials, host, login_id)
+        CodexAuthentication().process_environment(
+            credentials, "worker-card" if host else BACKEND_MACHINE_ID, login_id, host=host
+        )
         for login_id in login_ids
     ]
     session_id = str(uuid4())

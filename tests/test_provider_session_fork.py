@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderTurnRequest, profile_for, remote_bundle
 from rcp.providers.claude.remote import ClaudeSessionFormat, claude_project_directory
 from rcp.providers.codex.app_server import CodexAppServerRuntime
@@ -198,6 +199,8 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
                 fork_session_id=source_id,
                 fork_source_cwd=str(source_cwd),
                 write_dirs=[tmp_path / "changes"],
+                machine_id=BACKEND_MACHINE_ID,
+                host="",
                 capability="paper_suggest",
             )
         )
@@ -210,6 +213,8 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
             fork_session_id=source_id,
             fork_source_cwd=str(source_cwd),
             write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
             capability="paper_suggest",
         )
     ]

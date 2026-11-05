@@ -211,7 +211,7 @@ def _work_pair(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": "backend",
             "run_truth_scope": ["repo"],
             "chat_scope": "node",
             "mode": "work",
@@ -280,7 +280,7 @@ def _experiment_task(
             "provider": "codex",
             "model": "gpt-5",
             "reasoning": "medium",
-            "run_on": "laptop",
+            "run_on": "backend",
             "run_truth_scope": ["repo"],
             "chat_id": f"experiment-{episode_id}",
             "node_id": node_id,
@@ -311,6 +311,7 @@ def _experiment_task(
         attempt=attempt,
         parent_operation_id=parent_operation_id,
         native_session_id=session_id,
+        stage_machine_id="backend" if stage_root else None,
         stage_root=stage_root,
         authorized_by=authorizer,
     )
@@ -512,7 +513,10 @@ def test_child_work_admission_does_not_spend_b_and_reflects_route_atomically(tmp
     assert store.auto_research_child_admission(admission.admission_id).state == "reflected"  # type: ignore[union-attr]
 
     store.checkpoint_agent_task(
-        task.operation_id, native_session_id="worker-session", stage_root="/tmp/worker-stage"
+        task.operation_id,
+        native_session_id="worker-session",
+        stage_machine_id="backend",
+        stage_root="/tmp/worker-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
     notices = store.auto_research_lifecycle_notices(episode.episode_id)
@@ -558,6 +562,7 @@ def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path, fork)
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="saved-session",
+        stage_machine_id="backend",
         stage_root="/tmp/saved-child-stage",
     )
     store.fail_agent_task(task.operation_id, "network failed")
@@ -606,6 +611,7 @@ def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> Non
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="saved-session",
+        stage_machine_id="backend",
         stage_root="/tmp/saved-child-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
@@ -668,6 +674,7 @@ def test_session_limit_notice_offers_resume_of_the_saved_checkpoint(
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="spent-session",
+        stage_machine_id="backend",
         stage_root="/tmp/spent-session-stage",
     )
     store.record_agent_task_receipt(
@@ -750,6 +757,7 @@ def test_child_work_mail_wake_does_not_spend_b_updates_route_and_claims_exact_pr
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="worker-session",
+        stage_machine_id="backend",
         stage_root="/tmp/worker-mail-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
@@ -832,6 +840,7 @@ def test_child_work_mail_wake_lineage_failure_leaves_mail_and_budget_unchanged(
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="worker-session",
+        stage_machine_id="backend",
         stage_root="/tmp/worker-lineage-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
@@ -873,6 +882,7 @@ def test_concurrent_child_work_mail_wakes_claim_once_and_admit_one_lineage(tmp_p
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="worker-session",
+        stage_machine_id="backend",
         stage_root="/tmp/worker-race-stage",
     )
     store.complete_agent_task(task.operation_id, applied_revision=None, result={})
@@ -986,6 +996,7 @@ def test_gracefully_stopped_child_work_notifies_the_sleeping_orchestrator(tmp_pa
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="worker-session",
+        stage_machine_id="backend",
         stage_root="/tmp/worker-stopped-stage",
     )
     store.request_auto_research_child_work_stop(route.worker_id)
@@ -1013,6 +1024,7 @@ def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path, fork) -> Non
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="saved-session",
+        stage_machine_id="backend",
         stage_root="/tmp/saved-experiment-stage",
     )
     store.fail_agent_task(task.operation_id, "network failed")
@@ -1047,6 +1059,7 @@ def test_stopping_child_experiment_pause_keeps_exact_resume_available(tmp_path) 
     store.checkpoint_agent_task(
         task.operation_id,
         native_session_id="saved-session",
+        stage_machine_id="backend",
         stage_root="/tmp/stopping-experiment-stage",
     )
     store.request_episode_stop(child_id)
@@ -2516,6 +2529,7 @@ def test_child_human_ownership_follows_lineage_and_child_ending(tmp_path, child_
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id="orchestrator-session",
+        stage_machine_id="backend",
         stage_root=str(tmp_path / "stage"),
     )
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
@@ -2880,7 +2894,10 @@ def refused_worker_human_retry_case(tmp_path, monkeypatch):
     stage = tmp_path / "worker-stage"
     stage.mkdir()
     store.checkpoint_agent_task(
-        task.operation_id, native_session_id="old-session", stage_root=str(stage)
+        task.operation_id,
+        native_session_id="old-session",
+        stage_machine_id="backend",
+        stage_root=str(stage),
     )
     store.fail_agent_task(task.operation_id, error="invalid_encrypted_content")
     transcript = stage / "rollout.jsonl"
@@ -2892,7 +2909,7 @@ def refused_worker_human_retry_case(tmp_path, monkeypatch):
             "reason": "login_switch",
             "native_session_id": "old-session",
             "transcript_path": str(transcript),
-            "host": "",
+            "machine_id": "backend",
         },
     )
 
@@ -2919,7 +2936,7 @@ def refused_worker_human_retry_case(tmp_path, monkeypatch):
     assert recovered.parent_operation_id == failed.operation_id
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before
     execution = AgentTaskExecution(recovered.operation_id, store, AgentProcessControl())
-    assert str(transcript) in start_context(execution, "")
+    assert str(transcript) in start_context(execution, "backend")
     assert store.agent_task_has_receipt(failed.operation_id, RETRY)
 
 

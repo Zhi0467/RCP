@@ -6,6 +6,7 @@ from typing import Literal, cast
 import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.tasks.coach import _resolved_coach_request, stream_coach
 from rcp.service import CoachRequest
 
@@ -26,7 +27,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     coach, provider, model, reasoning, expected_session
 ):
     service, _live, data = coach
-    store_test_claude_token(service.paper.store)
+    store_test_claude_token(service.paper.store, BACKEND_MACHINE_ID)
     launches = []
 
     class Launcher:
@@ -91,7 +92,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     assert third_launch["reasoning"] == expected.reasoning
 
     off_base = current.model_copy(
-        update={"native_session_id": "off-base-session", "execution_machine": "previous-base"}
+        update={"native_session_id": "off-base-session", "machine_id": "previous-base"}
     )
     service.paper.record_session(off_base)
     admitted = _resolved_coach_request(

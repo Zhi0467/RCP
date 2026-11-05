@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import rcp.runs.tasks.experiment_loop as loop_module
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 
 from .helpers import append_fixture_patch, seed_patch
@@ -222,7 +223,7 @@ async def test_a_moved_loop_stage_refuses_to_finalize(manifest, tmp_path: Path) 
     """Recovery attaches the stage the launch named, or none at all."""
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
-    execution.checkpoint_stage("", str(tmp_path / "somewhere-else"))
+    execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path / "somewhere-else"))
 
     with pytest.raises(ValueError, match="belongs to another stage"):
         await _finalize(service, request, execution, _recorded_pass("", _ANSWER))

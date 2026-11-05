@@ -165,7 +165,7 @@ def _auto_start(*, ceiling: int) -> AutoResearchStartRequest:
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
     )
 
@@ -219,7 +219,7 @@ def _spend_child_experiment_allowance(
         provider="codex",
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=["repo-a"],
         chat_id=child_episode_id,
         chat_scope="node",
@@ -354,7 +354,7 @@ def test_kickoff_preserves_optional_goal_and_uses_current_node_work_profile(
         tmp_path,
         ceiling=2,
     )
-    store_test_claude_token(store)
+    store_test_claude_token(store, "backend")
     child_id = CHILD_EXPLICIT if goal is not None else CHILD_FALLBACK
     admission_id = f"admission-{child_id}"
     _admit(
@@ -708,7 +708,7 @@ def test_kickoff_replay_is_deterministic_and_exact_resume_does_not_respend_e(
         assert isinstance(request, RunRequest)
         if execution.continuation == "fresh":
             record_launched_experiment_turn(execution.store, execution.operation_id)
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -805,7 +805,7 @@ def test_experiment_resume_recovers_a_row_committed_before_process_spawn(
         nonlocal resume_executions
         if execution.continuation == "fresh":
             record_launched_experiment_turn(execution.store, execution.operation_id)
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage("backend", str(stage))
             yield _sse(AgentEvent(event="session", session_id="child-experiment-session"))
             yield _sse(AgentEvent(event="error", text="Transient network failure."))
             return
@@ -1240,7 +1240,7 @@ def _command_effects(service, store, background, coordinator, parent_id, root_id
         validate=lambda *_args: AutoResearchCommandEffectResult(),
         worker_request_factory=lambda *_args: RunRequest(),
         graph_state=service.history.state,
-        execution_host="",
+        machine_id="backend",
         experiment_coordinator=coordinator,
     )
     return context, effects
@@ -1608,7 +1608,7 @@ def test_child_profile_pick_and_catalog_use_authorizer_added_login(manifest, tmp
     human = fabricated_authorizer()
     accounts = ProviderAccounts.for_store(store)
     own = _login(accounts, "codex", own=True, member=human.user_id)
-    store.set_provider_login_setting(human.user_id, "codex", "", "own")
+    store.set_provider_login_setting(human.user_id, "codex", "backend", "own")
     service.launcher = AgentLauncher(accounts=accounts)
     seen = []
 

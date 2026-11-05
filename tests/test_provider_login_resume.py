@@ -71,7 +71,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
 
     async def stream(project_id, _kind, request, execution):
         calls.append((project_id, execution.continuation))
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         yield _sse(AgentEvent(event="session", session_id=f"{project_id}-session"))
         if execution.continuation == "fresh":
             yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
@@ -79,7 +79,12 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
             yield _sse(AgentEvent(event="done"))
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
-        "claude", "", "test-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
+        "claude",
+        BACKEND_MACHINE_ID,
+        "test-token",
+        member_id="member",
+        now=store.now(),
+        login_id=MACHINE_LOGIN_ID,
     )
     background = BackgroundAgentTasks(store, stream)
     _install_recovery_callback(background)
@@ -92,7 +97,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
                 invocation_ceiling=4,
                 run_truth_scope=["repo"],
                 provider=provider,
-                run_on="laptop",
+                run_on=BACKEND_MACHINE_ID,
             ),
             authorized_by=fabricated_authorizer(),
             graph_base_head=GraphHeadRef(revision=0),
@@ -141,7 +146,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     app.dependency_overrides[get_provider_sign_ins] = lambda: runner
     client = TestClient(app)
 
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     assert response.json()["state"]["generation"] == 1
@@ -156,7 +163,9 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         == "signed_out"
     )
     assert reconcile_due_auto_research_recoveries(background) == 0
-    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    again = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
     assert calls.count(("project", "retry")) == 1
@@ -207,7 +216,7 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
         calls.append((episode_id, execution.continuation))
         stage = tmp_path / episode_id
         stage.mkdir(exist_ok=True)
-        execution.checkpoint_stage("", str(stage))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
         if execution.continuation == "fresh":
             record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(AgentEvent(event="session", session_id=f"session-{episode_id}"))
@@ -248,7 +257,9 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
         source="turn",
     )
     client = _verify_client(store, background, monkeypatch)
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     for root in roots:
@@ -263,7 +274,9 @@ def test_verify_retries_both_target_experiments_once(manifest, tmp_path, monkeyp
         wait_until(lambda child=children[0]: child.operation_id not in background._workers)
         episode = store.episode(root.episode_id)
         assert episode is not None and episode.invocations_used == 1
-    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    again = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
     for root in roots:
@@ -301,7 +314,9 @@ def test_verify_retries_parked_report_allocation_once(manifest, tmp_path, monkey
     with store.connection() as connection:
         task_count = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     client = _verify_client(store, background, monkeypatch)
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     retried = store.episode_wrapup(request.episode_id).allocation_operation_id
@@ -312,7 +327,9 @@ def test_verify_retries_parked_report_allocation_once(manifest, tmp_path, monkey
     assert store.episode(request.episode_id).wrapup_state == "ready"
     assert store.episode(request.episode_id).report_attempts_used == 2
     assert report_launcher.calls == 2
-    again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    again = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert again.status_code == 200, again.text
     assert again.json()["resumed"]["checked"] >= 1
     assert report_launcher.calls == 2
@@ -321,9 +338,8 @@ def test_verify_retries_parked_report_allocation_once(manifest, tmp_path, monkey
 
 
 @pytest.mark.parametrize("expired", [False, True])
-@pytest.mark.parametrize("run_on", ["removed-alias", "laptop"])
-def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
-    manifest, tmp_path, monkeypatch, run_on, expired
+def test_verify_matches_failed_tasks_by_frozen_stage_machine(
+    manifest, tmp_path, monkeypatch, expired
 ):
     from .helpers import wait_until
     from .test_background import _experiment_request
@@ -340,7 +356,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         if execution.continuation == "fresh":
             stage = tmp_path / execution.operation_id
             stage.mkdir()
-            execution.checkpoint_stage("", str(stage))
+            execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
             record_launched_experiment_turn(store, execution.operation_id)
         yield _sse(
             AgentEvent(event="session", session_id=_request.session_id or execution.operation_id)
@@ -350,9 +366,6 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         else:
             yield _sse(AgentEvent(event="done"))
 
-    original_manifest = manifest.path.read_text()
-    if run_on == "removed-alias":
-        manifest.path.write_text(original_manifest.replace("laptop", "removed-alias"))
     background = BackgroundAgentTasks(store, stream)
     roots = []
     for index in range(2):
@@ -363,7 +376,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         )
         request = _experiment_request().model_copy(
             update={
-                "run_on": run_on,
+                "run_on": BACKEND_MACHINE_ID,
                 "control_episode_id": f"00000000-0000-4000-8000-00000000050{index}",
                 "control_node_id": f"exp/target-{index}",
                 "node_id": f"exp/target-{index}",
@@ -375,11 +388,11 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
         )
         roots.append(wait_for_task(store, task.operation_id, expect="failed"))
         wait_until(lambda operation_id=task.operation_id: operation_id not in background._workers)
-    manifest.path.write_text(original_manifest)
+    other = store.create_space_machine(name="other", host="other-host", os_account="").machine_id
     store.checkpoint_agent_task(
-        roots[1].operation_id, stage_host="other-host", stage_root=str(tmp_path / "other-stage")
+        roots[1].operation_id, stage_machine_id=other, stage_root=str(tmp_path / "other-stage")
     )
-    assert LoginKey("codex", "other-host", MACHINE_LOGIN_ID) in agent_login_accounts(
+    assert LoginKey("codex", other, MACHINE_LOGIN_ID) in agent_login_accounts(
         manifest, store, "project"
     )
     if expired:
@@ -393,11 +406,13 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
                 )
         expired_task = store.agent_task(roots[0].operation_id)
         assert expired_task is not None and not expired_task.can_retry
-        assert LoginKey("codex", "other-host", MACHINE_LOGIN_ID) not in agent_login_accounts(
+        assert LoginKey("codex", other, MACHINE_LOGIN_ID) not in agent_login_accounts(
             manifest, store, "project"
         )
     client = _verify_client(store, background, monkeypatch)
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert response.json()["resumed"]["checked"] >= 1
     children = [
@@ -412,7 +427,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     assert len(store.episode_tasks(roots[1].episode_id)) == 1
 
 
-def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, monkeypatch):
+def test_verify_matches_watchers_by_frozen_machine_not_run_on(manifest, tmp_path, monkeypatch):
     from .test_auto_research_delivery import _arm_completed_graph_condition
     from .test_provider_login_admission import _idle_root
 
@@ -423,11 +438,9 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
     )
     watcher = _arm_completed_graph_condition(store, episode, root)
     stale = watcher.model_copy(
-        update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed-alias"})}
+        update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed"})}
     )
-    elsewhere = watcher.model_copy(
-        update={"watcher_id": "elsewhere", "execution_host": "other.example"}
-    )
+    elsewhere = watcher.model_copy(update={"watcher_id": "elsewhere", "machine_id": "other"})
     monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale], [elsewhere]])
     client = _verify_client(store, background, monkeypatch)
     delivered = []
@@ -436,6 +449,8 @@ def test_verify_matches_watchers_by_frozen_host_not_alias(manifest, tmp_path, mo
         "deliver_watcher_group",
         lambda group: delivered.append(group),
     )
-    response = client.post("/api/providers/codex/logins/verify", json={"host": ""})
+    response = client.post(
+        "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
+    )
     assert response.status_code == 200, response.text
     assert [group[0].watcher_id for group in delivered] == [watcher.watcher_id]

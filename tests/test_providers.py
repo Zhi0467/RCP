@@ -92,12 +92,24 @@ def _ready_capability(
     )
 
 
+def _card_launcher(tmp_path: Path, *hosts: str) -> tuple[AgentLauncher, dict[str, str]]:
+    from rcp.agents.provider_accounts import ProviderAccounts
+    from rcp.storage import AppStore
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    ids = {
+        host: store.create_space_machine(name=host, host=host, os_account="").machine_id
+        for host in hosts
+    }
+    return AgentLauncher(accounts=ProviderAccounts.for_store(store)), ids
+
+
 def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None:
     launcher = AgentLauncher()
     calls: list[tuple[str, str, str | None]] = []
 
     def probe(login: LoginKey, *, binary: str | None, **_) -> ProviderReadiness:
-        calls.append((login.provider, login.host, binary))
+        calls.append((login.provider, login.machine_id, binary))
         return _ready_capability(login.provider, binary=binary or "/opt/agents/codex")
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
@@ -122,9 +134,9 @@ def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None
 
     assert first == second == refreshed == after_invalidation
     assert calls == [
-        ("codex", "", "/opt/agents/codex"),
-        ("codex", "", "/opt/agents/codex"),
-        ("codex", "", "/opt/agents/codex"),
+        ("codex", BACKEND_MACHINE_ID, "/opt/agents/codex"),
+        ("codex", BACKEND_MACHINE_ID, "/opt/agents/codex"),
+        ("codex", BACKEND_MACHINE_ID, "/opt/agents/codex"),
     ]
 
 
@@ -389,31 +401,28 @@ def test_the_registry_is_the_only_list_of_providers() -> None:
 
 
 def test_an_unknown_provider_is_rejected_by_the_schema_layer() -> None:
-    from rcp.config import AgentSurfaceConfig, MachineConfig
+    from rcp.config import AgentSurfaceConfig
 
-    AgentSurfaceConfig(provider="claude", run_on="local")
+    AgentSurfaceConfig(provider="claude")
     with pytest.raises(ValueError, match="Unknown agent provider"):
-        AgentSurfaceConfig(provider="gemini", run_on="local")
-    with pytest.raises(ValueError, match="Unknown agent provider"):
-        MachineConfig(alias="local", provider_paths={"gemini": "/opt/gemini"})
+        AgentSurfaceConfig(provider="gemini")
 
 
 def test_agent_profile_runtime_is_provider_owned_and_backward_compatible() -> None:
     from rcp.config import AgentSurfaceConfig
 
-    assert AgentSurfaceConfig(provider="codex", run_on="local").runtime == "app-server"
-    assert AgentSurfaceConfig(provider="codex", runtime="exec", run_on="local").runtime == "exec"
+    assert AgentSurfaceConfig(provider="codex").runtime == "app-server"
+    assert AgentSurfaceConfig(provider="codex", runtime="exec").runtime == "exec"
     assert (
         AgentSurfaceConfig(
             provider="codex",
             runtime="codex.app-server-stdio.v1",
-            run_on="local",
         ).runtime
         == "app-server"
     )
-    assert AgentSurfaceConfig(provider="claude", run_on="local").runtime == "stream-json"
+    assert AgentSurfaceConfig(provider="claude").runtime == "stream-json"
     with pytest.raises(ValueError, match="does not support runtime"):
-        AgentSurfaceConfig(provider="claude", runtime="app-server", run_on="local")
+        AgentSurfaceConfig(provider="claude", runtime="app-server")
 
 
 def test_readiness_names_the_runtimes_and_the_one_an_omitted_value_means() -> None:
@@ -448,22 +457,14 @@ def test_a_task_names_its_umbrella_provider_apart_from_the_runtime() -> None:
         assert task.provider_label == profile_for(provider).label
 
 
-def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:
-    from rcp.config import MachineConfig
+def test_machine_provider_paths_are_absolute() -> None:
+    from rcp.config import validate_machine_provider_paths
 
-    assert manifest.machine_map["laptop"].legacy_provider_paths == {}
-    configured = MachineConfig(
-        alias="remote",
-        host="gpu.example",
-        os_account="alice",
-        provider_paths={"codex": "/opt/codex/bin/codex"},
-    )
-    assert configured.os_account == "alice"
-    assert configured.legacy_provider_paths == {"codex": "/opt/codex/bin/codex"}
-    with pytest.raises(ValueError, match="must be absolute"):
-        MachineConfig(alias="local", provider_paths={"codex": "bin/codex"})
-    with pytest.raises(ValueError, match="operating-system account"):
-        MachineConfig(alias="remote", host="gpu.example", os_account="alice@example")
+    assert validate_machine_provider_paths(
+        {"codex": " /opt/codex/bin/codex ", "claude": ""}, host="gpu.example"
+    ) == {"codex": "/opt/codex/bin/codex"}
+    with pytest.raises(ValueError):
+        validate_machine_provider_paths({"codex": "bin/codex"}, host="")
 
 
 @pytest.mark.real_provider_discovery
@@ -622,7 +623,7 @@ def test_local_recorded_path_that_is_not_a_file_is_denied(tmp_path: Path) -> Non
 
 
 def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from rcp.agents.launcher import AgentLauncher
 
@@ -635,8 +636,9 @@ def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
         return _result(CATALOG if command[-2:] == ["debug", "models"] else "codex test")
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
-    readiness = AgentLauncher().readiness(
-        LoginKey("codex", "gpu.example", MACHINE_LOGIN_ID), binary="/opt/agent/bin/codex"
+    launcher, ids = _card_launcher(tmp_path, "gpu.example")
+    readiness = launcher.readiness(
+        LoginKey("codex", ids["gpu.example"], MACHINE_LOGIN_ID), binary="/opt/agent/bin/codex"
     )
 
     assert readiness.path_state == "resolved"
@@ -658,6 +660,7 @@ def test_remote_readiness_checks_and_uses_the_recorded_absolute_path(
 )
 def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     returncode: int,
     path_state: str,
     reason: str,
@@ -671,8 +674,9 @@ def test_remote_recorded_path_probe_distinguishes_why_it_cannot_launch(
         return _result(returncode=returncode)
 
     monkeypatch.setattr(AgentLauncher, "_probe", probe)
-    readiness = AgentLauncher().readiness(
-        LoginKey("codex", "gpu.example", MACHINE_LOGIN_ID), binary="/opt/Agent Tools/codex"
+    launcher, ids = _card_launcher(tmp_path, "gpu.example")
+    readiness = launcher.readiness(
+        LoginKey("codex", ids["gpu.example"], MACHINE_LOGIN_ID), binary="/opt/Agent Tools/codex"
     )
 
     assert readiness.path_state == path_state
@@ -717,7 +721,7 @@ def test_remote_recorded_path_probe_reports_missing_and_non_executable(
 
 
 def test_an_unreachable_host_is_not_reported_as_a_missing_install(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """ssh exits 255 when it cannot reach the host, while discovery exits 1 when the
     binary is merely absent; conflating them would send the human to install on a
@@ -725,16 +729,16 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
     """
     from rcp.agents.launcher import AgentLauncher
 
-    launcher = AgentLauncher()
+    launcher, ids = _card_launcher(tmp_path, "offline", "online", "no-python")
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 255))
     assert (
-        launcher.readiness(LoginKey("codex", "offline", MACHINE_LOGIN_ID)).path_state
+        launcher.readiness(LoginKey("codex", ids["offline"], MACHINE_LOGIN_ID)).path_state
         == "unreachable"
     )
 
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 1))
     assert (
-        launcher.readiness(LoginKey("codex", "online", MACHINE_LOGIN_ID)).path_state
+        launcher.readiness(LoginKey("codex", ids["online"], MACHINE_LOGIN_ID)).path_state
         == "unconfigured"
     )
 
@@ -745,7 +749,7 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
             [], 127, "", "bash: python3: command not found"
         ),
     )
-    broken = launcher.readiness(LoginKey("codex", "no-python", MACHINE_LOGIN_ID))
+    broken = launcher.readiness(LoginKey("codex", ids["no-python"], MACHINE_LOGIN_ID))
     assert broken.path_state == "unconfigured" and not broken.installed
     assert (
         broken.reason
@@ -964,8 +968,7 @@ def _granted_scope():
 
     return ProjectWriteScope.create(
         project_id="project",
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         capability="work_auto",
         stage_root="/home/rcp/data/stages/s",
         workspace_root="/home/rcp/data/stages/s/workspace",
@@ -1037,8 +1040,7 @@ def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
 
     paths = tuple(path.replace("~", "/home/rcp", 1) for path in WEBKIT_READ_DENY_PATHS)
     scope = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         os_account="rcp",
         hidden_directories=paths,
         enforcement=HiddenReadStatus(status="enforced"),
@@ -1074,8 +1076,7 @@ def test_codex_hidden_read_scope_covers_every_capability(
     from rcp.providers import ProviderTurnRequest
 
     scope = HiddenReadScope(
-        execution_machine="local",
-        execution_host="",
+        machine_id=BACKEND_MACHINE_ID,
         os_account="rcp",
         hidden_directories=() if unhidden else ("/private/secrets",),
         hidden_files=() if unhidden else ("/private/token",),

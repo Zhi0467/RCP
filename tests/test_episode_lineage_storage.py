@@ -161,9 +161,9 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
                 """
                 INSERT INTO watchers (
                     watcher_id, project_id, origin_operation_id, origin_task_kind,
-                    chat_id, execution_host, check_command, log_path, cwd,
+                    chat_id, machine_id, check_command, log_path, cwd,
                     continuation_json, status, created_at, notification_operation_id
-                ) VALUES (?, 'project', ?, 'campaign', 'chat', '', 'true', '/tmp/log',
+                ) VALUES (?, 'project', ?, 'campaign', 'chat', 'backend', 'true', '/tmp/log',
                           '/tmp', ?, 'completed', ?, ?)
                 """,
                 (

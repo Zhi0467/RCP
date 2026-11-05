@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderTurnRequest, profile_for
 
 
@@ -34,8 +35,7 @@ def test_summary_resume_has_no_write_grants(tmp_path, provider, runtime, fork):
         capability="session_summary",
         provider_version="2.200.0",
         hidden_read_scope=HiddenReadScope(
-            execution_machine="local",
-            execution_host="",
+            machine_id=BACKEND_MACHINE_ID,
             os_account="member",
             enforcement=HiddenReadStatus(status="enforced"),
             hidden_directories=("/private/other",),

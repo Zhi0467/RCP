@@ -21,13 +21,20 @@ def test_skill_probe_uses_healthy_shared_login_first(
 ) -> None:
     store = AppStore(tmp_path / "app.sqlite3")
     accounts = ProviderAccounts.for_store(store)
-    own = store.add_provider_login("claude", "", added_by="member", member_id="member")
-    shared = store.add_provider_login("claude", "", added_by="member")
+    own = store.add_provider_login(
+        "claude", BACKEND_MACHINE_ID, added_by="member", member_id="member"
+    )
+    shared = store.add_provider_login("claude", BACKEND_MACHINE_ID, added_by="member")
     ids = [own.login_id, shared.login_id] + ([""] if machine_usable else [])
     for login_id in ids:
         key = LoginKey("claude", BACKEND_MACHINE_ID, login_id)
         accounts.credentials.store_token(
-            "claude", "", "test-token", member_id="member", now=store.now(), login_id=login_id
+            "claude",
+            BACKEND_MACHINE_ID,
+            "test-token",
+            member_id="member",
+            now=store.now(),
+            login_id=login_id,
         )
         store.mark_provider_login_verified(key, member_id="member", detail="verified")
     observed: list[LoginKey] = []
@@ -48,7 +55,7 @@ def test_skill_probe_uses_healthy_shared_login_first(
     )
     result = manager.refresh(
         "claude",
-        "",
+        BACKEND_MACHINE_ID,
         "claude",
         ProviderReadiness(
             provider="claude",
@@ -73,11 +80,19 @@ def test_skill_refresh_requires_shared_login_and_executable_readiness(
     store = AppStore(tmp_path / "app.sqlite3")
     accounts = ProviderAccounts.for_store(store)
     row = store.add_provider_login(
-        "claude", "", added_by="member", member_id="member" if block == "own_only" else None
+        "claude",
+        BACKEND_MACHINE_ID,
+        added_by="member",
+        member_id="member" if block == "own_only" else None,
     )
     key = LoginKey("claude", BACKEND_MACHINE_ID, row.login_id)
     accounts.credentials.store_token(
-        "claude", "", "test-token", member_id="member", now=store.now(), login_id=row.login_id
+        "claude",
+        BACKEND_MACHINE_ID,
+        "test-token",
+        member_id="member",
+        now=store.now(),
+        login_id=row.login_id,
     )
     store.mark_provider_login_verified(key, member_id="member", detail="verified")
     if block == "draining":
@@ -89,7 +104,7 @@ def test_skill_refresh_requires_shared_login_and_executable_readiness(
     monkeypatch.setattr(provider_skills, "_run_process_group", unexpected_probe)
     result = ProviderSkillInventoryManager(store, accounts=accounts).refresh(
         "claude",
-        "",
+        BACKEND_MACHINE_ID,
         "claude",
         ProviderReadiness(
             provider="claude",

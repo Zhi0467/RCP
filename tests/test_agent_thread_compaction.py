@@ -9,6 +9,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution, TaskPaused
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest
 from tests.helpers import create_named_app, store_test_claude_token
@@ -91,7 +92,14 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
     )
     new_request = RunRequest.model_validate(task.request)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
-    store_test_claude_token(store, "example-host" if result == "remote_summary" else "")
+    machine_id = (
+        store.create_space_machine(
+            name="Example", host="example-host", os_account="test"
+        ).machine_id
+        if result == "remote_summary"
+        else BACKEND_MACHINE_ID
+    )
+    store_test_claude_token(store, machine_id)
     if result == "source_missing":
         store.record_agent_task_receipt(
             task.operation_id,
@@ -99,19 +107,18 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
             {"reason_code": "provider_switch_tail", "source_operation_id": "gone"},
         )
     if result == "remote_summary":
-        store.checkpoint_agent_task(old.operation_id, stage_host="example-host")
+        store.checkpoint_agent_task(old.operation_id, stage_machine_id=machine_id)
         monkeypatch.setattr(
             "rcp.runs.provider_process.require_remote_provider_quiescence", lambda *a: None
         )
     policy = HiddenReadScope(
-        execution_machine="local",
-        execution_host="example-host" if result == "remote_summary" else "",
+        machine_id=machine_id,
         os_account="test",
         hidden_directories=(str(tmp_path / "other-member"),),
         enforcement=HiddenReadStatus(status="enforced"),
     )
     if result == "signed_out":
-        from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
+        from rcp.machine_cards import LoginKey
 
         store.mark_provider_login_signed_out(
             LoginKey("claude", BACKEND_MACHINE_ID, ""),

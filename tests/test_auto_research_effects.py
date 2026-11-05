@@ -158,7 +158,7 @@ def _setup_auto_research(tmp_path) -> tuple[AppStore, EpisodeRecord, AgentTaskRe
         role="orchestrator",
         actor_operation_id="root",
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=_RUN_TRUTH_SCOPE,
     )
     episode, root = store.create_auto_research_episode_with_root_task(
@@ -227,7 +227,7 @@ def _worker_request(
 ) -> RunRequest:
     return RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         chat_id=worker_id,
         chat_scope="node",
@@ -254,7 +254,7 @@ def _create_worker(
         role="worker",
         actor_operation_id=operation_id,
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         control_node_id="blk/check",
         instruction="Resolve the blocker.",
@@ -274,6 +274,7 @@ def _create_worker(
             status_message=f"{operation_id} {status}",
             parent_operation_id=parent.operation_id,
             native_session_id=native_session_id,
+            stage_machine_id="backend" if stage_root else None,
             stage_root=stage_root,
             authorized_by=auto_research.authorized_by,
             dispatch_authority=_auto_research_authority(auto_research.episode_id, "worker"),
@@ -295,7 +296,7 @@ def _create_routed_worker(
     instruction = "Resolve the blocker."
     request = RunRequest(
         provider="codex",
-        run_on="laptop",
+        run_on="backend",
         run_truth_scope=_RUN_TRUTH_SCOPE,
         chat_id=operation_id,
         chat_scope="node",
@@ -334,6 +335,7 @@ def _create_routed_worker(
             updated_at=now,
             status_message=f"{operation_id} queued",
             native_session_id=native_session_id,
+            stage_machine_id="backend" if stage_root else None,
             stage_root=stage_root,
             authorized_by=auto_research.authorized_by,
             dispatch_authority=authority,
@@ -379,7 +381,7 @@ def _create_worker_recovery(
         attempt=parent.attempt + 1,
         parent_operation_id=parent.operation_id,
         native_session_id=parent.native_session_id,
-        stage_host=parent.stage_host,
+        stage_machine_id=parent.stage_machine_id,
         stage_root=parent.stage_root,
         authorized_by=auto_research.authorized_by,
         dispatch_authority=parent.dispatch_authority,
@@ -421,7 +423,7 @@ def _effects(
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=lambda: state or _blocker_state(),
-        execution_host="execution.example",
+        machine_id="backend",
         apply_patch=apply_patch,
         on_graph_applied=on_graph_applied,
         on_watcher_ready=on_watcher_ready,
@@ -1271,7 +1273,7 @@ def test_spawn_uses_the_planned_id_and_ordinary_work_route(tmp_path) -> None:
     assert worker.request["mode"] == "work"
     assert worker.request["trigger"] == "orchestrator"
     assert worker.request["provider"] == "codex"
-    assert worker.request["run_on"] == "laptop"
+    assert worker.request["run_on"] == "backend"
     route = store.auto_research_child_work(planned_worker_id)
     assert route is not None
     assert route.admitted_by_operation_id == root.operation_id
@@ -1368,7 +1370,7 @@ def test_new_message_stays_pending_when_an_older_bounded_batch_starts(
     wait_for_task(store, delivery_operation_id)
 
 
-def test_watch_graph_uses_live_state_and_the_explicit_execution_host(tmp_path) -> None:
+def test_watch_graph_uses_live_state_and_the_explicit_machine(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     background = BackgroundAgentTasks(store, _successful_stream)
     ready: list[str] = []
@@ -1385,7 +1387,7 @@ def test_watch_graph_uses_live_state_and_the_explicit_execution_host(tmp_path) -
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=live_state,
-        execution_host="ssh.execution.example",
+        machine_id="gpu-card",
         on_watcher_ready=ready.append,
     )
     context = _context(store, auto_research, root)
@@ -1415,7 +1417,7 @@ def test_watch_graph_uses_live_state_and_the_explicit_execution_host(tmp_path) -
     assert outcome.result["disposition"] == "created"
     watcher = store.watcher(str(outcome.result["watcher_id"]))
     assert isinstance(watcher, GraphWatcherRecord)
-    assert watcher.execution_host == "ssh.execution.example"
+    assert watcher.machine_id == "gpu-card"
     assert watcher.status == "completed"
     assert outcome.result["completed_immediately"] is True
     assert ready == [auto_research.project_id]
@@ -1965,7 +1967,7 @@ def test_experiment_kickoff_reports_an_exhausted_shared_allowance(tmp_path) -> N
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=_blocker_state,
-        execution_host="execution.example",
+        machine_id="backend",
         experiment_coordinator=ExhaustedCoordinator(),  # type: ignore[arg-type]
     )
     arguments = ExperimentKickoffArguments(
@@ -2093,7 +2095,7 @@ def test_unknown_graph_watch_reconciliation_is_read_only_and_fail_closed(tmp_pat
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=live_state,
-        execution_host="ssh.execution.example",
+        machine_id="gpu-card",
         on_watcher_ready=ready.append,
     )
     context = _context(store, auto_research, root)

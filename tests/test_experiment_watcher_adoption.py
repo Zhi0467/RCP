@@ -198,7 +198,7 @@ def test_stop_retires_adopted_watchers_without_touching_later_episode(
     assert not loop.store.watcher("new-watcher").notified
 
 
-@pytest.mark.parametrize("mismatch", ["graph_target", "execution_host", "node_id"])
+@pytest.mark.parametrize("mismatch", ["graph_target", "machine_id", "node_id"])
 def test_adoption_keeps_target_and_host_preflight_checks(manifest, tmp_path, mismatch):
     loop, target, _ = _adopted_loop(manifest, tmp_path, branch=False)
     runtime = loop.store.experiment_loop_runtime(
@@ -206,14 +206,19 @@ def test_adoption_keeps_target_and_host_preflight_checks(manifest, tmp_path, mis
     )
     episode = loop.store.experiment_episode(loop.episode_id)
     watcher = loop.store.watcher("old-watcher")
-    assert preflight_episode_wake(runtime, episode, [watcher]).readiness == "ready"
+    assert (
+        preflight_episode_wake(runtime, episode, [watcher], store=loop.store).readiness == "ready"
+    )
     wrong = {
         "graph_target": GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4())),
-        "execution_host": "another-machine.example",
+        "machine_id": "another-machine",
         "node_id": "exp/another",
     }[mismatch]
     watcher = watcher.model_copy(update={mismatch: wrong})
-    assert preflight_episode_wake(runtime, episode, [watcher]).readiness == "incompatible"
+    assert (
+        preflight_episode_wake(runtime, episode, [watcher], store=loop.store).readiness
+        == "incompatible"
+    )
 
 
 def test_stop_preserves_an_already_delivered_older_completion(manifest, tmp_path):
@@ -264,7 +269,7 @@ def test_agent_stop_retires_an_observer_adopted_from_an_earlier_episode(manifest
             node_id=current.node_id,
             episode_id=current.episode_id,
             graph_target=current.graph_target,
-            execution_host=current.execution_host,
+            machine_id=current.machine_id,
             continuation=current.continuation,
         ),
     )

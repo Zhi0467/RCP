@@ -32,7 +32,9 @@ def switched_session(accounts, stage, provider, direction, *, status="failed", r
     own = _login(accounts, provider, own=True, member=member.user_id)
     shared = _login(accounts, provider, machine=True)
     old, new = (own, shared) if direction == "personal_to_team" else (shared, own)
-    store.set_provider_login_setting(member.user_id, provider, "", "own_then_shared")
+    store.set_provider_login_setting(
+        member.user_id, provider, BACKEND_MACHINE_ID, "own_then_shared"
+    )
     store.upsert_project(
         ProjectRecord(
             project_id=PROJECT,
@@ -48,7 +50,7 @@ def switched_session(accounts, stage, provider, direction, *, status="failed", r
     request = RunRequest(
         provider=provider,
         mode="work" if repair else "discuss",
-        run_on="laptop",
+        run_on=BACKEND_MACHINE_ID,
         chat_scope="project",
         chat_id="00000000-0000-4000-8000-000000000004",
         reasoning="medium",

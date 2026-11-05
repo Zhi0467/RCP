@@ -10,8 +10,10 @@ import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
+from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
+from rcp.storage import AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID
 
 _WORK_PROBE_REASON = "invalid --settings: unknown permission mode 'dontAsk'"
@@ -101,7 +103,13 @@ async def test_failed_work_readiness_refuses_before_launch_but_discuss_runs(
     errors = [
         event
         async for event in launcher.stream(
-            "claude", "Do work", binary=str(binary), cwd=tmp_path, capability=capability
+            "claude",
+            "Do work",
+            binary=str(binary),
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability=capability,
         )
     ]
     assert len(errors) == 1
@@ -111,7 +119,13 @@ async def test_failed_work_readiness_refuses_before_launch_but_discuss_runs(
     events = [
         event
         async for event in launcher.stream(
-            "claude", "Discuss", binary=str(binary), cwd=tmp_path, capability="discuss"
+            "claude",
+            "Discuss",
+            binary=str(binary),
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
         )
     ]
     assert [event.text for event in events if event.event == "answer"] == ["Discuss works"]
@@ -125,7 +139,13 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
 ) -> None:
     """ssh's own 255 means the host is gone, not that the saved path is wrong."""
     binary = _claude_binary(tmp_path)
-    launcher = AgentLauncher()
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    machine_id = (
+        store.create_space_machine(name=host, host=host, os_account="").machine_id
+        if host
+        else BACKEND_MACHINE_ID
+    )
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
 
     def probe(_host, command, **_):
         if "--input-format" in command:
@@ -135,7 +155,10 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
         return subprocess.CompletedProcess(command, 0, "2.1.266", "")
 
     monkeypatch.setattr(launcher, "_probe", probe)
-    readiness = launcher.readiness(LoginKey("claude", host, MACHINE_LOGIN_ID), binary=str(binary))
+    monkeypatch.setattr(launcher, "_login_refusal", lambda *_: None)
+    readiness = launcher.readiness(
+        LoginKey("claude", machine_id, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert readiness.work_like_available is None
     assert _WORK_PROBE_REASON not in (readiness.work_like_reason or "")
     if host:
@@ -171,7 +194,14 @@ async def test_first_provider_error_contains_stderr_cause(
         ),
     )
     async with aclosing(
-        launcher.stream("claude", "Run", cwd=tmp_path, capability="discuss")
+        launcher.stream(
+            "claude",
+            "Run",
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
+        )
     ) as stream:
         async for event in stream:
             if event.event == "error":
@@ -341,11 +371,11 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
 
     async def stream(_project, _kind, request, execution):
         """A session's shared login outside the member's setting is not kept."""
-        execution.checkpoint_stage("", str(tmp_path))
+        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(tmp_path))
         if execution.continuation == "fresh":
             human = store.agent_task_authorizer(execution.operation_id)
             own = _login(accounts, "codex", own=True, member=human.user_id)
-            store.set_provider_login_setting(human.user_id, "codex", "", "own")
+            store.set_provider_login_setting(human.user_id, "codex", BACKEND_MACHINE_ID, "own")
             key = own if binding == "own" else _login(accounts, "codex")
             selected.append(own if binding == "session" else key)
             store.assign_provider_login(execution.operation_id, lambda _: key)
@@ -364,7 +394,10 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
         tasks,
         "project",
         AutoResearchStartRequest(
-            invocation_ceiling=4, run_truth_scope=["repo"], provider="codex", run_on="laptop"
+            invocation_ceiling=4,
+            run_truth_scope=["repo"],
+            provider="codex",
+            run_on=BACKEND_MACHINE_ID,
         ),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
