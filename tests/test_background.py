@@ -313,7 +313,7 @@ def _v0417_artifact_edit_row():
         "master_operation_id": None,
         "master_sha256": None,
         "master_path": None,
-        "stage_host": None,
+        "stage_machine_id": None,
         "stage_root": None,
         "reply_episode_id": None,
         "episode_id": None,

@@ -517,10 +517,16 @@ class ExperimentStoreMixin(StoreMixinBase):
                         )
                 connection.execute(
                     """
-                    INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
-                    VALUES (?, ?, ?)
+                    INSERT INTO experiment_episode_state (
+                        episode_id, machine_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?)
                     """,
-                    (episode.episode_id, episode.created_at, record.created_at),
+                    (
+                        episode.episode_id,
+                        record.request["run_on"],
+                        episode.created_at,
+                        record.created_at,
+                    ),
                 )
                 self._insert_agent_task(connection, record, continuation_cause="fresh")
                 if auto_research_route is not None:

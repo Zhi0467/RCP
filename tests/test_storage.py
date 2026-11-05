@@ -21,6 +21,7 @@ from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage
 from rcp.rcp_home import rcp_temp_dir
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -293,8 +294,8 @@ def _project(project_id: str) -> ProjectRecord:
         project_id=project_id,
         locator=f"/tmp/{project_id}/research.yaml",
         name=project_id,
-        state_location=f"/tmp/{project_id}/.research",
-        state_remote=False,
+        state_machine_id=BACKEND_MACHINE_ID,
+        state_path=f"/tmp/{project_id}/.research",
         added_at="2026-07-31T00:00:00+00:00",
     )
 
@@ -1295,8 +1296,8 @@ def _seed_project_identity_rows(
         project_id=project_id,
         locator=f"/tmp/{label}/research.yaml",
         name=f"Project {label}",
-        state_location=f"ssh://host/{label}/.research",
-        state_remote=True,
+        state_machine_id="gpu",
+        state_path=f"/{label}/.research",
         added_at="2026-08-01T01:02:03+00:00",
         last_opened_at="2026-08-02T01:02:03+00:00",
         revision=7,
@@ -1408,8 +1409,8 @@ def _insert_destination_conflict(
                 project_id=canonical_project_id,
                 locator="/tmp/destination/research.yaml",
                 name="Destination",
-                state_location="/tmp/destination/.research",
-                state_remote=False,
+                state_machine_id=BACKEND_MACHINE_ID,
+                state_path="/tmp/destination/.research",
                 added_at="2026-08-06T01:02:03+00:00",
             )
         )

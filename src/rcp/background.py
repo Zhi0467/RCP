@@ -1656,11 +1656,11 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by,
                 lineage_login=ProviderAccounts.for_store(self.store).lineage_login(
                     request.provider,
-                    stage_machine_id or "",
+                    stage_machine_id or BACKEND_MACHINE_ID,
                     parent,
                     graph_repair=claim_graph_repair_parent,
                 ),
-                machine_id=(stage_machine_id or "") if stage_root else None,
+                machine_id=(stage_machine_id or BACKEND_MACHINE_ID) if stage_root else None,
                 isolation_episode_id=parent.episode_id if parent else None,
                 graph_target=parent.graph_target if parent else graph_target,
             )
@@ -1963,7 +1963,7 @@ class BackgroundAgentTasks:
 
         lineage_login = ProviderAccounts.for_store(self.store).lineage_login(
             request.provider,
-            record.stage_machine_id or "",
+            record.stage_machine_id or BACKEND_MACHINE_ID,
             self.store.agent_task(record.parent_operation_id)
             if record.parent_operation_id
             else None,
@@ -1976,7 +1976,9 @@ class BackgroundAgentTasks:
             request,
             authorized_by=record.authorized_by,
             lineage_login=lineage_login,
-            machine_id=(record.stage_machine_id or "") if record.stage_root else None,
+            machine_id=(record.stage_machine_id or BACKEND_MACHINE_ID)
+            if record.stage_root
+            else None,
         )
 
         intent = self.store.agent_task_admission_intent(operation_id)
@@ -2707,7 +2709,9 @@ class BackgroundAgentTasks:
             runtime_id=record.runtime_id,
             login_key=(
                 LoginKey(
-                    str(record.request["provider"]), record.stage_machine_id or "", record.login_id
+                    str(record.request["provider"]),
+                    record.stage_machine_id or BACKEND_MACHINE_ID,
+                    record.login_id,
                 )
                 if record.request.get("provider") and record.login_id is not None
                 else None

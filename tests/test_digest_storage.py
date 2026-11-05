@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from rcp.core.models import AuthorizedHuman
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore, EpisodeRecord, ProjectRecord
 from rcp.storage.digest import append_digest_event
 from rcp.storage.evidence_flags import EvidenceFlagError
@@ -22,8 +23,8 @@ def digest_store(tmp_path):
             project_id="project",
             locator="/tmp/project/research.yaml",
             name="Project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -119,8 +120,8 @@ def test_digest_storage_transfer_rewrite_and_delete(digest_store):
             project_id="remaining",
             locator="/tmp/remaining/research.yaml",
             name="Remaining",
-            state_location="/tmp/remaining/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/remaining/.research",
             added_at=store.now(),
         )
     )

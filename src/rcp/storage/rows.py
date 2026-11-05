@@ -12,6 +12,7 @@ from rcp.core.authority import (
 from rcp.core.models import (
     AuthorizedHuman,
 )
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -78,7 +79,9 @@ def _agent_task_control_flags(
     status = str(row["status"])
     visible = bool(row.get("visible", True))
     history_only = bool(row.get("history_only", False))
-    stage_ready = not row.get("stage_host") or bool(row.get("stage_root"))
+    stage_ready = row.get("stage_machine_id") in {None, BACKEND_MACHINE_ID} or bool(
+        row.get("stage_root")
+    )
     attachments_expired = _chat_attachments_expired(row)
     can_pause = visible and not history_only and status in AGENT_TASK_TRANSITIONS["pausing"]
     can_resume = (
