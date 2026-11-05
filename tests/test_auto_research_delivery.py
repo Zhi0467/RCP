@@ -15,6 +15,7 @@ from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchRunRequest,
@@ -69,8 +70,8 @@ def _store(tmp_path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )

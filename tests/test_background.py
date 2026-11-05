@@ -15,7 +15,7 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import (
     auto_research_child_work_task,
@@ -3256,14 +3256,18 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     observed = []
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
+        execution.login_key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
     def settled(_project, _kind, _request, _execution):
-        observed.append(store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state)
+        observed.append(
+            store.provider_login_state(
+                LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+            ).state
+        )
 
     tasks = BackgroundAgentTasks(store, stream, on_task_settled=settled)
     task = _admitted_launch_task(store, operation_id="dead-login")
@@ -3271,7 +3275,10 @@ def test_provider_auth_finalizer_marks_login_before_settlement(tmp_path):
     finished = wait_for_task(store, task.operation_id, expect="failed")
     wait_until(lambda: bool(observed))
     assert finished.failure_kind == "provider_auth"
-    assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).source == "turn"
+    assert (
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).source
+        == "turn"
+    )
     assert observed == ["signed_out"]
 
 
@@ -3282,12 +3289,14 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     store = _store(tmp_path)
 
     async def stream(_project, _kind, _request, execution):
-        execution.login_key = LoginKey("codex", "", MACHINE_LOGIN_ID)
+        execution.login_key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         execution.login_generation = store.provider_login_state(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
         store.mark_provider_login_verified(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="member",
+            detail="verified",
         )
         yield _sse(AgentEvent(event="error", text="refresh_token_reused"))
 
@@ -3296,7 +3305,7 @@ def test_late_provider_auth_finalizer_cannot_undo_verified_login(tmp_path):
     tasks.launch_admitted(task.operation_id)
     finished = wait_for_task(store, task.operation_id, expect="failed")
     assert finished.failure_kind is None
-    state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
     assert state.generation == 1
 

@@ -19,7 +19,7 @@ from rcp.agents.launcher import (
 )
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import ModelChoice
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
@@ -69,7 +69,7 @@ class _FakeLauncher:
         binary: str | None = None,
         refresh: bool = False,
     ) -> ProviderReadiness:
-        self.readiness_calls.append((login.provider, login.host, binary, refresh))
+        self.readiness_calls.append((login.provider, login.machine_id, binary, refresh))
         return self.readiness_result.model_copy(deep=True)
 
 
@@ -107,11 +107,13 @@ def _request(
     profile: str = "seed",
     profiles: tuple[str, ...] | None = None,
 ):
+    card = (
+        store.create_space_machine(name="compute", host="gpu.example", os_account="alice")
+        if remote
+        else store.update_space_machine(store.backend_space_machine().machine_id, os_account="rcp")
+    )
     machine = ProjectProvisioningMachineIntent(
-        alias="compute" if remote else "server",
-        location="ssh" if remote else "local",
-        host="gpu.example" if remote else "",
-        os_account="alice" if remote else "rcp",
+        machine_id=card.machine_id,
         central_root=(
             "/home/alice/.local/share/rcp/projects"
             if remote
@@ -126,7 +128,7 @@ def _request(
             ProjectProvisioningRepositoryIntent(
                 alias="paper",
                 repository=parse_github_repository_ref("git@github.com:OpenAI/RCP.git"),
-                machine_alias=machine.alias,
+                machine_id=machine.machine_id,
             )
         ],
         provider_checks=[
@@ -136,7 +138,7 @@ def _request(
                 runtime_id="codex:exec",
                 model="gpt-test",
                 reasoning="medium",
-                machine_alias=machine.alias,
+                machine_id=machine.machine_id,
             )
             for selected_profile in (profiles or (profile,))
         ],
@@ -194,7 +196,7 @@ def test_request_plan_is_read_only_and_success_persists_exact_nonsecret_proof(
 
     assert checked.step.state == "succeeded"
     assert launcher.account_calls == [""]
-    assert launcher.readiness_calls == [("codex", "", None, True)]
+    assert launcher.readiness_calls == [("codex", BACKEND_MACHINE_ID, None, True)]
     stored = store.project_provisioning_request(request.request_id)
     assert stored is not None
     assert stored.status == "setup_in_progress"
@@ -217,7 +219,7 @@ def test_request_plan_is_read_only_and_success_persists_exact_nonsecret_proof(
     )
     assert launcher.readiness_calls[-1] == (
         "codex",
-        "",
+        BACKEND_MACHINE_ID,
         "/usr/local/bin/codex",
         True,
     )
@@ -523,8 +525,8 @@ def test_project_selector_resolves_only_the_six_stored_profiles(
             home_space_id=store.space_id,
             locator=str(manifest.path),
             name="Existing team project",
-            state_location="local",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="local",
             added_at=store.now(),
         )
     )
@@ -542,20 +544,16 @@ def test_project_selector_resolves_only_the_six_stored_profiles(
     assert launcher.readiness_calls == []
 
 
-def test_remote_project_requires_and_uses_its_manifest_account(
+def test_remote_project_requires_and_uses_its_card_account(
     tmp_path: Path,
     manifest,
 ) -> None:
     store, _authorizer = _team_store(tmp_path)
+    gpu = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
     original = manifest.path.read_text(encoding="utf-8")
     remote_manifest = tmp_path / "remote-manifest.toml"
     remote_manifest.write_text(
-        original.replace(
-            'host = ""',
-            'host = "gpu.example"\nos_account = "alice"',
-            1,
-        ),
-        encoding="utf-8",
+        original.replace(BACKEND_MACHINE_ID, gpu.machine_id), encoding="utf-8"
     )
     project_id = str(uuid.uuid4())
     store.upsert_project(
@@ -564,8 +562,8 @@ def test_remote_project_requires_and_uses_its_manifest_account(
             home_space_id=store.space_id,
             locator=str(remote_manifest),
             name="Remote team project",
-            state_location="gpu.example",
-            state_remote=True,
+            state_machine_id=gpu.machine_id,
+            state_path="/srv/project/.research",
             added_at=store.now(),
         )
     )
@@ -580,10 +578,7 @@ def test_remote_project_requires_and_uses_its_manifest_account(
     assert {target.step.target.host for target in plan.targets} == {"gpu.example"}
     assert {target.step.target.os_account for target in plan.targets} == {"alice"}
 
-    remote_manifest.write_text(
-        original.replace('host = ""', 'host = "gpu.example"', 1),
-        encoding="utf-8",
-    )
+    store.update_space_machine(gpu.machine_id, os_account="")
     with pytest.raises(ProviderReadinessRefused):
         coordinator.plan("project", project_id)
 

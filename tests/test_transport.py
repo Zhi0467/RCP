@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 import tomlkit
 
-from rcp.config import MachineConfig, RepositoryConfig, load_manifest
+from rcp.config import RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
 from rcp.limits import (
@@ -28,6 +28,7 @@ from rcp.limits import (
     STATE_LOCK_POLL_INTERVAL_SECONDS,
 )
 from rcp.setup import ProjectSetupRequest, render_manifest
+from rcp.storage import AppStore
 from rcp.transport import (
     BatchPublishFailed,
     LocalStateWorkspace,
@@ -1303,12 +1304,12 @@ def test_confirmed_absent_remote_discards_stale_mirror_before_fresh_initializati
         }
     )
     bootstrap_path = tmp_path / "bootstrap.toml"
-    bootstrap_path.write_text(render_manifest(request), encoding="utf-8")
+    bootstrap_path.write_text(render_manifest(request, {"gpu.example": "gpu"}), encoding="utf-8")
     bootstrap = load_manifest(bootstrap_path)
     mirror = tmp_path / "state-cache" / ".research"
     mirror.mkdir(parents=True)
     stale_manifest = mirror / "manifest.toml"
-    stale_manifest.write_text(render_manifest(request), encoding="utf-8")
+    stale_manifest.write_text(render_manifest(request, {"gpu.example": "gpu"}), encoding="utf-8")
     stale_patch = mirror / "patches" / "000001.json"
     stale_patch.parent.mkdir()
     stale_patch.write_text("archived history must not return\n", encoding="utf-8")
@@ -1316,10 +1317,12 @@ def test_confirmed_absent_remote_discards_stale_mirror_before_fresh_initializati
     monkeypatch.setattr(workspace, "refresh", lambda: False)
     monkeypatch.setattr(
         "rcp.transport.state.state_workspace_for_probe",
-        lambda _bootstrap, _data_dir: workspace,
+        lambda _bootstrap, _data_dir, _store: workspace,
     )
 
-    fresh, returned_workspace = prepare_state_workspace(bootstrap, tmp_path / "data")
+    fresh, returned_workspace = prepare_state_workspace(
+        bootstrap, tmp_path / "data", AppStore(tmp_path / "app.sqlite3")
+    )
 
     assert returned_workspace is workspace
     assert fresh.path == mirror / "manifest.toml"
@@ -1929,8 +1932,7 @@ def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None
 
 def test_local_repository_pointer_has_no_host() -> None:
     access = repository_access(
-        RepositoryConfig(alias="rcp", machine="laptop", path="/Users/me/research/RCP"),
-        MachineConfig(alias="laptop"),
+        RepositoryConfig(alias="rcp", machine="laptop", path="/Users/me/research/RCP"), ""
     )
 
     assert access.model_dump() == {
@@ -1944,7 +1946,7 @@ def test_local_repository_pointer_has_no_host() -> None:
 def test_remote_repository_pointer_keeps_host_and_untouched_path() -> None:
     access = repository_access(
         RepositoryConfig(alias="cot-steering", machine="remote-1", path="/home/research/cot-loop"),
-        MachineConfig(alias="remote-1", host="research.example"),
+        "research.example",
     )
 
     assert access.host == "research.example"
@@ -2560,9 +2562,8 @@ def _remote_capture_manifest(manifest):
     for repository in content["repositories"]:
         if repository["alias"] == manifest.state.repository:
             repository["path"] = "/srv/project"
-            for machine in content["machines"]:
-                if machine["alias"] == repository["machine"]:
-                    machine["host"] = "research.example"
+            repository["machine"] = "research"
+    content["machines"].append("research")
     manifest.path.write_text(tomlkit.dumps(content))
 
 
@@ -2606,9 +2607,7 @@ def test_remote_capture_keeps_pinned_readers_off_transfer_and_retains_failed_sna
         with pytest.raises(StateUnavailable, match="transfer failed"):
             workspace.capture()
         fail = False
-        manifest.path.write_text(
-            manifest.path.read_text().replace("research.example", "other.example")
-        )
+        manifest.path.write_text(manifest.path.read_text().replace('"research"', '"other"'))
         with pytest.raises(ValueError):
             workspace.capture()
         with workspace.read_snapshot() as root:

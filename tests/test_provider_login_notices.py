@@ -7,7 +7,7 @@ import pytest
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.api.episodes import serialize_episode
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.service import ProjectService, agent_login_accounts
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -21,7 +21,7 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
     _project(store)
     accounts = ProviderAccounts.for_store(store)
     own = store.add_provider_login("codex", "", member_id="owner", added_by="owner")
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_signed_out(
         key, member_id="owner", source="sign_out", detail="private@example.test"
     )
@@ -67,12 +67,12 @@ def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
     store = AppStore(tmp_path / "app.sqlite3")
     _project(store)
     own = store.add_provider_login("codex", "", member_id="viewer", added_by="viewer")
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id="viewer", detail="verified")
     store.set_provider_login_setting("viewer", "codex", "", "own")
     selected = agent_login_accounts(manifest, store, "project", viewer_id="viewer")
     assert key in selected
-    assert LoginKey("codex", "", "") not in selected
+    assert LoginKey("codex", BACKEND_MACHINE_ID, "") not in selected
 
 
 def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
@@ -87,11 +87,14 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
     other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
     assert other["provider_readiness"]["laptop"]["codex"]["authenticated"] is False
     store.mark_provider_login_signed_out(
-        LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
+        LoginKey("codex", BACKEND_MACHINE_ID, ""),
+        member_id=None,
+        source="sign_out",
+        detail="machine",
     )
     own = store.add_provider_login("codex", "", member_id="viewer", added_by="viewer")
     store.mark_provider_login_verified(
-        LoginKey("codex", "", own.login_id), member_id="viewer", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, own.login_id), member_id="viewer", detail="verified"
     )
     store.set_provider_login_setting("viewer", "codex", "", "own")
     probed = []
@@ -119,7 +122,7 @@ def test_report_admission_uses_episode_authorizer_login(tmp_path):
     assert episode.authorized_by is not None
     member = episode.authorized_by.user_id
     own = store.add_provider_login("codex", "", member_id=member, added_by=member)
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.set_provider_login_setting(member, "codex", "", "own")
     _begin_report(store, episode, root, ending="completed")
     episode = store.episode(episode.episode_id)
@@ -146,7 +149,7 @@ def test_project_response_refreshes_viewer_logins_without_rewriting_shared_cache
     assert client.get(f"/api/projects/{project_id}").status_code == 200
     before = app.state.catalog.cached_snapshot(project_id)
     own = store.add_provider_login("codex", "", member_id=owner.user_id, added_by=owner.user_id)
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id=owner.user_id, detail="verified")
     store.set_provider_login_setting(owner.user_id, "codex", "", "own")
     response = client.get(f"/api/projects/{project_id}{suffix}")
@@ -211,7 +214,7 @@ def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
     shared = _login(accounts, "codex")
     store.set_provider_login_setting("viewer", "codex", "", "shared")
     launcher = AgentLauncher(accounts=accounts)
-    machine = LoginKey("codex", "", "")
+    machine = LoginKey("codex", BACKEND_MACHINE_ID, "")
     assert accounts.resolve_login("codex", "", "viewer")[0] == machine
     monkeypatch.setattr(
         launcher, "_configured_path_state", lambda *a, **kw: ("resolved", None, False)
@@ -224,7 +227,7 @@ def test_fresh_machine_probe_releases_shared_viewer_to_added_login(
 
     monkeypatch.setattr(launcher, "_probe", probe)
     readiness = launcher.readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/test/codex", refresh=True
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/test/codex", refresh=True
     )
     assert not readiness.authenticated
     assert store.provider_login_state(machine).state == "signed_out"

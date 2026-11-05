@@ -21,7 +21,7 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
@@ -37,7 +37,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
 ):
     store = AppStore(tmp_path / "login.sqlite3")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused",
         source="turn",
@@ -81,7 +81,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     assert holds == [("codex", "")]
     assert len(probes) == 1
     assert probes[0][1][1] == "exec"
-    state = store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert state.state == ("signed_in" if success else "signed_out")
     assert state.generation == (1 if success else 0)
     assert state.changed_by == ("acting-member" if success else None)
@@ -116,7 +116,10 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
     )
     response = TestClient(app).post("/api/providers/codex/logins/verify", json={"host": ""})
     assert response.status_code == 409
-    assert store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_in"
+    assert (
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
+        == "signed_in"
+    )
     assert store.provider_login_states() == []
 
 
@@ -125,7 +128,10 @@ def test_login_list_shows_configured_accounts_and_drops_hosts_no_project_names(
 ):
     store = AppStore(tmp_path / "login.sqlite3")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     store.mark_provider_login_failed(
         LoginKey("codex", "gone.example", MACHINE_LOGIN_ID),
@@ -189,7 +195,7 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     monkeypatch.setitem(PROVIDERS, ThirdProvider.id, ThirdProvider())
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
     runner.store.mark_provider_login_failed(
-        LoginKey(ThirdProvider.id, "", MACHINE_LOGIN_ID),
+        LoginKey(ThirdProvider.id, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="expired",
         source="turn",
@@ -222,13 +228,13 @@ def test_third_provider_device_login_completes_without_polling_and_status_is_rea
     (tmp_path / "signed-in").write_text("")
     wait_until(lambda: runner.sign_in_status(operation).state == "succeeded" or None, timeout=10)
     runner.reconcile_recovery()
-    assert completions == [(LoginKey(ThirdProvider.id, "", ""),)]
+    assert completions == [(LoginKey(ThirdProvider.id, BACKEND_MACHINE_ID, ""),)]
     status = client.get(f"{route}/sign-in/{operation}")
     assert status.status_code == 200
     assert status.json()["state"] == "succeeded"
     assert status.json()["resumed"] == {"checked": 1}
     assert client.get(f"{route}/sign-in/{operation}").json() == status.json()
-    assert completions == [(LoginKey(ThirdProvider.id, "", ""),)]
+    assert completions == [(LoginKey(ThirdProvider.id, BACKEND_MACHINE_ID, ""),)]
     assert client.get(f"/api/providers/codex/logins/sign-in/{operation}").status_code == 404
     assert client.post(f"{route}/token", json={"token": "private-value"}).status_code == 422
     invalid = client.post(f"{route}/sign-in", json={"host": "", "unexpected": True})
@@ -467,7 +473,7 @@ def test_member_rows_filter_private_evidence_and_attempt_codes(member_login_api)
 
     client, store, runner, viewer = member_login_api
     own = store.add_provider_login("claude", "", member_id="alice", added_by="alice")
-    key = LoginKey("claude", "", own.login_id)
+    key = LoginKey("claude", BACKEND_MACHINE_ID, own.login_id)
     runner.credentials.store_token(
         "claude", "", "secret", member_id="alice", now=store.now(), login_id=own.login_id
     )
@@ -524,7 +530,7 @@ def test_add_own_conflict_owner_actions_and_remove_rules(member_login_api):
             body["token"] = "private-token"
         assert client.post(f"{route}/{action}", json=body).status_code == 403
     viewer["id"] = "alice"
-    store.finish_provider_login_removal(LoginKey("claude", "", login_id))
+    store.finish_provider_login_removal(LoginKey("claude", BACKEND_MACHINE_ID, login_id))
     assert client.post(f"{route}/verify", json={"login_id": login_id}).status_code == 409
     assert (
         client.post(
@@ -546,7 +552,7 @@ def test_authorization_precedes_unsupported_method(member_login_api, provider, a
     )
     route = f"/api/providers/{provider}/logins/{action}"
     assert client.post(route, json=body).status_code == 422
-    store.finish_provider_login_removal(LoginKey(provider, "", row.login_id))
+    store.finish_provider_login_removal(LoginKey(provider, BACKEND_MACHINE_ID, row.login_id))
     assert client.post(route, json=body).status_code == 409
     viewer["id"] = "bob"
     response = client.post(route, json=body)
@@ -629,7 +635,7 @@ def test_personal_login_rules(tmp_path, monkeypatch):
 def test_shared_remove_calls_keyed_lifecycle_and_reports_drain(member_login_api, monkeypatch):
     client, store, runner, _viewer = member_login_api
     added = client.post("/api/providers/claude/logins/add", json={"kind": "shared"}).json()
-    key = LoginKey("claude", "", added["login_id"])
+    key = LoginKey("claude", BACKEND_MACHINE_ID, added["login_id"])
     calls = []
 
     def remove(login_store, launcher, login, *, cancel_sign_in, member_id):

@@ -7,7 +7,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research_admission import start_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
     deliver_auto_research_watcher_group,
@@ -31,7 +31,7 @@ from .test_auto_research_delivery import (
 
 def _signed_out(store):
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused",
         source="turn",

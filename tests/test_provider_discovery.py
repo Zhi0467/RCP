@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
 from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.transport import provider_discovery
@@ -114,7 +114,7 @@ def test_invalid_configured_path_does_not_fall_back(account: Path) -> None:
     executable(account / ".opencode/bin/opencode")
     configured = str(account / "missing-configured-opencode")
     readiness = AgentLauncher().readiness(
-        LoginKey("opencode", "", MACHINE_LOGIN_ID), binary=configured
+        LoginKey("opencode", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=configured
     )
     assert not readiness.installed
     assert readiness.binary_path == configured

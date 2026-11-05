@@ -4,7 +4,7 @@ import pytest
 
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.service import RunRequest
 from rcp.storage import AppStore
@@ -26,7 +26,7 @@ def test_admission_resolves_member_before_allocation(tmp_path):
     with pytest.raises(ProviderSignedOut):
         tasks.admit_provider_task("project", request, authorized_by=human, execution_host="")
     own = store.add_provider_login("codex", "", member_id=human.user_id, added_by=human.user_id)
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id=human.user_id, detail="verified")
     tasks.admit_provider_task("project", request, authorized_by=human, execution_host="")
     assert store.provider_login_assignment(key).last_assigned_at is None
@@ -37,7 +37,7 @@ def test_admission_resolves_member_before_allocation(tmp_path):
 def test_typed_gate_refusal_does_not_depend_on_error_text(tmp_path):
     store = AppStore(tmp_path / "state.sqlite3")
     tasks = BackgroundAgentTasks(store, _unused_stream)
-    key = LoginKey("codex", "", "")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     execution = AgentTaskExecution(
         "absent", store, AgentProcessControl(), provider_auth_refused=key
     )
@@ -71,7 +71,7 @@ def test_recovery_admits_actual_session_or_fresh_target(tmp_path, mode, switch_p
     store = _store(tmp_path)
     human = fabricated_authorizer()
     own = store.add_provider_login("codex", "", member_id=human.user_id, added_by=human.user_id)
-    key = LoginKey("codex", "", own.login_id)
+    key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.mark_provider_login_verified(key, member_id=human.user_id, detail="verified")
     store.set_provider_login_setting(human.user_id, "codex", "", "own")
     stage = tmp_path / "stage"

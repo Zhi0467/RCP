@@ -25,7 +25,7 @@ from rcp.agents.credential_gate import (
 )
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.storage.models import MACHINE_LOGIN_ID
 
@@ -44,8 +44,8 @@ def prompt_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_one_credential_admits_one_startup_at_a_time(prompt_minimum: None) -> None:
     gate = ProviderCredentialGate()
-    first = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
-    second = asyncio.create_task(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
+    first = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+    second = asyncio.create_task(gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)))
     await asyncio.sleep(0)
 
     assert not second.done(), "a second startup ran while the first held the credential"
@@ -59,12 +59,12 @@ async def test_separate_credentials_start_concurrently(prompt_minimum: None) -> 
     """Staggering is per login, not global; unrelated accounts must not queue."""
 
     gate = ProviderCredentialGate()
-    local = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    local = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     remote = await asyncio.wait_for(
         gate.hold(LoginKey("codex", "agent-host", MACHINE_LOGIN_ID)), timeout=1
     )
     other_provider = await asyncio.wait_for(
-        gate.hold(LoginKey("claude", "", MACHINE_LOGIN_ID)), timeout=1
+        gate.hold(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=1
     )
 
     for hold in (local, remote, other_provider):
@@ -76,11 +76,13 @@ async def test_release_is_idempotent(prompt_minimum: None) -> None:
     """Every launcher exit path releases, and several of them can run together."""
 
     gate = ProviderCredentialGate()
-    hold = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    hold = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     hold.release()
     hold.release()
 
-    await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=1)
+    await asyncio.wait_for(
+        gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=1
+    )
 
 
 @pytest.mark.asyncio
@@ -96,9 +98,11 @@ async def test_a_silent_provider_does_not_strand_the_credential(
         "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_TIMEOUT_SECONDS", 0.05
     )
     gate = ProviderCredentialGate()
-    await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
 
-    await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=2)
+    await asyncio.wait_for(
+        gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=2
+    )
 
 
 @pytest.mark.asyncio
@@ -200,10 +204,12 @@ async def test_minimum_stagger_outlasts_an_immediate_first_line(
         "rcp.agents.credential_gate.PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS", 0.2
     )
     gate = ProviderCredentialGate()
-    hold = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    hold = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     hold.release()
 
-    waiting = asyncio.create_task(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
+    waiting = asyncio.create_task(
+        gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+    )
     await asyncio.sleep(0.05)
     assert not waiting.done(), "the credential was freed before the minimum stagger"
 
@@ -231,7 +237,7 @@ def test_one_credential_serializes_across_worker_event_loops(
     def worker() -> None:
         async def run() -> None:
             nonlocal starting, peak
-            hold = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+            hold = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
             try:
                 with peak_guard:
                     starting += 1
@@ -295,11 +301,15 @@ async def test_a_skill_probe_and_a_turn_share_one_credential(
     )
     assert manager.credential_gate is launcher.credential_gate
 
-    turn_hold = await launcher.credential_gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    turn_hold = await launcher.credential_gate.hold(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    )
     probing = threading.Event()
 
     def probe() -> None:
-        with manager.credential_gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)):
+        with manager.credential_gate.hold_blocking(
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+        ):
             probing.set()
 
     worker = threading.Thread(target=probe, daemon=True)
@@ -325,9 +335,9 @@ async def test_a_cancelled_wait_does_not_strand_the_credential(
     """
 
     gate = ProviderCredentialGate()
-    holder = await gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    holder = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
 
-    queued = asyncio.create_task(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
+    queued = asyncio.create_task(gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)))
     await asyncio.sleep(0.1)
     queued.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -335,7 +345,9 @@ async def test_a_cancelled_wait_does_not_strand_the_credential(
 
     holder.release()
 
-    later = await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=5)
+    later = await asyncio.wait_for(
+        gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=5
+    )
     later.release()
 
 
@@ -370,9 +382,9 @@ def test_a_finished_probe_releases_without_the_turn_stagger() -> None:
 
     gate = ProviderCredentialGate()
     started = time.monotonic()
-    with gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)):
+    with gate.hold_blocking(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)):
         pass
-    with gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)):
+    with gate.hold_blocking(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)):
         pass
 
     elapsed = time.monotonic() - started
@@ -390,11 +402,13 @@ def test_a_win_during_loop_teardown_does_not_strand_the_credential() -> None:
     """
 
     gate = ProviderCredentialGate()
-    blocker = gate._lock_for(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    blocker = gate._lock_for(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     blocker.acquire()
 
     async def queue_then_tear_down() -> None:
-        waiting = asyncio.create_task(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
+        waiting = asyncio.create_task(
+            gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+        )
         await asyncio.sleep(0.05)
         waiting.cancel()
         blocker.release()
@@ -402,7 +416,9 @@ def test_a_win_during_loop_teardown_does_not_strand_the_credential() -> None:
     asyncio.run(queue_then_tear_down())
 
     async def later() -> None:
-        hold = await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=5)
+        hold = await asyncio.wait_for(
+            gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=5
+        )
         hold.release()
 
     asyncio.run(later())
@@ -424,8 +440,10 @@ async def test_two_rcp_processes_under_one_account_do_not_both_hold(
     first_process = ProviderCredentialGate(account_lock_root=root)
     second_process = ProviderCredentialGate(account_lock_root=root)
 
-    held = await first_process.hold(LoginKey("codex", "", MACHINE_LOGIN_ID))
-    queued = asyncio.create_task(second_process.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)))
+    held = await first_process.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+    queued = asyncio.create_task(
+        second_process.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+    )
     await asyncio.sleep(0.3)
 
     assert not queued.done(), "two RCP processes held one provider login at once"
@@ -448,17 +466,21 @@ async def test_account_lock_io_failure_refuses_startup_and_allows_retry(
     gate = ProviderCredentialGate(account_lock_root=root)
 
     with pytest.raises(OSError) as error:
-        hold = await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=5)
+        hold = await asyncio.wait_for(
+            gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=5
+        )
         hold.release()
     assert error.value.errno in {errno.EEXIST, errno.ENOTDIR, errno.EISDIR}
-    assert not gate._lock_for(LoginKey("codex", "", MACHINE_LOGIN_ID)).locked()
+    assert not gate._lock_for(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).locked()
 
     if failure == "directory":
         root.unlink()
     else:
         lock_path.rmdir()
     (
-        await asyncio.wait_for(gate.hold(LoginKey("codex", "", MACHINE_LOGIN_ID)), timeout=5)
+        await asyncio.wait_for(
+            gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)), timeout=5
+        )
     ).release()
 
 
@@ -480,17 +502,17 @@ def test_permanent_account_lock_error_refuses_probe_and_allows_retry(
     monkeypatch.setattr(credential_gate.fcntl, "flock", fail_once)
     with (
         pytest.raises(OSError) as error,
-        gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)),
+        gate.hold_blocking(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)),
     ):
         pytest.fail("A permanent lock error must refuse the probe instead of retrying")
     assert error.value.errno == error_number
-    assert not gate._lock_for(LoginKey("codex", "", MACHINE_LOGIN_ID)).locked()
+    assert not gate._lock_for(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).locked()
     assert failed_descriptor is not None
     with pytest.raises(OSError) as closed:
         credential_gate.os.fstat(failed_descriptor)
     assert closed.value.errno == errno.EBADF
 
-    with gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)):
+    with gate.hold_blocking(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)):
         pass
 
 
@@ -510,7 +532,7 @@ def test_account_lock_contention_still_retries(
         original_flock(descriptor, operation)
 
     monkeypatch.setattr(credential_gate.fcntl, "flock", busy_once)
-    with gate.hold_blocking(LoginKey("codex", "", MACHINE_LOGIN_ID)):
+    with gate.hold_blocking(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)):
         assert not busy
 
 
@@ -602,7 +624,7 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
         if command[-1:] == ["--version"]:
             return subprocess.CompletedProcess(command, 0, "2.1.267", "")
         assert not launcher.credential_gate._lock_for(
-            LoginKey("claude", "", MACHINE_LOGIN_ID)
+            LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).acquire(False), f"{command[-2:]} ran without the credential hold"
         holding.append(command[-1])
         if command[-2:] == ["auth", "status"]:
@@ -610,7 +632,7 @@ def test_the_authentication_probe_runs_under_the_hold(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(command, 0, "", "")
 
     launcher._probe = probe
-    launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    launcher.readiness(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary))
 
     assert "status" in holding, "the authentication probe never ran"
 
@@ -644,7 +666,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
         binary_path="/test/claude",
         version="2.1.267",
     )
-    held = await launcher.credential_gate.hold(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    held = await launcher.credential_gate.hold(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    )
     waiting = asyncio.Event()
     original_hold = launcher.credential_gate.hold
 
@@ -657,7 +681,7 @@ async def test_waiting_launch_captures_environment_and_generation_together(
 
     async def capture():
         observed["generation"] = store.provider_login_state(
-            LoginKey("claude", "", MACHINE_LOGIN_ID)
+            LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
 
     async def spawn(*args, **kwargs):
@@ -680,7 +704,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
         "claude", "", "new-token", member_id="member", now=store.now(), login_id=MACHINE_LOGIN_ID
     )
     repaired = store.mark_provider_login_verified(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     held.release()
     events = await asyncio.wait_for(pending, timeout=5)
@@ -810,8 +836,10 @@ async def test_added_logins_have_independent_holds_without_account_lock(
 
     root = tmp_path / "locks"
     gate = ProviderCredentialGate(account_lock_root=root)
-    first = await gate.hold(LoginKey("codex", "", str(uuid4())))
-    second = await asyncio.wait_for(gate.hold(LoginKey("codex", "", str(uuid4()))), timeout=1)
+    first = await gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, str(uuid4())))
+    second = await asyncio.wait_for(
+        gate.hold(LoginKey("codex", BACKEND_MACHINE_ID, str(uuid4()))), timeout=1
+    )
     first.release()
     second.release()
     assert not root.exists()

@@ -24,7 +24,7 @@ from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
 from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -144,11 +144,16 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
     binary = "/opt/agents/codex"
     with ThreadPoolExecutor(max_workers=4) as executor:
         ordinary = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary=binary,
         )
         assert ordinary_entered.wait(timeout=1)
         forced = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary, refresh=True
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary=binary,
+            refresh=True,
         )
         assert forced_entered.wait(timeout=1)
         with launcher._readiness_lock:
@@ -162,10 +167,15 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
 
         monkeypatch.setattr(forced_probe.completed, "wait", signal_forced_wait)
         forced_follower = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary, refresh=True
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary=binary,
+            refresh=True,
         )
         ordinary_follower = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary=binary,
         )
         assert follower_waiting.wait(timeout=1)
         release_forced.set()
@@ -177,7 +187,9 @@ def test_forced_readiness_refresh_supersedes_inflight_warm_probe(monkeypatch) ->
 
     assert calls == 2
     assert (
-        launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary).version
+        launcher.readiness(
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=binary
+        ).version
         == "refreshed-result"
     )
 
@@ -724,7 +736,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
         lambda *args, **kwargs: [sys.executable, "-c", "raise SystemExit(7)"],
     )
     binary = "/opt/agents/codex"
-    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary)
+    launcher.readiness(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=binary)
 
     events = [
         event
@@ -739,7 +751,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
 
     assert probes == 1
     assert events[-1].event == "error"
-    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary=binary)
+    launcher.readiness(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=binary)
     assert probes == 2
 
 

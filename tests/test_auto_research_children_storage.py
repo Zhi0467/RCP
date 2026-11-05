@@ -13,6 +13,7 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman, EpisodeIsolation
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import project_auto_research_episode
 from rcp.storage import (
     AgentTaskRecord,
@@ -97,8 +98,8 @@ def _project(store: AppStore) -> None:
             project_id="project",
             locator=str(write_local_test_manifest(store.path.parent)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -1543,7 +1544,7 @@ def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_inp
             update={
                 "project_id": "other-project",
                 "locator": str(tmp_path / "other" / "research.yaml"),
-                "state_location": str(tmp_path / "other" / ".research"),
+                "state_path": str(tmp_path / "other" / ".research"),
             }
         )
         store.upsert_project(other_project)
@@ -2343,8 +2344,8 @@ def test_legacy_project_data_migration_moves_child_registries_idempotently(tmp_p
             home_space_id=store.space_id,
             locator="/tmp/canonical-project/research.yaml",
             name="canonical-project",
-            state_location="/tmp/canonical-project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/canonical-project/.research",
             added_at=store.now(),
         )
     )

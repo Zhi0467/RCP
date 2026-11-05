@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import (
     PROVIDER_IDS,
     PROVIDERS,
@@ -102,16 +102,22 @@ def test_readiness_cache_refresh_and_invalidation_are_exact(monkeypatch) -> None
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
 
-    first = launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
-    second = launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
+    first = launcher.readiness(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+    )
+    second = launcher.readiness(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+    )
     refreshed = launcher.readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex", refresh=True
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        binary="/opt/agents/codex",
+        refresh=True,
     )
     launcher.invalidate_readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
     )
     after_invalidation = launcher.readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
     )
 
     assert first == second == refreshed == after_invalidation
@@ -141,7 +147,9 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary="/opt/agents/codex",
         )
         assert entered.wait(timeout=1)
         (in_flight,) = launcher._readiness_probes.values()
@@ -158,7 +166,9 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
 
         in_flight.completed = _JoinedEvent()
         second = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary="/opt/agents/codex",
         )
         assert joined.wait(timeout=2)
         release.set()
@@ -184,16 +194,20 @@ def test_invalidation_during_probe_does_not_restore_stale_capability(monkeypatch
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
     with ThreadPoolExecutor(max_workers=1) as executor:
         first = executor.submit(
-            launcher.readiness, LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+            launcher.readiness,
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            binary="/opt/agents/codex",
         )
         assert entered.wait(timeout=1)
         launcher.invalidate_readiness(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
         )
         release.set()
         assert first.result().authenticated is True
 
-    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/opt/agents/codex")
+    launcher.readiness(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/codex"
+    )
     assert calls == 2
 
 
@@ -221,33 +235,35 @@ def test_readiness_caches_successful_and_failed_results(monkeypatch) -> None:
 
     monkeypatch.setattr(launcher, "_readiness_uncached", probe)
 
-    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
-    launcher.readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    launcher.readiness(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
+    launcher.readiness(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert calls == 1
 
     ready = False
     first_failure = launcher.readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/claude"
     )
     second_failure = launcher.readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/claude"
     )
     assert first_failure == second_failure
     assert calls == 2
 
     ready = True
     refreshed = launcher.readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude", refresh=True
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        binary="/opt/agents/claude",
+        refresh=True,
     )
     assert refreshed.authenticated is True
     assert calls == 3
 
     ready = False
     launcher.invalidate_readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/claude"
     )
     after_invalidation = launcher.readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary="/opt/agents/claude"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/opt/agents/claude"
     )
     assert after_invalidation.authenticated is False
     assert calls == 4
@@ -469,7 +485,7 @@ def test_failed_version_command_does_not_publish_stderr_as_a_version(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness(LoginKey("codex", "", MACHINE_LOGIN_ID))
+    readiness = AgentLauncher().readiness(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
 
     assert readiness.installed is True
     assert readiness.authenticated is True
@@ -504,7 +520,7 @@ def test_local_provider_discovery_includes_the_execution_accounts_local_bin(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    readiness = AgentLauncher().readiness(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
 
     assert readiness.binary_path == str(binary)
     assert readiness.installed is True
@@ -534,7 +550,7 @@ def test_local_provider_discovery_keeps_a_stable_symlink_path(
 
     monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
 
-    readiness = AgentLauncher().readiness(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    readiness = AgentLauncher().readiness(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
 
     assert readiness.binary_path == str(command)
 
@@ -569,7 +585,7 @@ def test_stale_recorded_path_never_falls_back_to_path(
     )
 
     readiness = AgentLauncher().readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary="/missing/recorded/codex"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary="/missing/recorded/codex"
     )
 
     assert readiness.path_state == "missing"
@@ -584,7 +600,7 @@ def test_local_recorded_path_without_execute_permission_is_denied(tmp_path: Path
     binary.chmod(0o644)
 
     readiness = AgentLauncher().readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
 
     assert readiness.path_state == "denied"
@@ -597,7 +613,7 @@ def test_local_recorded_path_that_is_not_a_file_is_denied(tmp_path: Path) -> Non
     from rcp.agents.launcher import AgentLauncher
 
     readiness = AgentLauncher().readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(tmp_path)
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(tmp_path)
     )
 
     assert readiness.path_state == "denied"

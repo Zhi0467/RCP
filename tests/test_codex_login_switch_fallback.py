@@ -12,7 +12,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.codex_resume import (
     REFUSAL,
     RETRY,
@@ -226,7 +226,7 @@ def test_refusal_retries_once_through_fresh_handoff(tmp_path, fork, stale_queued
     ],
 )
 def test_fresh_or_unrelated_failure_never_requests_fallback(accounts, native_session, error):
-    key = LoginKey("codex", "", "")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     _task(accounts.store, "ordinary", key, session=native_session)
     execution = AgentTaskExecution("ordinary", accounts.store, AgentProcessControl())
     record_refusal(execution, provider="codex", session_id=native_session, host="", error=error)
@@ -326,7 +326,7 @@ def test_fresh_handoff_rebuilds_discuss_master_and_contract(tmp_path, monkeypatc
 
 def test_refusal_retry_respects_lineage(accounts):
     store = accounts.store
-    key = LoginKey("codex", "", "")
+    key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     for operation_id in ("first-refusal", "transport-retry", "current-refusal"):
         _task(store, operation_id, key, member=None)
     with store.connection() as connection:

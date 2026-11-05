@@ -12,7 +12,7 @@ import uvicorn
 from rcp.agents import AgentEvent, ProviderReadiness
 from rcp.agents import launcher as launcher_module
 from rcp.api.app import create_app
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
@@ -51,8 +51,8 @@ def test_served_device_login_recovers_queued_work_without_polling(
             project_id="project",
             locator=str(manifest.path),
             name="Login journey",
-            state_location=str(tmp_path / "state"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "state"),
             added_at=store.now(),
         )
     )
@@ -80,7 +80,7 @@ def test_served_device_login_recovers_queued_work_without_polling(
             authorized_by=fabricated_authorizer(),
         )
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="refresh_token_reused",
         source="turn",

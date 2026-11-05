@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from rcp.config import MachineConfig
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
@@ -207,7 +206,7 @@ def test_remote_seed_inventory_is_available_for_task_staging(
 
     inventory = service.imported_source_inventory(
         "seed",
-        MachineConfig(alias="server", host="rcp.example"),
+        "server",
     )
 
     assert inventory is not None

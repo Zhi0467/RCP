@@ -11,7 +11,7 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
@@ -110,7 +110,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     credentials: ProviderCredentialStore,
 ) -> None:
     environment = AgentLauncher(credentials=credentials).process_environment(
-        LoginKey("claude", "", MACHINE_LOGIN_ID)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
@@ -120,7 +120,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     assert environment.remote_prefix is None
     assert (
         AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("codex", "", MACHINE_LOGIN_ID))
+        .process_environment(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
         .local_env
         is None
     )
@@ -128,7 +128,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     credentials.delete_token("claude", "", login_id=MACHINE_LOGIN_ID)
     without = (
         AgentLauncher(credentials=credentials)
-        .process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID))
+        .process_environment(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
         .local_env
     )
     assert without is not None
@@ -144,7 +144,7 @@ def test_local_environment_drops_a_hosting_claude_session(
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
 
     environment = AgentLauncher(credentials=credentials).process_environment(
-        LoginKey("claude", "", MACHINE_LOGIN_ID)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
 
     assert environment.local_env is not None
@@ -198,7 +198,9 @@ async def test_every_local_claude_start_receives_the_stored_token(
     store = AppStore(tmp_path / "app.sqlite3")
     launcher = AgentLauncher(credentials=credentials, readiness_snapshots=store)
 
-    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    readiness = launcher.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert readiness.authenticated and readiness.work_like_available
 
     skills = ProviderSkillInventoryManager(
@@ -237,30 +239,34 @@ def test_readiness_reuses_the_stored_answer_until_the_version_changes(
     binary = _fake_claude(tmp_path)
     store = AppStore(tmp_path / "app.sqlite3")
     first = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
     probed = [start["argv"] for start in _starts(tmp_path)]
     assert ["auth", "status"] in probed
     (tmp_path / "starts.jsonl").unlink()
 
     fresh = AgentLauncher(credentials=credentials, readiness_snapshots=store)
-    reused = fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    reused = fresh.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert reused == first
     assert [start["argv"] for start in _starts(tmp_path)] == [["--version"]]
     (tmp_path / "starts.jsonl").unlink()
 
-    fresh.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
+    fresh.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+    )
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     (tmp_path / "starts.jsonl").unlink()
 
     (tmp_path / "version.txt").write_text("2.1.271 (Claude Code)\n")
     upgraded = AgentLauncher(credentials=credentials, readiness_snapshots=store).readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
     assert upgraded.version == "2.1.271 (Claude Code)"
     assert ["auth", "status"] in [start["argv"] for start in _starts(tmp_path)]
     snapshot = store.provider_readiness_snapshot(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), str(binary)
     )
     assert snapshot is not None and snapshot.version == "2.1.271 (Claude Code)"
     assert TOKEN not in snapshot.readiness_json
@@ -274,7 +280,9 @@ async def test_before_start_runs_once_under_the_credential_gate(
 
     binary = _fake_claude(tmp_path)
     launcher = AgentLauncher(credentials=credentials)
-    lock = launcher.credential_gate._lock_for(LoginKey("claude", "", MACHINE_LOGIN_ID))
+    lock = launcher.credential_gate._lock_for(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    )
     observed: list[bool] = []
 
     async def before_start() -> None:
@@ -427,9 +435,9 @@ def test_member_git_default_reaches_launch_and_repository_config_wins(
 def test_claude_without_managed_credentials_still_runs_foreground() -> None:
     launcher = AgentLauncher()
     assert (
-        launcher.process_environment(LoginKey("claude", "", MACHINE_LOGIN_ID)).local_env[
-            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
-        ]
+        launcher.process_environment(
+            LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+        ).local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]
         == "1"
     )
     assert (

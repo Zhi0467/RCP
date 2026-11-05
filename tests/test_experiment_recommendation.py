@@ -6,7 +6,7 @@ import pytest
 
 from rcp.api.experiment_controls import _experiment_recommendation
 from rcp.control import ExperimentControlState, ExperimentOperationalState
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage.models import MACHINE_LOGIN_ID, AgentFailureKind
 
 
@@ -143,7 +143,10 @@ def test_signed_out_experiment_retry_queues_child_without_spending_budget(tmp_pa
     )
     root = wait_for_task(store, root.operation_id, expect="failed")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]

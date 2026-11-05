@@ -55,7 +55,7 @@ from unittest import mock
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.attachments import ChatAttachmentDescriptor
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -79,7 +79,7 @@ from tests.lifecycles.engine import RESTART, START, Action, Clock, Goal, Memory,
 
 _ROOT = "A0"
 _EXPIRY = START + timedelta(minutes=30)
-_LOGIN = LoginKey("codex", "", MACHINE_LOGIN_ID)
+_LOGIN = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
 _OUTCOMES = ("success", "transport_lost", "provider_auth", "session_refused", "paused")
 _TERMINAL = frozenset({"succeeded", "failed", "interrupted", "paused"})
 _MIGRATION = "a migration runs when a store opens, never inside an action"
@@ -99,8 +99,8 @@ def seeded_store(tmp_path: Path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="Project",
-            state_location=str(tmp_path / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / ".research"),
             added_at=store.now(),
         )
     )

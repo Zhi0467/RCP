@@ -9,7 +9,7 @@ import pytest
 
 from rcp.agents.provider_accounts import LoginRefusal, PreviousProviderLogin, ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import AppStore
 
 
@@ -31,7 +31,7 @@ def _login(accounts, provider, *, own=False, machine=False, member="member"):
             provider, "", member_id=member if own else None, added_by=member
         ).login_id
     )
-    key = LoginKey(provider, "", login_id)
+    key = LoginKey(provider, BACKEND_MACHINE_ID, login_id)
     store.mark_provider_login_verified(key, member_id=member, detail="ok")
     if provider == "claude":
         accounts.credentials.store_token(
@@ -223,9 +223,15 @@ def test_codex_session_on_signed_out_shared_login_continues_on_own_login(account
 
 def test_opencode_and_legacy_authorizer_use_machine(accounts):
     accounts.store.set_provider_login_setting("member", "opencode", "", "own")
-    assert accounts.resolve_login("opencode", "", "member") == (LoginKey("opencode", "", ""), None)
+    assert accounts.resolve_login("opencode", "", "member") == (
+        LoginKey("opencode", BACKEND_MACHINE_ID, ""),
+        None,
+    )
     accounts.store.set_provider_login_setting("", "codex", "", "own")
-    assert accounts.resolve_login("codex", "", None) == (LoginKey("codex", "", ""), None)
+    assert accounts.resolve_login("codex", "", None) == (
+        LoginKey("codex", BACKEND_MACHINE_ID, ""),
+        None,
+    )
 
 
 def test_session_helpers_only_use_provider_started_matching_turns(accounts):

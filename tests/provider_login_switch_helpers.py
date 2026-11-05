@@ -8,6 +8,7 @@ from typing import cast
 
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.background import BackgroundAgentTasks
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.shared import _ProviderOutcome, _sse, _stream_agent_events
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import ProjectRecord
@@ -37,8 +38,8 @@ def switched_session(accounts, stage, provider, direction, *, status="failed", r
             project_id=PROJECT,
             locator=str(write_local_test_manifest(stage.parent)),
             name="Project",
-            state_location="unused",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="unused",
             added_at=store.now(),
         )
     )

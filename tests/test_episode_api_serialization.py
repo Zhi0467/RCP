@@ -18,7 +18,7 @@ from rcp.api.episodes import (
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -39,8 +39,8 @@ def _project(store: AppStore, project_id: str = "project") -> None:
             project_id=project_id,
             locator=f"/tmp/{project_id}/research.yaml",
             name=project_id,
-            state_location=f"/tmp/{project_id}/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=f"/tmp/{project_id}/.research",
             added_at=store.now(),
         )
     )
@@ -996,7 +996,7 @@ def test_report_account_login_state_blocks_the_serialized_wrapup(tmp_path) -> No
     episode, root = _auto_episode(store, "signed-out-report")
     _begin_report(store, episode, root, ending="completed")
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID),
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="Sign in again.",
         source="report",
@@ -1018,7 +1018,9 @@ def test_report_account_without_its_managed_token_blocks_the_serialized_wrapup(t
     episode, root = _auto_episode(store, "tokenless-report")
     _begin_report(store, episode, root, ending="completed", provider="claude")
     store.mark_provider_login_verified(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="Verified.",
     )
     response = serialize_episode(
         store, "project", store.episode(episode.episode_id), branch_summary=_branch_summary

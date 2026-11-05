@@ -10,7 +10,7 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
@@ -48,8 +48,8 @@ def _store(tmp_path: Path) -> AppStore:
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )
@@ -726,7 +726,9 @@ def test_a_revoked_login_is_parked_until_verified(tmp_path: Path) -> None:
     assert recovery.next_attempt_at is None
     assert reconcile_due_auto_research_recoveries(tasks) == 0
     store.mark_provider_login_verified(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="verified"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        detail="verified",
     )
     assert store.release_provider_auth_recoveries([(recovery.episode_id, root.operation_id)]) == [
         recovery.recovery_id
@@ -762,7 +764,10 @@ def test_signed_out_pending_recovery_retains_queued_paid_child(tmp_path):
     recovery = _wait_for_recovery(store, "task:root")
     assert recovery.status == "pending"
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
@@ -861,7 +866,10 @@ def test_signed_out_human_retry_releases_verdict_to_queued_paid_child(tmp_path: 
 
     budget = store.episode(root.episode_id).invocations_used
     store.mark_provider_login_failed(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), generation=0, detail="expired", source="turn"
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="expired",
+        source="turn",
     )
     queued = tasks.retry_auto_research(settled.operation_id or "", service=None, reasoning="high")
     assert queued.status == "queued"

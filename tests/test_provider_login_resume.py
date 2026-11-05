@@ -21,7 +21,7 @@ from rcp.api import provider_login
 from rcp.api.dependencies import get_launcher, get_provider_sign_ins, get_store
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.auto_research_recovery import reconcile_due_auto_research_recoveries
@@ -109,7 +109,10 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         diagnostic="signed out",
     )
     store.mark_provider_login_failed(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), generation=0, detail="signed out", source="turn"
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        generation=0,
+        detail="signed out",
+        source="turn",
     )
     blocked_other = store.auto_research_recovery("task:root-other")
     assert blocked_other.status == "blocked"
@@ -149,7 +152,8 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
     assert store.episode(child.episode_id).invocations_used == 1
     assert store.auto_research_recovery("task:root-other") == blocked_other
     assert (
-        store.provider_login_state(LoginKey("claude", "", MACHINE_LOGIN_ID)).state == "signed_out"
+        store.provider_login_state(LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
+        == "signed_out"
     )
     assert reconcile_due_auto_research_recoveries(background) == 0
     again = client.post("/api/providers/codex/logins/verify", json={"host": ""})
@@ -331,7 +335,7 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
 
     async def stream(_project, _kind, _request, execution):
         execution.login_generation = store.provider_login_state(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).generation
         if execution.continuation == "fresh":
             stage = tmp_path / execution.operation_id
@@ -353,7 +357,9 @@ def test_verify_matches_failed_tasks_by_frozen_host_with_stale_alias(
     roots = []
     for index in range(2):
         store.mark_provider_login_verified(
-            LoginKey("codex", "", MACHINE_LOGIN_ID), member_id="member", detail="Verified."
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="member",
+            detail="Verified.",
         )
         request = _experiment_request().model_copy(
             update={

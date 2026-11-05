@@ -12,7 +12,7 @@ import pytest
 
 from rcp import provider_skills
 from rcp.agents import ProviderReadiness
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.provider_skills import (
     ProviderSkillInventoryManager,
     ProviderSkillInventorySnapshot,
@@ -419,7 +419,8 @@ def test_skill_probe_auth_failure_is_durable(tmp_path, monkeypatch, diagnostic, 
     snapshot = manager.refresh("codex", "", "/test/claude", _ready("codex", "/test/claude"))
     assert snapshot.status == "unavailable"
     assert (
-        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
+        == "signed_out"
     ) is blocked
 
 

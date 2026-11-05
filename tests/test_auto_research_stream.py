@@ -35,6 +35,7 @@ from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
 from rcp.runs import auto_research_mail as auto_research_mail_module
 from rcp.runs.auto_research import (
@@ -231,8 +232,8 @@ def _setup_auto_research(
             project_id="project",
             locator=str(write_local_test_manifest(tmp_path)),
             name="project",
-            state_location="/tmp/project/.research",
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path="/tmp/project/.research",
             added_at=store.now(),
         )
     )

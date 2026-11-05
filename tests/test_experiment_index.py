@@ -23,6 +23,7 @@ from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.loop_status import episode_loop_metadata, episode_loop_metadata_from_snapshot
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -605,8 +606,8 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
             home_space_id=store.space_id,
             locator=str(tmp_path / "hidden" / "manifest.toml"),
             name="Hidden project",
-            state_location=str(tmp_path / "hidden" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "hidden" / ".research"),
             added_at=store.now(),
         )
     )
@@ -1497,8 +1498,8 @@ def test_experiment_index_keeps_cached_unavailable_project_without_opening_it(
             project_id="unusable-project",
             locator=str(tmp_path / "missing" / "manifest.toml"),
             name="Unusable project",
-            state_location=str(tmp_path / "missing" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "missing" / ".research"),
             added_at=record.added_at,
         )
     )
@@ -2111,8 +2112,8 @@ def test_experiment_indexes_list_healthy_projects_beside_another_projects_missin
             home_space_id=store.space_id,
             locator=str(tmp_path / "unavailable" / "manifest.toml"),
             name="Unavailable project",
-            state_location=str(tmp_path / "unavailable" / ".research"),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(tmp_path / "unavailable" / ".research"),
             added_at=store.now(),
             revision=1,
         )

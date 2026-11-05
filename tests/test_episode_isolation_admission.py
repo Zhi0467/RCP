@@ -11,6 +11,7 @@ from rcp.api.episodes import StartEpisodeBody
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.core.transition_models import GraphHeadRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import reserve_auto_research
 from rcp.runs.episodes.isolation import validate_episode_admission, validate_episode_launch
@@ -48,8 +49,8 @@ def _store(manifest, tmp_path):
             project_id="project",
             locator=str(manifest.path),
             name="project",
-            state_location=str(manifest.research_dir),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.research_dir),
             added_at=store.now(),
         )
     )

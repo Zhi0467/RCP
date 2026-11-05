@@ -25,7 +25,7 @@ from rcp.core.models import Experiment, Patch
 from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.loop_status import other_branch_loops
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.paper import PaperService
 from rcp.providers import ModelChoice
 from rcp.runs.auto_research import (
@@ -261,8 +261,8 @@ def _setup(
             project_id=PROJECT_ID,
             locator=str(manifest.path),
             name="Project",
-            state_location=str(manifest.research_dir),
-            state_remote=False,
+            state_machine_id=BACKEND_MACHINE_ID,
+            state_path=str(manifest.research_dir),
             added_at=store.now(),
         )
     )

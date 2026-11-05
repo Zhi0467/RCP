@@ -10,7 +10,7 @@ import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import work_like_launch_problem
-from rcp.machine_cards import LoginKey
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research_admission import _require_auto_research_retry_target_ready
 from rcp.storage.models import MACHINE_LOGIN_ID
 
@@ -57,7 +57,9 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
     binary = _claude_binary(tmp_path, work_ready=work_ready)
     launcher = AgentLauncher()
 
-    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    readiness = launcher.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert readiness.authenticated
     assert readiness.work_like_available is work_ready
     assert readiness.reason is None
@@ -66,18 +68,22 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
     else:
         assert _WORK_PROBE_REASON in readiness.work_like_reason
     assert (
-        launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+        launcher.readiness(
+            LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+        )
         == readiness
     )
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
-    launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True)
+    launcher.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+    )
     assert (tmp_path / "probes").read_text().splitlines() == ["probe", "probe"]
 
 
 def test_unauthenticated_provider_does_not_probe_work_readiness(tmp_path: Path) -> None:
     binary = _claude_binary(tmp_path, authenticated=False)
     readiness = AgentLauncher().readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     )
     assert not readiness.authenticated
     assert readiness.work_like_available is None
@@ -241,19 +247,21 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     launcher = AgentLauncher(login_state=store.provider_login_state)
     binary = _claude_binary(tmp_path, work_ready=True)
     assert launcher.readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     ).authenticated
     store.mark_provider_login_failed(
-        LoginKey("claude", "", MACHINE_LOGIN_ID),
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         generation=0,
         detail="observed provider failure",
         source="turn",
     )
-    readiness = launcher.readiness(LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary))
+    readiness = launcher.readiness(
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
+    )
     assert not readiness.authenticated
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
     assert not launcher.cached_readiness(
-        LoginKey("claude", "", MACHINE_LOGIN_ID), binary=str(binary)
+        LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary)
     ).authenticated
 
 
@@ -287,7 +295,7 @@ def test_probe_failure_updates_account_only_for_provider_auth(
 
     def probe(host, command, **kwargs):
         assert not launcher.credential_gate._lock_for(
-            LoginKey("codex", "", MACHINE_LOGIN_ID)
+            LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
         ).acquire(False)
         return subprocess.CompletedProcess(
             command,
@@ -298,15 +306,18 @@ def test_probe_failure_updates_account_only_for_provider_auth(
 
     monkeypatch.setattr(launcher, "_probe", probe)
     readiness = launcher.readiness(
-        LoginKey("codex", "", MACHINE_LOGIN_ID), binary=str(binary), refresh=True
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), binary=str(binary), refresh=True
     )
     assert (
-        store.provider_login_state(LoginKey("codex", "", MACHINE_LOGIN_ID)).state == "signed_out"
+        store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)).state
+        == "signed_out"
     ) is blocked
     if blocked:
         assert not readiness.authenticated
         assert (
-            store.provider_readiness_snapshot(LoginKey("codex", "", MACHINE_LOGIN_ID), str(binary))
+            store.provider_readiness_snapshot(
+                LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), str(binary)
+            )
             is None
         )
 
@@ -364,7 +375,10 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
     wait_for_task(store, root.operation_id, expect="failed")
     wait_until(lambda: root.operation_id not in tasks._workers)
     store.mark_provider_login_signed_out(
-        LoginKey("codex", "", ""), member_id=None, source="sign_out", detail="machine"
+        LoginKey("codex", BACKEND_MACHINE_ID, ""),
+        member_id=None,
+        source="sign_out",
+        detail="machine",
     )
     launcher = AgentLauncher(accounts=accounts)
     seen = []
