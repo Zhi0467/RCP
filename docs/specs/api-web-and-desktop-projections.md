@@ -621,19 +621,21 @@ unobservable job returns 409 with a `jobs` list, and resending with
 
 ## Compute setup and job APIs
 
-Project machine entries carry `alias`, `host`, `os_account`, `removable` (no
-repository or agent profile uses it), the space card's `compute` block, and live
-`compute_probes`, one `ComputeBackendProbe` or null per route. Both are read
-from the card and storage even when the graph snapshot is cached. Project
-Settings saves no machine settings.
-`DELETE /api/projects/{project_id}/machines/{machine_alias}` uses project write
-admission, refuses with 422 only a machine a repository lives on, moves agent
-profiles that run there to the base machine, and returns the project snapshot;
-the space card stays.
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
+Project machine entries carry `machine_id`, `removable` (no repository lives on
+it and it is not the base), the space card's `compute` block, and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. Name, host and
+account come from the space card list. Both are read from the card and storage
+even when the graph snapshot is cached. Project Settings saves no machine
+settings. A repository entry's `machine` is a card id or `""`.
+`POST /api/projects/{project_id}/machines` takes `{machine_id}` (404 for a card
+the space lacks) and appends it to the manifest through the state workspace.
+`DELETE /api/projects/{project_id}/machines/{machine_id}` uses project write
+admission, refuses with 422 a machine a repository lives on, and returns the
+project snapshot; the space card stays.
+`POST /api/projects/{project_id}/machines/{machine_id}/compute/check` uses
 project write admission, re-probes every route that machine offers, and
 returns both route slots.
-`GET /api/projects/{project_id}/machines/{machine_alias}/browser` returns the
+`GET /api/projects/{project_id}/machines/{machine_id}/browser` returns the
 browser readiness of that machine's execution account; the composer reads it
 while a chat's Browser toggle is on and warns when it is not ready.
 
@@ -659,7 +661,7 @@ are returned on the watcher and allow an explicit retry.
 The machine card's Compute fold holds **Slurm**, helper `jobs_root`, and the
 access hint; RCP exposes no resource-argument inputs. Each saves on its own.
 Runs offers **Check again** through
-`POST .../machines/{machine_alias}/compute/check`. Each stored probe supplies
+`POST .../machines/{machine_id}/compute/check`. Each stored probe supplies
 its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
@@ -1788,11 +1790,14 @@ and reach now. Both settle an undecided job manager, even on a card no project
 uses yet. `POST /api/space/machines/{machine_id}/providers/{provider}/resolve`
 finds the executable on the machine and records it on the card. A card carries a boolean
 `deletable`: true only when every project can be read and no repository
-lives on any alias bound to it, including each project’s base. Delete detaches
+lives on it in any project, including as a project's base. Delete detaches
 the machine from every listing project before deleting the card. If detaching
-fails, the error is returned and the card stays. Host and account never change.
-A team create with a blank account fills it
-from the login check or refuses with 422 and a `detail.code` of
+fails, the error is returned and the card stays.
+A `PATCH` of `host` or `os_account` that changes the route runs the one
+[edit check](projects-spaces-and-operations.md#space-machines); a host another
+card holds returns 409.
+A team create with a blank account fills it from a login. That login and a
+route edit's login refuse with 422 and a `detail.code` of
 `authentication_failed`, `host_key_unknown` (with the fingerprint),
 `host_key_changed`, or `unreachable`. `POST /api/space/machines/host-key` takes
 `{host, fingerprint}`, rescans, and appends the key to the route's first
@@ -1818,10 +1823,7 @@ filtered then paged, marking protected entries; project setup's folder browser
 uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that
 machine's agent-browser readiness, reaching the host, so cards load it one
 machine at a time rather than with the list; `POST .../browser/install` is the
-explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
-alias to the project manifest through the state workspace. Existing projects
-fill the machine list at startup and on registration. Project
-snapshots expose non-secret compute metadata; readiness exposes a backend-owned
+explicit, bounded install. Project snapshots expose non-secret compute metadata; readiness exposes a backend-owned
 execution-machine/target-machine matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an
 explicit refresh runs network probes, and a machine route or execution-binding

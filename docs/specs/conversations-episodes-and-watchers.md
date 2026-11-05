@@ -197,11 +197,10 @@ the launch checks both. A send is checked by its own admission. Every turn on th
 schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
 replaces the failed request's agent with it. Without a pick, a project thread
 uses its project's Settings Work profile and the Space thread the backend
-default; `thread_agent` resolves both. A project thread's machine is a manifest
-alias. The Space thread's is the backend machine's Space card id, the card with
-no host, made on first use. `run_on_host` maps a task's machine to its host
-through that owner; an unset machine is the owner's default, the project's base
-machine or the backend. A changed provider takes the provider switch path below.
+default; `thread_agent` resolves both. A thread's machine is a space card id:
+a project thread's is its project's base machine, and the Space thread's is the
+backend card. `run_on_machine` resolves a task's card; an unset machine is the
+project's base machine, and a Space task always runs on the backend. A changed provider takes the provider switch path below.
 
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
 on each record. The reader verifies the filename against the record. Source
@@ -385,8 +384,10 @@ Project removal requests deletion for every retained owner. Failed cleanup stays
 pending and retries at later turn boundaries. The same cleanup owner drains durable
 project-memory deletions after the project deletion commits and at turn boundaries
 (see [memory lifecycle](graph-consolidation-and-lessons.md)). The owner key names the stable stage,
-space, project, and resolved execution host and account; a repointed SSH alias
-cannot clean up the old host through its new target.
+space, project, and the SSH-resolved hostname, user and port. Cleanup reaches
+the owner's card by its current route and refuses when that route now resolves
+elsewhere, so an edited card or repointed SSH alias cannot clean up the old
+host through its new target.
 
 ## Conversation archive
 
@@ -519,7 +520,7 @@ only when its bytes match its filename digest.
 
 Every turn carries all project machines as compute (see
 [project machines](providers-and-containment.md#project-machines-are-every-agents-compute)).
-Added/updated machines send bounded access metadata; removals send aliases. They
+Added/updated machines send bounded access metadata; removals send names. They
 change no execution or graph scope. Branch composers work during and after an episode with independent human
 authorization, sessions and budgets. Older chat records resolve their target from
 durable task/session bindings. Branch chats and their recovery preserve that
@@ -532,7 +533,7 @@ Before a conversation has a Work turn, its composer may select **Work in a
 worktree**, choosing one writable repository on the execution machine when more
 than one qualifies. The first ticked Work turn binds that repository; every later
 turn of the chat writes only it, while still reading every project repository. RCP persists an immutable binding before creation:
-project/chat/focus, repository alias, machine and execution host, canonical shared
+project/chat/focus, repository alias, machine id, canonical shared
 and worktree paths, Git common metadata directory, real worktree and starting
 branch names, and starting commit.
 The new branch starts at the shared checkout's captured commit; uncommitted
@@ -717,10 +718,10 @@ keeps that branch's isolation owner. Pending main observations stay on main.
 Branch Work gains no Decision exception.
 
 The first isolating episode records `EpisodeIsolation` before launch: owner,
-optional graph branch, and worktree repository alias, machine/host, shared and
+optional graph branch, and worktree repository alias, machine id, shared and
 worktree paths, Git common directory, branch, starting branch/commit. Operation
 state is separate. Children, Add N turns and human Experiments on its branch use
-`isolation_owner_episode_id`, never a second binding, and must match its host.
+`isolation_owner_episode_id`, never a second binding, and must match its machine.
 Truth membership is unchanged.
 
 Code isolation requires one writable repository on the run machine, named by the
