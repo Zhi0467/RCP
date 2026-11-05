@@ -271,6 +271,30 @@ def test_a_completed_legacy_receipt_verifies_then_names_its_cards() -> None:
     assert not is_legacy_provisioning_payload(record.model_dump(mode="json"))
 
 
+def test_two_legacy_aliases_on_one_host_keep_the_resolved_central_root() -> None:
+    payload = _legacy_provisioning_payload("0" * 64)
+    resolved = payload["machines"][0] | {
+        "location": "local",
+        "host": "",
+        "central_root": "/srv/rcp",
+    }  # type: ignore[operator]
+    payload["machines"] = [  # type: ignore[index]
+        {**resolved, "alias": "laptop", "resolved_central_root": None},
+        resolved,
+    ]
+    payload["repositories"][0] |= {  # type: ignore[index]
+        "machine_alias": "laptop",
+        "intended_path": f"/srv/rcp/{payload['proposed_project_id']}/repositories/data",
+        "resolved_path": f"/srv/rcp/{payload['proposed_project_id']}/repositories/data",
+    }
+    payload["final_review_digest"] = _review_digest(payload)
+
+    record = read_legacy_provisioning_request(payload, CARDS)
+
+    assert [machine.resolved_central_root for machine in record.machines] == ["/srv/rcp"]
+    assert record.repositories[0].machine_id == BACKEND
+
+
 def test_a_legacy_receipt_whose_digest_does_not_match_is_refused() -> None:
     payload = _legacy_provisioning_payload("0" * 64)
     payload["final_review_digest"] = _review_digest(payload)

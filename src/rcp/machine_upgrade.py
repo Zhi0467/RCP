@@ -353,7 +353,7 @@ def read_legacy_provisioning_request(
         machine.alias: machine_id_for_host(machine.host, cards) for machine in legacy.machines
     }
     machines: dict[str, dict[str, Any]] = {}
-    for machine in legacy.machines:
+    for machine in sorted(legacy.machines, key=lambda item: item.resolved_central_root is None):
         machines.setdefault(
             machine_ids[machine.alias],
             {
@@ -579,7 +579,7 @@ def _upgraded_recovery(
         }
     )
     machines: dict[str, dict[str, Any]] = {}
-    for machine in legacy.machines:
+    for machine in sorted(legacy.machines, key=lambda item: item.resolved_central_root is None):
         machine_id = machine_ids.get(machine.alias, "")
         if machine_id:
             machines.setdefault(
