@@ -39,6 +39,7 @@ from rcp.compute_jobs.routes import ComputeRoute
 from rcp.config import (
     MachineComputeConfig,
     load_manifest,
+    resolve_manifest_path,
     validate_machine_access_hint,
     validate_machine_provider_paths,
 )
@@ -46,6 +47,7 @@ from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, invalidate_machine
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
+from rcp.machine_upgrade import read_legacy_manifest
 from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
@@ -622,6 +624,21 @@ def _login_account(host: str) -> str:
         ) from None
 
 
+def _pending_upgrade_names(store: AppStore, machine: SpaceMachineRecord) -> bool:
+    """Whether a project not yet renamed to card ids may map its old host to this card."""
+
+    for project in store.projects():
+        if not project.machine_ids_pending:
+            continue
+        try:
+            legacy = read_legacy_manifest(resolve_manifest_path(project.locator))
+        except (OSError, ValueError):
+            return True
+        if legacy is not None and machine.host in {item.host for item in legacy.machines}:
+            return True
+    return False
+
+
 def _checked_route(
     store: AppStore, machine: SpaceMachineRecord, body: UpdateSpaceMachineRequest
 ) -> tuple[str, str]:
@@ -719,6 +736,15 @@ def update_space_machine(
                 detail={
                     "code": "machine_has_terminals",
                     "message": "Close this machine's terminals before changing its route.",
+                },
+            )
+        if route_changed and _pending_upgrade_names(store, machine):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "machine_upgrade_pending",
+                    "message": "A project still names this machine by its old host. "
+                    "Open that project, then change the route.",
                 },
             )
         if route_changed and store.space_machine_has_work(machine_id):

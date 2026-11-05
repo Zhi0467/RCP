@@ -284,6 +284,43 @@ def test_a_card_with_running_work_keeps_its_route_and_stays(app, monkeypatch) ->
     assert client.delete(path).status_code == 200
 
 
+def test_a_card_a_pending_legacy_project_names_keeps_its_route(app, tmp_path, monkeypatch) -> None:
+    from rcp.storage import ProjectRecord
+
+    client = signed_in_client(app)
+    store = _store(app)
+    card = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    monkeypatch.setattr("rcp.api.space_machines.login_account", lambda _host: "alice")
+    manifest = tmp_path / "legacy" / ".research" / "manifest.toml"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        'name = "legacy"\n\n[[machines]]\nalias = "gpu"\nhost = "gpu.example"\n\n'
+        '[[repositories]]\nalias = "code"\nmachine = "gpu"\npath = "/srv/code"\n\n'
+        '[project]\ntruth_scope = ["code"]\n\n[state]\nrepository = "code"\n',
+        encoding="utf-8",
+    )
+    store.upsert_project(
+        ProjectRecord(
+            project_id="legacy",
+            locator=str(manifest),
+            name="legacy",
+            state_machine_id=card.machine_id,
+            state_path="/srv/code/.research",
+            added_at=store.now(),
+        )
+    )
+    with store.connection() as connection:
+        connection.execute("UPDATE projects SET machine_ids_pending = 1 WHERE project_id='legacy'")
+    path = f"/api/space/machines/{card.machine_id}"
+
+    refused = client.patch(path, json={"host": "new.example"})
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "machine_upgrade_pending"
+    with store.connection() as connection:
+        connection.execute("UPDATE projects SET machine_ids_pending = 0 WHERE project_id='legacy'")
+    assert client.patch(path, json={"host": "new.example"}).status_code == 200
+
+
 def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     client = signed_in_client(app)
     machine = _backend(client)

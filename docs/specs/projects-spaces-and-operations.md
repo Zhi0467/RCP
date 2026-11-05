@@ -76,7 +76,9 @@ a blank account from that login. A card with a live or retained terminal
 session keeps its route until those sessions end, because units stop through
 the card's current route. So does a card an open turn, a running compute job, or
 an active watcher still reaches, and such a card is not deleted: their records
-name the card, and a moved or missing route would lose the work. The edit then
+name the card, and a moved or missing route would lose the work. A card whose
+host a not-yet-upgraded project manifest still names keeps its route too, since
+that project maps its old hosts to cards when it next opens. The edit then
 forgets
 what the old route taught: provider readiness, skill inventories, every
 project's compute probes on the card, and those projects' display snapshots.
