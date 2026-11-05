@@ -256,6 +256,7 @@ def chat_prompt_values(
                 "id": item.get("id"),
                 "kind": item.get("kind", "skill"),
                 "version": item.get("version"),
+                "description": item.get("description"),
                 "path": item.get("path"),
             }
             for item in skill_pointers
