@@ -1025,3 +1025,20 @@ def test_a_deferred_queued_message_retries_itself_until_it_starts_or_times_out(
     reason = wait_until(lambda: store.agent_thread_queue_item(queued.queue_id).refusal_reason)
     assert reason.startswith("delivery_timed_out") and reason.endswith(TypeError.__name__)
     assert store.agent_tasks(world.project_id) == []
+
+
+def test_an_admitted_queued_message_restarts_with_the_backend(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    world = _queue_world(manifest, tmp_path, monkeypatch)
+    store, background = world.store, world.background
+    queued = world.queue("key", "Next")
+    [operation_id] = world.drain()
+    assert store.agent_thread_queue_item(queued.queue_id).operation_id == operation_id
+    relaunched: list[str] = []
+    monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **kwargs: None)
+    monkeypatch.setattr(background, "launch_admitted", relaunched.append)
+    background.recover_at_startup()
+    task = store.agent_task(operation_id)
+    assert task is not None and task.status == "queued"
+    assert relaunched == [operation_id]

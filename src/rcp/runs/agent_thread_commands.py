@@ -815,11 +815,14 @@ def projects_command_usage(client: str) -> str:
     return "\n".join(f"- `{client} {usage}`" for usage in projects_usages())
 
 
-def unstarted_handoff_turns(store: AppStore) -> list[AgentTaskRecord]:
+def unstarted_thread_turns(store: AppStore) -> list[AgentTaskRecord]:
+    """Admitted handoff and queued-message turns whose worker never started."""
+
     with store.connection() as connection:
         rows = connection.execute(
             "SELECT target_operation_id FROM agent_handoffs WHERE target_operation_id IS NOT NULL "
-            "UNION SELECT notified_operation_id FROM agent_handoffs WHERE notified_operation_id IS NOT NULL"
+            "UNION SELECT notified_operation_id FROM agent_handoffs WHERE notified_operation_id IS NOT NULL "
+            "UNION SELECT operation_id FROM agent_thread_queue WHERE operation_id IS NOT NULL"
         ).fetchall()
     return [
         task
@@ -830,18 +833,18 @@ def unstarted_handoff_turns(store: AppStore) -> list[AgentTaskRecord]:
     ]
 
 
-def restart_handoff_turns(background: BackgroundAgentTasks, tasks: list[AgentTaskRecord]) -> None:
+def restart_thread_turns(background: BackgroundAgentTasks, tasks: list[AgentTaskRecord]) -> None:
     """Relaunch through admitted launch, which refuses a closed thread's turn.
 
-    The dispatcher then fails that turn so its handoff reports.
+    The dispatcher then fails that turn so its handoff or queued message reports.
     """
     for task in tasks:
         try:
             background.launch_admitted(task.operation_id)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
-            logger.warning("Handoff task %s restart deferred: %s", task.operation_id, exc)
+            logger.warning("Thread turn %s restart deferred: %s", task.operation_id, exc)
             background.store.record_agent_task_event(
-                task.operation_id, f"Handoff restart deferred: {exc}", level="warning"
+                task.operation_id, f"Thread turn restart deferred: {exc}", level="warning"
             )
 
 

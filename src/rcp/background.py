@@ -616,9 +616,9 @@ class BackgroundAgentTasks:
             ):
                 question_followups.append(task.operation_id)
         from rcp.runs.agent_schedules import queued_schedule_wakes
-        from rcp.runs.agent_thread_commands import restart_handoff_turns, unstarted_handoff_turns
+        from rcp.runs.agent_thread_commands import restart_thread_turns, unstarted_thread_turns
 
-        handoff_dispatches = unstarted_handoff_turns(self.store)
+        handoff_dispatches = unstarted_thread_turns(self.store)
         # The schedule poller relaunches these; its claim already consumed their notes.
         schedule_wakes = [
             operation_id
@@ -644,7 +644,7 @@ class BackgroundAgentTasks:
             }
         )
         self._discard_orphan_mailbox_checkpoints()
-        restart_handoff_turns(self, handoff_dispatches)
+        restart_thread_turns(self, handoff_dispatches)
         restart_stopping_experiment_recoveries(self)
         self.store.settle_ready_experiment_loop_stops()
         restart_interrupted_episode_reports(self)
