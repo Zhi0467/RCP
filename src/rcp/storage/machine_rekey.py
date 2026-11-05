@@ -108,12 +108,18 @@ def rekey_project_machines(
             raise
 
 
-def finish_project_machine_ids(store: AppStore, project_id: str) -> None:
-    """The project's manifest and rows name cards; it may open and recover again."""
+def finish_project_machine_ids(store: AppStore, project_id: str, state_machine_id: str) -> None:
+    """The project's manifest and rows name cards; it may open and recover again.
+
+    The catalog row takes its state card from the rewritten manifest: migration 77
+    could map the state host only to a card that already existed.
+    """
 
     with store.connection() as connection:
         connection.execute(
-            "UPDATE projects SET machine_ids_pending = 0 WHERE project_id = ?", (project_id,)
+            "UPDATE projects SET state_machine_id = ?, machine_ids_pending = 0 "
+            "WHERE project_id = ?",
+            (state_machine_id, project_id),
         )
 
 

@@ -392,7 +392,8 @@ def upgrade_project_machine_ids(store: AppStore, record: ProjectRecord, data_dir
         return upgraded_manifest_text(legacy, machine_ids) if legacy is not None else None
 
     HistoryManager.publish_upgraded_manifest(workspace, upgraded)
-    finish_project_machine_ids(store, record.project_id)
+    manifest = load_manifest(record.locator)
+    finish_project_machine_ids(store, record.project_id, manifest.base_machine)
 
 
 def rebind_restored_project_registration(

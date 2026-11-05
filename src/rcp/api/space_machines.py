@@ -42,7 +42,7 @@ from rcp.config import (
 )
 from rcp.core.models import MachineHiddenReadProjection
 from rcp.limits import HIDDEN_READ_PATH_MAX_COUNT
-from rcp.machine_cards import LoginKey, invalidate_machine
+from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, invalidate_machine
 from rcp.machine_login import MachineLoginFailure, login_account, trust_host_key
 from rcp.operator_commands import operator_route
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
@@ -221,7 +221,11 @@ class MachineUsage(NamedTuple):
     repository_machines: set[str]
 
     def deletable(self, machine: SpaceMachineRecord) -> bool:
-        return self.complete and machine.machine_id not in self.repository_machines
+        return (
+            self.complete
+            and machine.machine_id != BACKEND_MACHINE_ID
+            and machine.machine_id not in self.repository_machines
+        )
 
 
 def _machine_usage(store: AppStore) -> MachineUsage:
@@ -621,13 +625,24 @@ def _checked_route(
 ) -> tuple[str, str]:
     """The card's route after this edit; a changed one must log in, its one check.
 
-    A team space fills a blank account from that login, as create does.
+    The backend card is the machine RCP runs on and has no route to edit; every
+    other card has a host. A team space fills a blank account from that login,
+    as create does.
     """
 
     host = machine.host if body.host is None else body.host.strip()
     os_account = machine.os_account if body.os_account is None else body.os_account
     if (host, os_account) == (machine.host, machine.os_account):
         return host, os_account
+    if machine.machine_id == BACKEND_MACHINE_ID:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "backend_has_no_route", "message": "backend_has_no_route"},
+        )
+    if not host:
+        raise HTTPException(
+            status_code=422, detail={"code": "host_required", "message": "host_required"}
+        )
     account = _login_account(host)
     if not os_account and store.space_kind == "team":
         return host, account
@@ -682,16 +697,17 @@ def update_space_machine(
     machine = _machine_or_404(store, machine_id)
     host, os_account = _checked_route(store, machine, body)
     route_changed = (host, os_account) != (machine.host, machine.os_account)
+    target = machine.model_copy(update={"host": host, "os_account": os_account})
     writable_paths = None
     if body.writable_paths is not None:
         try:
-            writable_paths = _validated_writable_paths(machine, body.writable_paths, catalog)
+            writable_paths = _validated_writable_paths(target, body.writable_paths, catalog)
         except (MachineBrowseFailure, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     hidden_folders = None
     if body.hidden_folders is not None:
         try:
-            hidden_folders = _validated_hidden_folders(machine, body.hidden_folders, catalog)
+            hidden_folders = _validated_hidden_folders(target, body.hidden_folders, catalog)
         except (MachineBrowseFailure, ValueError) as exc:
             raise HTTPException(
                 status_code=422,

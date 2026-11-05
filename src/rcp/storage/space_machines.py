@@ -56,8 +56,9 @@ class SpaceMachineStoreMixin(StoreMixinBase):
         no account, which checks nothing, as a Space turn without a card did.
         """
 
-        card = self.space_machine_for("")
-        if card is None:
+        try:
+            return self.space_machine(BACKEND_MACHINE_ID)
+        except KeyError:
             self.ensure_space_machines([("", "", "Backend")])
             card = self.space_machine(BACKEND_MACHINE_ID)
         return card

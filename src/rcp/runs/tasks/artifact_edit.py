@@ -87,7 +87,7 @@ def _open_stage(service, request, data_dir, execution):
     assert edit is not None
     machine = card(execution.store, request.run_on)
     root = execution.stage_root
-    if root and (execution.stage_machine_id or "") != machine.machine_id:
+    if root and (execution.stage_machine_id or BACKEND_MACHINE_ID) != machine.machine_id:
         raise ValueError("The edit's saved stage differs from its execution host.")
     if machine.host:
         remote = RemoteRunStage(machine.host)

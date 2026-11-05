@@ -223,6 +223,14 @@ def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
     assert logins == ["new.example"] and invalidated == [card.machine_id]
     assert client.patch(path, json={"host": "other.example"}).status_code == 409
     assert store.space_machine(card.machine_id).host == "new.example"
+    assert client.patch(path, json={"host": ""}).status_code == 422
+
+    backend = _backend(client)
+    backend_path = f"/api/space/machines/{backend['machine_id']}"
+    assert client.patch(backend_path, json={"host": "elsewhere.example"}).status_code == 422
+    assert store.backend_space_machine().host == ""
+    assert backend["deletable"] is False
+    assert client.delete(backend_path).status_code != 200
 
 
 def test_machine_autocompact_round_trip_and_refusal(app) -> None:
