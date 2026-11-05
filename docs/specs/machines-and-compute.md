@@ -8,18 +8,18 @@ human job controls.
 
 ## Base and project machines
 
-The base is the machine of the canonical state repository. Every agent profile
-runs beside that repository's `.research/`. Configuration rejects an off-base
-`run_on`, except the Paper Coach's, which loading rewrites to the base machine.
+The base is the machine of the canonical state repository. Every agent runs
+beside that repository's `.research/`, so agent profiles name no machine. A
+request that names a machine other than the base is refused.
 [Manifest.base_machine and require_base_machine](../../src/rcp/config.py) own
 this rule. Provider launch routing is described by
 [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
 
-A project names space machines by aliases and assigns each repository to one.
-The space card owns provider paths, compute settings and access hints. Manifests
-retain machine identity and repository placement. Legacy per-project settings
-are validated and migrated to the card. They are not a second live
-configuration. [MachineConfig](../../src/rcp/config.py) and `SpaceMachineRecord`
+A project lists the space cards it uses by `machine_id` and assigns each
+repository to one. The card owns host, account, provider paths, compute
+settings and access hints
+([space machines](projects-spaces-and-operations.md#space-machines)).
+[Manifest](../../src/rcp/config.py) and `SpaceMachineRecord`
 ([storage/models.py](../../src/rcp/storage/models.py)) own the types;
 [space_machines.py](../../src/rcp/storage/space_machines.py) owns card storage.
 
@@ -88,7 +88,7 @@ compute again** button and their synchronous re-check are
 
 Runs shows each unready route's diagnostic, its fix, a button that opens
 Settings, and a re-check button. The re-check calls
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check`. The
+`POST /api/projects/{project_id}/machines/{machine_id}/compute/check`. The
 [operator probe](../server.md) uses the service socket and saves its results. It
 refuses a route the machine does not offer and succeeds only for a ready route.
 Episode start and reauthorization never gate on compute readiness. Helper launch
@@ -214,9 +214,9 @@ without reopening delivery.
 ## Durable state and transfer
 
 Internal helper rows retain the OS identity, roots, requester lineage, and
-receipts for recovery. Background reconciliation does not block startup. It uses
-the saved execution identity even when the project manifest or graph history is
-unavailable. Transport errors remain diagnostics rather than evidence of
+receipts for recovery. Background reconciliation does not block startup. It
+reaches the saved machine id through its card's current route, even when the
+project manifest or graph history is unavailable. Transport errors remain diagnostics rather than evidence of
 completion. Helper job directories are not included in whole-database backup
 payloads. Restoring a row does not recreate its outputs. Project deletion finally
 runs the saved cancel action of each running helper job and each watched external

@@ -385,11 +385,15 @@ Start episode's picker takes an optional starting message.
 
 Machine tiles show the name, host, provider status, writable-path count, and
 job status where a jobs route exists: Slurm on any machine, the helper on the base.
-Aliases for one machine account share a tile and card.
-One card opens below the tiles. Dashed Add machine selects another space machine,
-derives its alias, and opens it. Setup uses the same tiles and New machine control.
+One card opens below the tiles. Dashed Add machine selects another space machine
+and opens it. Setup uses the same tiles and New machine control.
 Space and Project Settings share the card. Project Settings offers unlink only
-when no repository or profile uses the machine.
+when no repository lives on the machine and it is not the base.
+The one pencil beside the card's name turns the header into the Add machine
+fields, Name, SSH host and Account, prefilled, with Save and Cancel; the folds
+stay below. The backend card's host is fixed. An unknown host key shows the
+fingerprint and Trust as Add machine does, then Save retries. Any other failure
+keeps the form open with its message.
 Each card is a raised box with rounded wells for Compute, provider executables
 and limits, writable paths, and hidden folders.
 Folder pickers have breadcrumbs, filtering and paging within one level, protected
@@ -530,7 +534,8 @@ reason, through the open-card change its own tap causes; it drops at a fetch
 after a later change that no longer lists it, or when the member leaves the
 thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
 and can still be sent back with Later. A failed card fetch hides the cards and
-leaves the transcript as it is. The Space thread docks one stack above its composer, hidden when empty:
+leaves the transcript as it is; an amber cards icon in the composer says so on
+hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. Docked cards
