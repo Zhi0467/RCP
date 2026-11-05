@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
 
+from rcp.agents import AgentLauncher
 from rcp.api.dependencies import get_graph_service
 from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -235,3 +237,41 @@ async def test_the_paper_coach_edits_an_attached_saved_artifact_in_place(manifes
         artifact.artifact_id
     ]
     assert store.read_artifact_bytes(artifact.artifact_id) == b"second draft"
+
+
+def test_a_failed_publish_of_an_attached_edit_settles_as_failed(manifest, tmp_path, monkeypatch):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    artifact = _saved_report(store, project_id)
+    launcher = cast(AgentLauncher, _Editor(b"second draft"))
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "publish_artifact_version", unavailable)
+
+    async def stream(_project_id, _kind, request, execution):
+        service = get_graph_service(app.state.catalog, project_id, None)
+        async for frame in stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = signed_in_client(app)
+    response = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": str(uuid4()),
+            "message": "Tighten the report",
+            "mode": "discuss",
+            "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
+        },
+    )
+    assert response.status_code == 202, response.text
+    task = wait_for_task_response(client, project_id, response.json()["operation_id"])
+    assert len(store.artifact_versions(artifact.artifact_id)) == 1
+    assert [
+        (item["status"], item["reason"]) for item in task["result"]["artifact_edit_outcomes"]
+    ] == [("failed", "unverified")]
