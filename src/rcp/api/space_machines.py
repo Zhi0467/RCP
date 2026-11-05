@@ -639,16 +639,24 @@ def _checked_route(
     if machine.machine_id == BACKEND_MACHINE_ID:
         raise HTTPException(
             status_code=422,
-            detail={"code": "backend_has_no_route", "message": "backend_has_no_route"},
+            detail={
+                "code": "backend_has_no_route",
+                "message": "RCP runs on this machine, so it has no SSH route to edit.",
+            },
         )
     if not host:
         raise HTTPException(
-            status_code=422, detail={"code": "host_required", "message": "host_required"}
+            status_code=422,
+            detail={"code": "host_required", "message": "Enter the SSH host for this machine."},
         )
     account = _login_account(host)
     if body.os_account and body.os_account != account:
         raise HTTPException(
-            status_code=422, detail={"code": "account_mismatch", "message": "account_mismatch"}
+            status_code=422,
+            detail={
+                "code": "account_mismatch",
+                "message": f"The SSH login lands on {account!r}, not {body.os_account!r}.",
+            },
         )
     if os_account or store.space_kind == "team":
         return host, account
@@ -708,7 +716,19 @@ def update_space_machine(
         if route_changed and not route.enter_context(terminals.route_change(machine_id)):
             raise HTTPException(
                 status_code=409,
-                detail={"code": "machine_has_terminals", "message": "machine_has_terminals"},
+                detail={
+                    "code": "machine_has_terminals",
+                    "message": "Close this machine's terminals before changing its route.",
+                },
+            )
+        if route_changed and store.space_machine_has_work(machine_id):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "machine_has_work",
+                    "message": "Agent work is still running on this machine. "
+                    "Change its route once that work ends.",
+                },
             )
         target = machine.model_copy(update={"host": host, "os_account": os_account})
         writable_paths = None
@@ -917,6 +937,11 @@ def delete_space_machine(
             fences.enter_context(project_write_admission(project_id, request))
         with MACHINE_ATTACHMENT_LOCK:
             usage = _machine_usage(store)
+            if usage.deletable(machine) and store.space_machine_has_work(machine_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Agent work is still running on this machine.",
+                )
             if not usage.deletable(machine):
                 detail = (
                     "A repository lives on this machine."

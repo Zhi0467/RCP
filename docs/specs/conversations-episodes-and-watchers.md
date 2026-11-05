@@ -449,8 +449,9 @@ and Space turns; absent receipts project as null. The
 [Agent view](interface-and-visual-design.md#agent-view) shows unexpected fresh starts.
 `session_limit` keeps the session. Viewer edits use an artifact's saved session
 without making it current; composer comments use the current chat session.
-**New session** creates a new chat id. Provider, host, stage, target and scope
-remain bound; neither another chat nor another graph target can reuse them.
+**New session** creates a new chat id. Provider, execution machine, stage,
+target and scope remain bound; neither another chat nor another graph target can
+reuse them.
 
 ### Branch this chat
 
@@ -471,9 +472,10 @@ session of its own, such as a branched chat before its first turn, cannot branch
 Its first human message forks the source chat's latest session as it stands when
 that message is admitted, with that turn's provider, model, reasoning and machine;
 the same usability rules apply again then. Admission records the source session,
-its cwd, its host and the source chat's latest turn on the turn. From then on the
-new chat never takes newer source state: Retry and later messages before it has a
-session carry that record, and an attempt on another host fails. Fork failure fails
+its cwd, its execution machine id and the source chat's latest turn on the
+turn. From then on the new chat never takes newer source state: Retry and later
+messages before it has a session carry that record, and an attempt on another
+machine fails. Fork failure fails
 the turn and leaves Retry available; it never falls back to a fresh session. Once
 the source chat admits a newer turn or loses that session, a carried fork is
 refused before launch (`chat_fork_source_moved` or `chat_fork_source_unavailable`)
@@ -514,9 +516,9 @@ The chat master supplies graph target/head, focus, every project repository with
 the turn's writable set, selected packages and non-secret compute metadata. Separate Discuss/Work contracts grant
 only the mode named on each turn. Resumes include the unchanged human message,
 logical turn id, artifact directory and changed values. Baselines commit only
-after mechanical success and bind provider, host, session, project, target,
-conversation and focus. A legacy master without a durable record is reusable
-only when its bytes match its filename digest.
+after mechanical success and bind provider, execution machine, session,
+project, target, conversation and focus. A legacy master without a durable
+record is reusable only when its bytes match its filename digest.
 
 Every turn carries all project machines as compute (see
 [project machines](providers-and-containment.md#project-machines-are-every-agents-compute)).
@@ -628,7 +630,7 @@ follow-up eligible and shows no false refusal for the answer.
 
 Settlement and startup admit at most one unreceived-answer follow-up, atomically
 claimed with task insertion. It keeps the asking turn's mode, native session,
-provider, host, stage and target. Both live launch and recorded
+provider, execution machine, stage and target. Both live launch and recorded
 settlement verify the complete origin. Provider switches and clean handoffs
 cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
 Discuss has no Patch/write scope; Work runs with the scope its launch builds.
@@ -750,9 +752,10 @@ Every episode turn uses the parent's recorded human authorizer. A requesting
 member owns an idempotent recovery receipt but cannot replace that authorizer.
 Missing authorization refuses recovery and requires fresh human Run.
 
-The validated session binding pins provider, session, host, reusable stage,
-project, graph target and actor conversation. Human Run creates all three fresh:
-episode, session and conversation; a chat id with turns is refused. Wakes retain
+The validated session binding pins provider, session, execution machine,
+reusable stage, project, graph target and actor conversation. Human Run creates
+all three fresh: episode, session and conversation; a chat id with turns is
+refused. Wakes retain
 the recorded conversation. Provider switch activates only after mechanical
 success and is offered only where a clean-session path exists: not child Work
 or stopping episodes. Orchestrator wakes may switch and retain their paid
@@ -938,9 +941,10 @@ returns the accepted Stop with operational state and unavailable graph readiness
 it does not turn the durable Stop into a failed request.
 
 The current loop's Stop also retires unclaimed observations adopted from older
-episodes on the same Experiment, graph target, and execution host. Their origin
-remains intact, but a later episode cannot revive their delivery. Reconciliation
-of a historical Stop never retires a replacement episode's observations.
+episodes on the same Experiment, graph target, and execution machine. Their
+origin remains intact, but a later episode cannot revive their delivery.
+Reconciliation of a historical Stop never retires a replacement episode's
+observations.
 
 If no live task remains, Stop settles immediately. While the current turn is
 queued, running, or pausing, Runs shows **Stopping gracefully** and recommends
@@ -981,7 +985,8 @@ a branch episode. Watcher selection, staging, atomic claim, task creation, and
 episode association retain the same target.
 
 An Experiment episode adopts unclaimed compatible observations from earlier
-episodes of that Experiment on the same exact graph target and execution host.
+episodes of that Experiment on the same exact graph target and execution
+machine.
 Completions may coalesce across those origin episodes, including on a branch.
 The receiving episode supplies the human authorization, native session, stage,
 pinned Experiment policy (including workflow and skill packages), and invocation
@@ -1100,7 +1105,7 @@ fires. A stop still never claims RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
 atomically. One invalid item arms none. An Experiment observer repeating an
-ungrouped one already armed for that node, graph target, execution host,
+ungrouped one already armed for that node, graph target, execution machine,
 directory, check command, and log path is one such invalid item: identity jitter
 keeps the pair out of a shared delivery pass, so each spends a wake on one
 completion. An unnotified completion counts as already armed, being a wake the

@@ -306,10 +306,11 @@ The opening wake claims a reauthorization notice.
 **Why:** delayed old callbacks cannot mutate a reopened run.
 
 Continuation requires a terminal source that has not yet continued and a bound
-session and stage, with the saved stage still on the machine its execution
-alias names. It requires available isolation, no live turn or merge, no
-competing branch-node episode, and no human-owned turn in a lineage child. Exact
-request replay returns the same continuation. Stopped watchers stay stopped.
+session and stage, with the saved stage still on the machine card the root's
+`run_on` names, or the project's base machine when unset. It requires available
+isolation, no live turn or merge, no competing branch-node episode, and no
+human-owned turn in a lineage child. Exact request replay returns the same
+continuation. Stopped watchers stay stopped.
 Absent bindings require a new run. Message orchestrator targets the newest member.
 A running member gets mail. An ended member requires explicit N; the composer
 defaults to 3, while the API has no default. Ending races refuse implicit turns.

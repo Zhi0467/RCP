@@ -247,6 +247,43 @@ def test_editing_a_card_route_checks_only_the_login(app, monkeypatch) -> None:
     assert client.delete(backend_path).status_code != 200
 
 
+def test_a_card_with_running_work_keeps_its_route_and_stays(app, monkeypatch) -> None:
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity, _project
+
+    client = signed_in_client(app)
+    store = _store(app)
+    card = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    path = f"/api/space/machines/{card.machine_id}"
+    monkeypatch.setattr("rcp.api.space_machines.login_account", lambda _host: "alice")
+    _project(store)
+    task = store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id="project",
+            kind="project_chat",
+            status="queued",
+            request={"chat_id": "chat", "message": "go", "run_on": card.machine_id},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+
+    moved = client.patch(path, json={"host": "new.example"})
+    assert moved.status_code == 409
+    assert moved.json()["detail"]["code"] == "machine_has_work"
+    assert client.delete(path).status_code == 409
+    assert client.patch(path, json={"name": "Big GPU"}).status_code == 200
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='succeeded' WHERE operation_id=?", (task.operation_id,)
+        )
+    assert client.patch(path, json={"host": "new.example"}).status_code == 200
+    assert client.delete(path).status_code == 200
+
+
 def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     client = signed_in_client(app)
     machine = _backend(client)

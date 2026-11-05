@@ -1416,14 +1416,14 @@ Auto-research detail asks the member to review the episode rather than suggestin
 an unavailable action.
 
 `GET /api/providers/logins` lists every login, shared and own, on each space
-machine and project target host, with secret-free credential summaries, labels,
-supported sign-in methods, the space machine names on that host, and active
-sign-ins ([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
+machine card, with secret-free credential summaries, labels, supported sign-in
+methods, that card's name in `machines`, and active sign-ins
+([row rules](providers-and-containment.md#team-execution-accounts-and-credentials)).
 The project snapshot's `provider_logins` lists, for the viewer, the login each
 agent's launch would use: each execution profile's provider on the base machine,
 resolved through the viewer's setting. Parked work (queued tasks,
 provider-auth recoveries, the current failed Experiment turn, undelivered
-watcher groups) adds its provider and host, resolved the same way; a parked
+watcher groups) adds its provider and machine card, resolved the same way; a parked
 Codex session keeps the login it is bound to. A refusal that names no login lists
 every login of the refused source. Two members can therefore see different rows.
 Apart from parked work, a machine no profile runs on raises no notice, and a provider whose login RCP
@@ -1541,9 +1541,9 @@ Experiment detail links active turns to the task inspector, labels durable
 objectives separately from stale guidance, and shows `parent_watching` from the
 backend. Its watcher fold contains only work that child handed off. Starting Run
 opens this detail, separating historical budgets from Next episode limit and
-showing watcher/session/host continuity. An explicit main route must match both
-episode and target; an advanced control shows a History handoff, never the newer
-episode's controls/transcript.
+showing watcher/session continuity and the machine card it runs on. An explicit
+main route must match both episode and target; an advanced control shows a
+History handoff, never the newer episode's controls/transcript.
 
 Isolation-owning cards show branch base/head, merge state, and the server-offered Merge.
 Submission rechecks current eligibility; [merge projection](auto-research-and-branch-merge.md#runs-projection)
@@ -1772,9 +1772,9 @@ Personal and team spaces draw the same fold; a provider whose login RCP does not
 manage, such as OpenCode, shows only its machine sign-in card, without state or
 actions. A collapsed Members row, shown when the space has other members, counts
 their signed-in own logins. A signed-out login's notice is one row: key mark,
-provider, the host when remote, an icon (hover "Sign-ins") that opens this fold,
-and Dismiss. On Runs, work waiting on another member's own login names them
-instead of the icon; the landing page omits those rows. A failed list load marks
+provider, an icon (hover "Sign-ins") that opens this fold, and Dismiss. On Runs,
+work waiting on another member's own login names them instead of the icon; the
+landing page omits those rows. A failed list load marks
 the fold itself.
 
 `/api/space/machines` lists, creates, configures, and deletes machine cards. A

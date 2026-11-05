@@ -35,6 +35,20 @@ class SpaceMachineStoreMixin(StoreMixinBase):
             raise KeyError(machine_id)
         return _record(row)
 
+    def space_machine_has_work(self, machine_id: str) -> bool:
+        """An open turn, a running compute job, or a live watcher still reaches this card."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM graph_runs WHERE status IN ('queued', 'running', 'pausing') "
+                "AND (stage_machine_id = ? OR json_extract(request_json, '$.run_on') = ?) "
+                "UNION ALL SELECT 1 FROM compute_jobs WHERE status = 'running' AND machine_id = ? "
+                "UNION ALL SELECT 1 FROM watchers "
+                "WHERE status IN ('active', 'degraded') AND machine_id = ? LIMIT 1",
+                (machine_id, machine_id, machine_id, machine_id),
+            ).fetchone()
+        return row is not None
+
     def space_machine_for(self, host: str) -> SpaceMachineRecord | None:
         """The card for `host`; a space keeps one card per host route.
 

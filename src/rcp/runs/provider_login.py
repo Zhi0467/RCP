@@ -433,7 +433,8 @@ def bound_running_count(store: AppStore, key: LoginKey) -> int:
     with store.connection() as connection:
         row = connection.execute(
             "SELECT COUNT(*) FROM graph_runs "
-            "WHERE json_extract(request_json, '$.provider')=? AND COALESCE(stage_machine_id,'')=? "
+            "WHERE json_extract(request_json, '$.provider')=? "
+            "AND COALESCE(NULLIF(stage_machine_id,''),'backend')=? "
             "AND login_id=? AND status IN ('running', 'pausing')",
             key,
         ).fetchone()

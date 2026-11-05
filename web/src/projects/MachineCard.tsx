@@ -929,6 +929,7 @@ function MachineFields({
         <input
           value={draft.os_account}
           placeholder={accountRequired ? "From login" : "Optional"}
+          disabled={hostFixedLabel !== null}
           onChange={(event) => setDraft({ ...draft, os_account: event.target.value })}
         />
       </label>

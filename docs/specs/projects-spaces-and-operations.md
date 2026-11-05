@@ -74,7 +74,10 @@ batch-mode login to the new host; the same failures as Add machine come back,
 a named account the login does not land on is refused, and a team space fills
 a blank account from that login. A card with a live or retained terminal
 session keeps its route until those sessions end, because units stop through
-the card's current route. The edit then forgets
+the card's current route. So does a card an open turn, a running compute job, or
+an active watcher still reaches, and such a card is not deleted: their records
+name the card, and a moved or missing route would lose the work. The edit then
+forgets
 what the old route taught: provider readiness, skill inventories, every
 project's compute probes on the card, and those projects' display snapshots.
 Nothing is torn down. Running processes keep their connection, and records hold
@@ -109,7 +112,8 @@ card from a row.
 1. SQLite migration 77 rekeys host-keyed rows through the rule, keeping the
    newest row on a key collision. It clears readiness and skill-inventory
    caches, renames credential folders to `machine-<machine_id>`, and marks
-   every project `machine_ids_pending`.
+   every project `machine_ids_pending`. Each old folder name stays as a link
+   to its new folder, so a rolled-back release still finds its sign-ins.
 2. Before startup recovery, `fill_space_machines` reads every pending legacy
    manifest. Its machines become cards, and the settings older builds kept
    there merge in: Slurm turns on when any project named it, and every other

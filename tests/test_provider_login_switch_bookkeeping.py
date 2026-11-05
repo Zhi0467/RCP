@@ -76,6 +76,15 @@ async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
         connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='current'")
     assert bound_running_count(store, old) == 0
     assert bound_running_count(store, current) == 1
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id=NULL WHERE operation_id='current'"
+        )
+    assert bound_running_count(store, current) == 1
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_machine_id='backend' WHERE operation_id='current'"
+        )
     removed = remove_shared_login(store, AgentLauncher(), old, cancel_sign_in=lambda _: None)
     assert removed.removed_at is not None
     assert store.agent_task("current").status == "running"

@@ -184,11 +184,12 @@ for a watcher that chat armed with `watcher --cancel`
 attributed to that member.
 
 An exact registered helper watcher can also recover a lost job whose ordinary
-check lacks a valid exit receipt. Matching requires the project, host, origin,
-log, and complete helper command contract. The server claims the human action,
-and first reconciles any valid exit receipt from an absent owner, including
-a receipt that arrived after an earlier loss observation. Natural completion
-retains its exit status and timestamp without a cancellation acknowledgement or
+check lacks a valid exit receipt. Matching requires the project, machine id,
+origin, log, and complete helper command contract. The server claims the human
+action, and first reconciles any valid exit receipt from an absent owner,
+including a receipt that arrived after an earlier loss observation. Natural
+completion retains its exit status and timestamp without a cancellation
+acknowledgement or
 request attribution. The server otherwise uses the recorded OS owner outside
 the provider's containment, stops it
 idempotently, writes a new cancellation acknowledgement, and checks absence afresh.

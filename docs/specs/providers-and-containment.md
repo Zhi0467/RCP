@@ -630,11 +630,12 @@ Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
-Launch receipts record project, host, capability, canonical write roots,
-fingerprint, enforcement mode and fresh/resumed state. Their canonical-state
-boundary is `provider_enforced` only where every tool is bounded (Codex) and
+Launch receipts record project, execution machine id, capability, canonical
+write roots, fingerprint, enforcement mode and fresh/resumed state. Their
+canonical-state boundary is `provider_enforced` only where every tool is bounded
+(Codex) and
 `file_tools_only` where the Work shell is not (Claude, OpenCode). A resumed
-launch checks that its stage still belongs to the same project and host, then
+launch checks that its stage still belongs to the same project and machine id, then
 records the scope it built; the provider receives exactly that scope.
 
 **Why:** No turn's scope is compared with an earlier turn's. Enforcement happens
@@ -1048,7 +1049,7 @@ One base means one machine whose SSH settings reach the others.
 
 Providers run with the same capability and scope locally and over SSH. Remote launches use remote canonical
 roots. The remote stage owns validation, wrappers, transfers and recovery;
-resumption proves its saved host and stage. Transport failure is unavailable,
+resumption proves its saved machine and stage. Transport failure is unavailable,
 not semantic correction.
 
 SSH connections are owned per durable unit of work: stage or lock. Short control
@@ -1127,7 +1128,7 @@ owns turn selection.
 
 Provider profiles own sign-in interactions, validation, environment, protocol,
 safe metadata and evidence interpretation. The credential store owns private
-atomic persistence and collision-free paths; remote keys digest the exact host.
+atomic persistence and collision-free paths, keyed by machine id and login id.
 Ambiguous legacy remote token paths require repasting, never guessed migration.
 
 Codex device sign-in uses app-server `account/login/start` with
@@ -1163,15 +1164,17 @@ removal records the departing member. Removed logins cannot be verified or
 receive tokens, including attempts completing after removal; a credential such an
 attempt wrote is deleted, or left pending for reconciliation.
 
-`GET /api/providers/logins` lists each nonremoved login on a listed host. The shared row mapper
+`GET /api/providers/logins` lists each nonremoved login on every space machine
+card, unused cards included; deleted cards are omitted. The shared row mapper
 also supplies project notices, resolving new launches and parked work for the
 viewer. Other members' own rows redact detail, source and
 token metadata. Device codes and URLs appear only for the attempt starter.
 Project responses attach these rows after reading the shared display cache.
 A refused own source without a stored login appears as a signed-out own notice
-with null `login_id`, the viewer's ID, provider label and host; other fields are
-empty. Its action opens Settings, Sign-ins. Every added shared row reports its
-running-turn count even before draining; machine and own rows report zero.
+with null `login_id`, the viewer's ID, provider label and `machine_id`; other
+fields are empty. Its action opens Settings, Sign-ins. Every added shared row
+reports its running-turn count even before draining; machine and own rows report
+zero.
 
 Human routes under `/api/providers/{provider}/logins` provide `add`, `remove`,
 `sign-in`, status `sign-in/{attempt_id}`, its `cancel`, `token`, `verify` and
@@ -1185,7 +1188,7 @@ Unsupported interactions refuse explicitly; status GET is read-only.
 Sign-out records a new generation, `source="sign_out"` and actor.
 
 `GET /api/providers/logins/settings` returns the viewer's effective settings:
-host row, migration fallback `*`, then the built-in default. PUT
+the machine's row, migration fallback `*`, then the built-in default. PUT
 `/api/providers/{provider}/logins/setting` accepts only `own`, `own_then_shared`,
 `shared_then_own` or `shared`. Personal and team spaces follow the same rules;
 only the built-in default differs. OpenCode has no added login or setting. No agent command reaches these routes.
@@ -1195,9 +1198,10 @@ removes credentials without deleting sessions. Shared logins stay. A credential
 under a running turn, whoever's turn it is, is kept until that turn ends; each advance cleans after its
 completion check, so the completing pass finds none of the member's turns
 running. Pending removal retries remote deletion on each
-advance, returning unreached hosts in `provider_cleanup_unreached`, including the
-completing pass; unreachable hosts do not block completion. Fencing also marks
-each own login draining, so after completion the removal reconciler retries any
+advance, returning unreached machine ids in `provider_cleanup_unreached`,
+including the completing pass; unreachable machines do not block completion.
+Fencing also marks each own login draining, so after completion the removal
+reconciler retries any
 credential still pending, as for a shared removal. Restore's stale-member
 removal fences the copied rows while preparing and deletes credentials only
 after both restore boundaries are confirmed, because the archived deployment may
