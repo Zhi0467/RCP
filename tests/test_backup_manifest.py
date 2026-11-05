@@ -255,6 +255,38 @@ def _captured_project(tmp_path: Path) -> BackupProjectCapture:
     )
 
 
+def test_a_manifest_still_naming_machines_by_alias_is_inspected_upgraded(
+    tmp_path: Path,
+) -> None:
+    """An update captures the outgoing release's projects before it rewrites their manifests."""
+    record, request = _completed_registration(tmp_path)
+    store = _store(tmp_path)
+    worker = store.space_machine(record.state_machine_id)
+    path = Path(record.locator)
+    legacy = (
+        path.read_text(encoding="utf-8")
+        .replace(f'machines = ["{worker.machine_id}"]\n', "")
+        .replace(
+            "[[repositories]]",
+            f'[[machines]]\nalias = "worker"\nhost = "{worker.host}"\n'
+            f'os_account = "{worker.os_account}"\n\n[[repositories]]',
+            1,
+        )
+        .replace(f'machine = "{worker.machine_id}"', 'machine = "worker"')
+    )
+    path.write_text(legacy, encoding="utf-8")
+
+    registration = inspect_backup_project_registration(
+        record,
+        store=store,
+        data_dir=tmp_path / "data",
+        provisioning_requests=[request],
+    )
+
+    assert registration.manifest.repository_map["paper"].machine == worker.machine_id
+    assert path.read_text(encoding="utf-8") == legacy
+
+
 def test_an_agent_profile_whose_model_takes_no_reasoning_is_backed_up() -> None:
     profile = BackupManifestAgentProfile(
         profile="project_chat",

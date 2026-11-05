@@ -49,7 +49,12 @@ from rcp.limits import (
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
-from rcp.machine_upgrade import LegacyManifest, read_legacy_manifest, upgraded_manifest_text
+from rcp.machine_upgrade import (
+    LegacyManifest,
+    load_upgraded_manifest,
+    read_legacy_manifest,
+    upgraded_manifest_text,
+)
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
@@ -216,7 +221,7 @@ def inspect_backup_project_registration(
     assert request.completed_at is not None and request.final_review_digest is not None
 
     try:
-        manifest = load_manifest(record.locator)
+        manifest = load_upgraded_manifest(record.locator, store.space_machines())
     except (OSError, ValueError) as exc:
         raise BackupProjectUnavailable("The registered project manifest is unavailable.") from exc
     if manifest.name != record.name or str(manifest.path) != record.locator:
