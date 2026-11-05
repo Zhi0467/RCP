@@ -25,8 +25,6 @@ from rcp.setup import render_prepared_team_manifest
 from rcp.storage import AppStore, ProjectProvisioningRequestRecord
 from rcp.storage.provisioning import project_provisioning_review_digest
 from rcp.transport.remote_backup_checkout import (
-    CheckoutInspectionError,
-    inspect_checkout,
     restore_server_only,
 )
 from tests.helpers import unchecked_write_authority
@@ -50,9 +48,7 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     commit = _initialize_git_repository(github)
     for directory in (root, github.parent.parent, github.parent):
         directory.chmod(0o700)
-    first = restore_server_only(
-        os_account=account, central_root=str(root), repository_path=str(server)
-    )
+    restore_server_only(os_account=account, central_root=str(root), repository_path=str(server))
     (server / "code.py").write_text("print('not archived')\n")
     _git(server, "add", "code.py")
     _git(
@@ -236,7 +232,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     assert restored_store.completed_project_provisioning_requests(
         record.project_id
     ) == store.completed_project_provisioning_requests(record.project_id)
-    assert first["origin"] == ""
     from datetime import datetime, timedelta
 
     connected = addition.model_dump()
@@ -265,22 +260,6 @@ def test_mixed_backup_restore_backup(tmp_path, monkeypatch):
     assert project_capture_warnings((connected_capture,)) == ()
 
 
-def test_server_only_capture_refuses_an_origin(tmp_path):
-    account = pwd.getpwuid(os.geteuid()).pw_name
-    path = tmp_path / "central" / str(uuid.uuid4()) / "repositories" / "code"
-    proof = restore_server_only(
-        os_account=account, central_root=str(tmp_path / "central"), repository_path=str(path)
-    )
-    _git(path, "remote", "add", "origin", "git@github.com:example/code.git")
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account,
-            repository_path=str(path),
-            expected_origin="",
-            recorded_commit=proof["head"],
-        )
-
-
 def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
     """The folder has an origin RCP did not set. Archives written before adoption existed keep their
     exact bytes.
@@ -291,14 +270,9 @@ def test_adopted_folder_capture_ignores_its_remote_but_not_its_commit(tmp_path):
     account = pwd.getpwuid(os.geteuid()).pw_name
     folder = tmp_path / "anywhere" / "notes"
     commit = _initialize_git_repository(folder)
-    arguments = ["helper", "inspect-adopted", account, str(folder)]
+    arguments = ["helper", "inspect", account, str(folder)]
     assert main([*arguments, commit]) == 0
     assert main([*arguments, "0" * 40]) == 3
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account, repository_path=str(folder), expected_origin="",
-            recorded_commit=commit,
-        )  # fmt: skip
     repository = BackupRecoveryRepository(
         alias="notes", repository=None, machine_id=BACKEND_MACHINE_ID, resolved_path=str(folder),
         git_commit=commit, deploy_key_label=None, public_key_fingerprint=None,

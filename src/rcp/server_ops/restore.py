@@ -1095,7 +1095,7 @@ def _recover_adopted(checkouts, machine, repository, saved):
             "python3",
             "-c",
             _remote_checkout_source(),
-            "inspect-adopted",
+            "inspect",
             machine.os_account,
             repository.resolved_path,
             recorded,
@@ -1110,7 +1110,6 @@ def _recover_adopted(checkouts, machine, repository, saved):
     if payload != {
         "account": machine.os_account,
         "repository_path": repository.resolved_path,
-        "origin": "",
         "head": commit,
         "recorded_commit": recorded,
     } or not re.fullmatch(r"[0-9a-f]{40}", str(commit)):
@@ -1144,7 +1143,6 @@ def _recover_server_only(checkouts, machine, repository, saved, archived_researc
     if payload != {
         "account": machine.os_account,
         "repository_path": repository.resolved_path,
-        "origin": "",
         "head": commit,
         "recorded_commit": saved.checkout_commit if saved is not None else commit,
     } or (saved is not None and commit != saved.checkout_commit):

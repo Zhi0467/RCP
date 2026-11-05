@@ -50,33 +50,20 @@ def verify_checkout_identities(
         machine = cards.get(repository.machine_id)
         if machine is None:
             raise CheckoutInspectionError("The checkout's machine is no longer in this space.")
-        origin = (
-            None
-            if repository.adopted
-            else repository.repository.ssh_clone_url
-            if repository.repository is not None
-            else ""
-        )
         arguments = (
             machine.os_account
             or ("" if machine.host else storage_models.DEFAULT_SERVER_LAYOUT.service_account),
             repository.resolved_path,
-            "" if origin is None else origin,
             repository.git_commit,
         )
         if not machine.host:
             payload = inspect_checkout(
                 os_account=arguments[0],
                 repository_path=arguments[1],
-                expected_origin=origin,
-                recorded_commit=arguments[3],
+                recorded_commit=arguments[2],
             )
         else:
-            remote = (
-                ("inspect-adopted", arguments[0], arguments[1], arguments[3])
-                if origin is None
-                else arguments
-            )
+            remote = ("inspect", *arguments)
             command = shlex.join(("python3", "-c", _remote_checkout_source(), *remote))
             try:
                 result = subprocess.run(
@@ -111,8 +98,7 @@ def verify_checkout_identities(
         expected = {
             "account": arguments[0],
             "repository_path": arguments[1],
-            "origin": arguments[2],
-            "recorded_commit": arguments[3],
+            "recorded_commit": arguments[2],
         }
         if (
             not isinstance(payload, dict)

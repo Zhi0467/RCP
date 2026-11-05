@@ -297,7 +297,7 @@ def prepare(
             raise MaintenanceRefused("Application capture belongs to a different data directory.")
         _snapshot_roots(Path(sqlite.snapshot_path), data_dir, output)
         coordinator = BackupProjectFileCaptureCoordinator(
-            data_dir, local_project_copies=local_project_copies, require_checkout_identity=True
+            data_dir, local_project_copies=local_project_copies
         )
         if not offline:
             coordinator._validate_capture_boundary(receipt_path, sqlite)

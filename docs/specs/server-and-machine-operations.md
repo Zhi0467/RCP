@@ -718,8 +718,10 @@ encrypted publication and full readback produce immutable receipts with safe,
 bounded diagnostics.
 
 Each project binds the current manifest, resolved routes and checkouts and
-public key evidence in a nonsecret recovery descriptor. The GitHub origin and
-commit must match. Server-only code is not protected. Restore initializes empty
+public key evidence in a nonsecret recovery descriptor. Backup copies RCP's own
+files and never inspects checkouts. Restore requires each checkout to still hold
+its recorded commit and ignores its remotes. **Why:** a member may move or add a
+remote, and that is not RCP's state. Server-only code is not protected. Restore initializes empty
 server-only Git history, but adopted folders must still exist with the recorded
 commit. Missing or inconsistent descriptors cannot silently become successful
 capture. Archive format 2 records each machine only as `machine_id` and

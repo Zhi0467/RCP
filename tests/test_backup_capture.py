@@ -489,12 +489,12 @@ def test_capture_causes_survive_receipts_cli_and_doctor_without_private_text(
         category = "local_state_missing"
     elif failure == "untrusted_exception":
 
-        def fail_checkout(*_args):
-            raise CheckoutInspectionError("token=private-secret ssh://private-host/private-path")
+        def fail_manifest(*_args, **_kwargs):
+            raise ValueError("token=private-secret ssh://private-host/private-path")
 
-        monkeypatch.setattr(project_files, "verify_checkout_identities", fail_checkout)
-        expected = "repositories"
-        category = "checkout_invalid"
+        monkeypatch.setattr(project_files, "load_upgraded_manifest", fail_manifest)
+        expected = ".research"
+        category = "project_files_invalid"
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)
         .capture(receipt_path, expected_sha256=digest)
@@ -688,14 +688,14 @@ def test_one_unavailable_ssh_project_does_not_spoil_a_healthy_capture(
         data_dir,
         (healthy, remote),
     )
-    original = project_files.verify_checkout_identities
+    original = project_files.state_workspace_on_hosts
 
-    def fail_remote(recovery: BackupCheckoutRecoveryDescriptor, cards) -> None:
-        if recovery.machines[0].machine_id == REMOTE_MACHINE_ID:
-            raise BackupCheckoutHostUnavailable("host unavailable", machine_id=REMOTE_MACHINE_ID)
-        original(recovery, cards)
+    def fail_remote(manifest, data_dir, host_of):
+        if manifest.repository_map[manifest.state.repository].machine == REMOTE_MACHINE_ID:
+            raise StateUnavailable("host unavailable")
+        return original(manifest, data_dir, host_of)
 
-    monkeypatch.setattr(project_files, "verify_checkout_identities", fail_remote)
+    monkeypatch.setattr(project_files, "state_workspace_on_hosts", fail_remote)
 
     receipt = (
         BackupProjectFileCaptureCoordinator(data_dir)
@@ -920,41 +920,21 @@ def test_forbidden_fact_subtree_marks_that_project_uncaptured(tmp_path: Path) ->
     assert receipt.status == "partial"
 
 
-def test_checkout_inspection_rejects_changed_origin_and_push_url(tmp_path: Path) -> None:
+def test_checkout_inspection_ignores_remotes_but_not_a_lost_commit(tmp_path: Path) -> None:
     repository = tmp_path / "checkout"
     commit = _initialize_git_repository(repository)
     account = pwd.getpwuid(os.geteuid()).pw_name
+    _git(repository, "remote", "set-url", "origin", "git@github.com:example/moved.git")
+    _git(repository, "config", "remote.origin.pushurl", "git@github.com:example/other.git")
+    _git(repository, "remote", "add", "upstream", "git@github.com:example/upstream.git")
 
     proof = inspect_checkout(
-        os_account=account,
-        repository_path=str(repository),
-        expected_origin="git@github.com:openai/rcp.git",
-        recorded_commit=commit,
+        os_account=account, repository_path=str(repository), recorded_commit=commit
     )
     assert proof["head"] == commit
-
-    _git(repository, "remote", "set-url", "origin", "git@github.com:openai/other.git")
     with pytest.raises(CheckoutInspectionError):
         inspect_checkout(
-            os_account=account,
-            repository_path=str(repository),
-            expected_origin="git@github.com:openai/rcp.git",
-            recorded_commit=commit,
-        )
-
-    _git(repository, "remote", "set-url", "origin", "git@github.com:openai/rcp.git")
-    _git(
-        repository,
-        "config",
-        "remote.origin.pushurl",
-        "git@github.com:openai/other.git",
-    )
-    with pytest.raises(CheckoutInspectionError):
-        inspect_checkout(
-            os_account=account,
-            repository_path=str(repository),
-            expected_origin="git@github.com:openai/rcp.git",
-            recorded_commit=commit,
+            os_account=account, repository_path=str(repository), recorded_commit="0" * 40
         )
 
 

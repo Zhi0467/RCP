@@ -36,10 +36,6 @@ from rcp.server_ops.backup_capture import (
     validate_backup_sqlite_snapshot,
     write_immutable_backup_receipt,
 )
-from rcp.server_ops.backup_checkout import (
-    BackupCheckoutHostUnavailable,
-    verify_checkout_identities,
-)
 from rcp.server_ops.backup_models import (
     BackupFileEntry,
     BackupImportedProviderSourceCapture,
@@ -65,7 +61,6 @@ from rcp.sources.imported import (
     ImportedProviderSourceStore,
 )
 from rcp.storage import AppStore
-from rcp.transport.remote_backup_checkout import CheckoutInspectionError
 from rcp.transport.state import LocalStateWorkspace, StateUnavailable, state_workspace_on_hosts
 
 logger = logging.getLogger(__name__)
@@ -243,11 +238,9 @@ class BackupProjectFileCaptureCoordinator:
         data_dir: Path,
         *,
         local_project_copies: Mapping[str, Path] | None = None,
-        require_checkout_identity: bool = False,
     ) -> None:
         self.data_dir = data_dir.resolve()
         self.local_project_copies = local_project_copies or {}
-        self.require_checkout_identity = require_checkout_identity
 
     def capture(
         self,
@@ -493,30 +486,6 @@ class BackupProjectFileCaptureCoordinator:
                 inventory,
                 operation_projects=operation_projects,
             )
-        except BackupCheckoutHostUnavailable as exc:
-            discard_failed_project_capture(capture_root, project_root)
-            if _inventory_state_machine_id(inventory) == exc.machine_id:
-                return BackupProjectCapture(
-                    project_id=inventory.project_id,
-                    home_space_id=inventory.home_space_id,
-                    locator=inventory.locator,
-                    status="uncaptured",
-                    recovery=inventory.recovery,
-                    unavailable_kind="remote_unreachable",
-                    unavailable_reason="The configured SSH canonical state was unreachable.",
-                    unavailable_at=datetime.now(UTC),
-                    total_bytes=0,
-                )
-            return BackupProjectCapture(
-                project_id=inventory.project_id,
-                home_space_id=inventory.home_space_id,
-                locator=inventory.locator,
-                status="uncaptured",
-                unavailable_kind="capture_failure",
-                unavailable_reason="checkout_unreachable: repositories",
-                unavailable_at=datetime.now(UTC),
-                total_bytes=0,
-            )
         except StateUnavailable as exc:
             discard_failed_project_capture(capture_root, project_root)
             if _inventory_state_is_remote(inventory):
@@ -543,14 +512,11 @@ class BackupProjectFileCaptureCoordinator:
             )
         except (
             BackupProjectFileUnavailable,
-            CheckoutInspectionError,
             OSError,
             TypeError,
             ValueError,
         ) as exc:
             discard_failed_project_capture(capture_root, project_root)
-            if self.require_checkout_identity and isinstance(exc, CheckoutInspectionError):
-                raise
             # The receipt keeps only a fixed reason; this line names the cause.
             logger.warning(
                 "Backup could not capture project files for %r: %s: %s",
@@ -564,15 +530,7 @@ class BackupProjectFileCaptureCoordinator:
                 locator=inventory.locator,
                 status="uncaptured",
                 unavailable_kind="capture_failure",
-                unavailable_reason=_capture_failure_reason(
-                    exc,
-                    category="checkout"
-                    if isinstance(exc, CheckoutInspectionError)
-                    else "project_files",
-                    component="repositories"
-                    if isinstance(exc, CheckoutInspectionError)
-                    else ".research",
-                ),
+                unavailable_reason=_capture_failure_reason(exc, category="project_files"),
                 unavailable_at=datetime.now(UTC),
                 total_bytes=0,
             )
@@ -610,7 +568,6 @@ class BackupProjectFileCaptureCoordinator:
                 raise BackupProjectFileUnavailable(
                     "The project manifest changed after SQLite capture."
                 )
-            verify_checkout_identities(recovery, cards)
             workspace = (
                 LocalStateWorkspace(copied_root, str(copied_root))
                 if copied_root is not None

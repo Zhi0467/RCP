@@ -68,25 +68,15 @@ def _git(repository: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def _optional_git(repository: Path, *arguments: str) -> str | None:
-    result = _git_result(repository, *arguments)
-    if result.returncode == 1 and not result.stdout and not result.stderr:
-        return None
-    if result.returncode != 0:
-        raise CheckoutInspectionError("The central checkout Git identity could not be read.")
-    return result.stdout.strip()
-
-
 def inspect_checkout(
     *,
     os_account: str,
     repository_path: str,
-    expected_origin: str | None,
     recorded_commit: str,
 ) -> dict[str, str]:
-    """Verify exact account, path, origin, and retained provisioning commit.
+    """Verify exact account, path, and retained provisioning commit.
 
-    A None origin is an adopted folder: its remotes are its owner's, not RCP's.
+    Remotes belong to the checkout's users, so a moved or added remote is not checked.
     """
 
     if pwd.getpwuid(os.geteuid()).pw_name != os_account:
@@ -109,26 +99,6 @@ def inspect_checkout(
     top_level = _git(repository, "rev-parse", "--show-toplevel")
     if top_level != str(repository):
         raise CheckoutInspectionError("The configured path is not the exact Git checkout root.")
-    remotes = _git(repository, "remote").splitlines()
-    origin = ""
-    if expected_origin is None:
-        pass
-    elif not expected_origin:
-        if remotes:
-            raise CheckoutInspectionError("A server-only checkout acquired a remote.")
-    else:
-        if remotes != ["origin"]:
-            raise CheckoutInspectionError("The central checkout does not have one exact origin.")
-        origin = _git(repository, "config", "--local", "--get-all", "remote.origin.url")
-        push_origin = _optional_git(
-            repository,
-            "config",
-            "--local",
-            "--get-all",
-            "remote.origin.pushurl",
-        )
-        if origin != expected_origin or push_origin not in {None, expected_origin}:
-            raise CheckoutInspectionError("The central checkout origin identity changed.")
     head = _git(repository, "rev-parse", "--verify", "HEAD^{commit}")
     if _FULL_COMMIT.fullmatch(head) is None:
         raise CheckoutInspectionError("The central checkout HEAD is invalid.")
@@ -138,7 +108,6 @@ def inspect_checkout(
     return {
         "account": os_account,
         "repository_path": str(repository),
-        "origin": origin,
         "head": head,
         "recorded_commit": retained,
     }
@@ -179,7 +148,6 @@ def restore_server_only(
         return inspect_checkout(
             os_account=os_account,
             repository_path=repository_path,
-            expected_origin="",
             recorded_commit=recorded_commit,
         )
     if set(p.name for p in repository.iterdir()) - {".git"}:
@@ -222,7 +190,6 @@ def restore_server_only(
     return inspect_checkout(
         os_account=os_account,
         repository_path=repository_path,
-        expected_origin="",
         recorded_commit=commit,
     )
 
@@ -241,15 +208,11 @@ def main(argv: list[str]) -> int:
         payload["account_home"] = pwd.getpwuid(os.geteuid()).pw_dir
         sys.stdout.write(json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n")
         return 0
-    adopted = len(argv) == 5 and argv[1] == "inspect-adopted"
-    if len(argv) != 5:
+    if len(argv) != 5 or argv[1] != "inspect":
         return 2
     try:
         payload = inspect_checkout(
-            os_account=argv[2] if adopted else argv[1],
-            repository_path=argv[3] if adopted else argv[2],
-            expected_origin=None if adopted else argv[3],
-            recorded_commit=argv[4],
+            os_account=argv[2], repository_path=argv[3], recorded_commit=argv[4]
         )
     except CheckoutInspectionError:
         return 3

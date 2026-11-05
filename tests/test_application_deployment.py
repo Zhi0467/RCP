@@ -1273,17 +1273,15 @@ def test_update_rehearsal_warning_and_refusals_leave_live_tree_unchanged(
         assert {root: visible(root) for root in before} == before
 
 
-def test_prepare_refuses_checkout_identity_mismatch(captured, monkeypatch):
-    from rcp.server_ops import backup_project_files
-    from rcp.transport.remote_backup_checkout import CheckoutInspectionError
-
-    def mismatch(_recovery, _cards):
-        raise CheckoutInspectionError("Checkout origin does not match.")
-
-    monkeypatch.setattr(backup_project_files, "verify_checkout_identities", mismatch)
-    with pytest.raises(CheckoutInspectionError):
-        prepare(captured[0])
-    assert not (Path(captured[0].output_dir) / "application-proof.json").exists()
+def test_a_moved_checkout_origin_neither_blocks_nor_warns(captured):
+    request, state, _ = captured
+    checkout = Path(state["research"]).parent
+    origin = ("git", "-C", str(checkout), "remote")
+    subprocess.run((*origin, "remove", "origin"), check=False, capture_output=True)
+    subprocess.run((*origin, "add", "origin", "git@github.com:example/moved.git"), check=True)
+    prepared = prepare(request)
+    assert prepared["warnings"] == []
+    assert (Path(request.output_dir) / "application-proof.json").exists()
 
 
 def test_missing_project_root_warns_and_preparation_proceeds(captured, tmp_path):
