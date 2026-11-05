@@ -773,3 +773,10 @@ def test_an_open_provisioning_request_keeps_its_machine_busy(tmp_path: Path) -> 
 
     assert store.space_machine_has_work(card)
     assert not store.space_machine_has_work(BACKEND_MACHINE_ID)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE project_provisioning_requests SET machines_json = ?",
+            ('[{"alias": "compute", "host": "gpu.example", "location": "ssh"}]',),
+        )
+    assert store.space_machine_has_work(card)
+    assert not store.space_machine_has_work(BACKEND_MACHINE_ID)

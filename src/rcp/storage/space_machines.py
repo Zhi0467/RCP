@@ -48,8 +48,10 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 "UNION ALL SELECT 1 FROM project_provisioning_requests "
                 "WHERE status NOT IN ('completed', 'cancelled') AND EXISTS ("
                 "SELECT 1 FROM json_each(machines_json) "
-                "WHERE json_extract(value, '$.machine_id') = ?) LIMIT 1",
-                (machine_id, machine_id, machine_id, machine_id, machine_id),
+                "WHERE json_extract(value, '$.machine_id') = ? "
+                "OR (json_extract(value, '$.machine_id') IS NULL AND json_extract(value, '$.host') "
+                "IN (SELECT host FROM space_machines WHERE machine_id = ?))) LIMIT 1",
+                (machine_id, machine_id, machine_id, machine_id, machine_id, machine_id),
             ).fetchone()
         return row is not None
 
