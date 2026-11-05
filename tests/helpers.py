@@ -35,7 +35,6 @@ from rcp.core.models import AuthorizedHuman, BranchMergeReceipt, GraphState, Pat
 from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.report import ValidationReport
-from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AgentTaskRecord, AppStore
 
 if TYPE_CHECKING:
@@ -214,6 +213,8 @@ def write_test_manifest(tmp_path: Path) -> Manifest:
     codex_root = tmp_path / "codex"
     claude_root.mkdir()
     codex_root.mkdir()
+    from rcp.machine_cards import BACKEND_MACHINE_ID
+
     path = research / "manifest.toml"
     path.write_text(
         f'''name = "test-paper"
@@ -301,6 +302,8 @@ def seated_on_every_project(_project_id: str, _user_id: str) -> bool:
 def write_local_test_manifest(directory: Path) -> Path:
     """A project on the backend card for engine tests that resolve run_on."""
 
+    from rcp.machine_cards import BACKEND_MACHINE_ID
+
     path = directory / "manifest.toml"
     path.write_text(
         'name = "Test project"\n'
@@ -315,18 +318,19 @@ def write_local_test_manifest(directory: Path) -> Path:
     return path
 
 
-def store_test_claude_token(store: AppStore, machine_id: str = BACKEND_MACHINE_ID) -> None:
+def store_test_claude_token(store: AppStore, machine_id: str | None = None) -> None:
     """Give fake Claude execution an explicit managed credential.
 
     Imported locally because release-update bases import this module with an older
     `rcp`.
     """
     from rcp.agents.provider_environment import ProviderCredentialStore
+    from rcp.machine_cards import BACKEND_MACHINE_ID
     from rcp.storage.models import MACHINE_LOGIN_ID
 
     ProviderCredentialStore.for_data_dir(store.path.parent).store_token(
         "claude",
-        machine_id,
+        machine_id or BACKEND_MACHINE_ID,
         "test-setup-token",
         member_id="fixture-member",
         now=store.now(),
@@ -357,6 +361,7 @@ def experiment_run_task(
 ) -> AgentTaskRecord:
     """A queued first Experiment-loop turn, shaped as the Run route admits it."""
 
+    from rcp.machine_cards import BACKEND_MACHINE_ID
     from rcp.service import RunRequest
 
     now = store.now()

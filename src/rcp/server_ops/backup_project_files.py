@@ -18,10 +18,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from rcp.config import load_manifest, resolve_manifest_path
+from rcp.config import resolve_manifest_path
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
 from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_upgrade import cards_by_id, load_upgraded_manifest
 from rcp.paper.service import (
     validate_canonical_introduction_backup,
 )
@@ -591,20 +592,22 @@ class BackupProjectFileCaptureCoordinator:
         copied_root = self.local_project_copies.get(inventory.project_id)
         # A locator may name the project folder or its manifest; relative
         # repository paths resolve against the live project either way.
-        manifest = (
-            load_manifest(
-                copied_root / "manifest.toml",
-                project_root=resolve_manifest_path(locator).parent.parent,
-            )
-            if copied_root is not None
-            else load_manifest(locator)
-        )
-        if not recovery.configuration.matches_manifest(manifest):
-            raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")
         with closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store:
-            verify_checkout_identities(
-                recovery, {card.machine_id: card for card in store.space_machines()}
+            cards = cards_by_id(store.space_machines())
+            manifest = (
+                load_upgraded_manifest(
+                    copied_root / "manifest.toml",
+                    cards.values(),
+                    project_root=resolve_manifest_path(locator).parent.parent,
+                )
+                if copied_root is not None
+                else load_upgraded_manifest(locator, cards.values())
             )
+            if not recovery.configuration.matches_manifest(manifest):
+                raise BackupProjectFileUnavailable(
+                    "The project manifest changed after SQLite capture."
+                )
+            verify_checkout_identities(recovery, cards)
             workspace = (
                 LocalStateWorkspace(copied_root, str(copied_root))
                 if copied_root is not None

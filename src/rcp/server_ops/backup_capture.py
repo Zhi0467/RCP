@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -24,6 +25,7 @@ from rcp.limits import (
     BACKUP_INVENTORY_MAX_ENTRIES,
     BACKUP_RECEIPT_MAX_BYTES,
 )
+from rcp.machine_upgrade import upgraded_capture_receipt
 from rcp.operation_ids import canonical_operation_uuid as _canonical_operation_uuid
 from rcp.projects import BackupProjectUnavailable, inspect_backup_project_registration
 from rcp.server_ops._local_primitives import (
@@ -838,8 +840,12 @@ def read_backup_sqlite_capture_receipt(
 
     payload = read_immutable_backup_receipt(path, expected_sha256=expected_sha256)
     try:
+        document = json.loads(payload)
+        if isinstance(document, dict) and isinstance(document.get("snapshot_path"), str):
+            upgraded = upgraded_capture_receipt(document, Path(document["snapshot_path"]))
+            payload = payload if upgraded is document else json.dumps(upgraded).encode()
         receipt = BackupSQLiteCaptureReceipt.model_validate_json(payload)
-    except ValueError as exc:
+    except (ValueError, sqlite3.Error) as exc:
         raise BackupCaptureUnavailable("The SQLite capture receipt is invalid.") from exc
     if path.name != "sqlite-capture.json" or path.parent.name != f"backup-{receipt.capture_id}":
         raise BackupCaptureUnavailable(

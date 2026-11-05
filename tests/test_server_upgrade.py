@@ -24,6 +24,8 @@ from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.core.authority import WriteAuthority
 from rcp.history import HistoryManager
+from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.projects import fill_space_machines
 from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
 from tests.helpers import signed_in_client
@@ -167,6 +169,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (74,),
             (75,),
             (76,),
+            (77,),
         ]
 
         plan = connection.execute(
@@ -786,8 +789,12 @@ def _exercise_candidate_upgrade(
                 assert store.episode_wrapup(experiment_episode_id) is None
 
         record = store.project(project_id)
-        assert record is not None
+        assert record is not None and record.machine_ids_pending
+        fill_space_machines(store, data_dir)
+        record = store.project(project_id)
+        assert record is not None and not record.machine_ids_pending
         manifest = load_manifest(record.locator)
+        assert manifest.machines == [BACKEND_MACHINE_ID]
         replay = (
             HistoryManager(
                 manifest,

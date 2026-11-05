@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from rcp.core.models import upgrade_graph_projection
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
 from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.machine_upgrade import local_project_state_paths
 from rcp.server_ops._local_primitives import (
     canonical_json_line,
     fsync_file_tree,
@@ -419,15 +420,9 @@ def _snapshot_roots(database: Path, data: Path, output: Path) -> list[dict]:
     with closing(
         sqlite3.connect(f"{database.as_uri()}?mode=ro&immutable=1", uri=True)
     ) as connection:
-        rows = connection.execute(
-            "SELECT project_id, state_path, state_machine_id FROM projects ORDER BY project_id"
-        ).fetchall()
+        rows = local_project_state_paths(connection)
     roots = [{"live": str(data), "project_id": None}]
-    roots.extend(
-        {"live": location, "project_id": project_id}
-        for project_id, location, machine_id in rows
-        if machine_id == BACKEND_MACHINE_ID
-    )
+    roots.extend({"live": location, "project_id": project_id} for project_id, location in rows)
     for root in roots:
         path = Path(_absolute(root["live"]))
         if root["project_id"] is not None and (

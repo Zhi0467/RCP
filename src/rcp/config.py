@@ -466,7 +466,21 @@ def load_manifest(
     project_root: Path | None = None,
 ) -> Manifest:
     path = resolve_manifest_path(value, local_home=local_home)
-    data = tomlkit.parse(path.read_text(encoding="utf-8")).unwrap()
+    return manifest_from_text(
+        path.read_text(encoding="utf-8"), path, local_home=local_home, project_root=project_root
+    )
+
+
+def manifest_from_text(
+    content: str,
+    path: Path,
+    *,
+    local_home: Path | None = None,
+    project_root: Path | None = None,
+) -> Manifest:
+    """The manifest `content` would be if it were the file at `path`."""
+
+    data = tomlkit.parse(content).unwrap()
     if is_legacy_manifest_document(data):
         raise LegacyManifestError(f"{path} names machines by alias; upgrade it first")
     manifest = Manifest.model_validate(data)
