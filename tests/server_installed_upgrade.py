@@ -610,18 +610,26 @@ def seed() -> None:
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     store = AppStore(DATA / "rcp.sqlite3")
     if "key" in inspect.signature(store.mark_provider_login_verified).parameters:
-        from rcp.storage.models import MACHINE_LOGIN_ID, LoginKey
+        from rcp.storage.models import MACHINE_LOGIN_ID
 
+        try:
+            from rcp.machine_cards import BACKEND_MACHINE_ID as machine
+            from rcp.machine_cards import LoginKey
+        except ImportError:
+            from rcp.storage.models import LoginKey
+
+            machine = ""
         codex, claude = (
-            (LoginKey(provider, "", MACHINE_LOGIN_ID),) for provider in ("codex", "claude")
+            (LoginKey(provider, machine, MACHINE_LOGIN_ID),) for provider in ("codex", "claude")
         )
     else:
+        machine = ""
         codex, claude = ("codex", ""), ("claude", "")
     store.mark_provider_login_verified(
         *codex, member_id=fixture["member_id"], detail="Synthetic offline login fixture"
     )
     if hasattr(store, "set_provider_login_setting"):
-        store.set_provider_login_setting(fixture["member_id"], "codex", "", "shared")
+        store.set_provider_login_setting(fixture["member_id"], "codex", machine, "shared")
     store.mark_provider_login_signed_out(
         *claude,
         member_id=fixture["member_id"],

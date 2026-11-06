@@ -3434,6 +3434,54 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     assert store.unresolved_remote_provider_passes(_remote(store), "/stage")
 
 
+def test_a_turn_whose_machine_slept_mid_settlement_settles_once_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """To the backend a sleep is a dropped link and a clock that jumped forward."""
+
+    import time
+    from datetime import datetime, timedelta
+
+    from rcp.transport import StateUnavailable
+
+    store = _store(tmp_path)
+    waiting = _waiting_remote_work(store, "slept")
+    _finished_remote_pass(monkeypatch, waiting)
+    settled: list[str] = []
+
+    async def asleep(*_args):
+        raise StateUnavailable("ssh: connect to host remote: Operation timed out")
+        yield  # pragma: no cover - the raise above ends this generator
+
+    async def awake(_project_id, _kind, _request, execution, _recorded):
+        settled.append(execution.operation_id)
+        yield _sse(AgentEvent(event="answer", text="Recovered answer."))
+        yield _sse(AgentEvent(event="done"))
+
+    before = BackgroundAgentTasks(store, _done_stream, recorded_stream=asleep)
+    assert before._reconcile_remote_results() is True
+    assert store.agent_task(waiting.operation_id).phase == "awaiting_remote_result"  # type: ignore[union-attr]
+
+    woke = datetime.fromisoformat(waiting.updated_at) + timedelta(hours=9)
+    monotonic = time.monotonic
+    monkeypatch.setattr(AppStore, "now", staticmethod(lambda: woke.isoformat()))
+    monkeypatch.setattr(time, "monotonic", lambda: monotonic() + 9 * 3600)
+
+    restarted_store = AppStore(tmp_path / "rcp.sqlite3")
+    restarted = BackgroundAgentTasks(restarted_store, _done_stream, recorded_stream=awake)
+    restarted.recover_at_startup()
+    finished = wait_for_task(restarted_store, waiting.operation_id, expect="succeeded")
+    restarted._reconcile_remote_results()
+    before.recorded_stream = awake
+    before._reconcile_remote_results()
+    restarted.shutdown()
+
+    assert settled == [waiting.operation_id]
+    assert finished.result == {"messages": ["Recovered answer."]}
+    assert len(restarted_store.agent_tasks("project", include_hidden=True)) == 1
+    assert not restarted_store.unresolved_remote_provider_passes(_remote(restarted_store), "/stage")
+
+
 def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

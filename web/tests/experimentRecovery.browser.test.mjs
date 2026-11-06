@@ -226,7 +226,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         provider_readiness: { local: providers },
         provider_skill_inventories: {},
         skill_catalog: [],
-        skill_defaults: {},
+        skill_defaults: { workflow_ids: [], skill_ids: [] },
         experiment_control: { [node.id]: control() },
         attention: {
           pending_proposal_ids: [],

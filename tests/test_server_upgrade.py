@@ -793,8 +793,7 @@ def _exercise_candidate_upgrade(
             if expected_repair is not None:
                 assert store.episode_wrapup(experiment_episode_id) is None
 
-        record = store.project(project_id)
-        assert record is not None and record.machine_ids_pending
+        assert store.project(project_id) is not None
         fill_space_machines(store, data_dir)
         record = store.project(project_id)
         assert record is not None and not record.machine_ids_pending

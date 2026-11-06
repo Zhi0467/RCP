@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type RefObject } from "react";
 import {
   EMPTY_SKILL_SELECTION,
   addProviderSkillSelection,
@@ -9,46 +9,50 @@ import {
   isSkillPickerChooseKey,
   moveSkillHighlight,
   readSkillTrigger,
+  skillInvocationFields,
 } from "./skillPickerModel";
 import type { ProviderSkillPickerEntry, SkillPickerEntry } from "./skillPickerModel";
-import type { ProviderId, ProviderSkillInventory, SkillCatalogEntry, SkillDefaults } from "./types";
+import type { ProjectSnapshot, ProviderId, SkillDefaults } from "./types";
+
+/** What offers skills: a project snapshot, or the Space's official offer. */
+export type SkillSource = Partial<
+  Pick<
+    ProjectSnapshot,
+    "skill_catalog" | "skill_defaults" | "provider_skill_inventories" | "provider_readiness"
+  >
+>;
 
 interface Options {
-  catalog: SkillCatalogEntry[];
-  defaults: SkillDefaults;
-  provider: ProviderId;
-  providerLabel: string;
-  machine: string;
-  inventory?: ProviderSkillInventory | null;
-  /** Read when a skill is chosen, so the composer need not re-render per keystroke. */
-  getMessage: () => string;
-  onComplete: (message: string) => void;
+  source: SkillSource | null | undefined;
+  /** The turn's agent; its provider's own skills on its machine are offered too. */
+  target: { provider: ProviderId; run_on: string } | null;
+  /** The composer text the `/` token is read from and completed into. */
+  message: { get: () => string; set: (next: string) => void };
+  input: RefObject<HTMLTextAreaElement | null>;
+  onComplete?: () => void;
 }
 
 /**
- * The `/`-dropdown controller shared by chat and paper coaching.
+ * The `/`-dropdown controller every composer shares: chat, agent windows and paper coaching.
  *
- * `handleKeyDown` belongs to the composer's own textarea and must run before
- * its send shortcut, so an open dropdown claims the arrows, Enter, Tab, and
- * Escape instead of sending the turn.
+ * `readMessage` follows the composer's text, `handleKeyDown` belongs to its own
+ * textarea and must run before its send shortcut, so an open dropdown claims the
+ * arrows, Enter, Tab, and Escape instead of sending the turn. `fields` are the
+ * turn request's invocation fields; `reset` follows a delivered send.
  */
-export function useSkillPicker({
-  catalog,
-  defaults,
-  provider,
-  providerLabel,
-  machine,
-  inventory,
-  getMessage,
-  onComplete,
-}: Options) {
+export function useSkillPicker({ source, target, message, input, onComplete }: Options) {
   const [selection, setSelection] = useState<SkillDefaults>(EMPTY_SKILL_SELECTION);
   const [providerSkillNames, setProviderSkillNames] = useState<string[]>([]);
   const [query, setQuery] = useState<string | null>(null);
   const [highlight, setHighlight] = useState(0);
+  const catalog = source?.skill_catalog ?? [];
+  const defaults = source?.skill_defaults ?? EMPTY_SKILL_SELECTION;
+  const provider = target?.provider ?? "";
+  const machine = target?.run_on ?? "";
+  const inventory = source?.provider_skill_inventories?.[machine]?.[provider];
   const availableEntries = buildSkillPickerEntries(catalog, defaults, {
     provider,
-    providerLabel,
+    providerLabel: source?.provider_readiness?.[machine]?.[provider]?.label || provider,
     machine,
     inventory,
   });
@@ -85,7 +89,13 @@ export function useSkillPicker({
   const readMessage = (next: string) => setQuery(readSkillTrigger(next));
 
   const choose = (entry: SkillPickerEntry) => {
-    onComplete(completeSkillTrigger(getMessage(), entry));
+    const next = completeSkillTrigger(message.get(), entry);
+    message.set(next);
+    onComplete?.();
+    window.requestAnimationFrame(() => {
+      input.current?.focus();
+      input.current?.setSelectionRange(next.length, next.length);
+    });
     if (entry.source === "rcp") {
       setSelection((current) => addSkillSelection(current, entry));
     } else {
@@ -122,7 +132,7 @@ export function useSkillPicker({
   return {
     selection,
     providerSkillNames,
-    setSelection,
+    fields: skillInvocationFields(selection, providerSkillNames),
     reset,
     readMessage,
     handleKeyDown,

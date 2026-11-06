@@ -652,6 +652,7 @@ def start_auto_research_turn(
         request,
         authorized_by=episode.authorized_by,
         machine_id=stage_machine_id if stage_root else None,
+        automatic=request.wake_cause in {"watcher", "graph_condition"},
     )
     assert episode.authorized_by is not None
     return tasks._create_and_spawn(
@@ -1200,6 +1201,7 @@ def _start_auto_research_child_work_wake(
         authorized_by=episode.authorized_by,
         graph_target=current.graph_target,
         isolation_episode_id=episode.episode_id,
+        automatic=continuation == "watcher_wake",
     )
     if continuation == "watcher_wake":
         stored = tasks.store.create_auto_research_child_work_watcher_wake_task(

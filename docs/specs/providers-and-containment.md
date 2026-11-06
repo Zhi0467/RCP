@@ -1364,7 +1364,11 @@ Settlement marks a login limited from the existing `session_limit` classificatio
 A later successful turn or Verify clears the mark; an overlapping older turn
 cannot clear newer evidence. The mark lapses after
 `PROVIDER_LOGIN_LIMIT_HINT_SECONDS`; a continued session still counts a lapsed
-mark on any login other than its previous one. An
+mark on any login other than its previous one. When every allowed login carries
+a live mark, an automatic launch (a watcher wake, a scheduled agent wake, or an
+episode report) is refused at admission like a signed-out one, so its pending
+input waits and the next poll after the earliest mark lapses launches it. A
+human-started turn still takes a limited login. An
 episode may retry once per session and limited login when resolution
 finds a different login without a limit mark. A durable receipt prevents restart
 from rearming that retry; Auto-research retains its recovery owner and Experiment
@@ -1649,7 +1653,8 @@ selected skill the provider does not load reaches the agent only as prompt text.
 
 Project Settings selects official packages. Every official skill is enabled by
 default unless the human saves an explicit selection, including an explicit
-empty selection. Official workflows remain opt-in.
+empty selection. Official workflows remain opt-in. A Space has no project Settings, so
+its thread offers every official skill and no workflow.
 
 Only selected packages are staged to the execution machine as immutable,
 content-addressed directories. The agent receives compact id, version,

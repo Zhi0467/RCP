@@ -32,6 +32,7 @@ if "write_authority" in inspect.signature(HistoryManager).parameters:
 
 
 FIXTURE_SCHEMA_VERSION = 1
+_RUN_MACHINE = "backend" if "state_machine_id" in ProjectRecord.model_fields else "laptop"
 
 
 def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
@@ -41,6 +42,7 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
     data_dir = output / "data"
     data_dir.mkdir()
     manifest_path = _write_project(output)
+    _name_machines_by_card_id(manifest_path)
 
     store, bootstrap = AppStore.initialize_team_space(
         data_dir / "rcp.sqlite3",
@@ -80,8 +82,11 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
             home_space_id=store.space_id,
             locator=relative_locator,
             name=manifest.name,
-            state_location=relative_state,
-            state_remote=False,
+            **(
+                {"state_machine_id": "backend", "state_path": relative_state}
+                if "state_machine_id" in ProjectRecord.model_fields
+                else {"state_location": relative_state, "state_remote": False}
+            ),
             added_at=store.now(),
             revision=materialized.revision,
             reachable=True,
@@ -116,7 +121,7 @@ def build_fixture(output: Path, *, boundary: str, commit: str) -> None:
         run_truth_scope=["repo"],
         model="",
         reasoning="medium",
-        run_on="laptop",
+        run_on=_RUN_MACHINE,
     )
     store.create_agent_task(
         AgentTaskRecord(
@@ -285,7 +290,7 @@ def _create_experiment_fixture(
         "provider": "codex",
         "model": "gpt-5",
         "reasoning": "medium",
-        "run_on": "laptop",
+        "run_on": _RUN_MACHINE,
         "run_truth_scope": ["repo"],
         "chat_id": "upgrade-fixture-experiment",
         "node_id": "exp/upgrade-fixture",
@@ -350,7 +355,7 @@ def _create_experiment_fixture(
             project_id=project_id,
             control_node_id="exp/upgrade-fixture",
             provider="codex",
-            execution_machine="laptop",
+            execution_machine=_RUN_MACHINE,
             execution_host="",
             native_session_id="fixture-native-session",
             stage_host=None,
@@ -402,15 +407,23 @@ def _provisioning_fixture(
         else {}
     )
 
+    card_ids = "machine_id" in ProjectProvisioningMachineIntent.model_fields
+    if card_ids:
+        store.backend_space_machine()
+    machine = (
+        {"machine_id": "backend"}
+        if card_ids
+        else {"alias": "server", "location": "local", "os_account": "rcp"}
+    )
+    placed = {"machine_id": "backend"} if card_ids else {"machine_alias": "server"}
+
     def create_started_request():
         created = create(
             kind="create_team_project",
             authorized_by=authorized_by,
             machines=[
                 ProjectProvisioningMachineIntent(
-                    alias="server",
-                    location="local",
-                    os_account="rcp",
+                    **machine,
                     central_root=str(DEFAULT_SERVER_LAYOUT.projects_root),
                 )
             ],
@@ -418,7 +431,7 @@ def _provisioning_fixture(
                 ProjectProvisioningRepositoryIntent(
                     alias="repo",
                     repository=parse_github_repository_ref("https://github.com/openai/rcp.git"),
-                    machine_alias="server",
+                    **placed,
                 )
             ],
             provider_checks=[
@@ -428,7 +441,7 @@ def _provisioning_fixture(
                     runtime_id="codex:exec",
                     model="gpt-5",
                     reasoning="medium",
-                    machine_alias="server",
+                    **placed,
                 )
             ],
             **configuration,
@@ -537,6 +550,18 @@ def _materialize_database(root: Path) -> Path:
     database.write_bytes(gzip.decompress(compressed.read_bytes()))
     compressed.unlink()
     return database
+
+
+def _name_machines_by_card_id(manifest_path: Path) -> None:
+    """A base that names machines by card id refuses the alias manifest; give it the upgraded one."""
+    try:
+        from rcp.machine_upgrade import read_legacy_manifest, upgraded_manifest_text
+    except ImportError:
+        return
+    legacy = read_legacy_manifest(manifest_path)
+    if legacy is not None:
+        machine_ids = {machine.alias: "backend" for machine in legacy.machines}
+        manifest_path.write_text(upgraded_manifest_text(legacy, machine_ids), encoding="utf-8")
 
 
 def _write_project(root: Path) -> Path:

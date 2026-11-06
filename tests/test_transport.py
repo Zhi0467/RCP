@@ -1751,6 +1751,57 @@ def test_absent_commit_probe_waits_for_old_holder_before_classifying(tmp_path, m
     assert caught.value.commit_status == "present"
 
 
+@pytest.mark.parametrize("committed", [False, True])
+def test_a_commit_the_holder_never_answers_is_classified(tmp_path, monkeypatch, committed) -> None:
+    import rcp.transport.state as state_module
+
+    cache_root = tmp_path / "cache" / ".research"
+    remote_root = tmp_path / "remote-project" / ".research"
+    patch = Path("patches/000001.json")
+    _publication_files(cache_root, patch, Path("graph.json"), content="{}\n")
+    workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+
+    def fake_ssh(arguments):
+        if arguments[0:2] == ["test", "-f"]:
+            return subprocess.CompletedProcess(
+                arguments, 0 if Path(arguments[-1]).is_file() else 1, "", ""
+            )
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    def stalled_apply(payload):
+        if committed:
+            target = remote_root / patch
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("committed\n", encoding="utf-8")
+        return state_module._send_lock_holder_command(
+            holder, _HolderLines(holder), lease, payload, threading.Lock()
+        )
+
+    lease = RunLockLease("remote-lock", command=stalled_apply)
+
+    @contextmanager
+    def silent_holder(_path, **_kwargs):
+        yield lease
+
+    monkeypatch.setattr(state_module, "STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", silent_holder)
+    monkeypatch.setattr(subprocess, "run", _successful_process)
+
+    with pytest.raises(BatchPublishFailed) as caught:
+        workspace.publish_committed_patch([patch, "graph.json"], patch)
+
+    assert caught.value.commit_status == ("present" if committed else "absent")
+    assert holder.poll() is not None
+    assert workspace.reachable is False
+
+
 def test_ordinary_publish_channel_loss_requires_full_restage(tmp_path, monkeypatch) -> None:
     root = tmp_path / ".research"
     root.mkdir()

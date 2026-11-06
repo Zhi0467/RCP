@@ -17,6 +17,7 @@ from rcp.api.dependencies import (
 from rcp.api.identity import IdentityAccess
 from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
+from rcp.runs.work_watcher_commands import wakes_chat
 from rcp.storage import (
     AppStore,
     GraphWatcherRecord,
@@ -236,6 +237,7 @@ def _watcher_response(
     )
     payload["cancel_requested_by_name"] = requester.display_name if requester else None
     payload["can_cancel"] = isinstance(record, WatcherRecord) and record.can_cancel
+    payload["wakes_chat"] = wakes_chat(record)
     payload["can_check_now"] = bool(
         isinstance(record, WatcherRecord) and record.status == "degraded" and not record.notified
     )

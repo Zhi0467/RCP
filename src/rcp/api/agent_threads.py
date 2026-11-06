@@ -90,7 +90,7 @@ from rcp.runs.agent_threads import (
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
 from rcp.runs.artifact_edit_admission import artifact_comment_message
-from rcp.runs.space_chat import SpaceThreadOwner, space_transcript_lock
+from rcp.runs.space_chat import SpaceThreadOwner, admit_space_invocations, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
@@ -824,6 +824,8 @@ class SpaceTurnBody(BaseModel):
     attachment_set_id: str | None = Field(default=None, min_length=1)
     attachment_client_id: str | None = Field(default=None, min_length=1)
     artifact_context: ArtifactContextRequest | None = None
+    invoked_workflow_ids: list[str] = Field(default_factory=list)
+    invoked_skill_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_attachment_pair(self) -> Self:
@@ -897,9 +899,12 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
+            admit_space_invocations(body.invoked_workflow_ids, body.invoked_skill_ids)
             turn = RunRequest.model_validate(
                 {
                     **sent_thread_agent(store, thread, body.model_dump()),
+                    "invoked_workflow_ids": body.invoked_workflow_ids,
+                    "invoked_skill_ids": body.invoked_skill_ids,
                     "chat_id": thread_id,
                     "chat_scope": "project",
                     "mode": "work",

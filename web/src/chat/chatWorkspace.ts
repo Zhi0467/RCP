@@ -1,5 +1,6 @@
 import { memberDraftKey } from "../core/draftStorage.ts";
 import { MAIN_GRAPH, projectViewHash, sameGraphTarget } from "../core/graphTarget.ts";
+import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel.ts";
 import type { ComposerTurnFields } from "./composerAttachments.tsx";
 import type {
   AgentRunConfig,
@@ -224,7 +225,6 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   // An artifact comment turn may carry only its comments; the server writes their text.
   if (!message && !submission.artifactContext?.selections.length)
     throw new Error("A conversation turn requires a non-blank message.");
-  const skills = submission.skills ?? { workflow_ids: [], skill_ids: [] };
   return {
     ...submission.config,
     model: submission.config.model || null,
@@ -246,9 +246,10 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
       : {}),
     ...submission.attachments,
     ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
-    invoked_workflow_ids: skills.workflow_ids,
-    invoked_skill_ids: skills.skill_ids,
-    invoked_provider_skill_names: submission.providerSkillNames ?? [],
+    ...skillInvocationFields(
+      submission.skills ?? EMPTY_SKILL_SELECTION,
+      submission.providerSkillNames ?? [],
+    ),
   };
 }
 

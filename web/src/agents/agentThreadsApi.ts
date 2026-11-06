@@ -25,8 +25,6 @@ import type {
   SteerRequest,
   WatcherRecord,
 } from "../core/types";
-import { MAIN_GRAPH } from "../core/graphTarget.ts";
-import { visibleChatWatchers } from "../experiments/runProjection.ts";
 
 type Request = typeof api;
 type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
@@ -240,7 +238,7 @@ export async function loadThreadWatchers(
 ): Promise<WatcherRecord[]> {
   if (thread.kind !== "project") return [];
   const watchers: WatcherRecord[] = await request(`${threadProjectPath(thread)}/watchers`);
-  return visibleChatWatchers(watchers, thread.thread_id, null, MAIN_GRAPH);
+  return watchers.filter((watcher) => watcher.chat_id === thread.thread_id && watcher.wakes_chat);
 }
 
 export function stopThreadWatcher(

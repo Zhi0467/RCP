@@ -656,10 +656,32 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     // The completed project's comments and draft clear while Space keeps its own comment.
     await page.waitForFunction(
       () =>
-        !sessionStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
+        !localStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
         !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
     assert.equal(await space.getByRole("button", { name: "1 annotation" }).count(), 1);
+    await page.evaluate(() => {
+      const key = "rcp:member-draft:alex:agent-window-comments:space:space";
+      sessionStorage.setItem(key, localStorage.getItem(key));
+      localStorage.removeItem(key);
+      sessionStorage.setItem("test:block-local-writes", "1");
+    });
+    await page.addInitScript(() => {
+      if (!sessionStorage.getItem("test:block-local-writes")) return;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (this === localStorage) throw new DOMException("full", "QuotaExceededError");
+        return setItem.call(this, key, value);
+      };
+    });
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
+    await page.evaluate(() => sessionStorage.removeItem("test:block-local-writes"));
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
+    await page.evaluate(() => sessionStorage.clear());
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
     const sent = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
     assert.ok(sent.body.message.includes("Show the comparison"));
     assert.equal(sent.body.attachment_set_id, "set-1");
@@ -889,6 +911,42 @@ test("Space and project threads pick their agent from one row in the thread menu
         }
         assert.equal(await menu.count(), 0);
       }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("/ in either thread window offers the official skills and sends the chosen one", async () => {
+  await withFixture(async (browser, base) => {
+    for (const [url, name, path] of [
+      [`${base}#/agent/space`, "Pip", "/api/agent-threads/space/turns"],
+      [`${base}?view=project`, "Moss", "/api/projects/p1/tasks/project_chat"],
+    ]) {
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      await page.goto(url);
+      const box = page.getByRole("region", { name }).getByRole("textbox", { name: "Message" });
+      await box.waitFor();
+      await box.fill("Check it /");
+      const list = page.getByRole("listbox", { name: "Select a skill or workflow" });
+      assert.deepEqual(await list.getByRole("option").allTextContents(), [
+        "Graph auditCheck the graph",
+      ]);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+      if (shots) await page.screenshot({ path: `${shots}/skills-${name}-390.png` });
+      await box.press("Enter");
+      assert.equal(await list.count(), 0);
+      assert.match(await box.inputValue(), /^Check it \S*graph-audit\S* $/);
+      const posted = page.waitForRequest(
+        (request) => request.method() === "POST" && new URL(request.url()).pathname === path,
+      );
+      await box.press("Enter");
+      const sent = JSON.parse((await posted).postData());
+      assert.deepEqual(sent.invoked_skill_ids, ["graph-audit"]);
+      assert.deepEqual(sent.invoked_workflow_ids, []);
       assert.deepEqual(errors, []);
       await page.close();
     }
@@ -2812,6 +2870,13 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     const pip = page.getByRole("region", { name: "Pip" });
     await pip.locator(".agent-turn-live").waitFor();
     await pip.getByRole("button", { name: "Steer", exact: true }).waitFor();
+    await pip.getByRole("textbox", { name: "Message" }).fill("Check it /");
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.getByRole("listbox", { name: "Select a skill or workflow" }).count(),
+      0,
+    );
+    await pip.getByRole("textbox", { name: "Message" }).fill("");
     assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
     assert.equal(await pip.locator(".thread-queue").count(), 0);
     assert.deepEqual(errors, []);

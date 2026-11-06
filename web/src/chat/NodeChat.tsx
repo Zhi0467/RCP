@@ -253,8 +253,6 @@ export function NodeChat({
   const readOnly = archived || requestedReadOnly;
   const allowArtifactComments = !archived && requestedArtifactComments;
   const surface = node ? "node_chat" : "project_chat";
-  const skillCatalog = project.skill_catalog ?? [];
-  const skillDefaults = project.skill_defaults ?? { workflow_ids: [], skill_ids: [] };
   const relatedTasks = useMemo(
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
@@ -455,23 +453,12 @@ export function NodeChat({
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
   const [watchersOpen, setWatchersOpen] = useState(false);
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
-    catalog: skillCatalog,
-    defaults: skillDefaults,
-    provider: config.provider,
-    providerLabel: readiness?.label || config.provider,
-    machine: config.run_on,
-    inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
-    getMessage: draft.get,
-    onComplete: (next) => {
-      draft.set(next);
-      setSubmitError(null);
-      window.requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(next.length, next.length);
-      });
-    },
+    source: project,
+    target: config,
+    message: draft,
+    input: textareaRef,
+    onComplete: () => setSubmitError(null),
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);

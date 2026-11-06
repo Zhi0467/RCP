@@ -39,6 +39,7 @@ from rcp.service import (
     open_space_transcript,
     parse_space_records,
 )
+from rcp.skill_registry import SkillDefaults, SkillSelection, official_registry
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.turn_outcomes import TurnOutcome
@@ -825,9 +826,45 @@ def _space_turn_parts(
         PromptFactory.work_turn_prompt(
             artifact_path=str(turn.artifact_directory),
             human_message=turn.request.message or "",
+            invoked_skill_pointers=_space_invoked_skill_pointers(turn),
             attachments=turn.attachments,
         ),
     ]
+
+
+def space_skill_selection() -> SkillSelection:
+    """A Space has no project Settings, so it offers the official defaults."""
+    return official_registry().resolve(SkillDefaults())
+
+
+def admit_space_invocations(workflow_ids: list[str], skill_ids: list[str]) -> None:
+    """Refuse an invoked package the Space's default selection does not enable."""
+    available = {(item.kind, item.id) for item in space_skill_selection().resolved_skill_packages}
+    for kind, ids in (("workflow", workflow_ids), ("skill", skill_ids)):
+        for package_id in ids:
+            if (kind, package_id) not in available:
+                raise ValueError(f"invoked {kind} {package_id!r} is not enabled in the Space")
+
+
+def _space_invoked_skill_pointers(turn: _SpaceTurn) -> list[dict[str, object]]:
+    """Stage the default packages once per content label and point at the invoked ones."""
+    from rcp.agents.prompts import invoked_package_pointers
+    from rcp.skills.staging import skill_bundle_label, stage_skill_selection
+
+    request = turn.request
+    if not (request.invoked_workflow_ids or request.invoked_skill_ids):
+        return []
+    selection = space_skill_selection()
+    pointers = stage_skill_selection(
+        selection,
+        local_stage=turn.stage,
+        remote_stage=None,
+        label=skill_bundle_label(selection),
+        reuse_existing=True,
+    )
+    return invoked_package_pointers(
+        pointers, workflow_ids=request.invoked_workflow_ids, skill_ids=request.invoked_skill_ids
+    )
 
 
 def _artifact_comment_part(turn: _SpaceTurn) -> str:

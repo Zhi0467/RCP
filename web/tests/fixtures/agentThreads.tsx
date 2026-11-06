@@ -7,6 +7,7 @@ import { ProjectLanding } from "../../src/projects/ProjectLanding";
 import { buildGlossaryIndex } from "../../src/graph/glossary";
 import type { AgentThread, ProjectSnapshot } from "../../src/core/types";
 import type { VoiceAgent } from "../../src/voice/useVoiceAgent";
+import { officialSkills } from "./officialSkills.mjs";
 import "../../src/styles.css";
 
 declare global {
@@ -91,6 +92,7 @@ const project = {
   repositories: [{ alias: "sa", machine: "local", path: "/repo/sa" }],
   project_truth_scope: [],
   machines: [],
+  ...officialSkills,
 } as unknown as ProjectSnapshot;
 
 const moss: AgentThread = {

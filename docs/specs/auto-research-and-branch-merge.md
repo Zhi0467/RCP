@@ -293,7 +293,8 @@ continuation and the no-session exception. Stop skips it.
 Permanent admission defects settle with a nonblocking report error. Sign-in blocks
 park without spend. Transient failures retry with the receipt. Unclassified or
 non-transient failures settle after three repeats per process, with deduplicated
-warnings. Failed reports do not retry automatically. A continuation gets its own
+warnings. A failed report relaunches automatically until three attempts are
+spent, then settles failed. A continuation gets its own
 ending and report.
 **Why:** durable phase outcomes prevent deterministic failures from trapping wrap-up.
 

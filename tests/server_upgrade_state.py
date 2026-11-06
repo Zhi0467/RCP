@@ -153,7 +153,7 @@ def _put_profiles(
     """
     keys = ("provider", "runtime", "model", "reasoning", "run_on")
     profiles = {
-        surface: {key: profile[key] for key in keys}
+        surface: {key: profile[key] for key in keys if key in profile}
         for surface, profile in project["agent_profiles"].items()
     }
     if coach:
@@ -168,8 +168,8 @@ def _put_profiles(
         cookie=cookie,
     ) as response:
         cached = json.load(response)["agent_profiles"]
-    assert {surface: cached[surface]["run_on"] for surface in profiles} == {
-        surface: profile["run_on"] for surface, profile in profiles.items()
+    assert {surface: cached[surface].get("run_on") for surface in profiles} == {
+        surface: profile.get("run_on") for surface, profile in profiles.items()
     }, cached
 
 

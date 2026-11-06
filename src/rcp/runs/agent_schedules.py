@@ -473,6 +473,7 @@ def _dispatch_thread(poller, thread_id: str, schedules, now: datetime) -> None:
             task.project_id,
             RunRequest.model_validate(task.request),
             authorized_by=task.authorized_by,
+            automatic=True,
         )
         claimed = store.claim_agent_schedule_wake(schedules, task)
     except (AdmissionRefused, AgentTaskAdmissionConflict, ValueError) as exc:

@@ -115,6 +115,30 @@ def test_every_allowed_limited_keeps_continued_session(accounts, setting):
     )
 
 
+def test_automatic_launch_waits_for_the_earliest_allowed_lapse(accounts, monkeypatch):
+    from rcp.limits import PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+
+    store = accounts.store
+    own = _login(accounts, "claude", own=True)
+    shared = _login(accounts, "claude", machine=True)
+    store.set_provider_login_setting("member", "claude", BACKEND_MACHINE_ID, "own_then_shared")
+    assert accounts.automatic_launch_wait("claude", BACKEND_MACHINE_ID, "member") == 0
+    _limit(accounts, own)
+    assert accounts.automatic_launch_wait("claude", BACKEND_MACHINE_ID, "member") == 0
+    start = datetime.fromisoformat(store.now())
+    monkeypatch.setattr(store, "now", lambda: (start + timedelta(hours=1)).isoformat())
+    _limit(accounts, shared)
+    assert accounts.automatic_launch_wait("claude", BACKEND_MACHINE_ID, "member") == (
+        PROVIDER_LOGIN_LIMIT_HINT_SECONDS - 3600
+    )
+    store.set_provider_login_setting("member", "claude", BACKEND_MACHINE_ID, "shared")
+    assert (
+        accounts.automatic_launch_wait("claude", BACKEND_MACHINE_ID, "member")
+        == PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+    )
+    assert isinstance(accounts.resolve_login("claude", BACKEND_MACHINE_ID, "member")[0], LoginKey)
+
+
 def test_lapse_reorders_fresh_sessions_but_evidence_moves_continued(accounts, monkeypatch):
     own = _login(accounts, "claude", own=True)
     shared = _login(accounts, "claude", machine=True)

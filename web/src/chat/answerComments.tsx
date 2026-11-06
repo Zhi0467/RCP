@@ -10,6 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import { createPortal } from "react-dom";
+import { readPref, writePref } from "../core/prefStorage";
 import { MessageCircle, MessageCirclePlus, X } from "lucide-react";
 import {
   annotatableAnswerSelectionRange,
@@ -86,18 +87,20 @@ export type AnswerCommentComposer = SelectedAnswerComment | KeyboardAnswerCommen
 function readStagedAnnotations(key: string | null): StagedChatAnnotation[] {
   if (!key) return [];
   try {
-    return parseStagedChatAnnotations(sessionStorage.getItem(key));
+    const earlier = sessionStorage.getItem(key);
+    if (earlier !== null) {
+      if (readPref(key) === null) writePref(key, earlier);
+      if (readPref(key) === null) return parseStagedChatAnnotations(earlier);
+      sessionStorage.removeItem(key);
+    }
+    return parseStagedChatAnnotations(readPref(key));
   } catch {
     return [];
   }
 }
 
 function writeStagedAnnotations(key: string | null, annotations: StagedChatAnnotation[]): void {
-  if (!key) return;
-  try {
-    if (annotations.length) sessionStorage.setItem(key, JSON.stringify(annotations));
-    else sessionStorage.removeItem(key);
-  } catch {}
+  if (key) writePref(key, annotations.length ? JSON.stringify(annotations) : null);
 }
 
 /** The visual viewport's size and offset while the composer is open; null when closed. */
@@ -296,7 +299,7 @@ function useSelectionOffer({
   }, [enabled, sources, composerOpenRef, composerRef, offerRef, setOffer]);
 }
 
-/** The comments staged for the next turn, kept for this tab under `storageKey`. */
+/** The comments staged for the next turn, kept with the unsent draft under `storageKey`. */
 function useStagedAnnotations(
   storageKey: string | null,
   busy: boolean,

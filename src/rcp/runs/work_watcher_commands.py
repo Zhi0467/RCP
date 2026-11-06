@@ -25,8 +25,26 @@ def chat_armed_watcher(task: AgentTaskRecord, watcher: StoredWatcherRecord) -> b
         bool(chat_id)
         and watcher.project_id == task.project_id
         and watcher.chat_id == chat_id
-        and watcher.origin_task_kind in {"node_chat", "project_chat"}
+        and chat_work_watcher(watcher)
+    )
+
+
+def chat_work_watcher(watcher: StoredWatcherRecord) -> bool:
+    """Whether a chat's own Work turn armed this watcher, rather than an Experiment loop."""
+
+    return (
+        watcher.origin_task_kind in {"node_chat", "project_chat"}
         and watcher.continuation.patch_kind == "work"
+    )
+
+
+def wakes_chat(watcher: StoredWatcherRecord) -> bool:
+    """Whether this watcher will still wake the chat that armed it."""
+
+    return (
+        chat_work_watcher(watcher)
+        and watcher.status in {"active", "degraded"}
+        and not watcher.notified
     )
 
 
@@ -87,9 +105,7 @@ def _live_chat_watchers(store: AppStore, task: AgentTaskRecord) -> list[StoredWa
         for watcher in store.watchers(
             task.project_id, chat_id=str(task.request.get("chat_id") or "")
         )
-        if chat_armed_watcher(task, watcher)
-        and watcher.status in {"active", "degraded"}
-        and not watcher.notified
+        if chat_armed_watcher(task, watcher) and wakes_chat(watcher)
     ]
 
 

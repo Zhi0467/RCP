@@ -314,3 +314,32 @@ def test_a_steered_turn_replays_the_reply_it_actually_finished_with(tmp_path) ->
 
     assert recorded.input_message_ids == [_CLAUDE_PROMPT, _CLAUDE_STEER]
     assert any(event.text == "the real answer" for event in verdict.events)
+
+
+def test_a_journal_the_previous_release_wrote_settles_with_current_code(tmp_path) -> None:
+    """An update replaces RCP while a pass the old supervisor journals is still on its host.
+
+    The fixture holds the exact files the v0.4.39 supervisor wrote for a finished Codex pass.
+    """
+
+    from rcp.agents.schema import parse_agent_patch_json
+
+    fixture = Path(__file__).parent / "fixtures" / "remote_turn_journal_v0.4.39.json"
+    files = json.loads(fixture.read_text(encoding="utf-8"))
+    stage = tmp_path / "stage"
+    (stage / "agent.pid.turn").mkdir(parents=True)
+    stage.chmod(0o700)
+    for name, text in files.items():
+        (stage / "agent.pid.turn" / name).write_bytes(text.encode("utf-8"))
+    journal = read_journal(str(stage / "agent.pid"), 1_000_000)
+
+    recorded = recorded_provider_turn(json.loads(files["outcome.json"])["pid_file"], journal)
+    verdict = decode_recorded_turn(recorded, _request(tmp_path))
+
+    assert recorded.accepted is True
+    assert recorded.intact is True
+    assert verdict.complete is True
+    answer = json.loads(files["events.jsonl"].splitlines()[1])["item"]["text"]
+    assert any(event.text == answer for event in verdict.events)
+    assert recorded.patch == files["patch.json"]
+    assert parse_agent_patch_json(recorded.patch).ops

@@ -64,6 +64,7 @@ from rcp.runs.project_deletion import (
     deletion_preview,
     stop_project_work,
 )
+from rcp.runs.space_chat import space_skill_selection
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager, ProjectSetupRequest
 from rcp.skill_registry import SkillKind, official_registry
@@ -1236,6 +1237,20 @@ def clear_all_rebuildable_caches(
     metrics = current_service.indexer.cache_metrics().model_dump(mode="json")
     metrics["project_pages_not_rebuilt"] = not_rebuilt
     return metrics
+
+
+@router.get("/api/skills")
+def read_space_skills() -> dict[str, object]:
+    """The official catalog and the selection a Space offers, which has no project Settings."""
+
+    selection = space_skill_selection()
+    return {
+        "skill_catalog": official_registry().catalog(),
+        "skill_defaults": {
+            "workflow_ids": selection.workflow_ids,
+            "skill_ids": selection.skill_ids,
+        },
+    }
 
 
 @router.get("/api/skills/{kind}/{package_id}")
