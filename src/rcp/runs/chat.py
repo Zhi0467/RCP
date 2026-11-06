@@ -32,6 +32,7 @@ from rcp.agents.prompts import (
     CHAT_MASTER_CONTEXT_VERSION,
     CONVERSATION_FORK_NOTE,
     chat_master_contract_key,
+    skill_prompt_values,
 )
 from rcp.agents.write_scope import (
     ProjectWriteScope,
@@ -251,16 +252,7 @@ def chat_prompt_values(
         },
         "repositories": repositories,
         "compute": {"active": compute_profiles},
-        "skills": [
-            {
-                "id": item.get("id"),
-                "kind": item.get("kind", "skill"),
-                "version": item.get("version"),
-                "description": item.get("description"),
-                "path": item.get("path"),
-            }
-            for item in skill_pointers
-        ],
+        "skills": skill_prompt_values(skill_pointers),
         "workspace": {"path": workspace},
         "group": group_prompt_value(context.group_context),
     }

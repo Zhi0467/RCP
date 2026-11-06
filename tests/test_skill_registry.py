@@ -42,6 +42,51 @@ def test_every_official_skill_is_enabled_by_default() -> None:
     assert SkillDefaults(skill_ids=[]).skill_ids == []
 
 
+def test_invocation_validation_normalizes_only_enabled_packages() -> None:
+    registry = official_registry()
+    selection = registry.resolve(workflow_ids=["research-graph-audit"], skill_ids=[])
+
+    workflows, skills = registry.validate_invocations(
+        selection,
+        workflow_ids=["research-graph-audit", "research-graph-audit"],
+        skill_ids=["graph-audit", "evidence-triage", "graph-audit"],
+    )
+
+    assert workflows == ["research-graph-audit"]
+    assert skills == ["graph-audit", "evidence-triage"]
+    with pytest.raises(ValueError, match="not enabled"):
+        registry.validate_invocations(selection, workflow_ids=[], skill_ids=["live-pages"])
+    with pytest.raises(ValueError, match="not available"):
+        registry.validate_invocations(selection, workflow_ids=[], skill_ids=["unknown"])
+
+
+@pytest.mark.parametrize("optional", [[], ["live-pages", "graph-audit"]])
+def test_required_methods_extend_settings_without_enabling_public_invocation(
+    manifest, tmp_path, optional
+) -> None:
+    service = create_app(str(manifest.path), data_dir=tmp_path / "data").state.service
+    service.manifest.agent.skill_defaults = SkillDefaults(skill_ids=optional)
+    request = RunRequest(provider="codex", run_on="laptop")
+
+    selection = service.resolve_skill_selection(
+        request,
+        required_workflow_ids=["graph-consolidation", "graph-consolidation"],
+        required_skill_ids=["episode-report"],
+    )
+
+    assert selection.workflow_ids == ["graph-consolidation"]
+    assert selection.skill_ids == [*optional, "episode-report"]
+    identities = [(item.kind, item.id) for item in selection.resolved_skill_packages]
+    assert len(identities) == len(set(identities))
+    assert {("skill", item) for item in optional} <= set(identities)
+    assert ("workflow", "graph-consolidation") in identities
+    assert ("skill", "episode-report") in identities
+    with pytest.raises(ValueError, match="not enabled"):
+        service.resolve_skill_request(
+            request.model_copy(update={"invoked_workflow_ids": ["graph-consolidation"]})
+        )
+
+
 def test_experiment_causality_resolves_and_stages_as_an_official_skill(tmp_path: Path) -> None:
     selection = official_registry().resolve(skill_ids=["experiment-causality"])
 
@@ -97,7 +142,7 @@ def test_project_defaults_apply_when_a_request_selects_nothing(manifest, tmp_pat
             invoked_skill_ids=["evidence-triage"],
         )
     )
-    with pytest.raises(ValueError, match="not enabled in project skill defaults"):
+    with pytest.raises(ValueError, match="not enabled in skill defaults"):
         service.resolve_skill_request(
             RunRequest(provider="codex", run_on="laptop", invoked_skill_ids=["graph-audit"])
         )

@@ -685,6 +685,29 @@ def _provider_log_pointers(provider_log_roots: dict[str, list[str]]) -> str:
     return "".join(lines)
 
 
+STAGED_SKILL_RULE = (
+    "Use a staged skill or workflow when its description matches the task. Follow explicitly invoked\n"
+    "packages for that turn."
+)
+
+
+def skill_prompt_values(pointers: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    """The complete discovery metadata, including on a retained master's next turn."""
+
+    return [
+        {
+            "id": item.get("id"),
+            "kind": item.get("kind", "skill"),
+            "label": item.get("label"),
+            "version": item.get("version"),
+            "description": item.get("description"),
+            "dependencies": item.get("dependencies"),
+            "path": item.get("path"),
+        }
+        for item in pointers or []
+    ]
+
+
 def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
     """Render staged packages as readable blocks rather than one dense line each."""
 
@@ -711,9 +734,8 @@ def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
 
 {}
 
-Use a staged skill or workflow when its description matches the task. Follow explicitly invoked
-packages for that turn.
-""".format("\n\n".join(blocks))
+{}
+""".format("\n\n".join(blocks), STAGED_SKILL_RULE)
 
 
 def invoked_package_pointers(
@@ -993,7 +1015,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v13"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v29"
+WORK_POLICY_VERSION = "work-v30"
 
 
 class PromptFactory:
@@ -1625,7 +1647,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v10"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v11"
 
     @staticmethod
     def paper_coach_task_contract(
