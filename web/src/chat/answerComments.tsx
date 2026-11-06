@@ -89,8 +89,9 @@ function readStagedAnnotations(key: string | null): StagedChatAnnotation[] {
   try {
     const earlier = sessionStorage.getItem(key);
     if (earlier !== null) {
-      sessionStorage.removeItem(key);
       if (readPref(key) === null) writePref(key, earlier);
+      if (readPref(key) === null) return parseStagedChatAnnotations(earlier);
+      sessionStorage.removeItem(key);
     }
     return parseStagedChatAnnotations(readPref(key));
   } catch {

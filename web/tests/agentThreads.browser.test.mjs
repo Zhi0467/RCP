@@ -664,7 +664,19 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       const key = "rcp:member-draft:alex:agent-window-comments:space:space";
       sessionStorage.setItem(key, localStorage.getItem(key));
       localStorage.removeItem(key);
+      sessionStorage.setItem("test:block-local-writes", "1");
     });
+    await page.addInitScript(() => {
+      if (!sessionStorage.getItem("test:block-local-writes")) return;
+      const setItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (key, value) {
+        if (this === localStorage) throw new DOMException("full", "QuotaExceededError");
+        return setItem.call(this, key, value);
+      };
+    });
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
+    await page.evaluate(() => sessionStorage.removeItem("test:block-local-writes"));
     await page.reload();
     await space.getByRole("button", { name: "1 annotation" }).waitFor();
     await page.evaluate(() => sessionStorage.clear());
