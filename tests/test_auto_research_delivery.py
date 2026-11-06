@@ -355,6 +355,37 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     ]
 
 
+def test_auto_research_watcher_wake_waits_while_every_login_is_limited(
+    tmp_path, monkeypatch
+) -> None:
+    from rcp.agents.provider_accounts import ProviderAccounts
+
+    store = _store(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("backend", str(stage))
+        yield _sse(AgentEvent(event="session", session_id=request.session_id or "root-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    episode, root = _start_auto_research(tasks)
+    watcher = _arm_completed_graph_condition(store, episode, root)
+    before = store.episode_budget_meter(episode.episode_id)
+    monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 60.0)
+
+    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
+    assert store.watcher(watcher.watcher_id).notified is False
+    assert store.episode_budget_meter(episode.episode_id) == before
+
+    monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 0.0)
+    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    assert wake_id is not None
+    wait_for_task(store, wake_id, expect="succeeded")
+
+
 @pytest.mark.parametrize("wake_source", ["graph_condition", "lifecycle"])
 def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     tmp_path, monkeypatch, wake_source
