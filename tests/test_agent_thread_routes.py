@@ -507,6 +507,32 @@ def test_space_turn_route_captures_member_work(manifest, tmp_path, monkeypatch):
         assert rows[0]["latest_operation_id"] == task.operation_id
 
 
+def test_space_turn_carries_only_an_enabled_official_invocation(manifest, tmp_path, monkeypatch):
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    with signed_in_client(app) as client:
+        offered = client.get("/api/skills").json()
+        assert offered["skill_defaults"]["workflow_ids"] == []
+        skill_id = offered["skill_defaults"]["skill_ids"][0]
+        workflow_id = next(
+            item["id"] for item in offered["skill_catalog"] if item["kind"] == "workflow"
+        )
+        base = (
+            "/api/agent-threads/"
+            + client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        )
+        sent = client.post(base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id]})
+        assert sent.status_code == 202, sent.text
+        task = app.state.background_tasks.store.agent_task(sent.json()["operation_id"])
+        assert task is not None and task.request["invoked_skill_ids"] == [skill_id]
+        refused = client.post(
+            base + "/turns", json={"message": "go", "invoked_workflow_ids": [workflow_id]}
+        )
+        assert refused.status_code == 409, refused.text
+
+
 @pytest.mark.parametrize("action", ["retry", "resume"])
 def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monkeypatch, action):
     """Resume's own checkpoint rules are not under test; both share one admission."""

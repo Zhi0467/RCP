@@ -660,6 +660,13 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
         !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
     assert.equal(await space.getByRole("button", { name: "1 annotation" }).count(), 1);
+    await page.evaluate(() => {
+      const key = "rcp:member-draft:alex:agent-window-comments:space:space";
+      sessionStorage.setItem(key, localStorage.getItem(key));
+      localStorage.removeItem(key);
+    });
+    await page.reload();
+    await space.getByRole("button", { name: "1 annotation" }).waitFor();
     await page.evaluate(() => sessionStorage.clear());
     await page.reload();
     await space.getByRole("button", { name: "1 annotation" }).waitFor();
@@ -892,6 +899,42 @@ test("Space and project threads pick their agent from one row in the thread menu
         }
         assert.equal(await menu.count(), 0);
       }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("/ in either thread window offers the official skills and sends the chosen one", async () => {
+  await withFixture(async (browser, base) => {
+    for (const [url, name, path] of [
+      [`${base}#/agent/space`, "Pip", "/api/agent-threads/space/turns"],
+      [`${base}?view=project`, "Moss", "/api/projects/p1/tasks/project_chat"],
+    ]) {
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      await page.goto(url);
+      const box = page.getByRole("region", { name }).getByRole("textbox", { name: "Message" });
+      await box.waitFor();
+      await box.fill("Check it /");
+      const list = page.getByRole("listbox", { name: "Select a skill or workflow" });
+      assert.deepEqual(await list.getByRole("option").allTextContents(), [
+        "Graph auditCheck the graph",
+      ]);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+      if (shots) await page.screenshot({ path: `${shots}/skills-${name}-390.png` });
+      await box.press("Enter");
+      assert.equal(await list.count(), 0);
+      assert.match(await box.inputValue(), /^Check it \S*graph-audit\S* $/);
+      const posted = page.waitForRequest(
+        (request) => request.method() === "POST" && new URL(request.url()).pathname === path,
+      );
+      await box.press("Enter");
+      const sent = JSON.parse((await posted).postData());
+      assert.deepEqual(sent.invoked_skill_ids, ["graph-audit"]);
+      assert.deepEqual(sent.invoked_workflow_ids, []);
       assert.deepEqual(errors, []);
       await page.close();
     }

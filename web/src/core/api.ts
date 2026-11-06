@@ -440,6 +440,13 @@ export function clearAllProjectCaches(projectId: string): Promise<AllProjectCach
   );
 }
 
+/** The official skills a Space offers; it has no project Settings. */
+export function loadSpaceSkills(): Promise<
+  Pick<ProjectSnapshot, "skill_catalog" | "skill_defaults">
+> {
+  return api("/api/skills");
+}
+
 export async function loadSpaceMachines(): Promise<MachineSettingsRecord[]> {
   return (await api<{ machines: MachineSettingsRecord[] }>("/api/space/machines")).machines;
 }

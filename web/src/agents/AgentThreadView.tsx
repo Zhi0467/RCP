@@ -33,7 +33,8 @@ import {
   providerModels,
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
-import { loadProjectReadiness, loadSpaceMachines } from "../core/api";
+import { loadProjectReadiness, loadSpaceMachines, loadSpaceSkills } from "../core/api";
+import { useSkillPicker, type SkillSource } from "../core/SkillPicker";
 import { browserReason } from "../core/browserStatus";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
@@ -1021,6 +1022,22 @@ export function AgentThreadView({
   const config = thread.agent
     ? { ...thread.agent, run_on: thread.agent.run_on || picker?.value.run_on || "" }
     : (picker?.value ?? null);
+  const [spaceSkills, setSpaceSkills] = useState<SkillSource | null>(null);
+  useEffect(() => {
+    if (thread.project_id || spaceSkills) return;
+    loadSpaceSkills().then(setSpaceSkills, () => undefined);
+  }, [thread.project_id, spaceSkills]);
+  const skills = useSkillPicker({
+    source: thread.project_id ? snapshot : spaceSkills,
+    target: config,
+    message: draft,
+    input: textareaRef,
+    onComplete: () => setSubmitError(null),
+  });
+  useEffect(() => {
+    skills.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the thread changes, not when the picker object does
+  }, [thread.thread_id]);
   const pickAgent = (agent: AgentRunConfig) => {
     const target = thread;
     onThreadChanged({ ...target, agent });
@@ -1061,6 +1078,7 @@ export function AgentThreadView({
       if (draft.get() === pending.draft) {
         draft.set("");
         if (draftKey) writePref(draftKey, null);
+        if (isCurrent(target.thread_id)) skills.reset();
       }
       updateComposer(key, {
         sending: null,
@@ -1132,6 +1150,12 @@ export function AgentThreadView({
               : {}),
           }),
       ...(artifactContext ? { artifact_context: artifactContext } : {}),
+      ...(thread.project_id
+        ? skills.fields
+        : {
+            invoked_workflow_ids: skills.fields.invoked_workflow_ids,
+            invoked_skill_ids: skills.fields.invoked_skill_ids,
+          }),
       ...(config
         ? {
             provider: config.provider,
@@ -1568,15 +1592,20 @@ export function AgentThreadView({
         mode="work"
         composer={attachments}
         comments={comments}
+        skills={skills.props}
         addDisabled={attachments.full || attachments.preparing || inFlight}
         field={
           <ThreadTextarea
             draft={draft}
             ref={textareaRef}
             aria-label="Message"
-            onChange={(event) => draft.set(event.target.value)}
+            onChange={(event) => {
+              draft.set(event.target.value);
+              skills.readMessage(event.target.value);
+            }}
             onPaste={attachments.paste}
             onKeyDown={(event) => {
+              if (skills.handleKeyDown(event)) return;
               if (arrowScrollsTranscript(event, linesRef.current)) return;
               if (!returnSends(event) || event.nativeEvent.isComposing) return;
               event.preventDefault();

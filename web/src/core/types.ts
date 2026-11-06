@@ -4126,6 +4126,10 @@ export interface AgentThreadTurnRequest {
   model?: string;
   reasoning?: string;
   timezone: string;
+  invoked_workflow_ids?: string[];
+  invoked_skill_ids?: string[];
+  /** A project thread only; a Space offers no provider-native skills. */
+  invoked_provider_skill_names?: string[];
 }
 
 /** One waiting item of a project thread, in the order it became ready. */

@@ -22,7 +22,6 @@ import { useResource } from "../core/useResource";
 import { paperSessionTasksProfile } from "../agents/taskResources";
 import { returnSends } from "../ui/composerKeys";
 import { useSkillPicker } from "../core/SkillPicker";
-import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import type {
   AgentQuestion,
   AgentRunConfig,
@@ -240,20 +239,12 @@ export function PaperCoach({
     workLikeCapable: false,
     panelClassName: "paper-agent-popover",
   });
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const skills = useSkillPicker({
-    catalog: project.skill_catalog ?? [],
-    defaults: project.skill_defaults ?? EMPTY_SKILL_SELECTION,
-    provider: config.provider,
-    providerLabel: readiness?.label || config.provider,
-    machine: config.run_on,
-    inventory: project.provider_skill_inventories?.[config.run_on]?.[config.provider],
-    getMessage: () => message,
-    onComplete: (next) => {
-      setMessage(next);
-      setError(null);
-      requestAnimationFrame(() => textarea.current?.focus());
-    },
+    source: project,
+    target: config,
+    message: { get: () => message, set: setMessage },
+    input: textarea,
+    onComplete: () => setError(null),
   });
   const steer = async (task: AgentTask) => {
     if (!text || composer.staged || submitting || !task.steer_turn_id) return;
@@ -298,7 +289,7 @@ export function PaperCoach({
         model: config.model || null,
         session_id: currentSessionId,
         paper_apply_directly: applyDirectly,
-        ...skillInvocationFields(skills.selection, skills.providerSkillNames),
+        ...skills.fields,
         ...composer.turnFields(),
       });
       // The conversation follows this turn, even into the fresh session a provider

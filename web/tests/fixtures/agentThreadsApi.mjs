@@ -1,5 +1,6 @@
 import { chromium } from "playwright";
 import { createServer } from "vite";
+import { officialSkills } from "./officialSkills.mjs";
 
 export const now = Date.now();
 export const ago = (minutes) => new Date(now - minutes * 60_000).toISOString();
@@ -324,6 +325,7 @@ export async function mockApi(page, writes) {
           project_chat: { provider: "claude", model: "opus", reasoning: "high", run_on: "local" },
         },
       });
+    if (path === "/api/skills") return json(officialSkills);
     if (path === "/api/space/machines")
       return json({
         machines: [{ machine_id: "local", host: "", provider_readiness: { claude: readiness } }],

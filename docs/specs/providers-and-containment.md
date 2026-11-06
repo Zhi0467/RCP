@@ -1653,7 +1653,8 @@ selected skill the provider does not load reaches the agent only as prompt text.
 
 Project Settings selects official packages. Every official skill is enabled by
 default unless the human saves an explicit selection, including an explicit
-empty selection. Official workflows remain opt-in.
+empty selection. Official workflows remain opt-in. A Space has no project Settings, so
+its thread offers every official skill and no workflow.
 
 Only selected packages are staged to the execution machine as immutable,
 content-addressed directories. The agent receives compact id, version,

@@ -87,6 +87,11 @@ export type AnswerCommentComposer = SelectedAnswerComment | KeyboardAnswerCommen
 function readStagedAnnotations(key: string | null): StagedChatAnnotation[] {
   if (!key) return [];
   try {
+    const earlier = sessionStorage.getItem(key);
+    if (earlier !== null) {
+      sessionStorage.removeItem(key);
+      if (readPref(key) === null) writePref(key, earlier);
+    }
     return parseStagedChatAnnotations(readPref(key));
   } catch {
     return [];

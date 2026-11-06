@@ -376,6 +376,24 @@ def test_fresh_space_turn_skips_a_linked_project_folder(tmp_path):
     assert (outside / "patch.json").exists()
 
 
+def test_a_space_turn_stages_the_pointer_of_its_invoked_official_skill(tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _space_invoked_skill_pointers
+    from rcp.service import RunRequest
+
+    stage = (tmp_path / "stage").resolve()
+    stage.mkdir()
+    request = RunRequest(message="audit", mode="work", invoked_skill_ids=["graph-audit"])
+    turn = SimpleNamespace(stage=stage, request=request)
+    (pointer,) = _space_invoked_skill_pointers(turn)  # pyright: ignore[reportArgumentType]
+    assert pointer["id"] == "graph-audit"
+    assert (Path(str(pointer["path"])) / "SKILL.md").is_file()
+    assert Path(str(pointer["path"])).is_relative_to(stage / "inputs")
+    plain = SimpleNamespace(stage=stage, request=RunRequest(message="hi", mode="work"))
+    assert _space_invoked_skill_pointers(plain) == []  # pyright: ignore[reportArgumentType]
+
+
 def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
     from types import SimpleNamespace
 
