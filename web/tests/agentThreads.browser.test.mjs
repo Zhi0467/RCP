@@ -2870,6 +2870,13 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     const pip = page.getByRole("region", { name: "Pip" });
     await pip.locator(".agent-turn-live").waitFor();
     await pip.getByRole("button", { name: "Steer", exact: true }).waitFor();
+    await pip.getByRole("textbox", { name: "Message" }).fill("Check it /");
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.getByRole("listbox", { name: "Select a skill or workflow" }).count(),
+      0,
+    );
+    await pip.getByRole("textbox", { name: "Message" }).fill("");
     assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
     assert.equal(await pip.locator(".thread-queue").count(), 0);
     assert.deepEqual(errors, []);

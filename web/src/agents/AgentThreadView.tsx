@@ -1027,8 +1027,12 @@ export function AgentThreadView({
     if (thread.project_id || spaceSkills) return;
     loadSpaceSkills().then(setSpaceSkills, () => undefined);
   }, [thread.project_id, spaceSkills]);
+  const steeringTask =
+    latest?.active && latest.can_steer && latest.steer_visible && latest.steer_turn_id
+      ? latest
+      : null;
   const skills = useSkillPicker({
-    source: thread.project_id ? snapshot : spaceSkills,
+    source: steeringTask ? null : thread.project_id ? snapshot : spaceSkills,
     target: config,
     message: draft,
     input: textareaRef,
@@ -1089,10 +1093,6 @@ export function AgentThreadView({
       updateComposer(key, { sending: { ...pending, error }, error });
     }
   };
-  const steeringTask =
-    latest?.active && latest.can_steer && latest.steer_visible && latest.steer_turn_id
-      ? latest
-      : null;
   // A paused turn holds the conversation until it is resumed or retried.
   const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
   const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
