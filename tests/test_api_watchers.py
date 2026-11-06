@@ -181,6 +181,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
     assert isinstance(listed_payload, list)
     assert len(listed_payload) == 1
     assert listed_payload[0]["watcher_id"] == watcher.watcher_id
+    assert listed_payload[0]["wakes_chat"] is True
     assert listed_payload[0]["status"] == "active"
     assert listed_payload[0]["can_check_now"] is False
 
@@ -190,6 +191,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
     assert isinstance(stopped_payload, dict)
     assert stopped_payload["watcher_id"] == watcher.watcher_id
     assert stopped_payload["status"] == "stopped"
+    assert stopped_payload["wakes_chat"] is False
     stored = store.watcher(watcher.watcher_id)
     assert stored is not None
     assert stored.status == "stopped"
@@ -371,3 +373,29 @@ def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manife
     scoped = client.get(url, params=params)
     assert scoped.status_code == 200, scoped.text
     assert [row["watcher_id"] for row in scoped.json()] == ["branch-observer"]
+
+
+def test_only_a_chats_own_unwoken_work_watcher_wakes_it(tmp_path: Path) -> None:
+    from rcp.runs.work_watcher_commands import wakes_chat
+
+    watcher = WatcherRecord(
+        watcher_id="chat-wake",
+        project_id="project",
+        origin_operation_id="origin",
+        origin_task_kind="project_chat",
+        chat_id="chat",
+        node_id=None,
+        check_command="true",
+        log_path=str(tmp_path / "job.log"),
+        cwd=str(tmp_path),
+        continuation=WatcherContinuation(
+            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
+        ),
+        created_at="2026-08-12T01:00:00+00:00",
+    )
+    loop = watcher.continuation.model_copy(update={"patch_kind": "experiment_loop"})
+
+    assert wakes_chat(watcher)
+    assert not wakes_chat(watcher.model_copy(update={"continuation": loop}))
+    assert not wakes_chat(watcher.model_copy(update={"notified": True}))
+    assert not wakes_chat(watcher.model_copy(update={"status": "stopped"}))

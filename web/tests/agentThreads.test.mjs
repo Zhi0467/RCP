@@ -207,13 +207,14 @@ test("pause and resume post to the schedule's own route", async () => {
   ]);
 });
 
-test("a project thread lists only its own live watchers and stops them by project route", async () => {
-  const watcher = (id, chat_id, status) => ({
+test("a project thread lists only the watchers that will wake it and stops them by project route", async () => {
+  const watcher = (id, chat_id, status, wakes_chat = status === "active") => ({
     watcher_id: id,
     chat_id,
     status,
+    wakes_chat,
     graph_target: { kind: "main" },
-    continuation: { patch_kind: "work" },
+    continuation: { patch_kind: wakes_chat ? "work" : "experiment_loop" },
     condition: { node_id: "exp-1", status_in: ["completed"] },
   });
   const calls = [];
@@ -224,6 +225,7 @@ test("a project thread lists only its own live watchers and stops them by projec
           watcher("w1", "scout", "active"),
           watcher("w2", "other", "active"),
           watcher("w3", "scout", "completed"),
+          watcher("w4", "scout", "active", false),
         ]
       : {};
   };

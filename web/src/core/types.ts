@@ -1004,6 +1004,7 @@ interface WatcherDeliveryRecord {
   stop_operation_id: string | null;
   can_check_now: boolean;
   can_stop_watching: boolean;
+  wakes_chat: boolean;
   delivery_label: string;
 }
 

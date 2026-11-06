@@ -457,9 +457,11 @@ Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
 board conversations stay in that list. The thread header holds a Wakes
-button, present only when schedules or the thread's live watchers exist, that
+button, present only when schedules or watchers that will wake the thread exist, that
 counts the schedules that will run without the member plus those watchers and
-opens a popover of them. Every row has the same shape: what wakes the agent,
+opens a popover of them. The backend marks each watcher `wakes_chat`, by the same
+rule the agent's own watcher list uses, so an Experiment loop's watcher, which
+wakes its episode, stays in Runs. Every row has the same shape: what wakes the agent,
 then when. A watcher names its node by title or its job by log file, says
 which states or event wake the agent, and can be stopped there. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
