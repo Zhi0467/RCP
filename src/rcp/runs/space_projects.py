@@ -259,6 +259,7 @@ def prepare_space_projects(
                 remote_stage=None,
                 app_data_dir=owner.catalog.data_dir,
                 repository_inventory=inventory,
+                machine_writable_paths=list(machine.writable_paths),
             )
             found.writers.append(
                 SpaceProjectTurn(

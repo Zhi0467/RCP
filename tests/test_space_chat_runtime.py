@@ -126,6 +126,92 @@ def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, mo
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
+@pytest.mark.parametrize("has_projects", [False, True])
+def test_served_space_refreshes_machine_grants_in_the_same_session(
+    manifest, tmp_path, monkeypatch, caplog, has_projects
+):
+    from tests.helpers import wait_until
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    store_test_claude_token(store)
+    if not has_projects:
+        with store.connection() as connection:
+            connection.execute("DELETE FROM project_members")
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    grant = tmp_path / "shared"
+    grant.mkdir()
+    declared = tmp_path / "shared-link"
+    declared.symlink_to(grant, target_is_directory=True)
+    canonical = str(grant.resolve())
+    observed = []
+    masters = []
+
+    async def provider(_provider, prompt, **kwargs):
+        scope = kwargs["write_scope"]
+        stage = kwargs["cwd"]
+        master = next(
+            path for path in (stage / "inputs").glob("space-master-*.md") if str(path) in prompt
+        )
+        master_text = master.read_text()
+        expected = set(observed[0].granted_roots) if observed else set(scope.granted_roots)
+        if len(observed) == 1 and has_projects:
+            expected.add(canonical)
+        assert set(scope.granted_roots) == expected
+        assert (canonical in scope.writable_roots) == (has_projects and len(observed) == 1)
+        assert (f"`{canonical}`" in master_text) == (has_projects and len(observed) == 1)
+        assert str(declared) not in master_text
+        for path in [*scope.granted_roots, *scope.protected_write_paths]:
+            assert f"`{path}`" in master_text
+        if has_projects:
+            assert scope.repository_roots
+            assert str((tmp_path / "data").resolve()) in scope.protected_write_paths
+            assert str(manifest.research_dir.resolve()) in scope.protected_write_paths
+        else:
+            assert scope.granted_roots == []
+            assert scope.fingerprint is None
+        (receipt,) = store.agent_task_receipts_by_category(kwargs["operation_id"], "agent_launch")
+        assert receipt.payload["canonical_write_roots"] == scope.writable_roots
+        assert receipt.payload["write_scope_fingerprint"] == scope.fingerprint
+        assert kwargs.get("session_id") == ("space-grants-session" if observed else None)
+        observed.append(scope)
+        masters.append(master)
+        (stage / "outcome.json").write_text('{"status":"done"}')
+        yield AgentEvent(event="session", session_id="space-grants-session")
+        yield AgentEvent(event="answer", text="Ready.")
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(app.state.launcher, "stream", provider)
+    with _served_space_client(app) as client:
+        thread = next(
+            item
+            for item in client.get("/api/agent-threads").json()["threads"]
+            if item["kind"] == "space"
+        )
+        base = f"/api/agent-threads/{thread['thread_id']}"
+        assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
+        for paths in ([], [str(declared), str(grant)], []):
+            store.update_space_machine(BACKEND_MACHINE_ID, writable_paths=paths)
+            sent = client.post(
+                base + "/turns", json={"provider": "claude", "message": "Use the current grants."}
+            )
+            assert sent.status_code == 202, sent.text
+            operation_id = sent.json()["operation_id"]
+            wait_until(
+                lambda operation_id=operation_id: (
+                    client.get(base + "/tasks/" + operation_id).json()["status"]
+                    in {"succeeded", "failed"}
+                )
+            )
+            result = client.get(base + "/tasks/" + operation_id).json()
+            assert result["status"] == "succeeded", json.dumps(result, indent=2)
+    assert len(observed) == 3
+    assert len({scope.fingerprint for scope in observed}) == 1
+    assert masters[0] == masters[2]
+    assert (masters[0] != masters[1]) == has_projects
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
 @pytest.mark.parametrize("comment", [False, True])
 @pytest.mark.parametrize("name", ["blog_notes.md", "page.html"])
 def test_served_space_artifact_edits_keep_identity_and_follow_undo(
