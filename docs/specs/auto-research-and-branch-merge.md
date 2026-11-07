@@ -147,7 +147,8 @@ It must have no reachable writer, unarchived descendant fork, unknown publicatio
 undelivered watcher or mail, live child Experiment, or accepted admission.
 Resumable sessions and stages, along with bound merge destinations, count as
 writers. Descendant checks follow immutable parent links within the project,
-including through archived forks, and cycles fail closed. Manual and
+including through archived forks. Cycles terminate; a cycle reaching the open
+candidate blocks retirement. Manual and
 nonautomatic descendants retain their ancestors; empty automatic forks retire
 from leaves toward ancestors across child polls. Child polling checks under the
 canonical lock. Explicit archive targets owned forks, never the root's branch.
@@ -249,7 +250,10 @@ session and stage. There is no agent Retry. Unusable children must stop, settle,
 and be replaced.
 
 Mutations persist keyed intent, file bytes and digest, and identity before effects.
-Completed ok or invalid results replay exactly. Interrupted or unavailable effects
+Completed invalid results replay exactly. Successful Spawn and Merge replays keep
+the original worker or task identity but report its current canonical status; an
+interrupted Merge may re-drive that same task. Other completed results replay
+exactly. Interrupted or unavailable effects
 may only prove or resume the same intent. They never reread changed files or
 invent a child. Starts and exits become task events. The broker for each invocation
 authenticates the provider process and descendants on the host. It uses no
@@ -257,7 +261,11 @@ reusable credentials in prompts, the environment, stages, or arguments. This
 establishes provenance within the cooperative account, not isolation from hostile
 UIDs. Episode and signature binding remain despite shared broker mechanics.
 
-Apply uses idempotent branch transitions. Finish is a pure guard. It returns an
+Apply uses idempotent branch transitions. Each invocation's admissions are bounded
+by `AUTO_RESEARCH_APPLY_MAX_PER_TURN` in
+[`limits.py`](../../src/rcp/limits.py). Unavailable admissions consume the allowance;
+same-key replay consumes no additional admission. Reaching the ceiling refuses
+before reading another Patch file. Finish is a pure guard. It returns an
 immutable, complete blocker receipt for unfinished children, undelivered notices,
 or accepted admissions not yet reflected in state. Waiting workers return
 waiting-work plus a stop command. Finish never silently cleans up blockers.
@@ -429,7 +437,11 @@ The merge task has the orchestrator profile under dispatch authority and scratch
 Only for code landing does it also receive the resolved worktree or shared-checkout
 roots. It gains no approval, membership, ontology, configuration, server, or general
 branch authority. One merge commits one destination transition or none. A changed
-head rebuilds and prepares again. It never overwrites or concatenates history.
+head rebuilds and prepares again, up to `MAX_BRANCH_MERGE_REBASE_ROUNDS`
+semantic rebases ([limit owner](../../src/rcp/limits.py)); continued movement raises
+`StateUnavailable` with a retry diagnostic. Episode graph commit makes at most
+that many attempts and retains `RevisionConflict` after continued contention.
+It never overwrites or concatenates history.
 Failed and paused attempts allow fresh dispatch. Canonical provenance and the
 reconciled receipt bind the source, base, head, prepared destination, result, task,
 dispatcher, and time. Crash recovery cannot deliver the same head twice. Main

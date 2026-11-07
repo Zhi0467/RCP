@@ -25,6 +25,8 @@ hold no episode authority of their own, except that a member's Work turn may sta
 the Experiments and Auto-research episodes the member asks for, then stop, pause,
 resume or extend only the episodes that chat started, and message the Auto-research
 ones, as that member's Runs controls would.
+An Experiment that ended to wait for its human may also resume from the chat it
+runs in, under the [Work control contract](specs/conversations-episodes-and-watchers.md).
 
 The paper workspace is human-controlled. Coach changes are reviewed or applied
 under the chat's human-authorized mode. Artifacts, reports, comments, and versions
