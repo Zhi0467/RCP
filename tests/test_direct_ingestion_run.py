@@ -463,3 +463,103 @@ async def test_failed_graph_run_stages_no_conversation_bytes_and_keeps_watermark
     assert all("conversation" not in part for path in staged_files for part in path.parts)
     assert all(provider_marker not in path.read_bytes() for path in staged_files)
     assert not hasattr(graph_run, "_project_native_transcripts")
+
+
+@pytest.mark.parametrize("kind", ["seed", "refresh"])
+def test_ingestion_correction_keeps_attempt_skills_until_the_next_attempt(manifest, tmp_path, kind):
+    from rcp.agents.prompts import _invoked_package_section
+    from rcp.skill_registry import SkillDefaults, official_registry
+
+    from .test_api import _persist_skill_defaults
+
+    data = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data)
+    service = app.state.service
+    if kind == "refresh":
+        append_fixture_patch(service, seed_patch())
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
+    contracts = []
+    prompts = []
+    package_paths = []
+
+    class Launcher:
+        async def stream(self, _provider, prompt, **kwargs):
+            prompts.append(prompt)
+            contract = Path(prompt.splitlines()[1]).read_text() if len(prompts) == 1 else prompt
+            contracts.append(contract)
+            workspace = Path(kwargs["cwd"])
+            if len(prompts) == 1:
+                package = next((workspace / "inputs").glob("rcp-skills-*/skill/graph-audit"))
+                package_paths.append(package)
+                _persist_skill_defaults(service, SkillDefaults(skill_ids=[]))
+                patch = {"summary": "Invalid operation", "ops": [{"op": "invent_nodes"}]}
+            elif len(prompts) == 2:
+                patch = json.loads(
+                    agent_patch_json(seed_patch() if kind == "seed" else refresh_patch())
+                )
+            else:
+                assert not list((workspace / "inputs").glob("rcp-skills-*/skill/graph-audit"))
+                patch = {
+                    "summary": "Recorded the next attempt's task result",
+                    "repositories_read": [],
+                    "ops": [
+                        {
+                            "op": "create_nodes",
+                            "nodes": [
+                                {
+                                    "id": "blk/next-skill-attempt",
+                                    "type": "blocker",
+                                    "title": "Next task result",
+                                    "description": "Await the new source.",
+                                    "status": "open",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            (workspace / "patch.json").write_text(json.dumps(patch))
+            yield AgentEvent(
+                event="session",
+                session_id="ingestion-skills-session"
+                if len(prompts) < 3
+                else "ingestion-next-session",
+            )
+            yield AgentEvent(event="done")
+
+    async def stream(_project_id, task_kind, request, execution):
+        async for frame in stream_graph_run(
+            service, Launcher(), task_kind, request, data, execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    project_id = app.state.default_project_id
+    with signed_in_client(app) as client:
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/{kind}",
+            json={"run_truth_scope": ["repo-a"], "invoked_skill_ids": ["graph-audit"]},
+        )
+        assert started.status_code == 202
+        completed = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        assert completed["status"] == "succeeded", completed.get("error")
+        assert len(prompts) == 2
+        next_attempt = client.post(
+            f"/api/projects/{project_id}/tasks/refresh", json={"run_truth_scope": ["repo-a"]}
+        )
+        assert next_attempt.status_code == 202
+        completed = wait_for_task_response(client, project_id, next_attempt.json()["operation_id"])
+        assert completed["status"] == "succeeded", completed.get("error")
+    assert len(prompts) == 3
+    pointer = {
+        "id": "graph-audit",
+        "kind": "skill",
+        "label": "Graph audit",
+        "path": str(package_paths[0]),
+    }
+    package = official_registry().package("skill", "graph-audit")
+    pointer.update(label=package.label, version=package.version)
+    invocation = _invoked_package_section([pointer]).strip()
+    assert all(invocation in prompt for prompt in prompts[:2])
+    assert invocation not in prompts[2]
+    assert invocation not in contracts[0]
+    assert service.resolve_skill_selection(RunRequest()).resolved_skill_packages == []

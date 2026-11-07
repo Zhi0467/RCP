@@ -146,3 +146,108 @@ async def test_coach_records_session_when_consumer_closes_on_failure(
     assert [
         (session.native_session_id, session.runtime_id) for session in service.paper.sessions()
     ] == [("interrupted-session", runtime_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_master", [False, True])
+async def test_coach_invocation_is_per_turn_and_outside_retained_master(
+    coach, legacy_master, monkeypatch
+):
+    import json
+    from pathlib import Path
+
+    from rcp.agents import PromptFactory
+    from rcp.agents.continuation_prompt import SECTIONS
+    from rcp.agents.prompts import _invoked_package_section
+    from rcp.skill_registry import SkillDefaults
+    from rcp.skills.staging import skill_bundle_label
+
+    service, _live, data = coach
+    service.manifest.agent.skill_defaults = SkillDefaults(skill_ids=["graph-audit"])
+    expected_bundle = skill_bundle_label(service.resolve_skill_selection(CoachRequest(message="")))
+    launches = []
+    executions = []
+    original_contract = PromptFactory.paper_coach_task_contract
+
+    def legacy_contract(**kwargs):
+        return original_contract(**kwargs) + _invoked_package_section(kwargs["skill_pointers"])
+
+    class Launcher:
+        async def stream(self, _provider, prompt, **kwargs):
+            launches.append(prompt)
+            yield AgentEvent(event="session", session_id="coach-invocation-session")
+            yield AgentEvent(event="done")
+
+    for request in (
+        CoachRequest(message="Review", invoked_skill_ids=["graph-audit"]),
+        CoachRequest(message="Continue", session_id="coach-invocation-session"),
+    ):
+        execution = execution_for(service)
+        executions.append(execution)
+        with monkeypatch.context() as patch:
+            if legacy_master and len(executions) == 1:
+                patch.setattr(PromptFactory, "PAPER_COACH_POLICY_VERSION", "paper-coach-v10")
+                patch.setattr(
+                    PromptFactory, "paper_coach_task_contract", staticmethod(legacy_contract)
+                )
+            events = [
+                AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+                async for frame in stream_coach(
+                    service,
+                    cast(AgentLauncher, Launcher()),
+                    service.paper,
+                    request,
+                    data,
+                    execution,
+                )
+            ]
+        assert not [event for event in events if event.event == "error"]
+        execution.store.checkpoint_agent_task(
+            execution.operation_id, native_session_id="coach-invocation-session"
+        )
+        execution.store.complete_agent_task(
+            execution.operation_id, applied_revision=None, result={}
+        )
+
+    first = executions[0]
+    master = first.store.agent_task_contract(first.operation_id, "session_master")
+    assert master is not None
+    values = json.loads(
+        first.store.agent_task_contract(first.operation_id, "session_master_values")
+    )
+    assert len(values["skills"]) == 1
+    invocation = _invoked_package_section(values["skills"]).strip()
+    assert (invocation in master) is legacy_master
+    initial_contract = Path(launches[0].splitlines()[1]).read_text()
+    assert invocation in initial_contract or invocation in launches[0]
+    assert invocation not in launches[1]
+    assert values["skills"][0]["description"]
+    assert Path(values["skills"][0]["path"]).parent.parent.name == expected_bundle
+    if legacy_master:
+        second = executions[1]
+        current = second.store.agent_task_contract(second.operation_id, "session_master")
+        assert current is not None
+        second_values = json.loads(
+            second.store.agent_task_contract(second.operation_id, "session_master_values")
+        )
+        assert _invoked_package_section(second_values["skills"]).strip() not in current
+        assert SECTIONS["master_rebootstrap"].split("{path}")[0] in launches[1]
+        assert first.store.agent_task_contract(first.operation_id, "session_master") == master
+
+
+@pytest.mark.parametrize("master_opens_now", [False, True])
+@pytest.mark.parametrize("retry", [False, True])
+def test_coach_recovery_keeps_current_invocation_outside_master(master_opens_now, retry):
+    from rcp.agents.prompts import _invoked_package_section
+    from rcp.runs.tasks.coach import _coach_continuation_parts
+
+    pointers = [{"kind": "skill", "id": "graph-audit", "path": "/inputs/graph-audit/SKILL.md"}]
+    parts = _coach_continuation_parts(
+        "recovery",
+        refresh=False,
+        master_opens_now=master_opens_now,
+        human_request_path="/inputs/request.txt",
+        retry_diagnostics_path="/inputs/retry.json" if retry else None,
+        invoked_skill_pointers=pointers,
+    )
+    assert _invoked_package_section(pointers).strip() in parts

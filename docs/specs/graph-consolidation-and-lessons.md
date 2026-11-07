@@ -48,9 +48,12 @@ Each target receives one ordinary Work turn with its graph target, `work_auto`,
 schedule trigger, and authorizer. Only the server-owned run binding grants
 consolidation behavior. A chat id or request field cannot grant it. Each target has a
 dedicated chat and a fresh native session each night, with ordinary scratch and
-artifacts. Branch ownership grants no orchestrator authority. The official
-workflow and dependencies resolve through the skill registry independently of
-project defaults and appear in the launch receipt.
+artifacts. Branch ownership grants no orchestrator authority. The project's
+optional packages resolve through saved Settings alongside the required official
+`graph-consolidation` workflow and its dependencies, including when the optional
+selection is empty. The launch receipt records the complete selection. The task
+invokes its required workflow on every provider pass, including corrections and
+fresh-session recovery, outside the retained master.
 
 The command client offers `validate`, keyed `apply`, `flag`, `bulletin` (a run with
 no episode always holds it), and the graph

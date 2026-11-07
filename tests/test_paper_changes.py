@@ -319,6 +319,8 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
             "run_on": "laptop",
             "message": "Revise",
             "mode": "apply_directly",
+            "invoked_workflow_ids": ["research-graph-audit"],
+            "invoked_skill_ids": ["graph-audit"],
         },
         native_session_id="native-paper",
         created_at=store.now(),
@@ -356,6 +358,10 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         assert continued[-1]["session_id"] == "native-paper"
         assert continued[-1]["refresh_group_ids"] == [group.group_id]
         assert continued[-1]["mode"] == "apply_directly"
+        assert continued[-1]["invoked_workflow_ids"] == []
+        assert continued[-1]["invoked_skill_ids"] == []
+        stored = store.agent_task("task")
+        assert stored is not None and stored.request == previous.request
         assert client.post(f"{base}/{group.group_id}/accept", json={}).status_code == 200
         assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 409
         assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200

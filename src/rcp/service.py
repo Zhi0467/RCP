@@ -3161,7 +3161,7 @@ class ProjectService:
 
     def resolve_skill_selection(
         self,
-        request: RunRequest | CoachRequest,
+        request: RunRequest | CoachRequest | AutoResearchRunRequest,
         *,
         required_workflow_ids: Sequence[str] = (),
         required_skill_ids: Sequence[str] = (),

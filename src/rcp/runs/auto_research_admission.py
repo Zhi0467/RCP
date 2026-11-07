@@ -206,6 +206,8 @@ def continue_auto_research(
             "control_node_id": None,
             "session_id": binding.native_session_id,
             "instruction": None,
+            "invoked_skill_ids": [],
+            "invoked_workflow_ids": [],
             "wake_cause": "lifecycle",
             "watcher_ids": [],
         }

@@ -989,8 +989,9 @@ episodes of that Experiment on the same exact graph target and execution
 machine.
 Completions may coalesce across those origin episodes, including on a branch.
 The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment policy (including workflow and skill packages), and invocation
-budget; watcher origin is immutable provenance, including when another human
+pinned Experiment execution policy and invocation budget; official packages
+follow the [current Settings selection](providers-and-containment.md#official-skills-and-workflows)
+on that new turn. Watcher origin is immutable provenance, including when another human
 created or maintained the observation.
 This adoption does not change ordinary conversation, Auto-research root, or
 child Work routing. Existing group readiness and atomic, once-only claims still
@@ -1191,7 +1192,12 @@ record or error.
 
 The report resumes the exact session/stage with the durable ending, report
 skill/output pointer and immutable compact mode receipt, never a rebuilt graph
-or transcript. The [Codex transcript-refusal exception](providers-and-containment.md#continuation-prompts)
+or transcript. Its optional method catalogue comes from current Project Settings
+alongside the required `episode-report` skill, which remains required even for an
+empty optional selection. The frozen mandatory-skill version is checked before
+optional staging; the report invokes that exact method on every provider pass
+and does not inherit an earlier operational turn's invocation. Optional methods
+cannot add operational inputs or outputs. The [Codex transcript-refusal exception](providers-and-containment.md#continuation-prompts)
 permits a fresh report session while retaining the stage, allocation and budget.
 Receipt compaction follows a fixed order and storage-encoded size
 bound. Permanent admission defects record one failed wrap-up and terminalize;

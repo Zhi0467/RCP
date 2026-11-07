@@ -1651,24 +1651,37 @@ selected skill the provider does not load reaches the agent only as prompt text.
 
 ## Official skills and workflows
 
-Project Settings selects official packages. Every official skill is enabled by
-default unless the human saves an explicit selection, including an explicit
-empty selection. Official workflows remain opt-in. A Space has no project Settings, so
-its thread offers every official skill and no workflow.
-Its default catalogue is staged on every turn, including when the Space has no
-projects. Descriptions and exact package pointers reach the session without an
-explicit invocation; changed catalogue metadata travels through the retained
-master's current-values delta. A slash selection invokes only that turn's chosen
-packages and never changes the default catalogue.
+Every project task-execution agent takes its optional official packages from
+saved Project Settings. Every official skill is enabled by default unless the
+human saves an explicit selection, including an explicit empty selection.
+Optional workflows remain opt-in. A Space has no project Settings, so its thread
+uses every official skill and no workflow, even when it has no projects. The
+[consolidation workflow](graph-consolidation-and-lessons.md#the-consolidation-turn)
+and [report method](conversations-episodes-and-watchers.md#visual-wrap-up) remain
+task-owned requirements alongside the optional selection. They cannot make a
+disabled package publicly invocable. [Session summaries](#session-summaries)
+keep their separate fixed capability and receive no package catalogue.
 
 Only selected packages are staged to the execution machine as immutable,
-content-addressed directories. The agent receives compact id, version,
-description, dependency, and exact pointer metadata; package bodies are never
-embedded into launch prose. Slash completion inserts only the visible token and
-a per-turn invocation pointer. Packages supply methods and examples under the
-current task contract; they do not replace its authority, output channels, or
-filesystem boundary. The same method may serve an ordinary worker, a bounded
-Experiment, or the orchestrator without importing another role's permissions.
+content-addressed directories. Descriptions and exact pointers reach the agent
+without an explicit invocation; package bodies are never embedded into launch
+prose. Complete catalogue metadata travels through a retained master's
+current-values delta, including additions, removals and changed descriptions.
+Settings and package versions resolve again on the next turn or task attempt,
+including Resume and Retry; correction passes share that attempt's selection.
+An already consumed result settles from its recorded inputs without resolving
+today's optional catalogue.
+
+Slash completion inserts the visible token and a structured per-turn invocation.
+The registry validates its IDs against the optional selection and normalizes
+duplicates before launch. Exact invocation pointers travel with the current turn,
+outside retained masters. Retry retains that turn's invocation; a new human turn
+or automatic allocation does not inherit it. Required internal methods are
+invoked on every pass by their owning task. Packages supply methods and examples
+under the current task contract; they do not replace its authority, output channels, or
+filesystem boundary. The same discovery and invocation rules apply to ordinary
+workers, Experiments, orchestration, merges and file-only edits, within each
+task's existing permissions.
 
 Graph-writing contracts include shared authoring methods and a local causal
 check, using only inputs the task permits. A planned empirical prerequisite
