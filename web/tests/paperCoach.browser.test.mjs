@@ -817,6 +817,62 @@ test("a comment opened from the preview closes when another file is shown", asyn
   assert.equal(await comment.inputValue(), "");
 });
 
+for (const state of ["ready", "warning", "refusal"])
+  test(`phone HTML preview keeps every control visible in its ${state} state`, async (t) => {
+    const { page, context } = await open(t, {
+      configure: ({ tree }) =>
+        tree.files.push({
+          file_id: "f3",
+          path: "page.html",
+          kind: "text",
+          format: "html",
+          size: 5,
+        }),
+    });
+    await context.route("**/files/f3/preview/state", (route) =>
+      route.fulfill(
+        state === "refusal"
+          ? { status: 503, json: { detail: "Preview unavailable" } }
+          : { json: { revision: 1, key: "page-1" } },
+      ),
+    );
+    await context.route("**/files/f3/preview?*", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Saved page</p>" }),
+    );
+    await page.getByRole("button", { name: "Show files", exact: true }).click();
+    await page.locator(".paper-file", { hasText: "page.html" }).click();
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    const toolbar = page.locator(".paper-phone-segments");
+    if (state === "refusal")
+      await toolbar.getByRole("button", { name: "Retry HTML preview" }).waitFor();
+    else {
+      await page.locator(".paper-html-preview iframe").waitFor();
+      if (state === "warning") {
+        const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
+        await shell.evaluate(() =>
+          parent.postMessage(
+            { kind: "rcp-artifact-error", message: "Saved image unavailable", count: 1 },
+            location.origin,
+          ),
+        );
+        await toolbar.getByRole("status", { name: "Saved image unavailable" }).waitFor();
+      }
+    }
+    const controls = toolbar.locator(":is(button, [role=status]):visible");
+    assert.equal(await controls.count(), state === "ready" ? 7 : 8);
+    const segments = await toolbar.getByRole("group", { name: "Paper view" }).boundingBox();
+    const tools = await toolbar.locator(".paper-panel-tools").boundingBox();
+    assert.ok(tools.y >= segments.y + segments.height);
+    for (const control of await controls.all()) {
+      const box = await control.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
+    }
+    for (const control of await toolbar.locator(".icon-button:visible").all())
+      await target(control);
+    await fits(page);
+    await page.screenshot({ path: `/private/tmp/paper-html-controls-390-${state}.png` });
+  });
+
 for (const width of [1280, 390])
   test(`a new selection in the HTML page keeps the typed comment and its own mark at ${width}px`, async (t) => {
     const { page, context } = await open(t, {
