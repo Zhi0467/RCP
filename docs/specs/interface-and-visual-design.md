@@ -540,7 +540,9 @@ leaves the transcript as it is; an amber cards icon in the composer says so on
 hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
-run or chat that asked, and an answer removes it. Docked cards
+run or chat that asked, and an answer removes it. A Project Agent uses the same
+dock for that project's relayed questions; its own questions and approval cards
+stay inline. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
 Left of Wakes, the Space thread header holds a Running button, present only

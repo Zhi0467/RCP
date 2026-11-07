@@ -4279,7 +4279,6 @@ export interface ProposalCardView {
 
 export type AskedApprovalCardView = AgentQuestion & { project_name: string };
 
-/** A plain question from one of the member's projects, relayed to the Space dock. */
 export type RelayedQuestion = AgentQuestion & {
   project_id: string;
   project_name: string;
@@ -4291,7 +4290,6 @@ export type RelayedQuestion = AgentQuestion & {
 export interface AgentCardList {
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
-  /** The member-wide read only. */
   questions?: RelayedQuestion[];
 }
 

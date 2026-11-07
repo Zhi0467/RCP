@@ -1,4 +1,4 @@
-"""The Space relay: the member's Running list and the dock's plain questions."""
+"""The member's Running list and project-scoped question relays."""
 
 from __future__ import annotations
 
@@ -262,7 +262,11 @@ def test_dock_relays_the_members_plain_questions_and_takes_their_answers(
     assert all(row["project_id"] == project_id and row["project_name"] for row in rows.values())
     assert all(rows[question.question_id]["source_label"] for question in (ended, waiting, own))
     named = client.get("/api/agent-threads/cards", params={"thread_id": thread["thread_id"]})
-    assert set(named.json()) == {"proposal_cards", "asked_cards"}
+    assert {row["question_id"] for row in named.json()["questions"]} == {
+        ended.question_id,
+        waiting.question_id,
+        shared.question_id,
+    }
 
     base = f"/api/projects/{project_id}/questions"
     answered = client.post(
@@ -284,3 +288,44 @@ def test_dock_relays_the_members_plain_questions_and_takes_their_answers(
         archived=True,
     )
     assert set(dock()) == {shared.question_id}
+    named = client.get("/api/agent-threads/cards", params={"thread_id": thread["thread_id"]})
+    assert named.json()["questions"] == []
+
+
+def test_named_question_relay_keeps_project_and_membership_boundaries(questions_api):
+    _app, client, store, project_id = questions_api
+    thread = _project_thread(client)
+    project = store.project(project_id)
+    assert project is not None
+    another = store.upsert_project(
+        project.model_copy(
+            update={
+                "project_id": str(uuid.uuid4()),
+                "name": "Another project",
+                "locator": "other-project",
+                "state_path": "/other-project",
+            }
+        )
+    )
+    store.seat_project_member(another.project_id, store.local_owner.user_id)
+    local = _question(store, project_id, owner_id="shared-chat", key="local")
+    _question(store, another.project_id, owner_id="another-chat", key="outside")
+    response = client.get("/api/agent-threads/cards", params={"thread_id": thread["thread_id"]})
+    assert response.status_code == 200, response.text
+    assert [row["question_id"] for row in response.json()["questions"]] == [local.question_id]
+    hidden = _other_member_thread(store, project_id)
+    assert (
+        client.get("/api/agent-threads/cards", params={"thread_id": hidden.thread_id}).status_code
+        == 404
+    )
+    store.close_agent_thread(thread["thread_id"], reason="access_lost")
+    response = client.get("/api/agent-threads/cards", params={"thread_id": thread["thread_id"]})
+    assert response.status_code == 200 and response.json()["questions"] == []
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members WHERE project_id = ?", (project_id,))
+    assert (
+        client.get(
+            "/api/agent-threads/cards", params={"thread_id": thread["thread_id"]}
+        ).status_code
+        == 404
+    )

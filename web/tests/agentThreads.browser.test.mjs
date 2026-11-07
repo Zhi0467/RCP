@@ -1874,8 +1874,16 @@ async function serveCards(page, served) {
         proposal_cards: served.proposals.filter(
           (view) => threadId === null || view.thread_id === threadId,
         ),
-        asked_cards: threadId === null ? served.asked : [],
-        questions: threadId === null ? (served.questions ?? []) : [],
+        asked_cards: served.asked.filter(
+          (question) => threadId === null || question.owner_id === threadId,
+        ),
+        questions: (served.questions ?? []).filter(
+          (question) =>
+            threadId === null ||
+            (question.project_id ===
+              threads.find((thread) => thread.thread_id === threadId)?.project_id &&
+              !(question.owner_kind === "chat" && question.owner_id === threadId)),
+        ),
       },
     });
   });
@@ -2368,6 +2376,81 @@ test("Pip's dock relays a project question with its origin and time, and answeri
         choices: ["3e-4"],
       });
       assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 1);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("Moss relays project questions above its composer while its own cards stay inline", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      const own = {
+        ...card,
+        question_id: "q-own",
+        question: "Keep the existing baseline?",
+        card: null,
+      };
+      const relayed = {
+        ...own,
+        question_id: "q-project-relay",
+        owner_kind: "episode",
+        owner_id: "e7",
+        question: "Which learning rate should the next sweep use?",
+        choices: ["3e-4", "1e-4"],
+        project_id: "p1",
+        project_name: "Sparse attention",
+        source_label: "Validation sweep",
+      };
+      const served = {
+        proposals: [],
+        asked: [{ ...card, project_name: "Sparse attention" }],
+        questions: [relayed, { ...own, project_id: "p1" }],
+      };
+      await serveCards(page, served);
+      await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
+        route.fulfill({ json: [card, own] }),
+      );
+      await page.route("**/api/projects/p1/questions/q-project-relay/answer", (route) => {
+        served.questions = [];
+        writes.push({
+          path: new URL(route.request().url()).pathname,
+          ...route.request().postDataJSON(),
+        });
+        return route.fulfill({ json: { ...relayed, state: "answered" } });
+      });
+      await page.goto(`${base}?view=project`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      const dock = thread.locator(".approval-dock");
+      const question = dock.locator(".question-card[data-question-id='q-project-relay']");
+      await question.waitFor();
+      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
+      assert.equal(await dock.locator(".question-card[data-question-id='q-own']").count(), 0);
+      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
+      assert.equal(await dock.locator(".approval-card").count(), 0);
+      assert.match(await question.locator(".question-origin").textContent(), /Validation sweep/);
+      assert.equal(
+        await question.locator(".entity-chip.project").getAttribute("href"),
+        "#/projects/p1",
+      );
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `moss-dock-question-${width}`);
+      await question.getByRole("button", { name: "3e-4" }).click();
+      await dock.waitFor({ state: "detached" });
+      assert.deepEqual(writes.at(-1), {
+        path: "/api/projects/p1/questions/q-project-relay/answer",
+        answer: "",
+        choices: ["3e-4"],
+      });
+      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
+      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
       assert.deepEqual(errors, []);
       await page.close();
     }

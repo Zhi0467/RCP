@@ -15,6 +15,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.storage import QuestionOrigin
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
+from .test_api_questions import _question
 
 
 def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
@@ -53,6 +54,8 @@ def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
             "pinned": {"writable": False},
         },
     )
+    relayed = _question(store, project_id, owner_id="shared-chat", key="relay")
+    own = _question(store, project_id, owner_id=thread_id, key="own")
     future = datetime.now(UTC) + timedelta(days=1)
     schedule = store.add_agent_schedule(
         thread_id=thread_id,
@@ -82,9 +85,29 @@ def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
                     == 200
                 )
                 base = f"/api/agent-threads/{thread_id}"
+                named = client.get("/api/agent-threads/cards", params={"thread_id": thread_id})
+                assert named.status_code == 200, named.text
+                assert [row["question_id"] for row in named.json()["questions"]] == [
+                    relayed.question_id
+                ]
+                assert {
+                    row["question_id"]
+                    for row in client.get("/api/agent-threads/cards").json()["questions"]
+                } == {relayed.question_id, own.question_id}
+                answered = client.post(
+                    f"/api/projects/{project_id}/questions/{relayed.question_id}/answer",
+                    json={"answer": "a"},
+                )
+                assert answered.status_code == 200, answered.text
+                assert (
+                    client.get("/api/agent-threads/cards", params={"thread_id": thread_id}).json()[
+                        "questions"
+                    ]
+                    == []
+                )
                 listed = client.get(f"/api/projects/{project_id}/chats/{thread_id}/questions")
                 assert listed.status_code == 200
-                card = listed.json()[0]["card"]
+                card = next(row["card"] for row in listed.json() if row["card"] is not None)
                 url = f"/api/approval-cards/{question.question_id}"
                 decision = {"decision": "decline", "pinned_sha256": card["pinned_sha256"]}
                 assert client.post(url, json=decision).json()["outcome"] == "declined"

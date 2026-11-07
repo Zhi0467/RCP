@@ -6,7 +6,7 @@ import hashlib
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote
@@ -178,7 +178,8 @@ def agent_thread_cards(
 ):
     """Open approval cards of the member's project threads: Proposal cards drawn from each
     project's local display snapshot, and asked cards from the question list. A member-wide
-    read, Pip's dock, also lists the cards the Space thread asked.
+    read, Pip's dock, also lists the cards the Space thread asked. Question relays
+    span the member's projects for Space and only the named Project Agent's project.
 
     A member-wide read skips a project whose snapshot cannot be read; a named thread's
     unreadable project is a 503.
@@ -206,7 +207,13 @@ def agent_thread_cards(
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     if thread_id is not None:
         asked.sort(key=lambda row: row["created_at"], reverse=True)
-        return {"proposal_cards": drawn, "asked_cards": asked}
+        return {
+            "proposal_cards": drawn,
+            "asked_cards": asked,
+            "questions": _dock_questions(
+                store, catalog, user_id, by_project, excluded_chat_id=thread_id
+            ),
+        }
     space = [
         thread
         for thread in store.agent_threads(user_id)
@@ -217,15 +224,22 @@ def agent_thread_cards(
     return {
         "proposal_cards": drawn,
         "asked_cards": asked,
-        "questions": _dock_questions(store, catalog, user_id),
+        "questions": _dock_questions(store, catalog, user_id, store.member_project_ids(user_id)),
     }
 
 
-def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> list[dict[str, Any]]:
-    """Pending card-less questions of the member's projects that `question_recipients` gives
-    this member, each naming its project and source, and whether answering adds turns."""
+def _dock_questions(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    user_id: str,
+    project_ids: Iterable[str],
+    *,
+    excluded_chat_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Answerable card-less questions within the admitted project scope, excluding questions
+    already shown inline in the named thread."""
     rows = []
-    for project_id in sorted(store.member_project_ids(user_id)):
+    for project_id in sorted(project_ids):
         project = store.project(project_id)
         if project is None:
             continue
@@ -236,6 +250,10 @@ def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> l
                 question
                 for question in pending
                 if question.question_id not in cards
+                and not (
+                    question.origin.owner_kind == "chat"
+                    and question.origin.owner_id == excluded_chat_id
+                )
                 and user_id in question_recipients(connection, question)
             ]
         asked = [
