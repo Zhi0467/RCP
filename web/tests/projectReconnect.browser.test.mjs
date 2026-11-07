@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { watermarkResponse } from "./watermarks.mjs";
 import { episode as baseEpisode } from "./fixtures/campaigns.mjs";
 import { timelineFixture } from "./fixtures/timeline.mjs";
+import {
+  capabilities,
+  message,
+  settled,
+  threads,
+  transcript,
+} from "./fixtures/agentThreadsApi.mjs";
 
 let server;
 let browser;
@@ -14,7 +22,16 @@ before(async () => {
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
     configLoader: "runner",
-    server: { host: "127.0.0.1", port: 0 },
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+      fs: {
+        allow: [
+          new URL("..", import.meta.url).pathname,
+          realpathSync(new URL("../node_modules", import.meta.url)),
+        ],
+      },
+    },
   });
   await server.listen();
   origin = `http://127.0.0.1:${server.httpServer.address().port}`;
@@ -331,6 +348,96 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   await page.goto(`${origin}/#/projects/demo?view=overview`);
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
+
+test("the actual App keeps global Space artifact interest out of project watermark requests", async (t) => {
+  const { page, errors, authoritativeLoaded } = await openDemoProject(t, "fresh");
+  await authoritativeLoaded;
+  const refused = [];
+  page.on("response", (response) => {
+    if (response.status() >= 400) refused.push(`${response.status()} ${response.url()}`);
+  });
+  const thread = { ...threads[0], capabilities: capabilities.space };
+  const artifact = {
+    artifact_id: "report",
+    name: "report.html",
+    media_type: "text/html",
+    view: "html",
+    size_bytes: 42,
+    available: true,
+    unavailable_reason: null,
+    can_open: true,
+    can_download: true,
+    can_keep: false,
+    can_discuss: true,
+  };
+  const base = "/api/agent-threads/space";
+  const responses = new Map([
+    ["/api/agent-threads", { threads: [thread] }],
+    ["/api/agent-threads/cards", { proposal_cards: [], asked_cards: [], questions: [] }],
+    ["/api/agent-threads/running", { rows: [], needs: 0, total: 0 }],
+    [`${base}/read`, thread],
+    [`${base}/queue`, { items: [] }],
+    [`${base}/schedules`, { schedules: [] }],
+    [
+      `${base}/transcript`,
+      transcript("space", [
+        message(
+          "answer",
+          "assistant",
+          "![Report](/workspace/.research/turns/op-space/artifacts/report.html)",
+          "op-space",
+        ),
+      ]),
+    ],
+    [`${base}/tasks/op-space`, { ...settled("op-space"), result: { artifacts: [artifact] } }],
+    [
+      `${base}/artifacts/report/state`,
+      {
+        current_version: "v1",
+        version_number: 1,
+        can_comment: true,
+        can_keep: false,
+        fresh_session_required: false,
+        live: null,
+        editing_operation_id: null,
+        viewer_url: `${base}/tasks/op-space/artifacts/report/viewer?version_id=v1`,
+      },
+    ],
+  ]);
+  await page.route("**/api/agent-threads**", (route) => {
+    const value = responses.get(new URL(route.request().url()).pathname);
+    return route.fulfill({ status: value ? 200 : 404, json: value ?? {} });
+  });
+  await page.route("**/artifacts/report/viewer?*", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<p>Saved report</p>" }),
+  );
+  const beats = [];
+  const rejected = Promise.withResolvers();
+  await page.route("**/api/resource-watermarks", (route) => {
+    const body = route.request().postDataJSON();
+    beats.push(body);
+    if (body.open.some((project) => project.project_id === "")) {
+      rejected.resolve(body);
+      return route.fulfill({ status: 422, json: { detail: "Invalid project resource" } });
+    }
+    return route.fulfill({
+      json: {
+        ...watermarkResponse(body),
+        agent_threads: body.agent_threads ? { version: "1" } : null,
+        agent_cards: body.agent_cards ? { version: "1" } : null,
+      },
+    });
+  });
+  await page.evaluate(() => (location.hash = "#/agent/space"));
+  const frame = page.locator('.chat-inline-artifact[data-artifact-id="report"] iframe');
+  const result = await Promise.race([frame.waitFor().then(() => "ready"), rejected.promise]);
+  assert.equal(result, "ready", JSON.stringify(result));
+  assert.ok(beats.some((beat) => beat.agent_threads));
+  assert.ok(beats.some((beat) => beat.open.some((project) => project.project_id === "demo")));
+  assert.ok(beats.every((beat) => beat.open.every((project) => project.project_id !== "")));
+  assert.match(await frame.getAttribute("src"), /version_id=v1&presentation=inline/);
+  assert.deepEqual(errors, [], refused.join("\n"));
+});
 
 for (const initialFreshness of ["stale", "fresh"]) {
   test(

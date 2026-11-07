@@ -613,7 +613,8 @@ function RefreshMemberApp(props: {
         const interests = store.awaitingWatermark();
         if (artifactProject.current) interests.add(artifactProject.current);
         for (const projectId of interests)
-          if (!open.has(projectId)) open.set(projectId, { projectId, currentRef: "main" });
+          if (projectId && !open.has(projectId))
+            open.set(projectId, { projectId, currentRef: "main" });
         return [...open.values()];
       },
       activeProjectId: () => bindings.current.active,
