@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
@@ -17,14 +16,21 @@ from rcp.agents.command_protocol import (
     FlagArguments,
     FlagCommandRequest,
 )
+from rcp.agents.prompts import (
+    _invoked_package_section,
+    invoked_package_pointers,
+    invoked_provider_skill_section,
+)
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.core.models import Patch
 from rcp.core.transition_models import GraphTargetRef
+from rcp.providers import ProviderSkillReference
 from rcp.runs.consolidation import consolidation_apply_handler, settlement_source_effect_id
 from rcp.runs.questions import work_command_handler
 from rcp.runs.tasks.work import _apply_work_patch, stream_work_run
 from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord
 from rcp.transport.workspace_mailbox import RunStageMailbox
 from tests.helpers import signed_in_client
@@ -37,7 +43,12 @@ from .helpers import (
     seed_patch,
     wait_for_task,
 )
-from .test_api import ScriptedLauncher, _named_test_authorizer
+from .test_api import (
+    ScriptedLauncher,
+    _chat_task_execution,
+    _named_test_authorizer,
+    _persist_skill_defaults,
+)
 
 
 def _admit(app, *, chat_id=None, target=None):
@@ -111,6 +122,253 @@ def _command(app, execution, tmp_path):
     handler = consolidation_apply_handler(lambda: app.state.service, execution, mailbox, ["repo-a"])
     identity = CommandTurnIdentity(None, execution.operation_id, "turn", "broker")
     return mailbox, lambda key: handler(_apply_request(key), identity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "optional_ids, optional_workflow_ids",
+    [([], []), (["ml-result-rigor"], ["research-graph-audit"])],
+)
+async def test_consolidation_keeps_optional_catalogue_and_invokes_each_pass(
+    manifest, tmp_path, optional_ids, optional_workflow_ids
+):
+    from .helpers import shape_invalid_patch
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    _persist_skill_defaults(
+        service, SkillDefaults(workflow_ids=optional_workflow_ids, skill_ids=optional_ids)
+    )
+    request, execution = _admit(app)
+    request = request.model_copy(
+        update={"invoked_skill_ids": optional_ids, "invoked_workflow_ids": optional_workflow_ids}
+    )
+    invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
+
+    class ChangingSettingsLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if self.calls == 1 and event.event == "answer":
+                    _persist_skill_defaults(service, SkillDefaults(skill_ids=[]))
+                yield event
+
+    launcher = ChangingSettingsLauncher(
+        [
+            {"patch.json": agent_patch_json(invalid)},
+            {"patch.json": agent_patch_json(refresh_patch())},
+        ],
+        message="Consolidated",
+    )
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+    assert launcher.calls == 2, frames
+    values = json.loads(
+        execution.store.agent_task_contract(execution.operation_id, "session_master_values")
+    )
+    pointers = values["skills"]
+    expected = official_registry().resolve(
+        workflow_ids=[*optional_workflow_ids, "graph-consolidation"], skill_ids=optional_ids
+    )
+    assert {(item["kind"], item["id"]) for item in pointers} == {
+        (item.kind, item.id) for item in expected.resolved_skill_packages
+    }
+    for pointer in pointers:
+        assert pointer["description"]
+        filename = "WORKFLOW.md" if pointer["kind"] == "workflow" else "SKILL.md"
+        assert (Path(pointer["path"]) / filename).is_file()
+    invocation = _invoked_package_section(
+        invoked_package_pointers(
+            pointers,
+            workflow_ids=[*optional_workflow_ids, "graph-consolidation"],
+            skill_ids=optional_ids,
+        )
+    ).strip()
+    assert all(invocation in prompt for prompt in launcher.prompts)
+    master = execution.store.agent_task_contract(execution.operation_id, "session_master")
+    assert invocation not in master
+
+
+@pytest.mark.asyncio
+async def test_consolidation_required_dependencies_do_not_enable_public_invocations(
+    manifest, tmp_path
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=[]))
+    request, execution = _admit(app)
+    request = request.model_copy(update={"invoked_skill_ids": ["graph-audit"]})
+    launcher = ScriptedLauncher([])
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            app.state.service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+
+    assert launcher.calls == 0
+    assert "graph-audit" in frames[0] and "not enabled" in frames[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "continuation, resumed_session", [("resume", True), ("retry", True), ("handoff", False)]
+)
+async def test_work_recovery_keeps_current_invocations_outside_replacement_master(
+    manifest, tmp_path, monkeypatch, continuation, resumed_session
+):
+    import rcp.runs.tasks.work as work
+
+    from .helpers import shape_invalid_patch
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["ml-result-rigor"]))
+    native_skill = ProviderSkillReference(
+        provider="codex",
+        machine="backend",
+        provider_version="test-version",
+        inventory_hash="test-inventory",
+        name="native-review",
+        label="Native review",
+        description="Review the result with the provider account's method.",
+    )
+    request = RunRequest(
+        provider="codex",
+        run_on="backend",
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message="Check the result.",
+        mode="work",
+        run_truth_scope=["repo-a"],
+        trigger="schedule",
+        invoked_skill_ids=["ml-result-rigor"],
+        resolved_provider_skills=[native_skill],
+    )
+    prior = _chat_task_execution(app, request, "work-prior")
+    store = prior.store
+    store.record_agent_task_receipt(
+        prior.operation_id,
+        "operation_created",
+        {"kind": "project_chat", "resumed": False, "has_parent": False, "attempt": 1},
+    )
+    initial = ScriptedLauncher([{}], message="Checked the result.")
+    with monkeypatch.context() as legacy:
+        legacy.setattr(work, "WORK_POLICY_VERSION", "work-task-legacy")
+        async for _ in stream_work_run(
+            service, initial, request, tmp_path / "data", execution=prior
+        ):
+            pass
+    store.complete_agent_task(prior.operation_id, applied_revision=None, result={})
+    previous = store.agent_task(prior.operation_id)
+    request = request.model_copy(
+        update={"session_id": initial.native_session_id if resumed_session else None}
+    )
+    now = store.now()
+    operation_id = "work-recovery"
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=previous.project_id,
+            kind="project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            native_session_id=request.session_id,
+            stage_root=previous.stage_root,
+            stage_machine_id=previous.stage_machine_id,
+            parent_operation_id=prior.operation_id,
+            attempt=2,
+            authorized_by=previous.authorized_by,
+            dispatch_authority=previous.dispatch_authority,
+            created_at=now,
+            updated_at=now,
+            status_message="Checking the result.",
+        )
+    )
+    store.record_agent_task_receipt(
+        operation_id,
+        "operation_created",
+        {
+            "kind": "project_chat",
+            "resumed": continuation == "resume",
+            "has_parent": True,
+            "attempt": 2,
+        },
+    )
+    execution = AgentTaskExecution(
+        operation_id,
+        store,
+        AgentProcessControl(),
+        continuation=continuation,
+        stage_root=previous.stage_root,
+        stage_machine_id=previous.stage_machine_id,
+    )
+    invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
+
+    class CheckpointingLauncher(ScriptedLauncher):
+        async def stream(self, provider, prompt, **kwargs):
+            async for event in super().stream(provider, prompt, **kwargs):
+                if event.event == "session":
+                    store.checkpoint_agent_task(operation_id, native_session_id=event.session_id)
+                yield event
+
+    turns = [
+        {"patch.json": agent_patch_json(invalid)},
+        {"patch.json": agent_patch_json(refresh_patch())},
+    ]
+    launcher = CheckpointingLauncher(
+        turns,
+        message="Corrected the result.",
+    )
+    if resumed_session:
+        launcher.native_session_id = request.session_id
+
+    frames = [
+        frame
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        )
+    ]
+
+    assert launcher.calls >= 2, frames
+    values = json.loads(
+        execution.store.agent_task_contract(execution.operation_id, "session_master_values")
+    )
+    invocation = _invoked_package_section(
+        invoked_package_pointers(values["skills"], workflow_ids=[], skill_ids=["ml-result-rigor"])
+    ).strip()
+    master = execution.store.agent_task_contract(execution.operation_id, "session_master")
+    assert invocation not in master
+    assert all(invocation in prompt for prompt in launcher.prompts)
+    native_invocation = invoked_provider_skill_section([native_skill]).strip()
+    assert native_invocation not in master
+    assert all(native_invocation in prompt for prompt in launcher.prompts)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    next_request = request.model_copy(
+        update={
+            "session_id": launcher.native_session_id,
+            "message": "Explain the result.",
+            "trigger": "human",
+            "invoked_skill_ids": [],
+            "resolved_provider_skills": [],
+        }
+    )
+    next_execution = _chat_task_execution(app, next_request, "work-next-turn")
+    next_launcher = ScriptedLauncher([{}], message="Explained the result.")
+    next_launcher.native_session_id = launcher.native_session_id
+    async for _ in stream_work_run(
+        service, next_launcher, next_request, tmp_path / "data", execution=next_execution
+    ):
+        pass
+    assert next_launcher.calls == 1
+    assert invocation not in next_launcher.prompts[0]
+    assert native_invocation not in next_launcher.prompts[0]
+    assert store.agent_task_contract(operation_id, "session_master") == master
 
 
 def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(manifest, tmp_path):
@@ -379,10 +637,9 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     assert not any(item["event"] == "error" for item in payloads)
     assert execution.turn_outcome is not None
     assert execution.turn_outcome.status == ("done" if outcome else "not_stated")
-    contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
     invoked = [
         Path(line.rstrip().rstrip("`").rsplit("`", 1)[-1])
-        for line in contract.read_text().splitlines()
+        for line in launcher.prompts[0].splitlines()
         if "`graph-consolidation`" in line and line.rstrip().endswith("`")
     ]
     assert invoked and (invoked[0] / "WORKFLOW.md").is_file()
@@ -758,6 +1015,14 @@ async def _consolidation_refusal_case(manifest, tmp_path, monkeypatch, *, fail_f
         r for r in store.agent_task_receipts(execution.operation_id) if r.category == "agent_launch"
     ]
     assert [r.payload["resumed"] for r in launches] == [False, True, False]
+    values = json.loads(store.agent_task_contract(execution.operation_id, "session_master_values"))
+    invocation = _invoked_package_section(
+        invoked_package_pointers(
+            values["skills"], workflow_ids=["graph-consolidation"], skill_ids=[]
+        )
+    ).strip()
+    assert all(invocation in prompt for prompt in launcher.prompts)
+    assert invocation not in store.agent_task_contract(execution.operation_id, "session_master")
     updates = [
         json.loads(event.text)["graph_update"]
         for frame in frames

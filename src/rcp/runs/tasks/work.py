@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -42,8 +42,10 @@ from rcp.agents.project_repositories import RepositoryReadScope, resolve_read_sc
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
+    _invoked_package_section,
     chat_master_contract_key,
     invoked_package_pointers,
+    invoked_provider_skill_section,
     live_ask_contract,
     render_chat_read_context,
 )
@@ -857,12 +859,29 @@ async def _stage_work_turn(
     def select_skills(request: RunRequest) -> tuple[SkillSelection, RunRequest]:
         if not is_consolidation(execution):
             return service.resolve_skill_selection(request), request
-        skill_selection = consolidation_skill_selection()
+        request = cast(
+            RunRequest,
+            service.resolve_skill_request(
+                request.model_copy(
+                    update={
+                        "invoked_workflow_ids": [
+                            item
+                            for item in request.invoked_workflow_ids
+                            if item != "graph-consolidation"
+                        ]
+                    }
+                )
+            ),
+        )
+        skill_selection = consolidation_skill_selection(service, request)
         return skill_selection, request.model_copy(
             update={
                 "workflow_ids": skill_selection.workflow_ids,
                 "skill_ids": skill_selection.skill_ids,
-                "invoked_workflow_ids": ["graph-consolidation"],
+                "invoked_workflow_ids": [
+                    *request.invoked_workflow_ids,
+                    "graph-consolidation",
+                ],
                 "resolved_skill_packages": skill_selection.resolved_skill_packages,
             }
         )
@@ -994,12 +1013,6 @@ def _work_contract_text(
         graph_read_prompt=turn.graph_read_prompt,
         write_scope=turn.write_scope,
         skill_pointers=staged.skill_pointers,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
         attachments=staged.attachment_pointers,
         compute_connections=compute_profiles,
     )
@@ -1008,6 +1021,23 @@ def _work_contract_text(
     if covered is not None:
         contract += f"\n\nConsolidation covered head: `{format_head(covered)}`."
     return contract
+
+
+def _work_invocations(turn: WorkTurn, pointers: list[dict[str, object]]) -> str:
+    return "\n\n".join(
+        part.strip()
+        for part in (
+            _invoked_package_section(
+                invoked_package_pointers(
+                    pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
+                )
+            ),
+            invoked_provider_skill_section(turn.request.resolved_provider_skills),
+        )
+        if part.strip()
+    )
 
 
 def _stage_work_contract(
@@ -1125,7 +1155,11 @@ def _work_continuation(
     delta = changed_since_master(replace(master, bootstrap=False), values)
     delta = merge_prepared_graph_observation_delta(delta, turn.execution, session_id)
     question_part = prepare_work_question_snapshot(turn)
-    parts = [part, question_part] if question_part else [part]
+    parts = [
+        part,
+        _work_invocations(turn, cast(list[dict[str, object]], values["skills"])),
+        question_part,
+    ]
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
     parts.append(render_chat_read_context(turn.context))
@@ -1254,6 +1288,9 @@ def _compose_fresh_prompt(
             + "\n\n"
             + render_chat_read_context(turn.context)
         )
+        invocation = _work_invocations(turn, staged.skill_pointers)
+        if invocation:
+            prompt += "\n\n" + invocation
         question_part = prepare_work_question_snapshot(turn)
         launch_path = contract_path
         if question_part:
@@ -1270,7 +1307,9 @@ def _compose_fresh_prompt(
             contract_path=launch_path,
             prompt=prompt,
             base_contract_path=contract_path,
-            render_master=lambda: _work_contract_text(turn, staged),
+            render_master=lambda: _work_contract_text(
+                turn, staged, retry_diagnostics_path=retry_diagnostics_path
+            ),
             prompt_values=values,
             browser_grant=browser_grant,
         )
@@ -1294,7 +1333,9 @@ def _compose_fresh_prompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=contract_path,
-        render_master=lambda: _work_contract_text(turn, staged),
+        render_master=lambda: _work_contract_text(
+            turn, staged, retry_diagnostics_path=retry_diagnostics_path
+        ),
         prompt_values=values,
         browser_grant=browser_grant,
     )
@@ -1340,12 +1381,6 @@ def _compose_retry_prompt(
         mode="retry",
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
     )
     if browser_grant is not None and browser_grant.status != "not_requested":
         retry_contract += "\n\n" + browser_prompt_line(browser_grant)
@@ -1363,6 +1398,9 @@ def _compose_retry_prompt(
         turn.local_stage,
         turn.remote_stage,
     )
+    invocation = _work_invocations(turn, staged.skill_pointers)
+    if invocation:
+        prompt += "\n\n" + invocation
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
