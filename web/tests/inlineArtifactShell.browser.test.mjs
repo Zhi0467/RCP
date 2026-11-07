@@ -19,9 +19,9 @@ page = b"""<!doctype html><html><body><style>:root{color-scheme:light dark}body{
 <div class=box id=box></div><button id=grow onclick="box.style.height='700px'">grow</button>
 <p id=ink style="color:var(--rcp-ink)">ink</p></body></html>"""
 d = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
-shell, _ = artifact_viewer_document(d, content_url="/content?version_id=v1", state="temporary", presentation="inline", selectable=True)
+shell, shell_csp = artifact_viewer_document(d, content_url="/content?version_id=v1", state="temporary", presentation="inline", selectable=True)
 content, _, csp = artifact_content("page.html", "text/html", page, frame_addon=selection_frame_addon(), inline=InlineAppearance("aqua", "dark"))
-print(json.dumps({"shell": shell, "content": content}))`,
+print(json.dumps({"shell": shell, "shellCsp": shell_csp, "content": content, "contentCsp": csp}))`,
     ],
     { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
   )
@@ -44,11 +44,19 @@ test("an inline artifact fills its fixed frame, blends in dark mode, and selects
       }),
     );
     await page.route("http://rcp.test/viewer", (route) =>
-      route.fulfill({ contentType: "text/html", body: rendered.shell }),
+      route.fulfill({
+        contentType: "text/html",
+        body: rendered.shell,
+        headers: { "Content-Security-Policy": rendered.shellCsp },
+      }),
     );
     await page.route("http://rcp.test/content?**", (route) => {
       contentRequests.push(new URL(route.request().url()).searchParams);
-      return route.fulfill({ contentType: "text/html", body: rendered.content });
+      return route.fulfill({
+        contentType: "text/html",
+        body: rendered.content,
+        headers: { "Content-Security-Policy": rendered.contentCsp },
+      });
     });
     await page.goto("http://rcp.test/app");
     await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
@@ -172,10 +180,10 @@ from rcp.limits import ARTIFACT_ERROR_MAX_CHARS
 d = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
 result = {"limit": ARTIFACT_ERROR_MAX_CHARS}
 for mode in ("panel", "inline"):
-    result[mode] = artifact_viewer_document(d, content_url="/content", state="temporary", presentation=mode, selectable=True, panel=comment_panel({"projectId":"p", "artifactId":d.artifact_id, "mediaType":"text/html"}))[0]
+    result[mode], result[mode+"Csp"] = artifact_viewer_document(d, content_url="/content", state="temporary", presentation=mode, selectable=True, panel=comment_panel({"projectId":"p", "artifactId":d.artifact_id, "mediaType":"text/html"}))
 for name, script in {"sync":"throw new Error('broken <img src=x>')", "quiet":"", "reject":"Promise.reject('rejected')", "long":"throw new Error('x'.repeat(10000))"}.items():
     addon = FrameAddon(frame_script="send({kind:'rcp-artifact-error',message:'extra-key',count:1,extra:1});", wrapper_script="") if name == "quiet" else None
-    result[name] = artifact_content("page.html", "text/html", ("<!doctype html><p id=drawn>drawn</p><script>"+script+"</script>").encode(), frame_addon=addon)[0]
+    result[name], _, result[name+"Csp"] = artifact_content("page.html", "text/html", ("<!doctype html><p id=drawn>drawn</p><script>"+script+"</script>").encode(), frame_addon=addon)
 print(json.dumps(result))`,
     ],
     { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
@@ -200,7 +208,17 @@ async function errorPage(t, mode, content) {
         : path === "/shell"
           ? errorPages[mode]
           : errorPages[content];
-    return route.fulfill({ contentType: "text/html", body });
+    const policy =
+      path === "/shell"
+        ? errorPages[mode + "Csp"]
+        : path === "/app"
+          ? null
+          : errorPages[content + "Csp"];
+    return route.fulfill({
+      contentType: "text/html",
+      body,
+      headers: policy ? { "Content-Security-Policy": policy } : {},
+    });
   });
   await page.goto("http://rcp.test/app");
   const shell = page.frame({ url: "http://rcp.test/shell" });
@@ -300,7 +318,11 @@ test("a content reload clears the old notice and rejects the previous generation
   const { page, shell, wrapper } = await errorPage(t, "inline", "sync");
   await page.waitForFunction(() => received.some((v) => v.kind === "rcp-artifact-error"));
   await page.route("http://rcp.test/content?**", (route) =>
-    route.fulfill({ contentType: "text/html", body: errorPages.quiet }),
+    route.fulfill({
+      contentType: "text/html",
+      body: errorPages.quiet,
+      headers: { "Content-Security-Policy": errorPages.quietCsp },
+    }),
   );
   const previous = new URL(wrapper.url()).searchParams.get("error_channel");
   await page.evaluate(() => {

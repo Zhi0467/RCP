@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
+import {
+  mkdtemp,
+  mkdir,
+  copyFile,
+  writeFile,
+  readFile,
+  symlink,
+  rm,
+  realpath,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { build } from "vite";
 import { chromium } from "playwright";
 
 const source = String.raw`# Math and formatting
 
 **A result** with $h_0$ and \(h_1\).
+
+Unsafe $\href{javascript:alert(1)}{click}$.
 
 $$
 h_t = \mathrm{Mix}(h_0,h_{t-1})
@@ -112,7 +128,7 @@ test("Markdown artifacts render chat math in both opaque presentations without a
           .find((frame) => new URL(frame.url() || "about:blank").pathname === "/content");
         assert.ok(content);
         await content.locator(".katex").first().waitFor({ timeout: 3000 });
-        assert.equal(await content.locator(".katex").count(), 5);
+        assert.equal(await content.locator(".katex").count(), 6);
         assert.equal(await content.locator(".katex-display").count(), 2);
         assert.equal(await content.locator("strong").innerText(), "A result");
         assert.equal(await content.locator("th").count(), 2);
@@ -136,7 +152,12 @@ test("Markdown artifacts render chat math in both opaque presentations without a
           false,
         );
         assert.equal(await page.locator("body").getAttribute("data-compromised"), null);
-        assert.ok(requests.every((url) => url.startsWith("http://rcp.test/")));
+        assert.ok(
+          requests.every((url) => ["/app", "/viewer", "/content"].includes(new URL(url).pathname)),
+        );
+        await content.evaluate(() => document.fonts.ready);
+        assert.ok(await content.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        assert.equal(await content.evaluate(() => typeof window.RcpArtifactRenderer), "undefined");
         assert.deepEqual(errors, []);
         await page.close();
       });
@@ -161,6 +182,8 @@ page = rb'''<!doctype html><html><body>
 <p id="inline">$h_0$ and \(h_1\)</p>
 <div id="display">$$ x = y^2 $$ and \[ z = x_0 \]</div>
 <p id="escaped">\$cash\$ and unmatched $open</p>
+<p id="inside">$x+\$1$</p>
+<p id="slashes">\\\$three\\\$ and unmatched $open</p>
 <code id="code">$code$ and \(literal\)</code><pre>$$ pre $$</pre>
 <script>window.authoredValue='$script$';</script><style>#ignored{--literal:'$style$'}</style>
 <p id="bad">$\frac$</p>
@@ -220,10 +243,20 @@ test("Paper HTML math shares fonts and options, preserves authored code and repo
   const artifact = wrapper.childFrames()[0];
   await artifact.locator("#inline .katex").first().waitFor();
   assert.equal(await artifact.locator("#inline .katex").count(), 2);
+  assert.equal(await artifact.locator("#inline .katex-display").count(), 0);
   assert.equal(await artifact.locator("#display .katex-display").count(), 2);
+  assert.equal(await artifact.locator("#inside .katex").count(), 1);
+  assert.equal(await artifact.locator("#slashes .katex").count(), 0);
+  assert.equal(
+    await artifact.locator("#slashes").innerText(),
+    String.raw`\\\$three\\\$ and unmatched $open`,
+  );
   assert.equal(await artifact.locator("#code .katex, pre .katex").count(), 0);
+  assert.equal(await artifact.locator("#escaped .katex").count(), 0);
+  assert.equal(await artifact.locator("#escaped").innerText(), "\\$cash\\$ and unmatched $open");
   assert.equal(await artifact.locator("#code").innerText(), "$code$ and \\(literal\\)");
   assert.equal(await artifact.evaluate(() => window.authoredValue), "$script$");
+  assert.equal(await artifact.evaluate(() => typeof window.RcpArtifactRenderer), "undefined");
   assert.equal(await artifact.locator("#bad .katex-error").count(), 1);
   assert.equal(await artifact.locator("#unsafe a").count(), 0);
   await artifact.evaluate(() => document.fonts.ready);
@@ -254,4 +287,79 @@ test("Paper HTML math shares fonts and options, preserves authored code and repo
   assert.equal(await artifact.locator("body").getAttribute("data-state"), "retained");
   assert.deepEqual(external, []);
   assert.deepEqual(errors, []);
+});
+
+function nextWatchBuild(watcher) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      watcher.off("event", listener);
+      reject(new Error("Artifact watch build timed out"));
+    }, 30000);
+    const listener = (event) => {
+      if (event.code !== "END" && event.code !== "ERROR") return;
+      clearTimeout(timeout);
+      watcher.off("event", listener);
+      if (event.code === "ERROR") reject(event.error);
+      else resolve();
+    };
+    watcher.on("event", listener);
+  });
+}
+
+test("the existing Vite watch lifecycle rebuilds the packaged renderer and shared syntax", async (t) => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rcp-renderer-watch-")));
+  let watcher;
+  t.after(async () => {
+    await watcher?.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  for (const path of ["build", "src/artifacts", "src/core"])
+    await mkdir(join(root, path), { recursive: true });
+  for (const path of [
+    "build/artifactRenderer.mjs",
+    "src/artifacts/artifactRenderer.tsx",
+    "src/core/markdownSyntax.ts",
+  ]) {
+    await copyFile(fileURLToPath(new URL("../" + path, import.meta.url)), join(root, path));
+  }
+  await symlink(
+    fileURLToPath(new URL("../node_modules", import.meta.url)),
+    join(root, "node_modules"),
+    "dir",
+  );
+  await writeFile(join(root, "package.json"), '{"type":"module"}');
+  await writeFile(join(root, "index.html"), '<script type="module" src="/src/main.js"></script>');
+  await writeFile(join(root, "src/main.js"), 'document.body.textContent="watch fixture";');
+  const { artifactRenderer } = await import(
+    pathToFileURL(join(root, "build/artifactRenderer.mjs"))
+  );
+  watcher = await build({
+    root,
+    configFile: false,
+    logLevel: "silent",
+    plugins: [artifactRenderer()],
+    build: { watch: {} },
+  });
+  await nextWatchBuild(watcher);
+  const script = join(root, "dist/artifact-renderer.js");
+  const before = await readFile(script, "utf8");
+  let ready = nextWatchBuild(watcher);
+  const entry = join(root, "src/artifacts/artifactRenderer.tsx");
+  await writeFile(
+    entry,
+    (await readFile(entry, "utf8")) + '\nexport const watchVersion = "updated";\n',
+  );
+  await ready;
+  assert.notEqual(await readFile(script, "utf8"), before);
+  assert.match(await readFile(script, "utf8"), /updated/);
+  ready = nextWatchBuild(watcher);
+  const syntax = join(root, "src/core/markdownSyntax.ts");
+  await writeFile(
+    syntax,
+    (await readFile(syntax, "utf8")) + "\nexport const syntaxWatchProbe = true;\n",
+  );
+  await ready;
+  const css = await readFile(join(root, "dist/artifact-renderer.css"), "utf8");
+  assert.match(css, /url\(data:font\/woff2;base64,/);
+  assert.doesNotMatch(css, /url\(fonts\//);
 });
