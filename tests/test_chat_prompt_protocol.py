@@ -1017,6 +1017,416 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
         assert len(store.artifact_versions(artifact_id)) == 2
 
 
+@pytest.fixture
+def legacy_private_artifact_edit(manifest, tmp_path, monkeypatch):
+    import rcp.runs.tasks.discuss as discuss
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    project_id = app.state.default_project_id
+
+    class Launcher(_RecordingLauncher):
+        def __init__(self):
+            super().__init__("original-private-session")
+            self.pause_turns = {1}
+
+        async def stream(self, provider, prompt, **kwargs):
+            turn = len(self.workspaces)
+            workspace = Path(kwargs["cwd"])
+            if turn == 0:
+                target = workspace / "turns" / kwargs["operation_id"] / "artifacts" / "note.html"
+                target.write_text("<p>Original note</p>")
+            else:
+                target = next(workspace.glob("turns/*/artifacts/note.html"))
+                self.native_session_id = "fresh-private-session"
+                if turn in self.pause_turns:
+                    target.write_text("<p>Paused revision</p>")
+                    self.prompts.append(prompt)
+                    self.workspaces.append(workspace)
+                    self.sessions.append(kwargs.get("session_id"))
+                    self.launch_kwargs.append(kwargs)
+                    yield AgentEvent(event="session", session_id=self.native_session_id)
+                    yield AgentEvent(event="paused", text="Retained old-writer checkpoint")
+                    return
+                assert target.read_text() == "<p>Paused revision</p>"
+                target.write_text("<p>Revised note</p>")
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = Launcher()
+
+    async def stream(_project_id, _kind, request, execution):
+        run = stream_work_run if request.mode == "work" else stream_discuss_run
+        async for frame in run(app.state.service, launcher, request, tmp_path / "data", execution):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    with signed_in_client(app) as client:
+        thread = next(
+            row
+            for row in client.get("/api/agent-threads").json()["threads"]
+            if row["kind"] == "project"
+        )
+        started = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": thread["thread_id"],
+                "message": "Write the note",
+                "mode": "work",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        completed = wait_for_task_response(client, project_id, started.json()["operation_id"])
+        assert completed["status"] == "succeeded", completed.get("error")
+        artifact_id = completed["result"]["artifacts"][0]["artifact_id"]
+        store = app.state.catalog.store
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
+                (completed["operation_id"],),
+            )
+        with monkeypatch.context() as old_writer:
+            old_writer.setattr(discuss, "_chat_stage_owner", lambda *_args: None)
+            edit = client.post(
+                f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
+                json={
+                    "comments": [{"text": "Revise this note"}],
+                    "edit_now": True,
+                    "fresh_session": True,
+                },
+            )
+            assert edit.status_code == 202, edit.text
+            paused = wait_for_task_response(client, project_id, edit.json()["operation_id"])
+        assert paused["status"] == "paused", paused.get("error")
+        assert paused["request"]["artifact_edit"]["fresh_session"] is True
+        assert launcher.sessions == [None, None]
+        expected_stage = (
+            tmp_path / "data" / "run-stage" / ("artifact-edit-" + paused["operation_id"])
+        )
+        assert launcher.workspaces[1] == expected_stage / "workspace"
+        old_request = dict(paused["request"])
+        old_request.pop("resolved_provider_skills", None)
+        old_request["artifact_edit"].pop("origin_bound", None)
+        old_request["artifact_edit"].pop("staged_scope_id", None)
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+                (json.dumps(old_request), paused["operation_id"]),
+            )
+        yield app, client, artifact_id, paused, launcher
+
+
+@pytest.mark.parametrize("continuations", [("resume",), ("retry",), ("retry", "resume")])
+def test_old_writer_private_fresh_artifact_edit_recovers_its_exact_checkpoint(
+    legacy_private_artifact_edit, tmp_path, continuations
+):
+    app, client, artifact_id, paused, launcher = legacy_private_artifact_edit
+    project_id = app.state.default_project_id
+    source = paused
+    launcher.pause_turns.update(range(2, len(continuations) + 1))
+    for index, continuation in enumerate(continuations):
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/{paused['operation_id']}/{continuation}", json={}
+        )
+        assert response.status_code == 202, response.text
+        recovered = wait_for_task_response(client, project_id, response.json()["operation_id"])
+        expected = "succeeded" if index == len(continuations) - 1 else "paused"
+        assert recovered["status"] == expected, recovered.get("error")
+        paused = recovered
+    assert launcher.sessions == [None, None] + ["fresh-private-session"] * len(continuations)
+    assert all(workspace == launcher.workspaces[1] for workspace in launcher.workspaces[2:])
+    store = app.state.catalog.store
+    assert store.read_artifact_bytes(artifact_id) == b"<p>Revised note</p>"
+    assert len(store.artifact_versions(artifact_id)) == 2
+    compatibility = [
+        receipt
+        for receipt in store.agent_task_receipts(recovered["operation_id"])
+        if receipt.category == "legacy_private_artifact_edit_stage"
+    ]
+    assert len(compatibility) == 1
+    assert compatibility[0].payload["source_operation_id"] == source["operation_id"]
+    assert compatibility[0].payload["continuation"] == continuations[-1]
+    assert any(
+        event.level == "warning" and "legacy" in event.message
+        for event in store.agent_task_events(recovered["operation_id"])
+    )
+    owner = store.private_chat_owner(source["request"]["chat_id"])
+    assert not (
+        tmp_path / "data" / "agent-threads" / owner / "stages" / Path(source["stage_root"]).name
+    ).exists()
+    if continuations == ("resume",):
+        following = _RecordingLauncher("following-private-session")
+
+        async def stream(_project_id, _kind, request, execution):
+            run = stream_work_run if request.mode == "work" else stream_discuss_run
+            async for frame in run(
+                app.state.service, following, request, tmp_path / "data", execution
+            ):
+                yield frame
+
+        app.state.background_tasks.stream = stream
+        new_edit = client.post(
+            f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
+            json={"comments": [{"text": "Review again"}], "edit_now": True, "fresh_session": True},
+        )
+        assert new_edit.status_code == 202, new_edit.text
+        new_edit_task = wait_for_task_response(client, project_id, new_edit.json()["operation_id"])
+        assert new_edit_task["status"] == "succeeded", new_edit_task.get("error")
+        following.native_session_id = "following-private-human-session"
+        message = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": source["request"]["chat_id"],
+                "message": "Continue our discussion",
+                "mode": "work",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        assert message.status_code == 202, message.text
+        message_task = wait_for_task_response(client, project_id, message.json()["operation_id"])
+        assert message_task["status"] == "succeeded", message_task.get("error")
+        assert following.sessions[0] is None
+        assert all(
+            workspace.is_relative_to(tmp_path / "data" / "agent-threads" / owner / "stages")
+            for workspace in following.workspaces
+        )
+        assert len(following.workspaces) == 2
+        assert list((tmp_path / "data" / "run-stage").glob("artifact-edit-*")) == [
+            Path(source["stage_root"])
+        ]
+        for task in (new_edit_task, message_task):
+            assert not store.agent_task_has_receipt(
+                task["operation_id"], "legacy_private_artifact_edit_stage"
+            )
+
+
+def test_old_writer_private_edit_requires_its_exact_durable_provenance(
+    legacy_private_artifact_edit, tmp_path, monkeypatch
+):
+    from rcp.runs.tasks.discuss import _legacy_private_edit_source
+
+    app, _client, _artifact_id, paused, _launcher = legacy_private_artifact_edit
+    tasks = app.state.background_tasks
+    store = tasks.store
+    source = store.agent_task(paused["operation_id"])
+    with monkeypatch.context() as admission:
+        admission.setattr(tasks, "_spawn_record", lambda record, *_args, **_kwargs: record)
+        candidate = tasks.resume(source.operation_id)
+    store.record_agent_task_receipt(
+        candidate.operation_id,
+        "operation_created",
+        {"kind": candidate.kind, "attempt": 2, "has_parent": True, "resumed": True},
+    )
+    request = RunRequest.model_validate(candidate.request)
+    execution = AgentTaskExecution(
+        operation_id=candidate.operation_id,
+        store=store,
+        control=AgentProcessControl(),
+        stage_root=candidate.stage_root,
+        stage_machine_id=candidate.stage_machine_id,
+        continuation="resume",
+    )
+    owner = store.private_chat_owner(request.chat_id)
+
+    def resolve():
+        return _legacy_private_edit_source(
+            execution, request, thread_owner=owner, data_dir=tmp_path / "data"
+        )
+
+    assert resolve() == source
+    read_thread = store.agent_thread
+    lookups = []
+
+    def changing_picker(thread_id):
+        thread = read_thread(thread_id)
+        lookups.append(thread_id)
+        return (
+            thread
+            if len(lookups) == 1
+            else thread.model_copy(update={"agent_model": "new-picker-choice"})
+        )
+
+    with monkeypatch.context() as picker:
+        picker.setattr(store, "agent_thread", changing_picker)
+        assert resolve() == source
+    origin = store.agent_task(request.artifact_edit.origin_operation_id)
+    different_provider = "claude" if request.provider != "claude" else "codex"
+    replacements = [
+        candidate.model_copy(
+            update={
+                "authorized_by": candidate.authorized_by.model_copy(
+                    update={"user_id": "different-owner"}
+                )
+            }
+        ),
+        candidate.model_copy(update={"project_id": "different-project"}),
+        candidate.model_copy(update={"episode_id": "different-episode"}),
+        candidate.model_copy(
+            update={"request": {**candidate.request, "provider": different_provider}}
+        ),
+        source.model_copy(update={"request": {**source.request, "provider": different_provider}}),
+        candidate.model_copy(
+            update={
+                "graph_target": candidate.graph_target.model_copy(
+                    update={"kind": "branch", "branch_id": "different-target"}
+                )
+            }
+        ),
+        candidate.model_copy(update={"native_session_id": "different-session"}),
+        candidate.model_copy(update={"stage_root": str(tmp_path / "different-stage")}),
+        candidate.model_copy(update={"stage_machine_id": "different-machine"}),
+        candidate.model_copy(update={"parent_operation_id": "missing-parent"}),
+        candidate.model_copy(
+            update={"request": {**candidate.request, "session_id": "different-session"}}
+        ),
+        origin.model_copy(update={"request": {**origin.request, "chat_id": "different-chat"}}),
+        source.model_copy(
+            update={
+                "request": {
+                    **source.request,
+                    "artifact_edit": {
+                        **source.request["artifact_edit"],
+                        "origin_operation_id": "different-origin",
+                    },
+                }
+            }
+        ),
+    ]
+    read = store.agent_task
+    for replacement in replacements:
+        with monkeypatch.context() as corrupt:
+            corrupt.setattr(
+                store,
+                "agent_task",
+                lambda operation_id, replacement=replacement: (
+                    replacement if operation_id == replacement.operation_id else read(operation_id)
+                ),
+            )
+            assert resolve() is None, replacement.model_dump(mode="json")
+    with monkeypatch.context() as corrupt:
+        corrupt.setattr(execution, "stage_root", str(tmp_path / "different-stage"))
+        assert resolve() is None
+    receipts = store.agent_task_receipts
+    for operation_id, payload_updates in (
+        (candidate.operation_id, {"continuation_cause": "message_wake"}),
+        (candidate.operation_id, {"continuation_cause": "retry"}),
+        (candidate.operation_id, {"continuation_cause": "resume", "resumed": False}),
+        (source.operation_id, {"resumed": True}),
+    ):
+        retained_receipts = [
+            receipt.model_copy(update={"payload": {**receipt.payload, **payload_updates}})
+            if receipt.category == "operation_created"
+            else receipt
+            for receipt in receipts(operation_id)
+        ]
+        with monkeypatch.context() as corrupt:
+            corrupt.setattr(
+                store,
+                "agent_task_receipts",
+                lambda current_id, operation_id=operation_id, retained_receipts=retained_receipts: (
+                    retained_receipts if current_id == operation_id else receipts(current_id)
+                ),
+            )
+            assert resolve() is None
+    with monkeypatch.context() as corrupt:
+        corrupt.setattr(execution, "continuation", "retry")
+        assert resolve() is None
+    with monkeypatch.context() as corrupt:
+        skipped = candidate.model_copy(update={"attempt": candidate.attempt + 1})
+        created = [
+            receipt.model_copy(update={"payload": {**receipt.payload, "attempt": skipped.attempt}})
+            if receipt.category == "operation_created"
+            else receipt
+            for receipt in receipts(candidate.operation_id)
+        ]
+        corrupt.setattr(
+            store,
+            "agent_task",
+            lambda operation_id: (
+                skipped if operation_id == candidate.operation_id else read(operation_id)
+            ),
+        )
+        corrupt.setattr(
+            store,
+            "agent_task_receipts",
+            lambda operation_id: (
+                created if operation_id == candidate.operation_id else receipts(operation_id)
+            ),
+        )
+        assert resolve() is None
+    admitted = request
+    for updates in (
+        {"artifact_edit": None},
+        {"session_id": None},
+        {"mode": "work"},
+        {"chat_scope": "node"},
+        {"run_on": "different-machine"},
+        {"artifact_edit": admitted.artifact_edit.model_copy(update={"fresh_session": False})},
+        {"artifact_edit": admitted.artifact_edit.model_copy(update={"origin_bound": False})},
+        {"artifact_edit": admitted.artifact_edit.model_copy(update={"launch_kind": "revoking"})},
+    ):
+        request = admitted.model_copy(update=updates)
+        assert resolve() is None
+    assert not store.agent_task_has_receipt(
+        candidate.operation_id, "legacy_private_artifact_edit_stage"
+    )
+
+
+def test_remote_private_edit_keeps_exact_legacy_checkpoint_without_allocating(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from rcp.runs.chat import open_remote_conversation_stage
+    from rcp.transport.run_stage import remote_stage_name
+
+    machine = SimpleNamespace(machine_id="remote-machine", host="worker.example")
+    saved = "/home/worker/.rcp/stages/rcp-run.artifact-edit-legacy-edit"
+    attached = []
+
+    class Stage:
+        def __init__(self, host):
+            assert host == machine.host
+
+        def attach(self, root):
+            assert root == saved
+            attached.append(root)
+            self.root = Path(root)
+            return self
+
+        def open(self, *_args, **_kwargs):
+            raise AssertionError("A retained checkpoint must never allocate a stage")
+
+        def touch(self):
+            pass
+
+    execution = SimpleNamespace(
+        stage_root=saved,
+        stage_machine_id=machine.machine_id,
+        checkpoint_stage=lambda machine_id, root: attached.append((machine_id, root)),
+    )
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", Stage)
+    stage = open_remote_conversation_stage(
+        machine, remote_stage_name(saved), execution, saved_stage=True, thread_owner="member"
+    )
+    assert str(stage.root) == saved
+    assert attached == [saved, (machine.machine_id, saved)]
+    for changes in (
+        {"stage_machine_id": "other-machine"},
+        {"stage_root": "/outside/rcp-run.artifact-edit-legacy-edit"},
+    ):
+        invalid = SimpleNamespace(**{**execution.__dict__, **changes})
+        with pytest.raises(ValueError):
+            open_remote_conversation_stage(
+                machine,
+                "artifact-edit-legacy-edit",
+                invalid,
+                saved_stage=True,
+                thread_owner="member",
+            )
+    assert attached == [saved, (machine.machine_id, saved)]
+
+
 @pytest.mark.asyncio
 async def test_node_chat_master_carries_the_focused_node_and_its_relations(
     manifest, tmp_path
