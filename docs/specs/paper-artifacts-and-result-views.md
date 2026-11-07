@@ -127,8 +127,10 @@ unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
 
-On entry the preview checks its member-only `/preview/state` route and shows
-loading until current state arrives. Its dependency key includes the HTML and
+On entry and when the saved Paper revision or HTML bytes change, the preview
+checks its member-only `/preview/state` route and hides the prior page behind
+loading until current state arrives. A failed check keeps the page hidden and
+offers Retry, which starts another check. Its dependency key includes the HTML and
 referenced image identities, paths, bytes and availability. A changed dependency
 loads the captured revision; unrelated saves preserve the loaded page, scroll
 and state. Obsolete reads are aborted. Reopening checks current state again.

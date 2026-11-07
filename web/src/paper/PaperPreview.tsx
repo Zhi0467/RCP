@@ -147,7 +147,7 @@ function useHtmlPreviewState(source: string, revision: number, hash: string, act
   const [entryReady, setEntryReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  useLayoutEffect(() => setEntryReady(false), [active]);
+  useLayoutEffect(() => setEntryReady(false), [source, revision, hash, active, attempt]);
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();

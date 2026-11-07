@@ -80,7 +80,7 @@ async function openHtmlPreview(t, width) {
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
           window.comments = []; window.cancelled = [];
-          window.show = (revision=1, active=true, id='html') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:'html-bytes'}} tree={{files:[],revision,saved_revision:revision}} text="" active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} />);`;
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision,saved_revision:revision}} text="" active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} />);`;
       },
     },
   ]);
@@ -237,20 +237,56 @@ for (const width of [1280, 390])
     assert.ok(await artifact().evaluate(() => window.scrollY > 0));
     await plus.click();
     const count = states.length;
+    fixture.hold();
     fixture.update({ revision: 2, key: "html-and-image-1" });
-    const rechecked = page.waitForResponse((response) => response.url().endsWith("/preview/state"));
+    const checking = page.waitForRequest((request) => request.url().endsWith("/preview/state"));
+    const retained = await frame.elementHandle();
+    const scroll = await artifact().evaluate(() => window.scrollY);
     await page.evaluate(() => window.show(2));
+    await checking;
+    assert.equal(await frame.isVisible(), false);
+    assert.equal(await page.locator(".paper-html-preview").getAttribute("aria-busy"), "true");
+    await page.getByLabel("Loading preview").waitFor();
+    const rechecked = page.waitForResponse((response) => response.url().endsWith("/preview/state"));
+    fixture.release();
     await rechecked;
+    await frame.waitFor({ state: "visible" });
     assert.equal(states.length, count + 1);
     assert.equal(loads.length, 1);
+    assert.equal(await frame.evaluate((element, previous) => element === previous, retained), true);
     assert.equal(await artifact().locator("#counter").innerText(), "1");
+    assert.equal(await artifact().evaluate(() => window.scrollY), scroll);
+    assert.equal(await reset.innerText(), "125%");
+    fixture.hold();
     fixture.update({ revision: 3, key: "html-and-image-2" });
+    const imageCheck = page.waitForRequest((request) => request.url().endsWith("/preview/state"));
+    await page.evaluate(() => window.show(3));
+    await imageCheck;
+    assert.equal(await frame.isVisible(), false);
+    await page.getByLabel("Loading preview").waitFor();
+    assert.equal(loads.length, 1);
     const replaced = page.waitForResponse((response) =>
       /\/preview\?revision=3$/.test(response.url()),
     );
-    await page.evaluate(() => window.show(3));
+    fixture.release();
     await replaced;
     assert.equal(loads.length, 2);
+    assert.equal(await reset.innerText(), "125%");
+    fixture.hold();
+    fixture.update({ revision: 4, key: "updated-html-bytes" });
+    const htmlCheck = page.waitForRequest((request) => request.url().endsWith("/preview/state"));
+    await page.evaluate(() => window.show(3, true, "html", "new-html-bytes"));
+    await htmlCheck;
+    assert.equal(await frame.isVisible(), false);
+    await page.getByLabel("Loading preview").waitFor();
+    assert.equal(loads.length, 2);
+    const htmlReload = page.waitForResponse((response) =>
+      /\/preview\?revision=4$/.test(response.url()),
+    );
+    fixture.release();
+    await htmlReload;
+    await frame.waitFor({ state: "visible" });
+    assert.equal(loads.length, 3);
     assert.equal(await reset.innerText(), "125%");
     await page.evaluate(() => window.show(3, true, "other"));
     await page.waitForFunction(() => document.querySelector("iframe")?.title === "other.html");
