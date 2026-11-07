@@ -323,6 +323,8 @@ def deliver_pending_auto_research_lifecycle(
             "control_node_id": None,
             "session_id": binding.native_session_id,
             "instruction": None,
+            "invoked_skill_ids": [],
+            "invoked_workflow_ids": [],
             "wake_cause": "lifecycle",
             "watcher_ids": [],
         }
@@ -521,6 +523,8 @@ def deliver_pending_auto_research_mail(
             "control_node_id": binding.control_node_id,
             "session_id": binding.native_session_id,
             "instruction": None,
+            "invoked_skill_ids": [],
+            "invoked_workflow_ids": [],
             "wake_cause": "message",
             "watcher_ids": [],
         }
@@ -716,6 +720,8 @@ def deliver_auto_research_watcher_group(
             "control_node_id": binding.control_node_id,
             "session_id": binding.native_session_id,
             "instruction": None,
+            "invoked_skill_ids": [],
+            "invoked_workflow_ids": [],
             "wake_cause": (
                 "graph_condition"
                 if all(isinstance(item, GraphWatcherRecord) for item in watchers)

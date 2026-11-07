@@ -54,6 +54,7 @@ from rcp.agents.prompts import (
     graph_read_contract,
     invoked_package_pointers,
     invoked_provider_skill_section,
+    skill_prompt_values,
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -615,10 +616,7 @@ def _experiment_values(
             item["alias"]: {"host": item["host"], "path": item["path"]}
             for item in staged.repositories
         },
-        "skills": {
-            str(item["id"]): {"version": item.get("version"), "path": item.get("path")}
-            for item in staged.skill_pointers
-        },
+        "skills": skill_prompt_values(staged.skill_pointers),
         "ontology_sha256": prepared.ontology_sha256,
     }
 
@@ -1224,13 +1222,15 @@ def _compose_fresh_prompt(
         staged,
         prepared,
         human_request=turn.request.message,
-        invoked=True,
+        invoked=False,
         retry_diagnostics_path=retry_diagnostics_path,
     )
     question_part = _question_snapshot_part(turn)
     if browser_grant is not None and browser_grant.status != "not_requested":
         contract += "\n\n" + browser_prompt_line(browser_grant)
-    launch_contract = contract + ("\n\n" + question_part if question_part else "")
+    launch_contract = "\n\n".join(
+        part for part in (contract, *_turn_invocations(turn, staged), question_part) if part
+    )
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,

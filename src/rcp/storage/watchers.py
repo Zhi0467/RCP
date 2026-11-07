@@ -1703,6 +1703,12 @@ class WatcherStoreMixin(StoreMixinBase):
             if request_continuation_data.get(nullable_list) is None:
                 request_continuation_data[nullable_list] = []
         request_continuation = WatcherContinuation.model_validate(request_continuation_data)
+        if auto_research_wake:
+            if request_continuation.invoked_workflow_ids or request_continuation.invoked_skill_ids:
+                raise ValueError("Auto-research watcher wake cannot inherit package invocations")
+            continuation = continuation.model_copy(
+                update={"invoked_workflow_ids": [], "invoked_skill_ids": []}
+            )
         request_policy = (
             WatcherStoreMixin._automatic_watcher_delivery_policy(request_continuation)
             if continuation.patch_kind == "experiment_loop"
