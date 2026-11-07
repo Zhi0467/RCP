@@ -290,7 +290,7 @@
   "src/rcp/storage/artifact_models.py": {"comment": 2},
   "src/rcp/storage/artifacts.py": {"comment": 9},
   "src/rcp/storage/auto_research.py": {"comment": 14},
-  "src/rcp/storage/auto_research_children.py": {"comment": 18},
+  "src/rcp/storage/auto_research_children.py": {"comment": 17},
   "src/rcp/storage/base.py": {"comment": 63},
   "src/rcp/storage/branch_names.py": {"comment": 2},
   "src/rcp/storage/bulletin.py": {"comment": 7},

@@ -143,11 +143,15 @@ share that scope, which grants no writes. Human views remain unfiltered.
 
 An owned fork archives automatically only while its own head remains at its
 immutable parent-at-fork head.
-It must have no reachable writer, nested live fork, unknown publication,
+It must have no reachable writer, unarchived descendant fork, unknown publication,
 undelivered watcher or mail, live child Experiment, or accepted admission.
 Resumable sessions and stages, along with bound merge destinations, count as
-writers. Child polling checks under the canonical lock. Explicit archive targets
-owned forks, never the root's branch. Member forks do not archive automatically.
+writers. Descendant checks follow immutable parent links within the project,
+including through archived forks, and cycles fail closed. Manual and
+nonautomatic descendants retain their ancestors; empty automatic forks retire
+from leaves toward ancestors across child polls. Child polling checks under the
+canonical lock. Explicit archive targets owned forks, never the root's branch.
+Member forks do not archive automatically.
 
 Keyed merge delivers an owned fork into its open, owned parent. Main or foreign
 parents require human dispatch. A deterministic plan commits without a provider.
