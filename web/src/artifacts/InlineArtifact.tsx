@@ -2,13 +2,26 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { FileX, Maximize2, MessageSquarePlus, RefreshCw, TriangleAlert } from "lucide-react";
 import { useResource, useRefreshRuntime } from "../core/useResource";
 import type { ResourceProfile } from "../core/resourceStore";
-import type { ArtifactViewerState } from "../core/types";
 import { resourceKeyId } from "../core/resourceStore";
-import { artifactStateProfile } from "./artifactResources";
+import { artifactStateProfile, type InlineArtifactState } from "./artifactResources";
 import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor } from "../core/types";
 import { INLINE_ARTIFACT_HEIGHT, inlineViewerUrl, type InlineSelection } from "./inlineArtifacts";
 import { useInlineShell } from "./useInlineShell";
+
+function useSpaceArtifactWatermark(
+  projectId: string | null,
+  profile: ResourceProfile<InlineArtifactState> | null,
+) {
+  const { store, scheduler } = useRefreshRuntime();
+  const { project, name, ref, entity } = profile?.key ?? {};
+  useEffect(() => {
+    if (projectId !== null || project === undefined || name === undefined) return;
+    return scheduler.watchAgentThreads((version) =>
+      store.observe(project, [{ name, ref, entity, version: version ?? "" }]),
+    );
+  }, [projectId, project, name, ref, entity, scheduler, store]);
+}
 
 export interface InlineArtifactSelectionEvent {
   selection: InlineSelection | null;
@@ -27,7 +40,7 @@ interface InlineArtifactProps {
   projectId: string | null;
   /** Transient artifacts can use an owner-checked viewer directly, without project state. */
   viewerUrl?: string;
-  stateProfile?: ResourceProfile<ArtifactViewerState> | null;
+  stateProfile?: ResourceProfile<InlineArtifactState> | null;
   /** Null while the turn that owns it loads; the same element then shows it. */
   artifact: AgentArtifactDescriptor | null;
   title: string;
@@ -81,7 +94,9 @@ export function InlineArtifact({
       : projectId && artifact
         ? artifactStateProfile(projectId, artifact.artifact_id)
         : null;
-  const resource = useResource(`${projectId}:inline:${owner}`, near && artifact ? profile : null);
+  const activeProfile = near && artifact ? profile : null;
+  const resource = useResource(`${projectId}:inline:${owner}`, activeProfile);
+  useSpaceArtifactWatermark(projectId, activeProfile);
   const state = resource.value;
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
@@ -163,7 +178,7 @@ export function InlineArtifact({
         </span>
       </span>
     );
-  const resolvedViewer = state?.viewer_url ?? (near ? viewerUrl : null);
+  const resolvedViewer = profile === null ? (near ? viewerUrl : null) : state?.viewer_url;
   const source = resolvedViewer ? inlineViewerUrl(resolvedViewer) : null;
   const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (
