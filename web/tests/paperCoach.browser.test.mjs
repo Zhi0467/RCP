@@ -850,13 +850,16 @@ for (const state of ["ready", "warning", "refusal"])
     else {
       await page.locator(".paper-html-preview iframe").waitFor();
       if (state === "warning") {
-        const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
-        await shell.evaluate(() =>
-          parent.postMessage(
-            { kind: "rcp-artifact-error", message: "Saved image unavailable", count: 1 },
-            location.origin,
-          ),
-        );
+        await page
+          .locator(".paper-html-preview iframe")
+          .contentFrame()
+          .getByText("Saved page")
+          .evaluate(() =>
+            parent.postMessage(
+              { kind: "rcp-artifact-error", message: "Saved image unavailable", count: 1 },
+              location.origin,
+            ),
+          );
         await toolbar.getByRole("status", { name: "Saved image unavailable" }).waitFor();
       }
     }
