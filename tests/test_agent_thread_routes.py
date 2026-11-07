@@ -523,7 +523,9 @@ def test_space_turn_carries_only_an_enabled_official_invocation(manifest, tmp_pa
             "/api/agent-threads/"
             + client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         )
-        sent = client.post(base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id]})
+        sent = client.post(
+            base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id, skill_id]}
+        )
         assert sent.status_code == 202, sent.text
         task = app.state.background_tasks.store.agent_task(sent.json()["operation_id"])
         assert task is not None and task.request["invoked_skill_ids"] == [skill_id]

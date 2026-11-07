@@ -419,6 +419,7 @@ class _SpaceTurn:
     found: SpaceProjects
     scope: CompositeWriteScope
     hidden_read_scope: HiddenReadScope
+    skill_selection: SkillSelection
 
     def clear_fresh_outputs(self) -> None:
         """Outputs from a completed earlier turn never become this turn's input."""
@@ -529,9 +530,15 @@ async def _open_space_turn(
         ]
     )
     install_space_hidden_read_scope(hidden_read_scope)
+    skill_selection = space_skill_selection()
+    workflows, skills = official_registry().validate_invocations(
+        skill_selection,
+        workflow_ids=request.invoked_workflow_ids,
+        skill_ids=request.invoked_skill_ids,
+    )
     return _SpaceTurn(
         owner,
-        request,
+        request.model_copy(update={"invoked_workflow_ids": workflows, "invoked_skill_ids": skills}),
         execution,
         stage,
         artifact_scope_id,
@@ -541,6 +548,7 @@ async def _open_space_turn(
         found,
         scope,
         hidden_read_scope,
+        skill_selection,
     )
 
 
@@ -718,7 +726,7 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v4"
+SPACE_MASTER_POLICY = "space-master-v5"
 
 
 def render_space_prompt(
@@ -736,12 +744,13 @@ def render_space_prompt(
     from rcp.agents.continuation_prompt import compose, context_delta
     from rcp.runs.session_master import continuation_session_master, start_session_master
 
+    skill_pointers = _space_skill_pointers(turn)
     fixed = render_space_master(turn, allowed_verbs)
-    values = space_master_values(turn.found, turn.request)
+    values = space_master_values(turn.found, turn.request, skill_pointers=skill_pointers)
     content = _with_master_values(fixed, values)
     key = f"{SPACE_MASTER_POLICY}-{hashlib.sha256(fixed.encode()).hexdigest()[:16]}"
     stages = {"local_stage": turn.stage, "remote_stage": None, "label_prefix": SPACE_MASTER_POLICY}
-    parts = _space_turn_parts(turn, seed, last_results)
+    parts = _space_turn_parts(turn, seed, last_results, skill_pointers=skill_pointers)
     session_id = turn.request.session_id
     if session_id is None:
         master = start_session_master(
@@ -773,7 +782,7 @@ def _with_master_values(fixed: str, values: dict[str, object]) -> str:
 def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
     """The Space contract that holds for a whole native session, without its values."""
     from rcp.agents.artifact_contract import artifact_contract
-    from rcp.agents.prompts import APP_PLACES, write_scope_section
+    from rcp.agents.prompts import APP_PLACES, STAGED_SKILL_RULE, write_scope_section
     from rcp.runs.agent_thread_commands import space_command_usages
     from rcp.turn_outcomes import work_turn_outcome_contract
 
@@ -790,6 +799,7 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
         write_scope_section(turn.scope),
         space_clients_section(turn.found, stage),
         APP_PLACES,
+        STAGED_SKILL_RULE,
         f"Patch JSON schema: `{_stage_space_patch_schema(stage)}`.",
         work_turn_outcome_contract(str(stage / "outcome.json")),
         artifact_contract(
@@ -801,10 +811,14 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
 
 
 def _space_turn_parts(
-    turn: _SpaceTurn, seed: str, last_results: dict[str, object] | None
+    turn: _SpaceTurn,
+    seed: str,
+    last_results: dict[str, object] | None,
+    *,
+    skill_pointers: list[dict[str, object]],
 ) -> list[str]:
     """What can differ on every turn: paths, project context, results and the message."""
-    from rcp.agents.prompts import PromptFactory
+    from rcp.agents.prompts import PromptFactory, invoked_package_pointers
     from rcp.runs.agent_names import stage_agent_name_pointer
     from rcp.runs.agent_schedules import schedule_instructions
     from rcp.runs.operational_context import member_memory_pointer
@@ -826,7 +840,11 @@ def _space_turn_parts(
         PromptFactory.work_turn_prompt(
             artifact_path=str(turn.artifact_directory),
             human_message=turn.request.message or "",
-            invoked_skill_pointers=_space_invoked_skill_pointers(turn),
+            invoked_skill_pointers=invoked_package_pointers(
+                skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            ),
             attachments=turn.attachments,
         ),
     ]
@@ -837,33 +855,25 @@ def space_skill_selection() -> SkillSelection:
     return official_registry().resolve(SkillDefaults())
 
 
-def admit_space_invocations(workflow_ids: list[str], skill_ids: list[str]) -> None:
+def admit_space_invocations(
+    workflow_ids: list[str], skill_ids: list[str]
+) -> tuple[list[str], list[str]]:
     """Refuse an invoked package the Space's default selection does not enable."""
-    available = {(item.kind, item.id) for item in space_skill_selection().resolved_skill_packages}
-    for kind, ids in (("workflow", workflow_ids), ("skill", skill_ids)):
-        for package_id in ids:
-            if (kind, package_id) not in available:
-                raise ValueError(f"invoked {kind} {package_id!r} is not enabled in the Space")
+    return official_registry().validate_invocations(
+        space_skill_selection(), workflow_ids=workflow_ids, skill_ids=skill_ids
+    )
 
 
-def _space_invoked_skill_pointers(turn: _SpaceTurn) -> list[dict[str, object]]:
-    """Stage the default packages once per content label and point at the invoked ones."""
-    from rcp.agents.prompts import invoked_package_pointers
+def _space_skill_pointers(turn: _SpaceTurn) -> list[dict[str, object]]:
+    """Stage the turn's resolved default catalogue, independent of invocation."""
     from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 
-    request = turn.request
-    if not (request.invoked_workflow_ids or request.invoked_skill_ids):
-        return []
-    selection = space_skill_selection()
-    pointers = stage_skill_selection(
-        selection,
+    return stage_skill_selection(
+        turn.skill_selection,
         local_stage=turn.stage,
         remote_stage=None,
-        label=skill_bundle_label(selection),
+        label=skill_bundle_label(turn.skill_selection),
         reuse_existing=True,
-    )
-    return invoked_package_pointers(
-        pointers, workflow_ids=request.invoked_workflow_ids, skill_ids=request.invoked_skill_ids
     )
 
 
@@ -920,6 +930,9 @@ def _record_space_launch(turn: _SpaceTurn, prompt: str) -> None:
             "surface": "space_chat",
             "canonical_write_roots": turn.scope.writable_roots,
             "write_scope_fingerprint": turn.scope.fingerprint,
+            **turn.skill_selection.model_dump(mode="json"),
+            "invoked_workflow_ids": turn.request.invoked_workflow_ids,
+            "invoked_skill_ids": turn.request.invoked_skill_ids,
         },
     )
 
@@ -1084,11 +1097,15 @@ def space_clients_section(found: SpaceProjects, stage: Path) -> str:
     return "## Member projects\n\n" + "\n\n".join(parts) if parts else ""
 
 
-def space_master_values(found: SpaceProjects, request: RunRequest) -> dict[str, object]:
+def space_master_values(
+    found: SpaceProjects, request: RunRequest, *, skill_pointers: list[dict[str, object]]
+) -> dict[str, object]:
     """The per-project values a turn may change; a continuation sends only the change."""
+    from rcp.agents.prompts import skill_prompt_values
     from rcp.runs.chat import chat_prompt_values
 
     return {
+        "skills": skill_prompt_values(skill_pointers),
         "projects": {
             project.project_id: chat_prompt_values(
                 project.context,

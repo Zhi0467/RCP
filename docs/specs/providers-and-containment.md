@@ -1655,6 +1655,11 @@ Project Settings selects official packages. Every official skill is enabled by
 default unless the human saves an explicit selection, including an explicit
 empty selection. Official workflows remain opt-in. A Space has no project Settings, so
 its thread offers every official skill and no workflow.
+Its default catalogue is staged on every turn, including when the Space has no
+projects. Descriptions and exact package pointers reach the session without an
+explicit invocation; changed catalogue metadata travels through the retained
+master's current-values delta. A slash selection invokes only that turn's chosen
+packages and never changes the default catalogue.
 
 Only selected packages are staged to the execution machine as immutable,
 content-addressed directories. The agent receives compact id, version,

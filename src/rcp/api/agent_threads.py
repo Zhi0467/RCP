@@ -899,12 +899,14 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
-            admit_space_invocations(body.invoked_workflow_ids, body.invoked_skill_ids)
+            workflows, skills = admit_space_invocations(
+                body.invoked_workflow_ids, body.invoked_skill_ids
+            )
             turn = RunRequest.model_validate(
                 {
                     **sent_thread_agent(store, thread, body.model_dump()),
-                    "invoked_workflow_ids": body.invoked_workflow_ids,
-                    "invoked_skill_ids": body.invoked_skill_ids,
+                    "invoked_workflow_ids": workflows,
+                    "invoked_skill_ids": skills,
                     "chat_id": thread_id,
                     "chat_scope": "project",
                     "mode": "work",

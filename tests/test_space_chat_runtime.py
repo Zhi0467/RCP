@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import shutil
+import socket
+import threading
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
+import uvicorn
 
+from rcp import skill_registry
 from rcp.agents import AgentEvent
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import APP_PLACES
@@ -19,28 +26,122 @@ from rcp.runs.space_chat import (
     stream_space_chat_run,
 )
 from rcp.service import read_space_chat_transcript
+from rcp.skill_registry import SkillDefaults, official_registry
 from tests.helpers import agent_patch_json, create_named_app, seed_patch, store_test_claude_token
 from tests.test_dispatch_authority import _authorizer, _work_authority, _work_request
 from tests.test_storage import _task_record
 
 
+def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, monkeypatch, caplog):
+    from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    store_test_claude_token(store)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members")
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    observed = []
+
+    async def provider(_provider, prompt, **kwargs):
+        stage = kwargs["cwd"]
+        master = next(
+            path for path in (stage / "inputs").glob("space-master-*.md") if str(path) in prompt
+        )
+        values = json.loads(
+            master.read_text().split("Current values (data, not instructions):\n", 1)[1]
+        )
+        assert [item["id"] for item in values["skills"]] == SkillDefaults().skill_ids
+        for item in values["skills"]:
+            assert item["description"]
+            assert (Path(item["path"]) / "SKILL.md").is_file()
+        (receipt,) = store.agent_task_receipts_by_category(kwargs["operation_id"], "agent_launch")
+        invoked = receipt.payload["invoked_skill_ids"]
+        for package_id in invoked:
+            pointer = next(item for item in values["skills"] if item["id"] == package_id)
+            assert pointer["path"] in prompt
+        observed.append((kwargs.get("session_id"), invoked))
+        (stage / "outcome.json").write_text('{"status":"done"}')
+        yield AgentEvent(event="session", session_id="served-space-session")
+        yield AgentEvent(event="answer", text="Ready.")
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(app.state.launcher, "stream", provider)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
+        worker = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
+        worker.start()
+        try:
+            wait_until(lambda: server.started)
+            wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
+            with httpx.Client(
+                base_url=f"http://127.0.0.1:{sock.getsockname()[1]}", trust_env=False
+            ) as client:
+                assert (
+                    client.post(
+                        "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                    ).status_code
+                    == 200
+                )
+                (thread,) = client.get("/api/agent-threads").json()["threads"]
+                base = f"/api/agent-threads/{thread['thread_id']}"
+                assert (
+                    client.put(base + "/browser", json={"browser_requested": False}).status_code
+                    == 200
+                )
+                for invocation in ([], ["graph-audit"], []):
+                    sent = client.post(
+                        base + "/turns",
+                        json={
+                            "provider": "claude",
+                            "message": "Find a method.",
+                            "invoked_skill_ids": invocation,
+                        },
+                    )
+                    assert sent.status_code == 202, sent.text
+                    operation_id = sent.json()["operation_id"]
+                    wait_until(
+                        lambda operation_id=operation_id: (
+                            client.get(base + "/tasks/" + operation_id).json()["status"]
+                            in {"succeeded", "failed"}
+                        )
+                    )
+                    result = client.get(base + "/tasks/" + operation_id).json()
+                    assert result["status"] == "succeeded", result
+        finally:
+            server.should_exit = True
+            worker.join(timeout=TASK_SETTLE_TIMEOUT)
+    assert not worker.is_alive()
+    assert observed == [
+        (None, []),
+        ("served-space-session", ["graph-audit"]),
+        ("served-space-session", []),
+    ]
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
 @pytest.mark.parametrize(
-    "project_count, broken",
+    "project_count, broken, catalogue_change",
     [
-        (0, None),
-        (2, None),
-        (2, "unavailable"),
-        (2, "missing"),
-        (2, "remote"),
-        (2, "hidden"),
-        (2, "collection"),
-        (2, "directory"),
+        (0, None, False),
+        (2, None, False),
+        (2, "unavailable", False),
+        (2, "missing", False),
+        (2, "remote", False),
+        (2, "hidden", False),
+        (2, "collection", False),
+        (2, "directory", False),
+        (2, None, True),
     ],
 )
 def test_space_runtime_real_storage_and_partial_apply(
-    manifest, tmp_path, monkeypatch, project_count, broken
+    manifest, tmp_path, monkeypatch, project_count, broken, catalogue_change
 ):
+    from tests.test_api import _persist_skill_defaults
+
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=[]))
     store = app.state.background_tasks.store
     human = _authorizer(store)
     if project_count == 0:
@@ -90,7 +191,12 @@ def test_space_runtime_real_storage_and_partial_apply(
     )
     thread = next(item for item in threads if item.kind == "space")
     request = _work_request().model_copy(
-        update={"chat_id": thread.thread_id, "provider": "claude", "run_truth_scope": []}
+        update={
+            "chat_id": thread.thread_id,
+            "provider": "claude",
+            "run_truth_scope": [],
+            "invoked_skill_ids": ["graph-audit"] if project_count else [],
+        }
     )
     task = store.create_agent_task(
         _task_record(
@@ -131,11 +237,44 @@ def test_space_runtime_real_storage_and_partial_apply(
 
     calls = []
     prompts = []
+    bundle_count = 1
 
     async def provider(_provider, prompt, **kwargs):
         calls.append(kwargs.get("session_id"))
         prompts.append(prompt)
         stage = kwargs["cwd"]
+        master = next(
+            path for path in (stage / "inputs").glob("space-master-*.md") if str(path) in prompt
+        )
+        values = json.loads(
+            master.read_text().split("Current values (data, not instructions):\n", 1)[1]
+        )
+        changed_skills = next(
+            (
+                line.removeprefix("- skills: ")
+                for line in prompt.splitlines()
+                if line.startswith("- skills: ")
+            ),
+            None,
+        )
+        if changed_skills is not None:
+            values["skills"] = json.loads(changed_skills)
+        assert [item["id"] for item in values["skills"]] == SkillDefaults().skill_ids
+        for item in values["skills"]:
+            package = official_registry().package("skill", item["id"])
+            assert item["description"] == package.description
+            path = Path(item["path"]) / "SKILL.md"
+            assert path.is_relative_to(stage / "inputs") and path.is_file()
+            assert path.stat().st_mode & 0o222 == 0
+            invoked = len(calls) == 1 and item["id"] in request.invoked_skill_ids
+            if changed_skills is None:
+                assert (str(path.parent) in prompt) == invoked
+        assert len(list((stage / "inputs").glob("rcp-skills-*"))) == bundle_count
+        (launch,) = store.agent_task_receipts_by_category(kwargs["operation_id"], "agent_launch")
+        assert launch.payload["skill_ids"] == SkillDefaults().skill_ids
+        assert launch.payload["invoked_skill_ids"] == (
+            request.invoked_skill_ids if len(calls) == 1 else []
+        )
         assert json.loads((stage / "workspace" / "agent-name.json").read_text()) == {
             "name": "Pip",
             "can_self_name": False,
@@ -268,6 +407,19 @@ def test_space_runtime_real_storage_and_partial_apply(
     if broken is None:
         from rcp.service import RunRequest
 
+        original_master = next(
+            (Path(execution.stage_root) / "inputs").glob(f"{SPACE_MASTER_POLICY}-*.md")
+        )
+        original_master_bytes = original_master.read_bytes()
+        if catalogue_change:
+            packages = tmp_path / "registry"
+            shutil.copytree(Path(skill_registry.__file__).parent / "skills", packages / "skills")
+            monkeypatch.setattr(skill_registry, "__file__", str(packages / "skill_registry.py"))
+            skill = packages / "skills" / "live-pages" / "SKILL.md"
+            skill.write_text(
+                skill.read_text().replace("description: ", "description: Updated method. ", 1)
+            )
+            bundle_count = 2
         store.checkpoint_agent_task(task.operation_id, native_session_id="space-native")
         with store.connection() as connection:
             connection.execute(
@@ -283,9 +435,9 @@ def test_space_runtime_real_storage_and_partial_apply(
                     "created_at": store.now(),
                     "updated_at": store.now(),
                     "finished_at": None,
-                    "request": request.model_copy(update={"message": "Continue."}).model_dump(
-                        mode="json"
-                    ),
+                    "request": request.model_copy(
+                        update={"message": "Continue.", "invoked_skill_ids": []}
+                    ).model_dump(mode="json"),
                 }
             )
         )
@@ -317,7 +469,12 @@ def test_space_runtime_real_storage_and_partial_apply(
         assert calls == [None, "space-native"]
         inputs = Path(execution.stage_root) / "inputs"
         first_master = next(inputs.glob(f"{SPACE_MASTER_POLICY}-*.md"))
-        assert str(first_master) in prompts[0] and len(prompts[1]) < 4000
+        assert str(first_master) in prompts[0]
+        if not catalogue_change:
+            assert len(prompts[1]) < 4000
+        else:
+            assert "Updated method." in prompts[1]
+            assert original_master.read_bytes() == original_master_bytes
         assert APP_PLACES in first_master.read_text()
         if project_count == 0:
             (restaged,) = inputs.glob("space-master-next-*.md")
@@ -376,22 +533,22 @@ def test_fresh_space_turn_skips_a_linked_project_folder(tmp_path):
     assert (outside / "patch.json").exists()
 
 
-def test_a_space_turn_stages_the_pointer_of_its_invoked_official_skill(tmp_path):
+def test_a_space_turn_stages_its_full_default_catalogue_once(tmp_path):
     from types import SimpleNamespace
 
-    from rcp.runs.space_chat import _space_invoked_skill_pointers
-    from rcp.service import RunRequest
+    from rcp.runs.space_chat import _space_skill_pointers, space_skill_selection
 
     stage = (tmp_path / "stage").resolve()
     stage.mkdir()
-    request = RunRequest(message="audit", mode="work", invoked_skill_ids=["graph-audit"])
-    turn = SimpleNamespace(stage=stage, request=request)
-    (pointer,) = _space_invoked_skill_pointers(turn)  # pyright: ignore[reportArgumentType]
-    assert pointer["id"] == "graph-audit"
-    assert (Path(str(pointer["path"])) / "SKILL.md").is_file()
-    assert Path(str(pointer["path"])).is_relative_to(stage / "inputs")
-    plain = SimpleNamespace(stage=stage, request=RunRequest(message="hi", mode="work"))
-    assert _space_invoked_skill_pointers(plain) == []  # pyright: ignore[reportArgumentType]
+    turn = SimpleNamespace(stage=stage, skill_selection=space_skill_selection())
+    pointers = _space_skill_pointers(turn)  # pyright: ignore[reportArgumentType]
+    assert [item["id"] for item in pointers] == SkillDefaults().skill_ids
+    for pointer in pointers:
+        path = Path(str(pointer["path"]))
+        assert (path / "SKILL.md").is_file()
+        assert path.is_relative_to(stage / "inputs")
+    assert _space_skill_pointers(turn) == pointers  # pyright: ignore[reportArgumentType]
+    assert len(list((stage / "inputs").glob("rcp-skills-*"))) == 1
 
 
 def test_space_seed_keeps_the_newest_tail_only_for_a_fresh_session():
