@@ -10,7 +10,7 @@ from typing import Literal
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import UploadFile
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -18,14 +18,16 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
+from rcp.artifact_renderer import ArtifactRendererUnavailable, paper_math_addon
 from rcp.artifact_views import (
+    _combined_addon,
     artifact_content,
     inline_viewer_document,
 )
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
 from rcp.paper.live import text_replacement
-from rcp.paper.models import Receipt, file_format, paper_file_kind
+from rcp.paper.models import Receipt, paper_file_kind
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -281,17 +283,20 @@ async def raw_file(
     )
 
 
-async def _html_file(request: Request, project_id: str, file_id: str, revision: int | None):
+_PREVIEW_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+
+
+@router.get(_PREFIX + "/files/{file_id}/preview/state")
+async def html_preview_state(
+    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+):
     try:
-        file, data = await get_paper_live(request).raw_file(project_id, file_id, revision)
+        preview = await get_paper_live(request).html_preview_state(project_id, file_id, revision)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
-    if file_format(file.path, file.kind) != "html":
-        raise HTTPException(404, "Paper file has no HTML preview")
-    return file, data
-
-
-_PREVIEW_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+    return JSONResponse(
+        {"revision": preview.revision, "key": preview.key}, headers=_PREVIEW_HEADERS
+    )
 
 
 @router.get(_PREFIX + "/files/{file_id}/preview")
@@ -299,14 +304,22 @@ async def html_preview(
     file_id: str, request: Request, revision: int | None = None, project_id: str = _member
 ):
     """The inline artifact shell around a Paper HTML file; invariant 10e holds one frame in."""
-    file, _ = await _html_file(request, project_id, file_id, revision)
-    query = urlencode({"revision": revision} if revision is not None else {})
+    try:
+        preview = await get_paper_live(request).html_preview_state(project_id, file_id, revision)
+    except KeyError as exc:
+        raise HTTPException(404, "Paper file or revision not found") from exc
+    query = urlencode({"revision": preview.revision})
     content_url = (
         f"{_PREFIX.format(project_id=quote(project_id, safe=''))}"
         f"/files/{quote(file_id, safe='')}/preview/content" + (f"?{query}" if query else "")
     )
     document, csp = inline_viewer_document(
-        PurePosixPath(file.path).name, "html", content_url=content_url, live=None, selectable=True
+        PurePosixPath(preview.file.path).name,
+        "html",
+        content_url=content_url,
+        live=None,
+        selectable=True,
+        follow_appearance=False,
     )
     return Response(
         document,
@@ -320,11 +333,21 @@ async def html_preview_content(
     file_id: str, request: Request, revision: int | None = None, project_id: str = _member
 ):
     """The page as its author wrote it: unlike a reply's artifact, it takes no app theme."""
-    file, data = await _html_file(request, project_id, file_id, revision)
+    try:
+        preview = await get_paper_live(request).html_preview(project_id, file_id, revision)
+    except KeyError as exc:
+        raise HTTPException(404, "Paper file or revision not found") from exc
     try:
         document, media_type, csp = artifact_content(
-            file.path, "text/html", data, frame_addon=selection_frame_addon()
+            preview.file.path,
+            "text/html",
+            preview.data,
+            frame_addon=_combined_addon(
+                selection_frame_addon(), paper_math_addon(preview.warnings)
+            ),
         )
+    except ArtifactRendererUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(404, "Paper file has no HTML preview") from exc
     return Response(

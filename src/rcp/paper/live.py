@@ -24,6 +24,12 @@ from typing import Any, TypeVar
 from pycrdt import Doc, Text, create_update_message, get_update, handle_sync_message, merge_updates
 
 from rcp import limits
+from rcp.paper.html_preview import (
+    PaperHTMLContent,
+    PaperHTMLPreview,
+    read_html_content,
+    read_html_preview,
+)
 from rcp.paper.models import (
     PaperConflict,
     PaperFile,
@@ -518,14 +524,37 @@ class PaperLive:
 
     @_owned
     async def raw_file(self, project_id: str, file_id: str, revision: int | None = None):
+        return await self._saved_read(
+            project_id, lambda reader: reader.raw_file(project_id, file_id, revision)
+        )
+
+    async def _saved_read(
+        self, project_id: str, read: Callable[[PaperSnapshotReader], _Result]
+    ) -> _Result:
         async with self._lock(project_id):
             await self._ensure(project_id)
-        return await asyncio.to_thread(self._raw_file, project_id, file_id, revision)
+        return await asyncio.to_thread(self._read_saved, read)
 
-    def _raw_file(self, project_id, file_id, revision):
+    def _read_saved(self, read: Callable[[PaperSnapshotReader], _Result]) -> _Result:
         with self.store.connection() as conn:
             conn.execute("BEGIN")
-            return PaperSnapshotReader(conn).raw_file(project_id, file_id, revision)
+            return read(PaperSnapshotReader(conn))
+
+    @_owned
+    async def html_preview_state(
+        self, project_id: str, file_id: str, revision: int | None = None
+    ) -> PaperHTMLPreview:
+        return await self._saved_read(
+            project_id, lambda reader: read_html_preview(reader, project_id, file_id, revision)
+        )
+
+    @_owned
+    async def html_preview(
+        self, project_id: str, file_id: str, revision: int | None = None
+    ) -> PaperHTMLContent:
+        return await self._saved_read(
+            project_id, lambda reader: read_html_content(reader, project_id, file_id, revision)
+        )
 
     def file_exists(self, project_id: str, file_id: str) -> bool:
         with self.store.connection() as conn:
