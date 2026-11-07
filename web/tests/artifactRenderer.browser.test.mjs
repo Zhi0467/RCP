@@ -191,11 +191,32 @@ page = rb'''<!doctype html><html><body>
 <p id="odd-brackets">\\\(e_3\) and \\\[d_3\]</p>
 <p id="escaped-unmatched">\\(open and \\[open and \$$open</p>
 <p id="inside-display">$$ x + \$1 $$</p>
+<p id="end-single">$\$$</p>
+<p id="end-inline">$x+\$$</p>
+<p id="end-display">$$x+\$$$</p>
+<p id="escaped-next">\$$ followed $y$</p>
+<p id="code-boundary">$x+<code>\$$</code></p>
 <code id="code">$code$ and \(literal\) and $$display$$ and \[literal\] and \\(escaped\)</code><pre>$$ pre $$</pre>
 <span id="existing" class="katex">$keep$ and \(literal\) and \$$literal$$</span>
 <script>window.authoredValue='$script$';</script><style>#ignored{--literal:'$style$'}</style>
 <p id="bad">$\frac$</p>
 <p id="unsafe">$\href{javascript:alert(1)}{click}$</p>
+<script>
+window.literalRuns = {};
+window.literalChunks = {};
+for (const [id, chunks] of [
+  ['adjacent-inside', ['$x+', '\\$$']],
+  ['adjacent-dollar', ['\\', '$$literal\\$$']],
+  ['adjacent-unmatched-dollar', ['\\', '$$literal$$']],
+  ['adjacent-bracket', ['\\', '\\(literal\\)']],
+]) {
+  const paragraph = document.createElement('p'); paragraph.id = id;
+  const nodes = chunks.map(chunk => document.createTextNode(chunk));
+  paragraph.append(...nodes); document.body.append(paragraph);
+  window.literalRuns[id] = nodes;
+  window.literalChunks[id] = chunks;
+}
+</script>
 </body></html>'''
 page=page.replace(b'</body>', b'<p id="unmatched-slashes">'+bytes([92])*20_000+b'</p></body>')
 body, media, csp=artifact_content('page.html','text/html',page,frame_addon=paper_math_addon(['Missing local figure: fixture.svg']))
@@ -255,6 +276,52 @@ test("Paper HTML math shares fonts and options, preserves authored code and repo
   assert.equal(await artifact.locator("#inline .katex-display").count(), 0);
   assert.equal(await artifact.locator("#display .katex-display").count(), 2);
   assert.equal(await artifact.locator("#inside .katex").count(), 1);
+  for (const [id, math] of [
+    ["end-single", String.raw`\$`],
+    ["end-inline", String.raw`x+\$`],
+    ["end-display", String.raw`x+\$`],
+    ["adjacent-inside", String.raw`x+\$`],
+  ]) {
+    await t.test(`${id} retains its closing delimiter after an escaped dollar`, async () => {
+      assert.equal(await artifact.locator(`#${id} .katex`).count(), 1, id);
+      assert.equal(await artifact.locator(`#${id} annotation`).textContent(), math);
+      assert.equal(
+        await artifact.locator(`#${id} .katex-display`).count(),
+        id === "end-display" ? 1 : 0,
+      );
+    });
+  }
+  for (const [id, text] of [
+    ["adjacent-dollar", String.raw`\$$literal\$$`],
+    ["adjacent-bracket", String.raw`\\(literal\)`],
+  ]) {
+    await t.test(`${id} stays literal across its original text nodes`, async () => {
+      assert.equal(await artifact.locator(`#${id} .katex`).count(), 0, id);
+      assert.equal(await artifact.locator(`#${id}`).innerText(), text);
+      assert.ok(
+        await artifact.evaluate((id) => {
+          const paragraph = document.getElementById(id);
+          const nodes = window.literalRuns[id];
+          return (
+            paragraph.childNodes.length === nodes.length &&
+            nodes.every(
+              (node, index) =>
+                paragraph.childNodes[index] === node &&
+                node.data === window.literalChunks[id][index],
+            )
+          );
+        }, id),
+      );
+    });
+  }
+  assert.equal(await artifact.locator("#adjacent-unmatched-dollar .katex").count(), 0);
+  assert.equal(
+    await artifact.locator("#adjacent-unmatched-dollar").innerText(),
+    String.raw`\$$literal$$`,
+  );
+  assert.equal(await artifact.locator("#escaped-next .katex").count(), 1);
+  assert.equal(await artifact.locator("#code-boundary .katex").count(), 0);
+  assert.equal(await artifact.locator("#code-boundary").textContent(), String.raw`$x+\$$`);
   for (const [id, text] of [
     ["escaped-double", String.raw`\$$literal$$`],
     ["escaped-brackets", String.raw`\\(literal\) and \\[literal\]`],
