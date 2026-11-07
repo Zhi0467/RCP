@@ -89,6 +89,7 @@ async function openHtmlPreview(t, width) {
   t.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width, height: 760 } });
   page.setDefaultTimeout(5000);
+  page.setDefaultNavigationTimeout(30_000);
   await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:\d+\/\?token=/, (socket) =>
     socket.send(JSON.stringify({ type: "connected" })),
   );

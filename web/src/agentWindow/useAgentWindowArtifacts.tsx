@@ -426,9 +426,7 @@ export function useAgentWindowArtifacts({
           artifact && endpoints.artifactState ? endpoints.artifactState(artifact.artifact_id) : null
         }
         viewerUrl={
-          artifact && !endpoints.artifactState
-            ? endpoints.artifactUrl(taskId, artifact.artifact_id, "viewer")
-            : undefined
+          artifact ? endpoints.artifactUrl(taskId, artifact.artifact_id, "viewer") : undefined
         }
         artifact={artifact}
         title={title}
