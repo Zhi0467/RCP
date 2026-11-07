@@ -51,10 +51,9 @@ def stage_skill_selection(
     """Stage one resolved official selection and return prompt-safe pointers.
 
     The source-controlled package directories are copied into the run stage as
-    immutable inputs. Existing callers stage one bundle per attempt. Persistent
-    chat stages may opt into reuse with a content-addressed label from
-    :func:`skill_bundle_label`; an existing bundle is accepted only when its
-    full tree is safe, immutable, and identical to the resolved official
+    immutable inputs. Run owners reuse bundles with a content-addressed label
+    from :func:`skill_bundle_label`; an existing bundle is accepted only when
+    its full tree is safe, immutable, and identical to the resolved official
     packages.
     """
 

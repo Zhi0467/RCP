@@ -1104,6 +1104,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         control_revision=service.history.state().revision,
     )
     initial_request.browser_requested = browser_requested
+    initial_request.invoked_skill_ids = ["experiment-causality"]
     initial_execution = _execution(
         store,
         project_id,
@@ -1212,6 +1213,15 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     master_path = next((initial_stage / "inputs").glob("experiment-master-*.md"))
     master_text = master_path.read_text(encoding="utf-8")
     assert master_text == store.agent_task_contract("loop-initial", "session_master")
+    from rcp.agents.prompts import _invoked_package_section
+
+    values = json.loads(store.agent_task_contract("loop-initial", "session_master_values"))
+    pointer = next(item for item in values["skills"] if item["id"] == "experiment-causality")
+    invocation = _invoked_package_section([pointer]).strip()
+    assert invocation not in master_text
+    assert invocation in launcher.contracts[0]
+    assert invocation not in wake_contract
+    assert pointer["description"]
     assert launcher.contracts[0].startswith(master_text)
     assert json.loads(launcher.contracts[0].splitlines()[-1]) == {"questions": [], "omitted": 0}
     assert wake_contract.endswith(SECTIONS["master_pointer"].format(path=master_path))
@@ -2812,3 +2822,60 @@ def test_experiment_graph_result_tells_the_next_wake_each_commit_certainty_apart
         for commit_status in ("absent", "present", "unknown")
     }
     assert len(summaries) == 3
+
+
+def test_legacy_experiment_invocation_master_rebootstraps_without_rewriting_it(manifest, tmp_path):
+    from rcp.agents.continuation_prompt import master_key
+    from rcp.agents.experiment_loop_prompt import EXPERIMENT_LOOP_POLICY_VERSION
+    from rcp.runs.session_master import record_session_master
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    request = _loop_request(
+        "00000000-0000-4000-8000-000000000075", "legacy-skills-chat", invocation=1
+    )
+    initial = _execution(store, project_id, "legacy-skills-initial", request)
+    stage = tmp_path / "legacy-stage"
+    (stage / "inputs").mkdir(parents=True)
+    store.checkpoint_agent_task(
+        initial.operation_id,
+        native_session_id="legacy-skills-session",
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=str(stage),
+    )
+    legacy = "Legacy Experiment master.\nInvoked for this turn: graph-audit."
+    record_session_master(
+        store,
+        initial.operation_id,
+        legacy,
+        master_key("experiment-loop-v18", ontology_extensions=False),
+        {"skills": {}},
+    )
+    store.fail_agent_task(initial.operation_id, "Provider disconnected")
+    retry_request = request.model_copy(update={"session_id": "legacy-skills-session"})
+    retry = _execution(
+        store,
+        project_id,
+        "legacy-skills-retry",
+        retry_request,
+        continuation="retry",
+        stage_root=str(stage),
+        parent_operation_id=initial.operation_id,
+    )
+    current = experiment_loop_task_module._experiment_master(
+        retry,
+        stage,
+        None,
+        session_id="legacy-skills-session",
+        episode_id=request.control_episode_id,
+        ontology_extensions=False,
+        render=lambda: "Current Experiment master.",
+        values={"skills": []},
+    )
+    assert current.bootstrap
+    assert Path(current.path).read_text() == "Current Experiment master."
+    assert store.agent_task_contract(initial.operation_id, "session_master") == legacy
+    assert store.agent_task_contract(retry.operation_id, "session_master_key") == master_key(
+        EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=False
+    )

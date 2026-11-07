@@ -553,6 +553,21 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
         },
       }),
     );
+    await page.route("**/api/agent-threads/space/artifacts/report/state", (route) =>
+      route.fulfill({
+        json: {
+          current_version: "one",
+          version_number: 1,
+          can_comment: true,
+          can_keep: false,
+          fresh_session_required: false,
+          live: null,
+          editing_operation_id: null,
+          viewer_url:
+            "/api/agent-threads/space/tasks/op-space/artifacts/report/viewer?version_id=one",
+        },
+      }),
+    );
     await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
     );
@@ -734,7 +749,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
   }
 });
 
-test("Pip comments on a part of an inline artifact and sends the selection with the turn", async () => {
+test("Pip refreshes an inline artifact version and sends its displayed version with a selection", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const writes = [];
@@ -771,11 +786,41 @@ test("Pip comments on a part of an inline artifact and sends the selection with 
     await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
       route.fulfill({ json: { ...settled("op-space"), result: { artifacts: [artifact] } } }),
     );
+    let version = 1;
+    let refusing = true;
+    let releaseState;
+    const stateHeld = new Promise((resolve) => (releaseState = resolve));
+    page.on("close", () => releaseState());
+    await page.route("**/api/agent-threads/space/artifacts/report/state", async (route) => {
+      await stateHeld;
+      if (refusing) return route.fulfill({ status: 503, json: { detail: "Preview unavailable" } });
+      return route.fulfill({
+        json: {
+          current_version: `v${version}`,
+          version_number: version,
+          can_comment: true,
+          can_keep: false,
+          fresh_session_required: false,
+          live: null,
+          editing_operation_id: null,
+          viewer_url: `/api/agent-threads/space/tasks/op-space/artifacts/report/viewer?version_id=v${version}`,
+        },
+      });
+    });
     await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
     );
-    await page.goto(`${base}#/agent/space`);
+    const stateRequested = page.waitForRequest("**/api/agent-threads/space/artifacts/report/state");
+    await page.goto(`${base}?wire#/agent/space`);
+    await stateRequested;
     const space = page.getByRole("region", { name: "Pip" });
+    assert.equal(await space.locator(".chat-inline-artifact-frame").count(), 0);
+    releaseState();
+    const retry = space.getByRole("button", { name: "Retry artifact", exact: true });
+    await retry.waitFor();
+    assert.equal(await space.locator(".chat-inline-artifact-frame").count(), 0);
+    refusing = false;
+    await retry.click();
     const embed = space.locator(".chat-inline-artifact.commenting");
     await embed.waitFor();
     assert.equal(
@@ -783,12 +828,28 @@ test("Pip comments on a part of an inline artifact and sends the selection with 
       "true",
     );
     const frame = embed.locator(".chat-inline-artifact-frame");
-    assert.match(await frame.getAttribute("src"), /\/viewer\?presentation=inline/);
+    assert.match(await frame.getAttribute("src"), /\/viewer\?version_id=v1&presentation=inline/);
     await page.waitForFunction(
       () =>
         document.querySelector(".chat-inline-artifact-frame")?.contentDocument?.body
           ?.textContent === "Rendered report",
     );
+    await frame.evaluate((element) => (element.dataset.seen = "v1"));
+    const originalHeight = (await frame.boundingBox()).height;
+    version = 2;
+    await moveWatermark(page);
+    await embed.locator("em", { hasText: "v2" }).waitFor();
+    assert.match(await frame.getAttribute("src"), /\/viewer\?version_id=v2&presentation=inline/);
+    assert.equal(await frame.getAttribute("data-seen"), null);
+    assert.equal((await frame.boundingBox()).height, originalHeight);
+    await frame.evaluate((element) => (element.dataset.seen = "retained-v2"));
+    const sameVersion = page.waitForResponse((response) =>
+      response.url().endsWith("/space/artifacts/report/state"),
+    );
+    await moveWatermark(page);
+    await sameVersion;
+    assert.equal(await frame.getAttribute("data-seen"), "retained-v2");
+    if (shots) await page.screenshot({ path: `${shots}/space-artifact-inline-v2-390.png` });
     await page.frame({ url: /\/artifacts\/report\/viewer/ }).evaluate(() =>
       parent.postMessage(
         {
@@ -811,11 +872,15 @@ test("Pip comments on a part of an inline artifact and sends the selection with 
     const sent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
     assert.equal(sent.body.artifact_context.artifact_id, "report");
     assert.equal(sent.body.artifact_context.operation_id, "op-space");
+    assert.equal(sent.body.artifact_context.base_version, "v2");
     assert.deepEqual(
       sent.body.artifact_context.selections.map((selection) => [selection.text, selection.comment]),
       [["Rendered report", "Tighten this"]],
     );
     assert.equal(sent.body.message.includes("Tighten this"), false);
+    const beats = writes.filter((write) => write.path === "/api/resource-watermarks");
+    assert.ok(beats.length > 0);
+    assert.ok(beats.every((beat) => beat.body.open.every((project) => project.project_id !== "")));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
     assert.deepEqual(errors, []);
   });
@@ -1483,6 +1548,45 @@ test("a provider switch picks that provider's first model, listed before any pro
   });
 });
 
+test("Snowbound gives Agent threads the same available height as other themes", async () => {
+  await withFixture(async (browser, base) => {
+    for (const [width, height] of [
+      [1440, 900],
+      [1440, 640],
+      [390, 844],
+    ]) {
+      const page = await browser.newPage({ viewport: { width, height } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      for (const id of ["space", "moss"]) {
+        await page.goto(`${base}#/agent/${id}`);
+        await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+        const geometry = (theme) =>
+          page.evaluate(async (theme) => {
+            document.documentElement.dataset.theme = theme;
+            document.documentElement.dataset.colorMode = "dark";
+            await new Promise(requestAnimationFrame);
+            const panel = document.querySelector(".space-agent").getBoundingClientRect();
+            const composer = document
+              .querySelector(".agent-thread .chat-composer")
+              .getBoundingClientRect();
+            return { bottom: panel.bottom, height: panel.height, composerBottom: composer.bottom };
+          }, theme);
+        const standard = await geometry("aqua");
+        assert.deepEqual(await geometry("snowbound"), standard);
+        assert.ok(standard.composerBottom <= standard.bottom);
+        assert.ok(standard.bottom <= height);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+        if (shots)
+          await page.screenshot({ path: `${shots}/snowbound-${id}-${width}-${height}.png` });
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
 test("the thread composer is one row that grows with its text and settles back", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1280, 390]) {
@@ -1874,8 +1978,16 @@ async function serveCards(page, served) {
         proposal_cards: served.proposals.filter(
           (view) => threadId === null || view.thread_id === threadId,
         ),
-        asked_cards: threadId === null ? served.asked : [],
-        questions: threadId === null ? (served.questions ?? []) : [],
+        asked_cards: served.asked.filter(
+          (question) => threadId === null || question.owner_id === threadId,
+        ),
+        questions: (served.questions ?? []).filter(
+          (question) =>
+            threadId === null ||
+            (question.project_id ===
+              threads.find((thread) => thread.thread_id === threadId)?.project_id &&
+              !(question.owner_kind === "chat" && question.owner_id === threadId)),
+        ),
       },
     });
   });
@@ -2368,6 +2480,86 @@ test("Pip's dock relays a project question with its origin and time, and answeri
         choices: ["3e-4"],
       });
       assert.equal(await dock.locator(".approval-card[data-state='pending']").count(), 1);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
+test("Moss relays project questions above its composer while its own cards stay inline", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1440, 390]) {
+      const page = await browser.newPage({
+        viewport: { width, height: width === 390 ? 844 : 900 },
+      });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const writes = [];
+      await mockApi(page, writes);
+      const own = {
+        ...card,
+        question_id: "q-own",
+        question: "Keep the existing baseline?",
+        card: null,
+      };
+      const relayed = {
+        ...own,
+        question_id: "q-project-relay",
+        owner_kind: "episode",
+        owner_id: "e7",
+        question: "Which learning rate should the next sweep use?",
+        choices: ["3e-4", "1e-4"],
+        project_id: "p1",
+        project_name: "Sparse attention",
+        source_label: "Validation sweep",
+      };
+      const served = {
+        proposals: [],
+        asked: [{ ...card, project_name: "Sparse attention" }],
+        questions: [relayed, { ...own, project_id: "p1" }],
+      };
+      await serveCards(page, served);
+      let releaseQuestions;
+      const questionsHeld = new Promise((resolve) => (releaseQuestions = resolve));
+      await page.route("**/api/projects/p1/chats/moss/questions", async (route) => {
+        await questionsHeld;
+        return route.fulfill({ json: [card, own] });
+      });
+      await page.route("**/api/projects/p1/questions/q-project-relay/answer", (route) => {
+        served.questions = [];
+        writes.push({
+          path: new URL(route.request().url()).pathname,
+          ...route.request().postDataJSON(),
+        });
+        return route.fulfill({ json: { ...relayed, state: "answered" } });
+      });
+      await page.goto(`${base}?view=project`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      const dock = thread.locator(".approval-dock");
+      const question = dock.locator(".question-card[data-question-id='q-project-relay']");
+      await question.waitFor();
+      releaseQuestions();
+      await thread.locator(".question-card[data-question-id='q-own']").waitFor();
+      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
+      assert.equal(await dock.locator(".question-card[data-question-id='q-own']").count(), 0);
+      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
+      assert.equal(await dock.locator(".approval-card").count(), 0);
+      assert.match(await question.locator(".question-origin").textContent(), /Validation sweep/);
+      assert.equal(
+        await question.locator(".entity-chip.project").getAttribute("href"),
+        "#/projects/p1",
+      );
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `moss-dock-question-${width}`);
+      await question.getByRole("button", { name: "3e-4" }).click();
+      await dock.waitFor({ state: "detached" });
+      assert.deepEqual(writes.at(-1), {
+        path: "/api/projects/p1/questions/q-project-relay/answer",
+        answer: "",
+        choices: ["3e-4"],
+      });
+      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
+      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
       assert.deepEqual(errors, []);
       await page.close();
     }

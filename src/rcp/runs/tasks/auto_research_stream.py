@@ -59,7 +59,12 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.group_context import GroupContext, build_group_context
 from rcp.agents.loop_overlap import render_auto_research_overlap, render_loop_overlap
 from rcp.agents.project_repositories import resolve_read_scope, write_repositories
-from rcp.agents.prompts import GraphReadPrompt, render_group_context
+from rcp.agents.prompts import (
+    GraphReadPrompt,
+    _invoked_package_section,
+    invoked_package_pointers,
+    render_group_context,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -275,6 +280,7 @@ class _Correction:
     staged_head: GraphHeadRef | None
     group_context: GroupContext | None
     command_dispatcher: AutoResearchCommandDispatcher
+    skill_pointers: list[dict[str, object]]
 
 
 async def stream_auto_research_orchestrator_run(
@@ -524,6 +530,7 @@ async def stream_auto_research_orchestrator_run(
                 staged_head=staged_head,
                 group_context=context.group_context,
                 command_dispatcher=command_dispatcher,
+                skill_pointers=orchestrator_skill_pointers,
             ),
         ):
             yield frame
@@ -622,6 +629,14 @@ async def stream_auto_research_worker_run(
             f"auto_research-patch-schema-{schema_digest}.json",
             schema,
         )
+        selection = service.resolve_skill_selection(turn.request)
+        skill_pointers = stage_skill_selection(
+            selection,
+            local_stage=stage.local,
+            remote_stage=stage.remote,
+            label=skill_bundle_label(selection),
+            reuse_existing=True,
+        )
         graph_read_scope = GraphReadScope.resolve(
             turn.task.project_id, service.history, context.group_context
         )
@@ -697,6 +712,7 @@ async def stream_auto_research_worker_run(
                 staged_head=staged_head,
                 reply_key=_worker_reply_key(turn),
                 messages_path=messages_path,
+                skill_pointers=skill_pointers,
                 write_scope=write_scope,
                 browser_grant=browser_grant,
             )
@@ -782,6 +798,7 @@ async def stream_auto_research_worker_run(
                 staged_head=staged_head,
                 group_context=context.group_context,
                 command_dispatcher=command_dispatcher,
+                skill_pointers=skill_pointers,
             ),
         ):
             yield frame
@@ -1786,6 +1803,13 @@ def _orchestrator_prompt(
         start_contract=start_contract,
         continuation_parts=continuation_parts,
         fresh_parts=(
+            _invoked_package_section(
+                invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
+                )
+            ).strip(),
             render_group_context(context.group_context),
             question_part,
             auto_research_branch_read_pointers(
@@ -1827,6 +1851,7 @@ def _worker_prompt(
     messages_path: str | None,
     write_scope: ProjectWriteScope,
     browser_grant: BrowserGrant,
+    skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str, MasterRef, dict[str, object]]:
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
@@ -1857,6 +1882,7 @@ def _worker_prompt(
         command_client=command_client,
         write_scope=write_scope,
         group_context=context.group_context,
+        skill_pointers=skill_pointers,
         reply_key=reply_key,
         allowed_verbs=allowed_verbs,
         compute_profiles=compute_profiles,
@@ -1887,6 +1913,7 @@ def _worker_prompt(
             ontology_extensions=context.ontology_extensions,
             graph_read_prompt=graph_prompt,
             compute_profiles=compute_profiles,
+            skill_pointers=skill_pointers,
         )
 
     def continuation_parts() -> list[str]:
@@ -1918,7 +1945,16 @@ def _worker_prompt(
         render_master=render_master,
         start_contract=render_master,
         continuation_parts=continuation_parts,
-        fresh_parts=(render_group_context(context.group_context),),
+        fresh_parts=(
+            _invoked_package_section(
+                invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
+                )
+            ).strip(),
+            render_group_context(context.group_context),
+        ),
     )
     return contract_path, prompt, master, values
 
@@ -2377,6 +2413,13 @@ async def _settle_worker_patch(
                         graph_read_scope=graph_read_scope,
                         command_client=correction_mailbox.client_command(),
                     ),
+                    _invoked_package_section(
+                        invoked_package_pointers(
+                            correction.skill_pointers,
+                            workflow_ids=turn.request.invoked_workflow_ids,
+                            skill_ids=turn.request.invoked_skill_ids,
+                        )
+                    ).strip(),
                     render_group_context(context.group_context),
                     stage_operational_context_pointer(
                         execution,

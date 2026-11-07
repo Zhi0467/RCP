@@ -37,9 +37,9 @@ On the space home, Snowbound draws a band of pixel woods with the cabin centered
 at every width, and slow pixel snow falls behind the content. On the Projects
 tab the band sits at the page bottom, below padding that keeps it clear of
 cards and Runs. On the Agent tab the band is fixed to the window floor behind
-the chat, and the chat keeps a solid background over it. On windows wider than
-a phone and at least 700px tall, the chat stops 128px above the bottom so the
-woods show; phones and short windows give the chat the full height. The scene
+the chat, and the chat keeps a solid background over it. The Agent panel uses
+the same available height and bottom gutter as the other themes; scenery does
+not reserve space below the chat. The scene
 sits behind the content without a new stacking context, so space-home dialogs
 stay above the voice window.
 
@@ -512,8 +512,10 @@ artifact-selection comments. Space threads render their own turn artifacts and
 accept files, answer comments, and inline artifact-selection comments, which
 open in comment mode like a project thread's. A Space comment travels with the
 next message as numbered selections on that turn file, and the agent writes a
-revised file in its new turn; there are no versions, Keep, or node references,
-and the opened viewer has no comment panel. Both open artifacts in the shared in-app viewer,
+revision at its original tracked path. Space turns synchronize earlier files and
+publish changes as the same artifact's next version, just as project turns do.
+Space has no Keep, node references, version controls or comment panel in its
+opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
 bubble. Answer comments join the next message in both.
 Approval cards stay where the agent raised them, before later transcript lines,
@@ -540,7 +542,9 @@ leaves the transcript as it is; an amber cards icon in the composer says so on
 hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
-run or chat that asked, and an answer removes it. Docked cards
+run or chat that asked, and an answer removes it. A Project Agent uses the same
+dock for that project's relayed questions; its own questions and approval cards
+stay inline. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
 Left of Wakes, the Space thread header holds a Running button, present only
@@ -583,8 +587,11 @@ Files retain their identity across renames. Copy links open that file.
 The editor shows durable save coverage separately from publication. Markdown
 previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
+HTML previews put Zoom out, percentage reset, Zoom in and Comment in the panel
+header. Their loading and error states occupy that same preview surface.
 At phone width, Write, Preview, and Coach occupy one pane selected by the segmented
-control. Files and History open as panels.
+control. HTML tools occupy a second row so warnings do not displace Comment or
+change the toolbar height. Files and History open as panels.
 
 ## Auto-research and episode history
 

@@ -161,7 +161,7 @@ APP_PLACES = """Where the member acts in the RCP app:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 28
+CHAT_MASTER_CONTEXT_VERSION = 29
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -685,6 +685,29 @@ def _provider_log_pointers(provider_log_roots: dict[str, list[str]]) -> str:
     return "".join(lines)
 
 
+STAGED_SKILL_RULE = (
+    "Use a staged skill or workflow when its description matches the task. Follow explicitly invoked\n"
+    "packages for that turn."
+)
+
+
+def skill_prompt_values(pointers: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    """The complete discovery metadata, including on a retained master's next turn."""
+
+    return [
+        {
+            "id": item.get("id"),
+            "kind": item.get("kind", "skill"),
+            "label": item.get("label"),
+            "version": item.get("version"),
+            "description": item.get("description"),
+            "dependencies": item.get("dependencies"),
+            "path": item.get("path"),
+        }
+        for item in pointers or []
+    ]
+
+
 def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
     """Render staged packages as readable blocks rather than one dense line each."""
 
@@ -711,9 +734,8 @@ def selected_skill_section(pointers: list[dict[str, object]] | None) -> str:
 
 {}
 
-Use a staged skill or workflow when its description matches the task. Follow explicitly invoked
-packages for that turn.
-""".format("\n\n".join(blocks))
+{}
+""".format("\n\n".join(blocks), STAGED_SKILL_RULE)
 
 
 def invoked_package_pointers(
@@ -991,9 +1013,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v13"
+DISCUSS_POLICY_VERSION = "discuss-v15"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v29"
+WORK_POLICY_VERSION = "work-v31"
 
 
 class PromptFactory:
@@ -1625,7 +1647,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v10"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v12"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1686,7 +1708,9 @@ Authorship contract:
 - All output is validated together and presented for review, or applied by RCP under the human's
   saved Apply-directly choice. You have no direct paper-write authority.
 - You have a shell. Run whatever commands the request needs, such as converting or rendering
-  figures, and write their outputs into the changes folder like any other file.
+  figures. Temporary scripts and working files may stay in the changes folder outside `files/`;
+  RCP publishes only the contents of `files/` and the moves declared in `moves.json`.
+  Put a script under `files/` too when it is part of the requested Paper deliverable.
 - Do not write anywhere outside the named changes folder and the attached saved artifacts,
   including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.

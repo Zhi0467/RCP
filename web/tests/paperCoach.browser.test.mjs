@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import {
@@ -329,6 +331,315 @@ const turn = {
   attempt: 1,
 };
 
+async function mountCoachPicker(page) {
+  await page.evaluate(async () => {
+    window.paperTab.leave();
+    const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
+    const { PaperWorkspace } = await import("/src/paper/PaperWorkspace.tsx");
+    const { ResourceStore } = await import("/src/core/resourceStore.ts");
+    const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
+    const models = [
+      { id: "settings-model", label: "Settings model", reasoning: ["medium"] },
+      { id: "picked-model", label: "Picked model", reasoning: ["low", "high"] },
+      { id: "no-effort-model", label: "No effort model", reasoning: [] },
+    ];
+    const project = {
+      id: "p",
+      revision: 1,
+      run_on: "local",
+      agent_profiles: {
+        paper_coach: { provider: "codex", model: "settings-model", reasoning: "medium" },
+      },
+      provider_readiness: {},
+      registry: [
+        { provider: "codex", label: "Codex", models },
+        { provider: "claude", label: "Claude", models: [models[2]] },
+      ],
+      machines: [],
+    };
+    const control = (window.coachPicker = { started: [] });
+    function Harness() {
+      const [tasks, setTasks] = React.useState([]);
+      const [mount, setMount] = React.useState(0);
+      const remembered = React.useRef({ view: "coach", right: "coach" });
+      control.update = setTasks;
+      control.remount = () => setMount((value) => value + 1);
+      return React.createElement(PaperWorkspace, {
+        key: mount,
+        project,
+        apiBase: "/api/projects/p",
+        editorState: remembered.current,
+        onEditorStateChange: (state) => (remembered.current = state),
+        tasks,
+        onStartTask: async (kind, request) => {
+          const at = new Date(Date.now() + control.started.length * 1000).toISOString();
+          const task = {
+            operation_id: `picked-${control.started.length}`,
+            kind,
+            request,
+            native_session_id: null,
+            result: null,
+            active: true,
+            can_pause: true,
+            attempt: 1,
+            created_at: at,
+            updated_at: at,
+          };
+          control.started.push(task);
+          return task;
+        },
+      });
+    }
+    const host = document.body.appendChild(document.createElement("div"));
+    createRoot(host).render(
+      React.createElement(
+        RefreshRuntimeContext.Provider,
+        { value: { store: new ResourceStore() } },
+        React.createElement(Harness),
+      ),
+    );
+  });
+  await page.locator(".paper-coach .agent-config-chip").waitFor();
+}
+
+test("the coach keeps its picked config through admission, checkpoint, settlement and remount", async (t) => {
+  for (const width of [1280, 390]) {
+    let sessions = [];
+    const { page, errors } = await open(t, {
+      width,
+      configure: (fixture) => {
+        const respond = fixture.respond;
+        fixture.respond = (path, ...rest) =>
+          path.endsWith("/sessions") ? { json: sessions } : respond(path, ...rest);
+      },
+    });
+    await mountCoachPicker(page);
+    const chip = page.locator(".paper-coach .agent-config-chip");
+    await chip.click();
+    await page.getByRole("combobox", { name: "Model", exact: true }).selectOption("picked-model");
+    await page.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
+    await chip.click();
+    await page.getByRole("textbox", { name: "Message" }).fill("Review this draft.");
+    await page.getByRole("button", { name: "Send coach message" }).click();
+    await page.getByRole("button", { name: "Stop coach" }).waitFor();
+    assert.match(await chip.innerText(), /picked-model · high/);
+    const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+    assert.deepEqual(
+      [admitted.request.provider, admitted.request.model, admitted.request.reasoning],
+      ["codex", "picked-model", "high"],
+    );
+    const checkpoint = { ...admitted, native_session_id: "picked-session" };
+    await Promise.all([
+      page.waitForResponse((response) => response.url().includes("/tasks?")),
+      page.evaluate((task) => window.coachPicker.update([task]), checkpoint),
+    ]);
+    assert.match(await chip.innerText(), /picked-model · high/);
+    sessions = [
+      {
+        provider: "codex",
+        native_session_id: "picked-session",
+        execution_machine: "local",
+        model: "picked-model",
+        reasoning: "high",
+        created_at: admitted.created_at,
+      },
+    ];
+    await page.evaluate((task) => window.coachPicker.update([task]), {
+      ...checkpoint,
+      active: false,
+      updated_at: new Date(Date.now() + 2000).toISOString(),
+    });
+    await page.waitForFunction(
+      () => !document.querySelector(".paper-coach .agent-config-chip").disabled,
+    );
+    assert.match(await chip.innerText(), /picked-model · high/);
+    await page.evaluate(() => window.coachPicker.remount());
+    await chip.waitFor();
+    assert.match(await chip.innerText(), /picked-model · high/);
+    await fits(page);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test("an active coach continuation shows its admitted pick while the writing session is stale", async (t) => {
+  const active = {
+    ...turn,
+    operation_id: "t2",
+    active: true,
+    can_pause: true,
+    result: null,
+    created_at: new Date(Date.now() + 1000).toISOString(),
+    request: {
+      message: "Continue",
+      session_id: "s1",
+      provider: "codex",
+      model: "picked-model",
+      reasoning: "high",
+    },
+  };
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = ${JSON.stringify({ tasks: [turn, active], started: [] })};`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions")
+          ? {
+              json: [
+                {
+                  provider: "codex",
+                  native_session_id: "s1",
+                  model: "old-model",
+                  reasoning: "low",
+                  created_at: turn.created_at,
+                },
+              ],
+            }
+          : respond(path, ...rest);
+    },
+  });
+  await coach(page);
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  assert.match(await chip.innerText(), /picked-model · high/);
+  await page.evaluate(() => window.paperTab.leave());
+  await page.evaluate(() => window.paperTab.back());
+  await chip.waitFor();
+  assert.match(await chip.innerText(), /picked-model · high/);
+  assert.deepEqual(errors, []);
+});
+
+test("switching the coach provider keeps a model without native effort through remount", async (t) => {
+  const { page, errors } = await open(t);
+  await mountCoachPicker(page);
+  await page.evaluate((task) => window.coachPicker.update([task]), {
+    ...turn,
+    request: {
+      ...turn.request,
+      provider: "codex",
+      model: "settings-model",
+      reasoning: "medium",
+      run_on: "previous-base",
+    },
+  });
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await chip.click();
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("claude");
+  assert.equal(await page.getByRole("combobox", { name: "Reasoning", exact: true }).count(), 0);
+  await chip.click();
+  await page.getByText(/starts a fresh .* session/).waitFor();
+  await page.getByRole("textbox", { name: "Message" }).fill("Continue with this provider.");
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+  assert.deepEqual(
+    [
+      admitted.request.provider,
+      admitted.request.model,
+      admitted.request.reasoning,
+      admitted.request.session_id,
+      admitted.request.run_on,
+    ],
+    ["claude", "no-effort-model", "", "s1", "local"],
+  );
+  const switched = {
+    ...admitted,
+    request: { ...admitted.request, session_id: null, previous_session_id: "s1" },
+  };
+  await page.evaluate((task) => window.coachPicker.update([task]), switched);
+  await page.evaluate(() => window.coachPicker.remount());
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  assert.equal(await chip.innerText(), "Claude · no-effort-model");
+  await page.evaluate((task) => window.coachPicker.update([task]), {
+    ...switched,
+    native_session_id: "new-provider-session",
+  });
+  assert.equal(await chip.innerText(), "Claude · no-effort-model");
+  assert.deepEqual(errors, []);
+});
+
+test("an evicted coach cohort keeps its held session through a failed second provider switch", async (t) => {
+  const previous = {
+    ...turn,
+    request: { ...turn.request, provider: "codex", model: "settings-model", reasoning: "medium" },
+  };
+  const switched = {
+    ...turn,
+    operation_id: "t2",
+    native_session_id: "s2",
+    created_at: new Date(Date.now() + 1000).toISOString(),
+    request: {
+      message: "Switch",
+      provider: "claude",
+      model: "no-effort-model",
+      reasoning: "",
+      session_id: null,
+      previous_session_id: "s1",
+    },
+  };
+  const failed = {
+    ...turn,
+    operation_id: "t3",
+    native_session_id: null,
+    failed: true,
+    settled: true,
+    can_retry: true,
+    error: "The provider quit before checkpoint.",
+    result: null,
+    created_at: new Date(Date.now() + 2000).toISOString(),
+    request: {
+      message: "Switch again",
+      provider: "opencode",
+      model: "picked-model",
+      reasoning: "high",
+      session_id: null,
+      previous_session_id: "s2",
+    },
+  };
+  const { page, errors, requests } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path === "/api/projects/p/tasks") return { json: [failed, switched, previous] };
+        if (path.endsWith("/sessions"))
+          return {
+            json: [
+              {
+                provider: "codex",
+                native_session_id: "s1",
+                model: "settings-model",
+                reasoning: "medium",
+                created_at: turn.created_at,
+              },
+            ],
+          };
+        return respond(path, ...rest);
+      };
+    },
+  });
+  await mountCoachPicker(page);
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-coach .agent-config-chip")?.textContent.includes("picked-model"),
+  );
+  await page.evaluate(() => window.coachPicker.remount());
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-coach .agent-config-chip")?.textContent.includes("picked-model"),
+  );
+  assert.ok(requests.some((url) => url.includes("paper_session=s1")));
+  await chip.click();
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("claude");
+  await chip.click();
+  await page.getByRole("textbox", { name: "Message" }).fill("Continue with the held provider.");
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+  assert.equal(admitted.request.session_id, "s2");
+  assert.equal(admitted.request.provider, "claude");
+  await fits(page);
+  assert.deepEqual(errors, []);
+});
+
 test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
   const uploads = [];
   const { page } = await open(t, {
@@ -508,83 +819,162 @@ test("a comment opened from the preview closes when another file is shown", asyn
   assert.equal(await comment.inputValue(), "");
 });
 
-test("a new selection in the HTML page keeps the typed comment and its own mark", async (t) => {
-  const { page, context } = await open(t, {
-    width: 1280,
-    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
-    configure: ({ tree }) =>
-      tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 }),
-  });
-  // A stand-in shell that counts the clears the app sends it.
-  await context.route("**/files/f3/preview", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
-    }),
-  );
-  await page.locator(".paper-file", { hasText: "page.html" }).click();
-  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
-  await page.getByRole("button", { name: "Comment on the page" }).click();
-  const shell = page.frame({ url: /\/files\/f3\/preview$/ });
-  const post = (text) =>
-    shell.evaluate(
-      (text) =>
-        parent.postMessage(
-          {
-            type: "rcp-artifact-selection",
-            version: 1,
-            selection: { kind: "text", text, surrounding_text: "" },
-            description: "",
-          },
-          location.origin,
-        ),
-      text,
+for (const state of ["ready", "warning", "refusal"])
+  test(`phone HTML preview keeps every control visible in its ${state} state`, async (t) => {
+    const { page, context } = await open(t, {
+      configure: ({ tree }) =>
+        tree.files.push({
+          file_id: "f3",
+          path: "page.html",
+          kind: "text",
+          format: "html",
+          size: 5,
+        }),
+    });
+    await context.route("**/files/f3/preview/state", (route) =>
+      route.fulfill(
+        state === "refusal"
+          ? { status: 503, json: { detail: "Preview unavailable" } }
+          : { json: { revision: 1, key: "page-1" } },
+      ),
     );
-  await post("First words");
-  const comment = page.getByRole("textbox", { name: "Comment", exact: true });
-  await comment.fill("half written");
-  await post("Second words");
-  await page.getByText("Second words").first().waitFor();
-  assert.equal(await comment.inputValue(), "half written");
-  assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
-  // A quote longer than a comment allows is cut to the limit, so it stages.
-  await shell.evaluate(() =>
-    parent.postMessage(
-      {
-        type: "rcp-artifact-selection",
-        version: 1,
-        selection: {
-          kind: "box",
-          rect: { x: 0, y: 0, width: 1, height: 1 },
-          viewport: { width: 500, height: 400 },
-          elements: Array.from({ length: 8 }, (_, n) => ({
-            path: `p:nth-child(${n + 1})`,
-            label: "",
-            text: `${n}`.repeat(512),
-          })),
+    await context.route("**/files/f3/preview?*", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Saved page</p>" }),
+    );
+    await page.getByRole("button", { name: "Show files", exact: true }).click();
+    await page.locator(".paper-file", { hasText: "page.html" }).click();
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    const toolbar = page.locator(".paper-phone-segments");
+    if (state === "refusal")
+      await toolbar.getByRole("button", { name: "Retry HTML preview" }).waitFor();
+    else {
+      await page.locator(".paper-html-preview iframe").waitFor();
+      if (state === "warning") {
+        await page
+          .locator(".paper-html-preview iframe")
+          .contentFrame()
+          .getByText("Saved page")
+          .evaluate(() =>
+            parent.postMessage(
+              { kind: "rcp-artifact-error", message: "Saved image unavailable", count: 1 },
+              location.origin,
+            ),
+          );
+        await toolbar.getByRole("status", { name: "Saved image unavailable" }).waitFor();
+      }
+    }
+    const controls = toolbar.locator(":is(button, [role=status]):visible");
+    assert.equal(await controls.count(), state === "ready" ? 7 : 8);
+    const segments = await toolbar.getByRole("group", { name: "Paper view" }).boundingBox();
+    const tools = await toolbar.locator(".paper-panel-tools").boundingBox();
+    assert.ok(tools.y >= segments.y + segments.height);
+    for (const control of await controls.all()) {
+      const box = await control.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= 390, JSON.stringify(box));
+    }
+    for (const control of await toolbar.locator(".icon-button:visible").all())
+      await target(control);
+    await fits(page);
+    await page.screenshot({ path: join(tmpdir(), `paper-html-controls-390-${state}.png`) });
+  });
+
+for (const width of [1280, 390])
+  test(`a new selection in the HTML page keeps the typed comment and its own mark at ${width}px`, async (t) => {
+    const { page, context } = await open(t, {
+      width,
+      init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+      configure: ({ tree }) =>
+        tree.files.push({
+          file_id: "f3",
+          path: "page.html",
+          kind: "text",
+          format: "html",
+          size: 5,
+        }),
+    });
+    // A stand-in shell that counts the clears the app sends it.
+    await context.route("**/files/f3/preview/state", (route) =>
+      route.fulfill({ json: { revision: 1, key: "page-1" } }),
+    );
+    await context.route("**/files/f3/preview?*", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
+      }),
+    );
+    if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
+    await page.locator(".paper-file", { hasText: "page.html" }).click();
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    await page.getByRole("button", { name: "Comment on the page" }).click();
+    if (width === 390) {
+      await target(page.getByRole("button", { name: "Zoom in", exact: true }));
+      await target(page.getByRole("button", { name: "Zoom out", exact: true }));
+      await target(page.getByRole("button", { name: "Reset preview zoom", exact: true }));
+    }
+    await fits(page);
+    await page.screenshot({ path: join(tmpdir(), `paper-html-controls-${width}.png`) });
+    await page.locator(".paper-html-preview iframe").waitFor();
+    const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
+    const post = (text) =>
+      shell.evaluate(
+        (text) =>
+          parent.postMessage(
+            {
+              type: "rcp-artifact-selection",
+              version: 1,
+              selection: { kind: "text", text, surrounding_text: "" },
+              description: "",
+            },
+            location.origin,
+          ),
+        text,
+      );
+    await post("First words");
+    const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+    await comment.fill("half written");
+    await post("Second words");
+    await page.getByText("Second words").first().waitFor();
+    assert.equal(await comment.inputValue(), "half written");
+    assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
+    // A quote longer than a comment allows is cut to the limit, so it stages.
+    await shell.evaluate(() =>
+      parent.postMessage(
+        {
+          type: "rcp-artifact-selection",
+          version: 1,
+          selection: {
+            kind: "box",
+            rect: { x: 0, y: 0, width: 1, height: 1 },
+            viewport: { width: 500, height: 400 },
+            elements: Array.from({ length: 8 }, (_, n) => ({
+              path: `p:nth-child(${n + 1})`,
+              label: "",
+              text: `${n}`.repeat(512),
+            })),
+          },
+          description: "",
         },
-        description: "",
-      },
-      location.origin,
-    ),
-  );
-  const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
-  await page.waitForFunction(
-    () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
-  );
-  const long = await quote.textContent();
-  assert.equal(long.length, 4096);
-  assert.ok(long.endsWith("…"));
-  // Any other way in replaces the open comment the same way: its mark goes, its text stays.
-  await coach(page);
-  await page.getByRole("button", { name: "Comment on this answer" }).click();
-  await page.getByRole("textbox", { name: "Select answer text" }).waitFor();
-  assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
-  // A frame selection replacing that keyboard step carries the same text.
-  await post("Third words");
-  await page.getByText("Third words").first().waitFor();
-  assert.equal(await comment.inputValue(), "half written");
-});
+        location.origin,
+      ),
+    );
+    const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
+    await page.waitForFunction(
+      () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
+    );
+    const long = await quote.textContent();
+    assert.equal(long.length, 4096);
+    assert.ok(long.endsWith("…"));
+    // Any other way in replaces the open comment the same way: its mark goes, its text stays.
+    await coach(page);
+    await page.getByRole("button", { name: "Comment on this answer" }).click();
+    await page.getByRole("textbox", { name: "Select answer text" }).waitFor();
+    await shell.waitForFunction(() => (window.clears ?? 0) === 1);
+    assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
+    // A frame selection replacing that keyboard step carries the same text.
+    await post("Third words");
+    await page.getByText("Third words").first().waitFor();
+    assert.equal(await comment.inputValue(), "half written");
+  });
 
 const running = {
   ...turn,

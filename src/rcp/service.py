@@ -9,7 +9,7 @@ import re
 import stat
 import threading
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
@@ -3161,7 +3161,10 @@ class ProjectService:
 
     def resolve_skill_selection(
         self,
-        request: RunRequest | CoachRequest,
+        request: RunRequest | CoachRequest | AutoResearchRunRequest,
+        *,
+        required_workflow_ids: Sequence[str] = (),
+        required_skill_ids: Sequence[str] = (),
     ) -> SkillSelection:
         """Resolve the official packages enabled by the project Settings defaults.
 
@@ -3171,35 +3174,22 @@ class ProjectService:
         """
 
         defaults = self.manifest.agent.skill_defaults
-        return official_registry().resolve(defaults=defaults)
+        return official_registry().resolve(
+            workflow_ids=[*defaults.workflow_ids, *required_workflow_ids],
+            skill_ids=[*defaults.skill_ids, *required_skill_ids],
+        )
 
     def resolve_skill_request(
         self,
         request: RunRequest | CoachRequest,
     ) -> RunRequest | CoachRequest:
         selection = self.resolve_skill_selection(request)
-        available = {(item.kind, item.id) for item in selection.resolved_skill_packages}
         registry = official_registry()
-
-        def validate_invocations(
-            values: list[str], kind: Literal["workflow", "skill"]
-        ) -> list[str]:
-            normalized: list[str] = []
-            seen: set[str] = set()
-            for value in values:
-                registry.package(kind, value)
-                if value in seen:
-                    continue
-                if (kind, value) not in available:
-                    raise ValueError(
-                        f"invoked {kind} {value!r} is not enabled in project skill defaults"
-                    )
-                seen.add(value)
-                normalized.append(value)
-            return normalized
-
-        invoked_workflow_ids = validate_invocations(request.invoked_workflow_ids, "workflow")
-        invoked_skill_ids = validate_invocations(request.invoked_skill_ids, "skill")
+        invoked_workflow_ids, invoked_skill_ids = registry.validate_invocations(
+            selection,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        )
         resolved_provider_skills: list[ProviderSkillReference] = []
         if request.invoked_provider_skill_names:
             if self.provider_skills is None:

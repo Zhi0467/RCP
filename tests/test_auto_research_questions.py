@@ -202,7 +202,9 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     )
     turn = SimpleNamespace(
         task=root,
-        request=SimpleNamespace(instruction=None, run_on="backend"),
+        request=SimpleNamespace(
+            instruction=None, run_on="backend", invoked_workflow_ids=[], invoked_skill_ids=[]
+        ),
         binding=SimpleNamespace(
             actor_operation_id=root.operation_id,
             native_session_id=None,

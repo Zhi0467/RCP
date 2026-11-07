@@ -32,6 +32,7 @@ from rcp.agents.prompts import (
     CHAT_MASTER_CONTEXT_VERSION,
     CONVERSATION_FORK_NOTE,
     chat_master_contract_key,
+    skill_prompt_values,
 )
 from rcp.agents.write_scope import (
     ProjectWriteScope,
@@ -251,16 +252,7 @@ def chat_prompt_values(
         },
         "repositories": repositories,
         "compute": {"active": compute_profiles},
-        "skills": [
-            {
-                "id": item.get("id"),
-                "kind": item.get("kind", "skill"),
-                "version": item.get("version"),
-                "description": item.get("description"),
-                "path": item.get("path"),
-            }
-            for item in skill_pointers
-        ],
+        "skills": skill_prompt_values(skill_pointers),
         "workspace": {"path": workspace},
         "group": group_prompt_value(context.group_context),
     }
@@ -1369,12 +1361,18 @@ def _chat_stage_name(
     return _safe_stage_name(f"chat-{project_key}-{request.chat_id}")
 
 
+def _chat_stage_owner(service: ProjectService, request: RunRequest) -> str | None:
+    """Use the same private conversation namespace for Work, Discuss and recovery."""
+    return service.paper.store.private_chat_owner(request.chat_id) if request.chat_id else None
+
+
 def open_remote_conversation_stage(
     machine: SpaceMachineRecord,
     stage_name: str,
     execution: AgentTaskExecution | None,
     *,
     saved_stage: bool,
+    thread_owner: str | None = None,
 ) -> RemoteRunStage:
     """Open or attach the conversation's exact stage and checkpoint its binding."""
     if saved_stage:
@@ -1384,6 +1382,7 @@ def open_remote_conversation_stage(
         stage = RemoteRunStage(machine.host).open(
             stage_name,
             reuse=True,
+            thread_owner=thread_owner,
             protected_roots=_protected_run_stage_roots(
                 execution.store if execution is not None else None,
                 machine.machine_id,
@@ -1797,6 +1796,10 @@ def reconcile_chat_question_answers(
                             {
                                 **origin_task.request,
                                 "session_id": question.origin.native_session_id,
+                                "invoked_workflow_ids": [],
+                                "invoked_skill_ids": [],
+                                "invoked_provider_skill_names": [],
+                                "resolved_provider_skills": [],
                             }
                         ),
                         authorized_by=origin_task.authorized_by,

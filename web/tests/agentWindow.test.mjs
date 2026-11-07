@@ -126,7 +126,14 @@ test("project and Space endpoints keep capabilities and encoded owner routes sep
   );
   assert.equal(space.attachmentsUrl, "/api/agent-threads/thread%2Fa/attachments");
   assert.equal(space.scopeKey, "space:thread/a");
-  assert.equal(space.artifactState, null);
+  assert.deepEqual(space.artifactState("id/a").key, {
+    backend: "",
+    member: "",
+    project: "",
+    name: "agent_threads",
+    entity: "thread/a",
+    query: "artifact:id/a",
+  });
   assert.equal(space.openArtifactPanel, null);
   assert.equal(space.canKeep, false);
   assert.equal(space.canCommentArtifacts, true);

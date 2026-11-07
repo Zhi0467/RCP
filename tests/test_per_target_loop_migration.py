@@ -106,45 +106,11 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     budget = previous.episode_budget_meter("live-main")
     previous.close()
     readonly = AppStore.open_read_only_snapshot(path)
+    registry = AppStore._STORAGE_SCHEMA_MIGRATIONS
     assert readonly.check_storage_schema_migrations() == (
         43,
-        77,
-        (
-            "per_target_experiment_loops_v1",
-            "client_requests_v1",
-            "repository_provisioning_contracts_v1",
-            "branch_names_v1",
-            "graph_seen_heads_v1",
-            "resource_watermarks_v1",
-            "research_view_pins_v1",
-            "evidence_flags_v1",
-            "per_branch_auto_research_v1",
-            "episode_report_deletion_v1",
-            "agent_live_status_v1",
-            "project_groups_v1",
-            "graph_branches_v1",
-            "graph_bulletin_v1",
-            "project_worker_seats_v1",
-            "conversation_names_v1",
-            "chat_forks_v1",
-            "machine_settings_v1",
-            "episode_question_versions_v1",
-            "paper_live_v1",
-            "consolidation_targets_v1",
-            "per_member_provider_logins_v1",
-            "evidence_flag_origins_v1",
-            "episode_merge_requests_v1",
-            "memory_files_v1",
-            "agent_threads_v1",
-            "agent_handoffs_v1",
-            "space_turn_project_bindings_v1",
-            "agent_schedules_v1",
-            "approval_cards_v1",
-            "agent_schedule_pending_fires_v1",
-            "agent_thread_queue_v1",
-            "paper_coach_steers_v1",
-            "machine_identity_v1",
-        ),
+        registry[-1][0],
+        tuple(name for version, name in registry if version > 43),
     )
     readonly.close()
     with sqlite3.connect(path) as connection:

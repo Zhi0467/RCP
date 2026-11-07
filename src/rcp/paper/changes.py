@@ -137,9 +137,6 @@ def validate_output(
         _path(name)
     if len(output.get("moves.json", b"")) > PAPER_CHANGES_MAX_MOVES_BYTES:
         raise InvalidChanges(["Changes byte limit exceeded: moves.json"])
-    unknown = [name for name in output if name != "moves.json" and not name.startswith("files/")]
-    if unknown:
-        raise InvalidChanges([f"Unexpected output: {name}" for name in unknown])
     try:
         moves = json.loads(output.get("moves.json", b"{}").decode("utf-8"))
     except (ValueError, UnicodeError) as exc:

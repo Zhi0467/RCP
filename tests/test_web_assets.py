@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import re
 import signal
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -183,3 +185,71 @@ def test_served_pages_revalidate_but_hashed_assets_keep_default_caching(
         stray = client.get(path, headers={"sec-fetch-mode": "navigate"}, follow_redirects=False)
         assert (stray.status_code, stray.headers["location"]) == (303, "/")
         assert client.get(path, headers={"sec-fetch-mode": "cors"}).status_code == 404
+
+
+@pytest.mark.parametrize("layout", ["source", "wheel", "frozen"])
+def test_artifact_renderer_uses_the_installed_web_bundle(tmp_path, monkeypatch, layout):
+    from rcp.artifact_renderer import renderer_assets
+
+    package = tmp_path / "package" / "rcp"
+    package.mkdir(parents=True)
+    monkeypatch.delenv(web_assets.WEB_ASSETS_ENV, raising=False)
+    monkeypatch.setattr(web_assets, "__file__", str(package / "web_assets.py"))
+    monkeypatch.delattr(web_assets.sys, "_MEIPASS", raising=False)
+    if layout == "source":
+        monkeypatch.setattr(web_assets, "WEB_DIR", tmp_path / "web")
+        dist = tmp_path / "web" / "dist"
+    elif layout == "wheel":
+        dist = package / "web_dist"
+    else:
+        frozen = tmp_path / "frozen"
+        monkeypatch.setattr(web_assets.sys, "_MEIPASS", str(frozen), raising=False)
+        dist = frozen / "rcp" / "web_dist"
+    dist.mkdir(parents=True)
+    (dist / "artifact-renderer.js").write_text('const source="</ScRiPt>";', encoding="utf-8")
+    (dist / "artifact-renderer.css").write_text(".katex{color:inherit}", encoding="utf-8")
+    script, css = renderer_assets()
+    assert script == 'const source="<\\/ScRiPt>";'
+    assert css == ".katex{color:inherit}"
+
+
+def test_artifact_renderer_missing_bundle_refuses_instead_of_losing_math(tmp_path, monkeypatch):
+    from rcp import artifact_renderer
+
+    monkeypatch.setattr(artifact_renderer, "web_dist_path", lambda: tmp_path)
+    with pytest.raises(
+        artifact_renderer.ArtifactRendererUnavailable, match="Rebuild the Web assets"
+    ):
+        artifact_renderer.renderer_assets()
+
+
+def test_built_artifact_renderer_is_self_contained():
+    from rcp.artifact_renderer import renderer_assets
+    from rcp.frozen_resources import resource_manifest
+
+    script, css = renderer_assets()
+    assert "RcpArtifactRenderer" in script
+    assert "url(fonts/" not in css
+    urls = re.findall(r"url\(([^)]+)\)", css)
+    assert urls and all(url.startswith("data:font/woff2;base64,") for url in urls)
+    assert "</script" not in script.casefold()
+    root = web_assets.web_dist_path()
+    assert not Path(root / "artifact-renderer.js").is_symlink()
+    inventory = resource_manifest([(str(root), "rcp/web_dist")])
+    assert {
+        "rcp/web_dist/artifact-renderer.js",
+        "rcp/web_dist/artifact-renderer.css",
+    } <= inventory.keys()
+
+
+@pytest.mark.parametrize("empty", ["artifact-renderer.js", "artifact-renderer.css"])
+def test_artifact_renderer_empty_build_fails_explicitly(tmp_path, monkeypatch, empty):
+    from rcp import artifact_renderer
+
+    monkeypatch.setattr(artifact_renderer, "web_dist_path", lambda: tmp_path)
+    for name in ["artifact-renderer.js", "artifact-renderer.css"]:
+        (tmp_path / name).write_text("" if name == empty else "valid", encoding="utf-8")
+    with pytest.raises(
+        artifact_renderer.ArtifactRendererUnavailable, match="Rebuild the Web assets"
+    ):
+        artifact_renderer.renderer_assets()

@@ -77,8 +77,19 @@ async def _turn(app, launcher, request, operation_id, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["discuss", "work"])
+@pytest.mark.parametrize(
+    "name,first_text,second_text",
+    [
+        ("page.html", "<p>v1</p>", "<p>v2</p>"),
+        (
+            "blog_notes.md",
+            "# Notes\nFirst observation.\n",
+            "# Notes\nFirst observation.\nSecond observation.\n",
+        ),
+    ],
+)
 async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_version(
-    manifest, tmp_path, mode
+    manifest, tmp_path, mode, name, first_text, second_text
 ):
     from rcp.api.tasks import _read_agent_artifact_bytes
     from rcp.service import RunRequest
@@ -99,24 +110,25 @@ async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_vers
         mode="discuss",
         run_truth_scope=["repo-a"],
     )
-    page = "turns/first/artifacts/page.html"
+    page = f"turns/first/artifacts/{name}"
     events = await _turn(
-        app, ScriptedLauncher([{page: "<p>v1</p>"}], message="Drew it."), first, "first", tmp_path
+        app, ScriptedLauncher([{page: first_text}], message="Drew it."), first, "first", tmp_path
     )
     [artifact] = [event.artifact for event in events if event.event == "artifact"]
     later = first.model_copy(update={"mode": mode, "message": "Fix the label"})
     events = await _turn(
-        app, ScriptedLauncher([{page: "<p>v2</p>"}], message="Fixed."), later, "second", tmp_path
+        app, ScriptedLauncher([{page: second_text}], message="Fixed."), later, "second", tmp_path
     )
     assert not [event.text for event in events if event.event == "error"]
     assert [event.artifact.artifact_id for event in events if event.event == "artifact"] == [
         artifact.artifact_id
     ]
-    assert store.read_artifact_bytes(artifact.artifact_id) == b"<p>v2</p>"
+    assert store.read_artifact_bytes(artifact.artifact_id) == second_text.encode()
+    assert len(store.artifact_versions(artifact.artifact_id)) == 2
     _, data = _read_agent_artifact_bytes(
         store, app.state.default_project_id, "second", artifact.artifact_id, "download"
     )
-    assert data == b"<p>v2</p>"
+    assert data == second_text.encode()
     from rcp.api.tasks import _agent_artifact_response
     from rcp.runs.artifact_edit_admission import _checked_artifact
     from rcp.service import ArtifactContextRequest
@@ -132,5 +144,5 @@ async def test_a_later_turn_changing_an_earlier_artifact_publishes_its_next_vers
     store.undo_artifact(artifact.artifact_id)
     launcher = ScriptedLauncher([{}], message="Nothing to change.")
     await _turn(app, launcher, later.model_copy(update={"mode": "discuss"}), "third", tmp_path)
-    assert (launcher.workspaces[0] / page).read_bytes() == b"<p>v1</p>"
+    assert (launcher.workspaces[0] / page).read_bytes() == first_text.encode()
     assert store.agent_task_artifact_edit_outcomes(["third"]) == {}

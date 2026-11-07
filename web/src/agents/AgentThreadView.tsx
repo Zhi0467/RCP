@@ -1251,18 +1251,19 @@ export function AgentThreadView({
     question,
     projectName,
   });
-  const dockCards =
-    thread.kind === "space"
+  const dockCards: StackCard[] = [
+    ...(thread.kind === "space"
       ? [
           ...cards.proposals.map((view) => proposalStackCard(view, true)),
           ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
-          ...cards.questions.map((question): StackCard => ({
-            kind: "question",
-            key: questionCardKey(question),
-            question,
-          })),
         ]
-      : [];
+      : []),
+    ...cards.questions.map((question): StackCard => ({
+      kind: "question",
+      key: questionCardKey(question),
+      question,
+    })),
+  ];
 
   const renderQuestion = (question: AgentQuestion) =>
     endpoints.questionsApiBase ? (

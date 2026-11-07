@@ -142,6 +142,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "811b6e71f0726a2af71805685bd5e6de193d346e",
         "fa8495f8da8cea9e06453611a10795a1407c8c696289de6a68c894d300374132",
     ),
+    "pre-local-question-origin-v43-1226e25": (
+        "1226e2578e215bd284a3e31bf68ba891c0f1dd79",
+        "ef0b5ae0fb491ec6178359e416ddc16f62539f3fcf30948d540f000ecc8ce289",
+    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",
@@ -445,6 +449,16 @@ def build_release_checkout(tag: str, work_root: Path) -> Path:
 
 
 def _build_checkout(ref: str, work_root: Path, *, web: bool) -> Path:
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", ref)
+        and subprocess.run(
+            ["git", "cat-file", "-e", ref + "^{commit}"],
+            cwd=REPOSITORY_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+    ):
+        _run(["git", "fetch", "--no-tags", "--depth=1", "origin", ref], cwd=REPOSITORY_ROOT)
     work_root.mkdir(parents=True)
     archive = work_root / "base.tar"
     checkout = work_root / "base"

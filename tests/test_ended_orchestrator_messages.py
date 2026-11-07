@@ -322,3 +322,33 @@ def test_archived_chain_refuses_a_new_continuation_actor(manifest, tmp_path, mon
         )
     assert store.episode_continuation(original.episode_id) is None
     assert store.episode(original.episode_id).invocations_used == original.invocations_used
+
+
+def test_continued_root_does_not_inherit_the_previous_human_invocation(
+    manifest, tmp_path, monkeypatch
+):
+    import json
+
+    app, store, original, _ = _ended_app(manifest, tmp_path, monkeypatch)
+    previous = store.agent_task(original.root_operation_id)
+    assert previous is not None
+    inherited = {
+        **previous.request,
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_workflow_ids": ["research-graph-audit"],
+    }
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+            (json.dumps(inherited), previous.operation_id),
+        )
+    _continued, root = continue_auto_research(
+        app.state.background_tasks,
+        original,
+        invocation_ceiling=1,
+        request_id=str(uuid.uuid4()),
+        authorized_by=original.authorized_by,
+    )
+    assert root.request["invoked_skill_ids"] == []
+    assert root.request["invoked_workflow_ids"] == []
+    assert store.agent_task(previous.operation_id).request == inherited

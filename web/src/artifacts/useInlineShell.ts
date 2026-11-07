@@ -28,7 +28,7 @@ export function useInlineShell(
   frame: RefObject<HTMLIFrameElement | null>,
   commentMode: boolean,
   handlers: InlineShellHandlers,
-): { onLoad: () => void } {
+): { onLoad: () => void; clear: () => void } {
   const commentModeRef = useRef(commentMode);
   commentModeRef.current = commentMode;
   const handlersRef = useRef(handlers);
@@ -100,5 +100,11 @@ export function useInlineShell(
     if (!commentMode) cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the frame ref is stable
   }, [commentMode]);
-  return { onLoad: () => postCommentMode(commentModeRef.current) };
+  return {
+    onLoad: () => postCommentMode(commentModeRef.current),
+    clear: () => {
+      shown.current?.();
+      cancel();
+    },
+  };
 }

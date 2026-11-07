@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, selected_skill_section
 
 
 def episode_report_task_contract(
@@ -12,6 +12,7 @@ def episode_report_task_contract(
     receipt_sha256: str,
     report_skill_path: str,
     report_output_path: str,
+    skill_pointers: list[dict[str, object]] | None = None,
     correction_diagnostic_path: str | None = None,
 ) -> str:
     """Build the mode-neutral report contract for an exact episode continuation."""
@@ -56,6 +57,7 @@ Before using the receipt, verify that its exact bytes have the expected SHA-256 
 missing receipt or digest mismatch as a report-generation failure: do not infer, recreate, or
 substitute its contents.
 
+{selected_skill_section(skill_pointers)}
 Use only the retained native-session context and the supplied compact receipt. Never seek,
 restage, rebuild, or read a graph, research rendering, transcript, repository, event ledger, or
 other episode history. Do not widen the context even if another path is remembered by the native

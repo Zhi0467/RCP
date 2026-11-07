@@ -73,6 +73,10 @@ def reconcile_experiment_question_answers(
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,
+                    "invoked_workflow_ids": [],
+                    "invoked_skill_ids": [],
+                    "invoked_provider_skill_names": [],
+                    "resolved_provider_skills": [],
                 }
             )
             # Continuation admission may have refreshed graph pins under explicit human authority.

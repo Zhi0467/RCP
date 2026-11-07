@@ -34,7 +34,9 @@ from tests.helpers import signed_in_client
 
 from . import server_upgrade_harness
 from .server_upgrade_harness import (
+    FIXTURE_ROOT,
     REPOSITORY_ROOT,
+    _build_checkout,
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
@@ -46,10 +48,61 @@ from .server_upgrade_harness import (
     verify_fixture_integrity,
     verify_fixture_registry,
 )
+from .test_experiment_questions import _assert_repaired_answer_resumes_once
 
 
 def test_immutable_server_boundary_registry_is_complete() -> None:
     verify_fixture_registry()
+
+
+def test_exact_writer_checkout_fetches_a_missing_commit_from_a_shallow_clone(tmp_path, monkeypatch):
+    def git(directory, *arguments):
+        return subprocess.run(
+            ["git", *arguments], cwd=directory, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git(origin, "init", "--initial-branch=main")
+    for content in ("historical", "current"):
+        (origin / "payload.txt").write_text(content, encoding="utf-8")
+        git(origin, "add", "payload.txt")
+        git(
+            origin,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            content,
+        )
+        if content == "historical":
+            writer_commit = git(origin, "rev-parse", "HEAD")
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "--depth=1", origin.as_uri(), str(shallow))
+    head = git(shallow, "rev-parse", "HEAD")
+    assert (
+        subprocess.run(
+            ["git", "cat-file", "-e", writer_commit + "^{commit}"],
+            cwd=shallow,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        != 0
+    )
+    monkeypatch.setattr(server_upgrade_harness, "REPOSITORY_ROOT", shallow)
+    run = server_upgrade_harness._run
+
+    def without_dependency_install(argv, *, cwd):
+        if argv[:2] != ["uv", "sync"]:
+            run(argv, cwd=cwd)
+
+    monkeypatch.setattr(server_upgrade_harness, "_run", without_dependency_install)
+    checkout = _build_checkout(writer_commit, tmp_path / "writer", web=False)
+    assert (checkout / "payload.txt").read_text(encoding="utf-8") == "historical"
+    assert git(shallow, "rev-parse", "HEAD") == head
+    assert git(shallow, "status", "--porcelain") == ""
 
 
 def test_release_catalog_is_complete_and_missing_sources_fail(
@@ -94,85 +147,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [
-            (1,),
-            (2,),
-            (3,),
-            (4,),
-            (5,),
-            (6,),
-            (7,),
-            (8,),
-            (9,),
-            (10,),
-            (11,),
-            (12,),
-            (13,),
-            (14,),
-            (15,),
-            (16,),
-            (17,),
-            (18,),
-            (19,),
-            (20,),
-            (21,),
-            (22,),
-            (23,),
-            (24,),
-            (25,),
-            (26,),
-            (27,),
-            (28,),
-            (29,),
-            (30,),
-            (31,),
-            (32,),
-            (33,),
-            (34,),
-            (35,),
-            (36,),
-            (37,),
-            (38,),
-            (39,),
-            (40,),
-            (41,),
-            (42,),
-            (43,),
-            (44,),
-            (45,),
-            (46,),
-            (47,),
-            (48,),
-            (49,),
-            (50,),
-            (51,),
-            (52,),
-            (53,),
-            (54,),
-            (55,),
-            (56,),
-            (57,),
-            (58,),
-            (59,),
-            (60,),
-            (61,),
-            (62,),
-            (63,),
-            (64,),
-            (65,),
-            (66,),
-            (67,),
-            (68,),
-            (69,),
-            (70,),
-            (71,),
-            (72,),
-            (73,),
-            (74,),
-            (75,),
-            (76,),
-            (77,),
-        ]
+        ).fetchall() == [(version,) for version, _name in AppStore._STORAGE_SCHEMA_MIGRATIONS]
 
         plan = connection.execute(
             "EXPLAIN QUERY PLAN SELECT * FROM graph_runs "
@@ -366,6 +341,58 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
     assert metadata["created_with_commit"] == base_commit
     _exercise_candidate_upgrade(fixture)
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_historical_writer_answer_crosses_upgrade_and_resumes_once(tmp_path, monkeypatch):
+    fixture = FIXTURE_ROOT / "pre-local-question-origin-v43-1226e25"
+    metadata = verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = copied / "data/rcp.sqlite3"
+    database.write_bytes(gzip.decompress(database.with_suffix(".sqlite3.gz").read_bytes()))
+    source = _build_checkout(
+        str(metadata["created_with_commit"]), tmp_path / "old-writer", web=False
+    )
+    subprocess.run(
+        [
+            str(source / ".venv/bin/python"),
+            "-c",
+            """
+import json
+from pathlib import Path
+from rcp.core.models import AuthorizedHuman
+from rcp.storage import AppStore
+metadata = json.loads(Path('fixture.json').read_text())
+store = AppStore(Path('data/rcp.sqlite3'))
+assert store.storage_schema_ledger_head() == 77
+question = store.get_question(metadata['local_question_id'])
+episode = store.episode(metadata['local_question_episode_id'])
+assert question.state == 'pending' and question.origin.stage_machine_id is None
+assert question.followup_operation_id is None
+assert (episode.invocations_used, episode.invocation_ceiling) == (1, 2)
+member = store.space_user(metadata['user_id'])
+store.answer_question(question.question_id, answer='Accuracy', resolved_by=AuthorizedHuman(
+    space_id=store.space_id, user_id=member.user_id, display_name=member.display_name,
+))
+answered = store.get_question(question.question_id)
+assert answered.state == 'answered' and answered.answer_revision == 1
+assert answered.origin == question.origin and answered.origin.stage_machine_id is None
+assert answered.followup_operation_id is None and answered.followup_claimed_at is None
+assert answered.client_receipt_revision is None
+assert store.episode(episode.episode_id).invocations_used == 1
+store.close()
+""",
+        ],
+        cwd=copied,
+        check=True,
+    )
+    with chdir(copied):
+        upgraded = AppStore(database)
+        _assert_repaired_answer_resumes_once(
+            monkeypatch, upgraded, str(metadata["local_question_id"])
+        )
+        upgraded.close()
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
@@ -761,6 +788,7 @@ def _exercise_candidate_upgrade(
     experiment_episode_id = _metadata_optional_string(metadata, "experiment_episode_id")
     experiment_operation_id = _metadata_optional_string(metadata, "experiment_operation_id")
     expected_repair = metadata.get("expected_repair")
+    local_question = _local_question_before_upgrade(database, metadata)
     _assert_raw_member_auth_rows(database, metadata)
     if expected_repair not in {None, "impossible_legacy_experiment_wrapup"}:
         raise ValueError("server-upgrade fixture names an unknown expected repair")
@@ -769,6 +797,7 @@ def _exercise_candidate_upgrade(
         _assert_raw_impossible_experiment_wrapup(database, experiment_episode_id)
     with chdir(fixture):
         store = AppStore(database)
+        _assert_local_question_upgrade(store, local_question)
         if baseline_schema is not None:
             assert _normalized_schema(database) == baseline_schema
         space_id = _metadata_string(metadata, "space_id")
@@ -853,6 +882,7 @@ def _exercise_candidate_upgrade(
                 assert experiment_task["active"] is False
 
         reopened = AppStore(database)
+        _assert_local_question_upgrade(reopened, local_question)
         _assert_member_auth_rows(reopened, metadata)
         _assert_provisioning_rows(reopened, metadata)
         assert reopened.agent_task(operation_id).status == "interrupted"
@@ -864,6 +894,67 @@ def _exercise_candidate_upgrade(
         with sqlite3.connect(database) as connection:
             assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def _local_question_before_upgrade(
+    database: Path, metadata: dict[str, object]
+) -> dict[str, object] | None:
+    question_id = _metadata_optional_string(metadata, "local_question_id")
+    if question_id is None:
+        return None
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 77
+        )
+        question = dict(
+            connection.execute(
+                "SELECT * FROM questions WHERE question_id = ?", (question_id,)
+            ).fetchone()
+        )
+        origin = json.loads(str(question["origin_json"]))
+        task = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?",
+            (_metadata_string(metadata, "local_question_operation_id"),),
+        ).fetchone()
+        assert task["operation_id"] == origin["operation_id"]
+        assert task["project_id"] == origin["project_id"]
+        assert json.loads(task["request_json"])["provider"] == origin["provider"]
+        assert task["native_session_id"] == origin["native_session_id"]
+        assert task["stage_root"] == origin["stage_root"]
+        assert task["stage_machine_id"] == BACKEND_MACHINE_ID
+        assert task["status"] == "succeeded"
+        assert origin["stage_machine_id"] is None
+        assert question["state"] == "pending"
+        assert question["answer_revision"] == 0
+        assert question["followup_operation_id"] is None
+        episode = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (_metadata_string(metadata, "local_question_episode_id"),),
+        ).fetchone()
+        assert episode["status"] == "running" and episode["ended_at"] is None
+        assert (episode["invocations_used"], episode["invocation_ceiling"]) == (1, 2)
+    return question
+
+
+def _assert_local_question_upgrade(store: AppStore, before: dict[str, object] | None) -> None:
+    if before is None:
+        return
+    with store.connection() as connection:
+        after = dict(
+            connection.execute(
+                "SELECT * FROM questions WHERE question_id = ?", (before["question_id"],)
+            ).fetchone()
+        )
+    origin = json.loads(str(before["origin_json"]))
+    assert json.loads(after.pop("origin_json")) == {
+        **origin,
+        "stage_machine_id": BACKEND_MACHINE_ID,
+    }
+    assert after == {key: value for key, value in before.items() if key != "origin_json"}
 
 
 def _metadata_string(metadata: dict[str, object], name: str) -> str:

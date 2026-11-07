@@ -1478,16 +1478,6 @@
                 }
             }
         ],
-        "./src/rcp/artifact_views.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 27,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/artifacts.py": [
             {
                 "code": "reportReturnType",
@@ -3760,14 +3750,6 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 65,
-                    "endColumn": 77,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 12,
                     "endColumn": 24,
                     "lineCount": 1
@@ -4150,14 +4132,6 @@
                 "range": {
                     "startColumn": 13,
                     "endColumn": 17,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 29,
-                    "endColumn": 41,
                     "lineCount": 1
                 }
             },

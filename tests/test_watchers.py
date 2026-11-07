@@ -1533,6 +1533,51 @@ def test_completed_groups_merge_compatible_watchers_from_different_work_turns(st
     assert all(item.notified for item in store.watchers("project"))
 
 
+def test_old_writer_slash_invocations_do_not_block_a_fresh_generic_wake(store):
+    from rcp.api.app import _generic_watcher_delivery_request
+
+    origin = _completed_chat_turn(store, "slash-origin", "exact-native-session")
+    store.create_watchers(
+        [
+            _record("old-slash", origin=origin.operation_id, status="completed"),
+            _record("without-slash", origin=origin.operation_id, status="completed"),
+        ]
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE watchers SET continuation_json=json_set(continuation_json, "
+            "'$.invoked_workflow_ids',json('[\"research-graph-audit\"]'), "
+            "'$.invoked_skill_ids',json('[\"graph-audit\"]')) WHERE watcher_id='old-slash'"
+        )
+    reopened = AppStore(store.path)
+    (group,) = reopened.completed_watcher_groups()
+    assert {item.watcher_id for item in group} == {"old-slash", "without-slash"}
+    request = _generic_watcher_delivery_request(group)
+    watcher_ids = request.watcher_ids
+    assert request.invoked_skill_ids == [] and request.invoked_workflow_ids == []
+    forged = _task(reopened, "forged-slash-wake", watcher_ids)
+    forged.request.update(request.model_dump(mode="json"))
+    forged.request["run_truth_scope"] = ["elsewhere"]
+    with pytest.raises(ValueError, match="immutable delivery policy"):
+        reopened.create_watcher_notification_task(forged, watcher_ids)
+    assert not reopened.watcher("old-slash").notified
+    injected = _task(reopened, "injected-slash-wake", watcher_ids)
+    injected.request.update(request.model_dump(mode="json"))
+    injected.request["invoked_skill_ids"] = ["graph-audit"]
+    with pytest.raises(ValueError, match="cannot inherit package invocations"):
+        reopened.create_watcher_notification_task(injected, watcher_ids)
+    record = _task(reopened, "fresh-slash-wake", watcher_ids)
+    record.request.update(request.model_dump(mode="json"))
+    wake = reopened.create_watcher_notification_task(record, watcher_ids)
+    assert wake is not None
+    assert wake.native_session_id == origin.native_session_id
+    assert wake.stage_root == origin.stage_root
+    assert wake.request["invoked_skill_ids"] == wake.request["invoked_workflow_ids"] == []
+    assert reopened.watcher("old-slash").notification_operation_id == wake.operation_id
+    with pytest.raises(ValueError, match="already notified"):
+        reopened.create_watcher_notification_task(record, watcher_ids)
+
+
 def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(store) -> None:
     store.create_watchers([_record("one", status="completed"), _record("two", status="completed")])
     live = _task(store, "human-turn", [])

@@ -69,6 +69,24 @@ def test_invalid_manifest_is_all_or_nothing(setup, moves):
     assert changes.groups("p", "t") == []
 
 
+def test_temporary_helpers_do_not_block_paper_files_or_become_paper_files(setup):
+    snapshot, live, changes, output = setup
+    (output / "render_draft.py").write_text("print('temporary renderer')\n")
+    (output / "review_notes.md").write_text("Temporary authoring notes.\n")
+    (output / "files/section.md").write_text("Revised draft.\n")
+    (output / "files/reproduce.py").write_text("print('published script')\n")
+    groups = changes.collect("p", "t", snapshot, read_paper_changes(output), mode="apply_directly")
+    assert groups and all(group.state == "pending" for group in groups)
+    for group in groups:
+        changes.accept("p", group.group_id, "Coach, applied directly", directly=True)
+    files = {file.path: file.text for file in saved(live).files}
+    assert files == {
+        "section.md": "Revised draft.\n",
+        "reproduce.py": "print('published script')\n",
+    }
+    assert (output / "render_draft.py").is_file()
+
+
 def test_paths_utf8_symlink_and_size_limits(setup, monkeypatch):
     snapshot, _live, _changes, output = setup
     file = output / "files/section.md"
@@ -319,6 +337,20 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
             "run_on": "laptop",
             "message": "Revise",
             "mode": "apply_directly",
+            "invoked_workflow_ids": ["research-graph-audit"],
+            "invoked_skill_ids": ["graph-audit"],
+            "invoked_provider_skill_names": ["native-review"],
+            "resolved_provider_skills": [
+                {
+                    "provider": "codex",
+                    "machine": "backend",
+                    "provider_version": "old",
+                    "inventory_hash": "old",
+                    "name": "native-review",
+                    "label": "Native review",
+                    "description": "Earlier turn only",
+                }
+            ],
         },
         native_session_id="native-paper",
         created_at=store.now(),
@@ -356,6 +388,12 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         assert continued[-1]["session_id"] == "native-paper"
         assert continued[-1]["refresh_group_ids"] == [group.group_id]
         assert continued[-1]["mode"] == "apply_directly"
+        assert continued[-1]["invoked_workflow_ids"] == []
+        assert continued[-1]["invoked_skill_ids"] == []
+        assert continued[-1]["invoked_provider_skill_names"] == []
+        assert continued[-1]["resolved_provider_skills"] == []
+        stored = store.agent_task("task")
+        assert stored is not None and stored.request == previous.request
         assert client.post(f"{base}/{group.group_id}/accept", json={}).status_code == 200
         assert client.post(f"{base}/{group.group_id}/refresh", json={}).status_code == 409
         assert client.post(f"{base}/{group.group_id}/undo", json={}).status_code == 200

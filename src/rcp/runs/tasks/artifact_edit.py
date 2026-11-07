@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import compose
-from rcp.agents.prompts import _attachment_items
+from rcp.agents.prompts import (
+    _attachment_items,
+    _invoked_package_section,
+    invoked_package_pointers,
+    selected_skill_section,
+)
 from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.runs.chat import (
     _append_chat_exchange,
@@ -36,6 +41,8 @@ from rcp.runs.shared import (
     _swept_stage_root,
 )
 from rcp.service import ArtifactEditAdmission, ProjectService, RunRequest
+from rcp.skill_registry import official_registry
+from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -164,7 +171,20 @@ async def stream_artifact_edit_run(
     edit = request.artifact_edit
     if edit is None or edit.launch_kind != "revoking" or request.mode != "discuss":
         raise ValueError("A revoking edit requires its admitted file-only request.")
+    selection = service.resolve_skill_selection(request)
+    workflow_ids, skill_ids = official_registry().validate_invocations(
+        selection,
+        workflow_ids=request.invoked_workflow_ids,
+        skill_ids=request.invoked_skill_ids,
+    )
     local, remote, workspace, machine = _open_stage(service, request, data_dir, execution)
+    skill_pointers = stage_skill_selection(
+        selection,
+        local_stage=local,
+        remote_stage=remote,
+        label=skill_bundle_label(selection),
+        reuse_existing=True,
+    )
     _clear_stale_turn_handoffs(workspace, remote)
     directory = (
         remote.prepare_artifact_directory(execution.operation_id, reuse=False)
@@ -189,6 +209,12 @@ async def stream_artifact_edit_run(
         parts=[
             "You have writable scratch only. Do not change project files, the graph, watchers, "
             "or episode controls. Reply to the human when finished.",
+            selected_skill_section(skill_pointers),
+            _invoked_package_section(
+                invoked_package_pointers(
+                    skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                )
+            ),
             _attachment_items([attachment.pointer]),
             request.message or "",
         ],
@@ -218,9 +244,17 @@ async def stream_artifact_edit_run(
         remote=bool(remote),
         resumed=bool(request.session_id),
         continuation=execution.continuation,
-        extra={"capability": "discuss", "graph_authority": "none"},
+        extra={
+            "capability": "discuss",
+            "graph_authority": "none",
+            **selection.model_dump(mode="json"),
+            "invoked_workflow_ids": workflow_ids,
+            "invoked_skill_ids": skill_ids,
+        },
     )
     outcome = _ProviderOutcome(session_id=request.session_id)
+    inputs_root = remote.root if remote else local
+    assert inputs_root is not None
     async with aclosing(
         _stream_agent_events(
             launcher,
@@ -230,7 +264,7 @@ async def stream_artifact_edit_run(
             data_dir=data_dir,
             workspace=workspace,
             session_id=request.session_id,
-            read_dirs=[],
+            read_dirs=[Path(str(inputs_root)) / "inputs"],
             write_dirs=[],
             write_scope=None,
             execution_host=machine.host,

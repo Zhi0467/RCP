@@ -41,6 +41,7 @@ def test_episode_report_contract_has_no_mode_or_large_context_parameters() -> No
         "receipt_sha256",
         "report_skill_path",
         "report_output_path",
+        "skill_pointers",
         "correction_diagnostic_path",
     }
     assert not parameters & {
@@ -50,8 +51,33 @@ def test_episode_report_contract_has_no_mode_or_large_context_parameters() -> No
         "research_path",
         "history_path",
         "repositories",
-        "skill_pointers",
     }
+
+
+def test_episode_report_contract_advertises_optional_staged_methods() -> None:
+    pointer = {
+        "kind": "skill",
+        "id": "ml-result-rigor",
+        "label": "ML result rigor",
+        "version": "1.0.0",
+        "description": "Audit the reported result against the evidence.",
+        "path": "/stage/inputs/packages/skill/ml-result-rigor",
+        "dependencies": "",
+    }
+    prompt = episode_report_task_contract(
+        project_name="Example",
+        ending="completed",
+        partial=False,
+        receipt_path="/stage/inputs/receipt.json",
+        receipt_sha256="c" * 64,
+        report_skill_path="/stage/inputs/packages/skill/episode-report/SKILL.md",
+        report_output_path="/stage/report.html",
+        skill_pointers=[pointer],
+    )
+
+    assert pointer["description"] in prompt
+    assert pointer["path"] in prompt
+    assert f"`{pointer['id']}`" not in prompt
 
 
 def test_episode_report_correction_adds_only_its_diagnostic_pointer() -> None:

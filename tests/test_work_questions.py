@@ -327,13 +327,16 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
 
     from rcp.runs.tasks.discuss import stream_discuss_run
     from rcp.runs.tasks.work import stream_work_run
+    from rcp.skill_registry import SkillDefaults
     from rcp.storage.question_models import QuestionOrigin
     from tests.helpers import (
         append_fixture_patch,
+        changed_values,
         create_named_app,
         seed_patch,
         wait_for_task_response,
     )
+    from tests.test_api import _persist_skill_defaults
     from tests.test_chat_prompt_protocol import _RecordingLauncher
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -360,12 +363,14 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
             "message": "Choose the next route.",
             "run_truth_scope": ["repo-a"],
             "mode": mode,
+            "invoked_skill_ids": ["graph-audit"],
         },
     )
     assert response.status_code == 202, response.text
     operation_id = response.json()["operation_id"]
     assert wait_for_task_response(client, project_id, operation_id)["status"] == "succeeded"
     origin = store.agent_task(operation_id)
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["evidence-triage"]))
     question = store.create_or_get_question(
         origin=QuestionOrigin(
             owner_kind="chat",
@@ -399,6 +404,10 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
     assert followup.write_scope_fingerprint == origin.write_scope_fingerprint
     assert followup.graph_target == origin.graph_target
     assert launcher.launch_kwargs[1]["capability"] == question.origin.capability
+    (recorded_prompt,) = store.agent_task_receipts_by_category(followup_id, "agent_prompt")
+    launch_skills = json.loads(changed_values(recorded_prompt.payload["prompt"])["skills"])
+    assert [item["id"] for item in launch_skills] == ["evidence-triage"]
+    assert followup.request["invoked_skill_ids"] == []
     snapshot_line = next(
         line for line in launcher.prompts[1].split("\n") if line.startswith('{"questions":')
     )

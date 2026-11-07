@@ -202,3 +202,17 @@ after the thread queue. It is built by the exact base source `911af577` from
 named by card id (storage migration 77), ending at migration 76 after the coach
 steers. It is built by the exact base source `811b6e71` from
 `pre-coach-steers-v41-911af57`.
+
+`pre-local-question-origin-v43-1226e25` is built from
+`pre-machine-identity-v42-811b6e7` by exact source
+`1226e2578e215bd284a3e31bf68ba891c0f1dd79`, using the builder's
+`--source-fixture` and `--local-question-origin` options. It freezes migration 77
+with a pending episode question whose local machine is null, a settled asking
+task explicitly on the backend, and its running, non-ended Experiment parent
+with one of two authorized invocations spent. The metadata identifies all three
+records. Candidate checks repair only the origin machine and preserve every
+other question field; the exact-base workflow answers a separate temporary copy
+with the historical storage API before candidate upgrade, then proves one
+continuation on the original session and stage with one claim and debit. The
+gate fetches the recorded writer commit when it is absent from a shallow
+checkout.

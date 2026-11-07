@@ -10,6 +10,7 @@ import pytest
 import rcp.storage.experiments as experiments_storage
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphTargetRef
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
 from rcp.runs.provider_login import MachineDependenciesMissing
 from rcp.runs.question_snapshots import question_snapshot
@@ -333,6 +334,79 @@ def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_pat
     assert store.episode(episode_id).invocations_used == 2
 
 
+@pytest.mark.parametrize("invocation_kind", ["official", "provider"])
+def test_experiment_answer_clears_the_asking_turns_skill_invocations(
+    manifest, tmp_path, monkeypatch, invocation_kind
+):
+    from rcp.skill_registry import SkillDefaults, official_registry
+    from tests.helpers import create_named_app
+    from tests.test_api import _persist_skill_defaults
+
+    service = create_named_app(str(manifest.path), data_dir=tmp_path / "service").state.service
+    _persist_skill_defaults(service, SkillDefaults(workflow_ids=[], skill_ids=["evidence-triage"]))
+    store, episode_id, question, _ = _ready_answer(tmp_path)
+    origin = store.agent_task("loop-root")
+    invocations = {
+        "invoked_workflow_ids": ["research-graph-audit"],
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_provider_skill_names": ["native-note"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "backend",
+                "provider_version": "1",
+                "inventory_hash": "old",
+                "name": "native-note",
+                "label": "Native note",
+                "description": "A previous turn's native invocation",
+            }
+        ],
+    }
+    for field in invocations:
+        if ("provider" in field) != (invocation_kind == "provider"):
+            invocations[field] = []
+    with pytest.raises(ValueError):
+        service.resolve_skill_request(RunRequest.model_validate({**origin.request, **invocations}))
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='loop-root'",
+            (
+                json.dumps(
+                    {
+                        **origin.request,
+                        **official_registry()
+                        .resolve(skill_ids=["graph-audit"])
+                        .model_dump(mode="json"),
+                        **invocations,
+                    }
+                ),
+            ),
+        )
+    launches = []
+    admitted = []
+
+    def admit(_project, request, **kwargs):
+        admitted.append(service.resolve_skill_request(request))
+
+    tasks = _recording_tasks(monkeypatch, store, launches, admit)
+    result = reconcile_experiment_question_answers(tasks)
+    operation_id = store.get_question(question.question_id).followup_operation_id
+    assert operation_id is not None and result[question.question_id] == operation_id
+    followup = store.agent_task(operation_id)
+    assert followup.native_session_id == question.origin.native_session_id
+    assert followup.stage_root == question.origin.stage_root
+    assert followup.graph_target == origin.graph_target
+    assert admitted[0].skill_ids == ["evidence-triage"]
+    assert [item.id for item in admitted[0].resolved_skill_packages] == ["evidence-triage"]
+    for field in invocations:
+        assert followup.request[field] == [] and getattr(admitted[0], field) == []
+        assert store.agent_task("loop-root").request[field] == invocations[field]
+    store.mark_agent_task_running(operation_id)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    assert reconcile_experiment_question_answers(tasks) == {}
+    assert launches == [operation_id] and store.episode(episode_id).invocations_used == 2
+
+
 def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path, monkeypatch):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     followup = question_followup_operation_id(question.question_id, question.answer_revision)
@@ -543,3 +617,76 @@ def test_only_acknowledged_answer_removes_experiment_continuation(tmp_path, ackn
         "project", episode_id, operation_id="loop-root"
     ) is (not acknowledged)
     assert store.get_question(question.question_id).client_receipt_revision is None
+
+
+def _assert_repaired_answer_resumes_once(monkeypatch, store, question_id):
+    question = store.get_question(question_id)
+    episode_id = question.origin.owner_id
+    used = store.episode(episode_id).invocations_used
+    assert question.state == "answered" and question.answer_revision == 1
+    assert question.followup_operation_id is None
+    assert question.client_receipt_revision is None
+    assert question.origin.stage_machine_id == BACKEND_MACHINE_ID
+    with store.connection() as connection:
+        task_count = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    launches = []
+    admissions = []
+    tasks = _recording_tasks(
+        monkeypatch, store, launches, admit=lambda *a, **kw: admissions.append((a, kw))
+    )
+
+    def launch(operation_id):
+        assert store.mark_agent_task_running(operation_id)
+        launches.append(operation_id)
+
+    fake_launch_admitted(monkeypatch, tasks, launch)
+    result = reconcile_experiment_question_answers(tasks)
+    operation_id = question_followup_operation_id(question_id, 1)
+    assert result[question_id] == operation_id
+    assert launches == [operation_id]
+    assert len(admissions) == 1
+    assert admissions[0][1]["machine_id"] == BACKEND_MACHINE_ID
+    followup = store.agent_task(operation_id)
+    assert followup.native_session_id == question.origin.native_session_id
+    assert followup.stage_root == question.origin.stage_root
+    assert followup.stage_machine_id == BACKEND_MACHINE_ID
+    assert followup.request["session_id"] == question.origin.native_session_id
+    assert followup.episode_id == episode_id
+    assert store.episode(episode_id).invocations_used == used + 1
+    claimed = store.get_question(question_id)
+    assert claimed.followup_operation_id == operation_id
+    assert claimed.followup_claimed_at is not None
+    assert claimed.origin == question.origin
+    assert reconcile_experiment_question_answers(tasks) == {}
+    assert launches == [operation_id] and len(admissions) == 1
+    assert store.episode(episode_id).invocations_used == used + 1
+    assert store.get_question(question_id) == claimed
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == task_count + 1
+
+
+def test_already_upgraded_local_null_answer_resumes_original_experiment_once(tmp_path, monkeypatch):
+    store, episode_id, pending, _ = _ready_answer(tmp_path)
+    question = store.get_question(pending.question_id)
+    store.checkpoint_agent_task(
+        question.origin.operation_id,
+        native_session_id=question.origin.native_session_id,
+        stage_machine_id=BACKEND_MACHINE_ID,
+        stage_root=question.origin.stage_root,
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE experiment_episode_state SET stage_machine_id=? WHERE episode_id=?",
+            (BACKEND_MACHINE_ID, episode_id),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version > 77")
+    store.close()
+    upgraded = AppStore(tmp_path / "rcp.sqlite3")
+    repaired = upgraded.get_question(question.question_id)
+    assert repaired == question.model_copy(
+        update={
+            "origin": question.origin.model_copy(update={"stage_machine_id": BACKEND_MACHINE_ID})
+        }
+    )
+    _assert_repaired_answer_resumes_once(monkeypatch, upgraded, question.question_id)
+    upgraded.close()

@@ -195,6 +195,31 @@ class SkillRegistry:
             resolved_skill_packages=self._closure(workflow_ids, skill_ids),
         )
 
+    def validate_invocations(
+        self,
+        selection: SkillSelection,
+        *,
+        workflow_ids: list[str],
+        skill_ids: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Normalize invocations without granting packages outside the selected closure."""
+
+        workflows = _unique_ids(workflow_ids, "workflow")
+        skills = _unique_ids(skill_ids, "skill")
+        available = {(item.kind, item.id) for item in selection.resolved_skill_packages}
+        invocations: tuple[tuple[SkillKind, list[str]], ...] = (
+            ("workflow", workflows),
+            ("skill", skills),
+        )
+        for kind, ids in invocations:
+            for package_id in ids:
+                self.package(kind, package_id)
+                if (kind, package_id) not in available:
+                    raise ValueError(
+                        f"invoked {kind} {package_id!r} is not enabled in skill defaults"
+                    )
+        return workflows, skills
+
     def _closure(self, workflow_ids: list[str], skill_ids: list[str]) -> list[SkillReference]:
         resolved: list[SkillReference] = []
         seen: set[tuple[SkillKind, str]] = set()

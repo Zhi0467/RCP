@@ -129,6 +129,15 @@ card from a row.
    and non-home projects upgrade too), and the pending flag last. An
    interrupted rewrite repeats on the next start.
 
+SQLite migration 78 repairs question origins that migration 77 left with a null
+or absent stage machine. It writes `backend` only when the original asking task
+has that explicit stage machine and the same project, provider, native session
+and nonempty exact stage root. Every other origin field, answer, receipt and
+follow-up claim stays unchanged. A non-null machine, including an empty string,
+or missing or mismatched asking-task provenance stays unchanged. This separate
+once-only migration also repairs databases that already ledgered migration 77;
+ordinary question reconciliation owns any later claim and invocation debit.
+
 A project is skipped while its state cannot be reached or a provisioning
 request or format-8 transfer request is open; it stays pending. An open
 transfer from before format 8 can only be restarted, so it holds nothing back. Startup merge-effect

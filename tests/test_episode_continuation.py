@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+
+import pytest
 
 from rcp.agents import AgentEvent
 from rcp.api.episodes import episode_on_branch
@@ -18,6 +21,23 @@ from tests.helpers import signed_in_client
 from .helpers import create_named_app, wait_for_task
 from .test_episode_api import _sse, create_terminal_auto_episode
 from .test_experiment_stop import EXPERIMENT_ID, _Loop
+
+_OLD_INVOCATIONS = {
+    "invoked_workflow_ids": ["research-graph-audit"],
+    "invoked_skill_ids": ["graph-audit"],
+    "invoked_provider_skill_names": ["native-review"],
+    "resolved_provider_skills": [
+        {
+            "provider": "codex",
+            "machine": "backend",
+            "provider_version": "old",
+            "inventory_hash": "old",
+            "name": "native-review",
+            "label": "Native review",
+            "description": "Earlier turn only",
+        }
+    ],
+}
 
 
 def _session_resuming_stream(
@@ -34,6 +54,8 @@ def _session_resuming_stream(
         seen.append((request_session, execution.stage_root))
         assert request_session == session_id
         assert execution.stage_root == stage_root
+        for field in _OLD_INVOCATIONS:
+            assert getattr(request, field) == []
         yield _sse(AgentEvent(event="session", session_id=session_id))
         yield _sse(AgentEvent(event="done"))
 
@@ -71,6 +93,24 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     )
     assert original.status == "needs_action"
     assert original_root.native_session_id and original_root.stage_root
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps({**original_root.request, **_OLD_INVOCATIONS}), original_root.operation_id),
+        )
+    original_admit = tasks.admit_provider_task
+    admitted_episode_ids = []
+
+    def admit(project, request, **kwargs):
+        for field in _OLD_INVOCATIONS:
+            assert getattr(request, field) == []
+        if not admitted_episode_ids:
+            assert request.episode_id == original.episode_id
+        admitted_episode_ids.append(request.episode_id)
+        assert request.session_id == original_root.native_session_id
+        return original_admit(project, request, **kwargs)
+
+    monkeypatch.setattr(tasks, "admit_provider_task", admit)
     seen: list[tuple[str | None, str | None]] = []
     tasks.stream = _session_resuming_stream(
         kind="auto_research",
@@ -242,6 +282,62 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
     )
 
 
+@pytest.mark.parametrize("refusal", ["choices", "closed"])
+def test_continuation_invocation_reset_preserves_source_isolation_preflight(
+    manifest, tmp_path, monkeypatch, refusal
+):
+    from rcp.core.models import EpisodeIsolation
+    from rcp.runs.auto_research_admission import continue_auto_research
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    tasks = app.state.background_tasks
+    store = tasks.store
+    original, root, _ = create_terminal_auto_episode(
+        store,
+        app.state.service.history,
+        project_id,
+        episode_id="source-isolation",
+        report_error="Report unavailable",
+    )
+    if refusal == "choices":
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE episodes SET isolation_owner_episode_id=episode_id WHERE episode_id=?",
+                (original.episode_id,),
+            )
+            connection.execute(
+                "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+                (json.dumps({**root.request, "code_worktree": True}), root.operation_id),
+            )
+        diagnostic = "episode_isolation_choices_changed"
+    else:
+        store.create_episode_isolation(
+            project_id, EpisodeIsolation(owner_episode_id=original.episode_id)
+        )
+        for before, after in (("creating", "ready"), ("ready", "removing")):
+            store.set_episode_isolation_status(
+                project_id, original.episode_id, expected_status=before, status=after
+            )
+        diagnostic = "episode_isolation_unavailable"
+    episodes_before = [item.model_dump(mode="json") for item in store.episodes(project_id)]
+    tasks_before = [item.model_dump(mode="json") for item in store.agent_tasks(project_id)]
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.resolved_dispatch_authority",
+        lambda *_args, **_kwargs: pytest.fail("Source isolation must refuse before allocation"),
+    )
+    with pytest.raises(ValueError, match=diagnostic):
+        continue_auto_research(
+            tasks,
+            original,
+            invocation_ceiling=2,
+            request_id=str(uuid.uuid4()),
+            authorized_by=original.authorized_by,
+        )
+    assert [item.model_dump(mode="json") for item in store.episodes(project_id)] == episodes_before
+    assert [item.model_dump(mode="json") for item in store.agent_tasks(project_id)] == tasks_before
+
+
 def test_continuation_preflight_failure_leaves_the_source_unchanged(
     manifest,
     tmp_path,
@@ -396,6 +492,12 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
         )
     tasks = app.state.background_tasks
     store = tasks.store
+    last_turn = store.agent_task(store.experiment_episode(loop.episode_id).last_turn_operation_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps({**last_turn.request, **_OLD_INVOCATIONS}), last_turn.operation_id),
+        )
     seen: list[tuple[str | None, str | None]] = []
     tasks.stream = _session_resuming_stream(
         kind="node_chat", session_id="native-session-abc", stage_root=str(stage), seen=seen

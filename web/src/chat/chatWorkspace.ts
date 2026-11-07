@@ -150,10 +150,7 @@ export function latestPersistedChatConfig(
       config: {
         provider: turn.provider,
         model: typeof turn.model === "string" ? persistedModel(turn.model) : "",
-        reasoning:
-          typeof turn.reasoning === "string" && turn.reasoning
-            ? turn.reasoning
-            : fallback.reasoning,
+        reasoning: typeof turn.reasoning === "string" ? turn.reasoning : fallback.reasoning,
         run_on:
           typeof turn.run_on === "string" && turn.run_on.trim() ? turn.run_on : fallback.run_on,
       },

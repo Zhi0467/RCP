@@ -6,7 +6,7 @@ import json
 from typing import Literal
 
 from rcp.agents.continuation_prompt import MASTER_OVERLAY_RULE
-from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, selected_skill_section
 from rcp.runs.merge_contract import (
     MergeAnswers,
     MergeAnswersRejected,
@@ -17,7 +17,7 @@ from rcp.runs.merge_contract import (
 )
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
-BRANCH_MERGE_POLICY_VERSION = "branch-merge-v9"
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v10"
 
 
 def branch_merge_task_contract(
@@ -29,6 +29,7 @@ def branch_merge_task_contract(
     validator_command: str,
     retained_answers: MergeAnswers | None = None,
     code_block: str = "",
+    skill_pointers: list[dict[str, object]] | None = None,
 ) -> str:
     """Render questions and enforcement facts from the exact checked plan."""
 
@@ -124,10 +125,14 @@ checks fail the task; there is no correction turn after you finish. RCP performs
 live preparation again and commits atomically, or commits nothing.
 
 {MASTER_OVERLAY_RULE}
+
+{selected_skill_section(skill_pointers)}
 """
 
 
-def code_merge_task_contract(*, code_block: str) -> str:
+def code_merge_task_contract(
+    *, code_block: str, skill_pointers: list[dict[str, object]] | None = None
+) -> str:
     """Describe a merge turn that lands code alone; RCP carries any graph itself."""
 
     if not code_block:
@@ -145,6 +150,8 @@ membership, or Proposal approval.
 
 When the merge commit is in place, reply with a short summary of how you resolved each
 conflict.
+
+{selected_skill_section(skill_pointers)}
 """
 
 

@@ -101,6 +101,11 @@ adds verbs:
   checks membership, the private owner, write admission and continuation, so an
   ended episode's answer still offers Add turns.
 
+Each Project Agent uses the same question dock, limited to that project's
+shared chats and episodes. Its own questions and approval cards stay inline,
+so a question never appears twice in the thread. The same recipient, private
+owner and answer checks apply; another member's private thread never relays.
+
 Both reads refresh on the member's `agent_cards` version, which never moves on
 another member's private work
 ([fields](api-web-and-desktop-projections.md#agent-thread-api)).
@@ -234,6 +239,15 @@ visible to project members like any Experiment, while the thread stays private.
 
 Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
 locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
+Work, Discuss artifact edits and retained Work graph repair resolve that same
+owner namespace before validating the exact saved stage; changing turn mode
+does not move the native session or fall back to the public chat stage root.
+An older explicitly fresh private Discuss artifact edit may retain a local public-root
+checkpoint. Resume and Retry keep that exact checkpoint only when
+`_legacy_private_edit_source` proves the same owner, thread, project, graph target,
+provider, native session and backend machine throughout its recorded recovery lineage;
+the ordinary stage validator still applies. A warning and receipt record this
+compatibility path. New stages use the private namespace.
 Local recovery inventories and local/remote retention sweeps include these exact
 stages, retaining live stages and leaving transcripts alone. The owning thread
 can access its stage but not its member folder's transcripts; every agent launch
@@ -634,6 +648,10 @@ provider, execution machine, stage and target. Both live launch and recorded
 settlement verify the complete origin. Provider switches and clean handoffs
 cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
 Discuss has no Patch/write scope; Work runs with the scope its launch builds.
+The [machine identity compatibility repair](projects-spaces-and-operations.md#machine-identity-upgrade)
+canonicalizes a saved local-null question origin only from its matching asking
+task during storage upgrade. Session and stage admission keep their exact
+comparison; missing or mismatched provenance never gains a runtime fallback.
 
 Answers project once through StateWorkspace using question id and revision.
 Chat follow-up ids derive from that pair; Experiment answers name only a claimed
@@ -989,8 +1007,9 @@ episodes of that Experiment on the same exact graph target and execution
 machine.
 Completions may coalesce across those origin episodes, including on a branch.
 The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment policy (including workflow and skill packages), and invocation
-budget; watcher origin is immutable provenance, including when another human
+pinned Experiment execution policy and invocation budget; official packages
+follow the [current Settings selection](providers-and-containment.md#official-skills-and-workflows)
+on that new turn. Watcher origin is immutable provenance, including when another human
 created or maintained the observation.
 This adoption does not change ordinary conversation, Auto-research root, or
 child Work routing. Existing group readiness and atomic, once-only claims still
@@ -1191,7 +1210,12 @@ record or error.
 
 The report resumes the exact session/stage with the durable ending, report
 skill/output pointer and immutable compact mode receipt, never a rebuilt graph
-or transcript. The [Codex transcript-refusal exception](providers-and-containment.md#continuation-prompts)
+or transcript. Its optional method catalogue comes from current Project Settings
+alongside the required `episode-report` skill, which remains required even for an
+empty optional selection. The frozen mandatory-skill version is checked before
+optional staging; the report invokes that exact method on every provider pass
+and does not inherit an earlier operational turn's invocation. Optional methods
+cannot add operational inputs or outputs. The [Codex transcript-refusal exception](providers-and-containment.md#continuation-prompts)
 permits a fresh report session while retaining the stage, allocation and budget.
 Receipt compaction follows a fixed order and storage-encoded size
 bound. Permanent admission defects record one failed wrap-up and terminalize;

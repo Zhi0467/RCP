@@ -208,8 +208,9 @@ async def test_correction_validator_closes_when_post_stage_receipt_fails(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("private_thread", [False, True])
 async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_failures(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, private_thread
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -217,9 +218,23 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     request = _request().model_copy(
         update={"message": None, "session_id": "manual-repair-native-session"}
     )
+    stage_parent = tmp_path / "data" / "run-stage"
+    if private_thread:
+        store = app.state.background_tasks.store
+        owner = store.local_owner
+        assert owner is not None
+        thread = next(
+            thread
+            for thread in store.ensure_agent_threads(
+                owner.user_id, [app.state.default_project_id], default_names=("Pip",)
+            )
+            if thread.kind == "project"
+        )
+        request = request.model_copy(update={"chat_id": thread.thread_id, "chat_scope": "project"})
+        stage_parent = tmp_path / "data" / "agent-threads" / owner.user_id / "stages"
     request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "work-mailbox-manual-repair-failure")
-    stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
+    stage = stage_parent / "chat-manual-repair-failure"
     stage.mkdir(parents=True)
     (stage / "workspace").mkdir()
     execution.store.record_chat_stage_layout(

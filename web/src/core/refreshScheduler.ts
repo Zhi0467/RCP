@@ -8,7 +8,12 @@
 // settles. Failures back off 3, 6, 12, 30 s while every tab keeps its last good data. The scheduler never names a
 // resource; owners register profiles with the store.
 
-import { retryBackoffMs, type ResourceStore, type ResourceWatermark } from "./resourceStore";
+import {
+  retryBackoffMs,
+  type ObservationTicket,
+  type ResourceStore,
+  type ResourceWatermark,
+} from "./resourceStore";
 
 export const REFRESH_BEAT_MS = 1000;
 export const HIDDEN_PROJECT_BEAT_EVERY = 3;
@@ -107,7 +112,9 @@ export class RefreshScheduler {
   private readonly clock: RefreshClock;
   private readonly visibility: RefreshVisibility;
   private readonly listeners = new Set<() => void>();
-  private readonly agentThreadWatchers = new Set<(version: string | null) => void>();
+  private readonly agentThreadWatchers = new Set<
+    (version: string | null, observation: ObservationTicket) => void
+  >();
   private readonly agentCardWatchers = new Map<
     (version: string | null) => void,
     string | null | undefined
@@ -168,7 +175,9 @@ export class RefreshScheduler {
   getHealth = (): RefreshHealth => this.health;
 
   /** Reports the member's agent-thread version after every beat that carried it. */
-  watchAgentThreads = (watcher: (version: string | null) => void): (() => void) => {
+  watchAgentThreads = (
+    watcher: (version: string | null, observation: ObservationTicket) => void,
+  ): (() => void) => {
     this.agentThreadWatchers.add(watcher);
     this.now();
     return () => this.agentThreadWatchers.delete(watcher);
@@ -250,6 +259,7 @@ export class RefreshScheduler {
     const observations = new Map(
       open.map((project) => [project.projectId, store.beginObservation(project.projectId)]),
     );
+    const threadObservation = agentThreads ? store.beginObservation("") : null;
     this.inFlight = controller;
     let activatedDuringFailure = false;
     const timeout = this.clock.setTimeout(() => controller.abort(), WATERMARK_REQUEST_TIMEOUT_MS);
@@ -282,9 +292,9 @@ export class RefreshScheduler {
         this.options.onLostAccess(id);
       }
       this.setHealth({ failing: false, sync });
-      if (agentThreads) {
+      if (threadObservation) {
         const version = response.agent_threads?.version ?? null;
-        for (const watcher of [...this.agentThreadWatchers]) watcher(version);
+        for (const watcher of [...this.agentThreadWatchers]) watcher(version, threadObservation);
       }
       if (agentCards) {
         const version = response.agent_cards?.version ?? null;
@@ -298,6 +308,7 @@ export class RefreshScheduler {
       if (this.inFlight !== controller) return;
       this.failures += 1;
       for (const ticket of observations.values()) store.failObservation(ticket, error);
+      if (threadObservation) store.failObservation(threadObservation, error);
       // A newer activation made during the request wins over the retried one,
       // and runs at once instead of waiting out the failure backoff.
       activatedDuringFailure = this.activated !== null;
