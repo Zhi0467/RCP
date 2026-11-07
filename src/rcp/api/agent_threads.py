@@ -7,7 +7,7 @@ import logging
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote, urlencode
 
@@ -923,49 +923,56 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
-            artifact_context, message = _space_artifact_comment(store, thread, body)
-            workflows, skills = admit_space_invocations(
-                body.invoked_workflow_ids, body.invoked_skill_ids
-            )
-            turn = RunRequest.model_validate(
-                {
-                    **sent_thread_agent(store, thread, body.model_dump()),
-                    "invoked_workflow_ids": workflows,
-                    "invoked_skill_ids": skills,
-                    "chat_id": thread_id,
-                    "chat_scope": "project",
-                    "mode": "work",
-                    "message": message,
-                    "timezone": body.timezone,
-                    "artifact_context": artifact_context,
-                    "browser_requested": store.chat_browser_requested(store.space_id, thread_id),
-                }
-            )
-            operation_id = str(uuid.uuid4())
-            claimed = None
-            if body.attachment_set_id is not None:
-                claimed = attachment_store.claim(
-                    project_id=store.space_id,
-                    chat_id=thread_id,
-                    client_id=body.attachment_client_id,
-                    attachment_set_id=body.attachment_set_id,
-                    operation_id=operation_id,
+            with (
+                store.artifact_lock(body.artifact_context.artifact_id)
+                if body.artifact_context is not None
+                else nullcontext()
+            ):
+                artifact_context, message = _space_artifact_comment(store, thread, body)
+                workflows, skills = admit_space_invocations(
+                    body.invoked_workflow_ids, body.invoked_skill_ids
                 )
-                turn = turn.model_copy(
-                    update={
-                        "attachment_batch_id": claimed.attachment_batch_id,
-                        "attachments": claimed.attachments,
+                turn = RunRequest.model_validate(
+                    {
+                        **sent_thread_agent(store, thread, body.model_dump()),
+                        "invoked_workflow_ids": workflows,
+                        "invoked_skill_ids": skills,
+                        "chat_id": thread_id,
+                        "chat_scope": "project",
+                        "mode": "work",
+                        "message": message,
+                        "timezone": body.timezone,
+                        "artifact_context": artifact_context,
+                        "browser_requested": store.chat_browser_requested(
+                            store.space_id, thread_id
+                        ),
                     }
                 )
-            batch = claimed.attachment_batch_id if claimed is not None else None
-            with released_unless_started(store, attachment_store, batch, operation_id):
-                task = background_tasks.start(
-                    store.space_id,
-                    "space_chat",
-                    turn,
-                    operation_id=operation_id,
-                    authorized_by=authorized,
-                )
+                operation_id = str(uuid.uuid4())
+                claimed = None
+                if body.attachment_set_id is not None:
+                    claimed = attachment_store.claim(
+                        project_id=store.space_id,
+                        chat_id=thread_id,
+                        client_id=body.attachment_client_id,
+                        attachment_set_id=body.attachment_set_id,
+                        operation_id=operation_id,
+                    )
+                    turn = turn.model_copy(
+                        update={
+                            "attachment_batch_id": claimed.attachment_batch_id,
+                            "attachments": claimed.attachments,
+                        }
+                    )
+                batch = claimed.attachment_batch_id if claimed is not None else None
+                with released_unless_started(store, attachment_store, batch, operation_id):
+                    task = background_tasks.start(
+                        store.space_id,
+                        "space_chat",
+                        turn,
+                        operation_id=operation_id,
+                        authorized_by=authorized,
+                    )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}
