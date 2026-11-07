@@ -1662,7 +1662,8 @@ config turns off. A one-shot probe's output passes through a file, because some
 provider runtimes exit before a pipe drains. Startup
 refreshes after readiness; success atomically replaces inventory and failure
 retains it visibly stale. Project open and launch do not refresh. Selection binds
-provider, machine, successful version, hash and name per turn. It cannot change
+provider, machine, successful version, hash and name per turn. Invocation lifetime
+follows the [same per-turn rules](#official-skills-and-workflows). It cannot change
 launch flags or scope. A name missing from the inventory refuses the launch; a
 selected skill the provider does not load reaches the agent only as prompt text.
 
