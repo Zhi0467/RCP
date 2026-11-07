@@ -333,6 +333,87 @@ def test_answer_admission_continues_the_origin_session(manifest, tmp_path, monke
     assert [request.session_id for request in admitted] == ["origin-session"]
 
 
+@pytest.mark.parametrize("mode", ["work", "discuss"])
+@pytest.mark.parametrize("invocation_kind", ["official", "provider"])
+def test_answer_does_not_reinvoke_a_now_disabled_origin_skill(
+    manifest, tmp_path, monkeypatch, mode, invocation_kind
+):
+    import json
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.chat import reconcile_chat_question_answers
+    from rcp.skill_registry import SkillDefaults, official_registry
+    from tests.helpers import fake_launch_admitted
+    from tests.test_api import _persist_skill_defaults
+
+    service, store, question, _ = _project_chat_question(manifest, tmp_path, mode=mode)
+    invocations = {
+        "invoked_workflow_ids": ["research-graph-audit"],
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_provider_skill_names": ["native-note"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "backend",
+                "provider_version": "1",
+                "inventory_hash": "old",
+                "name": "native-note",
+                "label": "Native note",
+                "description": "A previous turn's native invocation",
+            }
+        ],
+    }
+    for field in invocations:
+        if ("provider" in field) != (invocation_kind == "provider"):
+            invocations[field] = []
+    origin = store.agent_task("origin")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'",
+            (
+                json.dumps(
+                    {
+                        **origin.request,
+                        **official_registry()
+                        .resolve(skill_ids=["graph-audit"])
+                        .model_dump(mode="json"),
+                        **invocations,
+                    }
+                ),
+            ),
+        )
+    _persist_skill_defaults(service, SkillDefaults(workflow_ids=[], skill_ids=["evidence-triage"]))
+    with pytest.raises(ValueError):
+        service.resolve_skill_request(RunRequest.model_validate({**origin.request, **invocations}))
+    admitted = []
+    launched = []
+    tasks = BackgroundAgentTasks(store, lambda *_: pytest.fail("No provider starts"))
+
+    def admit(_project, request, **kwargs):
+        admitted.append(service.resolve_skill_request(request))
+
+    monkeypatch.setattr(tasks, "admit_provider_task", admit)
+    fake_launch_admitted(monkeypatch, tasks, launched.append)
+    result = reconcile_chat_question_answers(store, tasks, lambda _: service)
+    assert result == {question.question_id: "admitted"}
+    operation_id = store.get_question(question.question_id).followup_operation_id
+    followup = store.agent_task(operation_id)
+    assert launched == [operation_id]
+    assert followup.native_session_id == origin.native_session_id
+    assert followup.stage_root == origin.stage_root
+    assert followup.dispatch_authority == origin.dispatch_authority
+    assert admitted[0].session_id == origin.native_session_id
+    assert admitted[0].skill_ids == ["evidence-triage"]
+    assert [item.id for item in admitted[0].resolved_skill_packages] == ["evidence-triage"]
+    for field in invocations:
+        assert followup.request[field] == [] and getattr(admitted[0], field) == []
+        assert store.agent_task("origin").request[field] == invocations[field]
+    store.mark_agent_task_running(operation_id)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    assert reconcile_chat_question_answers(store, tasks, lambda _: service) == {}
+    assert launched == [operation_id]
+
+
 @pytest.mark.parametrize("projection_first", [False, True])
 def test_approval_answer_keeps_question_identity_through_followup(
     manifest, tmp_path, projection_first

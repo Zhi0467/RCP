@@ -334,6 +334,79 @@ def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_pat
     assert store.episode(episode_id).invocations_used == 2
 
 
+@pytest.mark.parametrize("invocation_kind", ["official", "provider"])
+def test_experiment_answer_clears_the_asking_turns_skill_invocations(
+    manifest, tmp_path, monkeypatch, invocation_kind
+):
+    from rcp.skill_registry import SkillDefaults, official_registry
+    from tests.helpers import create_named_app
+    from tests.test_api import _persist_skill_defaults
+
+    service = create_named_app(str(manifest.path), data_dir=tmp_path / "service").state.service
+    _persist_skill_defaults(service, SkillDefaults(workflow_ids=[], skill_ids=["evidence-triage"]))
+    store, episode_id, question, _ = _ready_answer(tmp_path)
+    origin = store.agent_task("loop-root")
+    invocations = {
+        "invoked_workflow_ids": ["research-graph-audit"],
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_provider_skill_names": ["native-note"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "backend",
+                "provider_version": "1",
+                "inventory_hash": "old",
+                "name": "native-note",
+                "label": "Native note",
+                "description": "A previous turn's native invocation",
+            }
+        ],
+    }
+    for field in invocations:
+        if ("provider" in field) != (invocation_kind == "provider"):
+            invocations[field] = []
+    with pytest.raises(ValueError):
+        service.resolve_skill_request(RunRequest.model_validate({**origin.request, **invocations}))
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='loop-root'",
+            (
+                json.dumps(
+                    {
+                        **origin.request,
+                        **official_registry()
+                        .resolve(skill_ids=["graph-audit"])
+                        .model_dump(mode="json"),
+                        **invocations,
+                    }
+                ),
+            ),
+        )
+    launches = []
+    admitted = []
+
+    def admit(_project, request, **kwargs):
+        admitted.append(service.resolve_skill_request(request))
+
+    tasks = _recording_tasks(monkeypatch, store, launches, admit)
+    result = reconcile_experiment_question_answers(tasks)
+    operation_id = store.get_question(question.question_id).followup_operation_id
+    assert operation_id is not None and result[question.question_id] == operation_id
+    followup = store.agent_task(operation_id)
+    assert followup.native_session_id == question.origin.native_session_id
+    assert followup.stage_root == question.origin.stage_root
+    assert followup.graph_target == origin.graph_target
+    assert admitted[0].skill_ids == ["evidence-triage"]
+    assert [item.id for item in admitted[0].resolved_skill_packages] == ["evidence-triage"]
+    for field in invocations:
+        assert followup.request[field] == [] and getattr(admitted[0], field) == []
+        assert store.agent_task("loop-root").request[field] == invocations[field]
+    store.mark_agent_task_running(operation_id)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    assert reconcile_experiment_question_answers(tasks) == {}
+    assert launches == [operation_id] and store.episode(episode_id).invocations_used == 2
+
+
 def test_refused_admission_leaves_answer_unclaimed_and_budget_unspent(tmp_path, monkeypatch):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     followup = question_followup_operation_id(question.question_id, question.answer_revision)
