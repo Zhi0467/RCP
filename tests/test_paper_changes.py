@@ -69,6 +69,24 @@ def test_invalid_manifest_is_all_or_nothing(setup, moves):
     assert changes.groups("p", "t") == []
 
 
+def test_temporary_helpers_do_not_block_paper_files_or_become_paper_files(setup):
+    snapshot, live, changes, output = setup
+    (output / "render_draft.py").write_text("print('temporary renderer')\n")
+    (output / "review_notes.md").write_text("Temporary authoring notes.\n")
+    (output / "files/section.md").write_text("Revised draft.\n")
+    (output / "files/reproduce.py").write_text("print('published script')\n")
+    groups = changes.collect("p", "t", snapshot, read_paper_changes(output), mode="apply_directly")
+    assert groups and all(group.state == "pending" for group in groups)
+    for group in groups:
+        changes.accept("p", group.group_id, "Coach, applied directly", directly=True)
+    files = {file.path: file.text for file in saved(live).files}
+    assert files == {
+        "section.md": "Revised draft.\n",
+        "reproduce.py": "print('published script')\n",
+    }
+    assert (output / "render_draft.py").is_file()
+
+
 def test_paths_utf8_symlink_and_size_limits(setup, monkeypatch):
     snapshot, _live, _changes, output = setup
     file = output / "files/section.md"

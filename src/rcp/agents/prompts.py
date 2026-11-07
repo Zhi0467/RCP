@@ -1647,7 +1647,7 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v11"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v12"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1708,7 +1708,9 @@ Authorship contract:
 - All output is validated together and presented for review, or applied by RCP under the human's
   saved Apply-directly choice. You have no direct paper-write authority.
 - You have a shell. Run whatever commands the request needs, such as converting or rendering
-  figures, and write their outputs into the changes folder like any other file.
+  figures. Temporary scripts and working files may stay in the changes folder outside `files/`;
+  RCP publishes only the contents of `files/` and the moves declared in `moves.json`.
+  Put a script under `files/` too when it is part of the requested Paper deliverable.
 - Do not write anywhere outside the named changes folder and the attached saved artifacts,
   including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.
