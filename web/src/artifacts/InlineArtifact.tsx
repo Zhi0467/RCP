@@ -17,8 +17,8 @@ function useSpaceArtifactWatermark(
   const { project, name, ref, entity } = profile?.key ?? {};
   useEffect(() => {
     if (projectId !== null || project === undefined || name === undefined) return;
-    return scheduler.watchAgentThreads((version) =>
-      store.observe(project, [{ name, ref, entity, version: version ?? "" }]),
+    return scheduler.watchAgentThreads((version, observation) =>
+      store.observe(project, [{ name, ref, entity, version: version ?? "" }], observation),
     );
   }, [projectId, project, name, ref, entity, scheduler, store]);
 }
