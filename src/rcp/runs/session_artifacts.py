@@ -349,13 +349,15 @@ def publish_session_artifacts(
     remote: RemoteRunStage | None,
     *,
     artifacts: list[AgentArtifactDescriptor],
-    service: ProjectService,
+    service: ProjectService | None,
 ) -> list[AgentArtifactDescriptor]:
     """At turn end, publish each changed tracked file as its artifact's next version.
 
     Failures leave a tracked file's change in place, so a later turn end still
     publishes it. A one-turn file has no later turn end, so its commented or
     attached edit settles as failed instead of ending without an outcome.
+    A project service resolves live dependencies after publication; Space's
+    static artifacts publish without that project authority.
     """
     if execution is None:
         return artifacts
@@ -407,7 +409,7 @@ def _publish(
     edits: dict[str, EditedArtifact],
     directory: Path | PurePosixPath,
     remote: RemoteRunStage | None,
-    service: ProjectService,
+    service: ProjectService | None,
 ) -> list[AgentArtifactDescriptor]:
     workspace, scope_id = _parts(directory)
     store = execution.store
@@ -553,7 +555,7 @@ def _publish(
 
 def _published(
     execution: AgentTaskExecution,
-    service: ProjectService,
+    service: ProjectService | None,
     item: _Tracked,
     version: ArtifactVersion,
     media_type: ArtifactMediaType,
@@ -561,9 +563,10 @@ def _published(
     from rcp.live_artifact_runtime import resolve_artifact_live_version
 
     artifact = item.artifact
-    resolve_artifact_live_version(
-        execution.store, service, artifact.artifact_id, version.version_id
-    )
+    if service is not None:
+        resolve_artifact_live_version(
+            execution.store, service, artifact.artifact_id, version.version_id
+        )
     descriptor = AgentArtifactDescriptor(
         artifact_id=artifact.artifact_id,
         name=artifact.source_name,
@@ -602,7 +605,7 @@ def _base_version(store: AppStore, artifact_id: str, synced: str | None) -> str 
 
 def _fork(
     execution: AgentTaskExecution,
-    service: ProjectService,
+    service: ProjectService | None,
     workspace: Path | PurePosixPath,
     remote: RemoteRunStage | None,
     artifact: Artifact,
@@ -653,7 +656,8 @@ def _fork(
     # Later turns track the fork at its own path in this turn's folder.
     if _write(workspace, remote, forked, "", data):
         store.record_artifact_sync(forked.artifact_id, hashlib.sha256(data).hexdigest())
-    resolve_artifact_live_version(store, service, forked.artifact_id, forked.current_version)
+    if service is not None:
+        resolve_artifact_live_version(store, service, forked.artifact_id, forked.current_version)
     return descriptor
 
 
