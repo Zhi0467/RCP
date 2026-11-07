@@ -817,83 +817,103 @@ test("a comment opened from the preview closes when another file is shown", asyn
   assert.equal(await comment.inputValue(), "");
 });
 
-test("a new selection in the HTML page keeps the typed comment and its own mark", async (t) => {
-  const { page, context } = await open(t, {
-    width: 1280,
-    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
-    configure: ({ tree }) =>
-      tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 }),
-  });
-  // A stand-in shell that counts the clears the app sends it.
-  await context.route("**/files/f3/preview", (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
-    }),
-  );
-  await page.locator(".paper-file", { hasText: "page.html" }).click();
-  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
-  await page.getByRole("button", { name: "Comment on the page" }).click();
-  const shell = page.frame({ url: /\/files\/f3\/preview$/ });
-  const post = (text) =>
-    shell.evaluate(
-      (text) =>
-        parent.postMessage(
-          {
-            type: "rcp-artifact-selection",
-            version: 1,
-            selection: { kind: "text", text, surrounding_text: "" },
-            description: "",
-          },
-          location.origin,
-        ),
-      text,
+for (const width of [1280, 390])
+  test(`a new selection in the HTML page keeps the typed comment and its own mark at ${width}px`, async (t) => {
+    const { page, context } = await open(t, {
+      width,
+      init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+      configure: ({ tree }) =>
+        tree.files.push({
+          file_id: "f3",
+          path: "page.html",
+          kind: "text",
+          format: "html",
+          size: 5,
+        }),
+    });
+    // A stand-in shell that counts the clears the app sends it.
+    await context.route("**/files/f3/preview/state", (route) =>
+      route.fulfill({ json: { revision: 1, key: "page-1" } }),
     );
-  await post("First words");
-  const comment = page.getByRole("textbox", { name: "Comment", exact: true });
-  await comment.fill("half written");
-  await post("Second words");
-  await page.getByText("Second words").first().waitFor();
-  assert.equal(await comment.inputValue(), "half written");
-  assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
-  // A quote longer than a comment allows is cut to the limit, so it stages.
-  await shell.evaluate(() =>
-    parent.postMessage(
-      {
-        type: "rcp-artifact-selection",
-        version: 1,
-        selection: {
-          kind: "box",
-          rect: { x: 0, y: 0, width: 1, height: 1 },
-          viewport: { width: 500, height: 400 },
-          elements: Array.from({ length: 8 }, (_, n) => ({
-            path: `p:nth-child(${n + 1})`,
-            label: "",
-            text: `${n}`.repeat(512),
-          })),
+    await context.route("**/files/f3/preview?*", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: '<script>addEventListener("message", (e) => e.data?.type === "rcp-inline-selection-clear" && (window.clears = (window.clears ?? 0) + 1))</script>',
+      }),
+    );
+    if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
+    await page.locator(".paper-file", { hasText: "page.html" }).click();
+    await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+    await page.getByRole("button", { name: "Comment on the page" }).click();
+    if (width === 390) {
+      await target(page.getByRole("button", { name: "Zoom in", exact: true }));
+      await target(page.getByRole("button", { name: "Zoom out", exact: true }));
+      await target(page.getByRole("button", { name: "Reset preview zoom", exact: true }));
+    }
+    await fits(page);
+    await page.screenshot({ path: `/private/tmp/paper-html-controls-${width}.png` });
+    await page.locator(".paper-html-preview iframe").waitFor();
+    const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
+    const post = (text) =>
+      shell.evaluate(
+        (text) =>
+          parent.postMessage(
+            {
+              type: "rcp-artifact-selection",
+              version: 1,
+              selection: { kind: "text", text, surrounding_text: "" },
+              description: "",
+            },
+            location.origin,
+          ),
+        text,
+      );
+    await post("First words");
+    const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+    await comment.fill("half written");
+    await post("Second words");
+    await page.getByText("Second words").first().waitFor();
+    assert.equal(await comment.inputValue(), "half written");
+    assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
+    // A quote longer than a comment allows is cut to the limit, so it stages.
+    await shell.evaluate(() =>
+      parent.postMessage(
+        {
+          type: "rcp-artifact-selection",
+          version: 1,
+          selection: {
+            kind: "box",
+            rect: { x: 0, y: 0, width: 1, height: 1 },
+            viewport: { width: 500, height: 400 },
+            elements: Array.from({ length: 8 }, (_, n) => ({
+              path: `p:nth-child(${n + 1})`,
+              label: "",
+              text: `${n}`.repeat(512),
+            })),
+          },
+          description: "",
         },
-        description: "",
-      },
-      location.origin,
-    ),
-  );
-  const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
-  await page.waitForFunction(
-    () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
-  );
-  const long = await quote.textContent();
-  assert.equal(long.length, 4096);
-  assert.ok(long.endsWith("…"));
-  // Any other way in replaces the open comment the same way: its mark goes, its text stays.
-  await coach(page);
-  await page.getByRole("button", { name: "Comment on this answer" }).click();
-  await page.getByRole("textbox", { name: "Select answer text" }).waitFor();
-  assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
-  // A frame selection replacing that keyboard step carries the same text.
-  await post("Third words");
-  await page.getByText("Third words").first().waitFor();
-  assert.equal(await comment.inputValue(), "half written");
-});
+        location.origin,
+      ),
+    );
+    const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
+    await page.waitForFunction(
+      () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
+    );
+    const long = await quote.textContent();
+    assert.equal(long.length, 4096);
+    assert.ok(long.endsWith("…"));
+    // Any other way in replaces the open comment the same way: its mark goes, its text stays.
+    await coach(page);
+    await page.getByRole("button", { name: "Comment on this answer" }).click();
+    await page.getByRole("textbox", { name: "Select answer text" }).waitFor();
+    await shell.waitForFunction(() => (window.clears ?? 0) === 1);
+    assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
+    // A frame selection replacing that keyboard step carries the same text.
+    await post("Third words");
+    await page.getByText("Third words").first().waitFor();
+    assert.equal(await comment.inputValue(), "half written");
+  });
 
 const running = {
   ...turn,

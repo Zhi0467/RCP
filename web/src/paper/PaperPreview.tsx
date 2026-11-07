@@ -6,6 +6,7 @@ import {
   Suspense,
   memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -15,14 +16,16 @@ import {
   FileWarning,
   LoaderCircle,
   MessageSquarePlus,
+  Minus,
   PackagePlus,
+  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
 import { api } from "../core/api";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
-import { ANSWER_SYNTAX_PLUGINS } from "../core/chatMarkdown";
+import { ANSWER_SYNTAX_PLUGINS, KATEX_OPTIONS } from "../core/markdownSyntax";
 import { MarkdownCodeBlock } from "../core/MarkdownCodeBlock";
 import type { PaperFile, PaperTree } from "../core/types";
 import {
@@ -58,6 +61,7 @@ interface CompileResult {
 }
 
 const PAPER_IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
+const HTML_ZOOM = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
 function assetUrl(projectId: string, file: PaperFile) {
@@ -119,7 +123,7 @@ const MarkdownPreview = memo(function MarkdownPreview({
     <article className="paper-markdown chat-markdown" data-paper-path={path}>
       <ReactMarkdown
         remarkPlugins={[...ANSWER_SYNTAX_PLUGINS]}
-        rehypePlugins={[rehypeSourceLines, [rehypeKatex, { strict: false, trust: false }]]}
+        rehypePlugins={[rehypeSourceLines, [rehypeKatex, KATEX_OPTIONS]]}
         components={{ pre: MarkdownCodeBlock, a: PaperLink, img: PaperImage }}
       >
         {text}
@@ -138,16 +142,60 @@ function boxComment(box: PaperBox): PreviewDirectComment {
   };
 }
 
+function useHtmlPreviewState(source: string, revision: number, hash: string, active: boolean) {
+  const [preview, setPreview] = useState<{ key: string; source: string } | null>(null);
+  const [entryReady, setEntryReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useLayoutEffect(() => setEntryReady(false), [active]);
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    void api<{ revision: number; key: string }>(`${source}/state`, {
+      signal: controller.signal,
+    })
+      .then((state) => {
+        if (controller.signal.aborted) return;
+        setPreview((previous) =>
+          previous?.key === state.key
+            ? previous
+            : { key: state.key, source: `${source}?revision=${state.revision}` },
+        );
+        setError(null);
+        setEntryReady(true);
+      })
+      .catch((reason) => {
+        if (controller.signal.aborted) return;
+        setError(String(reason));
+        setEntryReady(true);
+      });
+    return () => controller.abort();
+  }, [source, revision, hash, active, attempt]);
+  return {
+    preview,
+    entryReady,
+    error,
+    retry: () => {
+      setEntryReady(false);
+      setAttempt((value) => value + 1);
+    },
+  };
+}
+
 /** A saved Paper HTML file in the inline viewer shell; comment mode selects inside it. */
 function HtmlPreview({
   projectId,
   file,
+  savedRevision,
+  active,
   toolbar,
   onDirectComment,
   onDirectCancel,
 }: {
   projectId: string;
   file: PaperFile;
+  savedRevision: number;
+  active: boolean;
   toolbar: HTMLElement | null;
   onDirectComment?: (comment: PreviewDirectComment) => void;
   onDirectCancel?: (clear: () => void) => void;
@@ -155,6 +203,16 @@ function HtmlPreview({
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(false);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
+  const [zoom, setZoom] = useState(2);
+  const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
+    file.file_id,
+  )}/preview`;
+  const {
+    preview,
+    entryReady,
+    error: stateError,
+    retry,
+  } = useHtmlPreviewState(source, savedRevision, file.sha256, active);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: (clear) => onDirectCancel?.(clear),
@@ -174,17 +232,30 @@ function HtmlPreview({
       });
     },
   });
-  const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
-    file.file_id,
-  )}/preview`;
+  const zoomTo = (next: number) => {
+    shell.clear();
+    setZoom(Math.max(0, Math.min(HTML_ZOOM.length - 1, next)));
+  };
+  const scale = HTML_ZOOM[zoom];
+  const error = stateError || pageError?.message;
   return (
     <div
-      className={`paper-html-preview${commentMode ? " commenting" : ""}${pageError ? " paper-failed" : ""}`}
+      className={`paper-html-preview${commentMode ? " commenting" : ""}${error ? " paper-failed" : ""}`}
+      aria-busy={!entryReady}
     >
       {panelTools(
         toolbar,
         <>
-          {pageError && (
+          {stateError ? (
+            <button
+              className="icon-button"
+              aria-label="Retry HTML preview"
+              title={stateError}
+              onClick={retry}
+            >
+              <RotateCcw size={16} />
+            </button>
+          ) : pageError ? (
             <span
               className="icon-button"
               role="status"
@@ -193,7 +264,34 @@ function HtmlPreview({
             >
               <FileWarning size={16} />
             </span>
-          )}
+          ) : null}
+          <button
+            className="icon-button"
+            aria-label="Zoom out"
+            title="Zoom out"
+            disabled={!preview || zoom === 0}
+            onClick={() => zoomTo(zoom - 1)}
+          >
+            <Minus size={16} />
+          </button>
+          <button
+            className="icon-button paper-html-zoom"
+            aria-label="Reset preview zoom"
+            title="Reset preview zoom"
+            disabled={!preview}
+            onClick={() => zoomTo(2)}
+          >
+            {Math.round(scale * 100)}%
+          </button>
+          <button
+            className="icon-button"
+            aria-label="Zoom in"
+            title="Zoom in"
+            disabled={!preview || zoom === HTML_ZOOM.length - 1}
+            onClick={() => zoomTo(zoom + 1)}
+          >
+            <Plus size={16} />
+          </button>
           {onDirectComment && (
             <button
               className="icon-button"
@@ -206,11 +304,30 @@ function HtmlPreview({
             </button>
           )}
         </>,
-        Boolean(pageError),
+        Boolean(error),
       )}
-      {/* The routes load the latest saved page uncached, so only a change to this file
-          reloads it; another file's save leaves its state alone. */}
-      <iframe key={file.sha256} ref={frame} src={source} title={file.path} onLoad={shell.onLoad} />
+      {!entryReady && (
+        <LoaderCircle
+          className="spin paper-preview-loading"
+          aria-label="Loading preview"
+          size={20}
+        />
+      )}
+      {preview && (
+        <iframe
+          key={preview.key}
+          ref={frame}
+          src={preview.source}
+          title={file.path}
+          onLoad={shell.onLoad}
+          style={{
+            width: `${100 / scale}%`,
+            height: `${100 / scale}%`,
+            transform: `scale(${scale})`,
+            visibility: entryReady && !stateError ? undefined : "hidden",
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -447,6 +564,8 @@ export function PaperPreview({
         key={file.file_id}
         projectId={projectId}
         file={file}
+        savedRevision={tree.saved_revision}
+        active={active}
         toolbar={toolbar}
         onDirectComment={onDirectComment}
         onDirectCancel={onDirectCancel}
