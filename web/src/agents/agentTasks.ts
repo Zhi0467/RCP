@@ -174,8 +174,14 @@ export function coachConversation(
     grew = false;
     for (const task of coach) {
       const previous = textValue(task.request.previous_session_id);
-      if (previous && sessions.has(task.native_session_id ?? null) && !sessions.has(previous)) {
-        sessions.add(previous);
+      if (!previous) continue;
+      const linked = sessions.has(task.native_session_id ?? null)
+        ? previous
+        : sessions.has(previous)
+          ? task.native_session_id
+          : null;
+      if (linked && !sessions.has(linked)) {
+        sessions.add(linked);
         grew = true;
       }
     }
@@ -185,14 +191,18 @@ export function coachConversation(
       (task) =>
         started.has(task.operation_id) ||
         sessions.has(task.native_session_id ?? null) ||
-        sessions.has(textValue(task.request.session_id) || null),
+        sessions.has(textValue(task.request.session_id) || null) ||
+        sessions.has(textValue(task.request.previous_session_id) || null),
     )
     .sort(compareTaskTime);
   const newest = shown.at(-1);
   return {
     tasks: shown,
     sessionId:
-      newest?.native_session_id ?? (textValue(newest?.request.session_id) || openedSession),
+      newest?.native_session_id ??
+      (textValue(newest?.request.session_id) ||
+        textValue(newest?.request.previous_session_id) ||
+        openedSession),
   };
 }
 

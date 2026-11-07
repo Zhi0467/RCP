@@ -82,7 +82,7 @@ from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
-from rcp.skill_registry import SkillSelection
+from rcp.skill_registry import SkillSelection, official_registry
 from rcp.storage import (
     AgentTaskAdmissionConflict,
     AgentTaskKind,
@@ -922,6 +922,7 @@ async def _artifact_viewer_response(
     store: StoreDependency,
     head: bool = False,
     presentation: ViewerPresentation = "panel",
+    version_id: str | None = None,
 ) -> Response:
     if project_id != store.space_id:
         require_registered_project(catalog, project_id)
@@ -952,13 +953,13 @@ async def _artifact_viewer_response(
         if project_id != store.space_id and supports_comments(descriptor.media_type)
         else None
     )
-    stored = store.artifact(artifact_id)
+    version_id = _retained_artifact_version(store, artifact_id, version_id)
+    content_url += "?" + urlencode({"version_id": version_id})
     live_url = None
-    if stored is not None and project_id != store.space_id:
-        content_url += "?" + urlencode({"version_id": stored.current_version})
+    if project_id != store.space_id:
         live_url = (
             f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
-            f"/versions/{quote(stored.current_version, safe='')}/live"
+            f"/versions/{quote(version_id, safe='')}/live"
         )
     document, csp = artifact_viewer_document(
         descriptor,
@@ -978,6 +979,20 @@ async def _artifact_viewer_response(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _retained_artifact_version(store: AppStore, artifact_id: str, version_id: str | None) -> str:
+    """Capture a retained version before composing a viewer's content and live URLs."""
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=410, detail="Preview unavailable")
+        version_id = version_id or artifact.current_version
+        if not any(
+            version.version_id == version_id for version in store.artifact_versions(artifact_id)
+        ):
+            raise HTTPException(status_code=410, detail="Preview unavailable")
+        return version_id
 
 
 @router.post(
@@ -1496,17 +1511,7 @@ def _admit_artifact_context_request(
 
     admitted = admit_chat_artifact_comment(store, service, project_id, request)
     if admitted.artifact_edit is not None:
-        # The viewer's origin-bound edit carries no skills; client-supplied ones
-        # would reach the prompt unresolved.
-        return admitted.model_copy(
-            update={
-                "invoked_workflow_ids": [],
-                "invoked_skill_ids": [],
-                "invoked_provider_skill_names": [],
-                "resolved_provider_skills": [],
-                "resolved_skill_packages": None,
-            }
-        )
+        return admitted
     # A composer comment is an ordinary turn, resolved like one.
     return _resolved_graph_request(service, kind, admitted)
 
@@ -1616,7 +1621,13 @@ def _validate_stored_task_request(
         return resolved_coach, service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
-        return request, None
+        selection = service.resolve_skill_selection(request)
+        official_registry().validate_invocations(
+            selection,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        )
+        return request, selection
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
     resolved_run = _resolved_graph_request(

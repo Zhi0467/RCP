@@ -766,7 +766,20 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
     shared, binding = _conflicting(harness, tmp_path, graph=False)
     revision = harness.service.history.state().revision
     turns = []
-    monkeypatch.setattr(harness.app.state.launcher, "stream", _merge_turn(harness, shared, turns))
+    merge_turn = _merge_turn(harness, shared, turns)
+
+    async def launch(provider, prompt, *, cwd, **kwargs):
+        packages = list((cwd.parent / "inputs").glob("rcp-skills-*/skill/*/SKILL.md"))
+        assert {path.parent.name for path in packages} == set(
+            harness.service.manifest.agent.skill_defaults.skill_ids
+        )
+        contract = next((cwd.parent / "inputs").glob("*-code-merge.md")).read_text()
+        assert all(str(path.parent) in contract for path in packages)
+        assert "graph-audit" in contract
+        async for event in merge_turn(provider, prompt, cwd=cwd, **kwargs):
+            yield event
+
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launch)
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{owner_id}/merge", json={}
     )

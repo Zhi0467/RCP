@@ -400,10 +400,11 @@ class _Run:
 
     async def run(self, **kwargs):
         kwargs.setdefault("start_check_turn", self.activate)
+        request = kwargs.pop("request", RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID))
         return [
             frame
             async for frame in stream_branch_merge_run(
-                RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID),
+                request,
                 object(),
                 load_context=lambda: self.context,
                 main_history=self.history,
@@ -592,6 +593,49 @@ async def test_rebase_onto_new_ontology_extensions_points_to_the_staged_master(
     master = next((run.stage.local_stage / "inputs").glob("task-*-branch-merge.md"))
     assert str(master) in rebase
     assert len(rebase) < 3000
+
+
+@pytest.mark.asyncio
+async def test_merge_invokes_current_skill_on_each_pass_outside_the_master(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.skill_registry import SkillDefaults
+
+    from .helpers import create_named_app
+    from .test_api import _persist_skill_defaults
+    from .test_artifact_edit_runtime import _skill_invocation
+
+    service = create_named_app(str(manifest.path), data_dir=tmp_path / "data").state.service
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
+    run = _Run(tmp_path, monkeypatch, conflicts=(_field(),))
+    monkeypatch.setattr(
+        merge_module, "prepare_graph_observation", lambda *_args, **_kwargs: run.context.main_head
+    )
+
+    def answer_and_move():
+        run.answer()
+        if len(run.launches) == 1:
+            _persist_skill_defaults(service, SkillDefaults(skill_ids=[]))
+            run.move(changed_conflict=True)
+
+    run.behavior = answer_and_move
+    await run.run(
+        service=service,
+        request=RunRequest(
+            provider="codex",
+            run_on=BACKEND_MACHINE_ID,
+            invoked_skill_ids=["graph-audit", "graph-audit"],
+            skill_ids=[],
+        ),
+    )
+    assert run.outcome.status == "committed", run.outcome.diagnostic
+    assert len(run.launches) == 2
+    package_path = next((run.stage.local_stage / "inputs").glob("rcp-skills-*/skill/graph-audit"))
+    invocation = _skill_invocation(package_path)
+    assert all(prompt.count(invocation) == 1 for prompt, _ in run.launches)
+    master = next((run.stage.local_stage / "inputs").glob("task-*-branch-merge.md")).read_text()
+    assert invocation not in master
+    assert "graph-audit" in master
 
 
 @pytest.mark.asyncio

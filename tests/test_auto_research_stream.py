@@ -238,6 +238,7 @@ def _setup_auto_research(
     graph_base_head: GraphHeadRef | None = None,
     code_worktree: bool = False,
     browser_requested: bool = False,
+    invoked_skill_ids: list[str] | None = None,
 ) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord, AgentTaskRecord]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -266,6 +267,7 @@ def _setup_auto_research(
         reasoning="medium",
         run_on="backend",
         run_truth_scope=["repo-a"],
+        invoked_skill_ids=invoked_skill_ids or [],
     )
     orchestrator_authority = AgentDispatchAuthority(
         profile="orchestrator",
@@ -334,6 +336,7 @@ def _setup_auto_research(
         reasoning="medium",
         run_on=run_on,
         run_truth_scope=["repo-a"],
+        invoked_skill_ids=invoked_skill_ids or [],
         session_id=native_session_id,
         control_node_id="blk/check-result",
         instruction="Inspect the discrepancy and report the concrete result.",
@@ -660,9 +663,13 @@ class _LocalBackedRemoteStage:
         *,
         reuse: bool = False,
         protected_roots=(),
+        thread_owner: str | None = None,
     ):
         del reuse, protected_roots
-        self.root = self.base / operation_id
+        parent = (
+            self.base / "agent-threads" / thread_owner / "stages" if thread_owner else self.base
+        )
+        self.root = parent / operation_id
         (self.root / "inputs").mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(exist_ok=True)
         return self
@@ -677,6 +684,14 @@ class _LocalBackedRemoteStage:
         if target.exists():
             raise ValueError(f"immutable remote task input already exists: {label}")
         shutil.copyfile(source, target)
+        return str(target)
+
+    def put_directory(self, source: Path, label: str, *, reuse: bool = False) -> str:
+        assert self.root is not None
+        target = self.root / "inputs" / label
+        if reuse and target.is_dir():
+            return str(target)
+        shutil.copytree(source, target)
         return str(target)
 
     def prepare_read_context_input(self, label: str) -> bool:
@@ -818,13 +833,14 @@ def _recovery_task(
     return recovery
 
 
-def _saved_worker(tmp_path, *, status, service=None):
+def _saved_worker(tmp_path, *, status, service=None, invoked_skill_ids=None):
     stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
     stage.mkdir(parents=True)
     setup = {
         "worker_status": status,
         "native_session_id": "worker-session",
         "stage_root": str(stage),
+        "invoked_skill_ids": invoked_skill_ids,
     }
     if service is None:
         records = _setup_auto_research(tmp_path, **setup)
@@ -2831,6 +2847,13 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
             observed["revision"] = graph["revision"]
             observed["seat"] = graph["nodes"]["blk/check-result"]["type"]
             observed["research"] = research_path.read_text(encoding="utf-8")
+            values = json.loads(
+                store.agent_task_contract(worker.operation_id, "session_master_values")
+            )
+            pointer = next(item for item in values["skills"] if item["id"] == "graph-audit")
+            assert Path(pointer["path"], "SKILL.md").is_file()
+            assert pointer["description"]
+            assert any(Path(pointer["path"]).is_relative_to(root) for root in kwargs["read_dirs"])
             yield AgentEvent(event="session", session_id="remote-worker-session")
             yield AgentEvent(event="answer", text="Remote worker read current project state.")
             yield AgentEvent(event="done")
@@ -2924,7 +2947,7 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     """
     service = _service(manifest, tmp_path)
     stage, service, store, auto_research, _root, worker = _saved_worker(
-        tmp_path, status="failed", service=service
+        tmp_path, status="failed", service=service, invoked_skill_ids=["graph-audit"]
     )
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
@@ -2987,6 +3010,13 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     assert master is not None
     master_file = stage / "inputs" / session_master_label("auto_research-worker-master", master)
     recovery_prompt, correction_prompt = launcher.contracts
+    from rcp.agents.prompts import _invoked_package_section
+
+    values = json.loads(store.agent_task_contract(retry.operation_id, "session_master_values"))
+    pointer = next(item for item in values["skills"] if item["id"] == "graph-audit")
+    invocation = _invoked_package_section([pointer]).strip()
+    assert invocation not in master
+    assert invocation in recovery_prompt and invocation in correction_prompt
     assert recovery_prompt.endswith(SECTIONS["master_bootstrap"].format(path=str(master_file)))
     assert correction_prompt.endswith(SECTIONS["master_pointer"].format(path=str(master_file)))
     rules = graph_rules(edits=True, ontology_extensions=False)
@@ -3261,9 +3291,16 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     upgraded = auto_research_prompt_values(
         skill_pointers=[{**pointers[0], "version": "1.1.0"}], group_context=None, **common
     )
+    assert unchanged["skills"] == [{**pointers[0], "dependencies": None}]
+    renamed = auto_research_prompt_values(
+        skill_pointers=[{**pointers[0], "description": "Review the revised graph."}],
+        group_context=None,
+        **common,
+    )
+    assert changed_since_master(master, renamed) == {"skills": renamed["skills"]}
     assert changed_since_master(master, unchanged) is None
     assert changed_since_master(master, upgraded) == {
-        "skills": {"graph-audit": {"version": "1.1.0"}}
+        "skills": [{**pointers[0], "version": "1.1.0", "dependencies": None}]
     }
 
 
@@ -4043,3 +4080,54 @@ def test_worker_refused_transcript_human_retry_starts_fresh(
     assert retried.native_session_id == "replacement-session"
     assert retried.graph_target == worker.graph_target
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["worker", "orchestrator"])
+@pytest.mark.parametrize("enabled,invoked", [(True, True), (True, False), (False, False)])
+async def test_actor_catalogue_and_invocation_are_staged_for_each_attempt(
+    manifest, tmp_path, role, enabled, invoked
+):
+    from rcp.agents.prompts import _invoked_package_section
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+
+    service = _service(manifest, tmp_path)
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"] if enabled else []))
+    service, store, episode, root, worker = _setup_branch_auto_research(
+        service,
+        tmp_path / "store",
+        root_status="running",
+        invoked_skill_ids=["graph-audit"] if invoked else [],
+    )
+    task = root if role == "orchestrator" else worker
+    run = _orchestrator_events if role == "orchestrator" else _worker_events
+    session = f"{role}-session"
+    launcher = _WorkerLauncher(session_id=session)
+    events = await run(service, launcher, store, task, tmp_path / "data")
+    assert events[-1].event == "done"
+    master = store.agent_task_contract(task.operation_id, "session_master")
+    assert master is not None
+    values = json.loads(store.agent_task_contract(task.operation_id, "session_master_values"))
+    assert [item["id"] for item in values["skills"]] == (["graph-audit"] if enabled else [])
+    if enabled:
+        pointer = values["skills"][0]
+        assert " ".join(pointer["description"].split()) in " ".join(master.split())
+        assert Path(pointer["path"], "SKILL.md").is_file()
+        assert any(Path(pointer["path"]).is_relative_to(root) for root in launcher.read_dirs[0])
+        invocation = _invoked_package_section(values["skills"]).strip()
+        assert invocation not in master
+        assert (invocation in launcher.prompts[0]) is invoked
+    store.checkpoint_agent_task(task.operation_id, native_session_id=session)
+    store.fail_agent_task(task.operation_id, "Provider disconnected after launch")
+    current = store.agent_task(task.operation_id)
+    assert current is not None
+    retry = _recovery_task(store, episode, current, operation_id=f"{role}-skill-retry")
+    assert retry.request["invoked_skill_ids"] == task.request["invoked_skill_ids"]
+    resumed = _WorkerLauncher(session_id=session)
+    events = await run(service, resumed, store, retry, tmp_path / "data", continuation="retry")
+    assert events[-1].event == "done"
+    assert resumed.requested_session_ids == [session]
+    if enabled:
+        assert (invocation in resumed.prompts[0]) is invoked

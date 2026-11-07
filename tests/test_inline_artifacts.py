@@ -27,6 +27,7 @@ from rcp.artifacts import (
 )
 from rcp.limits import ARTIFACT_INLINE_HEIGHT_PX
 from rcp.storage import Artifact
+from tests.test_artifact_views import markdown_source
 
 from .helpers import assert_frozen_backend_ships, create_named_app, signed_in_client
 
@@ -96,8 +97,8 @@ def test_panel_content_is_unchanged_by_the_inline_presentation() -> None:
     assert "--rcp-ink" not in page
     assert "color-scheme" not in str(document)
     markdown, _, csp = artifact_content("notes.md", "text/markdown", b"# Notes")
-    assert "<script" not in str(markdown)
-    assert csp.startswith("sandbox;")
+    assert markdown_source(str(markdown)) == "# Notes"
+    assert csp.startswith("sandbox allow-scripts;")
 
 
 @pytest.mark.parametrize(
@@ -107,15 +108,22 @@ def test_panel_content_is_unchanged_by_the_inline_presentation() -> None:
         ("log.txt", b"line one\n<script>alert(1)</script>\n"),
     ],
 )
-def test_inline_text_runs_no_script(name, data) -> None:
+def test_inline_text_keeps_author_source_inert(name, data) -> None:
     document, media_type, csp = artifact_content(
         name, classify_artifact_bytes(name, data), data, inline=InlineAppearance("aqua", "dark")
     )
     page = str(document)
     assert media_type == "text/html"
-    assert "<script" not in page
-    assert "&lt;script&gt;" in page
-    assert csp.startswith("sandbox;") and "script-src" not in csp
+    if name.endswith(".md"):
+        assert markdown_source(page) == data.decode()
+        assert "<script>alert(1)</script>" not in page
+        assert csp.startswith("sandbox allow-scripts;")
+        assert "allow-same-origin" not in csp
+        assert "default-src 'none'" in csp
+    else:
+        assert "<script" not in page
+        assert "&lt;script&gt;" in page
+        assert csp.startswith("sandbox;") and "script-src" not in csp
     assert "frame-ancestors 'self'" in csp
     assert "--rcp-ink:#e5ebf2;" in page and "color-scheme:dark!important" in page
 

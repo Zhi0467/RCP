@@ -7,17 +7,34 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.prompts import _invoked_package_section
 from rcp.background import AgentTaskExecution
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.session_master import record_session_master
 from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
 from rcp.service import RunRequest
+from rcp.skill_registry import official_registry
 from rcp.storage import AgentTaskRecord
 from rcp.transport import StateUnavailable
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app, fabricated_authorizer
 from .test_unified_artifacts import _publish_artifact, _stored_artifact
+
+
+def _skill_invocation(path):
+    package = official_registry().package("skill", "graph-audit")
+    return _invoked_package_section(
+        [
+            {
+                "id": package.id,
+                "kind": package.kind,
+                "label": package.label,
+                "version": package.version,
+                "path": str(path),
+            }
+        ]
+    )
 
 
 def _setup(manifest, tmp_path):
@@ -167,10 +184,12 @@ class _EditLauncher:
         self.late_event = late_event
         self.scope = scope
         self.calls = []
+        self.prompts = []
         self.before = []
 
     async def stream(self, provider, prompt, **kwargs):
         self.calls.append((provider, kwargs))
+        self.prompts.append(prompt)
         turns = Path(kwargs["cwd"]) / "turns"
         target = turns / "origin" / "artifacts" / "chart.html"
         self.before.append(target.read_bytes())
@@ -225,6 +244,8 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
     assert kwargs["capability"] == "discuss"
     assert kwargs["write_dirs"] == []
     assert kwargs["write_scope"] is None
+    assert workspace.parent / "inputs" in kwargs["read_dirs"]
+    assert list((workspace.parent / "inputs").glob("rcp-skills-*/skill/*/SKILL.md"))
     assert not (workspace / "patch.json").exists()
     assert store.agent_task_contract("edit", "session_master") is None
     artifacts = [event.artifact for event in events if event.event == "artifact"]
@@ -247,6 +268,188 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
             store, app.state.default_project_id, "edit", artifact.artifact_id, "download"
         )
         assert data == store.read_artifact_bytes(artifact.artifact_id)
+
+
+@pytest.mark.asyncio
+async def test_revoking_edit_refreshes_skills_without_rewriting_frozen_request(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.runs.tasks.artifact_edit import finalize_recorded_artifact_edit_result
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+    from .test_work_agent_io import _recorded_pass
+
+    app, request, execution, _source, workspace = _setup(manifest, tmp_path)
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=["graph-audit"]))
+    request = request.model_copy(
+        update={"invoked_skill_ids": ["graph-audit", "graph-audit"], "skill_ids": []}
+    )
+    frozen = request.model_dump_json()
+    launcher = _EditLauncher()
+    events = await _run(app, request, execution, launcher, tmp_path)
+    assert events[-1].event == "done"
+    assert request.model_dump_json() == frozen
+    assert execution.store.agent_task_contract("edit", "artifact_edit_finalization") == frozen
+    packages = list((workspace.parent / "inputs").glob("rcp-skills-*/skill/*/SKILL.md"))
+    assert [path.parent.name for path in packages] == ["graph-audit"]
+    assert str(packages[0].parent) in launcher.prompts[0]
+    assert launcher.prompts[0].count(_skill_invocation(packages[0].parent)) == 1
+    launches = [
+        item
+        for item in execution.store.agent_task_receipts("edit")
+        if item.category == "agent_launch"
+    ]
+    assert launches[0].payload["invoked_skill_ids"] == ["graph-audit"]
+    assert launches[0].payload["resolved_skill_packages"][0]["id"] == "graph-audit"
+    monkeypatch.setattr(
+        app.state.service,
+        "resolve_skill_selection",
+        lambda *_args, **_kwargs: pytest.fail("settlement resolved today's skills"),
+    )
+    settled = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
+        async for frame in finalize_recorded_artifact_edit_result(
+            app.state.service,
+            launcher,
+            request,
+            tmp_path / "data",
+            execution,
+            _recorded_pass("", "Updated the chart.", thread_id=request.session_id),
+        )
+    ]
+    assert settled[-1].event == "done"
+    assert len(launcher.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_revoking_edit_refuses_a_retained_disabled_invocation(manifest, tmp_path):
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+
+    app, request, execution, _source, _workspace = _setup(manifest, tmp_path)
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=[]))
+    request = request.model_copy(update={"invoked_skill_ids": ["graph-audit"]})
+    launcher = _EditLauncher()
+    with pytest.raises(ValueError, match="not enabled"):
+        await _run(app, request, execution, launcher, tmp_path)
+    assert launcher.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("continuation", ["retry", "resume", "handoff"])
+async def test_discuss_replacement_master_keeps_official_invocation_on_the_turn(
+    manifest, tmp_path, continuation
+):
+    import rcp.runs.tasks.discuss as discuss
+    from rcp.runs.chat import _chat_stage_name
+
+    from .helpers import append_fixture_patch, seed_patch
+    from .test_api import ScriptedLauncher, _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    request = RunRequest(
+        provider="codex",
+        run_on=BACKEND_MACHINE_ID,
+        reasoning="medium",
+        chat_scope="project",
+        chat_id="skill-recovery-chat",
+        mode="discuss",
+        message="Use graph-audit for this answer.",
+        session_id="native-session" if continuation != "handoff" else None,
+        invoked_skill_ids=["graph-audit"],
+    )
+    legacy = _chat_task_execution(app, request, "discuss-legacy")
+    store = legacy.store
+    store.checkpoint_agent_task(legacy.operation_id, native_session_id="native-session")
+    store.complete_agent_task(legacy.operation_id, applied_revision=None, result={})
+    record_session_master(store, legacy.operation_id, "Legacy instructions", "legacy-policy")
+    parent = store.agent_task(legacy.operation_id)
+    store.create_agent_task(
+        parent.model_copy(
+            update={
+                "operation_id": "discuss-recovery",
+                "parent_operation_id": parent.operation_id,
+                "attempt": 2,
+                "status": "running",
+                "native_session_id": None,
+            }
+        )
+    )
+    for operation_id, attempt, resumed in (
+        (legacy.operation_id, 1, False),
+        ("discuss-recovery", 2, continuation == "resume"),
+    ):
+        store.record_agent_task_receipt(
+            operation_id,
+            "operation_created",
+            {
+                "kind": "project_chat",
+                "attempt": attempt,
+                "has_parent": attempt > 1,
+                "resumed": resumed,
+            },
+        )
+    execution = AgentTaskExecution(
+        operation_id="discuss-recovery",
+        store=store,
+        control=AgentProcessControl(),
+        continuation=continuation,
+    )
+    if continuation == "resume":
+        retained = (
+            tmp_path
+            / "data"
+            / "run-stage"
+            / _chat_stage_name(app.state.service, request, execution)
+            / "workspace"
+            / "turns"
+            / legacy.operation_id
+            / "artifacts"
+        )
+        retained.mkdir(parents=True)
+    launcher = ScriptedLauncher([{}], message="Reviewed.")
+    if request.session_id:
+        launcher.native_session_id = request.session_id
+    frames = [
+        frame
+        async for frame in discuss.stream_discuss_run(
+            app.state.service, launcher, request, tmp_path / "data", execution
+        )
+    ]
+    assert not [frame for frame in frames if '"event":"error"' in frame]
+    master = execution.store.agent_task_contract(execution.operation_id, "session_master")
+    assert master is not None
+    package_path = next(
+        (Path(execution.stage_root) / "inputs").glob("rcp-skills-*/skill/graph-audit")
+    )
+    invocation = _skill_invocation(package_path)
+    assert invocation not in master
+    assert invocation in launcher.prompts[0]
+    store.checkpoint_agent_task(
+        execution.operation_id, native_session_id=launcher.native_session_id
+    )
+    execution.store.complete_agent_task(execution.operation_id, applied_revision=None, result={})
+    following = request.model_copy(
+        update={
+            "session_id": launcher.native_session_id,
+            "message": "Explain the result.",
+            "invoked_skill_ids": [],
+        }
+    )
+    later = _chat_task_execution(app, following, "discuss-following")
+    later_launcher = ScriptedLauncher([{}], message="Explained.")
+    later_launcher.native_session_id = launcher.native_session_id
+    frames = [
+        frame
+        async for frame in discuss.stream_discuss_run(
+            app.state.service, later_launcher, following, tmp_path / "data", later
+        )
+    ]
+    assert not [frame for frame in frames if '"event":"error"' in frame]
+    assert invocation not in later_launcher.prompts[0]
 
 
 @pytest.mark.parametrize("failure", ["error", "session", "no_result"])
@@ -378,6 +581,10 @@ async def test_ordinary_discuss_edit_preserves_frozen_master(
 
     def capture(**kwargs):
         masters.append(kwargs["master"])
+        assert kwargs["context_delta"]["skills"]
+        assert {"description", "dependencies", "version", "path"} <= kwargs["context_delta"][
+            "skills"
+        ][0].keys()
         return render(**kwargs)
 
     monkeypatch.setattr(discuss.PromptFactory, "discuss_turn_prompt", capture)

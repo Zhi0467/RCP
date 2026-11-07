@@ -410,6 +410,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attachment_set_id": None,
                     "attachment_client_id": None,
                     "watcher_ids": [],
+                    "invoked_workflow_ids": [],
+                    "invoked_skill_ids": [],
+                    "invoked_provider_skill_names": [],
+                    "resolved_provider_skills": [],
                 }
             )
             now = self.now()
@@ -3188,16 +3192,24 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 WITH RECURSIVE chain(session) AS (
                     SELECT :session
                     UNION
-                    SELECT json_extract(graph_runs.request_json, '$.previous_session_id')
-                    FROM graph_runs JOIN chain ON graph_runs.native_session_id = chain.session
+                    SELECT CASE WHEN graph_runs.native_session_id = chain.session
+                        THEN json_extract(graph_runs.request_json, '$.previous_session_id')
+                        ELSE graph_runs.native_session_id END
+                    FROM graph_runs JOIN chain
+                      ON graph_runs.native_session_id = chain.session
+                         OR json_extract(graph_runs.request_json, '$.previous_session_id')
+                            = chain.session
                     WHERE graph_runs.project_id = :project AND graph_runs.kind = 'paper_coach'
+                      AND graph_runs.native_session_id IS NOT NULL
                       AND json_extract(graph_runs.request_json, '$.previous_session_id')
                           IS NOT NULL
                 )
                 SELECT graph_runs.*, 0 AS recovery_abandoned FROM graph_runs
                 WHERE project_id = :project AND kind = 'paper_coach' AND visible = 1
                   AND (native_session_id IN (SELECT session FROM chain)
-                       OR json_extract(request_json, '$.session_id') IN (SELECT session FROM chain))
+                       OR json_extract(request_json, '$.session_id') IN (SELECT session FROM chain)
+                       OR json_extract(request_json, '$.previous_session_id')
+                           IN (SELECT session FROM chain))
                 ORDER BY created_at DESC, operation_id DESC
                 """,
                 {"project": project_id, "session": session_id},

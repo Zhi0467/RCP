@@ -18,6 +18,7 @@ from rcp.consolidation import (
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.queries import StepRecord
 from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskAdmissionConflict
 from rcp.storage.artifact_models import Artifact
 from tests.lifecycles.consolidation import consolidation_runtime
@@ -28,6 +29,7 @@ from .helpers import (
     refresh_patch,
     signed_in_client,
 )
+from .test_api import _persist_skill_defaults
 
 
 @pytest.fixture
@@ -184,6 +186,32 @@ def test_due_admission_is_atomic_and_catchup_collapses_missed_days(runtime):
     assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
     runtime.poller.poll_once()
     assert len(runtime.dispatched) == 1
+
+
+@pytest.mark.parametrize(
+    "optional_ids, optional_workflow_ids",
+    [([], []), (["ml-result-rigor"], ["research-graph-audit"])],
+)
+def test_consolidation_admission_records_settings_plus_required_workflow(
+    runtime, optional_ids, optional_workflow_ids
+):
+    _persist_skill_defaults(
+        runtime.service,
+        SkillDefaults(workflow_ids=optional_workflow_ids, skill_ids=optional_ids),
+    )
+    runtime.poller.poll_once()
+    run = runtime.store.consolidation_runs()[0]
+    task = runtime.store.agent_task(run.operation_id)
+    expected = official_registry().resolve(
+        workflow_ids=[*optional_workflow_ids, "graph-consolidation"], skill_ids=optional_ids
+    )
+
+    assert task.request["workflow_ids"] == expected.workflow_ids
+    assert task.request["skill_ids"] == expected.skill_ids
+    assert task.request["resolved_skill_packages"] == [
+        item.model_dump(mode="json") for item in expected.resolved_skill_packages
+    ]
+    assert task.request["invoked_workflow_ids"] == ["graph-consolidation"]
 
 
 def test_expired_authorization_starts_nothing(runtime):

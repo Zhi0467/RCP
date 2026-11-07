@@ -127,6 +127,19 @@ records the accepted coupling.
 
 ## Provider runtime selection
 
+Chat and Paper coach pickers keep the member's next-turn selection, then use
+the newest admitted turn's provider, model and effort before retained conversation
+or writing-session defaults and Settings. Admission stays visible while the
+native-session checkpoint and writing-session profile catch up. Reopening an
+existing session includes its admitted continuation or provider switch. An
+explicit empty effort stays empty. A model left empty for an unknown catalog
+remains explicit on the admitted request, so repeated resolution cannot replace
+it with a named Settings model. Omitted fields inherit prior or configured values.
+Session-scoped coach task reads include both directions of the project's recorded
+switch lineage and admitted switches without a native checkpoint, independently
+of the recent task list. Until that checkpoint, a switched turn retains its
+previous held session for continuation.
+
 Each project profile selects a provider-owned runtime. Defaults are Codex
 `app-server`, Claude `stream-json`, and OpenCode `run-json`; Codex also offers
 `exec`. A profile that names no runtime follows the default.
@@ -707,7 +720,11 @@ authority stays inline so a master cannot restore expired commands or permission
 
 Discuss, Work and Experiment share the artifact contract rendered from the media
 model and enforced caps, including live-data fields. Empty output is normal;
-a commented writable file is edited in place. The `live-pages` package supplies
+a commented writable file is edited in place. Ongoing record notes and requested
+revisions keep their original tracked path; a new copy is for a distinct
+deliverable or an explicit human request. A viewable file delivered or materially
+revised as the answer uses inline embed syntax at that path. Supporting files
+remain optional, and prose answers stay prose. The `live-pages` package supplies
 examples; only episodes offer episode needs. Existing sessions keep their master
 until its version key changes.
 
@@ -1645,25 +1662,45 @@ config turns off. A one-shot probe's output passes through a file, because some
 provider runtimes exit before a pipe drains. Startup
 refreshes after readiness; success atomically replaces inventory and failure
 retains it visibly stale. Project open and launch do not refresh. Selection binds
-provider, machine, successful version, hash and name per turn. It cannot change
+provider, machine, successful version, hash and name per turn. Invocation lifetime
+follows the [same per-turn rules](#official-skills-and-workflows). It cannot change
 launch flags or scope. A name missing from the inventory refuses the launch; a
 selected skill the provider does not load reaches the agent only as prompt text.
 
 ## Official skills and workflows
 
-Project Settings selects official packages. Every official skill is enabled by
-default unless the human saves an explicit selection, including an explicit
-empty selection. Official workflows remain opt-in. A Space has no project Settings, so
-its thread offers every official skill and no workflow.
+Every project task-execution agent takes its optional official packages from
+saved Project Settings. Every official skill is enabled by default unless the
+human saves an explicit selection, including an explicit empty selection.
+Optional workflows remain opt-in. A Space has no project Settings, so its thread
+uses every official skill and no workflow, even when it has no projects. The
+[consolidation workflow](graph-consolidation-and-lessons.md#the-consolidation-turn)
+and [report method](conversations-episodes-and-watchers.md#visual-wrap-up) remain
+task-owned requirements alongside the optional selection. They cannot make a
+disabled package publicly invocable. [Session summaries](#session-summaries)
+keep their separate fixed capability and receive no package catalogue.
 
 Only selected packages are staged to the execution machine as immutable,
-content-addressed directories. The agent receives compact id, version,
-description, dependency, and exact pointer metadata; package bodies are never
-embedded into launch prose. Slash completion inserts only the visible token and
-a per-turn invocation pointer. Packages supply methods and examples under the
-current task contract; they do not replace its authority, output channels, or
-filesystem boundary. The same method may serve an ordinary worker, a bounded
-Experiment, or the orchestrator without importing another role's permissions.
+content-addressed directories. Descriptions and exact pointers reach the agent
+without an explicit invocation; package bodies are never embedded into launch
+prose. Complete catalogue metadata travels through a retained master's
+current-values delta, including additions, removals and changed descriptions.
+Settings and package versions resolve again on the next turn or task attempt,
+including Resume and Retry; correction passes share that attempt's selection.
+An already consumed result settles from its recorded inputs without resolving
+today's optional catalogue.
+
+Slash completion inserts the visible token and a structured per-turn invocation.
+The registry validates its IDs against the optional selection and normalizes
+duplicates before launch. Exact invocation pointers travel with the current turn,
+outside retained masters. Retry retains that turn's invocation; a new human or
+automatic turn, including question-answer follow-ups and watcher wakes, does not
+inherit it. Required internal methods are
+invoked on every pass by their owning task. Packages supply methods and examples
+under the current task contract; they do not replace its authority, output channels, or
+filesystem boundary. The same discovery and invocation rules apply to ordinary
+workers, Experiments, orchestration, merges and file-only edits, within each
+task's existing permissions.
 
 Graph-writing contracts include shared authoring methods and a local causal
 check, using only inputs the task permits. A planned empirical prerequisite

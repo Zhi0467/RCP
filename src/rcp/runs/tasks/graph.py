@@ -34,7 +34,13 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.project_repositories import resolve_read_scope, write_repositories
-from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
+from rcp.agents.prompts import (
+    GraphReadPrompt,
+    _invoked_package_section,
+    graph_read_contract,
+    invoked_package_pointers,
+    skill_prompt_values,
+)
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.history import PatchRejected, ReplayHalted
@@ -96,7 +102,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     start_work_validator_mailbox,
 )
 from rcp.service import ProjectService, RunRequest
-from rcp.skills.staging import stage_skill_selection
+from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import (
@@ -540,10 +546,7 @@ def _graph_master_values(
         "provider_log_roots": context.all_source_roots(),
         "ingestion_watermark": watermark.isoformat() if watermark is not None else None,
         "source_errors": list(context.source_errors),
-        "skills": {
-            str(item.get("id")): {"version": item.get("version"), "path": item.get("path")}
-            for item in skill_pointers or []
-        },
+        "skills": skill_prompt_values(skill_pointers),
     }
 
 
@@ -810,12 +813,21 @@ async def stream_graph_run(
                 workspace = local_stage
                 patch_path = str(local_stage / "patch.json")
 
+            skill_selection = service.resolve_skill_selection(request)
             skill_pointers = stage_skill_selection(
-                service.resolve_skill_selection(request),
+                skill_selection,
                 local_stage=local_stage,
                 remote_stage=remote_stage,
-                label=f"rcp-skills-{_task_token(execution)}",
+                label=skill_bundle_label(skill_selection),
+                reuse_existing=True,
             )
+            invocation_section = _invoked_package_section(
+                invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=request.invoked_workflow_ids,
+                    skill_ids=request.invoked_skill_ids,
+                )
+            ).strip()
             token = _task_token(execution)
             validator_staged = stage_patch_validation_mailbox(
                 local_stage=local_stage,
@@ -945,6 +957,9 @@ async def stream_graph_run(
             if reuses_native_checkpoint:
                 if continuation not in {"resume", "retry"}:
                     raise ValueError(f"Unsupported graph continuation: {continuation}")
+                recovery_mode: Literal["resume", "retry"] = (
+                    "resume" if continuation == "resume" else "retry"
+                )
                 if not request.session_id:
                     raise ValueError(
                         "The continued operation has no native agent session; retry it cleanly."
@@ -967,12 +982,15 @@ async def stream_graph_run(
                 )
                 prompt = compose(
                     classify(LaunchPhase(session_id=request.session_id, phase="recovery")),
-                    parts=_graph_continuation_parts(
-                        kind,
-                        mode=continuation,
-                        diagnostics_path=retry_diagnostics_path,
-                        master_opens_now=master.bootstrap,
-                    ),
+                    parts=[
+                        *_graph_continuation_parts(
+                            kind,
+                            mode=recovery_mode,
+                            diagnostics_path=retry_diagnostics_path,
+                            master_opens_now=master.bootstrap,
+                        ),
+                        invocation_section,
+                    ],
                     master=master,
                     delta={
                         **(changed_since_master(master, graph_master_values) or {}),
@@ -1057,6 +1075,8 @@ async def stream_graph_run(
                             handed_off=False,
                             reason=retry_state.progress_reason,
                         )
+            if not reuses_native_checkpoint and invocation_section:
+                prompt += "\n\n" + invocation_section
             if not reuses_native_checkpoint and execution is not None:
                 execution_record = execution.store.agent_task(execution.operation_id)
                 if execution_record is not None:
@@ -1301,12 +1321,15 @@ async def stream_graph_run(
             }
             prompt = compose(
                 classify(LaunchPhase(session_id=native_session_id, phase="correction")),
-                parts=_graph_continuation_parts(
-                    kind,
-                    mode="patch_correction",
-                    diagnostics_path=diagnostics_path,
-                    master_opens_now=False,
-                ),
+                parts=[
+                    *_graph_continuation_parts(
+                        kind,
+                        mode="patch_correction",
+                        diagnostics_path=diagnostics_path,
+                        master_opens_now=False,
+                    ),
+                    invocation_section,
+                ],
                 master=master,
                 delta={
                     **(changed_since_master(master, graph_master_values) or {}),

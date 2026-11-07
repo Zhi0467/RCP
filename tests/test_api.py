@@ -2451,7 +2451,6 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
 
         def put_directory(self, _source, label, *, reuse=False):
             assert self.root is not None
-            assert reuse is False
             return str(self.root / "inputs" / label)
 
         def read_input_text(self, label):
@@ -8462,6 +8461,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
             """A succeeded run reclaims its scratch folder, so the bundle is read in place."""
             bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
             observed["contract"] = _local_task_contract(prompt)
+            observed["prompt"] = prompt
             observed["staged"] = sorted(
                 str(item.relative_to(bundle)) for item in bundle.rglob("*.md")
             )
@@ -8478,6 +8478,7 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
         f"/api/projects/{project_id}/tasks/seed",
         json={
             "run_truth_scope": ["repo-a"],
+            "invoked_workflow_ids": ["research-graph-audit", "research-graph-audit"],
         },
     )
     operation_id = started.json()["operation_id"]
@@ -8502,8 +8503,24 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatc
         "skill/graph-audit/references/structures.md",
         "workflow/research-graph-audit/WORKFLOW.md",
     ]
+    from rcp.agents.prompts import _invoked_package_section
+
+    metadata = app.state.background_tasks.store.agent_task_contract(
+        operation_id, "session_master_values"
+    )
+    assert metadata is not None
+    values = json.loads(metadata)
+    invoked = next(item for item in values["skills"] if item["kind"] == "workflow")
+    invocation = _invoked_package_section([invoked]).strip()
+    assert invocation in observed["prompt"]
+    assert invocation not in observed["contract"]
+    assert Path(invoked["path"]).name == "research-graph-audit"
+    assert invoked["description"]
+    assert completed["request"]["invoked_workflow_ids"] == ["research-graph-audit"]
     contract = observed["contract"]
-    assert f"rcp-skills-{operation_id}" in contract
+    from rcp.skills.staging import skill_bundle_label
+
+    assert skill_bundle_label(service.resolve_skill_selection(RunRequest())) in contract
     research_dir = service.manifest.research_dir
     assert not list(research_dir.rglob("*SKILL.md"))
     assert not list(research_dir.rglob("*WORKFLOW.md"))

@@ -55,7 +55,7 @@ export const runtime = {
     openProjects: () => {
       const open = store.awaitingWatermark();
       if (activeProject) open.add(activeProject);
-      return [...open].map((projectId) => ({ projectId, currentRef: "main" }));
+      return [...open].filter(Boolean).map((projectId) => ({ projectId, currentRef: "main" }));
     },
     activeProjectId: () => activeProject,
     onLostAccess: () => {},

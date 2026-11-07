@@ -373,6 +373,11 @@ def admit_artifact_edit(
         "chat_id": origin.request.get("chat_id") if reply_episode_id is None else None,
         "chat_scope": origin.request.get("chat_scope", "node"),
         "node_id": origin.request.get("node_id") if reply_episode_id is None else None,
+        "workflow_ids": None,
+        "skill_ids": None,
+        "resolved_skill_packages": None,
+        "invoked_provider_skill_names": [],
+        "resolved_provider_skills": [],
     }
     for key in ("provider", "model", "reasoning", "run_on"):
         updates[key] = origin.request.get(key)
@@ -395,7 +400,9 @@ def admit_artifact_edit(
                 "run_on": service.manifest.base_machine,
             }
         )
-    return admitted
+    resolved = service.resolve_skill_request(admitted)
+    assert isinstance(resolved, RunRequest)
+    return resolved
 
 
 def refused_artifact_edit_request(request: RunRequest) -> RunRequest:

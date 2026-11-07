@@ -187,9 +187,18 @@ def continue_auto_research(
             "The orchestrator's saved stage is not on the machine it runs on now, so its "
             "session cannot be resumed. Start a new Auto-research episode instead."
         )
+    previous_root = previous_root.model_copy(
+        update={
+            "session_id": binding.native_session_id,
+            "invoked_skill_ids": [],
+            "invoked_workflow_ids": [],
+            "invoked_provider_skill_names": [],
+            "resolved_provider_skills": [],
+        }
+    )
     tasks.admit_provider_task(
         source.project_id,
-        previous_root.model_copy(update={"session_id": binding.native_session_id}),
+        previous_root,
         authorized_by=authorized_by,
         machine_id=binding.stage_machine_id,
     )
@@ -204,7 +213,6 @@ def continue_auto_research(
             "role": "orchestrator",
             "actor_operation_id": operation_id,
             "control_node_id": None,
-            "session_id": binding.native_session_id,
             "instruction": None,
             "wake_cause": "lifecycle",
             "watcher_ids": [],
@@ -1151,6 +1159,10 @@ def _start_auto_research_child_work_wake(
             "session_id": current.native_session_id,
             "message": watcher_request.message if watcher_request is not None else None,
             "watcher_ids": input_ids if continuation == "watcher_wake" else [],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "invoked_provider_skill_names": [],
+            "resolved_provider_skills": [],
         }
     )
     operation_id = operation_id or str(uuid.uuid4())

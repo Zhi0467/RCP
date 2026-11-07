@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html.parser import HTMLParser
 
 import pytest
@@ -23,14 +24,9 @@ class Elements(HTMLParser):
         self.text += data
 
 
-@pytest.mark.parametrize("kind", ["markdown", "text"])
-def test_text_previews_are_script_free_and_escape_source(kind: str) -> None:
+def test_plain_text_previews_are_script_free_and_escape_source() -> None:
     source = b"<script>alert(1)</script>\n[link](https://example.test)\n![alt](https://example.test/image)\n$x$"
-    document, csp = (
-        artifact_views.markdown_document(source)
-        if kind == "markdown"
-        else artifact_views.text_document("source.txt", source)
-    )
+    document, csp = artifact_views.text_document("source.txt", source)
     parsed = Elements(document)
     assert not {"script", "img", "a"} & {tag for tag, _ in parsed.tags}
     assert all("href" not in attrs for _, attrs in parsed.tags)
@@ -39,10 +35,22 @@ def test_text_previews_are_script_free_and_escape_source(kind: str) -> None:
     assert "sandbox" in csp and "allow-scripts" not in csp
 
 
-def test_markdown_renders_gfm_tables() -> None:
-    document, _ = artifact_views.markdown_document(b"| a | b |\n|---|---|\n| 1 | 2 |\n")
-    tags = [tag for tag, _ in Elements(document).tags]
-    assert tags.count("th") == 2 and tags.count("td") == 2
+def markdown_source(document: str) -> str:
+    start = document.index('<script type="application/json" id="markdown-source">')
+    source, _ = json.JSONDecoder().raw_decode(document[document.index(">", start) + 1 :])
+    return source
+
+
+def test_markdown_transports_original_source_as_data_in_the_opaque_renderer() -> None:
+    source = "<script>alert(1)</script>\n$x_0$\n| a | b |\n|---|---|\n| 1 | 2 |"
+    document, csp = artifact_views.markdown_document(source.encode())
+    assert markdown_source(document) == source
+    parsed = Elements(document)
+    assert not {"img", "a", "iframe", "form"} & {tag for tag, _ in parsed.tags}
+    assert "sandbox allow-scripts" in csp and "allow-same-origin" not in csp
+    assert "font-src data:" in csp
+    assert "default-src 'none'" in csp
+    assert "<script>alert(1)</script>" not in document
 
 
 @pytest.mark.parametrize("kind", ["markdown", "text"])
@@ -62,7 +70,7 @@ def test_render_budgets_bound_source_before_parsing(monkeypatch, kind: str, budg
     )
     parsed = Elements(document)
     assert any(attrs.get("id") == "truncated" for _, attrs in parsed.tags)
-    assert "excluded" not in parsed.text
+    assert "excluded" not in (markdown_source(document) if kind == "markdown" else parsed.text)
 
 
 @pytest.mark.parametrize("name", ["data.json", "notebook.ipynb"])

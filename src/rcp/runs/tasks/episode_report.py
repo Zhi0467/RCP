@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
-from rcp.agents.prompts import PromptFactory
+from rcp.agents.prompts import PromptFactory, _invoked_package_section, invoked_package_pointers
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts, record_provider_failure
 from rcp.agents.write_scope import ProjectWriteScope, resolve_project_write_scope
 from rcp.artifacts import classify_artifact_bytes, html_document_title
@@ -101,7 +101,7 @@ async def stream_episode_report_run(
     until a retry is about to take its place.
 
     Operational context is deliberately absent. The native provider session supplies its retained
-    context; RCP adds only the immutable compact receipt, the official report skill, and an optional
+    context; RCP adds the immutable compact receipt, staged official methods, and an optional
     diagnostic produced by the immediately preceding report attempt. A refused Codex
     transcript adds its history pointer to the one fresh report attempt.
     """
@@ -174,7 +174,12 @@ async def stream_episode_report_run(
         # Finish every mechanical preflight before reserving a new provider-call attempt. A
         # queued attempt may already exist after a crash between its durable reservation and call.
         receipt_path = _stage_and_verify_receipt(turn.wrapup, stage)
-        report_skill_path = _stage_and_verify_report_skill(turn.wrapup, stage)
+        selection, skill_pointers, report_skill_path = _stage_and_verify_report_skills(
+            service, turn.wrapup, stage
+        )
+        invoked_pointers = invoked_package_pointers(
+            skill_pointers, workflow_ids=[], skill_ids=[_REPORT_SKILL_ID]
+        )
         inputs_path = _inputs_path(stage)
 
         while True:
@@ -216,6 +221,7 @@ async def stream_episode_report_run(
                 receipt_sha256=turn.wrapup.receipt_sha256,
                 report_skill_path=report_skill_path,
                 report_output_path=report_output_path,
+                skill_pointers=skill_pointers,
                 correction_diagnostic_path=diagnostic_path,
             )
             contract_path, prompt = _stage_attempt_contract(
@@ -224,6 +230,7 @@ async def stream_episode_report_run(
                 stage,
                 contract,
                 LaunchPhase(session_id=session_id, phase="report"),
+                invoked_pointers,
             )
 
             # A retained output from an older operational turn or failed report attempt must never
@@ -274,6 +281,11 @@ async def stream_episode_report_run(
                     "report_output_path": report_output_path,
                     "report_skill_id": _REPORT_SKILL_ID,
                     "report_skill_version": turn.wrapup.skill_version,
+                    "workflow_ids": selection.workflow_ids,
+                    "skill_ids": selection.skill_ids,
+                    "resolved_skill_packages": [
+                        item.model_dump(mode="json") for item in selection.resolved_skill_packages
+                    ],
                 },
             )
 
@@ -698,15 +710,13 @@ def _stage_and_verify_receipt(wrapup: EpisodeWrapupRecord, stage: _ReportStage) 
     return path
 
 
-def _stage_and_verify_report_skill(wrapup: EpisodeWrapupRecord, stage: _ReportStage) -> str:
+def _stage_and_verify_report_skills(
+    service: ProjectService, wrapup: EpisodeWrapupRecord, stage: _ReportStage
+) -> tuple[SkillSelection, list[dict[str, object]], str]:
     reference = official_registry().package("skill", _REPORT_SKILL_ID).reference()
     if wrapup.skill_id != reference.id or wrapup.skill_version != reference.version:
         raise ValueError("Episode wrap-up does not pin the current official episode-report skill.")
-    selection = SkillSelection(
-        workflow_ids=[],
-        skill_ids=[_REPORT_SKILL_ID],
-        resolved_skill_packages=[reference],
-    )
+    selection = service.resolve_skill_selection(RunRequest(), required_skill_ids=[_REPORT_SKILL_ID])
     pointers = stage_skill_selection(
         selection,
         local_stage=stage.local,
@@ -714,14 +724,17 @@ def _stage_and_verify_report_skill(wrapup: EpisodeWrapupRecord, stage: _ReportSt
         label=skill_bundle_label(selection),
         reuse_existing=True,
     )
-    if (
-        len(pointers) != 1
-        or pointers[0].get("kind") != "skill"
-        or pointers[0].get("id") != _REPORT_SKILL_ID
-        or pointers[0].get("version") != reference.version
-    ):
-        raise ValueError("Episode report staging did not resolve its one official skill.")
-    return str(PurePosixPath(str(pointers[0]["path"])) / "SKILL.md")
+    report_pointer = next(
+        (
+            item
+            for item in pointers
+            if item.get("kind") == "skill" and item.get("id") == _REPORT_SKILL_ID
+        ),
+        None,
+    )
+    if report_pointer is None or report_pointer.get("version") != reference.version:
+        raise ValueError("Episode report staging did not resolve its required official skill.")
+    return selection, pointers, str(PurePosixPath(str(report_pointer["path"])) / "SKILL.md")
 
 
 def _exact_report_output(
@@ -812,6 +825,7 @@ def _stage_attempt_contract(
     stage: _ReportStage,
     contract: str,
     phase: LaunchPhase,
+    invoked_skill_pointers: list[dict[str, object]],
 ) -> tuple[str, str]:
     """Stage the report contract and point to it, with no pointer to the operational master.
 
@@ -835,7 +849,11 @@ def _stage_attempt_contract(
     )
     prompt = compose(
         classify(phase),
-        parts=[PromptFactory.launch_prompt(contract_path), browser_prompt_line(BrowserGrant())],
+        parts=[
+            PromptFactory.launch_prompt(contract_path),
+            _invoked_package_section(invoked_skill_pointers).strip(),
+            browser_prompt_line(BrowserGrant()),
+        ],
         master=None,
         delta=None,
     )

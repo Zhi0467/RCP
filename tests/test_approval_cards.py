@@ -1161,7 +1161,7 @@ def test_space_closed_and_archived_threads_have_no_cards(questions_api):
         )
         if thread.kind == "space"
     )
-    empty = {"proposal_cards": [], "asked_cards": []}
+    empty = {"proposal_cards": [], "asked_cards": [], "questions": []}
     assert client.get(f"/api/agent-threads/cards?thread_id={space.thread_id}").json() == empty
     store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=True)
     assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty

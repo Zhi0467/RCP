@@ -11,6 +11,7 @@ from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, Artifact
 from tests.helpers import signed_in_client
+from tests.test_artifact_views import Elements, markdown_source
 
 from .helpers import create_named_app
 
@@ -172,10 +173,17 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
                 assert ranged.status_code == 200 and ranged.content == data
                 assert '"selectionEnabled": false' in viewer.text
             if projected["view"] in {"markdown", "text"}:
-                assert "<script" not in content.text and "<img" not in content.text
-                assert "href=" not in content.text and "&lt;script&gt;" in content.text
+                parsed = Elements(content.text)
+                assert not {"img", "a"} & {tag for tag, _ in parsed.tags}
+                assert all("href" not in attrs for _, attrs in parsed.tags)
                 assert "sandbox" in content.headers["content-security-policy"]
-                assert "allow-scripts" not in content.headers["content-security-policy"]
+                if projected["view"] == "markdown":
+                    assert markdown_source(content.text) == data.decode()
+                    assert "<script>alert(1)</script>" not in content.text
+                    assert "allow-same-origin" not in content.headers["content-security-policy"]
+                else:
+                    assert "<script" not in content.text and "&lt;script&gt;" in content.text
+                    assert "allow-scripts" not in content.headers["content-security-policy"]
         if not commentable:
             request = {
                 **task.request,

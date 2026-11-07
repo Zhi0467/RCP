@@ -254,6 +254,7 @@ async def stream_branch_merge_task(
                     write_scope=write_scope,
                     code_block=code.prompt_section(write_scope),
                     verify=lambda: verify_episode_merge_code(execution.store, episode),
+                    service=service,
                     execution=execution,
                     binary=(
                         service.launcher.provider_binary(request.provider, machine.machine_id)

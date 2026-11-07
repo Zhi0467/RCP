@@ -763,6 +763,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
     assert child.graph_target == episode.graph_target == root.graph_target
+    assert '"name": "native-review"' in launcher.prompts[0]
 
     assert launcher.launch_kwargs[0]["invocation_gate"] is not None
     workspace = launcher.workspaces[0]
@@ -824,7 +825,14 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert not any(key.startswith(("skills", "repositories")) for key in changed)
     assert ("work.write_roots" in changed) is legacy_layout
     assert str(wake_inputs.artifact_directory) in continuation_contract
-    assert '"name": "native-review"' in continuation_contract
+    assert '"name": "native-review"' not in continuation_contract
+    for field in (
+        "invoked_workflow_ids",
+        "invoked_skill_ids",
+        "invoked_provider_skill_names",
+        "resolved_provider_skills",
+    ):
+        assert wake.request[field] == []
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
     staged_mail = parse_auto_research_mail_delivery(

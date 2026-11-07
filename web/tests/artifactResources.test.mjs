@@ -10,11 +10,34 @@ const server = await createServer({
 });
 after(() => server.close());
 const { ResourceStore, resourceKeyId } = await server.ssrLoadModule("/src/core/resourceStore.ts");
-const { artifactStateProfile, artifactsProfile, runArtifactsProfile } = await server.ssrLoadModule(
-  "/src/artifacts/artifactResources.ts",
-);
+const { artifactStateProfile, artifactsProfile, runArtifactsProfile, spaceArtifactStateProfile } =
+  await server.ssrLoadModule("/src/artifacts/artifactResources.ts");
 const { researchViewsProfile } = await server.ssrLoadModule("/src/graph/researchViewResources.ts");
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test("Space artifact metadata reads its owner route and keeps thread resource identities apart", async () => {
+  const profile = spaceArtifactStateProfile("thread/a", "artifact/b");
+  assert.notEqual(
+    resourceKeyId(profile.key),
+    resourceKeyId(spaceArtifactStateProfile("other", "artifact/b").key),
+  );
+  const originalFetch = globalThis.fetch;
+  const signal = new AbortController().signal;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url, signal: options.signal };
+    return Response.json({ current_version: "v2", version_number: 2 });
+  };
+  try {
+    assert.equal((await profile.fetch(signal)).current_version, "v2");
+    assert.deepEqual(request, {
+      url: "/api/agent-threads/thread%2Fa/artifacts/artifact%2Fb/state",
+      signal,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("one artifact watermark refreshes inventory, run inventory, and shared viewer metadata", async () => {
   const store = new ResourceStore();

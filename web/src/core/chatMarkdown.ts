@@ -11,8 +11,7 @@ import {
 } from "react";
 import ReactMarkdown, { defaultUrlTransform, type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math-extended";
+import { ANSWER_SYNTAX_PLUGINS, KATEX_OPTIONS } from "./markdownSyntax";
 import type { Element as HastElement } from "hast";
 import type { InlineCode, Link, Parent, Root, RootContent, Strong, Text } from "mdast";
 import { segmentGlossaryText, type GlossaryIndex } from "../graph/glossary";
@@ -20,8 +19,7 @@ import { MarkdownCodeBlock } from "./MarkdownCodeBlock";
 import { artifactReferenceId, isReferenceHrefCandidate } from "./repositoryFileLinks";
 import type { GraphNode } from "./types";
 
-/** The Markdown syntax every reply is read with; embed detection parses with it too. */
-export const ANSWER_SYNTAX_PLUGINS = [remarkGfm, remarkMath] as const;
+export { ANSWER_SYNTAX_PLUGINS } from "./markdownSyntax";
 
 // The lookbehind starts a candidate only at a word boundary (the same boundary
 // isNodeReferenceBoundary checks); without it a long run of letters with no slash
@@ -399,7 +397,7 @@ const MarkdownBody = memo(function MarkdownBody({
       glossaryDefinitionPlugin(glossaryIndex),
       emojiPlugin,
     ],
-    rehypePlugins: [[rehypeKatex, { strict: false, trust: false }]],
+    rehypePlugins: [[rehypeKatex, KATEX_OPTIONS]],
     components: MARKDOWN_COMPONENTS,
     urlTransform: keepReferenceUrls,
   });

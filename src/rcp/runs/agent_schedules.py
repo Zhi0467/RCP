@@ -549,6 +549,10 @@ def schedule_wake_task(poller, thread: AgentThreadRecord, message: str, now: dat
             "attachment_set_id": None,
             "attachment_client_id": None,
             "watcher_ids": [],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "invoked_provider_skill_names": [],
+            "resolved_provider_skills": [],
         }
     )
     operation_id = str(uuid4())

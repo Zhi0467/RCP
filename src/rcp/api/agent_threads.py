@@ -6,10 +6,10 @@ import hashlib
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager, nullcontext
 from typing import Annotated, Any, Literal, Self, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import (
     APIRouter,
@@ -20,6 +20,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
 )
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
@@ -89,7 +90,7 @@ from rcp.runs.agent_threads import (
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
-from rcp.runs.artifact_edit_admission import artifact_comment_message
+from rcp.runs.artifact_edit_admission import _edit_version, artifact_comment_message
 from rcp.runs.space_chat import SpaceThreadOwner, admit_space_invocations, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.runs.turn_attachments import claim_turn_attachments
@@ -178,7 +179,8 @@ def agent_thread_cards(
 ):
     """Open approval cards of the member's project threads: Proposal cards drawn from each
     project's local display snapshot, and asked cards from the question list. A member-wide
-    read, Pip's dock, also lists the cards the Space thread asked.
+    read, Pip's dock, also lists the cards the Space thread asked. Question relays
+    span the member's projects for Space and only the named Project Agent's project.
 
     A member-wide read skips a project whose snapshot cannot be read; a named thread's
     unreadable project is a 503.
@@ -206,7 +208,13 @@ def agent_thread_cards(
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     if thread_id is not None:
         asked.sort(key=lambda row: row["created_at"], reverse=True)
-        return {"proposal_cards": drawn, "asked_cards": asked}
+        return {
+            "proposal_cards": drawn,
+            "asked_cards": asked,
+            "questions": _dock_questions(
+                store, catalog, user_id, by_project, excluded_chat_id=thread_id
+            ),
+        }
     space = [
         thread
         for thread in store.agent_threads(user_id)
@@ -217,15 +225,22 @@ def agent_thread_cards(
     return {
         "proposal_cards": drawn,
         "asked_cards": asked,
-        "questions": _dock_questions(store, catalog, user_id),
+        "questions": _dock_questions(store, catalog, user_id, store.member_project_ids(user_id)),
     }
 
 
-def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> list[dict[str, Any]]:
-    """Pending card-less questions of the member's projects that `question_recipients` gives
-    this member, each naming its project and source, and whether answering adds turns."""
+def _dock_questions(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    user_id: str,
+    project_ids: Iterable[str],
+    *,
+    excluded_chat_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Answerable card-less questions within the admitted project scope, excluding questions
+    already shown inline in the named thread."""
     rows = []
-    for project_id in sorted(store.member_project_ids(user_id)):
+    for project_id in sorted(project_ids):
         project = store.project(project_id)
         if project is None:
             continue
@@ -236,6 +251,10 @@ def _dock_questions(store: AppStore, catalog: ProjectCatalog, user_id: str) -> l
                 question
                 for question in pending
                 if question.question_id not in cards
+                and not (
+                    question.origin.owner_kind == "chat"
+                    and question.origin.owner_id == excluded_chat_id
+                )
                 and user_id in question_recipients(connection, question)
             ]
         asked = [
@@ -855,6 +874,12 @@ def _space_artifact_comment(
             raise ValueError("The artifact type does not support comments.")
         if context.selections and descriptor.media_type not in COMMENTABLE_MEDIA_TYPES:
             raise ValueError("This artifact supports a comment without selections.")
+        artifact = store.artifact(context.artifact_id)
+        if artifact is None:
+            raise ValueError("The artifact is unavailable.")
+        context = context.model_copy(
+            update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
+        )
         message = artifact_comment_message(body.message, context)
     except (HTTPException, ValueError) as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
@@ -889,7 +914,6 @@ def space_turn(
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_space_thread(store, thread_id, authorized.user_id)
-    artifact_context, message = _space_artifact_comment(store, thread, body)
     try:
         with store.client_request_admission(
             store.space_id,
@@ -899,46 +923,56 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
-            admit_space_invocations(body.invoked_workflow_ids, body.invoked_skill_ids)
-            turn = RunRequest.model_validate(
-                {
-                    **sent_thread_agent(store, thread, body.model_dump()),
-                    "invoked_workflow_ids": body.invoked_workflow_ids,
-                    "invoked_skill_ids": body.invoked_skill_ids,
-                    "chat_id": thread_id,
-                    "chat_scope": "project",
-                    "mode": "work",
-                    "message": message,
-                    "timezone": body.timezone,
-                    "artifact_context": artifact_context,
-                    "browser_requested": store.chat_browser_requested(store.space_id, thread_id),
-                }
-            )
-            operation_id = str(uuid.uuid4())
-            claimed = None
-            if body.attachment_set_id is not None:
-                claimed = attachment_store.claim(
-                    project_id=store.space_id,
-                    chat_id=thread_id,
-                    client_id=body.attachment_client_id,
-                    attachment_set_id=body.attachment_set_id,
-                    operation_id=operation_id,
+            with (
+                store.artifact_lock(body.artifact_context.artifact_id)
+                if body.artifact_context is not None
+                else nullcontext()
+            ):
+                artifact_context, message = _space_artifact_comment(store, thread, body)
+                workflows, skills = admit_space_invocations(
+                    body.invoked_workflow_ids, body.invoked_skill_ids
                 )
-                turn = turn.model_copy(
-                    update={
-                        "attachment_batch_id": claimed.attachment_batch_id,
-                        "attachments": claimed.attachments,
+                turn = RunRequest.model_validate(
+                    {
+                        **sent_thread_agent(store, thread, body.model_dump()),
+                        "invoked_workflow_ids": workflows,
+                        "invoked_skill_ids": skills,
+                        "chat_id": thread_id,
+                        "chat_scope": "project",
+                        "mode": "work",
+                        "message": message,
+                        "timezone": body.timezone,
+                        "artifact_context": artifact_context,
+                        "browser_requested": store.chat_browser_requested(
+                            store.space_id, thread_id
+                        ),
                     }
                 )
-            batch = claimed.attachment_batch_id if claimed is not None else None
-            with released_unless_started(store, attachment_store, batch, operation_id):
-                task = background_tasks.start(
-                    store.space_id,
-                    "space_chat",
-                    turn,
-                    operation_id=operation_id,
-                    authorized_by=authorized,
-                )
+                operation_id = str(uuid.uuid4())
+                claimed = None
+                if body.attachment_set_id is not None:
+                    claimed = attachment_store.claim(
+                        project_id=store.space_id,
+                        chat_id=thread_id,
+                        client_id=body.attachment_client_id,
+                        attachment_set_id=body.attachment_set_id,
+                        operation_id=operation_id,
+                    )
+                    turn = turn.model_copy(
+                        update={
+                            "attachment_batch_id": claimed.attachment_batch_id,
+                            "attachments": claimed.attachments,
+                        }
+                    )
+                batch = claimed.attachment_batch_id if claimed is not None else None
+                with released_unless_started(store, attachment_store, batch, operation_id):
+                    task = background_tasks.start(
+                        store.space_id,
+                        "space_chat",
+                        turn,
+                        operation_id=operation_id,
+                        authorized_by=authorized,
+                    )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}
@@ -1085,6 +1119,46 @@ def steer_space_task(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/api/agent-threads/{thread_id}/artifacts/{artifact_id}/state")
+def space_artifact_state(
+    thread_id: str,
+    artifact_id: str,
+    request: Request,
+    response: Response,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+):
+    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None or artifact.project_id != store.space_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        origin = _space_task(store, thread, artifact.origin_operation_id or "")
+        descriptor = _agent_artifact_descriptor(origin, artifact_id)
+        if store.readable_artifact(store.space_id, artifact_id) is None:
+            raise HTTPException(status_code=410, detail="Artifact expired")
+        versions = store.artifact_versions(artifact_id)
+        current = next(
+            version for version in versions if version.version_id == artifact.current_version
+        )
+    base = (
+        f"/api/agent-threads/{quote(thread_id, safe='')}/tasks/{quote(origin.operation_id, safe='')}"
+        f"/artifacts/{quote(artifact_id, safe='')}/viewer"
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "current_version": current.version_id,
+        "version_number": versions.index(current) + 1,
+        "viewer_url": base + "?" + urlencode({"version_id": current.version_id}),
+        "can_comment": thread.closed_at is None and supports_comments(descriptor.media_type),
+        "can_keep": False,
+        "fresh_session_required": False,
+        "live": None,
+        "editing_operation_id": None,
+    }
+
+
 @router.api_route(
     "/api/agent-threads/{thread_id}/tasks/{operation_id}/artifacts/{artifact_id}/{action}",
     methods=["GET", "HEAD"],
@@ -1095,6 +1169,7 @@ async def space_artifact(
     artifact_id: str,
     action: Literal["content", "download", "viewer"],
     request: Request,
+    version_id: str | None = None,
     presentation: ViewerPresentation = "panel",
     theme: str | None = None,
     color_mode: str | None = None,
@@ -1115,6 +1190,7 @@ async def space_artifact(
             store=store,
             head=request.method == "HEAD",
             presentation=presentation,
+            version_id=version_id,
         )
     if action == "content":
         return await content_agent_artifact(
@@ -1122,6 +1198,7 @@ async def space_artifact(
             operation_id,
             artifact_id,
             request,
+            version_id=version_id,
             presentation=presentation,
             theme=theme,
             color_mode=color_mode,

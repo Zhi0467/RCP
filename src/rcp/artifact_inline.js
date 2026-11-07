@@ -15,7 +15,9 @@ const inlineErrorChannel = errorChannel;
 let inlineLoadGeneration = 0;
 function loadInlineContent() {
   if (!inlineFrame) return;
-  const next = `${inlineRoot.dataset.theme}/${inlineRoot.dataset.colorMode}`;
+  const next = inlineConfig.followAppearance === false
+    ? "fixed"
+    : `${inlineRoot.dataset.theme}/${inlineRoot.dataset.colorMode}`;
   if (next === inlineAppearance) return;
   inlineAppearance = next;
   errorChannel = `${inlineErrorChannel}:${++inlineLoadGeneration}`;

@@ -611,6 +611,7 @@ function RefreshMemberApp(props: {
         const open = new Map(bindings.current.open.map((project) => [project.projectId, project]));
         // Artifact controls and one-shot detail reads can outlive a routed project tab.
         const interests = store.awaitingWatermark();
+        interests.delete("");
         if (artifactProject.current) interests.add(artifactProject.current);
         for (const projectId of interests)
           if (!open.has(projectId)) open.set(projectId, { projectId, currentRef: "main" });

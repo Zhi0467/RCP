@@ -538,7 +538,7 @@ def test_composer_refuses_another_chat_artifact(edit_origin):
 
 
 def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_origin, monkeypatch):
-    """Client skill fields never reach an origin-bound edit's prompt."""
+    """Official invocations resolve after the origin profile replaces client fields."""
     app, _store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
     monkeypatch.setattr(
@@ -562,8 +562,9 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
     body = {
         **_request(task, artifact).model_dump(mode="json"),
         "chat_id": task.request["chat_id"],
-        "invoked_workflow_ids": ["stale-workflow"],
-        "invoked_skill_ids": ["stale-skill"],
+        "workflow_ids": ["stale-workflow"],
+        "skill_ids": ["stale-skill"],
+        "invoked_skill_ids": ["graph-audit", "graph-audit"],
         "invoked_provider_skill_names": ["stale"],
         "resolved_provider_skills": [
             {
@@ -586,13 +587,64 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
     assert admitted.mode == "discuss"
     assert admitted.artifact_edit.origin_bound
     assert admitted.session_id == task.native_session_id
+    assert admitted.invoked_skill_ids == ["graph-audit"]
+    assert admitted.workflow_ids == []
+    assert "stale-skill" not in admitted.skill_ids
+    assert "graph-audit" in {item.id for item in admitted.resolved_skill_packages}
     assert not (
         admitted.invoked_workflow_ids
-        or admitted.invoked_skill_ids
         or admitted.invoked_provider_skill_names
         or admitted.resolved_provider_skills
-        or admitted.resolved_skill_packages
     )
+
+
+@pytest.mark.parametrize("skill_id", ["graph-audit", "unknown-skill"])
+def test_origin_bound_edit_refuses_disabled_or_unknown_invocation(edit_origin, skill_id):
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+
+    app, store, task = edit_origin
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=[]))
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    with pytest.raises(ValueError, match="not enabled|unknown"):
+        admit_artifact_edit(
+            store,
+            app.state.service,
+            task.project_id,
+            _request(task, artifact).model_copy(update={"invoked_skill_ids": [skill_id]}),
+        )
+
+
+def test_stored_edit_validates_current_skills_without_rebinding_origin(edit_origin, monkeypatch):
+    from rcp.api.tasks import _validate_stored_task_request
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    admitted = admit_artifact_edit(
+        store,
+        app.state.service,
+        task.project_id,
+        _request(task, artifact).model_copy(update={"invoked_skill_ids": ["graph-audit"]}),
+    )
+    monkeypatch.setattr(
+        app.state.service,
+        "resolve_agent_profile",
+        lambda *_args, **_kwargs: pytest.fail("stored edit rebound its origin profile"),
+    )
+    validated, selection = _validate_stored_task_request(
+        app.state.service, "artifact_edit", admitted.model_dump(mode="json")
+    )
+    assert validated == admitted
+    assert selection is not None
+    _persist_skill_defaults(app.state.service, SkillDefaults(skill_ids=[]))
+    with pytest.raises(ValueError, match="not enabled"):
+        _validate_stored_task_request(
+            app.state.service, "artifact_edit", admitted.model_dump(mode="json")
+        )
 
 
 def test_composer_work_edit_runs_graph_admission(edit_origin, monkeypatch):

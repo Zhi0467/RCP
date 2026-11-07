@@ -1,5 +1,4 @@
 import type { ResourceProfile } from "../core/resourceStore";
-import type { ArtifactViewerState } from "../core/types";
 import { api } from "../core/api";
 import { artifactUrl } from "../agents/agentTasks";
 import {
@@ -8,7 +7,11 @@ import {
   steerThreadTurn,
   threadPath,
 } from "../agents/agentThreadsApi";
-import { artifactStateProfile } from "../artifacts/artifactResources";
+import {
+  artifactStateProfile,
+  spaceArtifactStateProfile,
+  type InlineArtifactState,
+} from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
 import {
   downloadDesktopArtifact,
@@ -31,7 +34,7 @@ export interface AgentWindowEndpoints {
   projectId: string | null;
   attachmentsUrl: string;
   artifactUrl: (operationId: string, artifactId: string, action: ArtifactAction) => string;
-  artifactState: ((artifactId: string) => ResourceProfile<ArtifactViewerState>) | null;
+  artifactState: ((artifactId: string) => ResourceProfile<InlineArtifactState>) | null;
   canKeep: boolean;
   canCommentArtifacts: boolean;
   openArtifactPanel: ((artifactId: string) => void) | null;
@@ -99,7 +102,7 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
     projectId: null,
     attachmentsUrl: `${base}/attachments`,
     artifactUrl: url,
-    artifactState: null,
+    artifactState: (artifactId) => spaceArtifactStateProfile(thread.thread_id, artifactId),
     canKeep: false,
     canCommentArtifacts: true,
     openArtifactPanel: null,

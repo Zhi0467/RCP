@@ -40,6 +40,10 @@ version reloads the thread list and the open thread's transcript, questions,
 and schedules. While the open thread's turn
 runs, only that task is read, every 2 s while the page shows, one read at a time.
 Earlier turns load their task detail once, when their row nears the view.
+Space artifact state uses that same member counter. Global interests stay out of
+the request's project set. Like project observations, global observations carry
+a ticket captured before dispatch: a response issued before view entry cannot
+admit cached content into that entry, and a failed observation exposes an error.
 
 A request with `agent_cards: true` also gets `agent_cards: {version}`, a digest
 of the epoch, the member, and each `(project_id, graph:main generation)` pair
@@ -2333,7 +2337,7 @@ table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
 thread. A test holds every grantable verb to a line.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
-`{proposal_cards, asked_cards}` for the member's open project threads in their
+`{proposal_cards, asked_cards, questions}` for the member's open project threads in their
 projects: not closed, not archived, and never ensured by this read. A named
 thread must be the member's own; a Space thread yields an empty response.
 `proposal_cards` are `ProposalCardView`s (project, thread, the raising turn's
@@ -2345,9 +2349,11 @@ member's open Space thread asked. State comes from each project's local display 
 remote read happens. A member-wide read skips and logs a project whose state
 cannot be read; for a named thread that failure is 503.
 
-The member-wide read, and only it, also returns `questions`: across every
-member project, the pending questions with no card that `question_recipients`
-gives the member, newest first. Each row is the question serialization plus
+The member-wide read's `questions` span every member project. A named open
+project thread receives only that project's questions, excluding its own chat's
+questions because those already appear inline. Closed, archived and named Space
+threads have no relayed questions. These are pending questions with no card that
+`question_recipients` gives the member, newest first. Each row is the question serialization plus
 `project_id`, `project_name`, `source_label` (the episode's Space Runs title,
 or the chat or thread title, null when the chat has none) and
 `answer_continues` computed as the episode question list computes it.

@@ -523,7 +523,9 @@ def test_space_turn_carries_only_an_enabled_official_invocation(manifest, tmp_pa
             "/api/agent-threads/"
             + client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         )
-        sent = client.post(base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id]})
+        sent = client.post(
+            base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id, skill_id]}
+        )
         assert sent.status_code == 202, sent.text
         task = app.state.background_tasks.store.agent_task(sent.json()["operation_id"])
         assert task is not None and task.request["invoked_skill_ids"] == [skill_id]
@@ -645,6 +647,10 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
         stored = store.agent_task(response.json()["operation_id"])
         assert stored is not None
         assert stored.request["artifact_context"]["artifact_id"] == artifact.artifact_id
+        assert (
+            stored.request["artifact_context"]["base_version"]
+            == store.artifact(artifact.artifact_id).current_version
+        )
         assert stored.request["artifact_context"]["selections"][0]["comment"] == "Bigger"
         assert "Comment 1" in stored.request["message"]
     from types import SimpleNamespace
@@ -653,15 +659,112 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
     from rcp.service import RunRequest
 
     stage = tmp_path / "stage"
+    commented = stage / "turns" / task.operation_id / "artifacts" / artifact.name
     part = _artifact_comment_part(
         SimpleNamespace(
-            owner=SimpleNamespace(store=store),
             request=RunRequest.model_validate(stored.request),
-            stage=stage,
+            artifact_edit_paths={artifact.artifact_id: str(commented)},
         )
     )
-    commented = stage / "turns" / task.operation_id / "artifacts" / artifact.name
     assert str(commented) in part and '"comment": "Bigger"' in part
+
+
+def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
+    manifest, tmp_path, monkeypatch
+):
+    import uuid
+
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, descriptor = _space_turn_artifact(app, thread_id)
+        artifact = store.artifact(descriptor.artifact_id)
+        body = {
+            "message": "Revise the comparison.",
+            "artifact_context": {
+                **_text_comment(task.operation_id, artifact.artifact_id),
+                "base_version": artifact.current_version,
+            },
+        }
+        headers = {"Idempotency-Key": str(uuid.uuid4())}
+        url = f"/api/agent-threads/{thread_id}/turns"
+        first = client.post(url, headers=headers, json=body)
+        assert first.status_code == 202, first.text
+        store.publish_artifact_version(
+            artifact.artifact_id,
+            base_version=artifact.current_version,
+            operation_id=first.json()["operation_id"],
+            data=b"<!doctype html><h1>Revised comparison</h1>",
+        )
+        repeated = client.post(url, headers=headers, json=body)
+        assert repeated.status_code == 202 and repeated.json() == first.json(), repeated.text
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_space_comment_blocks_publication_until_its_task_is_recorded(
+    manifest, tmp_path, monkeypatch, pinned
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rcp.storage.artifacts import _lock
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    store = tasks.store
+    with signed_in_client(app) as client, ThreadPoolExecutor(max_workers=1) as publisher:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        origin, descriptor = _space_turn_artifact(app, thread_id)
+        artifact = store.artifact(descriptor.artifact_id)
+        context = _text_comment(origin.operation_id, artifact.artifact_id)
+        if pinned:
+            context["base_version"] = artifact.current_version
+        attempted = threading.Event()
+        publications = []
+
+        def publish(operation_id):
+            lock = _lock(store.path.parent, artifact.artifact_id)
+            acquired = lock.acquire(blocking=False)
+            if not acquired:
+                attempted.set()
+                lock.acquire()
+            try:
+                admitted = store.agent_task(operation_id)
+                version = store.publish_artifact_version(
+                    artifact.artifact_id,
+                    base_version=artifact.current_version,
+                    operation_id="space-peer-revision",
+                    data=b"<!doctype html><h1>Peer revision</h1>",
+                )
+                return not acquired, admitted, version
+            finally:
+                lock.release()
+                attempted.set()
+
+        start = tasks.start
+
+        def start_with_publisher(*args, **kwargs):
+            publications.append(publisher.submit(publish, kwargs["operation_id"]))
+            assert attempted.wait(5)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(tasks, "start", start_with_publisher)
+        response = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={"message": "Revise this comparison.", "artifact_context": context},
+        )
+        assert response.status_code == 202, response.text
+        blocked, admitted, version = publications[0].result(timeout=5)
+        assert blocked
+        assert admitted is not None and admitted.operation_id == response.json()["operation_id"]
+        assert admitted.request["artifact_context"]["base_version"] == artifact.current_version
+        assert store.artifact(artifact.artifact_id).current_version == version.version_id
 
 
 def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, monkeypatch):
@@ -715,6 +818,105 @@ def test_space_inline_viewer_enables_selection(manifest, tmp_path):
         assert content.status_code == 200, content.text
 
 
+def test_space_artifact_state_and_viewers_pin_retained_versions(manifest, tmp_path, monkeypatch):
+    import json
+    import re
+    from urllib.parse import parse_qs, urlsplit
+
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, descriptor = _space_turn_artifact(app, thread_id)
+        artifact_id = descriptor.artifact_id
+        artifact = store.artifact(artifact_id)
+        state_url = f"/api/agent-threads/{thread_id}/artifacts/{artifact_id}/state"
+        response = client.get(state_url)
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        first = response.json()
+        assert first == {
+            "current_version": artifact.current_version,
+            "version_number": 1,
+            "viewer_url": (
+                f"/api/agent-threads/{thread_id}/tasks/{task.operation_id}"
+                f"/artifacts/{artifact_id}/viewer?version_id={artifact.current_version}"
+            ),
+            "can_comment": True,
+            "can_keep": False,
+            "fresh_session_required": False,
+            "live": None,
+            "editing_operation_id": None,
+        }
+        second = store.publish_artifact_version(
+            artifact_id,
+            base_version=artifact.current_version,
+            operation_id="space-note-revision",
+            data=b"<!doctype html><h1>Updated comparison</h1>",
+        )
+        latest = client.get(state_url).json()
+        assert latest["current_version"] == second.version_id and latest["version_number"] == 2
+
+        def pinned_content(viewer_url):
+            viewer = client.get(viewer_url + "&presentation=inline")
+            assert viewer.status_code == 200, viewer.text
+            config = re.search(r"const inlineConfig=(\{.*?\});", viewer.text)
+            assert config is not None
+            url = json.loads(config.group(1))["contentUrl"]
+            assert parse_qs(urlsplit(url).query)["version_id"]
+            assert "/live" not in viewer.text
+            content = client.get(url)
+            assert content.status_code == 200, content.text
+            return content.text
+
+        assert "Saved comparison" in pinned_content(first["viewer_url"])
+        assert "Updated comparison" in pinned_content(latest["viewer_url"])
+        assert parse_qs(urlsplit(latest["viewer_url"]).query)["version_id"] == [second.version_id]
+        base = first["viewer_url"].split("?", 1)[0].removesuffix("viewer")
+        for action in ("content", "viewer"):
+            assert client.get(base + action, params={"version_id": "unknown"}).status_code == 410
+        stale = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={
+                "message": "Revise this old selection.",
+                "artifact_context": {
+                    **_text_comment(task.operation_id, artifact_id),
+                    "base_version": first["current_version"],
+                },
+            },
+        )
+        assert stale.status_code == 422, stale.text
+        store.undo_artifact(artifact_id)
+        assert client.get(state_url).json() == first
+        assert "Updated comparison" in pinned_content(latest["viewer_url"])
+
+
+@pytest.mark.parametrize("origin", ["another-thread", "missing-descriptor"])
+def test_space_artifact_state_refuses_unbound_origins(manifest, tmp_path, origin):
+    import uuid
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        task, artifact = _space_turn_artifact(
+            app, str(uuid.uuid4()) if origin == "another-thread" else thread_id
+        )
+        if origin == "missing-descriptor":
+            with store.connection() as connection:
+                connection.execute(
+                    "UPDATE graph_runs SET result_json='{}' WHERE operation_id=?",
+                    (task.operation_id,),
+                )
+        response = client.get(
+            f"/api/agent-threads/{thread_id}/artifacts/{artifact.artifact_id}/state"
+        )
+        assert response.status_code == 404, response.text
+
+
 def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
@@ -731,6 +933,14 @@ def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
     assert viewer.status_code == 200
     assert base + "/content" in viewer.text
     assert client.head(base + "/content").content == b""
+    state_url = f"/api/agent-threads/{thread['thread_id']}/artifacts/{artifact.artifact_id}/state"
+    assert client.get(state_url).status_code == 200
+    assert (
+        client.get(
+            f"/api/agent-threads/{thread['thread_id']}/artifacts/{'0' * 24}/state"
+        ).status_code
+        == 404
+    )
     with store.connection() as connection:
         connection.execute(
             "UPDATE agent_threads SET user_id='another-member' WHERE thread_id=?",
@@ -738,6 +948,7 @@ def test_space_artifact_reads_are_owner_only(manifest, tmp_path):
         )
     for action in ("content", "download", "viewer"):
         assert client.get(base + "/" + action).status_code == 404
+    assert client.get(state_url).status_code == 404
 
 
 def test_thread_task_projects_latest_session_resolution(manifest, tmp_path):

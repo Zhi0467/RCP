@@ -27,11 +27,13 @@ from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     GraphReadPrompt,
     _command_client_rule,
+    _invoked_package_section,
     chat_master_contract_key,
     graph_read_contract,
     invoked_package_pointers,
     live_ask_contract,
     render_chat_read_context,
+    skill_prompt_values,
 )
 from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution
@@ -39,13 +41,15 @@ from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
 from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS, ask_hold_seconds
-from rcp.machine_cards import card
+from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _append_chat_exchange,
+    _attempt_was_resumed,
     _chat_read_dirs,
     _chat_stage_name,
+    _chat_stage_owner,
     _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
@@ -129,7 +133,10 @@ from rcp.runs.tasks.work_turn_runtime import (
     start_work_validator_mailbox,
 )
 from rcp.service import ProjectService, RunRequest
+from rcp.skill_registry import official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
+from rcp.storage import AgentTaskRecord
+from rcp.storage.agent_threads import AgentThreadRecord, bound_thread, thread_binds_task
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateUnavailable
 
@@ -179,6 +186,7 @@ def _prepare_discuss_chat_prompt(
     master_context: str,
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
+    invoked_skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     ontology_extensions: bool,
     browser_grant: BrowserGrant,
@@ -206,6 +214,7 @@ def _prepare_discuss_chat_prompt(
         )
         node, master = "human_turn", MasterRef(path=path, bootstrap=False)
         context_delta = {
+            "skills": skill_prompt_values(skill_pointers),
             "browser": browser_prompt_line(browser_grant),
             "discuss": {
                 "execution_instructions": ["No RCP commands are available for this artifact edit."]
@@ -231,11 +240,7 @@ def _prepare_discuss_chat_prompt(
         memory_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
-        invoked_skill_pointers=invoked_package_pointers(
-            skill_pointers,
-            workflow_ids=request.invoked_workflow_ids,
-            skill_ids=request.invoked_skill_ids,
-        ),
+        invoked_skill_pointers=invoked_skill_pointers,
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
@@ -601,6 +606,167 @@ async def finalize_recorded_discuss_result(
         yield frame
 
 
+def _legacy_private_edit_stage(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    thread_owner: str | None,
+    data_dir: Path,
+) -> Path | None:
+    edit = request.artifact_edit
+    if execution is None or edit is None or thread_owner is None or not request.session_id:
+        return None
+    legacy_stage = data_dir / "run-stage" / f"artifact-edit-{edit.operation_id}"
+    if not all(
+        (
+            legacy_stage.name == f"artifact-edit-{edit.operation_id}",
+            execution.continuation in {"resume", "retry"},
+            execution.stage_root == str(legacy_stage),
+            (execution.stage_machine_id or BACKEND_MACHINE_ID) == BACKEND_MACHINE_ID,
+            request.mode == "discuss",
+            request.chat_scope == "project",
+            request.run_on == BACKEND_MACHINE_ID,
+            edit.fresh_session,
+            edit.origin_bound,
+            edit.launch_kind == "discuss",
+            edit.stage_root is None,
+            edit.stage_machine_id is None,
+        )
+    ):
+        return None
+    return legacy_stage
+
+
+def _legacy_private_edit_source(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    thread_owner: str | None,
+    data_dir: Path,
+) -> AgentTaskRecord | None:
+    """Prove the one public checkpoint the older private fresh-edit writer made."""
+    stage = _legacy_private_edit_stage(
+        execution, request, thread_owner=thread_owner, data_dir=data_dir
+    )
+    if stage is None:
+        return None
+    assert execution is not None and request.artifact_edit is not None
+    edit = request.artifact_edit
+    origin = execution.store.agent_task(edit.origin_operation_id)
+    artifact = execution.store.artifact(edit.artifact_id)
+    current = execution.store.agent_task(execution.operation_id)
+    if origin is None or artifact is None or current is None:
+        return None
+    thread = bound_thread(execution.store, origin)
+    if thread is None:
+        return None
+    if not all(
+        (
+            thread.kind == "project",
+            thread.user_id == thread_owner,
+            thread.thread_id == request.chat_id,
+            artifact.project_id == origin.project_id,
+            artifact.origin_operation_id == origin.operation_id,
+            _legacy_private_edit_cause(execution, current) == execution.continuation,
+        )
+    ):
+        return None
+    return _legacy_private_edit_lineage(execution, request, origin, thread, stage)
+
+
+def _legacy_private_edit_cause(execution: AgentTaskExecution, task: AgentTaskRecord) -> str | None:
+    receipts = execution.store.agent_task_receipts(task.operation_id)
+    resumed = _attempt_was_resumed(receipts, task)
+    [created] = [receipt for receipt in receipts if receipt.category == "operation_created"]
+    recorded = created.payload.get("continuation_cause")
+    if recorded is None:
+        cause = "resume" if resumed else "fresh"
+    elif isinstance(recorded, str):
+        cause = recorded
+    else:
+        return None
+    if not all(
+        (
+            cause in {"fresh", "resume", "retry"},
+            created.payload["resumed"] == (cause != "fresh"),
+            execution.store.agent_task_continuation_cause(task.operation_id) in {None, cause},
+        )
+    ):
+        return None
+    return cause
+
+
+def _legacy_private_edit_lineage(
+    execution: AgentTaskExecution,
+    request: RunRequest,
+    origin: AgentTaskRecord,
+    thread: AgentThreadRecord,
+    stage: Path,
+) -> AgentTaskRecord | None:
+    edit = request.artifact_edit
+    assert edit is not None
+    current = execution.store.agent_task(execution.operation_id)
+    seen: set[str] = set()
+    expected_attempt: int | None = None
+    while current is not None and current.operation_id not in seen:
+        seen.add(current.operation_id)
+        retained = RunRequest.model_validate(current.request)
+        if not all(
+            (
+                not current.history_only,
+                current.episode_id is None,
+                current.dispatch_authority is None,
+                expected_attempt in {None, current.attempt},
+                thread_binds_task(thread, current, execution.store.space_id),
+                current.graph_target == origin.graph_target,
+                current.stage_root == str(stage),
+                (current.stage_machine_id or BACKEND_MACHINE_ID) == BACKEND_MACHINE_ID,
+                current.native_session_id == request.session_id,
+                retained.mode == "discuss",
+                retained.chat_scope == "project",
+                retained.run_on == BACKEND_MACHINE_ID,
+                retained.provider == request.provider,
+                retained.artifact_edit == edit,
+            )
+        ):
+            return None
+        cause = _legacy_private_edit_cause(execution, current)
+        if current.operation_id == edit.operation_id:
+            return (
+                current
+                if (cause, current.attempt, current.parent_operation_id, retained.session_id)
+                == ("fresh", 1, None, None)
+                else None
+            )
+        if (cause in {"resume", "retry"}, retained.session_id) != (True, request.session_id):
+            return None
+        expected_attempt = current.attempt - 1
+        current = execution.store.agent_task(current.parent_operation_id or "")
+    return None
+
+
+def _record_legacy_private_edit_stage(
+    execution: AgentTaskExecution, source: AgentTaskRecord
+) -> None:
+    category = "legacy_private_artifact_edit_stage"
+    if execution.store.agent_task_has_receipt(execution.operation_id, category):
+        return
+    execution.store.record_agent_task_event(
+        execution.operation_id,
+        "Continuing the legacy private artifact edit in its exact retained stage; new stages remain private.",
+        level="warning",
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        category,
+        {
+            "source_operation_id": source.operation_id,
+            "stage_root": source.stage_root,
+            "continuation": execution.continuation,
+        },
+    )
+
+
 async def stream_discuss_run(
     service: ProjectService,
     launcher: AgentLauncher,
@@ -623,13 +789,24 @@ async def stream_discuss_run(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
+        if request.artifact_edit is None or not request.artifact_edit.origin_bound:
+            request = _pinned_to_profile(request, profile, service.manifest.base_machine)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     # Every launch, including Resume, Retry, and recovery, tells the agent the
     # project's current machines as seen from where it now runs.
-    machine = card(service.paper.store, service.manifest.base_machine)
+    machine_id = (
+        request.run_on
+        if request.artifact_edit is not None and request.artifact_edit.origin_bound
+        else service.manifest.base_machine
+    )
+    if machine_id is None:
+        yield _sse(
+            AgentEvent(event="error", text="The artifact's execution machine is unavailable.")
+        )
+        return
+    machine = card(service.paper.store, machine_id)
     compute_profiles = service.machine_prompt_profiles(machine.machine_id)
     local_stage: Path | None = None
     execution_host = machine.host
@@ -687,9 +864,14 @@ async def stream_discuss_run(
             # remote, reuses the same folder and _sweep_stale_stages ages it out.
             stage_name = _chat_stage_name(service, request, execution)
             saved_stage = execution is not None and execution.stage_root is not None
+            thread_owner = _chat_stage_owner(service, request)
             if execution_host:
                 remote_stage = open_remote_conversation_stage(
-                    machine, stage_name, execution, saved_stage=saved_stage
+                    machine,
+                    stage_name,
+                    execution,
+                    saved_stage=saved_stage,
+                    thread_owner=thread_owner,
                 )
                 # Resumes rebuild context too; branch read pointers need execution-host paths.
                 context = context.model_copy(
@@ -700,9 +882,20 @@ async def stream_discuss_run(
                 stage_root = _swept_stage_root(
                     data_dir,
                     store=execution.store if execution is not None else None,
+                    thread_owner=thread_owner,
                 )
                 expected_stage = stage_root / stage_name
+                legacy_source = None
                 if saved_stage:
+                    legacy_source = _legacy_private_edit_source(
+                        execution,
+                        request,
+                        thread_owner=thread_owner,
+                        data_dir=data_dir,
+                    )
+                    if legacy_source is not None:
+                        assert legacy_source.stage_root is not None
+                        expected_stage = Path(legacy_source.stage_root)
                     local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
                 else:
                     local_stage = expected_stage
@@ -714,6 +907,8 @@ async def stream_discuss_run(
                 )
                 if execution is not None:
                     execution.checkpoint_stage(machine.machine_id, str(local_stage))
+                    if legacy_source is not None:
+                        _record_legacy_private_edit_stage(execution, legacy_source)
             hidden_read_scope = await _prepare_hidden_read_scope(
                 service,
                 request,
@@ -791,6 +986,11 @@ async def stream_discuss_run(
             )
             experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
             skill_selection = service.resolve_skill_selection(request)
+            workflow_ids, skill_ids = official_registry().validate_invocations(
+                skill_selection,
+                workflow_ids=request.invoked_workflow_ids,
+                skill_ids=request.invoked_skill_ids,
+            )
             skill_pointers = stage_skill_selection(
                 skill_selection,
                 local_stage=local_stage,
@@ -979,11 +1179,6 @@ async def stream_discuss_run(
                         retry_diagnostics_path=retry_diagnostics_path,
                         experiment_watcher_resources=experiment_resource_pointers,
                         skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
                         compute_connections=compute_profiles,
@@ -1028,6 +1223,11 @@ async def stream_discuss_run(
                         node,
                         parts=[
                             continuation_contract,
+                            _invoked_package_section(
+                                invoked_package_pointers(
+                                    skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                                )
+                            ),
                             render_chat_read_context(context),
                             stage_operational_context_pointer(execution, local_stage, remote_stage),
                             question_part,
@@ -1061,6 +1261,13 @@ async def stream_discuss_run(
                         role="discuss_retry_base",
                     )
                     prompt += "\n\n" + render_chat_read_context(context)
+                    invocation = _invoked_package_section(
+                        invoked_package_pointers(
+                            skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                        )
+                    )
+                    if invocation:
+                        prompt += "\n\n" + invocation
                     prompt += "\n\n" + stage_operational_context_pointer(
                         execution, local_stage, remote_stage
                     )
@@ -1120,6 +1327,9 @@ async def stream_discuss_run(
                     read_context=render_chat_read_context(context),
                     browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                    ),
                     attachment_pointers=attachment_pointers,
                     ontology_extensions=context.ontology_extensions,
                 )
@@ -1151,6 +1361,9 @@ async def stream_discuss_run(
                 "network_access": True,
                 "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
                 "write_directory_count": len(memory_write_dirs),
+                **skill_selection.model_dump(mode="json"),
+                "invoked_workflow_ids": workflow_ids,
+                "invoked_skill_ids": skill_ids,
             },
         )
         assert artifact_scope_id is not None

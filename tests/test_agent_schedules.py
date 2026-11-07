@@ -239,6 +239,7 @@ def test_due_schedules_combine_missed_fires_and_restore_disables(schedule_store)
 def test_busy_thread_keeps_pending_then_claims_one_combined_wake(
     schedule_store, monkeypatch, archived
 ):
+    import json
     from types import SimpleNamespace
 
     from rcp.runs.agent_schedules import dispatch_agent_schedules
@@ -287,6 +288,29 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(
         "origin", native_session_id="current-session", stage_root=str(stage)
     )
     previous = schedule_store.agent_task("origin")
+    old_request = {
+        **previous.request,
+        "invoked_workflow_ids": ["research-graph-audit"],
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_provider_skill_names": ["native-review"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "backend",
+                "provider_version": "old",
+                "inventory_hash": "old",
+                "name": "native-review",
+                "label": "Native review",
+                "description": "Earlier turn only",
+            }
+        ],
+    }
+    with schedule_store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'",
+            (json.dumps(old_request),),
+        )
+    previous = schedule_store.agent_task("origin")
     schedule_store.create_agent_task(
         previous.model_copy(
             update={
@@ -310,6 +334,13 @@ def test_busy_thread_keeps_pending_then_claims_one_combined_wake(
     assert len(launched) == 1
     task = schedule_store.agent_task(launched[0])
     assert task.request["trigger"] == "schedule"
+    for field in (
+        "invoked_workflow_ids",
+        "invoked_skill_ids",
+        "invoked_provider_skill_names",
+        "resolved_provider_skills",
+    ):
+        assert task.request[field] == []
     assert task.native_session_id == task.request["session_id"] == "current-session"
     receipts = [
         r.payload
