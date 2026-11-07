@@ -339,6 +339,18 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
             "mode": "apply_directly",
             "invoked_workflow_ids": ["research-graph-audit"],
             "invoked_skill_ids": ["graph-audit"],
+            "invoked_provider_skill_names": ["native-review"],
+            "resolved_provider_skills": [
+                {
+                    "provider": "codex",
+                    "machine": "backend",
+                    "provider_version": "old",
+                    "inventory_hash": "old",
+                    "name": "native-review",
+                    "label": "Native review",
+                    "description": "Earlier turn only",
+                }
+            ],
         },
         native_session_id="native-paper",
         created_at=store.now(),
@@ -378,6 +390,8 @@ def test_routes_enforce_project_scope_accept_and_undo(manifest, tmp_path, monkey
         assert continued[-1]["mode"] == "apply_directly"
         assert continued[-1]["invoked_workflow_ids"] == []
         assert continued[-1]["invoked_skill_ids"] == []
+        assert continued[-1]["invoked_provider_skill_names"] == []
+        assert continued[-1]["resolved_provider_skills"] == []
         stored = store.agent_task("task")
         assert stored is not None and stored.request == previous.request
         assert client.post(f"{base}/{group.group_id}/accept", json={}).status_code == 200

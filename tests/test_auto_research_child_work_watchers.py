@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 
@@ -207,7 +208,7 @@ def test_child_watcher_wake_reconciles_paid_dispatch_after_crash(tmp_path, monke
     assert sum(item[0] == wake_id for item in seen) == 1
 
 
-def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_path):
+def test_child_watcher_wake_uses_resolved_policy_without_inheriting_invoked_skills(tmp_path):
     """These are the values settlement stores after resolving a turn's defaults."""
     tasks, episode, _child, watchers, _seen = _waiting_child(tmp_path)
     resolved = watchers[0].continuation.model_copy(
@@ -228,8 +229,8 @@ def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_pa
     wake = wait_for_task(tasks.store, wake.operation_id, expect="succeeded")
     assert wake.request["model"] == "resolved-model"
     assert wake.request["reasoning"] == "medium"
-    assert wake.request["invoked_skill_ids"] == ["explicit-skill"]
-    assert wake.request["invoked_workflow_ids"] == ["explicit-workflow"]
+    assert wake.request["invoked_skill_ids"] == []
+    assert wake.request["invoked_workflow_ids"] == []
 
     record_auto_research_message(
         tasks.store,
@@ -249,6 +250,87 @@ def test_child_watcher_wake_uses_resolved_policy_and_keeps_invoked_skills(tmp_pa
     next_task = wait_for_task(tasks.store, next_id, expect="succeeded")
     for field in ("model", "reasoning", "invoked_skill_ids", "invoked_workflow_ids"):
         assert next_task.request[field] == wake.request[field]
+
+
+@pytest.mark.parametrize("wake_kind", ["watcher", "message"])
+def test_child_automatic_wakes_do_not_reinvoke_unavailable_old_writer_skills(
+    manifest, tmp_path, monkeypatch, wake_kind
+):
+    from rcp.skill_registry import SkillDefaults
+    from tests.helpers import create_named_app
+    from tests.test_api import _persist_skill_defaults
+
+    tasks, episode, child, watchers, seen = _waiting_child(tmp_path)
+    service = create_named_app(str(manifest.path), data_dir=tmp_path / "catalog").state.service
+    _persist_skill_defaults(service, SkillDefaults(skill_ids=["evidence-triage"]))
+    invocations = {
+        "invoked_workflow_ids": ["research-graph-audit"],
+        "invoked_skill_ids": ["graph-audit"],
+        "invoked_provider_skill_names": ["native-review"],
+        "resolved_provider_skills": [
+            {
+                "provider": "codex",
+                "machine": "backend",
+                "provider_version": "old",
+                "inventory_hash": "old",
+                "name": "native-review",
+                "label": "Native review",
+                "description": "Earlier turn only",
+            }
+        ],
+    }
+    old_request = {**child.request, **invocations}
+    with tasks.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps(old_request), child.operation_id),
+        )
+        continuation = watchers[0].continuation.model_copy(
+            update={
+                "invoked_skill_ids": invocations["invoked_skill_ids"],
+                "invoked_workflow_ids": invocations["invoked_workflow_ids"],
+            }
+        )
+        connection.execute(
+            "UPDATE watchers SET continuation_json=?", (continuation.model_dump_json(),)
+        )
+    with pytest.raises(ValueError):
+        service.resolve_skill_request(RunRequest.model_validate(old_request))
+    admitted = []
+
+    def admit(_project, request, **kwargs):
+        admitted.append(service.resolve_skill_request(request))
+
+    monkeypatch.setattr(tasks, "admit_provider_task", admit)
+    if wake_kind == "watcher":
+        watchers = [tasks.store.watcher(item.watcher_id) for item in watchers]
+        wake = _deliver(tasks, episode, watchers)
+        assert wake is not None
+        wake_id = wake.operation_id
+    else:
+        record_auto_research_message(
+            tasks.store,
+            episode_id=episode.episode_id,
+            sender_role="orchestrator",
+            sender_task_id=episode.root_operation_id,
+            authorized_by=None,
+            recipient_task_id=watchers[0].worker_id,
+            body="Inspect the current result.",
+        )
+        wake_id = deliver_pending_auto_research_mail(
+            tasks, episode_id=episode.episode_id, recipient_task_id=watchers[0].worker_id
+        )
+    assert wake_id is not None
+    wake = wait_for_task(tasks.store, wake_id, expect="succeeded")
+    assert wake.native_session_id == child.native_session_id
+    assert wake.stage_root == child.stage_root and wake.graph_target == child.graph_target
+    assert wake.dispatch_authority == child.dispatch_authority
+    for field, value in invocations.items():
+        assert wake.request[field] == []
+        assert getattr(admitted[0], field) == []
+        assert tasks.store.agent_task(child.operation_id).request[field] == value
+    assert admitted[0].skill_ids == ["evidence-triage"]
+    assert sum(item[0] == wake_id for item in seen) == 1
 
 
 def test_targeted_worker_status_reports_its_watcher_wait(tmp_path):

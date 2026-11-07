@@ -132,7 +132,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 assert child_turns[0][0].patch_inputs.command_client not in self.wake_contract
                 assert not any(key.startswith(("work.", "skills")) for key in changed)
                 assert str(inputs.artifact_directory) in self.wake_contract
-                assert '"name": "native-review"' in self.wake_contract
+                assert '"name": "native-review"' not in self.wake_contract
                 for extensions in (False, True):
                     rules = graph_rules(edits=True, ontology_extensions=extensions)
                     assert rules not in self.wake_contract
