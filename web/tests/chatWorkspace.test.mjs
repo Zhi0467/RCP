@@ -399,6 +399,32 @@ test("an agent's setup is its newest turn, loaded or only in the chat summary", 
   });
 });
 
+test("an explicit empty effort survives persisted chat config while an omitted one inherits", () => {
+  const fallback = { provider: "codex", model: "old-model", reasoning: "high", run_on: "local" };
+  const selected = { provider: "codex", model: "no-effort-model", reasoning: "", run_on: "local" };
+  const at = "2026-11-06T00:00:00Z";
+  assert.deepEqual(
+    latestPersistedChatConfig([], [task({ request: selected, created_at: at })], fallback),
+    selected,
+  );
+  assert.deepEqual(
+    latestPersistedChatConfig([{ ...selected, timestamp: at }], [], fallback),
+    selected,
+  );
+  assert.deepEqual(
+    latestPersistedChatConfig([], [], fallback, { ...selected, selected_at: at }),
+    selected,
+  );
+  assert.equal(
+    latestPersistedChatConfig(
+      [],
+      [task({ request: { provider: "codex", model: "next-model" }, created_at: at })],
+      fallback,
+    ).reasoning,
+    "high",
+  );
+});
+
 test("only a provider switch away from the session's holder starts a fresh session", () => {
   const holder = { native_session_id: "session-1", request: { provider: "codex" } };
   const failedAttempt = { native_session_id: null, request: { provider: "claude" } };

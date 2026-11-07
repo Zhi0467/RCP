@@ -329,6 +329,232 @@ const turn = {
   attempt: 1,
 };
 
+async function mountCoachPicker(page) {
+  await page.evaluate(async () => {
+    window.paperTab.leave();
+    const { React, createRoot } = await import("/tests/fixtures/paperReact.ts");
+    const { PaperWorkspace } = await import("/src/paper/PaperWorkspace.tsx");
+    const { ResourceStore } = await import("/src/core/resourceStore.ts");
+    const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
+    const models = [
+      { id: "settings-model", label: "Settings model", reasoning: ["medium"] },
+      { id: "picked-model", label: "Picked model", reasoning: ["low", "high"] },
+      { id: "no-effort-model", label: "No effort model", reasoning: [] },
+    ];
+    const project = {
+      id: "p",
+      revision: 1,
+      run_on: "local",
+      agent_profiles: {
+        paper_coach: { provider: "codex", model: "settings-model", reasoning: "medium" },
+      },
+      provider_readiness: {},
+      registry: [
+        { provider: "codex", label: "Codex", models },
+        { provider: "claude", label: "Claude", models: [models[2]] },
+      ],
+      machines: [],
+    };
+    const control = (window.coachPicker = { started: [] });
+    function Harness() {
+      const [tasks, setTasks] = React.useState([]);
+      const [mount, setMount] = React.useState(0);
+      const remembered = React.useRef({ view: "coach", right: "coach" });
+      control.update = setTasks;
+      control.remount = () => setMount((value) => value + 1);
+      return React.createElement(PaperWorkspace, {
+        key: mount,
+        project,
+        apiBase: "/api/projects/p",
+        editorState: remembered.current,
+        onEditorStateChange: (state) => (remembered.current = state),
+        tasks,
+        onStartTask: async (kind, request) => {
+          const at = new Date(Date.now() + control.started.length * 1000).toISOString();
+          const task = {
+            operation_id: `picked-${control.started.length}`,
+            kind,
+            request,
+            native_session_id: null,
+            result: null,
+            active: true,
+            can_pause: true,
+            attempt: 1,
+            created_at: at,
+            updated_at: at,
+          };
+          control.started.push(task);
+          return task;
+        },
+      });
+    }
+    const host = document.body.appendChild(document.createElement("div"));
+    createRoot(host).render(
+      React.createElement(
+        RefreshRuntimeContext.Provider,
+        { value: { store: new ResourceStore() } },
+        React.createElement(Harness),
+      ),
+    );
+  });
+  await page.locator(".paper-coach .agent-config-chip").waitFor();
+}
+
+test("the coach keeps its picked config through admission, checkpoint, settlement and remount", async (t) => {
+  for (const width of [1280, 390]) {
+    let sessions = [];
+    const { page, errors } = await open(t, {
+      width,
+      configure: (fixture) => {
+        const respond = fixture.respond;
+        fixture.respond = (path, ...rest) =>
+          path.endsWith("/sessions") ? { json: sessions } : respond(path, ...rest);
+      },
+    });
+    await mountCoachPicker(page);
+    const chip = page.locator(".paper-coach .agent-config-chip");
+    await chip.click();
+    await page.getByRole("combobox", { name: "Model", exact: true }).selectOption("picked-model");
+    await page.getByRole("combobox", { name: "Reasoning", exact: true }).selectOption("high");
+    await chip.click();
+    await page.getByRole("textbox", { name: "Message" }).fill("Review this draft.");
+    await page.getByRole("button", { name: "Send coach message" }).click();
+    await page.getByRole("button", { name: "Stop coach" }).waitFor();
+    assert.match(await chip.innerText(), /picked-model · high/);
+    const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+    assert.deepEqual(
+      [admitted.request.provider, admitted.request.model, admitted.request.reasoning],
+      ["codex", "picked-model", "high"],
+    );
+    const checkpoint = { ...admitted, native_session_id: "picked-session" };
+    await Promise.all([
+      page.waitForResponse((response) => response.url().includes("/tasks?")),
+      page.evaluate((task) => window.coachPicker.update([task]), checkpoint),
+    ]);
+    assert.match(await chip.innerText(), /picked-model · high/);
+    sessions = [
+      {
+        provider: "codex",
+        native_session_id: "picked-session",
+        execution_machine: "local",
+        model: "picked-model",
+        reasoning: "high",
+        created_at: admitted.created_at,
+      },
+    ];
+    await page.evaluate((task) => window.coachPicker.update([task]), {
+      ...checkpoint,
+      active: false,
+      updated_at: new Date(Date.now() + 2000).toISOString(),
+    });
+    await page.waitForFunction(
+      () => !document.querySelector(".paper-coach .agent-config-chip").disabled,
+    );
+    assert.match(await chip.innerText(), /picked-model · high/);
+    await page.evaluate(() => window.coachPicker.remount());
+    await chip.waitFor();
+    assert.match(await chip.innerText(), /picked-model · high/);
+    await fits(page);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test("an active coach continuation shows its admitted pick while the writing session is stale", async (t) => {
+  const active = {
+    ...turn,
+    operation_id: "t2",
+    active: true,
+    can_pause: true,
+    result: null,
+    created_at: new Date(Date.now() + 1000).toISOString(),
+    request: {
+      message: "Continue",
+      session_id: "s1",
+      provider: "codex",
+      model: "picked-model",
+      reasoning: "high",
+    },
+  };
+  const { page, errors } = await open(t, {
+    init: `window.paperCoachFixture = ${JSON.stringify({ tasks: [turn, active], started: [] })};`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) =>
+        path.endsWith("/sessions")
+          ? {
+              json: [
+                {
+                  provider: "codex",
+                  native_session_id: "s1",
+                  model: "old-model",
+                  reasoning: "low",
+                  created_at: turn.created_at,
+                },
+              ],
+            }
+          : respond(path, ...rest);
+    },
+  });
+  await coach(page);
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  assert.match(await chip.innerText(), /picked-model · high/);
+  await page.evaluate(() => window.paperTab.leave());
+  await page.evaluate(() => window.paperTab.back());
+  await chip.waitFor();
+  assert.match(await chip.innerText(), /picked-model · high/);
+  assert.deepEqual(errors, []);
+});
+
+test("switching the coach provider keeps a model without native effort through remount", async (t) => {
+  const { page, errors } = await open(t);
+  await mountCoachPicker(page);
+  await page.evaluate((task) => window.coachPicker.update([task]), {
+    ...turn,
+    request: {
+      ...turn.request,
+      provider: "codex",
+      model: "settings-model",
+      reasoning: "medium",
+      run_on: "previous-base",
+    },
+  });
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await chip.click();
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("claude");
+  assert.equal(await page.getByRole("combobox", { name: "Reasoning", exact: true }).count(), 0);
+  await chip.click();
+  await page.getByText(/starts a fresh .* session/).waitFor();
+  await page.getByRole("textbox", { name: "Message" }).fill("Continue with this provider.");
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+  assert.deepEqual(
+    [
+      admitted.request.provider,
+      admitted.request.model,
+      admitted.request.reasoning,
+      admitted.request.session_id,
+      admitted.request.run_on,
+    ],
+    ["claude", "no-effort-model", "", "s1", "local"],
+  );
+  const switched = {
+    ...admitted,
+    request: { ...admitted.request, session_id: null, previous_session_id: "s1" },
+  };
+  await page.evaluate((task) => window.coachPicker.update([task]), switched);
+  await page.evaluate(() => window.coachPicker.remount());
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  assert.equal(await chip.innerText(), "Claude · no-effort-model");
+  await page.evaluate((task) => window.coachPicker.update([task]), {
+    ...switched,
+    native_session_id: "new-provider-session",
+  });
+  assert.equal(await chip.innerText(), "Claude · no-effort-model");
+  assert.deepEqual(errors, []);
+});
+
 test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
   const uploads = [];
   const { page } = await open(t, {

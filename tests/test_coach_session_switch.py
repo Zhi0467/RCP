@@ -21,12 +21,15 @@ from .test_coach_suggestions import execution_for
     [
         ("claude", "claude-model", "high", None),
         ("claude", None, None, None),
+        ("codex", "", "low", "original-session"),
+        ("codex", "no-effort-model", "", "original-session"),
     ],
 )
 async def test_coach_profile_changes_follow_chat_session_rules(
     coach, provider, model, reasoning, expected_session
 ):
     service, _live, data = coach
+    service.manifest.agent_profile("paper_coach").model = "settings-model"
     store_test_claude_token(service.paper.store, BACKEND_MACHINE_ID)
     launches = []
 
@@ -58,18 +61,19 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     await turn(
         CoachRequest(message="Review", provider="codex", model="original-model", reasoning="low")
     )
-    await turn(
-        CoachRequest(
-            message="Continue",
-            session_id="original-session",
-            provider=provider,
-            model=model,
-            reasoning=reasoning,
-        )
+    requested = CoachRequest(
+        message="Continue",
+        session_id="original-session",
+        provider=provider,
+        model=model,
+        reasoning=reasoning,
     )
+    admitted = _resolved_coach_request(service, requested)
     expected = service.resolve_agent_profile(
         "paper_coach", provider=provider, model=model, reasoning=reasoning
     )
+    assert (admitted.model, admitted.reasoning) == (expected.model, expected.reasoning)
+    await turn(admitted)
     actual_provider, launch = launches[-1]
     assert actual_provider == provider
     assert launch["session_id"] == expected_session
@@ -100,7 +104,7 @@ async def test_coach_profile_changes_follow_chat_session_rules(
     )
     assert (admitted.provider, admitted.model, admitted.reasoning) == (
         current.provider,
-        expected.model or None,
+        expected.model,
         current.reasoning,
     )
     assert admitted.session_id is None

@@ -986,17 +986,36 @@ test("a coach conversation follows a provider switch into its fresh session and 
     native_session_id: "unrelated",
     created_at: "2026-07-28T00:00:01Z",
   });
+  const continuation = task({
+    operation_id: "continuation",
+    kind: "paper_coach",
+    native_session_id: null,
+    request: { session_id: "codex-session", provider: "codex" },
+    created_at: "2026-07-28T00:00:02Z",
+  });
+  assert.deepEqual(
+    coachConversation([earlier, other, continuation], "codex-session", []).tasks.map(
+      (item) => item.operation_id,
+    ),
+    ["earlier", "continuation"],
+  );
   // The server clears session_id when the provider changes; the turn opens a new session.
   const switched = task({
     operation_id: "switched",
     kind: "paper_coach",
     native_session_id: null,
-    request: { session_id: null, provider: "claude" },
+    request: { session_id: null, previous_session_id: "codex-session", provider: "claude" },
     created_at: "2026-07-28T00:00:02Z",
   });
   const admitted = coachConversation([earlier, other, switched], "codex-session", ["switched"]);
   assert.deepEqual(
     admitted.tasks.map((item) => item.operation_id),
+    ["earlier", "switched"],
+  );
+  assert.deepEqual(
+    coachConversation([earlier, other, switched], "codex-session", []).tasks.map(
+      (item) => item.operation_id,
+    ),
     ["earlier", "switched"],
   );
 
@@ -1027,6 +1046,25 @@ test("a coach conversation follows a provider switch into its fresh session and 
       (item) => item.operation_id,
     ),
     ["earlier", "switched", "next"],
+  );
+  assert.deepEqual(
+    coachConversation([earlier, other, recorded, next], "codex-session", []).tasks.map(
+      (item) => item.operation_id,
+    ),
+    ["earlier", "switched", "next"],
+  );
+  const switchedAgain = task({
+    operation_id: "switched-again",
+    kind: "paper_coach",
+    native_session_id: "opencode-session",
+    request: { session_id: null, previous_session_id: "claude-session", provider: "opencode" },
+    created_at: "2026-07-28T00:00:04Z",
+  });
+  assert.deepEqual(
+    coachConversation([earlier, other, recorded, switchedAgain], "opencode-session", []).tasks.map(
+      (item) => item.operation_id,
+    ),
+    ["earlier", "switched", "switched-again"],
   );
 });
 
