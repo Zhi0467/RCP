@@ -902,6 +902,98 @@ test("agent-thread watchers ride the beat with no project open, and only while w
   scheduler.stop();
 });
 
+test("a global beat issued before entry cannot admit a retained Space artifact into the new entry", async () => {
+  const time = fakeClock();
+  const store = new ResourceStore(() => time.clock.now());
+  const { reads, profile } = manualProfile("agent_threads", "");
+  const response = {
+    epoch: "e",
+    as_of: "",
+    projects: [],
+    unavailable: [],
+    agent_threads: { version: "v1" },
+  };
+  let hold = null;
+  const scheduler = new RefreshScheduler({
+    store,
+    clientId: "c",
+    openProjects: () => [],
+    activeProjectId: () => null,
+    send: async () => (hold ? hold.promise : response),
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.watchAgentThreads((version, ticket) =>
+    store.observe("", [{ name: "agent_threads", version }], ticket),
+  );
+  scheduler.start();
+  const id = store.register("retained", profile);
+  store.beginPresentation("retained", "first", [id]);
+  await time.advance(0);
+  reads[0].resolve("retained-v1");
+  await settle();
+  assert.equal(store.presentationView("retained", "first").status, "ready");
+  hold = deferred();
+  scheduler.now();
+  await time.advance(0);
+  store.beginPresentation("new", "entry", [id]);
+  assert.equal(store.presentationView("new", "entry").status, "loading");
+  hold.resolve(response);
+  await settle();
+  assert.equal(store.presentationView("new", "entry").status, "loading");
+  assert.equal(store.presentationView("retained", "first").views[0].value, "retained-v1");
+  hold = null;
+  await time.advance(1000);
+  assert.equal(store.presentationView("new", "entry").status, "ready");
+  assert.equal(reads.length, 1);
+  scheduler.stop();
+});
+
+test("a failed global entry observation exposes its failure and the next successful beat recovers", async () => {
+  const time = fakeClock();
+  const store = new ResourceStore(() => time.clock.now());
+  const { reads, profile } = manualProfile("agent_threads", "");
+  const offline = new Error("offline");
+  let failing = true;
+  const scheduler = new RefreshScheduler({
+    store,
+    clientId: "c",
+    openProjects: () => [],
+    activeProjectId: () => null,
+    send: async () => {
+      if (failing) throw offline;
+      return {
+        epoch: "e",
+        as_of: "",
+        projects: [],
+        unavailable: [],
+        agent_threads: { version: "v1" },
+      };
+    },
+    onLostAccess: () => {},
+    clock: time.clock,
+    visibility: { isHidden: () => false, listen: () => () => {} },
+  });
+  scheduler.watchAgentThreads((version, ticket) =>
+    store.observe("", [{ name: "agent_threads", version }], ticket),
+  );
+  scheduler.start();
+  const id = store.register("entry", profile);
+  store.beginPresentation("entry", "first", [id]);
+  await time.advance(0);
+  const refused = store.presentationView("entry", "first");
+  assert.equal(refused.status, "error");
+  assert.equal(refused.error, offline);
+  assert.equal(reads.length, 0);
+  failing = false;
+  await time.advance(3000);
+  reads[0].resolve("current-v1");
+  await settle();
+  assert.equal(store.presentationView("entry", "first").status, "ready");
+  scheduler.stop();
+});
+
 test("agent-card watchers hear each version change once, and only while watching", async () => {
   const time = fakeClock();
   const requests = [];
