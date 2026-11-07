@@ -52,6 +52,6 @@ export const desktopUpdateErrorDismissPrefix = "desktop-update-error:";
 
 export function desktopUpdateDismissKey(update: DesktopUpdate | null, error: string | null) {
   return error
-    ? `${desktopUpdateErrorDismissPrefix}${update?.version ?? "check"}:${error}`
+    ? `${desktopUpdateErrorDismissPrefix}${error}`
     : `desktop-update:${update?.version ?? "unknown"}`;
 }

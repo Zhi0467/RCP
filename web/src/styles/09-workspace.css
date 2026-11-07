@@ -33,6 +33,9 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.desktop-update-notice > svg {
+  flex-shrink: 0;
+}
 .desktop-update-notice.error {
   border-color: color-mix(in srgb, var(--red) 48%, var(--line));
   color: var(--red);

@@ -255,8 +255,11 @@ test("release notice transitions, actions, visibility, and storage through a ser
         await dismiss.click();
         await page.evaluate(() => window.refreshNativeUpdate());
         assert.equal(await notice.count(), 0);
-        await page.evaluate(() => history.replaceState(null, "", "?native#check-failure"));
-        await page.reload();
+        await page.evaluate(async () => {
+          window.nativeFailure = "Could not check for updates";
+          await window.refreshNativeUpdate();
+          history.replaceState(null, "", "?native#check-failure");
+        });
         await page.getByRole("alert").waitFor();
         await dismiss.click();
         await page.reload();
