@@ -544,7 +544,11 @@ test("switching files keeps each document's undo history, selection and scroll",
   await lastLine("line 60 edited");
   assert.equal(await page.locator(".paper-position").textContent(), position);
   // Scroll restores to the top visible line.
-  assert.ok(Math.abs((await scroller.evaluate((element) => element.scrollTop)) - scroll) < 40);
+  await page.waitForFunction(
+    (expected) => Math.abs(document.querySelector(".cm-scroller").scrollTop - expected) < 40,
+    scroll,
+    { timeout: 3000 },
+  );
   await page.locator(".cm-content").focus();
   await page.keyboard.press("ControlOrMeta+Z");
   await lastLine("line 60");
@@ -706,8 +710,22 @@ test("named versions can be deleted from history; automatic versions cannot", as
 });
 
 test("a newly created file receives typing and stays selected after reload", async (t) => {
-  const { page, room, fixture, errors } = await openPaper(t, {
+  const { page, context, room, fixture, errors } = await openPaper(t, {
     width: 390,
+    init: () => {
+      const render = (window.paperFocusRender = { held: false, pending: [] });
+      const NativeMessageChannel = window.MessageChannel;
+      window.MessageChannel = class extends NativeMessageChannel {
+        constructor() {
+          super();
+          const post = this.port2.postMessage.bind(this.port2);
+          this.port2.postMessage = (...args) => {
+            if (render.held) render.pending.push(() => post(...args));
+            else post(...args);
+          };
+        }
+      };
+    },
     configure: ({ tree }) =>
       tree.files.push(
         { ...tree.files[0], file_id: "s12", path: "section 12.md" },
@@ -725,8 +743,29 @@ test("a newly created file receives typing and stays selected after reload", asy
   const path = page.getByRole("textbox", { name: "File path" });
   assert.ok((await path.boundingBox()).height >= 44);
   await path.fill("new.md");
+  let releaseTree;
+  const treeHeld = new Promise((resolve) => (releaseTree = resolve));
+  t.after(() => releaseTree());
+  await context.route("**/paper/tree", async (route) => {
+    await treeHeld;
+    await route.fulfill(fixture.respond(new URL(route.request().url()).pathname));
+  });
+  const createdTree = page.waitForRequest((request) => request.url().endsWith("/paper/tree"));
+  await page.evaluate(() => (window.paperFocusRender.held = true));
   await path.press("Enter");
-  await page.waitForFunction(() => document.activeElement?.classList.contains("cm-content"));
+  await createdTree;
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await page.evaluate(() => {
+    const render = window.paperFocusRender;
+    render.held = false;
+    for (const post of render.pending.splice(0)) post();
+  });
+  releaseTree();
+  await page.waitForFunction(
+    () => document.activeElement?.classList.contains("cm-content"),
+    undefined,
+    { timeout: 3000 },
+  );
   await page.waitForFunction(editorMatches, "");
   await page.keyboard.insertText("new words");
   await saved(page, true);
@@ -739,6 +778,63 @@ test("a newly created file receives typing and stays selected after reload", asy
   await page.waitForFunction(editorMatches, "new words");
   assert.equal(await page.locator(".paper-path").textContent(), "new.md");
   assert.deepEqual(errors, []);
+});
+
+test("a delayed document does not take focus after leaving Write", async (t) => {
+  for (const panel of ["Preview", "Coach"]) {
+    const { page, errors } = await openPaper(t, { width: 390, configure: secondFile });
+    await page.evaluate(() => {
+      window.paperEditorFocusCalls = [];
+      const focus = HTMLElement.prototype.focus;
+      HTMLElement.prototype.focus = function (...args) {
+        if (this.matches(".cm-content"))
+          window.paperEditorFocusCalls.push(document.querySelector(".paper-path")?.textContent);
+        return focus.apply(this, args);
+      };
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function (...args) {
+        const request = open.apply(this, args);
+        if (args[0].endsWith(',"f2"]')) {
+          let released = false;
+          request.addEventListener(
+            "success",
+            (event) => {
+              if (released) return;
+              event.stopImmediatePropagation();
+              window.releasePaperStorage = () => {
+                released = true;
+                request.dispatchEvent(new Event("success"));
+              };
+            },
+            true,
+          );
+        }
+        return request;
+      };
+    });
+    await page.getByRole("button", { name: "Show files", exact: true }).click();
+    await page.getByRole("button", { name: "second.md", exact: true }).click();
+    await page.waitForFunction(() => window.releasePaperStorage, undefined, { timeout: 3000 });
+    await page.getByLabel("Loading document").waitFor();
+    const destination = page
+      .getByRole("group", { name: "Paper view" })
+      .getByRole("button", { name: panel, exact: true });
+    await destination.click();
+    const input =
+      panel === "Coach" ? page.getByRole("textbox", { name: "Message", exact: true }) : destination;
+    await input.focus();
+    await page.evaluate(() => {
+      window.paperEditorFocusCalls.length = 0;
+      window.releasePaperStorage();
+    });
+    await page.waitForFunction(editorMatches, "draft", { timeout: 3000 });
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    );
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true);
+    assert.deepEqual(await page.evaluate(() => window.paperEditorFocusCalls), []);
+    assert.deepEqual(errors, []);
+  }
 });
 
 test("reloading onto a deleted file opens the first file", async (t) => {
@@ -755,7 +851,7 @@ test("reloading onto a deleted file opens the first file", async (t) => {
 });
 
 test("phone Write returns keyboard focus to the document", async (t) => {
-  const { page } = await openPaper(t, { width: 390 });
+  const { page, errors } = await openPaper(t, { width: 390 });
   await page.locator(".cm-content").click();
   await page.keyboard.press("ControlOrMeta+End");
   await page.getByRole("button", { name: "Preview", exact: true }).first().click();
@@ -763,6 +859,13 @@ test("phone Write returns keyboard focus to the document", async (t) => {
   await page.waitForFunction(() => document.activeElement?.classList.contains("cm-content"));
   await page.keyboard.insertText(" returned");
   await page.waitForFunction(editorMatches, "draft returned");
+  await page.evaluate(() => {
+    document.querySelector('[aria-label="Paper view"] button').click();
+    window.paperTab.leave();
+  });
+  await page.locator(".cm-content").waitFor({ state: "detached" });
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  assert.deepEqual(errors, []);
 });
 
 test("beforeunload is prevented only while the open document is unsaved", async (t) => {

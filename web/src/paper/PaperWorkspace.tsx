@@ -382,20 +382,27 @@ export function PaperWorkspace({
     writePref(FOLD_KEY, "false");
   };
   // Focus follows an explicit request (Write, a picked or new file), never a load.
-  const focusPending = useRef(false);
-  const focusEditor = () => {
-    focusPending.current = true;
-    requestAnimationFrame(() => {
-      const editor = writingPane.current?.querySelector<HTMLElement>(".cm-content");
-      if (!editor) return;
-      focusPending.current = false;
-      editor.focus();
-    });
+  const focusPending = useRef<string | null>(null);
+  const focusReady = useCallback((id: string) => {
+    const pane = writingPane.current;
+    if (focusPending.current !== id || pane?.dataset.file !== id) return;
+    const editor = pane.querySelector<HTMLElement>(".cm-editor");
+    const view = editor && EditorView.findFromDOM(editor);
+    if (!view) return;
+    focusPending.current = null;
+    view.focus();
+  }, []);
+  const focusEditor = (id = file?.file_id) => {
+    if (!id) return;
+    focusPending.current = id;
+    if (document?.key.file === id) requestAnimationFrame(() => focusReady(id));
   };
-  const switchView = (next: typeof view) => {
+  const switchView = (next: typeof view, id = file?.file_id) => {
     setView(next);
-    if (next !== "write") setRight(next);
-    else focusEditor();
+    if (next !== "write") {
+      focusPending.current = null;
+      setRight(next);
+    } else focusEditor(id);
   };
   const locate = (next: PaperFocus) => {
     setSelected(next.file_id);
@@ -427,7 +434,7 @@ export function PaperWorkspace({
         onSelect={(id, existsAt) => {
           setSelected(id, existsAt);
           setFilesOpen(false);
-          switchView("write");
+          switchView("write", id);
         }}
         onFold={fold}
         onChanged={refresh}
@@ -449,7 +456,7 @@ export function PaperWorkspace({
               title={strandedElsewhere.path}
               onClick={() => {
                 setSelected(strandedElsewhere.file_id);
-                switchView("write");
+                switchView("write", strandedElsewhere.file_id);
               }}
             >
               <FileWarning size={16} />
@@ -486,7 +493,7 @@ export function PaperWorkspace({
                       const [created] = receipt.file_ids;
                       // The new file holds this text now; it opens where the writer was.
                       if (cursor) carryPaperSelection({ ...document.key, file: created }, cursor);
-                      focusPending.current = true;
+                      focusPending.current = created;
                       // Select first: a render between the two would find the deleted file
                       // neither listed nor stranded and open another one.
                       flushSync(() => setSelected(created, receipt.revision));
@@ -537,11 +544,11 @@ export function PaperWorkspace({
           </div>
           {phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </div>
-        <div className="paper-writing-pane" ref={writingPane}>
+        <div className="paper-writing-pane" ref={writingPane} data-file={document?.key.file}>
           {document ? (
             <LiveEditor
               owner={document}
-              focusPending={focusPending}
+              onReady={focusReady}
               maxBytes={tree?.max_doc_bytes}
               format={file!.format}
               changes={changeFeed.changes}
@@ -798,18 +805,15 @@ function DocumentStatus({
   );
 }
 function LiveEditor({
-  focusPending,
+  onReady,
   ...props
-}: React.ComponentProps<typeof PaperEditor> & { focusPending: { current: boolean } }) {
+}: React.ComponentProps<typeof PaperEditor> & { onReady: (id: string) => void }) {
   const state = useSyncExternalStore(props.owner.subscribe, props.owner.getSnapshot);
   useEffect(() => {
-    if (!state.ready || !focusPending.current) return;
-    const frame = requestAnimationFrame(() => {
-      focusPending.current = false;
-      window.document.querySelector<HTMLElement>(".paper-writing-pane .cm-content")?.focus();
-    });
+    if (!state.ready) return;
+    const frame = requestAnimationFrame(() => onReady(props.owner.key.file));
     return () => cancelAnimationFrame(frame);
-  }, [props.owner, state.ready, focusPending]);
+  }, [props.owner, state.ready, onReady]);
   return state.ready ? (
     <PaperEditor {...props} />
   ) : (

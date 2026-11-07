@@ -44,7 +44,9 @@ Stable file ids survive renames. File, folder, and root menus offer the applicab
 Create, Upload, Rename, Download, and Delete actions. Folders exist through file
 paths, so empty folders are browser-local. Renaming or deleting a folder creates
 one revision. Downloading a folder produces one zip. Desktop uses native save
-dialogs. New and uploaded files open immediately. Replacement uploads require
+dialogs. New and uploaded files open immediately. Typing focus waits for the
+selected file's editor; an older editor cannot consume that request. Choosing
+Preview or Coach cancels pending editor focus. Replacement uploads require
 confirmation. Splits retain a usable width and the browser's preference. They
 support keyboard resizing and omit the divider when stacked.
 
@@ -546,9 +548,9 @@ and admission refuses a moved version. Validation and recording of the new turn
 share the artifact lock; replaying an accepted request returns its recorded turn.
 Older clients that omit a version freeze current bytes at admission. Before turns,
 unchanged tracked files synchronize to current versions after Undo or peer edits.
-Locally changed or missing files
-remain as they are. A new comment restores its selected version even over missing
-text or text from a failed turn. Retrying or resuming the same comment keeps changes.
+Locally changed or missing files remain as they are. A new comment restores its
+selected version even over missing text or text from a failed turn. Retrying or
+resuming the same comment keeps changes.
 It restores current bytes only when the file is missing. Different stages get a
 turn-relative copy that publishes at settlement but is not tracked later. Read-only
 crops remain inputs. Question answers need no extant artifact. Other tracked-file
