@@ -215,6 +215,7 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
 _EXEMPT_TABLES = {
     "agent_threads": "private thread index; thread views poll directly",
     "agent_schedules": "private schedule state; thread views poll directly",
+    "agent_schedule_command_receipts": "private schedule replay; schedule deletion owns cleanup",
     "approval_cards": "question-owned action; questions invalidate resolution",
     "agent_handoffs": "durable delivery",
     "agent_thread_queue": "member queue; the agent_threads rail invalidates it",

@@ -26,9 +26,9 @@ project move leaves while it is under way, as
 ``test_schedule_wake_rechecks_transfer_fence`` does; driving a real transfer is
 the transfer catalog entry's job.
 
-Bound 3 runs within the budget only without the member's Cancel, Enable and
-composer sends, which no rule reads: the waiting wake keeps the thread busy, so
-a send is not needed to hold a note. The schedule tests cover Cancel and Enable.
+Bound 3 includes keyed Pause, Resume and Cancel, receipt replay and member
+Pause/Resume, so stale commands cross newer opposite changes. Enable and composer
+sends remain in the schedule tests: the waiting wake already holds the thread busy.
 A schedule with no next fire is offered only the one-minute tick; longer ticks
 reach the same rows and differ only in the age of a waiting note.
 """
@@ -129,6 +129,7 @@ class View(NamedTuple):
     closed: bool
     fenced: bool
     restored: bool
+    commands: tuple[str, ...]
 
 
 @dataclass
@@ -140,6 +141,7 @@ class World:
     poller: ConsolidationPoller
     clock: Clock
     last_action: str | None = None
+    replay_error: str | None = None
 
     @property
     def workers(self) -> set[str]:
@@ -183,12 +185,13 @@ class Schedules:
     bound = 3
     horizon = 2
     covers = {_ScheduleState: ("state", None)}
-    tables = frozenset({"agent_schedules"})
+    tables = frozenset({"agent_schedules", "agent_schedule_command_receipts"})
     writers = (
-        AgentSchedulesStoreMixin.add_agent_schedule,
-        AgentSchedulesStoreMixin.cancel_agent_schedule,
-        AgentSchedulesStoreMixin.pause_agent_schedule,
-        AgentSchedulesStoreMixin.reactivate_agent_schedule,
+        AgentSchedulesStoreMixin._add_agent_schedule,
+        AgentSchedulesStoreMixin._cancel_agent_schedule,
+        AgentSchedulesStoreMixin._pause_agent_schedule,
+        AgentSchedulesStoreMixin._reactivate_agent_schedule,
+        AgentSchedulesStoreMixin.run_agent_schedule_command,
         AgentSchedulesStoreMixin.defer_agent_schedules,
         AgentSchedulesStoreMixin.advance_agent_schedules,
         AgentSchedulesStoreMixin.claim_agent_schedule_wake,
@@ -199,13 +202,10 @@ class Schedules:
         _remove_member_agent_data,
         ProjectStoreMixin.delete_project_records,
     )
-    unreached_values = {"cancelled": "Cancel is not modeled, as the module docstring says"}
+    unreached_values = {}
     unreached_writers = {
-        AgentSchedulesStoreMixin.add_agent_schedule: (
+        AgentSchedulesStoreMixin._add_agent_schedule: (
             "start adds the one schedule; a wake's every-minute add is refused before the store"
-        ),
-        AgentSchedulesStoreMixin.cancel_agent_schedule: (
-            "Cancel is not modeled, as the module docstring says"
         ),
         migrate_agent_schedule_pending_fires: (
             "a migration runs when a store opens, never inside an action"
@@ -285,7 +285,7 @@ class Schedules:
                 world.tasks._workers[operation[name]] = HeldWorker()
 
     def actions(self, view: View) -> list[Action]:
-        state, schedule, turns, closed, fenced, restored = view
+        state, schedule, turns, closed, fenced, restored, commands = view
         ticks = _TICKS if schedule[1] is not None else _TICKS[:1]
         found = [Action("tick", (str(minutes),)) for minutes in ticks]
         for name, status, worker in turns:
@@ -297,8 +297,13 @@ class Schedules:
         if not closed:
             if state == "active":
                 found.append(Action("pause", environment=False))
+                found.append(Action("command_pause", environment=False))
             if state == "paused":
                 found.append(Action("resume", environment=False))
+                found.append(Action("command_resume", environment=False))
+            if state not in {"cancelled", "disabled"}:
+                found.append(Action("command_cancel", environment=False))
+            found.extend(Action("replay", (action,), environment=False) for action in commands)
             found.append(Action("close"))
         if not fenced and state == "active":
             found.append(Action("fence"))
@@ -322,6 +327,10 @@ class Schedules:
             _add_from_wake(world, world.wakes()[action.args[0]].operation_id)
         elif action.name in {"pause", "resume"}:
             _member_control(world, action.name)
+        elif action.name.startswith("command_"):
+            _command_control(world, action.name.removeprefix("command_"))
+        elif action.name == "replay":
+            _replay(world, action.args[0])
         elif action.name == "close":
             store.close_agent_thread(THREAD, reason="access_lost")
         elif action.name == "fence":
@@ -353,6 +362,7 @@ class Schedules:
             world.thread_closed(),
             _fenced(world.store),
             _restored(world.store),
+            tuple(row[0] for row in _receipts(world.store)),
         )
 
     @property
@@ -409,6 +419,38 @@ def _member_control(world: World, verb: str) -> None:
         store=store,
         identity_access=cast(Any, identity),
     )
+
+
+def _command_control(world: World, action: str) -> None:
+    from rcp.runs.agent_schedules import handle_schedule
+
+    response = handle_schedule(
+        world.store,
+        ORIGIN,
+        schedule_command(action, action=action, schedule_id=world.schedule().schedule_id),
+    )
+    assert response.status == "ok", response.message
+
+
+def _receipts(store: AppStore):
+    with store.connection() as connection:
+        return connection.execute(
+            "SELECT action, idempotency_key, arguments_json, result_json "
+            "FROM agent_schedule_command_receipts ORDER BY action"
+        ).fetchall()
+
+
+def _replay(world: World, action: str) -> None:
+    from rcp.runs.agent_schedules import handle_schedule
+
+    receipt = next(row for row in _receipts(world.store) if row[0] == action)
+    before = world.store.agent_schedules(THREAD)
+    request = schedule_command(receipt[1], **json.loads(receipt[2]))
+    response = handle_schedule(world.store, ORIGIN, request)
+    if response.status != "ok" or response.result != json.loads(receipt[3]):
+        world.replay_error = f"{action} replay did not return its accepted result"
+    if world.store.agent_schedules(THREAD) != before:
+        world.replay_error = f"{action} replay changed the current schedule"
 
 
 def _fence(store: AppStore) -> None:
@@ -614,6 +656,11 @@ def restore_disables_and_clears_notes(before: View, world: World) -> list[str]:
     return found
 
 
+def replay_keeps_the_current_schedule_and_accepted_result(before: View, world: World) -> list[str]:
+    """A receipt replay returns its accepted result without changing the current schedule."""
+    return [world.replay_error] if world.replay_error else []
+
+
 _SPEC = "consolidation spec: Private agent schedules"
 
 RULES = (
@@ -630,4 +677,5 @@ RULES = (
     Step(waiting_note_says_why, _ticked, _SPEC),
     Step(tick_keeps_or_claims_the_note, _ticked_with_a_note, _SPEC),
     Step(restore_disables_and_clears_notes, _restoring, _SPEC),
+    Step(replay_keeps_the_current_schedule_and_accepted_result, _always, _SPEC),
 )

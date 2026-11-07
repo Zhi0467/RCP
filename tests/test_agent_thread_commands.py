@@ -749,6 +749,11 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
             "INSERT INTO agent_schedules(schedule_id,thread_id,created_operation_id,idempotency_key,cron,timezone,note,state,created_at) VALUES('schedule',?,'source','key','0 9 * * *','UTC','note','active',?)",
             (source.thread_id, store.now()),
         )
+        connection.execute(
+            "INSERT INTO agent_schedule_command_receipts VALUES "
+            "('source','add','key',?,'schedule','{}','{}',?)",
+            (source.thread_id, store.now()),
+        )
     directory = store.path.parent / "agent-threads" / member.user_id
     directory.mkdir(parents=True)
     (directory / f"{source.thread_id}.jsonl").write_text("private")
@@ -758,6 +763,10 @@ def test_member_removal_discards_space_transcript_and_pending_agent_work(tmp_pat
     assert not store.pending_agent_handoffs()
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM agent_schedules").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT count(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
         assert connection.execute("SELECT count(*) FROM agent_thread_queue").fetchone()[0] == 0
     assert store.agent_thread(target.thread_id) is not None
 

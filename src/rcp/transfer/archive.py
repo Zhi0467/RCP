@@ -86,6 +86,7 @@ TRANSFER_RESEARCH_EXCLUDED_ROOTS = frozenset(
 TRANSFER_GLOBAL_TABLES = frozenset(
     {
         "agent_schedules",
+        "agent_schedule_command_receipts",
         "approval_cards",
         "agent_handoffs",
         "agent_thread_queue",
