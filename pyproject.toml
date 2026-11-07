@@ -18,7 +18,7 @@ dependencies = [
   "uvicorn[standard]>=0.35.0",
   "anyio>=4.0",
   "markdown-it-py>=4.2.0",
-  "pillow>=12.3.0",
+  "pillow>=13.0.0",
   "cryptography>=45",
   "pycrdt==0.14.10",
 ]
