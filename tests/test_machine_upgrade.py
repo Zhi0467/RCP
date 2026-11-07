@@ -305,13 +305,17 @@ def test_a_legacy_receipt_whose_digest_does_not_match_is_refused() -> None:
 
 
 def _old_store(
-    path: Path, monkeypatch: pytest.MonkeyPatch, seed: Callable[[sqlite3.Connection], None]
+    path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seed: Callable[[sqlite3.Connection], None],
+    *,
+    through_version: int = 76,
 ) -> None:
     migrations = AppStoreBase._STORAGE_SCHEMA_MIGRATIONS
     run_migration = AppStoreBase._run_storage_schema_migration
 
     def old_migration(self, connection, *, version, name, migration) -> None:
-        if version < 77:
+        if version <= through_version:
             run_migration(self, connection, version=version, name=name, migration=migration)
 
     with monkeypatch.context() as legacy:
@@ -321,7 +325,7 @@ def _old_store(
         legacy.setattr(
             AppStoreBase,
             "_STORAGE_SCHEMA_MIGRATIONS",
-            tuple(item for item in migrations if item[0] < 77),
+            tuple(item for item in migrations if item[0] <= through_version),
         )
         old = AppStore(path)
         with old.connection() as connection:
@@ -553,7 +557,7 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
     store.close()
 
     reopened = AppStore(path)
-    assert reopened.storage_schema_ledger_head() == 77
+    assert reopened.storage_schema_ledger_head() == AppStoreBase._STORAGE_SCHEMA_MIGRATIONS[-1][0]
     reopened.close()
 
 
@@ -586,3 +590,140 @@ def test_a_repeated_project_rekey_keeps_backend_rows_before_the_card_exists(tmp_
     with store.connection() as connection:
         rows = connection.execute("SELECT machine_id FROM compute_backend_probes").fetchall()
     assert [row["machine_id"] for row in rows] == [BACKEND]
+
+
+@pytest.mark.parametrize("through_version", [76, 77])
+@pytest.mark.parametrize(
+    "variation",
+    [
+        "null",
+        "absent",
+        "backend",
+        "remote",
+        "unknown",
+        "empty",
+        "missing_task",
+        "project",
+        "question_project",
+        "operation",
+        "provider",
+        "session",
+        "root",
+        "missing_root",
+        "empty_root",
+        "both_empty_root",
+        "numeric_root",
+        "task_null",
+        "task_empty",
+        "task_remote",
+        "task_unknown",
+    ],
+)
+def test_local_question_origin_repair_requires_asking_task_provenance(
+    tmp_path, monkeypatch, through_version, variation
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    origin = {
+        "owner_kind": "episode",
+        "owner_id": "episode",
+        "project_id": "project",
+        "operation_id": "ask",
+        "provider": "codex",
+        "native_session_id": "native",
+        "stage_root": "/exact/stage",
+        "capability": "work_auto",
+        "write_scope_fingerprint": "a" * 64,
+        "graph_target": {"kind": "main", "branch_id": None},
+    }
+    machine = {"backend": BACKEND, "remote": GPU, "unknown": "removed", "empty": ""}
+    stage_key = "stage_host" if through_version == 76 else "stage_machine_id"
+    if variation != "absent":
+        origin[stage_key] = machine.get(variation)
+    if variation in {"project", "operation", "provider", "session", "root"}:
+        field = {
+            "project": "project_id",
+            "operation": "operation_id",
+            "provider": "provider",
+            "session": "native_session_id",
+            "root": "stage_root",
+        }[variation]
+        origin[field] = "different"
+    if variation == "missing_root":
+        origin.pop("stage_root")
+    elif variation in {"empty_root", "both_empty_root"}:
+        origin["stage_root"] = ""
+    elif variation == "numeric_root":
+        origin["stage_root"] = 123
+    if through_version == 76 and variation in machine:
+        origin[stage_key] = {
+            "backend": "",
+            "remote": "gpu.example",
+            "unknown": "gone.example",
+            "empty": "gone.example",
+        }[variation]
+    before = {}
+
+    def seed(connection):
+        task_machine = {
+            "task_null": None,
+            "task_empty": "",
+            "task_remote": GPU,
+            "task_unknown": "removed",
+        }.get(variation, BACKEND)
+        if through_version == 76:
+            task_machine = (
+                None
+                if variation == "task_null"
+                else {
+                    "task_remote": "gpu.example",
+                    "task_unknown": "gone.example",
+                    "task_empty": "gone.example",
+                }.get(variation, "")
+            )
+            connection.execute(
+                "INSERT INTO space_machines (machine_id, name, host, os_account, writable_paths_json, created_at, updated_at) VALUES (?, 'GPU', 'gpu.example', '', '[]', ?, ?)",
+                (GPU, NOW, NOW),
+            )
+        if variation != "missing_task":
+            task_root = {"both_empty_root": "", "numeric_root": "123"}.get(
+                variation, "/exact/stage"
+            )
+            connection.execute(
+                f"INSERT INTO graph_runs (operation_id, project_id, kind, status, request_json, created_at, updated_at, status_message, native_session_id, stage_root, {stage_key}) VALUES ('ask', 'project', 'node_chat', 'succeeded', ?, ?, ?, 'Settled', 'native', ?, ?)",
+                (json.dumps({"provider": "codex"}), NOW, NOW, task_root, task_machine),
+            )
+        connection.execute(
+            "INSERT INTO questions (question_id, project_id, owner_kind, owner_id, key, origin_json, argument_hash, question, choices_json, multiple, state, answer, chosen_choices_json, resolved_by_json, resolved_at, answer_revision, client_receipt_revision, client_receipt_operation_id, client_receipt_request_id, client_receipt_at, followup_operation_id, followup_claimed_at, dismissal_delivered_at, created_at) VALUES ('q', 'project', 'episode', 'episode', 'metric', ?, 'digest', 'Which metric?', '[\"Accuracy\"]', 0, 'answered', 'Accuracy', '[\"Accuracy\"]', '{}', ?, 3, 2, 'receipt-op', 'request', ?, 'followup', ?, ?, ?)",
+            (json.dumps(origin), NOW, NOW, NOW, NOW, NOW),
+        )
+        if variation == "question_project":
+            connection.execute("UPDATE questions SET project_id = 'different'")
+        before.update(dict(connection.execute("SELECT * FROM questions").fetchone()))
+
+    _old_store(path, monkeypatch, seed, through_version=through_version)
+    store = AppStore(path)
+    with store.connection() as connection:
+        after = dict(connection.execute("SELECT * FROM questions").fetchone())
+        expected_origin = dict(origin)
+        if through_version == 76 and "stage_host" in expected_origin:
+            host = expected_origin.pop("stage_host")
+            expected_origin["stage_machine_id"] = (
+                None if host is None else {"": BACKEND, "gpu.example": GPU}.get(host, "")
+            )
+        repairable = variation in {"null", "absent"} or (
+            through_version == 76 and variation == "task_null"
+        )
+        if repairable:
+            expected_origin["stage_machine_id"] = BACKEND
+        assert json.loads(after.pop("origin_json")) == expected_origin
+        before.pop("origin_json")
+        assert after == before
+        from rcp.machine_upgrade import migrate_local_question_origins
+
+        snapshot = connection.execute("SELECT origin_json FROM questions").fetchone()[0]
+        migrate_local_question_origins(connection)
+        assert connection.execute("SELECT origin_json FROM questions").fetchone()[0] == snapshot
+    store.close()
+    reopened = AppStore(path)
+    assert reopened.storage_schema_ledger_head() == AppStoreBase._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+    reopened.close()

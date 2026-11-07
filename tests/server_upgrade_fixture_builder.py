@@ -180,6 +180,7 @@ def upgrade_fixture(
     boundary: str,
     commit: str,
     complete_experiment_task: bool,
+    local_question_origin: bool = False,
 ) -> None:
     if output.exists():
         raise ValueError(f"fixture output must be absent: {output}")
@@ -199,6 +200,10 @@ def upgrade_fixture(
         project = store.project(project_id)
         if project is None:
             raise RuntimeError("fixture upgrade lost its project")
+        if local_question_origin:
+            from rcp.projects import fill_space_machines
+
+            fill_space_machines(store, output / "data")
         manifest = load_manifest(project.locator)
         materialized = HistoryManager(
             manifest,
@@ -234,6 +239,18 @@ def upgrade_fixture(
         member = store.space_user(user_id)
         if member is None:
             raise RuntimeError("fixture upgrade lost its member")
+        if local_question_origin:
+            metadata.update(
+                _create_local_question_fixture(
+                    store,
+                    project_id=project_id,
+                    authorized_by=AuthorizedHuman(
+                        space_id=store.space_id,
+                        user_id=member.user_id,
+                        display_name=member.display_name,
+                    ),
+                )
+            )
         prior_provisioning_request_id = metadata.get("provisioning_request_id")
         store, provisioning_request_id, provisioning_project_id = _provisioning_fixture(
             store,
@@ -371,6 +388,105 @@ def _create_experiment_fixture(
     if reopened.experiment_episode(episode_id) is None:
         raise RuntimeError("fixture Experiment episode did not survive restart")
     return reopened, episode_id, operation_id
+
+
+def _create_local_question_fixture(
+    store: AppStore, *, project_id: str, authorized_by: AuthorizedHuman
+) -> dict[str, str]:
+    """Use the boundary writer's APIs to retain the proven local-null question shape."""
+    from rcp.core.transition_models import GraphTargetRef
+    from rcp.service import resolve_dispatch_authority
+    from rcp.storage.question_models import QuestionOrigin
+
+    episode_id = str(uuid.uuid4())
+    operation_id = str(uuid.uuid4())
+    stage_root = "project/.research/local-question-stage"
+    Path(stage_root).mkdir()
+    (Path(stage_root) / "context.txt").write_text("Sanitized question stage.\n", encoding="utf-8")
+    request = RunRequest(
+        provider="codex",
+        model="gpt-5",
+        reasoning="medium",
+        run_on="backend",
+        run_truth_scope=["repo"],
+        chat_id="local-question-chat",
+        node_id="exp/local-question",
+        message="Ask which evaluation metric to use.",
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/local-question",
+        control_revision=1,
+        control_episode_id=episode_id,
+        control_invocation=1,
+        control_invocation_ceiling=2,
+        control_completion_criteria=["The fixture evaluation has finished."],
+    )
+    now = store.now()
+    store.create_experiment_episode_with_invocation(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=project_id,
+            episode_id=episode_id,
+            kind="node_chat",
+            status="queued",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="Fixture question invocation was queued.",
+            authorized_by=authorized_by,
+            dispatch_authority=resolve_dispatch_authority("node_chat", request),
+            write_scope_fingerprint="b" * 64,
+        )
+    )
+    store.checkpoint_agent_task(
+        operation_id,
+        native_session_id="local-question-native-session",
+        stage_machine_id="backend",
+        stage_root=stage_root,
+    )
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id=project_id,
+        control_node_id="exp/local-question",
+        provider="codex",
+        machine_id="backend",
+        native_session_id="local-question-native-session",
+        stage_machine_id="backend",
+        stage_root=stage_root,
+        chat_id="local-question-chat",
+        operation_id=operation_id,
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[],
+        context_baseline={},
+    )
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    question = store.create_or_get_question(
+        origin=QuestionOrigin(
+            owner_kind="episode",
+            project_id=project_id,
+            owner_id=episode_id,
+            operation_id=operation_id,
+            provider="codex",
+            native_session_id="local-question-native-session",
+            stage_machine_id=None,
+            stage_root=stage_root,
+            capability="work_auto",
+            write_scope_fingerprint="b" * 64,
+            graph_target=GraphTargetRef(),
+        ),
+        key="evaluation-metric",
+        question="Which evaluation metric?",
+        choices=["Accuracy", "Recall"],
+    )
+    assert question.state == "pending" and question.origin.stage_machine_id is None
+    assert store.episode(episode_id).invocations_used == 1
+    return {
+        "local_question_id": question.question_id,
+        "local_question_operation_id": operation_id,
+        "local_question_episode_id": episode_id,
+    }
 
 
 def _provisioning_fixture(
@@ -634,10 +750,13 @@ def main() -> None:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--source-fixture", type=Path)
     parser.add_argument("--complete-experiment-task", action="store_true")
+    parser.add_argument("--local-question-origin", action="store_true")
     args = parser.parse_args()
     output = args.output.resolve()
     if args.complete_experiment_task and args.source_fixture is None:
         parser.error("--complete-experiment-task requires --source-fixture")
+    if args.local_question_origin and args.source_fixture is None:
+        parser.error("--local-question-origin requires --source-fixture")
     if args.source_fixture is None:
         build_fixture(output, boundary=args.boundary, commit=args.commit)
     else:
@@ -647,6 +766,7 @@ def main() -> None:
             boundary=args.boundary,
             commit=args.commit,
             complete_experiment_task=args.complete_experiment_task,
+            local_question_origin=args.local_question_origin,
         )
 
 
