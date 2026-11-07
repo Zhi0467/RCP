@@ -285,14 +285,21 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
             if has_work(head.target):
                 return False
             target_json = graph_target_json(head.target)
-            # A nested fork with live work still merges back into this one.
-            for nested in connection.execute(
-                "SELECT branch_id FROM graph_branches WHERE project_id=? AND archived=0 "
-                "AND json_extract(parent_target_json, '$.branch_id')=?",
-                (project_id, head.target.branch_id),
-            ).fetchall():
-                if has_work(GraphTargetRef(kind="branch", branch_id=nested["branch_id"])):
-                    return False
+            if (
+                connection.execute(
+                    "WITH RECURSIVE descendants(branch_id, archived) AS ("
+                    "SELECT branch_id, archived FROM graph_branches WHERE project_id=? "
+                    "AND json_extract(parent_target_json, '$.branch_id')=? "
+                    "UNION "
+                    "SELECT branch.branch_id, branch.archived FROM graph_branches AS branch "
+                    "JOIN descendants ON json_extract(branch.parent_target_json, '$.branch_id')="
+                    "descendants.branch_id WHERE branch.project_id=?"
+                    ") SELECT 1 FROM descendants WHERE archived=0 LIMIT 1",
+                    (project_id, head.target.branch_id, project_id),
+                ).fetchone()
+                is not None
+            ):
+                return False
             # A failed publication may have landed remotely despite an unchanged
             # local snapshot. It is never evidence that the fork stayed empty.
             if (

@@ -2811,6 +2811,93 @@ def test_fork_child_target_is_owned_and_continuations_cannot_apply_to_parent(tmp
     assert store.episode_budget_meter(parent.episode_id).invocations_used == 1
 
 
+@pytest.mark.parametrize("settled", [False, True])
+@pytest.mark.parametrize("archived_intermediate", [False, True])
+def test_empty_fork_archive_retains_open_descendants(tmp_path, settled, archived_intermediate):
+    store, parent, root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    head = GraphHeadRef(target=target, revision=0)
+    intermediate = _owned_fork(store, parent.model_copy(update={"graph_target": target}))
+    descendant = _owned_fork(store, parent.model_copy(update={"graph_target": intermediate}))
+    route, task = _work_pair(store, parent, root, worker_id="deep-worker")
+    task = task.model_copy(update={"graph_target": descendant})
+    store.create_auto_research_child_work(route, task)
+    if settled:
+        store.complete_agent_task(task.operation_id, applied_revision=1, result={})
+    if archived_intermediate:
+        store.set_branch_archived(parent.project_id, intermediate.branch_id, archived=True)
+
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    assert not store.graph_branch(parent.project_id, target.branch_id).archived
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_empty_fork_archive_retains_manual_or_nonautomatic_child(tmp_path, owned):
+    store, parent, _root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    head = GraphHeadRef(target=target, revision=0)
+    child = store.create_graph_branch(
+        project_id=parent.project_id,
+        branch_id=str(uuid.uuid4()),
+        owner_episode_id=parent.episode_id if owned else None,
+        parent_head=head,
+        created_by="member:test",
+    )
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    assert not store.archive_empty_auto_research_fork(
+        parent.project_id,
+        GraphHeadRef(target=GraphTargetRef(kind="branch", branch_id=child.branch_id), revision=0),
+    )
+    store.set_branch_archived(parent.project_id, child.branch_id, archived=True)
+    assert store.archive_empty_auto_research_fork(parent.project_id, head)
+
+
+@pytest.mark.parametrize("candidate_in_cycle", [False, True])
+def test_empty_fork_archive_terminates_cycles(tmp_path, candidate_in_cycle):
+    store, parent, _root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    head = GraphHeadRef(target=target, revision=0)
+    child = _owned_fork(store, parent.model_copy(update={"graph_target": target}))
+    store.set_branch_archived(parent.project_id, child.branch_id, archived=True)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_branches SET parent_target_json=? WHERE project_id=? AND branch_id=?",
+            (
+                child.model_dump_json(),
+                parent.project_id,
+                target.branch_id if candidate_in_cycle else child.branch_id,
+            ),
+        )
+    assert store.archive_empty_auto_research_fork(parent.project_id, head) is (
+        not candidate_in_cycle
+    )
+
+
+def test_empty_fork_archive_descendants_stay_within_project(tmp_path):
+    store, parent, _root = _setup_parent(tmp_path)
+    target = _owned_fork(store, parent)
+    head = GraphHeadRef(target=target, revision=0)
+    intermediate = _owned_fork(store, parent.model_copy(update={"graph_target": target}))
+    store.set_branch_archived(parent.project_id, intermediate.branch_id, archived=True)
+    project = store.project(parent.project_id)
+    assert project is not None
+    other_project = "other-project"
+    store.upsert_project(
+        project.model_copy(
+            update={"project_id": other_project, "locator": str(tmp_path / "other-project.toml")}
+        )
+    )
+    for parent_target in (target, intermediate):
+        store.create_graph_branch(
+            project_id=other_project,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=None,
+            parent_head=GraphHeadRef(target=parent_target, revision=0),
+            created_by="member:test",
+        )
+    assert store.archive_empty_auto_research_fork(parent.project_id, head)
+
+
 def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tmp_path):
     """A nested fork with a live worker, or a failed worker that can still resume, still merges back
     into this one.
@@ -2874,6 +2961,10 @@ def test_empty_fork_archive_waits_for_all_writers_admissions_and_known_commit(tm
         )
     assert not store.archive_empty_auto_research_fork(parent.project_id, head)
     store.request_auto_research_child_work_stop("nested")
+    assert not store.archive_empty_auto_research_fork(parent.project_id, head)
+    assert store.archive_empty_auto_research_fork(
+        parent.project_id, GraphHeadRef(target=task.graph_target, revision=0)
+    )
     assert store.archive_empty_auto_research_fork(parent.project_id, head)
     assert store.graph_branch(parent.project_id, target.branch_id).archived
 
