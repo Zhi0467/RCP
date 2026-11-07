@@ -1478,16 +1478,6 @@
                 }
             }
         ],
-        "./src/rcp/artifact_views.py": [
-            {
-                "code": "reportAttributeAccessIssue",
-                "range": {
-                    "startColumn": 22,
-                    "endColumn": 27,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/artifacts.py": [
             {
                 "code": "reportReturnType",
