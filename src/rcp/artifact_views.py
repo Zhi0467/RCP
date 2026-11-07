@@ -9,8 +9,7 @@ from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from markdown_it import MarkdownIt
-
+from rcp.artifact_renderer import ArtifactRendererUnavailable, renderer_assets
 from rcp.artifact_theme import (
     ArtifactColorMode,
     ArtifactTheme,
@@ -36,6 +35,13 @@ from rcp.limits import (
 
 ARTIFACT_TEXT_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
+    "form-action 'none'; frame-ancestors 'self'"
+)
+
+
+ARTIFACT_MARKDOWN_CSP = (
+    "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; "
+    "style-src 'unsafe-inline'; font-src data:; base-uri 'none'; "
     "form-action 'none'; frame-ancestors 'self'"
 )
 
@@ -200,7 +206,7 @@ def artifact_viewer_document(
     preview = (
         f'<img id="previewImage" src="{url}" alt="{title}">'
         if kind == "image"
-        else f'<iframe id="preview" sandbox="{"allow-scripts" if kind == "html" else ""}" '
+        else f'<iframe id="preview" sandbox="{"allow-scripts" if kind in {"html", "markdown"} else ""}" '
         f'src="{url}" title="{title}"></iframe>'
     )
     if kind == "video":
@@ -261,6 +267,7 @@ def inline_viewer_document(
     content_url: str,
     live: tuple[str, str] | None,
     selectable: bool,
+    follow_appearance: bool = True,
 ) -> tuple[str, str]:
     """The same shell inside a reply: no chrome, transparent, filling its fixed frame.
 
@@ -285,6 +292,7 @@ def inline_viewer_document(
         {
             "contentUrl": content_url,
             "selectable": selectable,
+            "followAppearance": follow_appearance,
         }
     ).replace("<", "\\u003c")
     resources = importlib.resources.files("rcp")
@@ -385,28 +393,23 @@ def _text_page(
 
 def markdown_document(data: bytes, inline: InlineAppearance | None = None) -> tuple[str, str]:
     text, truncated = _preview_text(data)
-    renderer = MarkdownIt("commonmark", {"html": False}).enable("table")
-
-    def link_open(tokens, index, options, env):
-        return ""
-
-    def link_close(tokens, index, options, env):
-        depth = 1
-        for token in reversed(tokens[:index]):
-            if token.type == "link_close":
-                depth += 1
-            elif token.type == "link_open":
-                depth -= 1
-                if depth == 0:
-                    return " (" + html.escape(token.attrGet("href") or "") + ")"
-        return ""
-
-    def image(tokens, index, options, env):
-        token = tokens[index]
-        return html.escape(token.content) + " (" + html.escape(token.attrGet("src") or "") + ")"
-
-    renderer.renderer.rules.update(link_open=link_open, link_close=link_close, image=image)
-    return _text_page(renderer.render(text), truncated=truncated, inline=inline)
+    script, style = renderer_assets()
+    source = json.dumps(text).replace("<", "\\u003c")
+    body = (
+        '<main id="markdown"></main><script type="application/json" id="markdown-source">'
+        + source
+        + "</script>"
+    )
+    document, _ = _text_page(body, truncated=truncated, inline=inline)
+    bootstrap = (
+        "<script>(()=>{" + script + "const source=document.getElementById('markdown-source');"
+        "document.getElementById('markdown').innerHTML=RcpArtifactRenderer.renderMarkdown(JSON.parse(source.textContent));"
+        "source.remove();})();</script>"
+    )
+    document = document.replace(
+        "</head>", "<style>" + style + ".katex-display{max-width:100%;overflow:auto}</style></head>"
+    )
+    return document.replace("</body>", bootstrap + "</body>"), ARTIFACT_MARKDOWN_CSP
 
 
 def text_document(
@@ -463,6 +466,8 @@ def artifact_content(
             return data, media_type, "default-src 'none'; sandbox"
         else:
             raise ValueError("Artifact has no viewer")
+    except ArtifactRendererUnavailable:
+        raise
     except Exception as exc:
         raise ValueError("Preview unavailable") from exc
     return document, "text/html", csp
