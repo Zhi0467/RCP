@@ -237,6 +237,46 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
         assert raw.headers["content-disposition"].startswith("attachment")
 
 
+def test_html_preview_loads_saved_tree_images_and_tracks_their_versions(manifest, tmp_path):
+    import base64
+    import html
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        ids = {}
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><rect width="5" height="7"/></svg>'
+        for path, data in (
+            ("figures/plot.svg", svg),
+            ("blog/main.html", b'<img src="../figures/plot.svg"><p>Draft</p>'),
+        ):
+            response = client.post(prefix + "/uploads", data={"path": path}, files={"file": data})
+            assert response.status_code == 200
+            ids[path] = response.json()["file_ids"][0]
+        url = prefix + f"/files/{ids['blog/main.html']}/preview"
+        content = client.get(url + "/content")
+        assert content.status_code == 200
+        assert "data:image/svg+xml;base64," + base64.b64encode(svg).decode() in html.unescape(
+            content.text
+        )
+        state = client.get(url + "/state")
+        assert state.status_code == 200
+        assert state.headers["cache-control"] == "no-store"
+        before = state.json()
+        assert set(before) == {"revision", "key"}
+        client.post(prefix + "/files", json={"path": "unrelated.md"})
+        assert client.get(url + "/state").json()["key"] == before["key"]
+        changed_svg = svg.replace(b'width="5"', b'width="15"')
+        changed = client.put(
+            prefix + f"/files/{ids['figures/plot.svg']}/content", files={"file": changed_svg}
+        )
+        assert changed.status_code == 200
+        assert client.get(url + "/state").json()["key"] != before["key"]
+        old = client.get(url + "/content", params={"revision": before["revision"]})
+        assert base64.b64encode(svg).decode() in html.unescape(old.text)
+        assert base64.b64encode(changed_svg).decode() not in html.unescape(old.text)
+
+
 def test_html_preview_is_member_only(tmp_path):
     from tests.test_project_membership import _create_project, _team_app
 
@@ -247,6 +287,8 @@ def test_html_preview_is_member_only(tmp_path):
         page = client.post(prefix + "/uploads", data={"path": "p.html"}, files={"file": b"<p>x"})
         file_url = prefix + f"/files/{page.json()['file_ids'][0]}/preview"
         assert client.get(file_url + "/content").status_code == 200
+        assert client.get(file_url + "/state").status_code == 200
         acting[0] = people[1].user_id
         assert client.get(file_url).status_code == 404
         assert client.get(file_url + "/content").status_code == 404
+        assert client.get(file_url + "/state").status_code == 404
