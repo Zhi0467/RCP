@@ -639,6 +639,10 @@ provider, execution machine, stage and target. Both live launch and recorded
 settlement verify the complete origin. Provider switches and clean handoffs
 cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
 Discuss has no Patch/write scope; Work runs with the scope its launch builds.
+The [machine identity compatibility repair](projects-spaces-and-operations.md#machine-identity-upgrade)
+canonicalizes a saved local-null question origin only from its matching asking
+task during storage upgrade. Session and stage admission keep their exact
+comparison; missing or mismatched provenance never gains a runtime fallback.
 
 Answers project once through StateWorkspace using question id and revision.
 Chat follow-up ids derive from that pair; Experiment answers name only a claimed

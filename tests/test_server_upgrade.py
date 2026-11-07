@@ -94,85 +94,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [
-            (1,),
-            (2,),
-            (3,),
-            (4,),
-            (5,),
-            (6,),
-            (7,),
-            (8,),
-            (9,),
-            (10,),
-            (11,),
-            (12,),
-            (13,),
-            (14,),
-            (15,),
-            (16,),
-            (17,),
-            (18,),
-            (19,),
-            (20,),
-            (21,),
-            (22,),
-            (23,),
-            (24,),
-            (25,),
-            (26,),
-            (27,),
-            (28,),
-            (29,),
-            (30,),
-            (31,),
-            (32,),
-            (33,),
-            (34,),
-            (35,),
-            (36,),
-            (37,),
-            (38,),
-            (39,),
-            (40,),
-            (41,),
-            (42,),
-            (43,),
-            (44,),
-            (45,),
-            (46,),
-            (47,),
-            (48,),
-            (49,),
-            (50,),
-            (51,),
-            (52,),
-            (53,),
-            (54,),
-            (55,),
-            (56,),
-            (57,),
-            (58,),
-            (59,),
-            (60,),
-            (61,),
-            (62,),
-            (63,),
-            (64,),
-            (65,),
-            (66,),
-            (67,),
-            (68,),
-            (69,),
-            (70,),
-            (71,),
-            (72,),
-            (73,),
-            (74,),
-            (75,),
-            (76,),
-            (77,),
-        ]
+        ).fetchall() == [(version,) for version, _name in AppStore._STORAGE_SCHEMA_MIGRATIONS]
 
         plan = connection.execute(
             "EXPLAIN QUERY PLAN SELECT * FROM graph_runs "
@@ -761,6 +683,7 @@ def _exercise_candidate_upgrade(
     experiment_episode_id = _metadata_optional_string(metadata, "experiment_episode_id")
     experiment_operation_id = _metadata_optional_string(metadata, "experiment_operation_id")
     expected_repair = metadata.get("expected_repair")
+    local_question = _local_question_before_upgrade(database, metadata)
     _assert_raw_member_auth_rows(database, metadata)
     if expected_repair not in {None, "impossible_legacy_experiment_wrapup"}:
         raise ValueError("server-upgrade fixture names an unknown expected repair")
@@ -769,6 +692,7 @@ def _exercise_candidate_upgrade(
         _assert_raw_impossible_experiment_wrapup(database, experiment_episode_id)
     with chdir(fixture):
         store = AppStore(database)
+        _assert_local_question_upgrade(store, local_question)
         if baseline_schema is not None:
             assert _normalized_schema(database) == baseline_schema
         space_id = _metadata_string(metadata, "space_id")
@@ -853,6 +777,7 @@ def _exercise_candidate_upgrade(
                 assert experiment_task["active"] is False
 
         reopened = AppStore(database)
+        _assert_local_question_upgrade(reopened, local_question)
         _assert_member_auth_rows(reopened, metadata)
         _assert_provisioning_rows(reopened, metadata)
         assert reopened.agent_task(operation_id).status == "interrupted"
@@ -864,6 +789,67 @@ def _exercise_candidate_upgrade(
         with sqlite3.connect(database) as connection:
             assert connection.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
             assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def _local_question_before_upgrade(
+    database: Path, metadata: dict[str, object]
+) -> dict[str, object] | None:
+    question_id = _metadata_optional_string(metadata, "local_question_id")
+    if question_id is None:
+        return None
+    with sqlite3.connect(database) as connection:
+        connection.row_factory = sqlite3.Row
+        assert (
+            connection.execute(
+                "SELECT MAX(migration_version) FROM storage_schema_migrations"
+            ).fetchone()[0]
+            == 77
+        )
+        question = dict(
+            connection.execute(
+                "SELECT * FROM questions WHERE question_id = ?", (question_id,)
+            ).fetchone()
+        )
+        origin = json.loads(str(question["origin_json"]))
+        task = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?",
+            (_metadata_string(metadata, "local_question_operation_id"),),
+        ).fetchone()
+        assert task["operation_id"] == origin["operation_id"]
+        assert task["project_id"] == origin["project_id"]
+        assert json.loads(task["request_json"])["provider"] == origin["provider"]
+        assert task["native_session_id"] == origin["native_session_id"]
+        assert task["stage_root"] == origin["stage_root"]
+        assert task["stage_machine_id"] == BACKEND_MACHINE_ID
+        assert task["status"] == "succeeded"
+        assert origin["stage_machine_id"] is None
+        assert question["state"] == "pending"
+        assert question["answer_revision"] == 0
+        assert question["followup_operation_id"] is None
+        episode = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (_metadata_string(metadata, "local_question_episode_id"),),
+        ).fetchone()
+        assert episode["status"] == "running" and episode["ended_at"] is None
+        assert (episode["invocations_used"], episode["invocation_ceiling"]) == (1, 2)
+    return question
+
+
+def _assert_local_question_upgrade(store: AppStore, before: dict[str, object] | None) -> None:
+    if before is None:
+        return
+    with store.connection() as connection:
+        after = dict(
+            connection.execute(
+                "SELECT * FROM questions WHERE question_id = ?", (before["question_id"],)
+            ).fetchone()
+        )
+    origin = json.loads(str(before["origin_json"]))
+    assert json.loads(after.pop("origin_json")) == {
+        **origin,
+        "stage_machine_id": BACKEND_MACHINE_ID,
+    }
+    assert after == {key: value for key, value in before.items() if key != "origin_json"}
 
 
 def _metadata_string(metadata: dict[str, object], name: str) -> str:

@@ -843,6 +843,36 @@ def _migrate_question_origins(connection: sqlite3.Connection, cards: _Cards) -> 
         )
 
 
+def migrate_local_question_origins(connection: sqlite3.Connection) -> None:
+    """Repair a missing local machine only when the original asking task proves it.
+
+    Migration 77 left null question hosts as null while upgrading their task's
+    stage to backend. Already-ledgered installations need this separate repair;
+    the runtime session/stage admission fence remains exact.
+    """
+    connection.execute(
+        """
+        UPDATE questions
+        SET origin_json = json_set(origin_json, '$.stage_machine_id', ?)
+        WHERE json_extract(origin_json, '$.stage_machine_id') IS NULL
+          AND json_type(origin_json, '$.stage_root') = 'text'
+          AND length(json_extract(origin_json, '$.stage_root')) > 0
+          AND EXISTS (
+              SELECT 1 FROM graph_runs AS task
+              WHERE task.operation_id = json_extract(origin_json, '$.operation_id')
+                AND task.project_id = questions.project_id
+                AND task.project_id = json_extract(origin_json, '$.project_id')
+                AND json_extract(task.request_json, '$.provider') =
+                    json_extract(origin_json, '$.provider')
+                AND task.native_session_id = json_extract(origin_json, '$.native_session_id')
+                AND task.stage_root = json_extract(origin_json, '$.stage_root')
+                AND task.stage_machine_id = ?
+          )
+        """,
+        (BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
+    )
+
+
 def _migrate_artifact_edit_stages(connection: sqlite3.Connection, cards: _Cards) -> None:
     rows = connection.execute(
         "SELECT operation_id, request_json FROM graph_runs "
