@@ -1904,6 +1904,12 @@ its reason and `handoff` as the next step. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
+Each turn resolves the local base machine card's current writable paths through
+the ordinary Project Work resolver: grants require an eligible repository and
+retain its canonicalization and protected-storage exclusions. The same composite
+roots feed provider enforcement and the staged master. Adding or removing a
+machine grant takes effect next turn without changing the graph fingerprint or
+the native session.
 The stored fingerprint hashes the sorted project fingerprints. With no admitted
 projects the provider can write its own stage but the graph-write fingerprint
 is NULL. A changed admitted project set is recorded on the turn and does not
