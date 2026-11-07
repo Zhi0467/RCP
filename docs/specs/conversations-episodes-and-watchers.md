@@ -239,6 +239,9 @@ visible to project members like any Experiment, while the thread stays private.
 
 Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
 locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
+Work, Discuss artifact edits and retained Work graph repair resolve that same
+owner namespace before validating the exact saved stage; changing turn mode
+does not move the native session or fall back to the public chat stage root.
 Local recovery inventories and local/remote retention sweeps include these exact
 stages, retaining live stages and leaving transcripts alone. The owning thread
 can access its stage but not its member folder's transcripts; every agent launch

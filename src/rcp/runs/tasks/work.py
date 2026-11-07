@@ -76,6 +76,7 @@ from rcp.runs.chat import (
     _append_chat_graph_receipt,
     _chat_read_dirs,
     _chat_stage_name,
+    _chat_stage_owner,
     _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
@@ -2991,7 +2992,14 @@ async def _stream_work_graph_repair(
             )
             workspace = Path(str(remote_stage.workspace))
         else:
-            expected_stage = _swept_stage_root(data_dir, store=execution.store) / stage_name
+            expected_stage = (
+                _swept_stage_root(
+                    data_dir,
+                    store=execution.store,
+                    thread_owner=_chat_stage_owner(service, request),
+                )
+                / stage_name
+            )
             local_stage = _validated_local_chat_resume_stage(execution, expected_stage)
             workspace = _prepare_local_chat_workspace(
                 local_stage,

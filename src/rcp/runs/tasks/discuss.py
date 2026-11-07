@@ -48,6 +48,7 @@ from rcp.runs.chat import (
     _append_chat_exchange,
     _chat_read_dirs,
     _chat_stage_name,
+    _chat_stage_owner,
     _clear_stale_turn_handoffs,
     _commit_chat_prompt_state,
     _discover_chat_artifacts,
@@ -699,9 +700,14 @@ async def stream_discuss_run(
             # remote, reuses the same folder and _sweep_stale_stages ages it out.
             stage_name = _chat_stage_name(service, request, execution)
             saved_stage = execution is not None and execution.stage_root is not None
+            thread_owner = _chat_stage_owner(service, request)
             if execution_host:
                 remote_stage = open_remote_conversation_stage(
-                    machine, stage_name, execution, saved_stage=saved_stage
+                    machine,
+                    stage_name,
+                    execution,
+                    saved_stage=saved_stage,
+                    thread_owner=thread_owner,
                 )
                 # Resumes rebuild context too; branch read pointers need execution-host paths.
                 context = context.model_copy(
@@ -712,6 +718,7 @@ async def stream_discuss_run(
                 stage_root = _swept_stage_root(
                     data_dir,
                     store=execution.store if execution is not None else None,
+                    thread_owner=thread_owner,
                 )
                 expected_stage = stage_root / stage_name
                 if saved_stage:

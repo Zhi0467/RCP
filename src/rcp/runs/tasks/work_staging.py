@@ -26,6 +26,7 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.chat import (
     _chat_read_dirs,
     _chat_stage_name,
+    _chat_stage_owner,
     _ChatPatchInputs,
     _logical_chat_turn_operation_id,
     _prepare_local_artifact_directory,
@@ -147,9 +148,7 @@ async def stage_work_turn(
         _record_chat_context_receipt(execution, context, surface=surface)
         stage_name = _chat_stage_name(service, request, execution)
         saved_stage = execution is not None and execution.stage_root is not None
-        thread_owner = (
-            service.paper.store.private_chat_owner(request.chat_id) if request.chat_id else None
-        )
+        thread_owner = _chat_stage_owner(service, request)
         if resolved.execution_host:
             if saved_stage:
                 stage_root = _validated_remote_chat_resume_stage(

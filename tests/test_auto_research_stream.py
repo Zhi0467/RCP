@@ -663,9 +663,13 @@ class _LocalBackedRemoteStage:
         *,
         reuse: bool = False,
         protected_roots=(),
+        thread_owner: str | None = None,
     ):
         del reuse, protected_roots
-        self.root = self.base / operation_id
+        parent = (
+            self.base / "agent-threads" / thread_owner / "stages" if thread_owner else self.base
+        )
+        self.root = parent / operation_id
         (self.root / "inputs").mkdir(parents=True, exist_ok=True)
         self.workspace.mkdir(exist_ok=True)
         return self

@@ -218,8 +218,9 @@ async def test_consolidation_required_dependencies_do_not_enable_public_invocati
 @pytest.mark.parametrize(
     "continuation, resumed_session", [("resume", True), ("retry", True), ("handoff", False)]
 )
+@pytest.mark.parametrize("private_thread", [False, True])
 async def test_work_recovery_keeps_current_invocations_outside_replacement_master(
-    manifest, tmp_path, monkeypatch, continuation, resumed_session
+    manifest, tmp_path, monkeypatch, continuation, resumed_session, private_thread
 ):
     import rcp.runs.tasks.work as work
 
@@ -250,6 +251,18 @@ async def test_work_recovery_keeps_current_invocations_outside_replacement_maste
         invoked_skill_ids=["ml-result-rigor"],
         resolved_provider_skills=[native_skill],
     )
+    if private_thread:
+        store = app.state.background_tasks.store
+        owner = store.local_owner
+        assert owner is not None
+        thread = next(
+            thread
+            for thread in store.ensure_agent_threads(
+                owner.user_id, [app.state.default_project_id], default_names=("Pip",)
+            )
+            if thread.kind == "project"
+        )
+        request = request.model_copy(update={"chat_id": thread.thread_id})
     prior = _chat_task_execution(app, request, "work-prior")
     store = prior.store
     store.record_agent_task_receipt(

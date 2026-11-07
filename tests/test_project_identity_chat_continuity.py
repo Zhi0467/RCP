@@ -17,6 +17,7 @@ from rcp.runs.chat import (
     _prepare_local_chat_workspace,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    open_remote_conversation_stage,
 )
 from rcp.runs.shared import _sweep_stale_stages
 from rcp.service import RunRequest
@@ -27,6 +28,30 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+
+
+@pytest.mark.parametrize("thread_owner", [None, "member"])
+def test_new_remote_chat_stage_keeps_the_private_owner_namespace(
+    tmp_path, monkeypatch, thread_owner
+):
+    from .test_auto_research_stream import _card, _LocalBackedRemoteStage
+
+    class Stage(_LocalBackedRemoteStage):
+        base = tmp_path
+
+        def touch(self):
+            assert self.root is not None and self.root.is_dir()
+
+    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", Stage)
+    stage = open_remote_conversation_stage(
+        _card("worker.example"),
+        "chat-private",
+        None,
+        saved_stage=False,
+        thread_owner=thread_owner,
+    )
+    parent = tmp_path / "agent-threads" / "member" / "stages" if thread_owner else tmp_path
+    assert stage.root == parent / "chat-private"
 
 
 def _register_legacy_project(store: AppStore, project_id: str) -> None:

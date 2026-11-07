@@ -1361,12 +1361,18 @@ def _chat_stage_name(
     return _safe_stage_name(f"chat-{project_key}-{request.chat_id}")
 
 
+def _chat_stage_owner(service: ProjectService, request: RunRequest) -> str | None:
+    """Use the same private conversation namespace for Work, Discuss and recovery."""
+    return service.paper.store.private_chat_owner(request.chat_id) if request.chat_id else None
+
+
 def open_remote_conversation_stage(
     machine: SpaceMachineRecord,
     stage_name: str,
     execution: AgentTaskExecution | None,
     *,
     saved_stage: bool,
+    thread_owner: str | None = None,
 ) -> RemoteRunStage:
     """Open or attach the conversation's exact stage and checkpoint its binding."""
     if saved_stage:
@@ -1376,6 +1382,7 @@ def open_remote_conversation_stage(
         stage = RemoteRunStage(machine.host).open(
             stage_name,
             reuse=True,
+            thread_owner=thread_owner,
             protected_roots=_protected_run_stage_roots(
                 execution.store if execution is not None else None,
                 machine.machine_id,

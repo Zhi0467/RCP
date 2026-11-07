@@ -947,6 +947,76 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
         assert launcher.launch_kwargs[1]["write_scope"] is None
 
 
+def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tmp_path):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    project_id = app.state.default_project_id
+
+    class Launcher(_RecordingLauncher):
+        target = None
+
+        async def stream(self, provider, prompt, **kwargs):
+            if self.target is None:
+                self.target = (
+                    Path(kwargs["cwd"])
+                    / "turns"
+                    / kwargs["operation_id"]
+                    / "artifacts"
+                    / "note.html"
+                )
+                self.target.write_text("<p>Original note</p>")
+            else:
+                self.target.write_text("<p>Revised note</p>")
+            async for event in super().stream(provider, prompt, **kwargs):
+                yield event
+
+    launcher = Launcher("private-native-session")
+
+    async def stream(_project_id, _kind, request, execution):
+        run = stream_work_run if request.mode == "work" else stream_discuss_run
+        async for frame in run(app.state.service, launcher, request, tmp_path / "data", execution):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    with signed_in_client(app) as client:
+        thread = next(
+            row
+            for row in client.get("/api/agent-threads").json()["threads"]
+            if row["kind"] == "project"
+        )
+        first = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                "chat_id": thread["thread_id"],
+                "message": "Write the note",
+                "mode": "work",
+                "run_truth_scope": ["repo-a"],
+            },
+        )
+        assert first.status_code == 202, first.text
+        completed = wait_for_task_response(client, project_id, first.json()["operation_id"])
+        assert completed["status"] == "succeeded", completed.get("error")
+        artifact_id = completed["result"]["artifacts"][0]["artifact_id"]
+        edit = client.post(
+            f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
+            json={
+                "comments": [{"text": "Revise this note"}],
+                "edit_now": True,
+            },
+        )
+        assert edit.status_code == 202, edit.text
+        revised = wait_for_task_response(client, project_id, edit.json()["operation_id"])
+        assert revised["status"] == "succeeded", revised.get("error")
+        assert revised["request"]["mode"] == "discuss"
+        assert launcher.sessions == [None, "private-native-session"]
+        assert launcher.workspaces[0] == launcher.workspaces[1]
+        store = app.state.catalog.store
+        owner = store.private_chat_owner(thread["thread_id"])
+        assert launcher.workspaces[0].is_relative_to(tmp_path / "data" / "agent-threads" / owner)
+        assert store.read_artifact_bytes(artifact_id) == b"<p>Revised note</p>"
+        assert len(store.artifact_versions(artifact_id)) == 2
+
+
 @pytest.mark.asyncio
 async def test_node_chat_master_carries_the_focused_node_and_its_relations(
     manifest, tmp_path
