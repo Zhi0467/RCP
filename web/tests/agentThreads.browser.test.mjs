@@ -1483,6 +1483,45 @@ test("a provider switch picks that provider's first model, listed before any pro
   });
 });
 
+test("Snowbound gives Agent threads the same available height as other themes", async () => {
+  await withFixture(async (browser, base) => {
+    for (const [width, height] of [
+      [1440, 900],
+      [1440, 640],
+      [390, 844],
+    ]) {
+      const page = await browser.newPage({ viewport: { width, height } });
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mockApi(page, []);
+      for (const id of ["space", "moss"]) {
+        await page.goto(`${base}#/agent/${id}`);
+        await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+        const geometry = (theme) =>
+          page.evaluate(async (theme) => {
+            document.documentElement.dataset.theme = theme;
+            document.documentElement.dataset.colorMode = "dark";
+            await new Promise(requestAnimationFrame);
+            const panel = document.querySelector(".space-agent").getBoundingClientRect();
+            const composer = document
+              .querySelector(".agent-thread .chat-composer")
+              .getBoundingClientRect();
+            return { bottom: panel.bottom, height: panel.height, composerBottom: composer.bottom };
+          }, theme);
+        const standard = await geometry("aqua");
+        assert.deepEqual(await geometry("snowbound"), standard);
+        assert.ok(standard.composerBottom <= standard.bottom);
+        assert.ok(standard.bottom <= height);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+        if (shots)
+          await page.screenshot({ path: `${shots}/snowbound-${id}-${width}-${height}.png` });
+      }
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  });
+});
+
 test("the thread composer is one row that grows with its text and settles back", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1280, 390]) {

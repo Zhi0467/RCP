@@ -37,9 +37,9 @@ On the space home, Snowbound draws a band of pixel woods with the cabin centered
 at every width, and slow pixel snow falls behind the content. On the Projects
 tab the band sits at the page bottom, below padding that keeps it clear of
 cards and Runs. On the Agent tab the band is fixed to the window floor behind
-the chat, and the chat keeps a solid background over it. On windows wider than
-a phone and at least 700px tall, the chat stops 128px above the bottom so the
-woods show; phones and short windows give the chat the full height. The scene
+the chat, and the chat keeps a solid background over it. The Agent panel uses
+the same available height and bottom gutter as the other themes; scenery does
+not reserve space below the chat. The scene
 sits behind the content without a new stacking context, so space-home dialogs
 stay above the voice window.
 
