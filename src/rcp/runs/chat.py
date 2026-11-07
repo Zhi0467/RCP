@@ -1796,6 +1796,10 @@ def reconcile_chat_question_answers(
                             {
                                 **origin_task.request,
                                 "session_id": question.origin.native_session_id,
+                                "invoked_workflow_ids": [],
+                                "invoked_skill_ids": [],
+                                "invoked_provider_skill_names": [],
+                                "resolved_provider_skills": [],
                             }
                         ),
                         authorized_by=origin_task.authorized_by,

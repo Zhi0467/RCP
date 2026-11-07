@@ -410,6 +410,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attachment_set_id": None,
                     "attachment_client_id": None,
                     "watcher_ids": [],
+                    "invoked_workflow_ids": [],
+                    "invoked_skill_ids": [],
+                    "invoked_provider_skill_names": [],
+                    "resolved_provider_skills": [],
                 }
             )
             now = self.now()

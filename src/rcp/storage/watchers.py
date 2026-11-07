@@ -1592,6 +1592,9 @@ class WatcherStoreMixin(StoreMixinBase):
     @staticmethod
     def _watcher_delivery_policy(continuation: WatcherContinuation) -> str:
         policy = continuation.model_dump(mode="json")
+        if continuation.patch_kind == "work":
+            policy.pop("invoked_workflow_ids", None)
+            policy.pop("invoked_skill_ids", None)
         if continuation.patch_kind == "experiment_loop" and policy.get("model") is None:
             # Legacy Experiment watchers stored the provider-default sentinel
             # as null. It is immutable policy, equivalent to today's "".
@@ -1703,9 +1706,9 @@ class WatcherStoreMixin(StoreMixinBase):
             if request_continuation_data.get(nullable_list) is None:
                 request_continuation_data[nullable_list] = []
         request_continuation = WatcherContinuation.model_validate(request_continuation_data)
-        if auto_research_wake:
+        if auto_research_wake or continuation.patch_kind == "work":
             if request_continuation.invoked_workflow_ids or request_continuation.invoked_skill_ids:
-                raise ValueError("Auto-research watcher wake cannot inherit package invocations")
+                raise ValueError("Watcher wake cannot inherit package invocations")
             continuation = continuation.model_copy(
                 update={"invoked_workflow_ids": [], "invoked_skill_ids": []}
             )
