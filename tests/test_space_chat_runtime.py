@@ -7,6 +7,7 @@ import shutil
 import socket
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -32,8 +33,35 @@ from tests.test_dispatch_authority import _authorizer, _work_authority, _work_re
 from tests.test_storage import _task_record
 
 
-def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, monkeypatch, caplog):
+@contextmanager
+def _served_space_client(app):
     from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
+
+    store = app.state.background_tasks.store
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
+        worker = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
+        worker.start()
+        try:
+            wait_until(lambda: server.started)
+            wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
+            with httpx.Client(
+                base_url=f"http://127.0.0.1:{sock.getsockname()[1]}", trust_env=False
+            ) as client:
+                response = client.post(
+                    "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
+                )
+                assert response.status_code == 200, response.text
+                yield client
+        finally:
+            server.should_exit = True
+            worker.join(timeout=TASK_SETTLE_TIMEOUT)
+    assert not worker.is_alive()
+
+
+def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, monkeypatch, caplog):
+    from tests.helpers import wait_until
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
@@ -67,58 +95,135 @@ def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, mo
         yield AgentEvent(event="done")
 
     monkeypatch.setattr(app.state.launcher, "stream", provider)
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
-        worker = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
-        worker.start()
-        try:
-            wait_until(lambda: server.started)
-            wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
-            with httpx.Client(
-                base_url=f"http://127.0.0.1:{sock.getsockname()[1]}", trust_env=False
-            ) as client:
-                assert (
-                    client.post(
-                        "/api/owner/redeem", json={"code": store.create_owner_sign_in_code()}
-                    ).status_code
-                    == 200
+    with _served_space_client(app) as client:
+        (thread,) = client.get("/api/agent-threads").json()["threads"]
+        base = f"/api/agent-threads/{thread['thread_id']}"
+        assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
+        for invocation in ([], ["graph-audit"], []):
+            sent = client.post(
+                base + "/turns",
+                json={
+                    "provider": "claude",
+                    "message": "Find a method.",
+                    "invoked_skill_ids": invocation,
+                },
+            )
+            assert sent.status_code == 202, sent.text
+            operation_id = sent.json()["operation_id"]
+            wait_until(
+                lambda operation_id=operation_id: (
+                    client.get(base + "/tasks/" + operation_id).json()["status"]
+                    in {"succeeded", "failed"}
                 )
-                (thread,) = client.get("/api/agent-threads").json()["threads"]
-                base = f"/api/agent-threads/{thread['thread_id']}"
-                assert (
-                    client.put(base + "/browser", json={"browser_requested": False}).status_code
-                    == 200
-                )
-                for invocation in ([], ["graph-audit"], []):
-                    sent = client.post(
-                        base + "/turns",
-                        json={
-                            "provider": "claude",
-                            "message": "Find a method.",
-                            "invoked_skill_ids": invocation,
-                        },
-                    )
-                    assert sent.status_code == 202, sent.text
-                    operation_id = sent.json()["operation_id"]
-                    wait_until(
-                        lambda operation_id=operation_id: (
-                            client.get(base + "/tasks/" + operation_id).json()["status"]
-                            in {"succeeded", "failed"}
-                        )
-                    )
-                    result = client.get(base + "/tasks/" + operation_id).json()
-                    assert result["status"] == "succeeded", result
-        finally:
-            server.should_exit = True
-            worker.join(timeout=TASK_SETTLE_TIMEOUT)
-    assert not worker.is_alive()
+            )
+            result = client.get(base + "/tasks/" + operation_id).json()
+            assert result["status"] == "succeeded", result
     assert observed == [
         (None, []),
         ("served-space-session", ["graph-audit"]),
         ("served-space-session", []),
     ]
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+@pytest.mark.parametrize("comment", [False, True])
+@pytest.mark.parametrize("name", ["blog_notes.md", "page.html"])
+def test_served_space_artifact_edits_keep_identity_and_follow_undo(
+    manifest, tmp_path, monkeypatch, caplog, comment, name
+):
+    from tests.helpers import wait_until
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    store_test_claude_token(store)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members")
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    paths = []
+    first = (
+        "<p>First observation.</p>" if name.endswith("html") else "# Notes\nFirst observation.\n"
+    )
+    second = first + "\nSecond observation.\n"
+
+    async def provider(_provider, prompt, **kwargs):
+        stage = kwargs["cwd"]
+        if paths and comment:
+            assert str(paths[0]) in prompt
+            if name.endswith("html"):
+                assert '"number": 1' in prompt and '"comment": "Maintain α"' in prompt
+        if not paths:
+            path = stage / "turns" / kwargs["operation_id"] / "artifacts" / name
+            path.write_text(first)
+            paths.append(path)
+        elif len(paths) == 1:
+            assert paths[0].read_text() == first
+            paths[0].write_text(second)
+            paths.append(paths[0])
+        else:
+            assert paths[0].read_text() == first
+            paths.append(paths[0])
+        (stage / "outcome.json").write_text('{"status":"done"}')
+        yield AgentEvent(event="session", session_id="space-note-session")
+        yield AgentEvent(event="answer", text=f"Updated: [Notes]({paths[0]})")
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(app.state.launcher, "stream", provider)
+    with _served_space_client(app) as client:
+        (thread,) = client.get("/api/agent-threads").json()["threads"]
+        base = f"/api/agent-threads/{thread['thread_id']}"
+        assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
+
+        def send_turn(context=None):
+            sent = client.post(
+                base + "/turns",
+                json={
+                    "provider": "claude",
+                    "message": "Maintain the note.",
+                    "artifact_context": context,
+                },
+            )
+            assert sent.status_code == 202, sent.text
+            operation_id = sent.json()["operation_id"]
+            wait_until(
+                lambda: (
+                    client.get(base + "/tasks/" + operation_id).json()["status"]
+                    in {"succeeded", "failed"}
+                )
+            )
+            result = client.get(base + "/tasks/" + operation_id).json()
+            assert result["status"] == "succeeded", result
+            return operation_id, result
+
+        first_operation, result = send_turn()
+        (artifact,) = result["result"]["artifacts"]
+        artifact_id = artifact["artifact_id"]
+        initial = store.artifact(artifact_id)
+        context = {
+            "operation_id": first_operation,
+            "artifact_id": artifact_id,
+            "base_version": initial.current_version,
+            "selections": [{"kind": "text", "text": "First observation.", "comment": "Maintain α"}]
+            if name.endswith("html")
+            else [],
+        }
+        second_operation, result = send_turn(context if comment else None)
+        assert [item["artifact_id"] for item in result["result"].get("artifacts", [])] == [
+            artifact_id
+        ]
+        assert store.read_artifact_bytes(artifact_id) == second.encode()
+        assert len(store.artifact_versions(artifact_id)) == 2
+        downloaded = client.get(
+            base + f"/tasks/{second_operation}/artifacts/{artifact_id}/download"
+        )
+        assert downloaded.status_code == 200 and downloaded.content == second.encode()
+        assert result["result"]["artifact_edit_outcomes"][0]["status"] == "published"
+        store.undo_artifact(artifact_id)
+        context["operation_id"] = second_operation
+        _, result = send_turn(context if comment else None)
+        assert not result["result"].get("artifacts")
+        assert store.read_artifact_bytes(artifact_id) == first.encode()
+    assert len(paths) == 3
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 @pytest.mark.parametrize(
