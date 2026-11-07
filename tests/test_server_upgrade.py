@@ -34,7 +34,9 @@ from tests.helpers import signed_in_client
 
 from . import server_upgrade_harness
 from .server_upgrade_harness import (
+    FIXTURE_ROOT,
     REPOSITORY_ROOT,
+    _build_checkout,
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
@@ -46,10 +48,61 @@ from .server_upgrade_harness import (
     verify_fixture_integrity,
     verify_fixture_registry,
 )
+from .test_experiment_questions import _assert_repaired_answer_resumes_once
 
 
 def test_immutable_server_boundary_registry_is_complete() -> None:
     verify_fixture_registry()
+
+
+def test_exact_writer_checkout_fetches_a_missing_commit_from_a_shallow_clone(tmp_path, monkeypatch):
+    def git(directory, *arguments):
+        return subprocess.run(
+            ["git", *arguments], cwd=directory, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git(origin, "init", "--initial-branch=main")
+    for content in ("historical", "current"):
+        (origin / "payload.txt").write_text(content, encoding="utf-8")
+        git(origin, "add", "payload.txt")
+        git(
+            origin,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            content,
+        )
+        if content == "historical":
+            writer_commit = git(origin, "rev-parse", "HEAD")
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "--depth=1", origin.as_uri(), str(shallow))
+    head = git(shallow, "rev-parse", "HEAD")
+    assert (
+        subprocess.run(
+            ["git", "cat-file", "-e", writer_commit + "^{commit}"],
+            cwd=shallow,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        != 0
+    )
+    monkeypatch.setattr(server_upgrade_harness, "REPOSITORY_ROOT", shallow)
+    run = server_upgrade_harness._run
+
+    def without_dependency_install(argv, *, cwd):
+        if argv[:2] != ["uv", "sync"]:
+            run(argv, cwd=cwd)
+
+    monkeypatch.setattr(server_upgrade_harness, "_run", without_dependency_install)
+    checkout = _build_checkout(writer_commit, tmp_path / "writer", web=False)
+    assert (checkout / "payload.txt").read_text(encoding="utf-8") == "historical"
+    assert git(shallow, "rev-parse", "HEAD") == head
+    assert git(shallow, "status", "--porcelain") == ""
 
 
 def test_release_catalog_is_complete_and_missing_sources_fail(
@@ -288,6 +341,58 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
     assert metadata["created_with_commit"] == base_commit
     _exercise_candidate_upgrade(fixture)
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_historical_writer_answer_crosses_upgrade_and_resumes_once(tmp_path, monkeypatch):
+    fixture = FIXTURE_ROOT / "pre-local-question-origin-v43-1226e25"
+    metadata = verify_fixture_integrity(fixture)
+    copied = tmp_path / "fixture"
+    shutil.copytree(fixture, copied)
+    database = copied / "data/rcp.sqlite3"
+    database.write_bytes(gzip.decompress(database.with_suffix(".sqlite3.gz").read_bytes()))
+    source = _build_checkout(
+        str(metadata["created_with_commit"]), tmp_path / "old-writer", web=False
+    )
+    subprocess.run(
+        [
+            str(source / ".venv/bin/python"),
+            "-c",
+            """
+import json
+from pathlib import Path
+from rcp.core.models import AuthorizedHuman
+from rcp.storage import AppStore
+metadata = json.loads(Path('fixture.json').read_text())
+store = AppStore(Path('data/rcp.sqlite3'))
+assert store.storage_schema_ledger_head() == 77
+question = store.get_question(metadata['local_question_id'])
+episode = store.episode(metadata['local_question_episode_id'])
+assert question.state == 'pending' and question.origin.stage_machine_id is None
+assert question.followup_operation_id is None
+assert (episode.invocations_used, episode.invocation_ceiling) == (1, 2)
+member = store.space_user(metadata['user_id'])
+store.answer_question(question.question_id, answer='Accuracy', resolved_by=AuthorizedHuman(
+    space_id=store.space_id, user_id=member.user_id, display_name=member.display_name,
+))
+answered = store.get_question(question.question_id)
+assert answered.state == 'answered' and answered.answer_revision == 1
+assert answered.origin == question.origin and answered.origin.stage_machine_id is None
+assert answered.followup_operation_id is None and answered.followup_claimed_at is None
+assert answered.client_receipt_revision is None
+assert store.episode(episode.episode_id).invocations_used == 1
+store.close()
+""",
+        ],
+        cwd=copied,
+        check=True,
+    )
+    with chdir(copied):
+        upgraded = AppStore(database)
+        _assert_repaired_answer_resumes_once(
+            monkeypatch, upgraded, str(metadata["local_question_id"])
+        )
+        upgraded.close()
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")

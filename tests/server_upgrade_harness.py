@@ -449,6 +449,16 @@ def build_release_checkout(tag: str, work_root: Path) -> Path:
 
 
 def _build_checkout(ref: str, work_root: Path, *, web: bool) -> Path:
+    if (
+        re.fullmatch(r"[0-9a-f]{40}", ref)
+        and subprocess.run(
+            ["git", "cat-file", "-e", ref + "^{commit}"],
+            cwd=REPOSITORY_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+    ):
+        _run(["git", "fetch", "--no-tags", "--depth=1", "origin", ref], cwd=REPOSITORY_ROOT)
     work_root.mkdir(parents=True)
     archive = work_root / "base.tar"
     checkout = work_root / "base"
