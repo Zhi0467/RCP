@@ -542,9 +542,11 @@ version for legacy artifacts. Space turns use this same lifecycle without projec
 live-data authority. Their owner-checked state read supplies the loaded version
 and a pinned viewer URL to the shared inline renderer; the member's Agent
 watermark refreshes it after publication. Comments carry that displayed version,
-and admission refuses a moved version. Older clients that omit it freeze current
-bytes at admission. Before turns, unchanged tracked files synchronize
-to current versions after Undo or peer edits. Locally changed or missing files
+and admission refuses a moved version. Validation and recording of the new turn
+share the artifact lock; replaying an accepted request returns its recorded turn.
+Older clients that omit a version freeze current bytes at admission. Before turns,
+unchanged tracked files synchronize to current versions after Undo or peer edits.
+Locally changed or missing files
 remain as they are. A new comment restores its selected version even over missing
 text or text from a failed turn. Retrying or resuming the same comment keeps changes.
 It restores current bytes only when the file is missing. Different stages get a

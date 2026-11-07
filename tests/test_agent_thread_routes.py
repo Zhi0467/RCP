@@ -704,6 +704,69 @@ def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
         assert repeated.status_code == 202 and repeated.json() == first.json(), repeated.text
 
 
+@pytest.mark.parametrize("pinned", [False, True])
+def test_space_comment_blocks_publication_until_its_task_is_recorded(
+    manifest, tmp_path, monkeypatch, pinned
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from rcp.storage.artifacts import _lock
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    store = tasks.store
+    with signed_in_client(app) as client, ThreadPoolExecutor(max_workers=1) as publisher:
+        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
+        origin, descriptor = _space_turn_artifact(app, thread_id)
+        artifact = store.artifact(descriptor.artifact_id)
+        context = _text_comment(origin.operation_id, artifact.artifact_id)
+        if pinned:
+            context["base_version"] = artifact.current_version
+        attempted = threading.Event()
+        publications = []
+
+        def publish(operation_id):
+            lock = _lock(store.path.parent, artifact.artifact_id)
+            acquired = lock.acquire(blocking=False)
+            if not acquired:
+                attempted.set()
+                lock.acquire()
+            try:
+                admitted = store.agent_task(operation_id)
+                version = store.publish_artifact_version(
+                    artifact.artifact_id,
+                    base_version=artifact.current_version,
+                    operation_id="space-peer-revision",
+                    data=b"<!doctype html><h1>Peer revision</h1>",
+                )
+                return not acquired, admitted, version
+            finally:
+                lock.release()
+                attempted.set()
+
+        start = tasks.start
+
+        def start_with_publisher(*args, **kwargs):
+            publications.append(publisher.submit(publish, kwargs["operation_id"]))
+            assert attempted.wait(5)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(tasks, "start", start_with_publisher)
+        response = client.post(
+            f"/api/agent-threads/{thread_id}/turns",
+            json={"message": "Revise this comparison.", "artifact_context": context},
+        )
+        assert response.status_code == 202, response.text
+        blocked, admitted, version = publications[0].result(timeout=5)
+        assert blocked
+        assert admitted is not None and admitted.operation_id == response.json()["operation_id"]
+        assert admitted.request["artifact_context"]["base_version"] == artifact.current_version
+        assert store.artifact(artifact.artifact_id).current_version == version.version_id
+
+
 def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, monkeypatch):
     import uuid
 
