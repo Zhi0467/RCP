@@ -244,7 +244,8 @@ owner namespace before validating the exact saved stage; changing turn mode
 does not move the native session or fall back to the public chat stage root.
 An older explicitly fresh private Discuss artifact edit may retain a local public-root
 checkpoint. Resume and Retry keep that exact checkpoint only when
-`_legacy_private_edit_source` proves its original private binding and recovery lineage;
+`_legacy_private_edit_source` proves the same owner, thread, project, graph target,
+provider, native session and backend machine throughout its recorded recovery lineage;
 the ordinary stage validator still applies. A warning and receipt record this
 compatibility path. New stages use the private namespace.
 Local recovery inventories and local/remote retention sweeps include these exact
