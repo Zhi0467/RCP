@@ -226,6 +226,93 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
     assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
+def test_served_space_fresh_comment_restores_published_bytes_but_retry_keeps_dirty_bytes(
+    manifest, tmp_path, monkeypatch
+):
+    from tests.helpers import wait_until
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    store_test_claude_token(store)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM project_members")
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    paths = []
+    operations = []
+    published = "# Notes\nPublished observation.\n"
+    revised = published + "Reviewed observation.\n"
+
+    async def provider(_provider, prompt, **kwargs):
+        stage = kwargs["cwd"]
+        attempt = len(operations)
+        operations.append(kwargs["operation_id"])
+        if attempt == 0:
+            path = stage / "turns" / kwargs["operation_id"] / "artifacts" / "notes.md"
+            path.write_text(published)
+            paths.append(path)
+        elif attempt == 1:
+            assert paths[0].read_text() == published
+            paths[0].write_text("Unpublished first attempt.\n")
+        elif attempt == 2:
+            assert paths[0].read_text() == "Unpublished first attempt.\n"
+            paths[0].write_text("Unpublished retry.\n")
+        else:
+            assert paths[0].read_text() == published
+            paths[0].write_text(revised)
+        yield AgentEvent(event="session", session_id="space-failed-note-session")
+        if attempt in {1, 2}:
+            yield AgentEvent(event="error", text="Expected interrupted draft")
+            return
+        (stage / "outcome.json").write_text('{"status":"done"}')
+        yield AgentEvent(event="answer", text=f"[Notes]({paths[0]})")
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(app.state.launcher, "stream", provider)
+    with _served_space_client(app) as client:
+        (thread,) = client.get("/api/agent-threads").json()["threads"]
+        base = f"/api/agent-threads/{thread['thread_id']}"
+        assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
+
+        def finish(response, status):
+            assert response.status_code == 202, response.text
+            operation_id = response.json()["operation_id"]
+            wait_until(
+                lambda: (
+                    client.get(base + "/tasks/" + operation_id).json()["status"]
+                    in {"succeeded", "failed"}
+                )
+            )
+            result = client.get(base + "/tasks/" + operation_id).json()
+            assert result["status"] == status, result
+            return operation_id, result
+
+        origin, result = finish(
+            client.post(base + "/turns", json={"provider": "claude", "message": "Keep notes."}),
+            "succeeded",
+        )
+        (descriptor,) = result["result"]["artifacts"]
+        artifact_id = descriptor["artifact_id"]
+        initial = store.artifact(artifact_id)
+        comment = {
+            "provider": "claude",
+            "message": "Revise the note.",
+            "artifact_context": {"operation_id": origin, "artifact_id": artifact_id},
+        }
+        failed, _ = finish(client.post(base + "/turns", json=comment), "failed")
+        retry, _ = finish(client.post(base + f"/tasks/{failed}/retry", json={}), "failed")
+        assert store.agent_task(retry).parent_operation_id == failed
+        assert store.read_artifact_bytes(artifact_id) == published.encode()
+        fresh, result = finish(client.post(base + "/turns", json=comment), "succeeded")
+        assert (
+            store.agent_task(fresh).request["artifact_context"]["base_version"]
+            == initial.current_version
+        )
+        assert [item["artifact_id"] for item in result["result"]["artifacts"]] == [artifact_id]
+        assert store.read_artifact_bytes(artifact_id) == revised.encode()
+        assert len(store.artifact_versions(artifact_id)) == 2
+    assert len(operations) == 4
+
+
 @pytest.mark.parametrize(
     "project_count, broken, catalogue_change",
     [

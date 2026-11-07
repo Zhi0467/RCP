@@ -922,6 +922,7 @@ async def _artifact_viewer_response(
     store: StoreDependency,
     head: bool = False,
     presentation: ViewerPresentation = "panel",
+    version_id: str | None = None,
 ) -> Response:
     if project_id != store.space_id:
         require_registered_project(catalog, project_id)
@@ -952,13 +953,13 @@ async def _artifact_viewer_response(
         if project_id != store.space_id and supports_comments(descriptor.media_type)
         else None
     )
-    stored = store.artifact(artifact_id)
+    version_id = _retained_artifact_version(store, artifact_id, version_id)
+    content_url += "?" + urlencode({"version_id": version_id})
     live_url = None
-    if stored is not None and project_id != store.space_id:
-        content_url += "?" + urlencode({"version_id": stored.current_version})
+    if project_id != store.space_id:
         live_url = (
             f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
-            f"/versions/{quote(stored.current_version, safe='')}/live"
+            f"/versions/{quote(version_id, safe='')}/live"
         )
     document, csp = artifact_viewer_document(
         descriptor,
@@ -978,6 +979,20 @@ async def _artifact_viewer_response(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+def _retained_artifact_version(store: AppStore, artifact_id: str, version_id: str | None) -> str:
+    """Capture a retained version before composing a viewer's content and live URLs."""
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None:
+            raise HTTPException(status_code=410, detail="Preview unavailable")
+        version_id = version_id or artifact.current_version
+        if not any(
+            version.version_id == version_id for version in store.artifact_versions(artifact_id)
+        ):
+            raise HTTPException(status_code=410, detail="Preview unavailable")
+        return version_id
 
 
 @router.post(

@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from typing import Annotated, Any, Literal, Self, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import (
     APIRouter,
@@ -20,6 +20,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
 )
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
@@ -89,7 +90,7 @@ from rcp.runs.agent_threads import (
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
-from rcp.runs.artifact_edit_admission import artifact_comment_message
+from rcp.runs.artifact_edit_admission import _edit_version, artifact_comment_message
 from rcp.runs.space_chat import SpaceThreadOwner, admit_space_invocations, space_transcript_lock
 from rcp.runs.steering import begin_chat_steer, finish_chat_steer
 from rcp.runs.turn_attachments import claim_turn_attachments
@@ -873,6 +874,12 @@ def _space_artifact_comment(
             raise ValueError("The artifact type does not support comments.")
         if context.selections and descriptor.media_type not in COMMENTABLE_MEDIA_TYPES:
             raise ValueError("This artifact supports a comment without selections.")
+        artifact = store.artifact(context.artifact_id)
+        if artifact is None:
+            raise ValueError("The artifact is unavailable.")
+        context = context.model_copy(
+            update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
+        )
         message = artifact_comment_message(body.message, context)
     except (HTTPException, ValueError) as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
@@ -907,7 +914,6 @@ def space_turn(
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_space_thread(store, thread_id, authorized.user_id)
-    artifact_context, message = _space_artifact_comment(store, thread, body)
     try:
         with store.client_request_admission(
             store.space_id,
@@ -917,6 +923,7 @@ def space_turn(
         ) as existing:
             if existing is not None:
                 return {"operation_id": existing.operation_id}
+            artifact_context, message = _space_artifact_comment(store, thread, body)
             workflows, skills = admit_space_invocations(
                 body.invoked_workflow_ids, body.invoked_skill_ids
             )
@@ -1105,6 +1112,46 @@ def steer_space_task(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@router.get("/api/agent-threads/{thread_id}/artifacts/{artifact_id}/state")
+def space_artifact_state(
+    thread_id: str,
+    artifact_id: str,
+    request: Request,
+    response: Response,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+):
+    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    with store.artifact_lock(artifact_id):
+        artifact = store.artifact(artifact_id)
+        if artifact is None or artifact.project_id != store.space_id:
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        origin = _space_task(store, thread, artifact.origin_operation_id or "")
+        descriptor = _agent_artifact_descriptor(origin, artifact_id)
+        if store.readable_artifact(store.space_id, artifact_id) is None:
+            raise HTTPException(status_code=410, detail="Artifact expired")
+        versions = store.artifact_versions(artifact_id)
+        current = next(
+            version for version in versions if version.version_id == artifact.current_version
+        )
+    base = (
+        f"/api/agent-threads/{quote(thread_id, safe='')}/tasks/{quote(origin.operation_id, safe='')}"
+        f"/artifacts/{quote(artifact_id, safe='')}/viewer"
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "current_version": current.version_id,
+        "version_number": versions.index(current) + 1,
+        "viewer_url": base + "?" + urlencode({"version_id": current.version_id}),
+        "can_comment": thread.closed_at is None and supports_comments(descriptor.media_type),
+        "can_keep": False,
+        "fresh_session_required": False,
+        "live": None,
+        "editing_operation_id": None,
+    }
+
+
 @router.api_route(
     "/api/agent-threads/{thread_id}/tasks/{operation_id}/artifacts/{artifact_id}/{action}",
     methods=["GET", "HEAD"],
@@ -1115,6 +1162,7 @@ async def space_artifact(
     artifact_id: str,
     action: Literal["content", "download", "viewer"],
     request: Request,
+    version_id: str | None = None,
     presentation: ViewerPresentation = "panel",
     theme: str | None = None,
     color_mode: str | None = None,
@@ -1135,6 +1183,7 @@ async def space_artifact(
             store=store,
             head=request.method == "HEAD",
             presentation=presentation,
+            version_id=version_id,
         )
     if action == "content":
         return await content_agent_artifact(
@@ -1142,6 +1191,7 @@ async def space_artifact(
             operation_id,
             artifact_id,
             request,
+            version_id=version_id,
             presentation=presentation,
             theme=theme,
             color_mode=color_mode,
