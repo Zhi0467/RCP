@@ -82,7 +82,7 @@ from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
-from rcp.skill_registry import SkillSelection
+from rcp.skill_registry import SkillSelection, official_registry
 from rcp.storage import (
     AgentTaskAdmissionConflict,
     AgentTaskKind,
@@ -1496,17 +1496,7 @@ def _admit_artifact_context_request(
 
     admitted = admit_chat_artifact_comment(store, service, project_id, request)
     if admitted.artifact_edit is not None:
-        # The viewer's origin-bound edit carries no skills; client-supplied ones
-        # would reach the prompt unresolved.
-        return admitted.model_copy(
-            update={
-                "invoked_workflow_ids": [],
-                "invoked_skill_ids": [],
-                "invoked_provider_skill_names": [],
-                "resolved_provider_skills": [],
-                "resolved_skill_packages": None,
-            }
-        )
+        return admitted
     # A composer comment is an ordinary turn, resolved like one.
     return _resolved_graph_request(service, kind, admitted)
 
@@ -1616,7 +1606,13 @@ def _validate_stored_task_request(
         return resolved_coach, service.resolve_skill_selection(resolved_coach)
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
-        return request, None
+        selection = service.resolve_skill_selection(request)
+        official_registry().validate_invocations(
+            selection,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        )
+        return request, selection
     if kind in {"seed", "refresh"}:
         service.history.require_writable()
     resolved_run = _resolved_graph_request(

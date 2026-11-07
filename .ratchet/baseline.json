@@ -67,7 +67,7 @@
   "src/rcp/api/service_connections.py": {"comment": 3},
   "src/rcp/api/space_machines.py": {"comment": 34},
   "src/rcp/api/task_requests.py": {"comment": 4},
-  "src/rcp/api/tasks.py": {"comment": 42},
+  "src/rcp/api/tasks.py": {"comment": 40},
   "src/rcp/api/team.py": {"comment": 4},
   "src/rcp/api/terminal_projection.py": {"comment": 6},
   "src/rcp/api/terminals.py": {"comment": 36},
