@@ -35,7 +35,7 @@ Do not import chat node links, glossary, artifact discovery or app actions.
 
 The existing Vite build emits `artifact-renderer.js` (a self-contained IIFE)
 and `artifact-renderer.css` (KaTeX styles with font URLs replaced by data URLs)
-into `web/dist`. Create `web/build/artifactRenderer.ts`; its Vite plugin produces
+into `web/dist`. Create `web/build/artifactRenderer.mjs`; its Vite plugin produces
 these assets during `generateBundle` and registers the entry, shared syntax and
 stylesheet/font inputs with `addWatchFile`. Do not add a second chained build, generated vendor files
 to Git, a runtime Node requirement, a CDN, or new dependencies. Python reads the
@@ -202,7 +202,7 @@ duplicating syntax wiring solely to reduce bundle size is unnecessary.
 
 | Action | Files / owner |
 | --- | --- |
-| Create | `web/src/core/markdownSyntax.ts`, `web/src/artifacts/artifactRenderer.tsx`, `web/build/artifactRenderer.ts`, `src/rcp/artifact_renderer.py`, `src/rcp/paper/html_preview.py`. |
+| Create | `web/src/core/markdownSyntax.ts`, `web/src/artifacts/artifactRenderer.tsx`, `web/build/artifactRenderer.mjs`, `src/rcp/artifact_renderer.py`, `src/rcp/paper/html_preview.py`. |
 | Modify | `web/vite.config.ts`, `web/src/core/chatMarkdown.ts` (re-export shared syntax for existing consumers). |
 | Modify | `src/rcp/artifact_views.py` for Markdown bootstrap/CSP, panel iframe sandbox and explicit appearance following; `src/rcp/artifact_inline.js` to leave unthemed Paper content loaded on theme switches. |
 | Modify | `src/rcp/api/paper.py`, `src/rcp/paper/live.py` for snapshot-bound read methods, state route, images and Paper math addon. |

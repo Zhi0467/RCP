@@ -720,7 +720,11 @@ authority stays inline so a master cannot restore expired commands or permission
 
 Discuss, Work and Experiment share the artifact contract rendered from the media
 model and enforced caps, including live-data fields. Empty output is normal;
-a commented writable file is edited in place. The `live-pages` package supplies
+a commented writable file is edited in place. Ongoing record notes and requested
+revisions keep their original tracked path; a new copy is for a distinct
+deliverable or an explicit human request. A viewable file delivered or materially
+revised as the answer uses inline embed syntax at that path. Supporting files
+remain optional, and prose answers stay prose. The `live-pages` package supplies
 examples; only episodes offer episode needs. Existing sessions keep their master
 until its version key changes.
 

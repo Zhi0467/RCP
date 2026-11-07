@@ -726,7 +726,7 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v5"
+SPACE_MASTER_POLICY = "space-master-v6"
 
 
 def render_space_prompt(

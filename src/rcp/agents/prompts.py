@@ -161,7 +161,7 @@ APP_PLACES = """Where the member acts in the RCP app:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 28
+CHAT_MASTER_CONTEXT_VERSION = 29
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -1013,9 +1013,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v14"
+DISCUSS_POLICY_VERSION = "discuss-v15"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v30"
+WORK_POLICY_VERSION = "work-v31"
 
 
 class PromptFactory:
