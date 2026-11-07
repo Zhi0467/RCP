@@ -1692,8 +1692,9 @@ today's optional catalogue.
 Slash completion inserts the visible token and a structured per-turn invocation.
 The registry validates its IDs against the optional selection and normalizes
 duplicates before launch. Exact invocation pointers travel with the current turn,
-outside retained masters. Retry retains that turn's invocation; a new human turn
-or automatic allocation does not inherit it. Required internal methods are
+outside retained masters. Retry retains that turn's invocation; a new human or
+automatic turn, including question-answer follow-ups and watcher wakes, does not
+inherit it. Required internal methods are
 invoked on every pass by their owning task. Packages supply methods and examples
 under the current task contract; they do not replace its authority, output channels, or
 filesystem boundary. The same discovery and invocation rules apply to ordinary
