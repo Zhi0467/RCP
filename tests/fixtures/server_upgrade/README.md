@@ -213,4 +213,6 @@ with one of two authorized invocations spent. The metadata identifies all three
 records. Candidate checks repair only the origin machine and preserve every
 other question field; the exact-base workflow answers a separate temporary copy
 with the historical storage API before candidate upgrade, then proves one
-continuation on the original session and stage with one claim and debit.
+continuation on the original session and stage with one claim and debit. The
+gate fetches the recorded writer commit when it is absent from a shallow
+checkout.
