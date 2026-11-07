@@ -184,11 +184,20 @@ page = rb'''<!doctype html><html><body>
 <p id="escaped">\$cash\$ and unmatched $open</p>
 <p id="inside">$x+\$1$</p>
 <p id="slashes">\\\$three\\\$ and unmatched $open</p>
-<code id="code">$code$ and \(literal\)</code><pre>$$ pre $$</pre>
+<p id="escaped-double">\$$literal$$</p>
+<p id="escaped-brackets">\\(literal\) and \\[literal\]</p>
+<p id="four-slashes">\\\\(literal\) and \\\\[literal\]</p>
+<p id="even-dollar">\\$e_2$ and \\$$d_2$$</p>
+<p id="odd-brackets">\\\(e_3\) and \\\[d_3\]</p>
+<p id="escaped-unmatched">\\(open and \\[open and \$$open</p>
+<p id="inside-display">$$ x + \$1 $$</p>
+<code id="code">$code$ and \(literal\) and $$display$$ and \[literal\] and \\(escaped\)</code><pre>$$ pre $$</pre>
+<span id="existing" class="katex">$keep$ and \(literal\) and \$$literal$$</span>
 <script>window.authoredValue='$script$';</script><style>#ignored{--literal:'$style$'}</style>
 <p id="bad">$\frac$</p>
 <p id="unsafe">$\href{javascript:alert(1)}{click}$</p>
 </body></html>'''
+page=page.replace(b'</body>', b'<p id="unmatched-slashes">'+bytes([92])*20_000+b'</p></body>')
 body, media, csp=artifact_content('page.html','text/html',page,frame_addon=paper_math_addon(['Missing local figure: fixture.svg']))
 shell, shell_csp=inline_viewer_document('page.html','html',content_url='/content',live=None,selectable=True,follow_appearance=False)
 print(json.dumps({'body':body,'csp':csp,'shell':shell,'shellCsp':shell_csp}))
@@ -246,6 +255,24 @@ test("Paper HTML math shares fonts and options, preserves authored code and repo
   assert.equal(await artifact.locator("#inline .katex-display").count(), 0);
   assert.equal(await artifact.locator("#display .katex-display").count(), 2);
   assert.equal(await artifact.locator("#inside .katex").count(), 1);
+  for (const [id, text] of [
+    ["escaped-double", String.raw`\$$literal$$`],
+    ["escaped-brackets", String.raw`\\(literal\) and \\[literal\]`],
+    ["four-slashes", String.raw`\\\\(literal\) and \\\\[literal\]`],
+    ["escaped-unmatched", String.raw`\\(open and \\[open and \$$open`],
+  ]) {
+    assert.equal(await artifact.locator(`#${id} .katex`).count(), 0, id);
+    assert.equal(await artifact.locator(`#${id}`).innerText(), text);
+  }
+  assert.equal(await artifact.locator("#even-dollar .katex").count(), 2);
+  assert.equal(await artifact.locator("#even-dollar .katex-display").count(), 1);
+  assert.equal(await artifact.locator("#odd-brackets .katex").count(), 2);
+  assert.equal(await artifact.locator("#odd-brackets .katex-display").count(), 1);
+  assert.equal(
+    await artifact.locator("#inside-display annotation").textContent(),
+    String.raw` x + \$1 `,
+  );
+  assert.equal(await artifact.locator("#unmatched-slashes").innerText(), "\\".repeat(20_000));
   assert.equal(await artifact.locator("#slashes .katex").count(), 0);
   assert.equal(
     await artifact.locator("#slashes").innerText(),
@@ -254,7 +281,15 @@ test("Paper HTML math shares fonts and options, preserves authored code and repo
   assert.equal(await artifact.locator("#code .katex, pre .katex").count(), 0);
   assert.equal(await artifact.locator("#escaped .katex").count(), 0);
   assert.equal(await artifact.locator("#escaped").innerText(), "\\$cash\\$ and unmatched $open");
-  assert.equal(await artifact.locator("#code").innerText(), "$code$ and \\(literal\\)");
+  assert.equal(
+    await artifact.locator("#code").innerText(),
+    String.raw`$code$ and \(literal\) and $$display$$ and \[literal\] and \\(escaped\)`,
+  );
+  assert.equal(
+    await artifact.locator("#existing").textContent(),
+    String.raw`$keep$ and \(literal\) and \$$literal$$`,
+  );
+  assert.equal(await artifact.locator("#existing .katex").count(), 0);
   assert.equal(await artifact.evaluate(() => window.authoredValue), "$script$");
   assert.equal(await artifact.evaluate(() => typeof window.RcpArtifactRenderer), "undefined");
   assert.equal(await artifact.locator("#bad .katex-error").count(), 1);
