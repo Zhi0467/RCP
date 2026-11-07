@@ -18,7 +18,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
+from rcp.artifact_renderer import ArtifactRendererUnavailable, paper_math_addon
 from rcp.artifact_views import (
+    _combined_addon,
     artifact_content,
     inline_viewer_document,
 )
@@ -317,6 +319,7 @@ async def html_preview(
         content_url=content_url,
         live=None,
         selectable=True,
+        follow_appearance=False,
     )
     return Response(
         document,
@@ -336,8 +339,15 @@ async def html_preview_content(
         raise HTTPException(404, "Paper file or revision not found") from exc
     try:
         document, media_type, csp = artifact_content(
-            preview.file.path, "text/html", preview.data, frame_addon=selection_frame_addon()
+            preview.file.path,
+            "text/html",
+            preview.data,
+            frame_addon=_combined_addon(
+                selection_frame_addon(), paper_math_addon(preview.warnings)
+            ),
         )
+    except ArtifactRendererUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(404, "Paper file has no HTML preview") from exc
     return Response(

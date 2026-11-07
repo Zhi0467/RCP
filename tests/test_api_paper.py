@@ -205,6 +205,7 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
         config = re.search(r"const inlineConfig=(\{.*?\});", shell.text)
         assert config
         assert json.loads(config.group(1))["selectable"] is True
+        assert json.loads(config.group(1))["followAppearance"] is False
         target = urlsplit(json.loads(config.group(1))["contentUrl"])
         assert target.path == file_url + "/preview/content"
         assert parse_qs(target.query)["revision"] == [str(revision)]
@@ -292,3 +293,17 @@ def test_html_preview_is_member_only(tmp_path):
         assert client.get(file_url).status_code == 404
         assert client.get(file_url + "/content").status_code == 404
         assert client.get(file_url + "/state").status_code == 404
+
+
+def test_html_preview_reports_missing_renderer_assets_explicitly(manifest, tmp_path, monkeypatch):
+    import rcp.artifact_renderer
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        page = client.post(prefix + "/uploads", data={"path": "p.html"}, files={"file": b"<p>x"})
+        monkeypatch.setattr(rcp.artifact_renderer, "web_dist_path", lambda: tmp_path / "missing")
+        url = prefix + f"/files/{page.json()['file_ids'][0]}/preview/content"
+        missing = client.get(url)
+        assert missing.status_code == 503
+        assert "Rebuild the Web assets" in missing.json()["detail"]

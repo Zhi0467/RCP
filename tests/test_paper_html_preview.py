@@ -222,3 +222,34 @@ def test_image_replacement_preserves_authored_script_and_mixed_line_endings(pape
         assert rendered.startswith(prefix)
         assert rendered.count("data:image/") == 1
         assert prepared.warnings == []
+
+
+def test_exact_preview_budgets_are_inclusive(paper, monkeypatch):
+    from rcp import limits
+
+    image(paper, "figures/my plot.svg")
+    human_edit(
+        paper, "page", '<img src="../figures/my plot.svg"><img src="../figures/my%20plot.svg">'
+    )
+    with preview(paper) as (prepared, reader):
+        rendered = inline_html_images(prepared, reader, "p")
+        assert not prepared.warnings
+    monkeypatch.setattr(limits, "PAPER_HTML_PREVIEW_MAX_ASSET_BYTES", len(SVG))
+    monkeypatch.setattr(limits, "PAPER_HTML_PREVIEW_MAX_ASSET_TOTAL_BYTES", len(SVG))
+    monkeypatch.setattr(limits, "PAPER_HTML_PREVIEW_MAX_OUTPUT_BYTES", len(rendered))
+    with preview(paper) as (prepared, reader):
+        assert not prepared.warnings
+        assert inline_html_images(prepared, reader, "p") == rendered
+
+
+def test_a_non_html_preview_refuses_before_reading_its_body(paper, monkeypatch):
+    image(paper)
+
+    def no_body(*_args, **_kwargs):
+        raise AssertionError("A non-HTML body was loaded")
+
+    monkeypatch.setattr(PaperSnapshotReader, "raw_file", no_body)
+    with paper.store.connection() as connection:
+        connection.execute("BEGIN")
+        with pytest.raises(KeyError):
+            read_html_preview(PaperSnapshotReader(connection), "p", "image")

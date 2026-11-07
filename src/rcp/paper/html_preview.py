@@ -201,9 +201,10 @@ def read_html_preview(
     reader: PaperSnapshotReader, project_id: str, file_id: str, revision: int | None = None
 ) -> PaperHTMLPreview:
     revision, entries = reader.manifest(project_id, revision)
-    file, body = reader.raw_file(project_id, file_id, revision)
-    if file_format(file.path, file.kind) != "html":
+    entry = next((entry for entry in entries if entry["file_id"] == file_id), None)
+    if entry is None or file_format(entry["path"], entry["kind"]) != "html":
         raise KeyError("Paper file has no HTML preview")
+    file, body = reader.raw_file(project_id, file_id, revision)
     source = body.decode("utf-8")
     parser = _Images(source)
     parser.feed(source)
