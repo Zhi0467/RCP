@@ -518,6 +518,8 @@ def continue_experiment_episode(
             "watcher_ids": [item.watcher_id for item in pending_group or []],
             "invoked_workflow_ids": [],
             "invoked_skill_ids": [],
+            "invoked_provider_skill_names": [],
+            "resolved_provider_skills": [],
         }
     )
     # The saved stage is frozen on one card; a turn on another card cannot reach it.

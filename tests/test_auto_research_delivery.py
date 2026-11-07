@@ -138,6 +138,8 @@ def _start_auto_research(
     browser_requested: bool = False,
     invoked: bool = False,
 ) -> tuple[EpisodeRecord, AgentTaskRecord]:
+    from rcp.providers import ProviderSkillReference
+
     auto_research, root = start_auto_research(
         tasks,
         "project",
@@ -148,6 +150,20 @@ def _start_auto_research(
             run_on="backend",
             run_truth_scope=["repo-a"],
             invoked_skill_ids=["graph-audit"] if invoked else [],
+            invoked_provider_skill_names=["native-review"] if invoked else [],
+            resolved_provider_skills=[
+                ProviderSkillReference(
+                    provider="codex",
+                    machine="backend",
+                    provider_version="old",
+                    inventory_hash="old",
+                    name="native-review",
+                    label="Native review",
+                    description="Earlier turn only",
+                )
+            ]
+            if invoked
+            else [],
         ),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
@@ -348,6 +364,8 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     assert wake.request["role"] == "orchestrator"
     assert wake.request["control_node_id"] is None
     assert wake.request["wake_cause"] == "graph_condition"
+    assert wake.request["invoked_provider_skill_names"] == []
+    assert wake.request["resolved_provider_skills"] == []
     assert wake.request["watcher_ids"] == [watcher.watcher_id]
     assert wake.graph_target == auto_research.graph_target
     assert wake.native_session_id == root.native_session_id == "orchestrator-session"
@@ -772,6 +790,8 @@ def test_pending_auto_research_mail_coalesces_into_one_paid_message_wake(tmp_pat
     )
     assert store.auto_research_invocation_role(wake.operation_id) == "orchestrator"
     assert wake.request["wake_cause"] == "message"
+    assert wake.request["invoked_provider_skill_names"] == []
+    assert wake.request["resolved_provider_skills"] == []
     assert wake.request["invoked_skill_ids"] == []
     assert wake.request["invoked_workflow_ids"] == []
     assert wake.request["actor_operation_id"] == root.operation_id
@@ -1246,6 +1266,8 @@ def test_lifecycle_notice_and_root_mail_share_one_paid_wake(tmp_path, suppressed
     )
     cause = "message" if suppressed else "lifecycle"
     assert wake.request["wake_cause"] == cause
+    assert wake.request["invoked_provider_skill_names"] == []
+    assert wake.request["resolved_provider_skills"] == []
     if suppressed:
         remaining = store.auto_research_lifecycle_notices(auto_research.episode_id)
         assert remaining == [notice]

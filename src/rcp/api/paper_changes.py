@@ -113,6 +113,8 @@ def _continue(project_id: str, group: ChangeGroup, request: Request):
         run_on=previous.request.get("run_on"),
         invoked_workflow_ids=[],
         invoked_skill_ids=[],
+        invoked_provider_skill_names=[],
+        resolved_provider_skills=[],
     )
     if group.state not in {"pending", "outdated"}:
         raise HTTPException(status_code=409, detail="Only undecided paper changes can be refreshed")
