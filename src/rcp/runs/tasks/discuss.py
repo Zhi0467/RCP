@@ -27,11 +27,13 @@ from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     GraphReadPrompt,
     _command_client_rule,
+    _invoked_package_section,
     chat_master_contract_key,
     graph_read_contract,
     invoked_package_pointers,
     live_ask_contract,
     render_chat_read_context,
+    skill_prompt_values,
 )
 from rcp.attachments import stage_turn_attachments
 from rcp.background import AgentTaskExecution
@@ -129,6 +131,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     start_work_validator_mailbox,
 )
 from rcp.service import ProjectService, RunRequest
+from rcp.skill_registry import official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateUnavailable
@@ -179,6 +182,7 @@ def _prepare_discuss_chat_prompt(
     master_context: str,
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
+    invoked_skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     ontology_extensions: bool,
     browser_grant: BrowserGrant,
@@ -206,6 +210,7 @@ def _prepare_discuss_chat_prompt(
         )
         node, master = "human_turn", MasterRef(path=path, bootstrap=False)
         context_delta = {
+            "skills": skill_prompt_values(skill_pointers),
             "browser": browser_prompt_line(browser_grant),
             "discuss": {
                 "execution_instructions": ["No RCP commands are available for this artifact edit."]
@@ -231,11 +236,7 @@ def _prepare_discuss_chat_prompt(
         memory_pointer=stage_operational_context_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         read_context=read_context,
-        invoked_skill_pointers=invoked_package_pointers(
-            skill_pointers,
-            workflow_ids=request.invoked_workflow_ids,
-            skill_ids=request.invoked_skill_ids,
-        ),
+        invoked_skill_pointers=invoked_skill_pointers,
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
@@ -623,13 +624,24 @@ async def stream_discuss_run(
             reasoning=request.reasoning,
             run_on=request.run_on,
         )
-        request = _pinned_to_profile(request, profile, service.manifest.base_machine)
+        if request.artifact_edit is None or not request.artifact_edit.origin_bound:
+            request = _pinned_to_profile(request, profile, service.manifest.base_machine)
     except ValueError as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     # Every launch, including Resume, Retry, and recovery, tells the agent the
     # project's current machines as seen from where it now runs.
-    machine = card(service.paper.store, service.manifest.base_machine)
+    machine_id = (
+        request.run_on
+        if request.artifact_edit is not None and request.artifact_edit.origin_bound
+        else service.manifest.base_machine
+    )
+    if machine_id is None:
+        yield _sse(
+            AgentEvent(event="error", text="The artifact's execution machine is unavailable.")
+        )
+        return
+    machine = card(service.paper.store, machine_id)
     compute_profiles = service.machine_prompt_profiles(machine.machine_id)
     local_stage: Path | None = None
     execution_host = machine.host
@@ -791,6 +803,11 @@ async def stream_discuss_run(
             )
             experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
             skill_selection = service.resolve_skill_selection(request)
+            workflow_ids, skill_ids = official_registry().validate_invocations(
+                skill_selection,
+                workflow_ids=request.invoked_workflow_ids,
+                skill_ids=request.invoked_skill_ids,
+            )
             skill_pointers = stage_skill_selection(
                 skill_selection,
                 local_stage=local_stage,
@@ -979,11 +996,6 @@ async def stream_discuss_run(
                         retry_diagnostics_path=retry_diagnostics_path,
                         experiment_watcher_resources=experiment_resource_pointers,
                         skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
                         compute_connections=compute_profiles,
@@ -1028,6 +1040,11 @@ async def stream_discuss_run(
                         node,
                         parts=[
                             continuation_contract,
+                            _invoked_package_section(
+                                invoked_package_pointers(
+                                    skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                                )
+                            ),
                             render_chat_read_context(context),
                             stage_operational_context_pointer(execution, local_stage, remote_stage),
                             question_part,
@@ -1061,6 +1078,13 @@ async def stream_discuss_run(
                         role="discuss_retry_base",
                     )
                     prompt += "\n\n" + render_chat_read_context(context)
+                    invocation = _invoked_package_section(
+                        invoked_package_pointers(
+                            skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                        )
+                    )
+                    if invocation:
+                        prompt += "\n\n" + invocation
                     prompt += "\n\n" + stage_operational_context_pointer(
                         execution, local_stage, remote_stage
                     )
@@ -1120,6 +1144,9 @@ async def stream_discuss_run(
                     read_context=render_chat_read_context(context),
                     browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
+                    invoked_skill_pointers=invoked_package_pointers(
+                        skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
+                    ),
                     attachment_pointers=attachment_pointers,
                     ontology_extensions=context.ontology_extensions,
                 )
@@ -1151,6 +1178,9 @@ async def stream_discuss_run(
                 "network_access": True,
                 "launch_kind": "retry" if retry_attempt else "resume" if resuming else "initial",
                 "write_directory_count": len(memory_write_dirs),
+                **skill_selection.model_dump(mode="json"),
+                "invoked_workflow_ids": workflow_ids,
+                "invoked_skill_ids": skill_ids,
             },
         )
         assert artifact_scope_id is not None

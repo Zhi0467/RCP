@@ -42,7 +42,13 @@ from rcp.agents.continuation_prompt import (
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.invocation_broker import ProviderInvocationGate
-from rcp.agents.prompts import GraphReadPrompt, graph_read_contract
+from rcp.agents.prompts import (
+    GraphReadPrompt,
+    _invoked_package_section,
+    graph_read_contract,
+    invoked_package_pointers,
+    skill_prompt_values,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import (
     WriteAuthority,
@@ -112,6 +118,8 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
+from rcp.skill_registry import official_registry
+from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 
@@ -771,11 +779,18 @@ async def stream_branch_merge_run(
     needs_code = bool(code_block) and not code_landed
 
     graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store if service else None)
+    skill_pointers: list[dict[str, object]] | None = None
+    skill_receipt: dict[str, object] = {}
+    invocation = ""
     while True:
         try:
             if not merge_answers_complete(plan, answers) or needs_code:
                 if recorded_answers is not None:
                     raise ValueError("The recorded merge turn left its answers incomplete.")
+                if skill_pointers is None:
+                    skill_pointers, skill_receipt, invocation = _stage_merge_skills(
+                        service, request, stage
+                    )
                 # A fresh receipt is required for every launched continuation.
                 validator_command, history_client, invocation_gate = await start_check_turn(plan)
                 _answers_mailbox(stage).remove("answers.json")
@@ -790,6 +805,7 @@ async def stream_branch_merge_run(
                     history_client=history_client,
                 )
                 values.update(graph_prompt.values)
+                values["skills"] = skill_prompt_values(skill_pointers)
                 staged_head = plan.destination_head
                 if service is not None:
                     staged_head = prepare_graph_observation(
@@ -811,6 +827,7 @@ async def stream_branch_merge_run(
                             validator_command=validator_command,
                             retained_answers=answers,
                             code_block=code_block,
+                            skill_pointers=skill_pointers,
                         ),
                         graph_prompt,
                         history_client,
@@ -824,6 +841,8 @@ async def stream_branch_merge_run(
                         execution=execution,
                         role="branch_merge",
                     )
+                    if invocation:
+                        prompt += "\n\n" + invocation
                     master_values = values
                     session_master = (label, contract)
                     if execution is not None:
@@ -844,12 +863,15 @@ async def stream_branch_merge_run(
                     master = _restaged_merge_master(stage, session_master, master_values)
                     prompt = compose(
                         classify(LaunchPhase(session_id=session_id, phase="turn")),
-                        parts=branch_merge_rebase_parts(
-                            cause=continuation_cause,
-                            previous_plan_id=previous_plan_id,
-                            plan_id=plan.plan_id,
-                            code=bool(code_block),
-                        ),
+                        parts=[
+                            *branch_merge_rebase_parts(
+                                cause=continuation_cause,
+                                previous_plan_id=previous_plan_id,
+                                plan_id=plan.plan_id,
+                                code=bool(code_block),
+                            ),
+                            invocation,
+                        ],
                         master=master,
                         delta={
                             **(changed_since_master(master, values) or {}),
@@ -874,6 +896,7 @@ async def stream_branch_merge_run(
                     context=context,
                     continuation=continuation,
                     round_number=launch_number,
+                    skill_receipt=skill_receipt,
                 )
                 if execution is not None:
                     # What this turn answers, for settling it if its link drops.
@@ -1114,6 +1137,7 @@ async def stream_code_merge_run(
     write_scope: ProjectWriteScope,
     code_block: str,
     verify: Callable[[], None],
+    service: ProjectService | None = None,
     execution: Any | None = None,
     binary: str | None = None,
     hidden_read_scope: HiddenReadScope | None = None,
@@ -1122,7 +1146,8 @@ async def stream_code_merge_run(
 
     if request.provider is None or request.run_on is None:
         raise ValueError("branch merge request must have a pinned provider and execution machine")
-    contract = code_merge_task_contract(code_block=code_block)
+    skill_pointers, skill_receipt, invocation = _stage_merge_skills(service, request, stage)
+    contract = code_merge_task_contract(code_block=code_block, skill_pointers=skill_pointers)
     contract_path, prompt = _stage_task_contract(
         stage.local_stage,
         stage.remote_stage,
@@ -1131,6 +1156,8 @@ async def stream_code_merge_run(
         execution=execution,
         role="branch_merge",
     )
+    if invocation:
+        prompt += "\n\n" + invocation
     _record_agent_launch_receipt(
         execution,
         request,
@@ -1149,6 +1176,7 @@ async def stream_code_merge_run(
             "round": 0,
             "write_directory_count": 1 + len(write_scope.repository_roots),
             "repository_write_root_count": len(write_scope.repository_roots),
+            **skill_receipt,
         },
     )
     provider, events = _provider_turn(
@@ -1171,6 +1199,37 @@ async def stream_code_merge_run(
     if provider.paused or provider.failed or not provider.completed:
         raise ValueError("The code merge provider did not complete its turn.")
     verify()
+
+
+def _stage_merge_skills(
+    service: ProjectService | None, request: RunRequest, stage: BranchMergeStage
+) -> tuple[list[dict[str, object]], dict[str, object], str]:
+    if service is None:
+        return [], {}, ""
+    selection = service.resolve_skill_selection(request)
+    workflows, skills = official_registry().validate_invocations(
+        selection,
+        workflow_ids=request.invoked_workflow_ids,
+        skill_ids=request.invoked_skill_ids,
+    )
+    pointers = stage_skill_selection(
+        selection,
+        local_stage=stage.local_stage,
+        remote_stage=stage.remote_stage,
+        label=skill_bundle_label(selection),
+        reuse_existing=True,
+    )
+    return (
+        pointers,
+        {
+            **selection.model_dump(mode="json"),
+            "invoked_workflow_ids": workflows,
+            "invoked_skill_ids": skills,
+        },
+        _invoked_package_section(
+            invoked_package_pointers(pointers, workflow_ids=workflows, skill_ids=skills)
+        ),
+    )
 
 
 def _jsonable(value: object) -> JsonValue:
@@ -1371,6 +1430,7 @@ def _record_merge_launch(
     context: BranchMergeContext,
     continuation: str,
     round_number: int,
+    skill_receipt: dict[str, object],
 ) -> None:
     _record_agent_launch_receipt(
         execution,
@@ -1395,5 +1455,6 @@ def _record_merge_launch(
             "main_head": context.main_head.model_dump(mode="json"),
             "write_directory_count": 1 + len(write_scope.repository_roots),
             "repository_write_root_count": len(write_scope.repository_roots),
+            **skill_receipt,
         },
     )

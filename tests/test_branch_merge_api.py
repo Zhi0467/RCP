@@ -1474,7 +1474,12 @@ def test_no_change_receipt_rechecks_live_project_membership(
 
 
 def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypatch):
+    from rcp.skill_registry import SkillDefaults
+
+    from .test_api import _persist_skill_defaults
+
     harness = _create_branch_harness(manifest, tmp_path, change="status")
+    _persist_skill_defaults(harness.service, SkillDefaults(skill_ids=["graph-audit"]))
     for title in ("Branch title", "Main title"):
         patch = Patch(
             kind="work",
@@ -1514,6 +1519,9 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
     async def launch(_provider, _prompt, *, cwd, invocation_gate, **_kwargs):
         assert invocation_gate is not None
         master = next((cwd.parent / "inputs").glob("*-branch-merge.md")).read_text()
+        packages = list((cwd.parent / "inputs").glob("rcp-skills-*/skill/*/SKILL.md"))
+        assert [path.parent.name for path in packages] == ["graph-audit"]
+        assert str(packages[0].parent) in master
         await serving.wait()
         scope = GraphReadScope.resolve(harness.project_id, harness.service.history)
         assert (
@@ -1581,6 +1589,11 @@ def test_merge_history_client_and_main_observation(manifest, tmp_path, monkeypat
         if task.kind == "branch_merge"
     )
     task = wait_for_task(harness.store, task.operation_id, expect="succeeded")
+    values = json.loads(
+        harness.store.agent_task_contract(task.operation_id, "session_master_values")
+    )
+    assert [item["id"] for item in values["skills"]] == ["graph-audit"]
+    assert {"description", "dependencies", "version", "path"} <= values["skills"][0].keys()
     assert len(calls) == 1
     assert harness.service.history.state().nodes["blk/merge-ready"].title == "Merged title"
     seen = harness.store.graph_seen_head(
@@ -1764,6 +1777,12 @@ def test_a_merge_turn_that_outlives_its_link_commits_the_answers_it_left(
         ]
 
     recorded = _recorded_pass("", "Merged.")
+
+    monkeypatch.setattr(
+        ProjectService,
+        "resolve_skill_selection",
+        lambda *_args, **_kwargs: pytest.fail("settlement resolved today's skills"),
+    )
 
     def unreachable(*_args, **_kwargs):
         """A host that drops while the stage reattaches or the merge prepares is an outage, not a
