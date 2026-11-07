@@ -14,13 +14,13 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.history.queries import HeadSpec
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
 from rcp.runs.evidence_flag_commands import hold_consolidation_additions
-from rcp.skill_registry import official_registry
 from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.background import AgentTaskExecution
-    from rcp.service import ProjectService
+    from rcp.service import ProjectService, RunRequest
+    from rcp.skill_registry import SkillSelection
     from rcp.storage import AgentTaskRecord, AppStore
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
@@ -130,8 +130,8 @@ def require_consolidation_launch(store: AppStore, task: AgentTaskRecord) -> None
         raise ValueError("consolidation_launch_binding_invalid")
 
 
-def consolidation_skill_selection():
-    return official_registry().resolve(workflow_ids=["graph-consolidation"], skill_ids=[])
+def consolidation_skill_selection(service: ProjectService, request: RunRequest) -> SkillSelection:
+    return service.resolve_skill_selection(request, required_workflow_ids=["graph-consolidation"])
 
 
 def source_effect_id(operation_id: str, digest: str) -> str:

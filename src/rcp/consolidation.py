@@ -445,9 +445,13 @@ class ConsolidationPoller:
             skill_ids=[],
             invoked_workflow_ids=["graph-consolidation"],
         )
-        selection = consolidation_skill_selection()
+        selection = consolidation_skill_selection(service, request)
         request = request.model_copy(
-            update={"resolved_skill_packages": selection.resolved_skill_packages}
+            update={
+                "workflow_ids": selection.workflow_ids,
+                "skill_ids": selection.skill_ids,
+                "resolved_skill_packages": selection.resolved_skill_packages,
+            }
         )
         operation_id = str(uuid4())
         authority = resolved_dispatch_authority(

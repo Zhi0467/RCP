@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.prompts import _invoked_package_section
 from rcp.agents.write_scope import registered_repository_roots
 from rcp.api.episodes import serialize_episode
 from rcp.api.experiment_controls import _experiment_control_response
@@ -22,7 +24,7 @@ from rcp.runs.episodes.isolation import ensure_episode_isolation
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.service import ProjectService, RunRequest
-from rcp.skill_registry import official_registry
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -312,6 +314,9 @@ def _setup_report(
             project_id=project_id,
         ),
     )
+    service.resolve_skill_selection = lambda request, **kwargs: (
+        ProjectService.resolve_skill_selection(cast(ProjectService, service), request, **kwargs)
+    )
     ensure_episode_isolation(
         cast(ProjectService, service),
         store,
@@ -395,6 +400,111 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
         b"<html>"
     )
     assert [attempt.status for attempt in store.episode_report_attempts(EPISODE)] == ["succeeded"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "optional_ids, optional_workflow_ids",
+    [([], []), (["ml-result-rigor"], ["research-graph-audit"])],
+)
+async def test_report_keeps_settings_catalogue_and_only_invokes_required_method(
+    manifest, tmp_path, optional_ids, optional_workflow_ids
+):
+    service, store, request, execution, stage = _setup_report(manifest, tmp_path)
+    service.manifest.agent.skill_defaults = SkillDefaults(
+        workflow_ids=optional_workflow_ids, skill_ids=optional_ids
+    )
+    parent_id = store.agent_task(execution.operation_id).parent_operation_id
+    parent = store.agent_task(parent_id)
+    parent_request = {**parent.request, "invoked_skill_ids": ["ml-result-rigor"]}
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps(parent_request), parent_id),
+        )
+    launcher = _ReportLauncher(["missing", "valid"])
+
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert [event.event for event in events] == ["message", "done"]
+    receipts = store.agent_task_receipts_by_category(execution.operation_id, "agent_launch")
+    expected = official_registry().resolve(
+        workflow_ids=optional_workflow_ids, skill_ids=[*optional_ids, "episode-report"]
+    )
+    for number, receipt in enumerate(receipts, start=1):
+        assert receipt.payload["workflow_ids"] == expected.workflow_ids
+        assert receipt.payload["skill_ids"] == expected.skill_ids
+        assert receipt.payload["resolved_skill_packages"] == [
+            item.model_dump(mode="json") for item in expected.resolved_skill_packages
+        ]
+        contract = next(stage.glob(f"inputs/*-episode-report-contract-{number}.md")).read_text()
+        for reference in expected.resolved_skill_packages:
+            package = official_registry().package(reference.kind, reference.id)
+            assert " ".join(package.description.split()) in " ".join(contract.split())
+        required_path = next(stage.glob("inputs/rcp-skills-*/skill/episode-report"))
+        assert str(required_path / "SKILL.md") in contract
+        invocation = _invoked_package_section(
+            [
+                {
+                    "kind": "skill",
+                    "id": "episode-report",
+                    "label": "Episode report",
+                    "version": store.episode_wrapup(EPISODE).skill_version,
+                    "path": str(required_path),
+                }
+            ]
+        ).strip()
+        assert invocation in launcher.prompts[number - 1]
+        assert "`ml-result-rigor`" not in launcher.prompts[number - 1]
+
+
+@pytest.mark.asyncio
+async def test_report_refuses_changed_required_skill_before_resolving_settings(manifest, tmp_path):
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episode_wrapups SET skill_version='0.0.0' WHERE episode_id=?", (EPISODE,)
+        )
+    service.resolve_skill_selection = lambda *_args, **_kwargs: pytest.fail(
+        "resolved optional settings before checking frozen report skill"
+    )
+    launcher = _ReportLauncher([])
+
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert [event.event for event in events] == ["error"]
+    assert "does not pin the current official episode-report skill" in events[0].text
+    assert launcher.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_pointer", ["missing", "version"])
+async def test_report_staging_requires_its_exact_mandatory_package(
+    manifest, tmp_path, monkeypatch, invalid_pointer
+):
+    import rcp.runs.tasks.episode_report as report
+
+    service, store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    service.manifest.agent.skill_defaults = SkillDefaults(skill_ids=["ml-result-rigor"])
+    stage_skills = report.stage_skill_selection
+
+    def invalid_staging(*args, **kwargs):
+        pointers = stage_skills(*args, **kwargs)
+        return [
+            {**pointer, "version": "0.0.0"} if pointer["id"] == "episode-report" else pointer
+            for pointer in pointers
+            if invalid_pointer != "missing" or pointer["id"] != "episode-report"
+        ]
+
+    monkeypatch.setattr(report, "stage_skill_selection", invalid_staging)
+    launcher = _ReportLauncher([])
+
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert [event.event for event in events] == ["error"]
+    assert "required official skill" in events[0].text
+    assert launcher.calls == 0
+    assert store.episode_report_attempts(EPISODE) == []
 
 
 @pytest.mark.asyncio
@@ -837,6 +947,9 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
         encoding="utf-8",
     )
     launcher = _ReportLauncher([])
+    service.resolve_skill_selection = lambda *_args, **_kwargs: pytest.fail(
+        "resolved optional settings for a consumed result"
+    )
 
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
@@ -1318,6 +1431,19 @@ async def assert_report_refusal_fallback(
         events = [event for event in events if event.event != "raw"]
     assert [call["session_id"] for call in launcher.kwargs] == ["native-session", None]
     assert all(Path(call["cwd"]) == stage for call in launcher.kwargs)
+    required_path = next(stage.glob("inputs/rcp-skills-*/skill/episode-report"))
+    invocation = _invoked_package_section(
+        [
+            {
+                "kind": "skill",
+                "id": "episode-report",
+                "label": "Episode report",
+                "version": store.episode_wrapup(EPISODE).skill_version,
+                "path": str(required_path),
+            }
+        ]
+    ).strip()
+    assert all(invocation in prompt for prompt in launcher.prompts)
     assert str(transcript) in launcher.prompts[1]
     after = store.episode(EPISODE)
     assert after.invocations_used == before.invocations_used
