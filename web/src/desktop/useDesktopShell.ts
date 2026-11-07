@@ -11,6 +11,8 @@ import {
   needsDesktopFolderAccessAcknowledgement,
   type DesktopUpdate,
 } from "../core/desktopRuntime";
+import { forgetBanners } from "../ui/bannerDismissal";
+import { desktopUpdateErrorDismissPrefix } from "./updateNoticeModel";
 
 interface PendingDesktopProject {
   projectId: string;
@@ -39,9 +41,14 @@ export function useDesktopShell(desktop: boolean) {
   const [reconnecting, setReconnecting] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdate | null>(null);
   const [updaterEnabled, setUpdaterEnabled] = useState<boolean | null>(null);
-  const [updateExpanded, setUpdateExpanded] = useState(false);
+  const [expandedUpdateVersion, setExpandedUpdateVersion] = useState<string | null>(null);
+  const updateExpanded =
+    desktopUpdate !== null && expandedUpdateVersion === (desktopUpdate.version ?? "");
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  useEffect(() => {
+    if (updaterEnabled !== null && !updateError) forgetBanners(desktopUpdateErrorDismissPrefix);
+  }, [updateError, updaterEnabled]);
   const [pendingDesktopProject, setPendingDesktopProject] = useState<PendingDesktopProject | null>(
     null,
   );
@@ -141,7 +148,7 @@ export function useDesktopShell(desktop: boolean) {
       if (!identity.ok) return;
       const hasActiveWork = activeTask || identity.activeAgentTasks > 0;
       if (hasActiveWork && !updateExpanded) {
-        setUpdateExpanded(true);
+        setExpandedUpdateVersion(desktopUpdate.version ?? "");
         return;
       }
       await applyDesktopUpdate(hasActiveWork);
@@ -150,12 +157,6 @@ export function useDesktopShell(desktop: boolean) {
     } finally {
       setUpdateApplying(false);
     }
-  };
-
-  const dismissUpdate = () => {
-    setDesktopUpdate(null);
-    setUpdateError(null);
-    setUpdateExpanded(false);
   };
 
   return {
@@ -175,7 +176,6 @@ export function useDesktopShell(desktop: boolean) {
     dismissDesktopProjectOpen,
     reconnectBackend,
     applyUpdate,
-    expandUpdate: () => setUpdateExpanded(true),
-    dismissUpdate,
+    expandUpdate: () => setExpandedUpdateVersion(desktopUpdate?.version ?? ""),
   };
 }

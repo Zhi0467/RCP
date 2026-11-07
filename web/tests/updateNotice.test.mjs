@@ -209,6 +209,118 @@ test("release notice transitions, actions, visibility, and storage through a ser
       });
       await refresh();
     });
+    await t.test(
+      "native release and failure dismissals survive checks without hiding new occurrences",
+      async () => {
+        await page.addInitScript(() => {
+          window.nativeOffer = {
+            enabled: true,
+            available: true,
+            version: "0.4.41",
+            current_version: "0.4.40",
+            active_agent_tasks: 0,
+          };
+          window.nativeFailure =
+            location.hash === "#check-failure" ? "Could not check for updates" : null;
+          window.nativeApplies = [];
+          window.__TAURI_INTERNALS__ = {
+            invoke: async (command, args) => {
+              if (command === "desktop_build_identity")
+                return { kind: "prebuilt", version: "0.4.40", checkout: null };
+              if (command === "check_for_update") {
+                if (window.nativeFailure) throw new Error(window.nativeFailure);
+                return structuredClone(window.nativeOffer);
+              }
+              if (command === "apply_update") {
+                window.nativeApplies.push(args);
+                return { started: true };
+              }
+              throw new Error(`Unexpected native command ${command}`);
+            },
+          };
+        });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/updateNotice.html?native`);
+        const notice = page.locator(".desktop-update-notice");
+        const marker = page.getByRole("button", { name: "Update ready", exact: true });
+        const dismiss = page.getByRole("button", { name: "Dismiss", exact: true });
+        await notice.waitFor();
+        assert.equal(await dismiss.count(), 1);
+        const frame = await notice.boundingBox();
+        const control = await dismiss.boundingBox();
+        assert.ok(frame.x >= 0 && frame.x + frame.width <= 390);
+        assert.ok(control.width >= 44 && control.height >= 44);
+        assert.ok(control.x >= frame.x && control.x + control.width <= frame.x + frame.width);
+        assert.ok(control.y >= frame.y && control.y + control.height <= frame.y + frame.height);
+        await dismiss.click();
+        await page.evaluate(() => window.refreshNativeUpdate());
+        assert.equal(await notice.count(), 0);
+        await page.evaluate(() => history.replaceState(null, "", "?native#check-failure"));
+        await page.reload();
+        await page.getByRole("alert").waitFor();
+        await dismiss.click();
+        await page.reload();
+        await page.waitForFunction(() => window.refreshNativeUpdate);
+        await page.evaluate(() => window.refreshNativeUpdate());
+        assert.equal(await page.getByRole("alert").count(), 0);
+        await page.evaluate(() => history.replaceState(null, "", "?native"));
+        await page.reload();
+        await page.waitForFunction(() => window.refreshNativeUpdate);
+        await page.evaluate(async () => {
+          window.setNativeActiveWork(true);
+          await window.refreshNativeUpdate();
+        });
+        assert.equal(await notice.count(), 0);
+        assert.equal(await marker.count(), 0);
+        await page.evaluate(async () => {
+          window.nativeOffer.version = "0.4.42";
+          await window.refreshNativeUpdate();
+        });
+        await marker.click();
+        await page.getByRole("button", { name: "Update now", exact: true }).click();
+        await page.waitForFunction(() => window.nativeApplies.length === 1);
+        assert.deepEqual(await page.evaluate(() => window.nativeApplies), [
+          { confirmActiveWork: true },
+        ]);
+        await dismiss.click();
+        await page.evaluate(async () => {
+          window.nativeFailure = "Could not download the update";
+          await window.refreshNativeUpdate();
+        });
+        await page.getByRole("alert").waitFor();
+        await dismiss.click();
+        await page.evaluate(() => window.refreshNativeUpdate());
+        assert.equal(await page.getByRole("alert").count(), 0);
+        await page.evaluate(async () => {
+          window.nativeFailure = null;
+          await window.refreshNativeUpdate();
+        });
+        assert.equal(await notice.count(), 0);
+        await page.evaluate(async () => {
+          window.nativeFailure = "Could not download the update";
+          await window.refreshNativeUpdate();
+        });
+        await page.getByRole("alert").waitFor();
+        await page.evaluate(async () => {
+          window.nativeFailure = null;
+          window.nativeOffer.version = "0.4.43";
+          await window.refreshNativeUpdate();
+        });
+        await marker.waitFor();
+        await page.evaluate(() => window.setNativeActiveWork(false));
+        await notice.waitFor();
+        await page.evaluate(() => {
+          Object.defineProperty(window, "localStorage", {
+            get() {
+              throw new Error("unavailable");
+            },
+          });
+        });
+        await dismiss.click();
+        await page.evaluate(() => window.refreshNativeUpdate());
+        assert.equal(await notice.count(), 0);
+      },
+    );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

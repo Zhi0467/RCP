@@ -3,7 +3,8 @@ import { useState } from "react";
 import type { DesktopUpdate, DesktopBuildIdentity } from "../core/desktopRuntime";
 import type { UpdateNotice as NoticeData } from "../core/types";
 import { Banner } from "../ui/Banner";
-import { releaseDismissKey, releaseNotice } from "./updateNoticeModel";
+import { isBannerDismissed } from "../ui/bannerDismissal";
+import { desktopUpdateDismissKey, releaseDismissKey, releaseNotice } from "./updateNoticeModel";
 
 export function UpdateNotice({
   notice,
@@ -110,7 +111,6 @@ export interface DesktopUpdateNoticeProps {
   error: string | null;
   onExpand: () => void;
   onApply: () => void;
-  onDismiss: () => void;
 }
 
 function DesktopUpdateNotice({
@@ -121,8 +121,9 @@ function DesktopUpdateNotice({
   error,
   onExpand,
   onApply,
-  onDismiss,
 }: DesktopUpdateNoticeProps) {
+  const dismissKey = desktopUpdateDismissKey(update, error);
+  if (isBannerDismissed(dismissKey)) return null;
   if (update && activeWork && !expanded && !error) {
     return (
       <button className="desktop-update-marker" type="button" onClick={onExpand}>
@@ -131,7 +132,8 @@ function DesktopUpdateNotice({
     );
   }
   return (
-    <div
+    <Banner
+      dismissKey={dismissKey}
       className={`desktop-update-notice${error ? " error" : ""}`}
       role={error ? "alert" : "status"}
     >
@@ -143,9 +145,6 @@ function DesktopUpdateNotice({
           {activeWork ? "Update now" : "Update"}
         </button>
       )}
-      <button className="desktop-update-dismiss" type="button" onClick={onDismiss}>
-        Later
-      </button>
-    </div>
+    </Banner>
   );
 }

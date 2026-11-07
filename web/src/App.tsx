@@ -779,7 +779,6 @@ function MemberApp({
     reconnectBackend: reconnectDesktopBackend,
     applyUpdate: applyDesktopShellUpdate,
     expandUpdate,
-    dismissUpdate,
   } = useDesktopShell(desktop);
   useRecheckOnRelease(releaseUpdate, desktopUpdate?.version, refreshDesktopUpdate);
   const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
@@ -4270,7 +4269,6 @@ function MemberApp({
       error={updateError}
       onExpand={expandUpdate}
       onApply={() => void applyUpdate()}
-      onDismiss={dismissUpdate}
     />
   );
   const desktopAccessSurface = pendingDesktopProject ? (
