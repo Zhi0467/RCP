@@ -171,6 +171,14 @@ def test_a_resumed_chat_learns_a_new_skill_from_its_delta(branch_services) -> No
             workspace="workspace",
         )
 
-    added = {"id": "new", "kind": "skill", "version": "1.0.0", "description": "When.", "path": "p"}
+    added = {
+        "id": "new",
+        "kind": "skill",
+        "label": "New method",
+        "version": "1.0.0",
+        "description": "When.",
+        "dependencies": [],
+        "path": "p",
+    }
     delta = context_delta(values([]), values([added]))
     assert delta["skills"] == [{**added}]

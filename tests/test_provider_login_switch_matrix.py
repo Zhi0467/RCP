@@ -92,7 +92,10 @@ def test_operation_after_login_switch(
 
         edit = admit_artifact_edit(
             store,
-            SimpleNamespace(history=SimpleNamespace(graph_target=GraphTargetRef())),
+            SimpleNamespace(
+                history=SimpleNamespace(graph_target=GraphTargetRef()),
+                resolve_skill_request=lambda request: request,
+            ),
             PROJECT,
             RunRequest(
                 message="Update notes",

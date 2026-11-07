@@ -223,7 +223,7 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
     import re
     import uuid
 
-    from .helpers import signed_in_client, wait_for_task
+    from .helpers import launch_contract_path, signed_in_client, wait_for_task
     from .test_api import ScriptedLauncher
     from .test_branch_chats import _app_branch
 
@@ -247,9 +247,11 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
         task = wait_for_task(app.state.catalog.store, response.json()["operation_id"])
         assert task.status == "succeeded", task.error
         assert task.graph_target == episode.graph_target
+        prompt = launcher.prompts[-1]
+        master = launch_contract_path(prompt).read_text()
         blocks = [
             json.loads(value)
-            for value in re.findall(r"```json\n(.*?)\n```", launcher.prompts[-1], re.S)
+            for value in re.findall(r"```json\n(.*?)\n```", prompt + "\n" + master, re.S)
         ]
         pointers = next(block for block in blocks if "parent_graph_path" in block)
         path = Path(pointers["parent_graph_path"])
