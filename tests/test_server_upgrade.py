@@ -344,6 +344,59 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_previous_writer_schedule_replays_consumed_count_after_member_zone_changes(tmp_path: Path):
+    base_ref, _ = exact_candidate_base()
+    source = _build_checkout(base_ref, tmp_path / "old-writer", web=False)
+    database = tmp_path / "legacy.sqlite3"
+    helper = REPOSITORY_ROOT / "tests/server_upgrade_state.py"
+    seeded = subprocess.run(
+        [
+            str(source / ".venv/bin/python"),
+            "-c",
+            "import json, runpy, sys; from pathlib import Path; "
+            "seed = runpy.run_path(sys.argv[1])['seed_private_schedule_replay']; "
+            "print(json.dumps(seed(Path(sys.argv[2]))))",
+            str(helper),
+            str(database),
+        ],
+        cwd=source,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _assert_previous_writer_schedule_replay(database, json.loads(seeded.stdout))
+
+
+def _assert_previous_writer_schedule_replay(database: Path, seeded: dict) -> None:
+    from rcp.agents.command_protocol import ScheduleCommandRequest
+    from rcp.runs.agent_schedules import handle_schedule
+
+    store = AppStore(database)
+    store.now = lambda: "2026-01-01T12:00:00+00:00"
+    request = ScheduleCommandRequest.model_validate(seeded["request"])
+    assert store.agent_schedules("thread")[0].model_dump(mode="json") == seeded["schedule"]
+    for zone in ("Europe/Berlin", None):
+        with store.connection() as connection:
+            task_request = {**store.agent_task("origin").request, "timezone": zone}
+            connection.execute("UPDATE graph_runs SET request_json=?", (json.dumps(task_request),))
+        replayed = handle_schedule(store, "origin", request)
+        assert replayed.status == "ok", replayed.message
+        assert replayed.result["schedule"] == seeded["schedule"]
+        assert store.agent_schedules("thread")[0].model_dump(mode="json") == seeded["schedule"]
+    explicit = request.model_copy(
+        update={"arguments": request.arguments.model_copy(update={"timezone": "Europe/Berlin"})}
+    )
+    refused = handle_schedule(store, "origin", explicit)
+    assert refused.status == "invalid" and "schedule_key_conflict" in refused.message
+    with store.connection() as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
+    store.close()
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
 def test_historical_writer_answer_crosses_upgrade_and_resumes_once(tmp_path, monkeypatch):
     fixture = FIXTURE_ROOT / "pre-local-question-origin-v43-1226e25"
     metadata = verify_fixture_integrity(fixture)
@@ -904,12 +957,10 @@ def _local_question_before_upgrade(
         return None
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
-        assert (
-            connection.execute(
-                "SELECT MAX(migration_version) FROM storage_schema_migrations"
-            ).fetchone()[0]
-            == 77
-        )
+        ledger = connection.execute(
+            "SELECT MAX(migration_version) FROM storage_schema_migrations"
+        ).fetchone()[0]
+        assert ledger >= 77
         question = dict(
             connection.execute(
                 "SELECT * FROM questions WHERE question_id = ?", (question_id,)
@@ -927,7 +978,10 @@ def _local_question_before_upgrade(
         assert task["stage_root"] == origin["stage_root"]
         assert task["stage_machine_id"] == BACKEND_MACHINE_ID
         assert task["status"] == "succeeded"
-        assert origin["stage_machine_id"] is None
+        if ledger == 77:
+            assert origin["stage_machine_id"] is None
+        else:
+            assert origin["stage_machine_id"] == BACKEND_MACHINE_ID
         assert question["state"] == "pending"
         assert question["answer_revision"] == 0
         assert question["followup_operation_id"] is None

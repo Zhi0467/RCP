@@ -23,6 +23,8 @@ _MINUTES_PER_DAY = 24 * 60
 
 # Store refusals keep their codes; the agent also gets what to do next.
 _STORE_REASONS = {
+    "schedule_thread_required": "schedules live on the member's private agent thread, "
+    "which this turn is not",
     "schedule_limit": f"this thread already has {AGENT_SCHEDULES_MAX_ACTIVE} active "
     "schedules; cancel one first",
     "schedule_key_conflict": "this --key already names a different schedule; use a new key",
@@ -279,8 +281,30 @@ def lineage_root(store, task) -> str:
     return task.operation_id
 
 
-def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
+def _add_schedule(
+    store, connection, task, thread: dict, command
+) -> tuple[str | None, dict[str, object]]:
     args = command.arguments
+    root = lineage_root(store, task)
+    interval = every_minutes(args.every) if args.every is not None else None
+    existing = store.existing_agent_schedule(
+        connection,
+        thread_id=thread["thread_id"],
+        operation_id=root,
+        key=command.idempotency_key,
+        cron=args.cron,
+        at=args.at,
+        timezone=args.timezone,
+        note=args.note,
+        every_minutes=interval,
+        start=args.start,
+        until=args.until,
+    )
+    if existing is not None:
+        return None, {
+            "schedule": existing.model_dump(mode="json"),
+            **schedule_clock(existing.timezone, datetime.fromisoformat(store.now())),
+        }
     timezone = args.timezone or member_timezone(store, task)
     if not timezone:
         raise ScheduleRefused(
@@ -288,7 +312,6 @@ def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
             "the member's time zone is unknown; ask the member, then pass --timezone",
         )
     now = datetime.fromisoformat(store.now())
-    interval = every_minutes(args.every) if args.every is not None else None
     due = validate_schedule(
         cron=args.cron,
         at=args.at,
@@ -300,9 +323,10 @@ def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
         until=args.until,
         count=args.count,
     )
-    schedule = store.add_agent_schedule(
+    schedule = store._add_agent_schedule(
+        connection,
         thread_id=thread["thread_id"],
-        operation_id=lineage_root(store, task),
+        operation_id=root,
         key=command.idempotency_key,
         cron=args.cron,
         at=args.at,
@@ -314,22 +338,47 @@ def _add_schedule(store, task, thread: dict, command) -> dict[str, object]:
         until=args.until,
         count=args.count,
     )
-    return {"schedule": schedule.model_dump(mode="json"), **schedule_clock(timezone, now)}
+    return schedule.schedule_id, {
+        "schedule": schedule.model_dump(mode="json"),
+        **schedule_clock(timezone, now),
+    }
+
+
+def _mutate_schedule(
+    store, connection, task, thread: dict, command
+) -> tuple[str | None, dict[str, object]]:
+    args = command.arguments
+    if args.action == "add":
+        return _add_schedule(store, connection, task, thread, command)
+    if args.action == "cancel":
+        store._cancel_agent_schedule(connection, thread["thread_id"], args.schedule_id)
+        return args.schedule_id, {"cancelled": args.schedule_id}
+    if args.action == "pause":
+        store._pause_agent_schedule(connection, thread["thread_id"], args.schedule_id)
+        return args.schedule_id, {"paused": args.schedule_id}
+    schedule = store._agent_schedule(connection, thread["thread_id"], args.schedule_id)
+    due = resume_fire(schedule, datetime.fromisoformat(store.now()))
+    schedule = store._reactivate_agent_schedule(
+        connection,
+        thread["thread_id"],
+        args.schedule_id,
+        due.isoformat() if due else None,
+        was="paused",
+    )
+    return args.schedule_id, {"schedule": schedule.model_dump(mode="json")}
 
 
 def _schedule_result(store, task, thread: dict, command) -> dict[str, object]:
-    args = command.arguments
-    if args.action == "add":
-        return _add_schedule(store, task, thread, command)
-    if args.action == "cancel":
-        store.cancel_agent_schedule(thread["thread_id"], args.schedule_id)
-        return {"cancelled": args.schedule_id}
-    if args.action == "pause":
-        store.pause_agent_schedule(thread["thread_id"], args.schedule_id)
-        return {"paused": args.schedule_id}
-    if args.action == "resume":
-        schedule = resume_schedule(store, thread["thread_id"], args.schedule_id)
-        return {"schedule": schedule.model_dump(mode="json")}
+    if command.arguments.action != "list":
+        return store.run_agent_schedule_command(
+            task=task,
+            thread_id=thread["thread_id"],
+            lineage_root_operation_id=lineage_root(store, task),
+            action=command.arguments.action,
+            key=command.idempotency_key,
+            arguments=command.arguments.model_dump(mode="json"),
+            mutate=lambda connection: _mutate_schedule(store, connection, task, thread, command),
+        )
     return {
         "schedules": [
             item.model_dump(mode="json") for item in store.agent_schedules(thread["thread_id"])
@@ -366,7 +415,7 @@ def handle_schedule(store, operation_id: str, command):
         if thread is None or task is None:
             raise ScheduleRefused(
                 "schedule_thread_required",
-                "schedules live on the member's private agent thread, which this turn is not",
+                _STORE_REASONS["schedule_thread_required"],
             )
         result = _schedule_result(store, task, thread, command)
     except (ValueError, KeyError) as exc:

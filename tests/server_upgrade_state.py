@@ -22,6 +22,41 @@ COACH_MACHINE = "coach-gpu"
 BRANCH_NAME = "upgrade-consolidation"
 
 
+def seed_private_schedule_replay(database: Path) -> dict:
+    """A previous writer's omitted-zone Add after one bounded fire was consumed."""
+    from unittest.mock import patch
+
+    with patch("rcp.rcp_home.rcp_home", lambda: database.parent / "writer-home"):
+        return _seed_private_schedule_replay(database)
+
+
+def _seed_private_schedule_replay(database: Path) -> dict:
+    from rcp.runs.agent_schedules import handle_schedule
+    from tests.lifecycles.schedules import build_schedule_store, schedule_command
+
+    store = build_schedule_store(database, lambda: "2026-01-01T08:00:00+00:00")
+    task = store.agent_task("origin")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='origin'",
+            (json.dumps({**task.request, "timezone": "UTC"}),),
+        )
+    request = schedule_command(
+        "legacy", action="add", every="1h", until="2026-01-01T10:30", count=3, note="Check"
+    )
+    response = handle_schedule(store, "origin", request)
+    assert response.status == "ok", response.message
+    store.advance_agent_schedules(datetime(2026, 1, 1, 9, tzinfo=UTC))
+    (schedule,) = store.agent_schedules("thread")
+    assert schedule.fires_left == 2 and schedule.pending_since is not None
+    result = {
+        "request": request.model_dump(mode="json"),
+        "schedule": schedule.model_dump(mode="json"),
+    }
+    store.close()
+    return result
+
+
 def seed_space_state(request, fixture: dict, cookie: str) -> dict:
     """Through the serving previous release: coach machine, ended Experiment, nightly schedule.
 

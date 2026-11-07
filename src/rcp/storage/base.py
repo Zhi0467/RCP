@@ -149,6 +149,7 @@ class AppStoreBase:
         (76, "paper_coach_steers_v1"),
         (77, "machine_identity_v1"),
         (78, "local_question_origins_v1"),
+        (79, "agent_schedule_command_receipts_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1028,6 +1029,7 @@ class AppStoreBase:
             migration=migrate_space_turn_project_bindings,
         )
         from rcp.storage.agent_schedules import (
+            migrate_agent_schedule_command_receipts,
             migrate_agent_schedule_pending_fires,
             migrate_agent_schedules,
         )
@@ -1074,6 +1076,12 @@ class AppStoreBase:
             version=78,
             name="local_question_origins_v1",
             migration=migrate_local_question_origins,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=79,
+            name="agent_schedule_command_receipts_v1",
+            migration=migrate_agent_schedule_command_receipts,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
