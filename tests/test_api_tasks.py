@@ -148,7 +148,10 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
         assert payload["debug_receipts"]
 
 
-def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(manifest, tmp_path):
+@pytest.mark.parametrize("switch_status", ["running", "failed"])
+def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(
+    manifest, tmp_path, switch_status
+):
     from rcp.storage import AgentTaskRecord
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -160,7 +163,7 @@ def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(ma
         return store.create_agent_task(
             AgentTaskRecord(
                 operation_id=str(uuid.uuid4()),
-                project_id=project_id,
+                project_id=fields.pop("project_id", project_id),
                 kind=kind,
                 status=status,
                 created_at=at,
@@ -180,16 +183,32 @@ def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(ma
         native_session_id="s3",
     )
     after = seed("paper_coach", 4, request={"message": "More", "session_id": "s3"})
-    for minute in range(5, 30):
+    pending = seed(
+        "paper_coach",
+        5,
+        switch_status,
+        request={"message": "Switch again", "session_id": None, "previous_session_id": "s3"},
+    )
+    seed("paper_coach", 6, request={"message": "Other switch", "previous_session_id": "s2"})
+    seed(
+        "paper_coach",
+        7,
+        project_id="other-project",
+        request={"previous_session_id": "s3"},
+        native_session_id="foreign-session",
+    )
+    seed("paper_coach", 8, request={}, native_session_id="foreign-session")
+    for minute in range(9, 34):
         seed("refresh", minute, request={})
     client = signed_in_client(app)
     prefix = f"/api/projects/{project_id}/tasks"
     assert {task["kind"] for task in client.get(prefix).json()} == {"refresh"}
     session = client.get(prefix, params={"paper_session": "s1"})
     assert session.status_code == 200
-    assert [task["operation_id"] for task in session.json()] == [running, answered]
+    expected = [pending, after, switched, running, answered]
+    assert [task["operation_id"] for task in session.json()] == expected
     conversation = client.get(prefix, params={"paper_session": "s3"}).json()
-    assert [task["operation_id"] for task in conversation] == [after, switched, running, answered]
+    assert [task["operation_id"] for task in conversation] == expected
 
 
 def test_coach_admission_claims_inputs_only_after_scope_validation(manifest, tmp_path):

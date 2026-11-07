@@ -38,6 +38,7 @@ import { AgentStatusStrip } from "../chat/AgentStatusStrip";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import type { AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
+import { latestPersistedChatConfig } from "../chat/chatWorkspace";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import "./paper-coach.css";
 
@@ -198,13 +199,19 @@ export function PaperCoach({
   const selectedSession = sessions.find(
     (session) => session.native_session_id === currentSessionId,
   );
-  const config =
-    configOverride && configOverride.anchor === openedSession
-      ? configOverride.config
-      : selectedSession
-        ? sessionConfig(selectedSession, baseMachine)
-        : profileRunConfig(project.agent_profiles.paper_coach, baseMachine);
   const sessionTasks = conversation.tasks;
+  const config = {
+    ...(configOverride && configOverride.anchor === openedSession
+      ? configOverride.config
+      : latestPersistedChatConfig(
+          [],
+          sessionTasks,
+          selectedSession
+            ? sessionConfig(selectedSession, baseMachine)
+            : profileRunConfig(project.agent_profiles.paper_coach, baseMachine),
+        )),
+    run_on: baseMachine,
+  };
   const activeTask = sessionTasks.find(isActiveTask);
   const steeringTask =
     activeTask?.steer_visible && activeTask.can_steer && activeTask.steer_turn_id

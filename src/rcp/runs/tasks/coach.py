@@ -153,7 +153,13 @@ def _resolve_coach_launch(
             if previous
             else None
         ),
-        reasoning=request.reasoning or (previous.reasoning if previous else None),
+        reasoning=(
+            request.reasoning
+            if request.reasoning is not None
+            else previous.reasoning
+            if previous
+            else None
+        ),
         run_on=base_machine,
     )
     switched = (
@@ -167,7 +173,7 @@ def _resolve_coach_launch(
     resolved = request.model_copy(
         update={
             "provider": profile.provider,
-            "model": profile.model or None,
+            "model": profile.model,
             "reasoning": profile.reasoning,
             "run_on": base_machine,
             "session_id": None if switched else request.session_id,
