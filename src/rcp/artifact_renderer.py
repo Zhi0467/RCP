@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from rcp.artifacts import FrameAddon
 from rcp.limits import ARTIFACT_ERROR_MAX_CHARS
@@ -22,7 +23,13 @@ def renderer_assets() -> tuple[str, str]:
         raise ArtifactRendererUnavailable(
             "The artifact math renderer is unavailable. Rebuild the Web assets."
         ) from exc
-    return script.replace("</script", "<\\/script"), style
+    if not script.strip() or not style.strip():
+        raise ArtifactRendererUnavailable(
+            "The artifact math renderer is empty. Rebuild the Web assets."
+        )
+    return re.sub(
+        "</script", lambda match: "<\\/" + match.group(0)[2:], script, flags=re.IGNORECASE
+    ), style
 
 
 def paper_math_addon(warnings: list[str]) -> FrameAddon:
