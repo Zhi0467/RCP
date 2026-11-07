@@ -135,6 +135,10 @@ existing session includes its admitted continuation or provider switch. An
 explicit empty effort stays empty. A model left empty for an unknown catalog
 remains explicit on the admitted request, so repeated resolution cannot replace
 it with a named Settings model. Omitted fields inherit prior or configured values.
+Session-scoped coach task reads include both directions of the project's recorded
+switch lineage and admitted switches without a native checkpoint, independently
+of the recent task list. Until that checkpoint, a switched turn retains its
+previous held session for continuation.
 
 Each project profile selects a provider-owned runtime. Defaults are Codex
 `app-server`, Claude `stream-json`, and OpenCode `run-json`; Codex also offers

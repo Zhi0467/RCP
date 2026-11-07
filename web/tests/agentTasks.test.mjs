@@ -974,6 +974,11 @@ test("a later artifact edit leaves Retry on the newest failed turn", () => {
 });
 
 test("a coach conversation follows a provider switch into its fresh session and keeps its history", () => {
+  assert.deepEqual(coachConversation([], null, []), { tasks: [], sessionId: null });
+  assert.deepEqual(coachConversation([], "codex-session", []), {
+    tasks: [],
+    sessionId: "codex-session",
+  });
   const earlier = task({
     operation_id: "earlier",
     kind: "paper_coach",
@@ -1066,6 +1071,15 @@ test("a coach conversation follows a provider switch into its fresh session and 
     ),
     ["earlier", "switched", "switched-again"],
   );
+  for (const status of ["running", "failed"]) {
+    const pending = { ...switchedAgain, status, native_session_id: null };
+    const reopened = coachConversation([earlier, other, recorded, pending], "codex-session", []);
+    assert.equal(reopened.sessionId, "claude-session");
+    assert.deepEqual(
+      reopened.tasks.map((item) => item.operation_id),
+      ["earlier", "switched", "switched-again"],
+    );
+  }
 });
 
 test("a retry shows its turn's member message once, from the attempt that recorded it", () => {

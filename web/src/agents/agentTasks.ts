@@ -199,7 +199,10 @@ export function coachConversation(
   return {
     tasks: shown,
     sessionId:
-      newest?.native_session_id ?? (textValue(newest?.request.session_id) || openedSession),
+      newest?.native_session_id ??
+      (textValue(newest?.request.session_id) ||
+        textValue(newest?.request.previous_session_id) ||
+        openedSession),
   };
 }
 

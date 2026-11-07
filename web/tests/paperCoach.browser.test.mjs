@@ -555,6 +555,89 @@ test("switching the coach provider keeps a model without native effort through r
   assert.deepEqual(errors, []);
 });
 
+test("an evicted coach cohort keeps its held session through a failed second provider switch", async (t) => {
+  const previous = {
+    ...turn,
+    request: { ...turn.request, provider: "codex", model: "settings-model", reasoning: "medium" },
+  };
+  const switched = {
+    ...turn,
+    operation_id: "t2",
+    native_session_id: "s2",
+    created_at: new Date(Date.now() + 1000).toISOString(),
+    request: {
+      message: "Switch",
+      provider: "claude",
+      model: "no-effort-model",
+      reasoning: "",
+      session_id: null,
+      previous_session_id: "s1",
+    },
+  };
+  const failed = {
+    ...turn,
+    operation_id: "t3",
+    native_session_id: null,
+    failed: true,
+    settled: true,
+    can_retry: true,
+    error: "The provider quit before checkpoint.",
+    result: null,
+    created_at: new Date(Date.now() + 2000).toISOString(),
+    request: {
+      message: "Switch again",
+      provider: "opencode",
+      model: "picked-model",
+      reasoning: "high",
+      session_id: null,
+      previous_session_id: "s2",
+    },
+  };
+  const { page, errors, requests } = await open(t, {
+    init: `window.paperCoachFixture = { tasks: [], started: [] };`,
+    configure: (fixture) => {
+      const respond = fixture.respond;
+      fixture.respond = (path, ...rest) => {
+        if (path === "/api/projects/p/tasks") return { json: [failed, switched, previous] };
+        if (path.endsWith("/sessions"))
+          return {
+            json: [
+              {
+                provider: "codex",
+                native_session_id: "s1",
+                model: "settings-model",
+                reasoning: "medium",
+                created_at: turn.created_at,
+              },
+            ],
+          };
+        return respond(path, ...rest);
+      };
+    },
+  });
+  await mountCoachPicker(page);
+  const chip = page.locator(".paper-coach .agent-config-chip");
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-coach .agent-config-chip")?.textContent.includes("picked-model"),
+  );
+  await page.evaluate(() => window.coachPicker.remount());
+  await page.waitForFunction(() =>
+    document.querySelector(".paper-coach .agent-config-chip")?.textContent.includes("picked-model"),
+  );
+  assert.ok(requests.some((url) => url.includes("paper_session=s1")));
+  await chip.click();
+  await page.getByRole("combobox", { name: "Provider", exact: true }).selectOption("claude");
+  await chip.click();
+  await page.getByRole("textbox", { name: "Message" }).fill("Continue with the held provider.");
+  await page.getByRole("button", { name: "Send coach message" }).click();
+  await page.getByRole("button", { name: "Stop coach" }).waitFor();
+  const admitted = await page.evaluate(() => window.coachPicker.started[0]);
+  assert.equal(admitted.request.session_id, "s2");
+  assert.equal(admitted.request.provider, "claude");
+  await fits(page);
+  assert.deepEqual(errors, []);
+});
+
 test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
   const uploads = [];
   const { page } = await open(t, {
