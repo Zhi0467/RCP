@@ -512,8 +512,10 @@ artifact-selection comments. Space threads render their own turn artifacts and
 accept files, answer comments, and inline artifact-selection comments, which
 open in comment mode like a project thread's. A Space comment travels with the
 next message as numbered selections on that turn file, and the agent writes a
-revised file in its new turn; there are no versions, Keep, or node references,
-and the opened viewer has no comment panel. Both open artifacts in the shared in-app viewer,
+revision at its original tracked path. Space turns synchronize earlier files and
+publish changes as the same artifact's next version, just as project turns do.
+Space has no Keep, node references, version controls or comment panel in its
+opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
 bubble. Answer comments join the next message in both.
 Approval cards stay where the agent raised them, before later transcript lines,
@@ -585,8 +587,11 @@ Files retain their identity across renames. Copy links open that file.
 The editor shows durable save coverage separately from publication. Markdown
 previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
+HTML previews put Zoom out, percentage reset, Zoom in and Comment in the panel
+header. Their loading and error states occupy that same preview surface.
 At phone width, Write, Preview, and Coach occupy one pane selected by the segmented
-control. Files and History open as panels.
+control. HTML tools occupy a second row so warnings do not displace Comment or
+change the toolbar height. Files and History open as panels.
 
 ## Auto-research and episode history
 

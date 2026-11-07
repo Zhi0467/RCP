@@ -114,21 +114,42 @@ file in the member-only PDF, including agent-hidden files. This follows the
 [team trust model](server-and-machine-operations.md). Agent launches cannot read
 the preview.
 
-A text `.html` or `.htm` file previews its latest saved page through the inline
-artifact shell, one frame inside the same opaque sandbox and CSP as agent HTML
+A text `.html` or `.htm` file previews its saved page through the inline artifact
+shell and the same opaque sandbox and CSP as agent HTML
 ([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
-document, and relative images and Paper links do not load, so the page must be
-self-contained; inlining tree images is not built, and the author is not told what
-the sanitizer removed. Its HTTP(S) links do not open either, as in a reply's
-inline artifact, because the frame allows no popups. It passes through the
-agent-HTML sanitizer and takes no app theme, since it is the author's own page. A
-save that changes this file reloads it, as does switching the app's theme or color
-mode; unsaved typing and other files' saves do not. A reload starts the page over,
-scroll and state included, so a page being edited jumps back to its top at each
-typing pause. Errors the page throws show as a warning in the panel header, with
-the message on hover. Making Paper previews artifacts was rejected: artifacts are
-versioned deliverables with their own chat, while a preview follows every save,
-and Markdown and PDF previews need SyncTeX, Paper links, and tree images.
+document. Relative PNG, JPEG, GIF, WebP and SVG images resolve against the HTML's
+Paper directory and are inlined from the same captured saved revision. Lookup
+decodes the path once, ignores queries, retains SVG fragments and refuses paths
+outside the Paper tree. It never reads arbitrary server paths or fetches URLs.
+Admission checks metadata before reading bytes, deduplicates source reads and
+counts every expanded reference against the limits in `limits.py`. Missing,
+unsupported and oversized figures produce a bounded warning on hover in the
+panel header. Other resource references still pass through the ordinary sanitizer.
+Paper and HTTP(S) links do not open because the frame allows no popups.
+
+On entry the preview checks its member-only `/preview/state` route and shows
+loading until current state arrives. Its dependency key includes the HTML and
+referenced image identities, paths, bytes and availability. A changed dependency
+loads the captured revision; unrelated saves preserve the loaded page, scroll
+and state. Obsolete reads are aborted. Reopening checks current state again.
+The author's page takes no app theme, and changing theme never reloads it, even
+after unrelated saves prune its captured revision. Explicit historical URLs
+remain subject to ordinary retention. Unsaved typing does not reload it.
+
+HTML text uses the packaged shared KaTeX addon for `$$...$$`, `\[...\]`,
+`\(...\)` and `$...$`, with display delimiters tried first. Code, styles,
+scripts and existing KaTeX remain untouched; escaped or unmatched delimiters
+remain literal. Delimiters do not cross HTML elements. The renderer uses chat's
+untrusted-math options, inline fonts and no external service or server Node
+process. A missing renderer is an explicit preview failure. Authored script
+errors remain visible through the existing private error channel.
+
+The header has Zoom out, percentage reset and Zoom in, from 50% to 200% in fixed
+steps. Zoom transforms the existing viewer without reloading it, persists while
+that file stays open and starts at 100% for another file. It clears a selection
+while preserving the comment draft. Making previews artifacts was rejected:
+artifacts are versioned deliverables with their own chat, while Paper follows
+saves and its other previews need source links and tree images.
 
 ### Commenting on the preview
 
@@ -280,7 +301,7 @@ colors, and applies the launcher's idle timeout. Other turns use logic checks.
 | HTML | It opens in the sandboxed viewer without a thumbnail. |
 | Raster or SVG | It opens in the viewer and as an inline picture. |
 | Video | It uses the native player in chat and the viewer, with whole-file comments. |
-| Markdown | It renders without scripts. Raw HTML is visible, links are inert, and remote images are disabled. |
+| Markdown | The packaged shared chat Markdown and KaTeX renderer runs in an opaque frame. Raw HTML, links and image references remain inert. |
 | Text, data, code, or notebook | It displays as escaped numbered text. Valid JSON and notebooks are formatted. |
 | PDF | It uses the desktop system viewer or browser Download. |
 | Other | It offers only Download and Keep. Recognition never changes retroactively. |
@@ -436,8 +457,11 @@ another entrance.
 
 Inline content uses the shared shell without chrome, a transparent background,
 the reply's color scheme, and the `--rcp-*` palette before CSS loads. Theme changes
-reload it. Expand and Download use authored fallback colors. Markdown and text
-run no script. The fixed embed height persists through loading, refreshes, and
+reload it. Expand and Download use authored fallback colors. Markdown executes
+only RCP's packaged renderer; author HTML and JavaScript remain inert. Its CSP
+allows inline scripts/styles and data fonts, with no same-origin, resource-fetch,
+frame, form, object or base capability. Text stays script-free. The fixed embed
+height persists through loading, refreshes, and
 version changes. Content scrolls internally, and images are centered. The caption
 stays on one row until an action, avoiding chat motion. Frames mount near the
 reader in the chat scroll box. A mounted frame re-reads its state when the

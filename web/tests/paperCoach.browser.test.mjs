@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import {
@@ -870,7 +872,7 @@ for (const state of ["ready", "warning", "refusal"])
     for (const control of await toolbar.locator(".icon-button:visible").all())
       await target(control);
     await fits(page);
-    await page.screenshot({ path: `/private/tmp/paper-html-controls-390-${state}.png` });
+    await page.screenshot({ path: join(tmpdir(), `paper-html-controls-390-${state}.png`) });
   });
 
 for (const width of [1280, 390])
@@ -907,7 +909,7 @@ for (const width of [1280, 390])
       await target(page.getByRole("button", { name: "Reset preview zoom", exact: true }));
     }
     await fits(page);
-    await page.screenshot({ path: `/private/tmp/paper-html-controls-${width}.png` });
+    await page.screenshot({ path: join(tmpdir(), `paper-html-controls-${width}.png`) });
     await page.locator(".paper-html-preview iframe").waitFor();
     const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
     const post = (text) =>
