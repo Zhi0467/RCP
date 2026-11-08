@@ -55,12 +55,21 @@ class FakeRuntime:
     def stop_service(self):
         self.stops += 1
 
+    def require_stopped_source(self):
+        pass
+
+    def checkpoint_stopped_source(self, operation):
+        return self.snapshot(operation, [str(self.data)])
+
+    def prepare_stopped_source(self, operation):
+        return self.prepare(operation, None)
+
     def checkpoint_roots(self, operation, capture):
         return [str(self.data)]
 
     def snapshot(self, operation, roots):
         checkpoint = create_stopped_snapshot(
-            self.root / "checkpoint", (self.data,), boundary_sha256="b" * 64
+            self.root / "checkpoint", tuple(Path(root) for root in roots), boundary_sha256="b" * 64
         )
         return {
             "directory": str(checkpoint.directory),
@@ -230,11 +239,12 @@ def test_repeated_interruption_during_forward_migration_rollback(tmp_path: Path,
     )
 
 
-def test_failed_health_reports_both_failure_and_successful_rollback(tmp_path: Path):
+@pytest.mark.parametrize("stopped_source", [False, True])
+def test_failed_health_reports_both_failure_and_successful_rollback(tmp_path: Path, stopped_source):
     coordinator, runtime, previous, target = _case(tmp_path / "case")
     runtime.fail_target = True
     with pytest.raises(SupervisorError, match="rolled_back"):
-        coordinator.deploy(previous, target)
+        coordinator.deploy(previous, target, stopped_source=stopped_source)
     assert runtime.selected == 100 and runtime.restores == 1
     assert runtime.starts == 1
 
@@ -421,6 +431,119 @@ def test_stale_previous_is_refused_before_journal_or_admission(tmp_path, monkeyp
         coordinator.deploy(previous, target)
     assert not list(coordinator.store.directory.glob("*.json"))
     assert runtime.stops == runtime.starts == 0
+
+
+def test_stopped_source_refuses_running_source_without_stopping_it(tmp_path, monkeypatch):
+    coordinator, runtime, previous, target = _case(tmp_path / "case")
+
+    def running():
+        raise SupervisorError("source must already be stopped")
+
+    monkeypatch.setattr(runtime, "require_stopped_source", running)
+    monkeypatch.setattr(runtime, "protected_backup", lambda: pytest.fail("backup started"))
+    monkeypatch.setattr(runtime, "enter_maintenance", lambda _: pytest.fail("admission closed"))
+    with pytest.raises(SupervisorError, match="already be stopped"):
+        coordinator.deploy(previous, target, stopped_source=True)
+    assert runtime.stops == runtime.starts == runtime.restores == 0
+    assert runtime.selected == runtime.pointer == 100
+    assert coordinator.store.active() is None
+
+
+@pytest.mark.parametrize("startup", [False, True])
+@pytest.mark.parametrize("interrupted_copy", [False, True])
+def test_stopped_source_early_recovery_leaves_operator_stop_intact(
+    tmp_path, monkeypatch, startup, interrupted_copy
+):
+    from rcp_supervisor import driver
+    from rcp_supervisor.runtime import Paths
+
+    coordinator, runtime, previous, target = _case(tmp_path / "case")
+
+    def power_loss(phase):
+        if phase == "preparing_stopped_source" and not interrupted_copy:
+            raise PowerLoss
+
+    def partial_copy(operation):
+        partial = runtime.root / "partial-checkpoint"
+        partial.mkdir()
+        (partial / "value").write_text("partial old bytes")
+        raise PowerLoss
+
+    coordinator.boundary = power_loss
+    if interrupted_copy:
+        monkeypatch.setattr(runtime, "checkpoint_stopped_source", partial_copy)
+    with pytest.raises(PowerLoss):
+        coordinator.deploy(previous, target, stopped_source=True)
+    assert coordinator.store.active()["phase"] == "preparing_stopped_source"
+    coordinator.boundary = lambda _: None
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("early recovery called the source or changed deployment state")
+
+    for name in (
+        "abort_maintenance",
+        "stop_service",
+        "start_service",
+        "switch_pointer",
+        "probe",
+        "select",
+        "restore_roots",
+    ):
+        monkeypatch.setattr(runtime, name, forbidden)
+    paths = Paths(supervisor=runtime.root / "supervisor", data_dir=runtime.data)
+    runtime.paths = paths
+    inspections = []
+
+    def application(release, action, request):
+        assert release == previous and action == "inspect"
+        assert request["data_dir"] == str(runtime.data)
+        inspections.append(action)
+        return {"status": "initialized_team"}
+
+    runtime.application = application
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
+    monkeypatch.setattr(driver, "store_for", lambda _: coordinator.store)
+    monkeypatch.setattr(driver, "selected_pointer", lambda _: previous)
+    assert driver.recover(paths=paths, startup=startup)["phase"] == "aborted"
+    assert inspections == (["inspect"] if startup else [])
+    assert coordinator.store.active() is None
+    assert runtime.selected == runtime.pointer == 100
+    assert (runtime.data / "value").read_text() == "old"
+
+
+@pytest.mark.parametrize("boundary", ["snapshot_ready", "checkpoint_ready", "pointer_switched"])
+def test_stopped_source_published_checkpoint_recovers_through_existing_rollback(
+    tmp_path, monkeypatch, boundary
+):
+    coordinator, runtime, previous, target = _case(tmp_path / "case")
+    monkeypatch.setattr(runtime, "protected_backup", lambda: pytest.fail("backup started"))
+    monkeypatch.setattr(runtime, "enter_maintenance", lambda _: pytest.fail("admission closed"))
+
+    def power_loss(phase):
+        if phase == boundary:
+            (runtime.data / "value").write_text("interrupted migration")
+            raise PowerLoss
+
+    coordinator.boundary = power_loss
+    with pytest.raises(PowerLoss):
+        coordinator.deploy(previous, target, stopped_source=True)
+    assert runtime.stops == runtime.starts == 0
+    coordinator.boundary = lambda _: None
+    assert coordinator.recover()["phase"] == "rolled_back"
+    assert runtime.restores == runtime.starts == runtime.stops == 1
+    assert runtime.selected == runtime.pointer == 100
+    assert (runtime.data / "value").read_text() == "old"
+
+
+def test_stopped_source_commits_through_existing_candidate_sequence(tmp_path, monkeypatch):
+    coordinator, runtime, previous, target = _case(tmp_path / "case")
+    monkeypatch.setattr(runtime, "protected_backup", lambda: pytest.fail("backup started"))
+    monkeypatch.setattr(runtime, "enter_maintenance", lambda _: pytest.fail("admission closed"))
+    result = coordinator.deploy(previous, target, stopped_source=True)
+    assert result["phase"] == "committed"
+    assert runtime.selected == runtime.pointer == 101
+    assert runtime.stops == runtime.restores == 0 and runtime.starts == 1
+    assert coordinator.backup_warning is not None
 
 
 @pytest.mark.parametrize("failure", ["prepare", "legacy"])

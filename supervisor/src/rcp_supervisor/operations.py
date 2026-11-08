@@ -20,6 +20,7 @@ TERMINAL = frozenset({"committed", "rolled_back", "aborted"})
 EARLY = frozenset(
     {
         "preparing",
+        "preparing_stopped_source",
         "backup_ready",
         "entering_maintenance",
         "quiescent",
@@ -76,6 +77,9 @@ class Runtime(Protocol):
     def enter_maintenance(self, operation: dict) -> dict: ...
     def abort_maintenance(self, operation: dict) -> None: ...
     def stop_service(self) -> None: ...
+    def require_stopped_source(self) -> None: ...
+    def checkpoint_stopped_source(self, operation: dict) -> dict: ...
+    def prepare_stopped_source(self, operation: dict) -> tuple[dict, None, dict, None]: ...
     def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]: ...
     def snapshot(self, operation: dict, roots: list[str]) -> dict: ...
     def prepare(
@@ -403,6 +407,7 @@ class Coordinator:
         *,
         kind: str = "update",
         previous_uninitialized: bool = False,
+        stopped_source: bool = False,
     ) -> dict:
         with self.store.locked(), ExitStack() as resources:
             if self.store.active() is not None:
@@ -417,7 +422,7 @@ class Coordinator:
                 "version": 3,
                 "operation_id": str(uuid.uuid4()),
                 "kind": kind,
-                "phase": "preparing",
+                "phase": "preparing_stopped_source" if stopped_source else "preparing",
                 "previous": previous,
                 "target": target,
                 "nonce": uuid.uuid4().hex + uuid.uuid4().hex,
@@ -429,30 +434,46 @@ class Coordinator:
                 "error": None,
             }
             self.store.write(operation)
-            self.boundary("preparing")
+            self.boundary(operation["phase"])
             try:
-                if not previous_uninitialized:
-                    self.backup_warning = self.runtime.protected_backup()
-                operation = self._phase(operation, "backup_ready")
-                resources.enter_context(self.runtime.deployment_lock())
-                operation = self._phase(operation, "entering_maintenance")
-                capture = (
-                    None if previous_uninitialized else self.runtime.enter_maintenance(operation)
-                )
-                roots = (
-                    self.runtime.checkpoint_roots(operation, capture) if kind == "update" else []
-                )
-                operation = self._phase(operation, "quiescent")
-                self.runtime.stop_service()
-                if kind == "update":
-                    operation = self._phase(operation, "snapshotting")
-                    checkpoint = self.runtime.snapshot(operation, roots)
+                if stopped_source:
+                    resources.enter_context(self.runtime.deployment_lock())
+                    self.runtime.require_stopped_source()
+                    self.backup_warning = (
+                        "The protected backup is unavailable for an already-stopped source; "
+                        "rollback uses the complete stopped byte checkpoint."
+                    )
+                    checkpoint = self.runtime.checkpoint_stopped_source(operation)
                     operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
-                checkpoint, previous_proof, target_proof, candidate_checkpoint = (
-                    self.runtime.prepare_fresh_restore(operation)
-                    if previous_uninitialized
-                    else self.runtime.prepare(operation, capture)
-                )
+                    prepared = self.runtime.prepare_stopped_source(operation)
+                else:
+                    if not previous_uninitialized:
+                        self.backup_warning = self.runtime.protected_backup()
+                    operation = self._phase(operation, "backup_ready")
+                    resources.enter_context(self.runtime.deployment_lock())
+                    operation = self._phase(operation, "entering_maintenance")
+                    capture = (
+                        None
+                        if previous_uninitialized
+                        else self.runtime.enter_maintenance(operation)
+                    )
+                    roots = (
+                        self.runtime.checkpoint_roots(operation, capture)
+                        if kind == "update"
+                        else []
+                    )
+                    operation = self._phase(operation, "quiescent")
+                    self.runtime.stop_service()
+                    if kind == "update":
+                        operation = self._phase(operation, "snapshotting")
+                        checkpoint = self.runtime.snapshot(operation, roots)
+                        operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
+                    prepared = (
+                        self.runtime.prepare_fresh_restore(operation)
+                        if previous_uninitialized
+                        else self.runtime.prepare(operation, capture)
+                    )
+                checkpoint, previous_proof, target_proof, candidate_checkpoint = prepared
                 operation = self._phase(
                     operation,
                     "checkpoint_ready",
@@ -526,6 +547,8 @@ class Coordinator:
     def _recover_operation(self, operation: dict, *, startup: bool) -> dict:
         phase = operation["phase"]
         exact_update = operation["kind"] == "update" and operation["version"] >= 2
+        if phase == "preparing_stopped_source":
+            return self._phase(operation, "aborted")
         if phase in ("candidate_chosen", "previous_chosen"):
             release = operation["target"] if phase == "candidate_chosen" else operation["previous"]
             if not startup:

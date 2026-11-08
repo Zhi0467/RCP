@@ -329,7 +329,12 @@ def _application_version(version: object) -> tuple[int, ...] | None:
 
 
 def _check_update_source(
-    previous: dict, capability: dict, emitter: EventEmitter, warnings: list[dict]
+    previous: dict,
+    capability: dict,
+    emitter: EventEmitter,
+    warnings: list[dict],
+    *,
+    stopped_source: bool = False,
 ) -> bool:
     """The floor is the oldest release CI updates from; older ones still try, with a warning."""
     # Historical targets predate the optional floor capability.
@@ -362,7 +367,13 @@ def _check_update_source(
             }
         ],
         fields=[{"name": "update_source_floor", "value": floor}],
-        resume_argv=["sudo", "rcp", "server", "update"],
+        resume_argv=[
+            "sudo",
+            "rcp",
+            "server",
+            "update",
+            *(["--stopped-source"] if stopped_source else []),
+        ],
     )
     return False
 
@@ -378,6 +389,7 @@ def _adoption_unfinished(paths: Paths) -> bool:
 @_serialized_preparation
 def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
     dry_run = arguments.confirm_target is None
+    stopped_source = arguments.stopped_source
     if not dry_run:
         recover(paths=paths)
     elif store_for(paths).active() is not None or _adoption_unfinished(paths):
@@ -417,18 +429,32 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
                     {"name": "manifest_sha256", "value": target["manifest_sha256"]},
                     *rehearsal,
                 ],
-                resume_argv=["sudo", "rcp", "server", "update", "--confirm-target", confirmation],
+                resume_argv=[
+                    "sudo",
+                    "rcp",
+                    "server",
+                    "update",
+                    *(["--stopped-source"] if stopped_source else []),
+                    "--confirm-target",
+                    confirmation,
+                ],
             )
             return 3
         runtime.require_capability(previous)
         warnings: list[dict] = []
         target = prepare_release(runtime, release, warnings)
+        if stopped_source:
+            runtime.require_capability(
+                target, extra_commands=("offline-inventory", "offline-prepare")
+            )
         capability = runtime.application(target, "capabilities")
-        if not _check_update_source(previous, capability, emitter, warnings):
+        if not _check_update_source(
+            previous, capability, emitter, warnings, stopped_source=stopped_source
+        ):
             return 3
         store = store_for(paths)
         coordinator = Coordinator(store, runtime)
-        result = coordinator.deploy(previous, target)
+        result = coordinator.deploy(previous, target, stopped_source=stopped_source)
         fields = [
             {"name": "build", "value": target["build"]},
             {"name": "phase", "value": result["phase"]},
