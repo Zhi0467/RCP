@@ -557,7 +557,7 @@ def pick_thread_agent(
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ):
-    """Store the thread's agent pick; every later turn on the thread runs it."""
+    """Store the pick for member, Retry, scheduled and handoff turns."""
     thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
     try:
         store_thread_pick(store, catalog, thread, **body.model_dump(), wait_for_sign_in=True)

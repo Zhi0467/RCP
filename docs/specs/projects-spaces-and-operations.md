@@ -97,9 +97,11 @@ the UI. Every command a card asks a human to run is rendered by
 is their own login, with `sudo -u <service> -H` and the service account's SSH
 route to reach another machine.
 
-Space card creation never writes manifests. Raw loads, preflight, replay,
-backup and rehearsal never mutate cards. Backup keeps them; transfer excludes
-them so the target grants its own paths.
+Space card creation never writes manifests. Raw loads, retained-state
+inspection, replay, backup and rehearsal never mutate cards. Project setup
+preflight registers missing repository hosts as cards for provider probes,
+without writable grants; existing cards keep their settings. Backup keeps cards;
+transfer excludes them so the target grants its own paths.
 
 ### Machine identity upgrade
 
@@ -540,7 +542,10 @@ and noncanonical. Clearing affects only the selected project and is blocked by
 its active readers. It deletes source copies/slices and rebuilds the display
 snapshot because that is also the offline copy; failure retains and names the
 previous snapshot. Every snapshot uses the running release's official skill
-catalog and defaults for unset manifest fields, never a cached catalog.
+catalog. Snapshots recording which defaults the manifest explicitly declares use
+the running release's defaults for unset fields. Older snapshots without that
+metadata retain their recorded defaults while one background rebuild is attempted
+per process; a failed rebuild leaves that snapshot available.
 
 Personal spaces also offer explicit app-wide cache clearing, blocked by any
 project reader. Teams offer only project clearing because membership does not

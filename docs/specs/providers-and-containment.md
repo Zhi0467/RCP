@@ -403,10 +403,12 @@ runs, is readable by that command only, and the launch still reports `enforced`.
 Masking it would write a stand-in into the home, and flagging it would mark every
 launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
-on the execution host, outside every write root and inside the hidden set. A
-launch already resolved unhidden runs its commands silently; if hiding was
-enforced at launch and the sandbox later becomes unavailable, the wrapper
-refuses the command rather than run it unhidden.
+on the execution host, outside every write root and inside the hidden set.
+When the hiding wrapper is unavailable at command time, the shell runs unwrapped
+without per-command traces only if the launch recorded `wrapper_unavailable` or
+`userns_blocked`. A wrapper that was available at launch but later becomes
+unavailable refuses the command, even when another coverage gap made the overall
+launch `unhidden`.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine.

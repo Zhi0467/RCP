@@ -198,9 +198,11 @@ Each thread stores its agent pick (provider, model, reasoning, machine), set by
 pick, or by `handoff --provider/--model/--effort`. A handoff pick must be
 runnable on the project thread's machine now. The route keeps a project-thread
 pick whose provider is not signed in yet and does not check a Space-thread pick;
-the launch checks both. A send is checked by its own admission. Every turn on the thread runs the stored pick: member sends, Retry,
-schedule fires, handoff deliveries and handoff reports. Retry of a thread turn
-replaces the failed request's agent with it. Without a pick, a project thread
+the launch checks both. A send is checked by its own admission. Member sends,
+Retry, schedule fires, handoff deliveries and handoff reports run the stored
+pick. Generic watcher wakes instead follow the current native-session profile
+under [native chat context](#native-chat-context). Retry of a thread turn
+replaces the failed request's agent with the stored pick. Without a pick, a project thread
 uses its project's Settings Work profile and the Space thread the backend
 default; `thread_agent` resolves both. A thread's machine is a space card id:
 a project thread's is its project's base machine, and the Space thread's is the

@@ -2320,7 +2320,8 @@ project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `capabilities`, and `agent` (the thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused (also an interrupted turn), `failed` (the latest turn failed and no retry or resume of it started)
-or `needs_you` (an open question or card). `watching` counts the active or
+or `needs_you` (one of the thread's own questions or cards is open, including a
+Space thread's approval card). `watching` counts the active or
 degraded watchers the thread armed itself; an episode's watchers are the
 episode's. `live_label` is the state's short text for the Running list, null
 when idle without watchers; a failure reads as a sign-in need when its
