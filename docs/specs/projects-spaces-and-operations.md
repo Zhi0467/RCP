@@ -41,9 +41,8 @@ fresh personal sign-in.
 A machine is its space card: one `space_machines` row with `machine_id`,
 `name`, `host`, `os_account` and every setting configured on that machine
 (writable paths, hidden folders, provider limits, provider executables, job
-manager, jobs root and access hint). The card is the only owner. Every other
-record, including the project manifest, names the machine by `machine_id` and
-reads host and account from the card when it needs them
+manager, jobs root and access hint). The card is the only owner. Project manifests
+name a machine by `machine_id` and resolve its current host and account from the card
 ([machine_cards.py](../../src/rcp/machine_cards.py)). The UI shows the card's
 name. The backend's own machine is the card with no host and the fixed id
 `backend`, made on first read in every space.
