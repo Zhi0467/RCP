@@ -1442,6 +1442,46 @@ def _tap(client, store, question_id, decision="approve"):
     )
 
 
+def test_pending_space_card_needs_you_until_declined(questions_api):
+    app, client, store, project_id = questions_api
+    handler = _space_turn(questions_api)
+    before = client.get("/api/agent-threads")
+    assert before.status_code == 200, before.text
+    space = next(row for row in before.json()["threads"] if row["kind"] == "space")
+    assert space["live_state"] == "running"
+    writable = "repo-b" in app.state.catalog.open(project_id).history.state().project_truth_scope
+    asked = _space_ask(
+        handler,
+        {
+            "kind": "truth_scope",
+            "project_id": project_id,
+            "alias": "repo-b",
+            "writable": not writable,
+        },
+    )
+    assert asked.status == "ok", asked.message
+    question_id = asked.result["question_id"]
+    question = store.get_question(question_id)
+    assert (question.origin.project_id, question.origin.owner_id) == (
+        store.space_id,
+        space["thread_id"],
+    )
+    pending = client.get("/api/agent-threads")
+    assert pending.status_code == 200, pending.text
+    rows = {row["thread_id"]: row for row in pending.json()["threads"]}
+    assert rows[space["thread_id"]]["live_state"] == "needs_you"
+    assert all(row["live_state"] == "idle" for row in rows.values() if row["kind"] == "project")
+
+    declined = _tap(client, store, question_id, decision="decline")
+    assert declined.status_code == 200, declined.text
+    assert declined.json()["outcome"] == "declined"
+    assert store.get_question(question_id).state == "answered"
+    after = client.get("/api/agent-threads")
+    assert after.status_code == 200, after.text
+    row = next(row for row in after.json()["threads"] if row["thread_id"] == space["thread_id"])
+    assert row["live_state"] == "running"
+
+
 def test_a_space_ask_raises_a_card_in_pips_dock_that_decides_the_proposal(
     questions_api, monkeypatch
 ):

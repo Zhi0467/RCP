@@ -140,7 +140,7 @@ def thread_projections(
         state = "idle"
         if thread.closed_at:
             state = "closed"
-        elif thread.project_id and (scope, thread_id) in open_questions:
+        elif (scope, thread_id) in open_questions:
             state = "needs_you"
         elif task["operation_id"] is not None:
             state = {
