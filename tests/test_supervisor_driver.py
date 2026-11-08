@@ -259,19 +259,25 @@ def test_dry_run_rehearses_on_a_copy_without_admission_or_residue(
     if outcome in {"refused", "install_failed"}:
         with pytest.raises(SupervisorError, match="failed"):
             driver.update.__wrapped__(
-                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+                SimpleNamespace(confirm_target=None, stopped_source=False),
+                emitter,
+                paths=runtime.paths,
             )
     elif outcome == "same":
         assert (
             driver.update.__wrapped__(
-                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+                SimpleNamespace(confirm_target=None, stopped_source=False),
+                emitter,
+                paths=runtime.paths,
             )
             == 0
         )
     else:
         assert (
             driver.update.__wrapped__(
-                SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+                SimpleNamespace(confirm_target=None, stopped_source=False),
+                emitter,
+                paths=runtime.paths,
             )
             == 3
         )
@@ -340,12 +346,15 @@ def test_dry_run_refuses_pending_recovery_without_performing_it(monkeypatch):
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args: pytest.fail("machine inspected"))
     emitter = EventEmitter("server update", machine_readable=True)
     with pytest.raises(SupervisorError, match="recovery"):
-        driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter)
+        driver.update.__wrapped__(
+            SimpleNamespace(confirm_target=None, stopped_source=False), emitter
+        )
 
 
 @pytest.mark.parametrize("installed", ["0.1.8", "0.1.9", "0.2.0"])
+@pytest.mark.parametrize("stopped_source", [False, True])
 def test_update_requires_bundled_supervisor_before_application_preparation(
-    monkeypatch, capsys, installed
+    monkeypatch, capsys, installed, stopped_source
 ):
     target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
     monkeypatch.setattr(driver, "__version__", installed)
@@ -370,8 +379,16 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch.setattr(driver, "store_for", lambda paths: SimpleNamespace(active=lambda: None))
     monkeypatch.setattr(driver, "rehearse_update", lambda *args: [])
     monkeypatch.setattr(driver, "update", driver.update.__wrapped__)
-    code = cli.main(["--machine-readable", "server", "update"])
+    code = cli.main(
+        [
+            "--machine-readable",
+            "server",
+            "update",
+            *(["--stopped-source"] if stopped_source else []),
+        ]
+    )
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    assert ("--stopped-source" in step.resume_argv) == stopped_source
     if installed == "0.1.8":
         assert code == 1
         assert step.state == "failed"
@@ -393,8 +410,9 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
         ("0.3.4+build.1.gabcdef0", None, True, False),
     ],
 )
+@pytest.mark.parametrize("stopped_source", [False, True])
 def test_update_checks_target_floor_before_deployment(
-    monkeypatch, capsys, version, floor, allowed, untested
+    monkeypatch, capsys, version, floor, allowed, untested, stopped_source
 ):
     previous = {"build": 1, "version_string": version}
     target = {"release_tag": "v0.5.0", "manifest_sha256": "a" * 64, "build": 2}
@@ -409,14 +427,17 @@ def test_update_checks_target_floor_before_deployment(
         assert calls == ["prepare"]
         return {} if floor is None else {"update_source_floor": floor}
 
-    def deploy(old, new):
+    def deploy(old, new, *, stopped_source):
         assert allowed
         assert old == previous and new == target
+        assert stopped_source == expected_stopped_source
         calls.append("deploy")
         return {"phase": "committed"}
 
+    expected_stopped_source = stopped_source
+    capabilities = []
     runtime = SimpleNamespace(
-        require_capability=lambda _: None,
+        require_capability=lambda release, **kwargs: capabilities.append((release, kwargs)),
         application=application,
         update_warnings=["backup p1: Inventory rejected."],
     )
@@ -435,11 +456,18 @@ def test_update_checks_target_floor_before_deployment(
     monkeypatch.setattr(driver, "_retention_after_commit", lambda *_: [])
     emitter = EventEmitter("server update", machine_readable=True)
     emitter.emit("running", "Verify")
-    code = driver.update.__wrapped__(SimpleNamespace(confirm_target=f"v0.5.0:{'a' * 64}"), emitter)
+    code = driver.update.__wrapped__(
+        SimpleNamespace(confirm_target=f"v0.5.0:{'a' * 64}", stopped_source=stopped_source), emitter
+    )
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
     assert code == (0 if allowed else 3)
     assert calls == (["prepare", "deploy"] if allowed else ["prepare"])
     assert step.state == ("succeeded" if allowed else "operator_action_needed")
+    assert capabilities == [(previous, {})] + (
+        [(target, {"extra_commands": ("offline-inventory", "offline-prepare")})]
+        if stopped_source
+        else []
+    )
     if allowed:
         names = {field.name: field.value for field in step.fields}
         assert names["update_warning"] == "backup p1: Inventory rejected."
@@ -447,6 +475,45 @@ def test_update_checks_target_floor_before_deployment(
     if not allowed:
         assert step.actions
         assert previous == {"build": 1, "version_string": version}
+        assert ("--stopped-source" in step.resume_argv) == stopped_source
+
+
+@pytest.mark.parametrize("confirmation", [None, "v0.4.0:wrong"])
+def test_stopped_source_confirmation_preserves_explicit_update_option(
+    monkeypatch, capsys, confirmation
+):
+    target = {"release_tag": "v0.5.0", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
+    runtime = SimpleNamespace(remove_retained=lambda *_: None)
+    monkeypatch.setattr(driver, "recover", lambda **_: None)
+    monkeypatch.setattr(driver, "store_for", lambda _: SimpleNamespace(active=lambda: None))
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *_: runtime)
+    monkeypatch.setattr(driver, "selected_pointer", lambda _: {"build": 8})
+    monkeypatch.setattr(
+        driver,
+        "followed_release",
+        lambda _: SimpleNamespace(supervisor_version="0.1.15", directory=Path("/absent/bundle")),
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *_: target)
+    monkeypatch.setattr(driver, "rehearse_update", lambda *_: [])
+    emitter = EventEmitter("server update", machine_readable=True)
+    emitter.emit("running", "Verify")
+    argv = ["server", "update", "--stopped-source"]
+    if confirmation is not None:
+        argv.extend(["--confirm-target", confirmation])
+    arguments = cli._arguments(argv)
+    assert arguments.stopped_source is True
+    assert cli._invocation(argv) == argv
+    assert driver.update.__wrapped__(arguments, emitter) == 3
+    step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    assert list(step.resume_argv) == [
+        "sudo",
+        "rcp",
+        "server",
+        "update",
+        "--stopped-source",
+        "--confirm-target",
+        f"v0.5.0:{'a' * 64}",
+    ]
 
 
 @pytest.mark.parametrize("position", [0, 1, 2, 3])
@@ -752,6 +819,6 @@ def test_dry_run_refuses_only_an_unfinished_adoption(monkeypatch, tmp_path, unfi
     emitter = EventEmitter("server update", machine_readable=True)
     with pytest.raises(SupervisorError if unfinished else PastTheCheck):
         driver.update.__wrapped__(
-            SimpleNamespace(confirm_target=None), emitter, paths=runtime.paths
+            SimpleNamespace(confirm_target=None, stopped_source=False), emitter, paths=runtime.paths
         )
     assert inspected[0] == {"allow_legacy_config": True}

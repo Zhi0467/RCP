@@ -53,6 +53,11 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     initial.add_argument("--team-name", default="Research team")
     update = operations.add_parser("update")
     update.add_argument("--confirm-target")
+    update.add_argument(
+        "--stopped-source",
+        action="store_true",
+        help="Update an already-stopped source using a complete offline checkpoint.",
+    )
     restore = operations.add_parser("restore")
     restore.add_argument("archive_path", type=Path)
     restore.add_argument("--identity-file", type=Path)
