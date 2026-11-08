@@ -308,3 +308,120 @@ def test_failed_guest_ssh_retains_bounded_stderr(tmp_path, monkeypatch):
         guest.ssh(["qualification-command"])
     assert len(error.value.__notes__) == 1
     assert error.value.__notes__[0].endswith(diagnostic[-20000:])
+
+
+def test_private_vm_preflight_accepts_confirmed_linux_operator_with_rcp(tmp_path, monkeypatch):
+    from tests import supervisor_reboot_vm as vm
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("RUNNER_ENVIRONMENT", raising=False)
+    monkeypatch.setattr(vm.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(vm.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(vm.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(vm.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(vm.shutil, "disk_usage", lambda _: SimpleNamespace(free=20 * 1024**3))
+    original_exists = Path.exists
+    monkeypatch.setattr(
+        Path, "exists", lambda path: str(path) == "/etc/rcp" or original_exists(path)
+    )
+    original_read = Path.read_text
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda path, *args, **kwargs: (
+            "MemAvailable: 8388608 kB\n"
+            if str(path) == "/proc/meminfo"
+            else original_read(path, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        vm, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, "QEMU test\n", "")
+    )
+    assert preflight(tmp_path, DISPOSABLE_CONFIRMATION, operator_host=True)["accelerator"] == "kvm"
+    with pytest.raises(QualificationUnavailable):
+        preflight(tmp_path, "yes", operator_host=True)
+    monkeypatch.setattr(vm.platform, "machine", lambda: "aarch64")
+    with pytest.raises(QualificationUnavailable):
+        preflight(tmp_path, DISPOSABLE_CONFIRMATION, operator_host=True)
+
+
+def test_offline_guest_cannot_reenable_egress_after_start_cycle_or_reset(tmp_path, monkeypatch):
+    from tests import supervisor_reboot_vm as vm
+
+    guest = object.__new__(Guest)
+    guest.directory = tmp_path
+    guest.port = 23456
+    guest.ubuntu = "24.04"
+    guest.token = "owned-guest"
+    guest.boot_ids = []
+    guest.process = guest.log = None
+    commands = []
+
+    class Process:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            pass
+
+    def launch(argv, **kwargs):
+        commands.append(argv)
+        return Process()
+
+    def ssh(argv, **kwargs):
+        if argv == ["cat", "/proc/sys/kernel/random/boot_id"]:
+            output = f"00000000-0000-0000-0000-{len(guest.boot_ids):012x}"
+        elif argv == ["sudo", "-n", "cat", vm.GUEST_MARKER]:
+            output = guest.token
+        else:
+            output = 'ID=ubuntu\nVERSION_ID="24.04"\n'
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    guest.ssh = ssh
+    monkeypatch.setattr(vm.subprocess, "Popen", launch)
+    monkeypatch.setattr(vm, "run", lambda argv: None)
+    try:
+        guest.start(offline=True)
+        guest.power_cycle(offline=False)
+        guest.reset()
+        guest.power_off()
+        guest.start()
+        assert len(commands) == 4
+        assert all("restrict=on" in argv[argv.index("-netdev") + 1] for argv in commands)
+    finally:
+        guest.power_off()
+
+
+def test_guest_seed_leaves_common_captured_service_ids_available(tmp_path, monkeypatch):
+    from tests import supervisor_reboot_vm as vm
+
+    def run(argv, **kwargs):
+        if argv[0] == "ssh-keygen":
+            Path(argv[-1] + ".pub").write_text("ssh-ed25519 disposable-key")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(vm, "run", run)
+
+    class Listener:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def bind(self, address):
+            assert address == ("127.0.0.1", 0)
+
+        def getsockname(self):
+            return ("127.0.0.1", 23456)
+
+    monkeypatch.setattr(vm.socket, "socket", Listener)
+    guest = Guest(
+        tmp_path / "guest", image=tmp_path / "image", image_sha256="a" * 64, ubuntu="24.04"
+    )
+    seed = json.loads((guest.directory / "user-data").read_text().split("\n", 1)[1])
+    assert seed["users"][0]["uid"] == 60000
+    assert seed["users"][0]["name"] == "qualifier"
