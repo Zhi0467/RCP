@@ -1,4 +1,4 @@
-"""Actual installed update on one pristine GitHub-hosted Ubuntu runner.
+"""Actual installed update on a pristine runner or an owned disposable QEMU guest.
 
 No production opt-in or test hook ships in RCP. The runner must be empty; this
 program never removes an existing installation and never listens on port 8421.
@@ -35,19 +35,52 @@ ROOT = Path("/opt/rcp-installed-upgrade")
 DATA = Path("/home/rcp/rcp-server/data")
 PROJECTS = Path("/home/rcp/rcp-server/projects")
 SUPERVISOR = Path("/etc/rcp/supervisor/current")
+SELECTED = Path("/etc/rcp/supervisor/selected.json")
+OPERATIONS = Path("/etc/rcp/supervisor/operations")
 PORT = 18421
 SCRIPT = ROOT / "tests/server_installed_upgrade.py"
 
 
-def preflight() -> None:
+def require_guest(token: str) -> None:
+    marker = Path("/etc/rcp-supervisor-qualification")
+    info = marker.lstat()
+    if (
+        not token
+        or info.st_uid != 0
+        or not stat.S_ISREG(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or marker.read_text() != token
+        or "QEMU" not in Path("/sys/class/dmi/id/sys_vendor").read_text()
+    ):
+        raise RuntimeError("Private update requires the exact owned QEMU guest token.")
+
+
+def preflight(*, guest_token: str | None = None, prepared: bool = False) -> None:
+    if guest_token is not None:
+        require_guest(guest_token)
     if (
         sys.platform != "linux"
         or os.geteuid() != 0
-        or os.environ.get("GITHUB_ACTIONS") != "true"
-        or os.environ.get("RCP_RUN_INSTALLED_UPGRADE") != "1"
+        or (
+            guest_token is None
+            and (
+                os.environ.get("GITHUB_ACTIONS") != "true"
+                or os.environ.get("RCP_RUN_INSTALLED_UPGRADE") != "1"
+            )
+        )
         or not Path("/run/systemd/system").is_dir()
     ):
         raise RuntimeError("Requires explicit opt-in on a disposable GitHub Ubuntu systemd runner.")
+    if prepared:
+        if guest_token is None:
+            raise RuntimeError("Only an owned guest can resume a prepared installation.")
+        state = ROOT / "state/prepared.json"
+        info = state.lstat()
+        if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
+            raise RuntimeError("Prepared guest identity must remain root-owned and private.")
+        if json.loads(state.read_text())["guest_token"] != guest_token:
+            raise RuntimeError("Prepared installation belongs to another guest.")
+        return
     for path in (
         ROOT,
         Path("/etc/rcp"),
@@ -129,7 +162,7 @@ def assert_serves(fixture: dict, version: str) -> None:
     running = wait_health()
     assert running["space_id"] == fixture["space_id"]
     assert running["version"] == version
-    selected = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    selected = json.loads(SELECTED.read_text())
     assert selected["version_string"] == version
     assert running["running_commit"] == selected["commit"]
     assert os.readlink("/etc/rcp/current") == selected["release_directory"]
@@ -196,6 +229,314 @@ def select(
     return json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
 
 
+def bundle_identity(bundle: Path) -> dict:
+    from zipfile import ZipFile
+
+    provenance = json.loads(bundle.with_name(bundle.name + ".receipt.json").read_text())
+    with ZipFile(next(bundle.glob("rcp-*.whl"))) as archive:
+        metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+        version = next(
+            line.removeprefix("Version: ")
+            for line in archive.read(metadata).decode().splitlines()
+            if line.startswith("Version: ")
+        )
+    (site,) = (SUPERVISOR / "lib").glob("python*/site-packages")
+    sys.path.insert(0, str(site))
+    from rcp_supervisor.releases import verify_release
+
+    verified = verify_release(bundle)
+    assert verified.manifest_sha256 == provenance["manifest_sha256"]
+    assert re.fullmatch(r"[0-9a-f]{40}", provenance["full_commit"])
+    assert provenance["full_commit"].startswith(verified.commit)
+    return {
+        "manifest_sha256": verified.manifest_sha256,
+        "commit": provenance["full_commit"],
+        "version": version,
+        "supervisor_version": verified.supervisor_version,
+    }
+
+
+def selected_supervisor_version() -> str:
+    return run(
+        [
+            str(SUPERVISOR / "bin/python"),
+            "-I",
+            "-c",
+            "import rcp_supervisor; print(rcp_supervisor.__version__)",
+        ]
+    ).stdout.strip()
+
+
+def completed_report(base: Path, candidate: Path, input_sha256: str, procedure: str) -> dict:
+    assert re.fullmatch(r"[0-9a-f]{64}", input_sha256)
+    assert procedure in {"graceful", "stopped-source"}
+    source, target = bundle_identity(base), bundle_identity(candidate)
+    supervisor = selected_supervisor_version()
+    assert supervisor == target["supervisor_version"]
+    selected = json.loads(SELECTED.read_text())
+    assert selected["manifest_sha256"] == target["manifest_sha256"]
+    records = [json.loads(path.read_text()) for path in OPERATIONS.glob("*.json")]
+    committed = [
+        record
+        for record in records
+        if record["phase"] == "committed"
+        and record["previous"]["manifest_sha256"] == source["manifest_sha256"]
+        and record["target"]["manifest_sha256"] == target["manifest_sha256"]
+    ]
+    assert committed, "No committed journal binds the verified source and candidate."
+    rollback = json.loads((ROOT / "rollback-exact.json").read_text())
+    assert any(
+        record["operation_id"] == rollback["operation_id"]
+        and record["phase"] == "rolled_back"
+        and record["previous"]["manifest_sha256"] == source["manifest_sha256"]
+        and record["target"]["manifest_sha256"] == target["manifest_sha256"]
+        for record in records
+    )
+    running = wait_health()
+    assert running["running_commit"] == target["commit"]
+    assert running["version"] == target["version"]
+    return {
+        "version": 1,
+        "journey": "installed-update",
+        "status": "passed",
+        "source": {key: value for key, value in source.items() if key != "supervisor_version"},
+        "candidate": target,
+        "input_sha256": input_sha256,
+        "procedure": procedure,
+        "supervisor_version": supervisor,
+        "journal": {
+            "phase": committed[-1]["phase"],
+            "previous_manifest_sha256": committed[-1]["previous"]["manifest_sha256"],
+            "target_manifest_sha256": committed[-1]["target"]["manifest_sha256"],
+        },
+        "serving": {
+            "status": running["status"],
+            "commit": running["running_commit"],
+            "version": running["version"],
+        },
+        "rollback_exact": True,
+        "retry_committed": True,
+        "rollback_details": rollback,
+    }
+
+
+def retained_rows(path: Path, *, insert: bool = False) -> None:
+    tables = json.loads(path.read_text())["tables"]
+    assert set(tables) == {"project_transfer_requests", "project_transfer_uploads"}
+    with sqlite3.connect(DATA / "rcp.sqlite3") as database:
+        database.row_factory = sqlite3.Row
+        for table, rows in tables.items():
+            for row in rows:
+                if insert:
+                    columns = ", ".join(row)
+                    placeholders = ", ".join("?" for _ in row)
+                    database.execute(
+                        f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
+                        tuple(row.values()),
+                    )
+                actual = database.execute(
+                    f"SELECT {', '.join(row)} FROM {table} WHERE request_id = ?",
+                    (row["request_id"],),
+                ).fetchone()
+                assert actual is not None and dict(actual) == row
+
+
+def fault_sentinel() -> None:
+    path = DATA / "installed-upgrade-fault-sentinel"
+    with path.open("x") as stream:
+        stream.write("original fixture sentinel\n")
+    owner = DATA.stat()
+    os.chown(path, owner.st_uid, owner.st_gid)
+    path.chmod(0o600)
+
+
+def retained_transfer_state(previous: dict | None = None) -> dict:
+    result = {}
+    with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+        for table in ("project_transfer_requests", "project_transfer_uploads"):
+            columns = (
+                previous[table]["columns"]
+                if previous is not None
+                else [row[1] for row in database.execute(f"PRAGMA table_info({table})")]
+            )
+            rows = database.execute(
+                f"SELECT {', '.join(columns)} FROM {table} ORDER BY request_id"
+            ).fetchall()
+            result[table] = {"columns": columns, "rows": rows}
+    return result
+
+
+def assert_identity(expected: dict, selected: dict) -> None:
+    running = wait_health()
+    assert running["space_id"] == expected["space_id"]
+    assert running["running_commit"] == selected["commit"]
+    assert running["version"] == selected["version_string"]
+    current = json.loads(SELECTED.read_text())
+    assert current == selected
+    assert os.readlink("/etc/rcp/current") == selected["release_directory"]
+    with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+        assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        if "project_ids" in expected:
+            assert {row[0] for row in database.execute("SELECT project_id FROM projects")} == set(
+                expected["project_ids"]
+            )
+    for name, digest in expected.get("canonical_files", {}).items():
+        assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest
+
+
+def stopped_journey(
+    base: Path, candidate: Path, expected: dict, *, rows: Path | None = None
+) -> dict:
+    selected = json.loads(SELECTED.read_text())
+    assert selected["manifest_sha256"] == bundle_identity(base)["manifest_sha256"]
+    target = select(candidate)
+    retained = retained_transfer_state()
+    assert selected_supervisor_version() == bundle_identity(candidate)["supervisor_version"]
+    confirmation = f"{target['tag']}:{target['manifest_sha256']}"
+    before = set(OPERATIONS.glob("*.json"))
+    failed = operator("update", "--confirm-target", confirmation, expected=1)
+    added = set(OPERATIONS.glob("*.json")) - before
+    assert len(added) == 1
+    aborted = json.loads(added.pop().read_text())
+    assert aborted["phase"] == "aborted"
+    assert aborted["previous"] == selected
+    diagnostics = run(["journalctl", "-u", "rcp.service", "--no-pager", "-o", "cat"]).stdout
+    diagnostics += failed.stdout + failed.stderr
+    diagnostics += "\n".join(
+        path.read_text() for path in Path("/etc/rcp/supervisor/logs").glob("*.log")
+    )
+    assert "Traceback (most recent call last)" in diagnostics
+    assert "This transfer began before RCP was updated. Restart the transfer." in diagnostics
+    assert_identity(expected, selected)
+    assert retained_transfer_state(retained) == retained
+    if rows is not None:
+        retained_rows(rows)
+    run(["systemctl", "stop", "rcp.service"])
+    fault_sentinel()
+    select(candidate, observe=True, fail=True)
+    failed = operator("update", "--stopped-source", "--confirm-target", confirmation, expected=1)
+    assert "installed-upgrade intentional candidate failure" in failed.stdout
+    exact = json.loads((ROOT / "rollback-exact.json").read_text())
+    journal = json.loads((OPERATIONS / f"{exact['operation_id']}.json").read_text())
+    assert journal["phase"] == "rolled_back"
+    assert exact["roots"] >= 1
+    assert_identity(expected, selected)
+    assert retained_transfer_state(retained) == retained
+    assert (DATA / "installed-upgrade-fault-sentinel").read_text() == "original fixture sentinel\n"
+    if rows is not None:
+        retained_rows(rows)
+    run(["systemctl", "stop", "rcp.service"])
+    select(candidate, observe=True)
+    operator("update", "--stopped-source", "--confirm-target", confirmation)
+    current = json.loads(SELECTED.read_text())
+    assert_identity(expected, current)
+    assert retained_transfer_state(retained) == retained
+    if rows is not None:
+        retained_rows(rows)
+    return {
+        "ordinary_attempt": {"phase": aborted["phase"], "historical_format_refused": True},
+        "retained_rows_unchanged": True,
+    }
+
+
+def prepare_guest(base: Path, candidate: Path, token: str, uid: int, gid: int) -> None:
+    preflight(guest_token=token)
+    if uid <= 0 or gid <= 0:
+        raise RuntimeError("Private state requires a non-root service identity.")
+    os.umask(0o022)
+    prepare_toolchain()
+    run(["groupadd", "--gid", str(gid), "rcp"])
+    run(
+        [
+            "useradd",
+            "--uid",
+            str(uid),
+            "--gid",
+            str(gid),
+            "--create-home",
+            "--home-dir",
+            "/home/rcp",
+            "--shell",
+            "/bin/bash",
+            "rcp",
+        ]
+    )
+    install_source(base, candidate, guest_token=token)
+    base, candidate = ROOT / "bundles/base", ROOT / "bundles/target"
+    select(candidate)
+    run(
+        [
+            str(SUPERVISOR / "bin/python"),
+            "-I",
+            str(SCRIPT),
+            "prepare-candidate",
+            "--guest-token",
+            token,
+        ],
+        timeout=1200,
+    )
+    run(["systemctl", "stop", "rcp.service"])
+    write_json(
+        ROOT / "state/prepared.json",
+        {
+            "guest_token": token,
+            "source_manifest_sha256": bundle_identity(base)["manifest_sha256"],
+            "candidate_manifest_sha256": bundle_identity(candidate)["manifest_sha256"],
+        },
+    )
+
+
+def private_drive(base: Path, candidate: Path, output: Path, manifest: Path, token: str) -> None:
+    preflight(guest_token=token, prepared=True)
+    (site,) = (SUPERVISOR / "lib").glob("python*/site-packages")
+    sys.path.insert(0, str(site))
+    from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_checkpoint
+
+    from tests.server_update_rehearsal import tree_digest, validate_private_state
+
+    prepare_toolchain()
+    prepared = json.loads((ROOT / "state/prepared.json").read_text())
+    source, target = bundle_identity(base), bundle_identity(candidate)
+    assert source["manifest_sha256"] == prepared["source_manifest_sha256"]
+    assert target["manifest_sha256"] == prepared["candidate_manifest_sha256"]
+    state = validate_private_state(manifest, source["manifest_sha256"])
+    roots = [state["data"], *state["local_roots"]]
+    assert Path(state["data"]["destination"]) == DATA
+    run(["systemctl", "stop", "rcp.service"])
+    assert service_pid() == 0
+    for item in roots:
+        destination = Path(item["destination"])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not destination.exists():
+            destination.mkdir(mode=0o700)
+            owner = Path(item["snapshot"]).stat()
+            os.chown(destination, owner.st_uid, owner.st_gid)
+    checkpoint = create_checkpoint(
+        ROOT / "private-import",
+        tuple(SnapshotRoot(Path(item["destination"]), Path(item["snapshot"])) for item in roots),
+        boundary_sha256=state["input_sha256"],
+    )
+    restore_checkpoint(checkpoint)
+    assert DATA.stat().st_uid == pwd.getpwnam("rcp").pw_uid
+    for item in roots:
+        assert tree_digest(Path(item["destination"])) == item["tree_sha256"]
+    run(["systemctl", "start", "rcp.service"])
+    selected = json.loads(SELECTED.read_text())
+    assert_identity(state["expected"], selected)
+    select(ROOT / "bundles/target")
+    operator("supervisor", "update")
+    install_hook()
+    assert selected_supervisor_version() == target["supervisor_version"]
+    diagnostics = stopped_journey(ROOT / "bundles/base", ROOT / "bundles/target", state["expected"])
+    write_json(
+        output / "result.json",
+        {
+            **completed_report(base, candidate, state["input_sha256"], "stopped-source"),
+            **diagnostics,
+        },
+    )
+
+
 def operator(*arguments: str, expected: int = 0) -> subprocess.CompletedProcess:
     """Only event envelopes are persisted, never bootstrap codes, cookies or fixture
     tokens.
@@ -237,14 +578,14 @@ def dry_run() -> dict:
     )
     before = {
         "pid": service_pid(),
-        "selected": Path("/etc/rcp/supervisor/selected.json").read_bytes(),
+        "selected": SELECTED.read_bytes(),
         "current": os.readlink("/etc/rcp/current"),
         "entries": {str(root): sorted(path.name for path in root.iterdir()) for root in roots},
     }
     fields = step_fields(operator("update", expected=3))
     after = {
         "pid": service_pid(),
-        "selected": Path("/etc/rcp/supervisor/selected.json").read_bytes(),
+        "selected": SELECTED.read_bytes(),
         "current": os.readlink("/etc/rcp/current"),
         "entries": {str(root): sorted(path.name for path in root.iterdir()) for root in roots},
     }
@@ -688,16 +1029,9 @@ def prepare_toolchain() -> None:
     os.environ["PATH"] = "/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
-def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
-    """Root-owned fixture paths need service-account traversal. v0.4.19 read its project
-    list only at startup, so the base release is restarted after seeding. The new
-    supervisor is installed independently, not patched in its wheel. The final backup
-    check runs after cleanup checks, because the restart's startup guard keeps its
-    own logs.
-    """
-    preflight()
-    os.umask(0o022)
-    prepare_toolchain()
+def install_source(
+    base: Path, candidate: Path, *, guest_token: str | None = None
+) -> tuple[dict, str]:
     ROOT.mkdir(mode=0o755)
     (ROOT / "tests").mkdir(mode=0o755)
     workspace = Path(__file__).resolve().parents[1]
@@ -706,12 +1040,14 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         "helpers.py",
         "server_installed_upgrade.py",
         "server_installed_upgrade_hook.py",
+        "server_update_rehearsal.py",
         "server_upgrade_paper.py",
         "server_upgrade_codex.py",
         "server_upgrade_state.py",
         "server_upgrade_scratch.py",
         "supervisor_reboot_guest.py",
         "supervisor_reboot_data.py",
+        "supervisor_reboot_vm.py",
     ):
         shutil.copyfile(workspace / "tests" / name, ROOT / "tests" / name)
     (ROOT / "bundles").mkdir(mode=0o755)
@@ -749,7 +1085,10 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             *map(str, base.glob("*.whl")),
         ]
     )
-    run([str(python), "-I", str(SCRIPT), "setup"], timeout=1200)
+    helper = [str(python), "-I", str(SCRIPT), "setup"]
+    if guest_token is not None:
+        helper.extend(["--guest-token", guest_token])
+    run(helper, timeout=1200)
     select(base)
     install_hook()
     first = operator("install", "--team-name", "Installed upgrade", expected=3)
@@ -761,12 +1100,30 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     (code,) = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", initialized)
     operator("install", "--team-name", "Installed upgrade")
     wait_health()
+    selected = json.loads(SELECTED.read_text())
+    return selected, code
+
+
+def drive(
+    base: Path, candidate: Path, output: Path, tag: str, *, production_corpus: str | None = None
+) -> None:
+    """Root-owned fixture paths need service-account traversal. v0.4.19 read its project
+    list only at startup, so the base release is restarted after seeding. The new
+    supervisor is installed independently, not patched in its wheel. The final backup
+    check runs after cleanup checks, because the restart's startup guard keeps its
+    own logs.
+    """
+    preflight()
+    os.umask(0o022)
+    prepare_toolchain()
+    selected, code = install_source(base, candidate)
+    base, candidate = ROOT / "bundles/base", ROOT / "bundles/target"
     with request(
         "/api/team/enroll", body={"code": code, "display_name": "Upgrade researcher"}, method="POST"
     ) as response:
         token = json.load(response)["token"]
     write_json(ROOT / "state/enrolled.json", {"token": token}, service_owned=True)
-    selected = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    selected = json.loads(SELECTED.read_text())
     old_python = str(Path(selected["release_directory"]) / ".venv/bin/python")
     service([old_python, "-I", str(SCRIPT), "seed"])
     run(["systemctl", "restart", "rcp.service"])
@@ -822,19 +1179,45 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
         ]
     )
     target = select(candidate)
+    if production_corpus is not None:
+        assert tag == "v0.4.40", "The retained corpus qualifies the genuine v0.4.40 source."
+        rows = (
+            Path(__file__).parent
+            / "fixtures/production_upgrade_state"
+            / production_corpus
+            / "rows.json"
+        )
+        run(["systemctl", "stop", "rcp.service"])
+        retained_rows(rows, insert=True)
+        run(["systemctl", "start", "rcp.service"])
+        assert_serves(fixture, selected["version_string"])
     operator("supervisor", "update")
     install_hook()
+    assert selected_supervisor_version() == bundle_identity(candidate)["supervisor_version"]
     assert_serves(fixture, selected["version_string"])
+    if production_corpus is not None:
+        diagnostics = stopped_journey(base, candidate, fixture, rows=rows)
+        write_json(
+            output / "result.json",
+            {
+                **completed_report(
+                    base, candidate, hashlib.sha256(rows.read_bytes()).hexdigest(), "stopped-source"
+                ),
+                **diagnostics,
+                "corpus": production_corpus,
+                "scaffolding": "synthetic installed application state",
+            },
+        )
+        return
     confirmation = f"{target['tag']}:{target['manifest_sha256']}"
+    fault_sentinel()
     select(candidate, observe=True, fail=True)
     failed = operator("update", "--confirm-target", confirmation, expected=1)
     assert "installed-upgrade intentional candidate failure" in failed.stdout, (
         failed.stdout[-4000:] + failed.stderr[-4000:]
     )
     exact = json.loads((ROOT / "rollback-exact.json").read_text())
-    journal = json.loads(
-        (Path("/etc/rcp/supervisor/operations") / f"{exact['operation_id']}.json").read_text()
-    )
+    journal = json.loads((OPERATIONS / f"{exact['operation_id']}.json").read_text())
     assert journal["phase"] == "rolled_back"
     assert exact["roots"] >= 2
     assert_serves(fixture, selected["version_string"])
@@ -875,7 +1258,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     ]
     if rejected is not None:
         assert any(rejected in line for line in update_warnings), update_warnings
-    current = json.loads(Path("/etc/rcp/supervisor/selected.json").read_text())
+    current = json.loads(SELECTED.read_text())
     (site,) = (Path(current["release_directory"]) / ".venv/lib").glob("python*/site-packages")
     for path in site.glob("rcp_installed_upgrade_inject.*"):
         path.unlink()
@@ -890,10 +1273,7 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
             ),
             "unknown",
         )
-    records = [
-        json.loads(path.read_text())
-        for path in Path("/etc/rcp/supervisor/operations").glob("*.json")
-    ]
+    records = [json.loads(path.read_text()) for path in OPERATIONS.glob("*.json")]
     assert any(
         record["phase"] == "committed"
         and record["target"]["manifest_sha256"] == target["manifest_sha256"]
@@ -964,9 +1344,13 @@ def drive(base: Path, candidate: Path, output: Path, tag: str) -> None:
     write_json(
         output / "result.json",
         {
-            "status": "passed",
+            **completed_report(
+                base,
+                candidate,
+                hashlib.sha256((ROOT / "state/fixture.json").read_bytes()).hexdigest(),
+                "graceful",
+            ),
             "release": tag,
-            "rollback_exact": exact,
             "candidate_version": version,
             "backup_after_rollback": "protected",
             "kept_artifacts": {"base": base_artifact, "candidate": candidate_artifact},
@@ -995,8 +1379,9 @@ def main() -> None:
     refusal must never reach cleanup of a pre-existing installation, and uploaded
     artifacts exclude tokens and raw fixture files.
     """
-    if len(sys.argv) in {2, 3} and sys.argv[1] in {
+    if len(sys.argv) >= 2 and sys.argv[1] in {
         "setup",
+        "prepare-candidate",
         "seed",
         "scratch-check",
         "seed-base-artifact",
@@ -1008,15 +1393,31 @@ def main() -> None:
         "codex-home-upgrade",
         "codex-home-rollback",
     }:
+        guest_token = (
+            sys.argv[3] if sys.argv[2:3] == ["--guest-token"] and len(sys.argv) == 4 else None
+        )
+        if guest_token is not None:
+            require_guest(guest_token)
         if (
             sys.platform != "linux"
-            or os.environ.get("GITHUB_ACTIONS") != "true"
-            or os.environ.get("RCP_RUN_INSTALLED_UPGRADE") != "1"
+            or (
+                guest_token is None
+                and (
+                    os.environ.get("GITHUB_ACTIONS") != "true"
+                    or os.environ.get("RCP_RUN_INSTALLED_UPGRADE") != "1"
+                )
+            )
             or ROOT.stat().st_uid != 0
         ):
             raise RuntimeError("Installed helper requires the disposable runner fixture.")
         if sys.argv[1] == "setup":
             setup()
+        elif sys.argv[1] == "prepare-candidate":
+            from rcp_supervisor.driver import prepare_release
+            from rcp_supervisor.releases import verify_release
+            from rcp_supervisor.runtime import SystemRuntime
+
+            prepare_release(SystemRuntime(), verify_release(ROOT / "bundles/target"))
         elif sys.argv[1] == "seed":
             seed()
         elif sys.argv[1] in {"codex-home-upgrade", "codex-home-rollback"}:
@@ -1054,11 +1455,54 @@ def main() -> None:
     for name in ("base", "candidate", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--tag", required=True)
+    profile = parser.add_mutually_exclusive_group()
+    profile.add_argument("--production-corpus", choices=("terminal-transfer",))
+    profile.add_argument("--private-state", type=Path)
+    profile.add_argument("--prepare-guest", action="store_true")
+    parser.add_argument("--guest-token")
+    parser.add_argument("--service-uid", type=int)
+    parser.add_argument("--service-gid", type=int)
     arguments = parser.parse_args()
-    arguments.output.mkdir(parents=True, exist_ok=True)
-    preflight()
+    if (
+        arguments.private_state is not None or arguments.prepare_guest
+    ) and not arguments.guest_token:
+        parser.error("Private rehearsal requires the owned guest token.")
+    if arguments.prepare_guest and (arguments.service_uid is None or arguments.service_gid is None):
+        parser.error("Guest preparation requires the captured service uid and gid.")
+    if arguments.guest_token and arguments.private_state is None and not arguments.prepare_guest:
+        parser.error(
+            "Guest tokens are accepted only for explicit private preparation or rehearsal."
+        )
+    preflight(guest_token=arguments.guest_token, prepared=arguments.private_state is not None)
+    private = arguments.private_state is not None or arguments.prepare_guest
+    arguments.output.mkdir(mode=0o700 if private else 0o755, parents=True, exist_ok=True)
+    if private and arguments.output.stat().st_mode & 0o077:
+        raise RuntimeError("Private rehearsal output must be accessible only to its owner.")
     try:
-        drive(arguments.base, arguments.candidate, arguments.output, arguments.tag)
+        if arguments.prepare_guest:
+            prepare_guest(
+                arguments.base,
+                arguments.candidate,
+                arguments.guest_token,
+                arguments.service_uid,
+                arguments.service_gid,
+            )
+        elif arguments.private_state is not None:
+            private_drive(
+                arguments.base,
+                arguments.candidate,
+                arguments.output,
+                arguments.private_state,
+                arguments.guest_token,
+            )
+        else:
+            drive(
+                arguments.base,
+                arguments.candidate,
+                arguments.output,
+                arguments.tag,
+                production_corpus=arguments.production_corpus,
+            )
     finally:
         if ROOT.exists():
             logs = run(["journalctl", "-u", "rcp.service", "--no-pager"])
