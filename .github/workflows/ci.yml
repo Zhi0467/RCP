@@ -185,7 +185,9 @@ jobs:
           import json
           from tests.server_upgrade_harness import published_release_tags
           tags = sorted(published_release_tags(), key=lambda tag: tuple(map(int, tag[1:].split("."))))
-          print("releases=" + json.dumps({"tag": tags}))
+          cases = [{"tag": tag, "corpus": "", "artifact": "installed-upgrade-" + tag} for tag in tags]
+          cases.append({"tag": "v0.4.40", "corpus": "terminal-transfer", "artifact": "installed-upgrade-v0.4.40-terminal-transfer"})
+          print("releases=" + json.dumps({"include": cases}))
           ' >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7
         with:
@@ -211,7 +213,7 @@ jobs:
           if-no-files-found: error
 
   installed-upgrade-release:
-    name: installed upgrade (${{ matrix.tag }})
+    name: installed upgrade (${{ matrix.tag }}${{ matrix.corpus && format(', {0}', matrix.corpus) || '' }})
     needs: installed-upgrade-candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -261,16 +263,19 @@ jobs:
       - name: Exercise installed systemd update, rollback, backup, and retry
         env:
           RELEASE_TAG: ${{ matrix.tag }}
+          PRODUCTION_CORPUS: ${{ matrix.corpus }}
         run: |
           # The runner image gives /home a default ACL that makes new service-account
           # directories 0775 regardless of umask; a real server has none.
           sudo getfacl --absolute-names /home || true
           sudo setfacl -k /home
+          corpus_args=()
+          if [ -n "$PRODUCTION_CORPUS" ]; then corpus_args=(--production-corpus "$PRODUCTION_CORPUS"); fi
           sudo --preserve-env=RCP_RUN_INSTALLED_UPGRADE,GITHUB_ACTIONS \
             "$PWD/.venv/bin/python" -m tests.server_installed_upgrade \
             --base "$RUNNER_TEMP/installed-upgrade/base" \
             --candidate "$RUNNER_TEMP/installed-upgrade/candidate" \
-            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/evidence"
+            --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/installed-upgrade/evidence" "${corpus_args[@]}"
       - name: Collect service logs
         if: always()
         run: |
@@ -287,7 +292,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: installed-upgrade-${{ matrix.tag }}
+          name: ${{ matrix.artifact }}
           path: ${{ runner.temp }}/installed-upgrade/evidence
           if-no-files-found: error
 

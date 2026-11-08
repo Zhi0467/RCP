@@ -187,11 +187,12 @@ def install_hooks() -> None:
             if phase == "candidate_verified" and selection.get("fail"):
                 assert oracle.is_file(), "fault must follow a durable whole-root snapshot"
                 data = self.runtime.paths.data_dir
-                (data / "run-stage/real-tools/repo/result.txt").write_text("candidate mutation\n")
-                (data / "run-stage/real-tools/empty").rmdir()
-                (data / "providers/claude/qualification/setup-token").unlink()
-                added = data / "candidate-only"
-                added.write_text("must disappear\n")
+                sentinel = data / "installed-upgrade-fault-sentinel"
+                assert sentinel.read_text() == "original fixture sentinel\n"
+                sentinel.write_text("candidate mutation\n")
+                added = data / "installed-upgrade-fault-created"
+                with added.open("x") as output:
+                    output.write("must disappear\n")
                 owner = data.stat()
                 os.chown(added, owner.st_uid, owner.st_gid)
                 raise RuntimeError("installed-upgrade intentional candidate failure")
