@@ -215,7 +215,15 @@ def require_changed_boot_id(before: str, after: str) -> None:
 
 
 class Guest:
-    def __init__(self, directory: Path, *, image: Path, image_sha256: str, ubuntu: str):
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        image: Path,
+        image_sha256: str,
+        ubuntu: str,
+        disk_gib: int = GUEST_DISK_GIB,
+    ):
         self.directory = directory
         self.ubuntu = ubuntu
         self.image_sha256 = image_sha256
@@ -275,7 +283,7 @@ class Guest:
                 "-b",
                 str(image.resolve()),
                 str(directory / "guest.qcow2"),
-                f"{GUEST_DISK_GIB}G",
+                f"{disk_gib}G",
             ]
         )
 

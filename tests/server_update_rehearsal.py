@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -21,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tests.supervisor_reboot_vm import (  # noqa: E402
+    GUEST_DISK_GIB,
     GUEST_ROOT,
     Guest,
     download_image,
@@ -179,42 +181,30 @@ def bundle_identity(bundle: Path) -> dict:
     }
 
 
-def validate_report(report: dict, source: dict, candidate: dict, input_digest: str) -> None:
-    required = {
-        "version": 1,
-        "journey": "installed-update",
-        "status": "passed",
-        "input_sha256": input_digest,
-        "supervisor_version": candidate["supervisor_version"],
-        "rollback_exact": True,
-        "retry_committed": True,
-    }
-    if not isinstance(report, dict) or any(
-        not isinstance(report.get(key), dict)
-        for key in ("source", "candidate", "journal", "serving")
-    ):
-        raise ValueError("Guest report must contain complete identity records.")
-    journal = {
-        "phase": "committed",
-        "previous_manifest_sha256": source["manifest_sha256"],
-        "target_manifest_sha256": candidate["manifest_sha256"],
-    }
-    serving = {"status": "ok", "commit": candidate["commit"], "version": candidate["version"]}
+def validate_report(
+    report: dict, source: dict, candidate: dict, input_digest: str, procedure: str
+) -> None:
+    specification = importlib.util.spec_from_file_location(
+        "rcp_release_build", Path(__file__).resolve().parents[1] / "packaging/release_build.py"
+    )
+    assert specification is not None and specification.loader is not None
+    release = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(release)
+    try:
+        release.validate_update_report(report, candidate["manifest_sha256"])
+    except release.ReleaseBuildError as exc:
+        raise ValueError("Guest report does not prove the complete installed update.") from exc
     if (
-        any(
-            report.get(key) != value or type(report.get(key)) is not type(value)
-            for key, value in required.items()
-        )
-        or report.get("procedure") not in {"graceful", "stopped-source"}
+        report["input_sha256"] != input_digest
+        or report.get("input_kind") != "captured-private-state"
+        or report["procedure"] != procedure
         or any(
-            report.get("source", {}).get(key) != source[key]
+            report["source"].get(key) != source[key]
             for key in ("manifest_sha256", "commit", "version")
         )
-        or any(report.get("candidate", {}).get(key) != value for key, value in candidate.items())
-        or any(report["journal"].get(key) != value for key, value in journal.items())
-        or any(report["serving"].get(key) != value for key, value in serving.items())
+        or any(report["candidate"].get(key) != value for key, value in candidate.items())
     ):
-        raise ValueError("Guest report does not prove the complete installed update.")
+        raise ValueError("Guest report does not match the requested artifacts and private input.")
 
 
 def code_payload(base: Path, candidate: Path, destination: Path) -> None:
@@ -286,6 +276,17 @@ def private_payload(state: dict, output: Path) -> dict:
     return transported
 
 
+def guest_disk_gib(state: dict) -> int:
+    """Budget for transport, import, update copies, rollback and retry retention."""
+    roots = [state["data"], *state["local_roots"]]
+    measured = run(
+        ["du", "--summarize", "--block-size=1", "--total", "--", *[r["snapshot"] for r in roots]],
+        timeout=1800,
+    )
+    allocated = int(measured.stdout.splitlines()[-1].split()[0])
+    return GUEST_DISK_GIB + (10 * allocated + 1024**3 - 1) // 1024**3
+
+
 def unpack_private(token: str) -> None:
     """Recreate the special nodes GNU tar omits, then let the guest driver verify it."""
     from tests.server_installed_upgrade import require_guest
@@ -338,6 +339,7 @@ def drive(
     confirmation: str,
     *,
     ubuntu: str = "24.04",
+    procedure: str = "graceful",
 ) -> None:
     source, target = bundle_identity(base), bundle_identity(candidate)
     state = validate_private_state(private_state, source["manifest_sha256"])
@@ -354,7 +356,13 @@ def drive(
     image, digest = download_image(output, ubuntu)
     payload = output / "code.tar.gz"
     code_payload(base, candidate, payload)
-    guest = Guest(output / "guest", image=image, image_sha256=digest, ubuntu=ubuntu)
+    guest = Guest(
+        output / "guest",
+        image=image,
+        image_sha256=digest,
+        ubuntu=ubuntu,
+        disk_gib=guest_disk_gib(state),
+    )
     script = f"{GUEST_ROOT}/tests/server_installed_upgrade.py"
     arguments = [
         "--base",
@@ -367,6 +375,8 @@ def drive(
         GUEST_OUTPUT,
         "--guest-token",
         guest.token,
+        "--procedure",
+        procedure,
     ]
     try:
         guest.start()
@@ -441,7 +451,7 @@ def drive(
         raw = guest.ssh(["sudo", "-n", "cat", f"{GUEST_OUTPUT}/result.json"]).stdout
         (output / "guest-result.json").write_text(raw)
         report = json.loads(raw)
-        validate_report(report, source, target, state["input_sha256"])
+        validate_report(report, source, target, state["input_sha256"], procedure)
         if file_digest(private_state) != state["input_sha256"]:
             raise ValueError("Private input manifest changed during the rehearsal.")
     finally:
@@ -466,6 +476,7 @@ def main() -> None:
         parser.add_argument(f"--{name}", type=Path)
     parser.add_argument("--confirm-disposable")
     parser.add_argument("--ubuntu", choices=("22.04", "24.04"), default="24.04")
+    parser.add_argument("--procedure", choices=("graceful", "stopped-source"), default="graceful")
     args = parser.parse_args()
     if args.unpack_private:
         unpack_private(args.guest_token)
@@ -481,6 +492,7 @@ def main() -> None:
         args.output,
         args.confirm_disposable,
         ubuntu=args.ubuntu,
+        procedure=args.procedure,
     )
 
 

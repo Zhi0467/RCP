@@ -250,7 +250,8 @@ def test_prepared_installation_requires_bound_guest_token(tmp_path, monkeypatch)
     "fault",
     [None, "short_commit", "wrong_version", "missing_rollback", "uncommitted", "wrong_supervisor"],
 )
-def test_full_report_requires_observed_committed_retry(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize("input_kind", ["synthetic-fixture", "captured-private-state"])
+def test_full_report_requires_observed_committed_retry(tmp_path, monkeypatch, fault, input_kind):
     source = {
         "manifest_sha256": "a" * 64,
         "commit": "a" * 40,
@@ -307,16 +308,116 @@ def test_full_report_requires_observed_committed_retry(tmp_path, monkeypatch, fa
     if fault:
         with pytest.raises(AssertionError):
             installed.completed_report(
-                tmp_path / "base", tmp_path / "target", "c" * 64, "stopped-source"
+                tmp_path / "base",
+                tmp_path / "target",
+                "c" * 64,
+                "stopped-source",
+                input_kind=input_kind,
             )
     else:
         report = installed.completed_report(
-            tmp_path / "base", tmp_path / "target", "c" * 64, "stopped-source"
+            tmp_path / "base",
+            tmp_path / "target",
+            "c" * 64,
+            "stopped-source",
+            input_kind=input_kind,
         )
         assert report["serving"]["commit"] == "b" * 40
         assert report["rollback_exact"] is True and report["retry_committed"] is True
         assert report["journal"]["phase"] == "committed"
         assert report["input_sha256"] == "c" * 64
+        assert report["input_kind"] == input_kind
+
+
+@pytest.mark.parametrize("procedure", ["graceful", "stopped-source"])
+def test_update_journey_rolls_back_then_retries_the_requested_entry(
+    tmp_path, monkeypatch, procedure
+):
+    source = {"manifest_sha256": "a" * 64, "release_directory": "/old"}
+    target = {
+        "manifest_sha256": "b" * 64,
+        "supervisor_version": "0.1.15",
+        "release_directory": "/candidate",
+        "tag": "v0.4.42",
+    }
+    monkeypatch.setattr(installed, "ROOT", tmp_path)
+    monkeypatch.setattr(installed, "SELECTED", tmp_path / "selected.json")
+    monkeypatch.setattr(installed, "OPERATIONS", tmp_path / "operations")
+    monkeypatch.setattr(installed, "DATA", tmp_path / "data")
+    installed.DATA.mkdir()
+    installed.OPERATIONS.mkdir()
+    installed.SELECTED.write_text(json.dumps(source))
+    monkeypatch.setattr(
+        installed,
+        "bundle_identity",
+        lambda bundle: source if bundle.name == "base" else target,
+    )
+    monkeypatch.setattr(installed, "select", lambda bundle, **kwargs: target)
+    monkeypatch.setattr(installed, "selected_supervisor_version", lambda: "0.1.15")
+    monkeypatch.setattr(installed, "retained_transfer_state", lambda previous=None: {})
+    monkeypatch.setattr(os, "chown", lambda *args: None)
+    calls = []
+    monkeypatch.setattr(installed, "run", lambda argv: calls.append(tuple(argv)))
+
+    def identity(expected, selected):
+        assert json.loads(installed.SELECTED.read_text()) == selected
+
+    monkeypatch.setattr(installed, "assert_identity", identity)
+
+    def operator(*arguments, expected=0):
+        calls.append(arguments)
+        if expected:
+            (tmp_path / "rollback-exact.json").write_text(
+                json.dumps({"operation_id": "failed", "roots": 2})
+            )
+            (installed.OPERATIONS / "failed.json").write_text(json.dumps({"phase": "rolled_back"}))
+            return SimpleNamespace(stdout="installed-upgrade intentional candidate failure")
+        installed.SELECTED.write_text(json.dumps(target))
+        return SimpleNamespace(stdout="committed")
+
+    monkeypatch.setattr(installed, "operator", operator)
+    result = installed.update_journey(tmp_path / "base", tmp_path / "target", {}, procedure)
+    entry = ("--stopped-source",) if procedure == "stopped-source" else ()
+    attempt = ("update", *entry, "--confirm-target", "v0.4.42:" + "b" * 64)
+    if procedure == "stopped-source":
+        assert calls == [
+            ("systemctl", "stop", "rcp.service"),
+            attempt,
+            ("systemctl", "stop", "rcp.service"),
+            attempt,
+        ]
+    else:
+        assert calls == [attempt, attempt]
+    assert result == {"retained_rows_unchanged": True}
+
+
+@pytest.mark.parametrize("procedure", [None, "graceful", "stopped-source"])
+def test_private_cli_forwards_the_requested_update_procedure(tmp_path, monkeypatch, procedure):
+    monkeypatch.setattr(installed, "ROOT", tmp_path / "absent")
+    monkeypatch.setattr(installed, "preflight", lambda **kwargs: None)
+    calls = []
+    monkeypatch.setattr(installed, "private_drive", lambda *args: calls.append(args))
+    arguments = [
+        "driver",
+        "--base",
+        "base",
+        "--candidate",
+        "candidate",
+        "--output",
+        str(tmp_path / "output"),
+        "--tag",
+        "v0.4.40",
+        "--private-state",
+        "state.json",
+        "--guest-token",
+        "owned",
+    ]
+    if procedure is not None:
+        arguments.extend(("--procedure", procedure))
+    monkeypatch.setattr(sys, "argv", arguments)
+    installed.main()
+    assert len(calls) == 1
+    assert calls[0][-1] == (procedure or "graceful")
 
 
 def test_required_ci_matrix_keeps_every_release_and_adds_production_corpus(monkeypatch, capsys):

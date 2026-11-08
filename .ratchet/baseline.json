@@ -1,5 +1,5 @@
 {
-  "packaging/release_build.py": {"comment": 5},
+  "packaging/release_build.py": {"comment": 3},
   "packaging/smoke-backend.py": {"comment": 4},
   "packaging/smoke_agent.py": {"comment": 3},
   "packaging/smoke_terminal.py": {"comment": 12},

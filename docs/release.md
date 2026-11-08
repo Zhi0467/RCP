@@ -54,61 +54,70 @@ Keep it outside `/Applications` and follow the
 [disposable candidate checks](desktop.md#build-and-test-a-release-candidate).
 Record the successful candidate run id for promotion.
 
-Rehearse the candidate against copies of each team's data before promotion.
-Run as the server service account. The command leaves the service running:
+Run the complete installed-update rehearsal on a private copy of each team's
+state. Candidate-only `update-rehearsal` remains useful for diagnosis; its `ready`
+result cannot qualify promotion.
+
+Use a stopped whole-root checkpoint containing the data directory and every local
+canonical root. Keep the copy outside the checkout in a mode-0700 operator
+folder. Preserve paths, numeric ownership, metadata, links and special nodes;
+never migrate the live roots for qualification. The private input format and
+snapshot-digest checks are owned by
+[`validate_private_state`](../tests/server_update_rehearsal.py). It names the
+verified source manifest, captured root paths, original destinations and expected
+space, project and canonical-history identities. Use the existing
+[checkpoint copier](../supervisor/src/rcp_supervisor/checkpoint.py); do not rebuild
+records with current models. Remote roots remain outside this local proof.
+
+Download the genuine source release and exact candidate build, retaining each
+verified bundle's `.receipt.json` from
+[`download_installed_release`](../tests/server_upgrade_harness.py) and the
+candidate bundle receipt. On a Linux x86_64 host with KVM and the QEMU tools from
+[VM preflight](../tests/supervisor_reboot_vm.py), run:
 
 ```bash
-RCP_REHEARSAL_DIR=$(mktemp -d /home/rcp/rcp-rehearsal-XXXXXX)
-gh release download build/<N> --repo Zhi0467/RCP -D "$RCP_REHEARSAL_DIR" -p 'rcp-*.whl' -p requirements.lock.txt -p manifest.sha256
-(cd "$RCP_REHEARSAL_DIR" && sha256sum --check --ignore-missing manifest.sha256)
-umask 077
-export PYTHONDONTWRITEBYTECODE=1 UV_CACHE_DIR="$RCP_REHEARSAL_DIR/uv-cache"
-uv venv -q "$RCP_REHEARSAL_DIR/venv" --python 3.12
-uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" -r "$RCP_REHEARSAL_DIR/requirements.lock.txt"
-uv pip install -q --python "$RCP_REHEARSAL_DIR/venv" --no-deps "$RCP_REHEARSAL_DIR"/rcp-*.whl
-"$RCP_REHEARSAL_DIR/venv/bin/python" -I -m rcp.server_ops.deployment update-rehearsal - > "$RCP_REHEARSAL_DIR/rehearsal.json" <<EOF_REHEARSAL
-{"version":1,"data_dir":"/home/rcp/rcp-server/data","output_dir":"$RCP_REHEARSAL_DIR/out"}
-EOF_REHEARSAL
-printf '{"manifest_sha256":"%s","status":"%s"}\n' \
-  "$(sha256sum < "$RCP_REHEARSAL_DIR/manifest.sha256" | cut -c1-64)" \
-  "$("$RCP_REHEARSAL_DIR/venv/bin/python" -I -c 'import json, sys; print(json.load(sys.stdin)["status"])' < "$RCP_REHEARSAL_DIR/rehearsal.json")"
+uv run python tests/server_update_rehearsal.py \
+  --base /private/qualification/source \
+  --candidate /private/qualification/candidate \
+  --private-state /private/qualification/private-state.json \
+  --output /private/qualification/full-update \
+  --procedure graceful \
+  --confirm-disposable I_UNDERSTAND_THIS_CREATES_DISPOSABLE_VMS
 ```
 
-The rehearsal refuses when a copied record or cache breaks a space-wide read;
-see [copied-state reads](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint).
-CI's web job also browses seeded rehearsed data; that journey covers no real records.
-Inspect the result and any backup warnings, including omitted projects. When
-the result is `ready`, save the printed line on your machine as
-`rehearsal-<team>.json`. Retain needed diagnostics before removing this exact
-temporary directory:
-
-```bash
-rm -rf "$RCP_REHEARSAL_DIR"
-```
-
-See [application proof](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint)
-for the qualification boundary. A green seeded CI run cannot prove real records.
+Choose `--procedure stopped-source` only when that is the intended server update
+procedure. The tool provisions verified wheels and dependencies online, then
+disables guest egress before copying private bytes. It runs the real installed
+supervisor update, application update, injected failure, exact rollback and
+successful retry. Failure exits nonzero and produces no passing `result.json`.
+Keep all VM disks, logs, snapshots and full reports private; they may contain
+credentials. They are not CI artifacts. Retain needed evidence before removing
+only the owned qualification directory.
 
 ## Promote a build to stable
 
-Only a human runs promotion. Combine every team's rehearsal line and the tested
-desktop candidate run into the qualification receipt, then promote:
+Only a human runs promotion. Generate the public receipt from the complete private
+reports and tested desktop candidate run; do not hand-build a readiness receipt:
 
 ```bash
-jq -s --arg run <run-id> '{version: 1, desktop_candidate_run: $run, rehearsals: .}' \
-  rehearsal-*.json > receipt.json
+uv run --no-project python packaging/release_build.py qualification-receipt \
+  --report /private/qualification/full-update/result.json \
+  --manifest /private/qualification/candidate/manifest.sha256 \
+  --desktop-candidate-run <run-id> --output receipt.json
 gh workflow run promote.yml --repo Zhi0467/RCP \
   -f build=<N> -f tag=v<X.Y.Z> -f desktop_candidate_run=<run-id> \
   -f receipt="$(cat receipt.json)"
 ```
 
-Include one line per team; promotion cannot tell a team is missing. The receipt
-is public, so it carries no warnings or other fields. Promotion refuses any
-other field, no rehearsal, one that did not pass or tested other bytes, or
-another desktop run; see
-[release selection](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery).
-Check the workflow summary, which keeps the receipt, and the published release
-before telling operators to update.
+Repeat `--report` for each team. The tool cannot discover an omitted team. The
+public receipt contains only update identities, procedure, status and report
+hashes. Promotion rejects version-1 readiness receipts, incomplete or failed
+updates, different candidate bytes and a different desktop run. The generator
+also rejects synthetic CI fixture reports. See
+[qualification scope](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery).
+Check the workflow summary and published asset bytes before telling operators
+to update. Promotion stays before deployment; no live production canary is
+required.
 
 ## How servers pick it up
 

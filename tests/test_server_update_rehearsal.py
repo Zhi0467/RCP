@@ -107,6 +107,7 @@ def passed_report(source, candidate, digest):
         "status": "passed",
         "source": {key: source[key] for key in ("manifest_sha256", "commit", "version")},
         "candidate": candidate,
+        "input_kind": "captured-private-state",
         "input_sha256": digest,
         "procedure": "stopped-source",
         "supervisor_version": candidate["supervisor_version"],
@@ -130,6 +131,8 @@ def passed_report(source, candidate, digest):
         ("rollback_exact", {}),
         ("retry_committed", False),
         ("procedure", "automatic-bypass"),
+        ("procedure", "graceful"),
+        ("input_kind", "synthetic-fixture"),
         ("supervisor_version", "0.0.0"),
         ("input_sha256", "c" * 64),
         ("journal", {"phase": "aborted"}),
@@ -137,18 +140,22 @@ def passed_report(source, candidate, digest):
     ],
 )
 def test_full_report_requires_every_installed_update_phase(field, value):
-    source = {"manifest_sha256": "a" * 64, "commit": "a" * 40, "version": "old"}
+    source = {
+        "manifest_sha256": "a" * 64,
+        "commit": "a" * 40,
+        "version": "0.4.40+build.3094.gaaaaaaa",
+    }
     candidate = {
         "manifest_sha256": "b" * 64,
         "commit": "b" * 40,
-        "version": "new",
+        "version": "0.4.42+build.9999.gbbbbbbb",
         "supervisor_version": "1.0.0",
     }
     report = passed_report(source, candidate, "d" * 64)
-    rehearsal.validate_report(report, source, candidate, "d" * 64)
+    rehearsal.validate_report(report, source, candidate, "d" * 64, "stopped-source")
     report[field] = value
     with pytest.raises(ValueError, match="report"):
-        rehearsal.validate_report(report, source, candidate, "d" * 64)
+        rehearsal.validate_report(report, source, candidate, "d" * 64, "stopped-source")
 
 
 def test_local_bundles_are_verified_before_their_receipts_are_trusted(tmp_path):
@@ -169,21 +176,23 @@ def test_local_bundles_are_verified_before_their_receipts_are_trusted(tmp_path):
         rehearsal.bundle_identity(bundle)
 
 
+@pytest.mark.parametrize("procedure", ["graceful", "stopped-source"])
 @pytest.mark.parametrize(
     "failure", [None, "prepare", "transfer", "driver", "missing", "skipped", "changed", "logs"]
 )
 def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
-    tmp_path, monkeypatch, failure
+    tmp_path, monkeypatch, failure, procedure
 ):
     path, manifest = private_input(tmp_path)
-    source = {"manifest_sha256": "a" * 64, "commit": "a" * 40, "version": "0.4.40+build.1.ga"}
+    source = {"manifest_sha256": "a" * 64, "commit": "a" * 40, "version": "0.4.40+build.1.gaaaaaaa"}
     candidate = {
         "manifest_sha256": "b" * 64,
         "commit": "b" * 40,
-        "version": "0.4.42+build.2.gb",
+        "version": "0.4.42+build.2.gbbbbbbb",
         "supervisor_version": "0.0.15",
     }
     report = passed_report(source, candidate, rehearsal.file_digest(path))
+    report["procedure"] = procedure
     if failure == "skipped":
         report["status"] = "skipped"
     events = []
@@ -193,6 +202,7 @@ def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
         offline = False
 
         def __init__(self, directory, **kwargs):
+            assert kwargs["disk_gib"] == 80
             self.directory = directory
             directory.mkdir()
 
@@ -215,6 +225,7 @@ def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
                 if failure == "prepare":
                     raise RuntimeError("prepare failed")
             if "--private-state" in argv:
+                assert argv[argv.index("--procedure") + 1] == procedure
                 assert self.offline
                 assert "--prepare-guest" not in argv
                 events.append("full driver")
@@ -262,13 +273,21 @@ def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
     monkeypatch.setattr(rehearsal, "download_image", lambda *args: (tmp_path / "image", "a" * 64))
     monkeypatch.setattr(rehearsal, "code_payload", lambda *args: events.append("packed code"))
     monkeypatch.setattr(rehearsal, "private_payload", pack_private)
+    monkeypatch.setattr(rehearsal, "guest_disk_gib", lambda state: 80)
     monkeypatch.setattr(
         rehearsal, "run", lambda *args, **kwargs: pytest.fail("No CI upload command may run")
     )
     output = tmp_path / "private-output"
 
     def drive():
-        rehearsal.drive(tmp_path / "base", tmp_path / "candidate", path, output, "confirmed")
+        rehearsal.drive(
+            tmp_path / "base",
+            tmp_path / "candidate",
+            path,
+            output,
+            "confirmed",
+            procedure=procedure,
+        )
 
     if failure:
         with pytest.raises((RuntimeError, ValueError)):
@@ -290,6 +309,23 @@ def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
 
 def stat_mode(path):
     return path.stat().st_mode & 0o777
+
+
+def test_private_guest_capacity_follows_captured_storage(tmp_path, monkeypatch):
+    _, state = private_input(tmp_path)
+    allocated = 7 * 1024**3
+    calls = []
+
+    def measure(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, f"{allocated}\ttotal\n", "")
+
+    monkeypatch.setattr(rehearsal, "run", measure)
+    first = rehearsal.guest_disk_gib(state)
+    assert first * 1024**3 > allocated * 2
+    assert calls[0][-2:] == [state["data"]["snapshot"], state["local_roots"][0]["snapshot"]]
+    allocated *= 2
+    assert rehearsal.guest_disk_gib(state) > first
 
 
 def test_controller_rejects_changed_input_before_creating_vm_or_report(tmp_path, monkeypatch):

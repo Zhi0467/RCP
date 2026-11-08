@@ -395,10 +395,14 @@ def test_offline_guest_cannot_reenable_egress_after_start_cycle_or_reset(tmp_pat
         guest.power_off()
 
 
-def test_guest_seed_leaves_common_captured_service_ids_available(tmp_path, monkeypatch):
+@pytest.mark.parametrize("disk_gib", [None, 80])
+def test_guest_creation_preserves_service_ids_and_requested_disk(tmp_path, monkeypatch, disk_gib):
     from tests import supervisor_reboot_vm as vm
 
+    commands = []
+
     def run(argv, **kwargs):
+        commands.append(argv)
         if argv[0] == "ssh-keygen":
             Path(argv[-1] + ".pub").write_text("ssh-ed25519 disposable-key")
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -419,9 +423,17 @@ def test_guest_seed_leaves_common_captured_service_ids_available(tmp_path, monke
             return ("127.0.0.1", 23456)
 
     monkeypatch.setattr(vm.socket, "socket", Listener)
+    capacity = {} if disk_gib is None else {"disk_gib": disk_gib}
     guest = Guest(
-        tmp_path / "guest", image=tmp_path / "image", image_sha256="a" * 64, ubuntu="24.04"
+        tmp_path / "guest",
+        image=tmp_path / "image",
+        image_sha256="a" * 64,
+        ubuntu="24.04",
+        **capacity,
     )
     seed = json.loads((guest.directory / "user-data").read_text().split("\n", 1)[1])
     assert seed["users"][0]["uid"] == 60000
     assert seed["users"][0]["name"] == "qualifier"
+    disk = next(argv for argv in commands if argv[0] == "qemu-img")
+    assert disk[1] == "create"
+    assert disk[-1] == f"{disk_gib if disk_gib is not None else vm.GUEST_DISK_GIB}G"

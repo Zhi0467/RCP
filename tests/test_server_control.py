@@ -51,6 +51,7 @@ from rcp.server_runtime import (
 from rcp.storage import AppStore
 from rcp.storage.provisioning import ProjectTransferRestartRequired
 from rcp.transfer.target import upload_target_transfer_archive
+from tests import server_installed_upgrade
 from tests.helpers import TASK_SETTLE_TIMEOUT, signed_in_client
 from tests.test_project_transfer_request_storage import _archive_bound_pair
 from tests.test_transfer_import import _archive_fixture
@@ -499,6 +500,7 @@ def test_update_maintenance_only_considers_active_transfer_uploads(
     control_root: Path,
     upload_status: str,
     active_upload_order: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _source, store, _source_request, request = _archive_bound_pair(tmp_path / "fixture")
     store.rename_space("Transfer maintenance lab")
@@ -507,16 +509,10 @@ def test_update_maintenance_only_considers_active_transfer_uploads(
     fixture_path = (
         Path(__file__).parent / "fixtures/production_upgrade_state/terminal-transfer/rows.json"
     )
-    tables = json.loads(fixture_path.read_text())["tables"]
+    monkeypatch.setattr(server_installed_upgrade, "DATA", store.path.parent)
+    tables = server_installed_upgrade.retained_rows(fixture_path, insert=True)
     historical_request_id = tables["project_transfer_requests"][0]["request_id"]
     with store.connection() as connection:
-        for table, rows in tables.items():
-            for row in rows:
-                columns = ", ".join(row)
-                placeholders = ", ".join("?" for _ in row)
-                connection.execute(
-                    f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(row.values())
-                )
         connection.execute(
             """UPDATE project_transfer_uploads
                SET status = ?,

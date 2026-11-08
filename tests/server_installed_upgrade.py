@@ -24,6 +24,7 @@ import sys
 import time
 import urllib.request
 import uuid
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -267,7 +268,14 @@ def selected_supervisor_version() -> str:
     ).stdout.strip()
 
 
-def completed_report(base: Path, candidate: Path, input_sha256: str, procedure: str) -> dict:
+def completed_report(
+    base: Path,
+    candidate: Path,
+    input_sha256: str,
+    procedure: str,
+    *,
+    input_kind: str = "synthetic-fixture",
+) -> dict:
     assert re.fullmatch(r"[0-9a-f]{64}", input_sha256)
     assert procedure in {"graceful", "stopped-source"}
     source, target = bundle_identity(base), bundle_identity(candidate)
@@ -302,6 +310,7 @@ def completed_report(base: Path, candidate: Path, input_sha256: str, procedure: 
         "source": {key: value for key, value in source.items() if key != "supervisor_version"},
         "candidate": target,
         "input_sha256": input_sha256,
+        "input_kind": input_kind,
         "procedure": procedure,
         "supervisor_version": supervisor,
         "journal": {
@@ -320,10 +329,16 @@ def completed_report(base: Path, candidate: Path, input_sha256: str, procedure: 
     }
 
 
-def retained_rows(path: Path, *, insert: bool = False) -> None:
+def retained_rows(path: Path, *, insert: bool = False) -> dict:
     tables = json.loads(path.read_text())["tables"]
     assert set(tables) == {"project_transfer_requests", "project_transfer_uploads"}
-    with sqlite3.connect(DATA / "rcp.sqlite3") as database:
+    mode = "rw" if insert else "ro"
+    with (
+        closing(
+            sqlite3.connect(f"{(DATA / 'rcp.sqlite3').as_uri()}?mode={mode}", uri=True)
+        ) as database,
+        database,
+    ):
         database.row_factory = sqlite3.Row
         for table, rows in tables.items():
             for row in rows:
@@ -339,6 +354,7 @@ def retained_rows(path: Path, *, insert: bool = False) -> None:
                     (row["request_id"],),
                 ).fetchone()
                 assert actual is not None and dict(actual) == row
+    return tables
 
 
 def fault_sentinel() -> None:
@@ -384,9 +400,7 @@ def assert_identity(expected: dict, selected: dict) -> None:
         assert hashlib.sha256(Path(name).read_bytes()).hexdigest() == digest
 
 
-def stopped_journey(
-    base: Path, candidate: Path, expected: dict, *, rows: Path | None = None
-) -> dict:
+def historical_maintenance_failure(base: Path, candidate: Path, expected: dict) -> dict:
     selected = json.loads(SELECTED.read_text())
     assert selected["manifest_sha256"] == bundle_identity(base)["manifest_sha256"]
     target = select(candidate)
@@ -409,12 +423,29 @@ def stopped_journey(
     assert "This transfer began before RCP was updated. Restart the transfer." in diagnostics
     assert_identity(expected, selected)
     assert retained_transfer_state(retained) == retained
-    if rows is not None:
-        retained_rows(rows)
-    run(["systemctl", "stop", "rcp.service"])
+    return {"ordinary_attempt": {"phase": aborted["phase"], "historical_format_refused": True}}
+
+
+def update_journey(
+    base: Path,
+    candidate: Path,
+    expected: dict,
+    procedure: str,
+    *,
+    rows: Path | None = None,
+) -> dict:
+    selected = json.loads(SELECTED.read_text())
+    assert selected["manifest_sha256"] == bundle_identity(base)["manifest_sha256"]
+    target = select(candidate)
+    retained = retained_transfer_state()
+    assert selected_supervisor_version() == bundle_identity(candidate)["supervisor_version"]
+    confirmation = f"{target['tag']}:{target['manifest_sha256']}"
+    arguments = ("--stopped-source",) if procedure == "stopped-source" else ()
+    if arguments:
+        run(["systemctl", "stop", "rcp.service"])
     fault_sentinel()
     select(candidate, observe=True, fail=True)
-    failed = operator("update", "--stopped-source", "--confirm-target", confirmation, expected=1)
+    failed = operator("update", *arguments, "--confirm-target", confirmation, expected=1)
     assert "installed-upgrade intentional candidate failure" in failed.stdout
     exact = json.loads((ROOT / "rollback-exact.json").read_text())
     journal = json.loads((OPERATIONS / f"{exact['operation_id']}.json").read_text())
@@ -425,18 +456,16 @@ def stopped_journey(
     assert (DATA / "installed-upgrade-fault-sentinel").read_text() == "original fixture sentinel\n"
     if rows is not None:
         retained_rows(rows)
-    run(["systemctl", "stop", "rcp.service"])
+    if arguments:
+        run(["systemctl", "stop", "rcp.service"])
     select(candidate, observe=True)
-    operator("update", "--stopped-source", "--confirm-target", confirmation)
+    operator("update", *arguments, "--confirm-target", confirmation)
     current = json.loads(SELECTED.read_text())
     assert_identity(expected, current)
     assert retained_transfer_state(retained) == retained
     if rows is not None:
         retained_rows(rows)
-    return {
-        "ordinary_attempt": {"phase": aborted["phase"], "historical_format_refused": True},
-        "retained_rows_unchanged": True,
-    }
+    return {"retained_rows_unchanged": True}
 
 
 def prepare_guest(base: Path, candidate: Path, token: str, uid: int, gid: int) -> None:
@@ -486,7 +515,9 @@ def prepare_guest(base: Path, candidate: Path, token: str, uid: int, gid: int) -
     )
 
 
-def private_drive(base: Path, candidate: Path, output: Path, manifest: Path, token: str) -> None:
+def private_drive(
+    base: Path, candidate: Path, output: Path, manifest: Path, token: str, procedure: str
+) -> None:
     preflight(guest_token=token, prepared=True)
     (site,) = (SUPERVISOR / "lib").glob("python*/site-packages")
     sys.path.insert(0, str(site))
@@ -527,11 +558,19 @@ def private_drive(base: Path, candidate: Path, output: Path, manifest: Path, tok
     operator("supervisor", "update")
     install_hook()
     assert selected_supervisor_version() == target["supervisor_version"]
-    diagnostics = stopped_journey(ROOT / "bundles/base", ROOT / "bundles/target", state["expected"])
+    diagnostics = update_journey(
+        ROOT / "bundles/base", ROOT / "bundles/target", state["expected"], procedure
+    )
     write_json(
         output / "result.json",
         {
-            **completed_report(base, candidate, state["input_sha256"], "stopped-source"),
+            **completed_report(
+                base,
+                candidate,
+                state["input_sha256"],
+                procedure,
+                input_kind="captured-private-state",
+            ),
             **diagnostics,
         },
     )
@@ -1196,7 +1235,9 @@ def drive(
     assert selected_supervisor_version() == bundle_identity(candidate)["supervisor_version"]
     assert_serves(fixture, selected["version_string"])
     if production_corpus is not None:
-        diagnostics = stopped_journey(base, candidate, fixture, rows=rows)
+        historical = historical_maintenance_failure(base, candidate, fixture)
+        retained_rows(rows)
+        diagnostics = update_journey(base, candidate, fixture, "stopped-source", rows=rows)
         write_json(
             output / "result.json",
             {
@@ -1204,6 +1245,7 @@ def drive(
                     base, candidate, hashlib.sha256(rows.read_bytes()).hexdigest(), "stopped-source"
                 ),
                 **diagnostics,
+                **historical,
                 "corpus": production_corpus,
                 "scaffolding": "synthetic installed application state",
             },
@@ -1462,6 +1504,7 @@ def main() -> None:
     parser.add_argument("--guest-token")
     parser.add_argument("--service-uid", type=int)
     parser.add_argument("--service-gid", type=int)
+    parser.add_argument("--procedure", choices=("graceful", "stopped-source"), default="graceful")
     arguments = parser.parse_args()
     if (
         arguments.private_state is not None or arguments.prepare_guest
@@ -1494,6 +1537,7 @@ def main() -> None:
                 arguments.output,
                 arguments.private_state,
                 arguments.guest_token,
+                arguments.procedure,
             )
         else:
             drive(

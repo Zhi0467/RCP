@@ -222,20 +222,123 @@ def check_promotion(wheel: Path, tag: str) -> None:
         )
 
 
-def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) -> None:
-    """Accept only passing copied-data rehearsals of these exact assets and the tested app."""
+_UPDATE_PROCEDURES = ("graceful", "stopped-source")
+
+
+def _required_digest(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise ReleaseBuildError(f"{label} must be a SHA-256 digest")
+    return value
+
+
+def _matching_fields(value: Any, expected: dict[str, Any], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or any(value.get(key) != item for key, item in expected.items()):
+        raise ReleaseBuildError(f"{label} does not match the required update result")
+    return value
+
+
+def _report_identity(value: Any, label: str) -> dict[str, Any]:
+    identity = _matching_fields(value, {}, label)
+    _required_digest(identity.get("manifest_sha256"), f"{label} manifest")
+    commit = identity.get("commit")
+    version = identity.get("version")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ReleaseBuildError(f"{label} must name the full build commit")
+    if (
+        not isinstance(version, str)
+        or not _RCP_WHEEL.fullmatch(f"rcp-{version}-py3-none-any.whl")
+        or version.rsplit(".g", 1)[-1] != commit[:7]
+    ):
+        raise ReleaseBuildError(f"{label} version does not match its build commit")
+    return identity
+
+
+def validate_update_report(report: Any, manifest_sha256: str) -> dict[str, Any]:
+    """Validate the full updater evidence shared by rehearsal and promotion."""
+    report = _matching_fields(
+        report,
+        {"version": 1, "journey": "installed-update", "status": "passed"},
+        "qualification report",
+    )
+    if report.get("rollback_exact") is not True or report.get("retry_committed") is not True:
+        raise ReleaseBuildError("qualification report did not prove exact rollback and retry")
+    _required_digest(report.get("input_sha256"), "captured state")
+    source = _report_identity(report.get("source"), "source")
+    candidate = _report_identity(report.get("candidate"), "candidate")
+    procedure = report.get("procedure")
+    if procedure not in _UPDATE_PROCEDURES:
+        raise ReleaseBuildError("qualification report names an unsupported update procedure")
+    supervisor = report.get("supervisor_version")
+    if not isinstance(supervisor, str) or not _TAG.fullmatch(f"v{supervisor}"):
+        raise ReleaseBuildError("qualification report must name its selected supervisor")
+    _matching_fields(
+        candidate,
+        {"manifest_sha256": manifest_sha256, "supervisor_version": supervisor},
+        "candidate assets and supervisor",
+    )
+    _matching_fields(
+        report.get("journal"),
+        {
+            "phase": "committed",
+            "previous_manifest_sha256": source["manifest_sha256"],
+            "target_manifest_sha256": manifest_sha256,
+        },
+        "deployment journal",
+    )
+    _matching_fields(
+        report.get("serving"),
+        {
+            "status": "ok",
+            "commit": candidate["commit"],
+            "version": candidate["version"],
+        },
+        "serving identity",
+    )
+    return report
+
+
+def _qualification_entry(report_path: Path, manifest_sha256: str) -> dict[str, Any]:
     try:
-        value = json.loads(receipt.read_text(encoding="utf-8"))
+        raw = report_path.read_bytes()
+        report = json.loads(raw)
     except (OSError, ValueError) as exc:
-        raise ReleaseBuildError(f"could not read qualification receipt: {exc}") from exc
-    # The receipt is public in the run inputs and summary, so it admits no
-    # rehearsal warnings, which can name projects and hosts.
+        raise ReleaseBuildError("could not read the full installed-update report") from exc
+    report = validate_update_report(report, manifest_sha256)
+    _matching_fields(report, {"input_kind": "captured-private-state"}, "captured private state")
+    return {
+        "kind": "installed-update",
+        "procedure": report["procedure"],
+        "source_manifest_sha256": report["source"]["manifest_sha256"],
+        "manifest_sha256": manifest_sha256,
+        "qualification_sha256": hashlib.sha256(raw).hexdigest(),
+        "status": "committed",
+    }
+
+
+def qualification_receipt(
+    reports: list[Path], manifest: Path, *, desktop_candidate_run: str, output: Path
+) -> None:
+    """Project successful full-update reports into the public promotion receipt."""
+    if not reports or not desktop_candidate_run.isdecimal():
+        raise ReleaseBuildError(
+            "qualification needs full-update reports and a desktop candidate run"
+        )
+    digest = _digest(manifest)
+    receipt = {
+        "version": 2,
+        "desktop_candidate_run": desktop_candidate_run,
+        "rehearsals": [_qualification_entry(path, digest) for path in reports],
+    }
+    output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+
+
+def _receipt_rehearsals(value: Any, desktop_candidate_run: str) -> list[Any]:
     if (
         not isinstance(value, dict)
         or value.keys() != {"version", "desktop_candidate_run", "rehearsals"}
-        or value["version"] != 1
+        or value["version"] != 2
     ):
-        raise ReleaseBuildError("qualification receipt must be a version 1 object")
+        raise ReleaseBuildError("qualification receipt must be a version 2 full-update object")
     if (
         not desktop_candidate_run.isdecimal()
         or value.get("desktop_candidate_run") != desktop_candidate_run
@@ -243,15 +346,40 @@ def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) 
         raise ReleaseBuildError("qualification receipt names another desktop candidate run")
     rehearsals = value.get("rehearsals")
     if not isinstance(rehearsals, list) or not rehearsals:
-        raise ReleaseBuildError("qualification receipt holds no copied-data rehearsal")
+        raise ReleaseBuildError("qualification receipt holds no full installed-update rehearsal")
+    return rehearsals
+
+
+def _check_public_rehearsal(rehearsal: Any, number: int, digest: str) -> None:
+    if not isinstance(rehearsal, dict) or rehearsal.keys() != {
+        "kind",
+        "procedure",
+        "source_manifest_sha256",
+        "manifest_sha256",
+        "qualification_sha256",
+        "status",
+    }:
+        raise ReleaseBuildError(f"rehearsal {number} must hold only public update evidence")
+    if rehearsal["kind"] != "installed-update" or rehearsal["procedure"] not in _UPDATE_PROCEDURES:
+        raise ReleaseBuildError(f"rehearsal {number} is not a supported installed-update journey")
+    _required_digest(rehearsal["source_manifest_sha256"], f"rehearsal {number} source")
+    _required_digest(rehearsal["qualification_sha256"], f"rehearsal {number} report")
+    if rehearsal["manifest_sha256"] != digest:
+        raise ReleaseBuildError(f"rehearsal {number} did not install this build's assets")
+    if rehearsal["status"] != "committed":
+        raise ReleaseBuildError(f"rehearsal {number} did not commit a full update")
+
+
+def check_receipt(receipt: Path, manifest: Path, *, desktop_candidate_run: str) -> None:
+    """Require full installed-update evidence for these exact assets and tested app."""
+    try:
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReleaseBuildError(f"could not read qualification receipt: {exc}") from exc
+    rehearsals = _receipt_rehearsals(value, desktop_candidate_run)
     digest = _digest(manifest)
     for number, rehearsal in enumerate(rehearsals, start=1):
-        if not isinstance(rehearsal, dict) or rehearsal.keys() != {"manifest_sha256", "status"}:
-            raise ReleaseBuildError(f"rehearsal {number} must hold only its digest and status")
-        if rehearsal["manifest_sha256"] != digest:
-            raise ReleaseBuildError(f"rehearsal {number} did not install this build's assets")
-        if rehearsal["status"] != "ready":
-            raise ReleaseBuildError(f"rehearsal {number} did not pass")
+        _check_public_rehearsal(rehearsal, number, digest)
 
 
 def _timestamp(value: Any, field: str) -> datetime:
@@ -353,6 +481,12 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     receipt.add_argument("--manifest", type=Path, required=True)
     receipt.add_argument("--desktop-candidate-run", required=True)
 
+    qualification = subparsers.add_parser("qualification-receipt")
+    qualification.add_argument("--report", type=Path, action="append", required=True)
+    qualification.add_argument("--manifest", type=Path, required=True)
+    qualification.add_argument("--desktop-candidate-run", required=True)
+    qualification.add_argument("--output", type=Path, required=True)
+
     stale = subparsers.add_parser("select-stale-builds")
     stale.add_argument("--releases", type=Path, required=True)
     stale.add_argument("--now", required=True)
@@ -367,38 +501,53 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _check_release(arguments: argparse.Namespace) -> None:
+    if arguments.command == "check-desktop-version":
+        check_desktop_version(arguments.version)
+    elif arguments.command == "check-assets":
+        check_assets(arguments.directory, require_supervisor=arguments.require_supervisor)
+    elif arguments.command == "check-promotion":
+        check_promotion(arguments.wheel, arguments.tag)
+    elif arguments.command == "check-receipt":
+        check_receipt(
+            arguments.receipt,
+            arguments.manifest,
+            desktop_candidate_run=arguments.desktop_candidate_run,
+        )
+
+
+def _run_command(arguments: argparse.Namespace) -> None:
+    if arguments.command.startswith("check-"):
+        _check_release(arguments)
+    elif arguments.command == "stamp-version":
+        print(stamp_version(arguments.run_number, arguments.sha))
+    elif arguments.command == "write-manifest":
+        write_manifest(arguments.directory, arguments.output)
+    elif arguments.command == "verify-manifest":
+        verify_manifest(arguments.directory, arguments.manifest)
+    elif arguments.command == "qualification-receipt":
+        qualification_receipt(
+            arguments.report,
+            arguments.manifest,
+            desktop_candidate_run=arguments.desktop_candidate_run,
+            output=arguments.output,
+        )
+    elif arguments.command == "select-stale-builds":
+        for tag_name in select_stale_builds(arguments.releases, arguments.now, arguments.days):
+            print(tag_name)
+    elif arguments.command == "updater-manifest":
+        write_updater_manifest(
+            arguments.tag,
+            arguments.signature,
+            arguments.url,
+            arguments.output,
+            previous=arguments.previous,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
-        arguments = _arguments(argv)
-        if arguments.command == "stamp-version":
-            print(stamp_version(arguments.run_number, arguments.sha))
-        elif arguments.command == "check-desktop-version":
-            check_desktop_version(arguments.version)
-        elif arguments.command == "write-manifest":
-            write_manifest(arguments.directory, arguments.output)
-        elif arguments.command == "verify-manifest":
-            verify_manifest(arguments.directory, arguments.manifest)
-        elif arguments.command == "check-assets":
-            check_assets(arguments.directory, require_supervisor=arguments.require_supervisor)
-        elif arguments.command == "check-promotion":
-            check_promotion(arguments.wheel, arguments.tag)
-        elif arguments.command == "check-receipt":
-            check_receipt(
-                arguments.receipt,
-                arguments.manifest,
-                desktop_candidate_run=arguments.desktop_candidate_run,
-            )
-        elif arguments.command == "select-stale-builds":
-            for tag_name in select_stale_builds(arguments.releases, arguments.now, arguments.days):
-                print(tag_name)
-        elif arguments.command == "updater-manifest":
-            write_updater_manifest(
-                arguments.tag,
-                arguments.signature,
-                arguments.url,
-                arguments.output,
-                previous=arguments.previous,
-            )
+        _run_command(_arguments(argv))
     except ReleaseBuildError as exc:
         print(exc, file=sys.stderr)
         return 1

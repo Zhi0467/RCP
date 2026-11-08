@@ -37,7 +37,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CRAPPER = "git+https://github.com/unclebob/crapper@6fd92c4c9bcc56efb64a2f8743d5a2993bcfd42d"
 DRYER = "git+https://github.com/unclebob/dryer@66ff6d21a42c04afcad89c78a80066176d1294b0"
-SOURCE_DIRS = ("src/", "web/src/")
+SOURCE_DIRS = ("src/", "supervisor/src/", "packaging/", "web/src/")
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx")
 CC_LIMIT = 10
 DUPLICATE_THRESHOLD = "0.8"

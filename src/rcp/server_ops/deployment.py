@@ -765,6 +765,10 @@ def _inventory_copy(data: Path, database: Path, output: Path) -> dict[str, objec
 
     roots = _snapshot_roots(database, data, output)
     with closing(_open_migrated_snapshot(database)) as store:
+        if store.has_active_target_project_transfer_uploads():
+            raise MaintenanceRefused(
+                "An active project transfer upload must complete before stopped inventory."
+            )
         warnings = []
         for record in sorted(store.projects(), key=lambda item: item.project_id):
             project = inspect_snapshot_project_inventory(
