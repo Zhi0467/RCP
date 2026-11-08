@@ -905,6 +905,9 @@ function MemberApp({
       forgetBanners(`staged-conflict:${stagedConflictScope}:`);
   }, [stagedConflictScope, draftPreviewConflict]);
   useEffect(() => {
+    if (projectId && !draftPreviewPending) forgetBanners(`staged-preview-pending:${projectId}:`);
+  }, [projectId, draftPreviewPending]);
+  useEffect(() => {
     if (projectId && !replayDegraded) forgetBanners(`replay-degraded:${projectId}:`);
   }, [projectId, replayDegraded]);
   const pinBranchId = graphTarget.kind === "branch" ? graphTarget.branch_id : null;
