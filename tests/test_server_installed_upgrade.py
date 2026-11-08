@@ -372,6 +372,7 @@ def test_update_journey_rolls_back_then_retries_the_requested_entry(
             )
             (installed.OPERATIONS / "failed.json").write_text(json.dumps({"phase": "rolled_back"}))
             return SimpleNamespace(stdout="installed-upgrade intentional candidate failure")
+        assert not (installed.DATA / "installed-upgrade-fault-sentinel").exists()
         installed.SELECTED.write_text(json.dumps(target))
         return SimpleNamespace(stdout="committed")
 

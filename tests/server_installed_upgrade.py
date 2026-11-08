@@ -371,6 +371,12 @@ def fault_sentinel() -> None:
     path.chmod(0o600)
 
 
+def remove_fault_sentinel() -> None:
+    path = DATA / "installed-upgrade-fault-sentinel"
+    assert path.read_text() == "original fixture sentinel\n"
+    path.unlink()
+
+
 def retained_transfer_state(previous: dict | None = None) -> dict:
     result = {}
     with closing(sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True)) as database:
@@ -458,7 +464,7 @@ def update_journey(
     assert exact["roots"] >= 1
     assert_identity(expected, selected)
     assert retained_transfer_state(retained) == retained
-    assert (DATA / "installed-upgrade-fault-sentinel").read_text() == "original fixture sentinel\n"
+    remove_fault_sentinel()
     if rows is not None:
         retained_rows(rows)
     if arguments:
@@ -1267,6 +1273,7 @@ def drive(
     assert journal["phase"] == "rolled_back"
     assert exact["roots"] >= 2
     assert_serves(fixture, selected["version_string"])
+    remove_fault_sentinel()
     service([old_python, "-I", str(SCRIPT), "scratch-check"])
     backup()
     service([old_python, "-I", str(SCRIPT), "seed-base-artifact"])

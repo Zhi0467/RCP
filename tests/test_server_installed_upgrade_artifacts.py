@@ -166,3 +166,21 @@ def test_retained_transfer_rows_enter_and_leave_database_without_model_roundtrip
         )
     with pytest.raises(AssertionError):
         installed.retained_rows(source)
+
+
+def test_fault_marker_is_removed_before_backup_classification(tmp_path, monkeypatch):
+    from rcp.server_ops.backup_models import inspect_app_data_capture_plan
+    from tests import server_installed_upgrade as installed
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "rcp.sqlite3").write_bytes(b"database content is outside this inventory boundary")
+    monkeypatch.setattr(installed, "DATA", data)
+    monkeypatch.setattr(installed.os, "chown", lambda *args: None)
+    assert inspect_app_data_capture_plan(data).complete
+    installed.fault_sentinel()
+    assert inspect_app_data_capture_plan(data).unclassified_entries == (
+        "installed-upgrade-fault-sentinel",
+    )
+    installed.remove_fault_sentinel()
+    assert inspect_app_data_capture_plan(data).complete

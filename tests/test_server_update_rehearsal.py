@@ -96,7 +96,8 @@ def test_tree_digest_retains_relative_paths_metadata_links_and_special_nodes(tmp
     copied = tmp_path / "copy"
     subprocess.run(["cp", "-a", str(root), str(copied)], check=True)
     assert rehearsal.tree_digest(root) == rehearsal.tree_digest(copied)
-    (copied / "bytes").chmod(0o600)
+    changed = copied / "bytes"
+    changed.chmod(changed.stat().st_mode ^ 0o100)
     assert rehearsal.tree_digest(root) != rehearsal.tree_digest(copied)
 
 
