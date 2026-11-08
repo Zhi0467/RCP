@@ -326,6 +326,9 @@ A schedule names an IANA timezone and exactly one time: a local
 `YYYY-MM-DDTHH:MM` one-shot (`--at`), a plain interval (`--every`, such as `1m`,
 `90m`, `2h` or `1d`), or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
 `SUN`-`SAT` names, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+[`ScheduleArguments`](../../src/rcp/agents/command_protocol.py) owns the input
+bounds: `--count` is positive and capped, and the note is nonblank with a bounded
+length; their maxima live in [`limits.py`](../../src/rcp/limits.py).
 Only a repeat (cron or interval) takes bounds, all local times in its zone.
 `--from` sets its start. Without it, cron starts at its next match and an interval
 starts one interval from now. `--until` makes it done after its last fire at or

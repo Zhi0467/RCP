@@ -307,6 +307,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
             "consolidation_schedules",
             "consolidation_runs",
             "consolidation_apply_receipts",
+            "agent_schedule_command_receipts",
         ):
             connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE artifact_imports")

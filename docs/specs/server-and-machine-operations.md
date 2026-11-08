@@ -692,6 +692,8 @@ Apply or claim unreachable projects are protected.
 inventory, recovery descriptors and exclusions.
 [server.md](../server.md#back-up-the-team-server) owns configuration, capture
 and restore commands.
+Restore verifies the archive's recorded SQLite schema against supported fresh
+and in-place migration fingerprints before opening a copy.
 
 One immutable online SQLite snapshot determines referenced durable bytes:
 canonical main and branch history, typed chats, saved and published Paper,

@@ -58,6 +58,17 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        "140fcef84b8b114ffc71c7226b99669af7d389fcf099f037e01e3df015a5d140",
+        "2622ef8257a93c9bede899d866a8c127b68204aaf965042fb8dcff3a1c24b111",
+        "faafa62520d8c13996211ac2357270e6c4a0899b7bf19ef7feae196b6a121e74",
+        "f9ff146e02fc4f40e1c4a247946e8152bbac5c63f3944f0597cf546acbac327c",
+        "137f33bcd6301e87e65bcb98107786921acb95eee8cbd5acd9f0f15e65ff0c84",
+        "6c65baa6d250af292d0f15d4b1c29e975822cf0fda97dbb301b4fb8a706bba4c",
+        "f5a3c2f597381e1c1eb0eae0120ffeaa0973f02bb8be369bb58b73c7b5baf394",
+        "9c3e54e70d40b74e1449006a369e500a66879699d10ebbc019fd65453db78159",
+        "feea42e61c89e33da57b19c7c9973f79247e361838c9305fa87c971b751701ad",
+        "d833e7a9c2012fdee9494e6e5abcc2523e44145cf6bfe06a37e1a0e243afedfd",
+        "c80c7cb971afa590b303129e06686c6ec0e081cfdd8c5307c111218a8b25e52e",
         # Agent tables (v68-73), pending fires (v74), thread queue (v75), coach steers (v76).
         "b8ed2421e756253fdc93a4c5081236805bf8b33b08aeb67fb1d947334c4dc1c2",
         "ddbc017f09a3e7ff4ce44bbd9e3c652dea2c2a39505bd136cbbc9ea90c5f9769",
