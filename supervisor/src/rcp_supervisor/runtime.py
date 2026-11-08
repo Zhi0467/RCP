@@ -730,6 +730,10 @@ class SystemRuntime:
         if self.startup:
             raise SupervisorError("Startup recovery cannot recursively stop its own systemd unit.")
         self._systemctl("stop")
+        self.require_stopped_source()
+
+    def require_stopped_source(self) -> None:
+        """Read systemd's stopped-process proof without changing the service."""
         result = subprocess.run(
             [
                 root_executable("systemctl"),
@@ -743,7 +747,7 @@ class SystemRuntime:
             timeout=SERVICE_TIMEOUT_SECONDS,
         )
         if result.stdout.strip() != b"0":
-            raise SupervisorError("Systemd did not prove the application process stopped.")
+            raise SupervisorError("The source service must already be stopped before proceeding.")
 
     def start_service(self) -> None:
         if self.startup:
@@ -809,6 +813,9 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
+        return self._checkpoint_roots(inventory)
+
+    def _checkpoint_roots(self, inventory: dict) -> list[str]:
         self._record_warnings(inventory)
         roots = [root["live"] for root in inventory["roots"]]
         self.filesystem(
@@ -816,19 +823,54 @@ class SystemRuntime:
         )
         return roots
 
+    def checkpoint_stopped_source(self, operation: dict) -> dict:
+        with self.stopped_data_lock():
+            workspace = self.paths.checkpoints_root / operation["operation_id"]
+            self.filesystem("workspace", {"directory": str(workspace)})
+            inventory = self.application(
+                operation["target"],
+                "offline-inventory",
+                {
+                    "version": 1,
+                    "data_dir": str(self.paths.data_dir),
+                    "output_dir": str(workspace / "inventory"),
+                    "source_commit": operation["previous"]["commit"],
+                },
+            )
+            return self._snapshot_roots(operation, self._checkpoint_roots(inventory))
+
     def snapshot(self, operation: dict, roots: list[str]) -> dict:
         """Copy stopped roots before candidate preparation."""
         with self.stopped_data_lock():
             workspace = self.paths.checkpoints_root / operation["operation_id"]
             self.filesystem("workspace", {"directory": str(workspace)})
-            return self.filesystem(
-                "snapshot-roots",
-                {
-                    "directory": str(workspace / "checkpoint"),
-                    "roots": roots,
-                    "boundary_sha256": operation["nonce"],
-                },
-            )
+            return self._snapshot_roots(operation, roots)
+
+    def _snapshot_roots(self, operation: dict, roots: list[str]) -> dict:
+        return self.filesystem(
+            "snapshot-roots",
+            {
+                "directory": str(
+                    self.paths.checkpoints_root / operation["operation_id"] / "checkpoint"
+                ),
+                "roots": roots,
+                "boundary_sha256": operation["nonce"],
+            },
+        )
+
+    def prepare_stopped_source(self, operation: dict) -> tuple[dict, None, dict, None]:
+        workspace = self.paths.checkpoints_root / operation["operation_id"]
+        prepared = self.application(
+            operation["target"],
+            "offline-prepare",
+            {
+                "version": 1,
+                "data_dir": str(self.paths.data_dir),
+                "output_dir": str(workspace / "prepared"),
+                "source_commit": operation["previous"]["commit"],
+            },
+        )
+        return operation["checkpoint"], None, self._validate_prepared(operation, prepared), None
 
     def prepare(self, operation: dict, capture: dict) -> tuple[dict, None, dict, dict | None]:
         workspace = self.paths.checkpoints_root / operation["operation_id"]
@@ -843,25 +885,9 @@ class SystemRuntime:
                 "sqlite_receipt_sha256": capture["receipt_sha256"],
             },
         )
-        self._record_warnings(prepared)
-        if operation["kind"] == "update":
-            self.filesystem(
-                "check-roots",
-                dict(operation["checkpoint"], roots=[root["live"] for root in prepared["roots"]]),
-            )
-        checked = self.application(
-            operation["target"],
-            "validate",
-            {
-                "version": 1,
-                "proof_path": prepared["proof_path"],
-                "proof_sha256": prepared["proof_sha256"],
-                "output_dir": str(workspace / "validated"),
-            },
-        )
+        target_proof = self._validate_prepared(operation, prepared)
         candidate_checkpoint = None
         extra_previous_roots = []
-        target_proof = {"path": checked["proof_path"], "sha256": checked["proof_sha256"]}
         if operation["kind"] == "restore":
             from rcp_supervisor.restore import prepare_restore
 
@@ -884,6 +910,27 @@ class SystemRuntime:
             target_proof,
             candidate_checkpoint,
         )
+
+    def _validate_prepared(self, operation: dict, prepared: dict) -> dict:
+        self._record_warnings(prepared)
+        if operation["kind"] == "update":
+            self.filesystem(
+                "check-roots",
+                dict(operation["checkpoint"], roots=[root["live"] for root in prepared["roots"]]),
+            )
+        checked = self.application(
+            operation["target"],
+            "validate",
+            {
+                "version": 1,
+                "proof_path": prepared["proof_path"],
+                "proof_sha256": prepared["proof_sha256"],
+                "output_dir": str(
+                    self.paths.checkpoints_root / operation["operation_id"] / "validated"
+                ),
+            },
+        )
+        return {"path": checked["proof_path"], "sha256": checked["proof_sha256"]}
 
     def prepare_fresh_restore(self, operation: dict) -> tuple[dict, None, dict, dict]:
         from rcp_supervisor.restore import prepare_restore

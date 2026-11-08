@@ -371,7 +371,8 @@ def test_stopped_lock_checks_current_inode_without_changing_bytes(runtime, tmp_p
     assert lock.read_bytes() == b"restored lock bytes\n"
 
 
-def test_candidate_requires_inventory_command(runtime):
+@pytest.mark.parametrize("command", ["inventory", "offline-inventory", "offline-prepare"])
+def test_candidate_requires_inventory_command(runtime, command):
     runtime.application = lambda *args: {
         "version": 1,
         "maintenance_protocol": 10,
@@ -379,9 +380,133 @@ def test_candidate_requires_inventory_command(runtime):
     }
     runtime.require_capability({})
     with pytest.raises(
-        SupervisorError, match="application_maintenance_commands_missing: inventory"
+        SupervisorError, match=f"application_maintenance_commands_missing: {command}"
     ):
-        runtime.require_capability({}, extra_commands=("inventory",))
+        runtime.require_capability({}, extra_commands=(command,))
+
+
+@pytest.mark.parametrize("pid", [b"0\n", b"23\n"])
+def test_stopped_source_precondition_only_reads_service_state(runtime, monkeypatch, pid):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(stdout=pid)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr("rcp_supervisor.runtime.root_executable", lambda name: "/usr/bin/" + name)
+    if pid == b"0\n":
+        runtime.require_stopped_source()
+    else:
+        with pytest.raises(SupervisorError, match="already be stopped"):
+            runtime.require_stopped_source()
+    assert calls == [["/usr/bin/systemctl", "show", "--property=MainPID", "--value", "rcp.service"]]
+
+
+@pytest.mark.parametrize("competing_owner", [False, True])
+def test_stopped_source_owns_instance_lock_through_inventory_and_snapshot(
+    runtime, tmp_path, competing_owner
+):
+    import fcntl
+
+    runtime.paths = Paths(data_dir=tmp_path, checkpoints_root=tmp_path / "checkpoints")
+    lock = tmp_path / "rcp.lock"
+    lock.write_bytes(b"stopped lock bytes")
+    calls = []
+    operation = {
+        "operation_id": "operation",
+        "nonce": "b" * 64,
+        "previous": {"commit": "a" * 40},
+        "target": {"commit": "c" * 40},
+    }
+
+    def verify_locked():
+        with lock.open("rb") as contender, pytest.raises(BlockingIOError):
+            fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def application(release, action, request):
+        verify_locked()
+        assert release == operation["target"] and action == "offline-inventory"
+        assert request == {
+            "version": 1,
+            "data_dir": str(tmp_path),
+            "output_dir": str(runtime.paths.checkpoints_root / "operation" / "inventory"),
+            "source_commit": operation["previous"]["commit"],
+        }
+        calls.append(action)
+        return {"roots": [{"live": str(tmp_path)}]}
+
+    def filesystem(action, request):
+        verify_locked()
+        calls.append(action)
+        if action == "snapshot-roots":
+            assert request["roots"] == [str(tmp_path)]
+            return {"directory": request["directory"], "sha256": "d" * 64}
+
+    runtime.application = application
+    runtime.filesystem = filesystem
+    with lock.open("rb") as owner:
+        if competing_owner:
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with pytest.raises(SupervisorError, match="writer still owns"):
+                runtime.checkpoint_stopped_source(operation)
+            assert calls == []
+        else:
+            checkpoint = runtime.checkpoint_stopped_source(operation)
+            assert checkpoint["sha256"] == "d" * 64
+            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert calls == ["workspace", "offline-inventory", "check-space", "snapshot-roots"]
+    assert lock.read_bytes() == b"stopped lock bytes"
+
+
+def test_stopped_source_prepares_with_previous_commit_after_parent_lock_release(runtime, tmp_path):
+    import fcntl
+
+    runtime.paths = Paths(data_dir=tmp_path, checkpoints_root=tmp_path / "checkpoints")
+    lock = tmp_path / "rcp.lock"
+    lock.write_bytes(b"old lock")
+    checkpoint = {"directory": str(tmp_path / "checkpoint"), "sha256": "a" * 64}
+    operation = {
+        "operation_id": "operation",
+        "previous": {"commit": "b" * 40},
+        "target": {"commit": "c" * 40},
+        "checkpoint": checkpoint,
+        "kind": "update",
+    }
+    prepared = {"roots": [{"live": str(tmp_path)}], "proof_path": "proof", "proof_sha256": "d" * 64}
+    calls = []
+
+    def application(release, action, request):
+        with lock.open("rb") as child:
+            fcntl.flock(child, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert release == operation["target"]
+        if action == "offline-prepare":
+            assert request == {
+                "version": 1,
+                "data_dir": str(tmp_path),
+                "output_dir": str(runtime.paths.checkpoints_root / "operation" / "prepared"),
+                "source_commit": operation["previous"]["commit"],
+            }
+        else:
+            assert action == "validate"
+            assert request == {
+                "version": 1,
+                "proof_path": "proof",
+                "proof_sha256": "d" * 64,
+                "output_dir": str(runtime.paths.checkpoints_root / "operation" / "validated"),
+            }
+        calls.append(action)
+        return prepared
+
+    def filesystem(action, request):
+        assert action == "check-roots" and request == dict(checkpoint, roots=[str(tmp_path)])
+        calls.append(action)
+
+    runtime.application = application
+    runtime.filesystem = filesystem
+    result = runtime.prepare_stopped_source(operation)
+    assert result == (checkpoint, None, {"path": "proof", "sha256": "d" * 64}, None)
+    assert calls == ["offline-prepare", "check-roots", "validate"]
 
 
 @pytest.mark.parametrize(

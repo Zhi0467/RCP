@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from rcp_supervisor.errors import SupervisorError, safe_diagnostic
 from rcp_supervisor.launch import validate_selected_receipt
@@ -20,6 +20,7 @@ TERMINAL = frozenset({"committed", "rolled_back", "aborted"})
 EARLY = frozenset(
     {
         "preparing",
+        "preparing_stopped_source",
         "backup_ready",
         "entering_maintenance",
         "quiescent",
@@ -76,6 +77,9 @@ class Runtime(Protocol):
     def enter_maintenance(self, operation: dict) -> dict: ...
     def abort_maintenance(self, operation: dict) -> None: ...
     def stop_service(self) -> None: ...
+    def require_stopped_source(self) -> None: ...
+    def checkpoint_stopped_source(self, operation: dict) -> dict: ...
+    def prepare_stopped_source(self, operation: dict) -> tuple[dict, None, dict, None]: ...
     def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]: ...
     def snapshot(self, operation: dict, roots: list[str]) -> dict: ...
     def prepare(
@@ -403,6 +407,7 @@ class Coordinator:
         *,
         kind: str = "update",
         previous_uninitialized: bool = False,
+        stopped_source: bool = False,
     ) -> dict:
         with self.store.locked(), ExitStack() as resources:
             if self.store.active() is not None:
@@ -417,7 +422,7 @@ class Coordinator:
                 "version": 3,
                 "operation_id": str(uuid.uuid4()),
                 "kind": kind,
-                "phase": "preparing",
+                "phase": "preparing_stopped_source" if stopped_source else "preparing",
                 "previous": previous,
                 "target": target,
                 "nonce": uuid.uuid4().hex + uuid.uuid4().hex,
@@ -429,79 +434,106 @@ class Coordinator:
                 "error": None,
             }
             self.store.write(operation)
-            self.boundary("preparing")
+            self.boundary(operation["phase"])
             try:
-                if not previous_uninitialized:
-                    self.backup_warning = self.runtime.protected_backup()
-                operation = self._phase(operation, "backup_ready")
-                resources.enter_context(self.runtime.deployment_lock())
-                operation = self._phase(operation, "entering_maintenance")
-                capture = (
-                    None if previous_uninitialized else self.runtime.enter_maintenance(operation)
+                operation, prepared = (
+                    self._prepare_stopped_source(operation, resources)
+                    if stopped_source
+                    else self._prepare_running_source(operation, resources)
                 )
-                roots = (
-                    self.runtime.checkpoint_roots(operation, capture) if kind == "update" else []
-                )
-                operation = self._phase(operation, "quiescent")
-                self.runtime.stop_service()
-                if kind == "update":
-                    operation = self._phase(operation, "snapshotting")
-                    checkpoint = self.runtime.snapshot(operation, roots)
-                    operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
-                checkpoint, previous_proof, target_proof, candidate_checkpoint = (
-                    self.runtime.prepare_fresh_restore(operation)
-                    if previous_uninitialized
-                    else self.runtime.prepare(operation, capture)
-                )
-                operation = self._phase(
-                    operation,
-                    "checkpoint_ready",
-                    checkpoint=checkpoint,
-                    previous_proof=previous_proof,
-                    target_proof=target_proof,
-                    candidate_checkpoint=candidate_checkpoint,
-                )
-                operation = self._phase(operation, "activating")
-                if candidate_checkpoint is not None:
-                    self.runtime.restore_roots(candidate_checkpoint)
-                self.runtime.switch_pointer(target, allowed=(previous, target))
-                operation = self._phase(operation, "pointer_switched")
-                self.runtime.probe(target, operation, target_proof)
-                operation = self._phase(operation, "candidate_verified")
-                # This journal is authoritative before selection/start: no later
-                # failure may restore old data over potentially accepted work.
-                operation = self._phase(operation, "candidate_chosen")
-                self.runtime.select(target)
-                self.runtime.start_service()
-                return self._phase(operation, "committed")
+                return self._activate(operation, prepared)
             except Exception as exc:
-                # Read the durable state, not a stale local record when a write
-                # completed immediately before its notification raised.
-                operation = self.store.active()
-                if operation is None:
-                    raise
-                operation = dict(operation, error=str(exc)[:4096])
-                self.store.write(operation)
-                if operation["phase"] in ("candidate_chosen", "previous_chosen"):
-                    raise SupervisorError(
-                        "The selected release failed to start; recovery must preserve its data: "
-                        + safe_diagnostic(str(exc))
-                    ) from exc
-                try:
-                    recovered = self._recover(operation, startup=False)
-                except Exception as recovery_error:
-                    raise SupervisorError(
-                        f"Deployment failed: {safe_diagnostic(str(exc))}; "
-                        f"recovery also failed: {safe_diagnostic(str(recovery_error))}"
-                    ) from recovery_error
-                if operation["kind"] == "restore":
-                    from rcp_supervisor.restore import RestoreOperatorAction
+                self._deployment_failed(exc)
 
-                    if isinstance(exc, RestoreOperatorAction):
-                        raise
-                raise SupervisorError(
-                    f"Deployment failed; recovery ended in {recovered['phase']}: {str(exc)[:2048]}"
-                ) from exc
+    def _prepare_stopped_source(self, operation: dict, resources: ExitStack) -> tuple[dict, tuple]:
+        resources.enter_context(self.runtime.deployment_lock())
+        self.runtime.require_stopped_source()
+        self.backup_warning = (
+            "The protected backup is unavailable for an already-stopped source; "
+            "rollback uses the complete stopped byte checkpoint."
+        )
+        checkpoint = self.runtime.checkpoint_stopped_source(operation)
+        operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
+        return operation, self.runtime.prepare_stopped_source(operation)
+
+    def _prepare_running_source(self, operation: dict, resources: ExitStack) -> tuple[dict, tuple]:
+        if not operation["previous_uninitialized"]:
+            self.backup_warning = self.runtime.protected_backup()
+        operation = self._phase(operation, "backup_ready")
+        resources.enter_context(self.runtime.deployment_lock())
+        operation = self._phase(operation, "entering_maintenance")
+        capture = (
+            None
+            if operation["previous_uninitialized"]
+            else self.runtime.enter_maintenance(operation)
+        )
+        roots = (
+            self.runtime.checkpoint_roots(operation, capture)
+            if operation["kind"] == "update"
+            else []
+        )
+        operation = self._phase(operation, "quiescent")
+        self.runtime.stop_service()
+        if operation["kind"] == "update":
+            operation = self._phase(operation, "snapshotting")
+            checkpoint = self.runtime.snapshot(operation, roots)
+            operation = self._phase(operation, "snapshot_ready", checkpoint=checkpoint)
+        prepared = (
+            self.runtime.prepare_fresh_restore(operation)
+            if operation["previous_uninitialized"]
+            else self.runtime.prepare(operation, capture)
+        )
+        return operation, prepared
+
+    def _activate(self, operation: dict, prepared: tuple) -> dict:
+        checkpoint, previous_proof, target_proof, candidate_checkpoint = prepared
+        operation = self._phase(
+            operation,
+            "checkpoint_ready",
+            checkpoint=checkpoint,
+            previous_proof=previous_proof,
+            target_proof=target_proof,
+            candidate_checkpoint=candidate_checkpoint,
+        )
+        operation = self._phase(operation, "activating")
+        if candidate_checkpoint is not None:
+            self.runtime.restore_roots(candidate_checkpoint)
+        previous, target = operation["previous"], operation["target"]
+        self.runtime.switch_pointer(target, allowed=(previous, target))
+        operation = self._phase(operation, "pointer_switched")
+        self.runtime.probe(target, operation, target_proof)
+        operation = self._phase(operation, "candidate_verified")
+        operation = self._phase(operation, "candidate_chosen")
+        self.runtime.select(target)
+        self.runtime.start_service()
+        return self._phase(operation, "committed")
+
+    def _deployment_failed(self, exc: Exception) -> NoReturn:
+        operation = self.store.active()
+        if operation is None:
+            raise exc
+        operation = dict(operation, error=str(exc)[:4096])
+        self.store.write(operation)
+        if operation["phase"] in ("candidate_chosen", "previous_chosen"):
+            raise SupervisorError(
+                "The selected release failed to start; recovery must preserve its data: "
+                + safe_diagnostic(str(exc))
+            ) from exc
+        try:
+            recovered = self._recover(operation, startup=False)
+        except Exception as recovery_error:
+            raise SupervisorError(
+                f"Deployment failed: {safe_diagnostic(str(exc))}; "
+                f"recovery also failed: {safe_diagnostic(str(recovery_error))}"
+            ) from recovery_error
+        if operation["kind"] == "restore":
+            from rcp_supervisor.restore import RestoreOperatorAction
+
+            if isinstance(exc, RestoreOperatorAction):
+                raise exc
+        raise SupervisorError(
+            f"Deployment failed; recovery ended in {recovered['phase']}: {str(exc)[:2048]}"
+        ) from exc
 
     def recover(self, *, startup: bool = False) -> dict | None:
         with self.store.locked():
@@ -513,6 +545,8 @@ class Coordinator:
 
     def _recover(self, operation: dict, *, startup: bool) -> dict:
         try:
+            if operation["phase"] == "preparing_stopped_source":
+                return self._phase(operation, "aborted")
             return self._recover_operation(operation, startup=startup)
         except Exception as exc:
             current = self.store.active()

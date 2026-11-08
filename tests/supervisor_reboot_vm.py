@@ -1,9 +1,9 @@
-"""External controller for disposable, real Linux boots on hosted runners.
+"""External controller for disposable, real Linux boots.
 
 No command accepts a remote host. SSH always addresses a private QEMU guest
 through a loopback-only forwarding port, and only the owned child is killed.
 The ordinary test suite exercises helpers; qualification explicitly enables
-this controller on a GitHub-hosted runner.
+this controller on a GitHub-hosted runner or a confirmed private operator host.
 
 QEMU's ``restrict=on`` denies guest-initiated host/external traffic while keeping
 the explicit SSH forwarding rule. See https://www.qemu.org/docs/master/system/invocation.html
@@ -56,20 +56,20 @@ def run(
     )
 
 
-def preflight(directory: Path, confirmation: str) -> dict:
+def preflight(directory: Path, confirmation: str, *, operator_host: bool = False) -> dict:
     """Fail before downloads or VM creation, without modifying host settings."""
     if confirmation != DISPOSABLE_CONFIRMATION:
         raise QualificationUnavailable("The explicit disposable-VM confirmation is missing.")
-    if (
+    if platform.system() != "Linux" or platform.machine() != "x86_64":
+        raise QualificationUnavailable("Qualification requires Linux x86_64.")
+    if not operator_host and (
         os.environ.get("GITHUB_ACTIONS") != "true"
         or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted"
-        or platform.system() != "Linux"
-        or platform.machine() != "x86_64"
     ):
         raise QualificationUnavailable(
             "Qualification is restricted to GitHub-hosted Linux x86_64 runners."
         )
-    if Path("/etc/rcp").exists():
+    if not operator_host and Path("/etc/rcp").exists():
         raise QualificationUnavailable(
             "This host already has RCP configuration; refusing qualification."
         )
@@ -118,7 +118,7 @@ def preflight(directory: Path, confirmation: str) -> dict:
         ) from exc
     return {
         "accelerator": "kvm",
-        "runner": os.environ.get("RUNNER_OS"),
+        "runner": "operator-host" if operator_host else os.environ.get("RUNNER_OS"),
         "qemu": run(["qemu-system-x86_64", "--version"]).stdout.splitlines()[0],
         "probe_exit": probe.returncode,
     }
@@ -215,7 +215,15 @@ def require_changed_boot_id(before: str, after: str) -> None:
 
 
 class Guest:
-    def __init__(self, directory: Path, *, image: Path, image_sha256: str, ubuntu: str):
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        image: Path,
+        image_sha256: str,
+        ubuntu: str,
+        disk_gib: int = GUEST_DISK_GIB,
+    ):
         self.directory = directory
         self.ubuntu = ubuntu
         self.image_sha256 = image_sha256
@@ -223,6 +231,7 @@ class Guest:
         self.log: IO | None = None
         self.token = str(uuid.uuid4())
         self.boot_ids: list[str] = []
+        self.offline = False
         directory.mkdir(mode=0o700)
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -234,6 +243,7 @@ class Guest:
             "users": [
                 {
                     "name": "qualifier",
+                    "uid": 60000,
                     "sudo": "ALL=(ALL) NOPASSWD:ALL",
                     "shell": "/bin/bash",
                     "ssh_authorized_keys": [public_key],
@@ -273,7 +283,7 @@ class Guest:
                 "-b",
                 str(image.resolve()),
                 str(directory / "guest.qcow2"),
-                f"{GUEST_DISK_GIB}G",
+                f"{disk_gib}G",
             ]
         )
 
@@ -365,9 +375,10 @@ class Guest:
 
         if self.process is not None:
             raise RuntimeError("The owned guest is already running.")
+        self.offline = getattr(self, "offline", False) or offline
         self.log = (self.directory / "qemu.log").open("a")
         self.process = subprocess.Popen(
-            qemu_command(self.directory, self.port, offline=offline),
+            qemu_command(self.directory, self.port, offline=self.offline),
             stdin=subprocess.DEVNULL,
             stdout=self.log,
             stderr=self.log,

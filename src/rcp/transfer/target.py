@@ -411,9 +411,7 @@ class TargetTransferUploadCoordinator:
         )
 
     def uploads_idle(self) -> bool:
-        return all(
-            upload.status != "active" for upload in self.store.target_project_transfer_uploads()
-        )
+        return not self.store.has_active_target_project_transfer_uploads()
 
 
 class TargetTransferActivationCoordinator:

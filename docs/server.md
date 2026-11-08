@@ -361,6 +361,26 @@ sudo -u rcp -H /usr/local/bin/rcp server doctor
 
 If an older wrapper lacks prune, use `/usr/local/bin/rcp-supervisor server prune`
 until installation refreshes it.
+Pinning an older application does not downgrade the installed supervisor. Retain
+the newer supervisor if its update command refuses a downgrade.
+
+If the outgoing application cannot enter maintenance, use the explicit
+stopped-source procedure after qualifying that same procedure on a copy. It
+interrupts running work. Install the release's supervisor before stopping the
+application, then review and confirm the displayed target as usual:
+
+```bash
+sudo /usr/local/bin/rcp server supervisor update
+sudo systemctl stop rcp.service
+sudo /usr/local/bin/rcp server update --stopped-source
+sudo -u rcp -H /usr/local/bin/rcp server doctor
+```
+
+The command refuses a running source. If it fails before publishing a checkpoint,
+the source remains stopped and unchanged; inspect the diagnostic, then start it
+with `sudo systemctl start rcp.service` when appropriate. Once a checkpoint is
+published, the existing rollback and startup recovery apply. See the
+[entry and recovery rules](specs/server-and-machine-operations.md#application-boundary-and-local-checkpoint).
 
 ## Back up the team server
 

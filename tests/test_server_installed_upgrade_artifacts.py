@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import pwd
+import sqlite3
 from types import SimpleNamespace
+
+import pytest
 
 import rcp.storage.models as storage_models
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
@@ -136,3 +140,47 @@ def test_a_project_registered_beside_a_running_server_is_readable(tmp_path, monk
         response = client.get(f"/api/projects/{fixture['project_id']}")
 
         assert response.status_code == 200, response.text
+
+
+def test_retained_transfer_rows_enter_and_leave_database_without_model_roundtrip(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from rcp.storage.provisioning import ProjectTransferRestartRequired
+    from tests import server_installed_upgrade as installed
+
+    store, _code = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Raw retained state")
+    monkeypatch.setattr(installed, "DATA", tmp_path)
+    source = Path(__file__).parent / "fixtures/production_upgrade_state/terminal-transfer/rows.json"
+    installed.retained_rows(source, insert=True)
+    retained = json.loads(source.read_text())["tables"]
+    request_id = retained["project_transfer_requests"][0]["request_id"]
+    with pytest.raises(ProjectTransferRestartRequired):
+        store.project_transfer_request(request_id)
+    installed.retained_rows(source)
+    with sqlite3.connect(tmp_path / "rcp.sqlite3") as database:
+        database.execute(
+            "UPDATE project_transfer_uploads SET status = 'complete' WHERE request_id = ?",
+            (request_id,),
+        )
+    with pytest.raises(AssertionError):
+        installed.retained_rows(source)
+
+
+def test_fault_marker_is_removed_before_backup_classification(tmp_path, monkeypatch):
+    from rcp.server_ops.backup_models import inspect_app_data_capture_plan
+    from tests import server_installed_upgrade as installed
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "rcp.sqlite3").write_bytes(b"database content is outside this inventory boundary")
+    monkeypatch.setattr(installed, "DATA", data)
+    monkeypatch.setattr(installed.os, "chown", lambda *args: None)
+    assert inspect_app_data_capture_plan(data).complete
+    installed.fault_sentinel()
+    assert inspect_app_data_capture_plan(data).unclassified_entries == (
+        "installed-upgrade-fault-sentinel",
+    )
+    installed.remove_fault_sentinel()
+    assert inspect_app_data_capture_plan(data).complete

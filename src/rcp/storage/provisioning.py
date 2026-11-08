@@ -1186,21 +1186,16 @@ class ProjectProvisioningStoreMixin(StoreMixinBase):
             self._require_target_upload_matches(current, upload)
             return upload
 
-    def target_project_transfer_uploads(self) -> list[ProjectTransferUploadRecord]:
-        """List durable target upload boundaries in request order."""
+    def has_active_target_project_transfer_uploads(self) -> bool:
+        """Check upload idleness without reading historical transfer requests."""
 
         with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM project_transfer_uploads ORDER BY request_id"
-            ).fetchall()
-            uploads = [self._project_transfer_upload_record(row) for row in rows]
-            for upload in uploads:
-                current = self._project_transfer_request_from_connection(
-                    connection,
-                    upload.request_id,
-                )
-                self._require_target_upload_matches(current, upload)
-            return uploads
+            return (
+                connection.execute(
+                    "SELECT 1 FROM project_transfer_uploads WHERE status = 'active' LIMIT 1"
+                ).fetchone()
+                is not None
+            )
 
     def complete_target_project_transfer_upload(
         self,

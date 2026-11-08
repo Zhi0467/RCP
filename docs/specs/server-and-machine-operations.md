@@ -304,14 +304,18 @@ Only a human promotes a release.
 and commit. It refuses existing tags or releases. It copies the same assets
 without rebuilding. Historical complete asset sets remain promotable. A partial
 supervisor pair causes refusal. Installation requires supervisor assets.
-Promotion also refuses without a passing qualification receipt. Each receipt
-entry is one [update rehearsal](#application-boundary-and-local-checkpoint) on
-copied team data. It holds only its status, which must be `ready`, and the
-SHA-256 of this build's `manifest.sha256`. The receipt is public, so any other
-field refuses. It names the desktop candidate run, which must be
-the run promotion publishes. The CI gates, including the browser journey, are
-already implied: a `build/<N>` exists only after they pass. **Why:** 0.4.35
-passed CI but broke on real records.
+Promotion also refuses without a version-2 qualification receipt generated from
+full installed updates on captured private team state. Each entry binds the
+source and candidate manifests, chosen update procedure and complete report
+digest, with status `committed`. The generator requires observed selected
+supervisor and serving identities, a committed journal, exact rollback and a
+successful retry. Synthetic CI fixtures and candidate-only preparation reports
+cannot qualify promotion. The public projection excludes private diagnostics;
+unknown public fields refuse. Its desktop candidate run must be the one
+promotion publishes. CI gates are already implied: a `build/<N>` exists only
+after they pass. The receipt is maintainer-controlled evidence, not independent
+attestation. **Why:** readiness of a migrated copy did not exercise the outgoing
+binary's maintenance path.
 [Build pruning](../../.github/workflows/prune-builds.yml) removes only expired
 build prereleases and tags under `STALE_BUILD_DAYS`. Stable releases stay
 retained. **Why:** build expiry bounds CI artifacts while promotion preserves
@@ -333,10 +337,13 @@ team address is stored separately from pinned release configuration and is
 read-only to members.
 
 Update confirms an exact tag and manifest digest, then prepares an isolated
-release directory without overwriting failed or existing builds. A required
+release directory. A sealed build is reused only with the identical receipt;
+an incomplete unsealed preparation is removed before retry. A required
 newer supervisor must be installed first, under the same operation lock.
 Supervisor replacement switches its validated root-owned runtime without rolling
-back application data.
+back application data. It refuses a supervisor older than either the executing
+supervisor or the selected application's requirement, including when the
+application is pinned to an older release.
 
 Update rehearsal snapshots online SQLite and copies local project roots into a
 disposable output. It then runs candidate inspection, preparation and proof
@@ -345,6 +352,18 @@ result covers that captured copy, not a later cutover. Warnings identify omitted
 projects. Rebinding local stage paths preserves shared workspace identity across
 stored records while placing those paths under an isolated, absent directory.
 
+Full private qualification extends the installed-update harness in an owned
+Linux VM. Verified release bundles and dependencies enter before the guest loses
+egress. Only then are captured whole roots restored at their original paths,
+preserving numeric owners, metadata, links and special nodes. The guest installs
+the real outgoing application and supervisor, updates the supervisor through its
+ordinary command, injects a candidate failure, proves exact rollback and retries
+to committed selection. Explicit `graceful` and `stopped-source` procedures match
+the intended deployment. Guest capacity follows captured allocated bytes with
+room for transport, import and retained update/rollback copies. Snapshot digests
+bind the input; reports and VM disks remain private. Promotion precedes live deployment. Qualification covers those
+artifacts, captured state and procedure; it cannot prove a later changed host.
+
 ### Application boundary and local checkpoint
 
 Deployment first attempts a protected backup. An incomplete or unreadable
@@ -352,6 +371,21 @@ capture produces an explicit warning without refusing the update. Authenticated
 maintenance closes mutations, launches, watchers, machine work and recovery. It
 drains entered work and captures SQLite at that quiet boundary. A timeout causes a clean refusal. Human-input waits park under closed admission rather than prevent
 drainage.
+
+Maintenance checks only durable active upload leases. Completed, consumed and
+invalidated transfer history does not block admission or require parsing an old
+transfer configuration. An upload still active can write independently of the
+application process and must settle before a stopped-source inventory too.
+
+If the outgoing binary cannot enter maintenance, an operator may stop the
+service and explicitly request `--stopped-source`. This entry never stops a
+running source or retries a failed graceful update automatically. It holds the
+instance lock through disposable inventory and the whole-root snapshot, then
+uses the existing preparation, proof, selection and rollback path. Inventory
+reads a migrated database copy without changing the stopped source. The
+interruption can end running agent work; operators choose it deliberately.
+The source still needs the supported deployment capability protocol; this option
+replaces maintenance entry, not source compatibility.
 
 The candidate inventories captured local roots and rechecks failed backup
 inventories. Unreadable projects are named and excluded from copying and live
@@ -437,6 +471,12 @@ still read as succeeded. The aggregate gate promotes those same bytes. It does n
 prove arbitrary installations, provider authentication, remote-root behavior or
 reboot recovery.
 
+A separate installed case retains sanitized production transfer rows with their
+original historical JSON shape. It requires the genuine old binary to reproduce
+the maintenance refusal, then exercises stopped-source rollback and retry. Rows
+remain unchanged. This small corpus complements the synthetic scenarios; full
+private qualification carries the rest of the deployment's captured records.
+
 The web suite's
 [release-upgrade browser journey](../../web/tests/releaseUpgrade.browser.test.mjs)
 serves the data the update rehearsal just passed, beside a fresh personal space.
@@ -480,6 +520,12 @@ without network. It completes rollback before startup. It never recursively
 controls its own unit. Coordinator contention grants nothing. Startup still
 requires a durable choice and a matching receipt and pointer. Unknown, corrupt,
 inconsistent or multiple active journals cause refusal.
+
+Before a stopped-source checkpoint is published, the journal remains in
+`preparing_stopped_source`. Recovery aborts that attempt without changing roots
+or selection and without explicitly starting the source. An ordinary requested
+service start, including reboot startup, may then launch the unchanged selected
+source. After `snapshot_ready`, ordinary checkpoint recovery applies.
 
 After the candidate or previous release is chosen, recovery verifies the chosen
 state without replaying captured proof over accepted work. Fresh-host rollback
@@ -678,7 +724,8 @@ retirement or removal. Corrupt or missing archives remain repairable. The
 historical membership audit remains.
 
 An active upload causes update refusal without closing the upload completion
-route. Completed receipt-backed inboxes survive preparation and rollback.
+route. This checks active leases directly; reading historical transfer requests
+is unnecessary for idleness. Completed receipt-backed inboxes survive preparation and rollback.
 Backups exclude transfer inboxes and exports. Restore invalidates leases and
 marks unfinished requests for operator action. Re-entry must validate the
 restored review, actor and archive before a new lease. Target restore never

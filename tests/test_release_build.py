@@ -150,6 +150,11 @@ def test_promotion_refuses_invalid_tag() -> None:
         "no rehearsal",
         "untested app",
         "no app",
+        "preparation only",
+        "no source",
+        "bad report digest",
+        "unsupported procedure",
+        "old receipt",
     ],
 )
 def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
@@ -158,9 +163,16 @@ def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
     (tmp_path / "a.whl").write_bytes(b"wheel")
     manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
     digest = release_build._digest(manifest)
-    rehearsal = {"manifest_sha256": digest, "status": "ready"}
+    rehearsal = {
+        "kind": "installed-update",
+        "procedure": "stopped-source",
+        "manifest_sha256": digest,
+        "source_manifest_sha256": "1" * 64,
+        "qualification_sha256": "2" * 64,
+        "status": "committed",
+    }
     receipt: dict[str, object] = {
-        "version": 1,
+        "version": 2,
         "desktop_candidate_run": "77",
         "rehearsals": [rehearsal, rehearsal],
     }
@@ -179,6 +191,17 @@ def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
         run = "78"
     elif change == "no app":
         receipt["desktop_candidate_run"] = run = ""
+    elif change == "preparation only":
+        rehearsal.update(kind="candidate-preparation", status="ready")
+    elif change == "no source":
+        del rehearsal["source_manifest_sha256"]
+    elif change == "bad report digest":
+        rehearsal["qualification_sha256"] = ""
+    elif change == "unsupported procedure":
+        rehearsal["procedure"] = "skip-update"
+    elif change == "old receipt":
+        receipt["version"] = 1
+        receipt["rehearsals"] = [{"manifest_sha256": digest, "status": "ready"}]
     path = tmp_path / "receipt.json"
     path.write_text(json.dumps(receipt), encoding="utf-8")
 
@@ -186,6 +209,157 @@ def test_promotion_receipt_binds_passing_rehearsals_to_the_assets(
     status = release_build.main([*arguments, "--desktop-candidate-run", run])
 
     assert status == (0 if change is None else 1)
+
+
+def _installed_update_report(manifest_sha256: str) -> dict:
+    source = {
+        "manifest_sha256": "1" * 64,
+        "commit": "a" * 40,
+        "version": "0.4.40+build.3094.gaaaaaaa",
+    }
+    candidate = {
+        "manifest_sha256": manifest_sha256,
+        "commit": "b" * 40,
+        "version": "0.4.42+build.9999.gbbbbbbb",
+        "supervisor_version": "0.1.15",
+    }
+    return {
+        "version": 1,
+        "journey": "installed-update",
+        "status": "passed",
+        "source": source,
+        "candidate": candidate,
+        "input_kind": "captured-private-state",
+        "input_sha256": "3" * 64,
+        "procedure": "stopped-source",
+        "supervisor_version": "0.1.15",
+        "journal": {
+            "phase": "committed",
+            "previous_manifest_sha256": source["manifest_sha256"],
+            "target_manifest_sha256": manifest_sha256,
+        },
+        "serving": {
+            "status": "ok",
+            "commit": candidate["commit"],
+            "version": candidate["version"],
+        },
+        "rollback_exact": True,
+        "retry_committed": True,
+        "private_note": "do-not-publish",
+    }
+
+
+@pytest.mark.parametrize("procedure", ["graceful", "stopped-source"])
+def test_generate_qualification_receipt_from_complete_private_report(
+    tmp_path: Path, procedure: str
+) -> None:
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
+    report = _installed_update_report(release_build._digest(manifest))
+    report["procedure"] = procedure
+    report_path = tmp_path / "private-report.json"
+    report_path.write_text(json.dumps(report))
+    output = tmp_path / "receipt.json"
+
+    status = release_build.main(
+        [
+            "qualification-receipt",
+            "--report",
+            str(report_path),
+            "--manifest",
+            str(manifest),
+            "--desktop-candidate-run",
+            "77",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert status == 0
+    receipt = json.loads(output.read_text())
+    assert receipt["version"] == 2
+    assert receipt["rehearsals"] == [
+        {
+            "kind": "installed-update",
+            "procedure": procedure,
+            "manifest_sha256": report["candidate"]["manifest_sha256"],
+            "source_manifest_sha256": report["source"]["manifest_sha256"],
+            "qualification_sha256": release_build._digest(report_path),
+            "status": "committed",
+        }
+    ]
+    assert "do-not-publish" not in output.read_text()
+    assert (
+        release_build.main(
+            [
+                "check-receipt",
+                str(output),
+                "--manifest",
+                str(manifest),
+                "--desktop-candidate-run",
+                "77",
+            ]
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        (None, "journey", "candidate-preparation"),
+        (None, "status", "failed"),
+        (None, "source", None),
+        (None, "input_kind", "synthetic-fixture"),
+        (None, "input_kind", None),
+        (None, "input_sha256", ""),
+        (None, "rollback_exact", False),
+        (None, "retry_committed", False),
+        (None, "supervisor_version", "0.1.14"),
+        (None, "supervisor_version", "not-a-version"),
+        (None, "procedure", "skip-update"),
+        ("source", "commit", "short"),
+        ("source", "commit", "aaaaaaa"),
+        ("source", "version", "0.4.40+build.3094.gccccccc"),
+        ("source", "version", "0.4.40+invalid.gaaaaaaa"),
+        ("candidate", "manifest_sha256", "0" * 64),
+        ("journal", "phase", "aborted"),
+        ("journal", "previous_manifest_sha256", "0" * 64),
+        ("journal", "target_manifest_sha256", "0" * 64),
+        ("serving", "status", "failed"),
+        ("serving", "commit", "a" * 40),
+        ("serving", "version", "0.4.40+build.3094.gaaaaaaa"),
+    ],
+)
+def test_incomplete_deployment_cannot_produce_a_promotion_receipt(
+    tmp_path: Path, section: str | None, field: str, value: object
+) -> None:
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
+    report = _installed_update_report(release_build._digest(manifest))
+    target = report if section is None else report[section]
+    target[field] = value
+    report_path = tmp_path / "private-report.json"
+    report_path.write_text(json.dumps(report))
+    output = tmp_path / "receipt.json"
+
+    assert (
+        release_build.main(
+            [
+                "qualification-receipt",
+                "--report",
+                str(report_path),
+                "--manifest",
+                str(manifest),
+                "--desktop-candidate-run",
+                "77",
+                "--output",
+                str(output),
+            ]
+        )
+        == 1
+    )
+    assert not output.exists()
 
 
 def test_promotion_checks_the_receipt_before_publishing() -> None:
@@ -371,3 +545,43 @@ def test_updater_manifest_never_points_back_at_an_older_release(
         assert platform == {"signature": "c2lnbmF0dXJl", "url": "https://example.test/app.tar.gz"}
     else:
         assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "missing", ["--report", "--manifest", "--desktop-candidate-run", "--output"]
+)
+def test_qualification_requires_complete_cli_inputs_before_reading_files(tmp_path, missing, capsys):
+    options = {
+        "--report": str(tmp_path / "absent-report.json"),
+        "--manifest": str(tmp_path / "absent-manifest.sha256"),
+        "--desktop-candidate-run": "77",
+        "--output": str(tmp_path / "receipt.json"),
+    }
+    argv = ["qualification-receipt"]
+    for name, value in options.items():
+        if name != missing:
+            argv.extend([name, value])
+    assert release_build.main(argv) == 1
+    assert missing in capsys.readouterr().err
+    assert not (tmp_path / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("run", ["", "not-a-run"])
+def test_qualification_refuses_invalid_desktop_run_without_writing_receipt(tmp_path, run):
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
+    report = tmp_path / "private-report.json"
+    report.write_text(json.dumps(_installed_update_report(release_build._digest(manifest))))
+    output = tmp_path / "receipt.json"
+    with pytest.raises(release_build.ReleaseBuildError, match="desktop candidate run"):
+        release_build.qualification_receipt(
+            [report], manifest, desktop_candidate_run=run, output=output
+        )
+    assert not output.exists()
+
+
+def test_matching_unversioned_supervisor_identities_cannot_qualify():
+    report = _installed_update_report("f" * 64)
+    report["supervisor_version"] = report["candidate"]["supervisor_version"] = "unversioned"
+    with pytest.raises(release_build.ReleaseBuildError, match="selected supervisor"):
+        release_build.validate_update_report(report, "f" * 64)

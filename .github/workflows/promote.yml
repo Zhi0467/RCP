@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       receipt:
-        description: Qualification receipt JSON from the copied-data rehearsals (docs/release.md)
+        description: Generated qualification receipt from full installed updates (docs/release.md)
         required: true
         type: string
 
@@ -67,8 +67,6 @@ jobs:
       - name: Verify the build manifest
         run: uv run --no-project python packaging/release_build.py verify-manifest build-assets --manifest manifest.sha256
 
-      # A stable release needs passing rehearsals on copied team data of these
-      # exact assets, and publishes only the desktop candidate that was tested.
       - name: Check the qualification receipt
         env:
           RECEIPT: ${{ inputs.receipt }}

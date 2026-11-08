@@ -973,6 +973,52 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
         command("maintenance_release", next_boundary)
 
 
+@pytest.mark.parametrize("upload_status", ["consumed", "active"])
+def test_offline_inventory_requires_transfer_uploads_to_settle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, upload_status: str
+) -> None:
+    from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory
+    from tests import server_installed_upgrade
+
+    data = tmp_path / "data"
+    store, _bootstrap = AppStore.initialize_team_space(
+        data / "rcp.sqlite3", "Transfer inventory lab"
+    )
+    data.chmod(0o700)
+    monkeypatch.setattr(server_installed_upgrade, "DATA", data)
+    fixture_path = (
+        Path(__file__).parent / "fixtures/production_upgrade_state/terminal-transfer/rows.json"
+    )
+    tables = server_installed_upgrade.retained_rows(fixture_path, insert=True)
+    if upload_status == "active":
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE project_transfer_uploads SET status='active', receipt_json=NULL"
+            )
+    store.close()
+    before = hashlib.sha256((data / "rcp.sqlite3").read_bytes()).hexdigest()
+    request = OfflinePrepareRequest(
+        version=1,
+        data_dir=str(data),
+        output_dir=str(tmp_path / "inventory"),
+        source_commit="a" * 40,
+    )
+    if upload_status == "active":
+        with pytest.raises(MaintenanceRefused, match="active project transfer upload"):
+            offline_inventory(request)
+    else:
+        result = offline_inventory(request)
+        assert {root["live"] for root in result["roots"]} == {str(data)}
+        assert result["warnings"] == []
+        assert (
+            "record_schema_version"
+            not in json.loads(tables["project_transfer_requests"][0]["record_json"])[
+                "source_configuration"
+            ]
+        )
+    assert hashlib.sha256((data / "rcp.sqlite3").read_bytes()).hexdigest() == before
+
+
 def test_offline_inventory_discovers_roots_without_changing_stopped_state(captured, tmp_path):
     from rcp.server_ops.deployment import OfflinePrepareRequest, offline_inventory
 

@@ -329,7 +329,12 @@ def _application_version(version: object) -> tuple[int, ...] | None:
 
 
 def _check_update_source(
-    previous: dict, capability: dict, emitter: EventEmitter, warnings: list[dict]
+    previous: dict,
+    capability: dict,
+    emitter: EventEmitter,
+    warnings: list[dict],
+    *,
+    stopped_source: bool = False,
 ) -> bool:
     """The floor is the oldest release CI updates from; older ones still try, with a warning."""
     # Historical targets predate the optional floor capability.
@@ -362,7 +367,13 @@ def _check_update_source(
             }
         ],
         fields=[{"name": "update_source_floor", "value": floor}],
-        resume_argv=["sudo", "rcp", "server", "update"],
+        resume_argv=[
+            "sudo",
+            "rcp",
+            "server",
+            "update",
+            *(["--stopped-source"] if stopped_source else []),
+        ],
     )
     return False
 
@@ -398,55 +409,93 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
                 fields=[] if dry_run else _retention_after_commit(runtime, store_for(paths)),
             )
             return 0
-        confirmation = f"{target['release_tag']}:{target['manifest_sha256']}"
-        if arguments.confirm_target != confirmation:
-            rehearsal = rehearse_update(runtime, release, target) if dry_run else []
-            emitter.emit(
-                "operator_action_needed",
-                "Confirm this exact promoted release before closing admission.",
-                actions=[
-                    {
-                        "kind": "external",
-                        "instruction": "Review the displayed release identity and rerun the exact confirmation command to authorize deployment.",
-                    }
-                ],
-                fields=[
-                    {"name": "release", "value": target["release_tag"]},
-                    {"name": "build", "value": target["build"]},
-                    {"name": "commit", "value": target["commit"]},
-                    {"name": "manifest_sha256", "value": target["manifest_sha256"]},
-                    *rehearsal,
-                ],
-                resume_argv=["sudo", "rcp", "server", "update", "--confirm-target", confirmation],
-            )
+        if not _confirm_update(arguments, emitter, runtime, release, target):
             return 3
-        runtime.require_capability(previous)
-        warnings: list[dict] = []
-        target = prepare_release(runtime, release, warnings)
-        capability = runtime.application(target, "capabilities")
-        if not _check_update_source(previous, capability, emitter, warnings):
-            return 3
-        store = store_for(paths)
-        coordinator = Coordinator(store, runtime)
-        result = coordinator.deploy(previous, target)
-        fields = [
-            {"name": "build", "value": target["build"]},
-            {"name": "phase", "value": result["phase"]},
-        ]
-        if coordinator.backup_warning is not None:
-            fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
-        fields.extend(warnings)
-        fields.extend({"name": "update_warning", "value": line} for line in runtime.update_warnings)
-        fields.extend(_retention_after_commit(runtime, store))
-        emitter.emit(
-            "succeeded",
-            "The verified release is serving after fenced validation.",
-            fields=fields,
-        )
-        return 0
+        return _deploy_update(arguments, emitter, runtime, release, previous, paths=paths)
     finally:
         if dry_run:
             _remove_release_bundle(runtime, release.directory)
+
+
+def _confirm_update(
+    arguments,
+    emitter: EventEmitter,
+    runtime: SystemRuntime,
+    release: VerifiedRelease,
+    target: dict,
+) -> bool:
+    confirmation = f"{target['release_tag']}:{target['manifest_sha256']}"
+    if arguments.confirm_target == confirmation:
+        return True
+    rehearsal = (
+        rehearse_update(runtime, release, target) if arguments.confirm_target is None else []
+    )
+    emitter.emit(
+        "operator_action_needed",
+        "Confirm this exact promoted release before closing admission.",
+        actions=[
+            {
+                "kind": "external",
+                "instruction": "Review the displayed release identity and rerun the exact confirmation command to authorize deployment.",
+            }
+        ],
+        fields=[
+            {"name": "release", "value": target["release_tag"]},
+            {"name": "build", "value": target["build"]},
+            {"name": "commit", "value": target["commit"]},
+            {"name": "manifest_sha256", "value": target["manifest_sha256"]},
+            *rehearsal,
+        ],
+        resume_argv=[
+            "sudo",
+            "rcp",
+            "server",
+            "update",
+            *(["--stopped-source"] if arguments.stopped_source else []),
+            "--confirm-target",
+            confirmation,
+        ],
+    )
+    return False
+
+
+def _deploy_update(
+    arguments,
+    emitter: EventEmitter,
+    runtime: SystemRuntime,
+    release: VerifiedRelease,
+    previous: dict,
+    *,
+    paths: Paths,
+) -> int:
+    runtime.require_capability(previous)
+    warnings: list[dict] = []
+    target = prepare_release(runtime, release, warnings)
+    if arguments.stopped_source:
+        runtime.require_capability(target, extra_commands=("offline-inventory", "offline-prepare"))
+    capability = runtime.application(target, "capabilities")
+    if not _check_update_source(
+        previous, capability, emitter, warnings, stopped_source=arguments.stopped_source
+    ):
+        return 3
+    store = store_for(paths)
+    coordinator = Coordinator(store, runtime)
+    result = coordinator.deploy(previous, target, stopped_source=arguments.stopped_source)
+    fields = [
+        {"name": "build", "value": target["build"]},
+        {"name": "phase", "value": result["phase"]},
+    ]
+    if coordinator.backup_warning is not None:
+        fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
+    fields.extend(warnings)
+    fields.extend({"name": "update_warning", "value": line} for line in runtime.update_warnings)
+    fields.extend(_retention_after_commit(runtime, store))
+    emitter.emit(
+        "succeeded",
+        "The verified release is serving after fenced validation.",
+        fields=fields,
+    )
+    return 0
 
 
 def _retention_after_commit(runtime: SystemRuntime, store: OperationStore) -> list[dict]:
