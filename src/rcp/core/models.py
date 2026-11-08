@@ -1121,7 +1121,7 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         ALL_NODE_TYPES,
         "meta",
         same_type=True,
-        description="The source replaces the target, which stays in history.",
+        description="The target replaces the source, which stays in history.",
     ),
     "duplicate_of": RelationSpec(
         ALL_NODE_TYPES,
