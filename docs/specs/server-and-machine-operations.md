@@ -337,10 +337,13 @@ team address is stored separately from pinned release configuration and is
 read-only to members.
 
 Update confirms an exact tag and manifest digest, then prepares an isolated
-release directory without overwriting failed or existing builds. A required
+release directory. A sealed build is reused only with the identical receipt;
+an incomplete unsealed preparation is removed before retry. A required
 newer supervisor must be installed first, under the same operation lock.
 Supervisor replacement switches its validated root-owned runtime without rolling
-back application data.
+back application data. It refuses a supervisor older than either the executing
+supervisor or the selected application's requirement, including when the
+application is pinned to an older release.
 
 Update rehearsal snapshots online SQLite and copies local project roots into a
 disposable output. It then runs candidate inspection, preparation and proof
@@ -356,8 +359,9 @@ preserving numeric owners, metadata, links and special nodes. The guest installs
 the real outgoing application and supervisor, updates the supervisor through its
 ordinary command, injects a candidate failure, proves exact rollback and retries
 to committed selection. Explicit `graceful` and `stopped-source` procedures match
-the intended deployment. Snapshot digests bind the input; reports and VM disks
-remain private. Promotion precedes live deployment. Qualification covers those
+the intended deployment. Guest capacity follows captured allocated bytes with
+room for transport, import and retained update/rollback copies. Snapshot digests
+bind the input; reports and VM disks remain private. Promotion precedes live deployment. Qualification covers those
 artifacts, captured state and procedure; it cannot prove a later changed host.
 
 ### Application boundary and local checkpoint
@@ -380,6 +384,8 @@ instance lock through disposable inventory and the whole-root snapshot, then
 uses the existing preparation, proof, selection and rollback path. Inventory
 reads a migrated database copy without changing the stopped source. The
 interruption can end running agent work; operators choose it deliberately.
+The source still needs the supported deployment capability protocol; this option
+replaces maintenance entry, not source compatibility.
 
 The candidate inventories captured local roots and rechecks failed backup
 inventories. Unreadable projects are named and excluded from copying and live

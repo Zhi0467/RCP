@@ -60,6 +60,15 @@ def run(argv: list[str], *, timeout: int = 120, **kwargs) -> subprocess.Complete
         raise
 
 
+def initialize_team(action: dict) -> str:
+    initialized = run(
+        ["script", "--quiet", "--return", "--command", shlex.join(action["argv"]), "/dev/null"],
+        cwd=pwd.getpwnam("rcp").pw_dir,
+    ).stdout
+    (code,) = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", initialized)
+    return code
+
+
 def write_json(path: Path, value: dict, *, service_owned: bool = False) -> None:
     temporary = path.with_name(f".{path.name}-{uuid.uuid4().hex}")
     with temporary.open("x") as output:
@@ -336,10 +345,7 @@ def setup_data() -> dict:
     assert pause["state"] == "operator_action_needed"
     (action,) = pause["actions"]
     assert action["kind"] == "command"
-    initialized = run(
-        ["script", "--quiet", "--return", "--command", shlex.join(action["argv"]), "/dev/null"]
-    ).stdout
-    (code,) = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", initialized)
+    code = initialize_team(action)
     write_json(STATE / "bootstrap.json", {"code": code}, service_owned=True)
     base = release_receipt(ROOT / "bundles/base")
     target = release_receipt(ROOT / "bundles/target")

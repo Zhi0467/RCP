@@ -353,6 +353,7 @@ def drive(
     if output.is_symlink() or output.stat().st_uid != os.geteuid():
         raise ValueError("Private output must be a new operator-owned directory.")
     preflight(output, confirmation, operator_host=True)
+    print("Verifying the guest image and public release inputs.", flush=True)
     image, digest = download_image(output, ubuntu)
     payload = output / "code.tar.gz"
     code_payload(base, candidate, payload)
@@ -379,6 +380,7 @@ def drive(
         procedure,
     ]
     try:
+        print("Booting the disposable guest and provisioning dependencies.", flush=True)
         guest.start()
         guest.install_payload(payload)
         guest.ssh(["sudo", "-n", "apt-get", "update"], timeout=600)
@@ -418,6 +420,7 @@ def drive(
             timeout=3600,
         )
         guest.ssh(["sudo", "-n", "sync"])
+        print("Disabling guest egress before importing captured private state.", flush=True)
         guest.power_cycle(offline=True)
         private_payload(state, output)
         validate_private_state(private_state, source["manifest_sha256"])
@@ -448,6 +451,7 @@ def drive(
             ],
             timeout=3600,
         )
+        print("Validating the committed update, exact rollback and successful retry.", flush=True)
         raw = guest.ssh(["sudo", "-n", "cat", f"{GUEST_OUTPUT}/result.json"]).stdout
         (output / "guest-result.json").write_text(raw)
         report = json.loads(raw)

@@ -361,6 +361,8 @@ sudo -u rcp -H /usr/local/bin/rcp server doctor
 
 If an older wrapper lacks prune, use `/usr/local/bin/rcp-supervisor server prune`
 until installation refreshes it.
+Pinning an older application does not downgrade the installed supervisor. Retain
+the newer supervisor if its update command refuses a downgrade.
 
 If the outgoing application cannot enter maintenance, use the explicit
 stopped-source procedure after qualifying that same procedure on a copy. It

@@ -316,8 +316,12 @@ def test_generate_qualification_receipt_from_complete_private_report(
         (None, "rollback_exact", False),
         (None, "retry_committed", False),
         (None, "supervisor_version", "0.1.14"),
+        (None, "supervisor_version", "not-a-version"),
         (None, "procedure", "skip-update"),
         ("source", "commit", "short"),
+        ("source", "commit", "aaaaaaa"),
+        ("source", "version", "0.4.40+build.3094.gccccccc"),
+        ("source", "version", "0.4.40+invalid.gaaaaaaa"),
         ("candidate", "manifest_sha256", "0" * 64),
         ("journal", "phase", "aborted"),
         ("journal", "previous_manifest_sha256", "0" * 64),
@@ -541,3 +545,43 @@ def test_updater_manifest_never_points_back_at_an_older_release(
         assert platform == {"signature": "c2lnbmF0dXJl", "url": "https://example.test/app.tar.gz"}
     else:
         assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "missing", ["--report", "--manifest", "--desktop-candidate-run", "--output"]
+)
+def test_qualification_requires_complete_cli_inputs_before_reading_files(tmp_path, missing, capsys):
+    options = {
+        "--report": str(tmp_path / "absent-report.json"),
+        "--manifest": str(tmp_path / "absent-manifest.sha256"),
+        "--desktop-candidate-run": "77",
+        "--output": str(tmp_path / "receipt.json"),
+    }
+    argv = ["qualification-receipt"]
+    for name, value in options.items():
+        if name != missing:
+            argv.extend([name, value])
+    assert release_build.main(argv) == 1
+    assert missing in capsys.readouterr().err
+    assert not (tmp_path / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("run", ["", "not-a-run"])
+def test_qualification_refuses_invalid_desktop_run_without_writing_receipt(tmp_path, run):
+    (tmp_path / "a.whl").write_bytes(b"wheel")
+    manifest = release_build.write_manifest(tmp_path, tmp_path / "manifest.sha256")
+    report = tmp_path / "private-report.json"
+    report.write_text(json.dumps(_installed_update_report(release_build._digest(manifest))))
+    output = tmp_path / "receipt.json"
+    with pytest.raises(release_build.ReleaseBuildError, match="desktop candidate run"):
+        release_build.qualification_receipt(
+            [report], manifest, desktop_candidate_run=run, output=output
+        )
+    assert not output.exists()
+
+
+def test_matching_unversioned_supervisor_identities_cannot_qualify():
+    report = _installed_update_report("f" * 64)
+    report["supervisor_version"] = report["candidate"]["supervisor_version"] = "unversioned"
+    with pytest.raises(release_build.ReleaseBuildError, match="selected supervisor"):
+        release_build.validate_update_report(report, "f" * 64)

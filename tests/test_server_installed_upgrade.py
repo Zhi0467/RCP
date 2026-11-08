@@ -482,3 +482,51 @@ def test_private_profile_rejects_unbound_or_synthetic_input_before_host_effects(
     with pytest.raises(SystemExit) as failure:
         installed.main()
     assert failure.value.code == 2
+
+
+def test_private_preparation_uses_the_origin_bound_release(tmp_path, monkeypatch):
+    from rcp_supervisor import driver, releases, runtime
+
+    monkeypatch.setattr(installed, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "argv", ["driver", "prepare-candidate", "--guest-token", "owned"])
+    monkeypatch.setattr(installed, "require_guest", lambda token: None)
+    original_stat = Path.stat
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda path, *args, **kwargs: (
+            SimpleNamespace(st_uid=0) if path == tmp_path else original_stat(path, *args, **kwargs)
+        ),
+    )
+    context, origin = object(), object()
+    monkeypatch.setattr(runtime, "SystemRuntime", lambda: context)
+    monkeypatch.setattr(
+        driver, "followed_release", lambda current: origin if current is context else None
+    )
+    monkeypatch.setattr(
+        releases,
+        "verify_release",
+        lambda *args: pytest.fail("Unbound manifest loses promoted origin"),
+    )
+    prepared = []
+    monkeypatch.setattr(driver, "prepare_release", lambda *args: prepared.append(args))
+    installed.main()
+    assert prepared == [(context, origin)]
+
+
+def test_private_guest_keeps_captured_service_ids_and_nonlocking_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(installed, "ROOT", tmp_path)
+    monkeypatch.setattr(installed, "preflight", lambda **kwargs: None)
+    monkeypatch.setattr(installed, "prepare_toolchain", lambda: None)
+    monkeypatch.setattr(installed, "install_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(installed, "select", lambda *args: None)
+    monkeypatch.setattr(installed, "bundle_identity", lambda *args: {"manifest_sha256": "a" * 64})
+    monkeypatch.setattr(installed, "write_json", lambda *args: None)
+    commands = []
+    monkeypatch.setattr(installed, "run", lambda argv, **kwargs: commands.append(argv))
+    installed.prepare_guest(tmp_path / "base", tmp_path / "target", "owned", 1234, 2345)
+    account = next(argv for argv in commands if argv[0] == "useradd")
+    assert account[account.index("--uid") + 1] == "1234"
+    assert account[account.index("--gid") + 1] == "2345"
+    assert account[account.index("--password") + 1] == "*NP*"

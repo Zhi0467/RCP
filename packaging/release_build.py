@@ -247,7 +247,7 @@ def _report_identity(value: Any, label: str) -> dict[str, Any]:
     if (
         not isinstance(version, str)
         or not _RCP_WHEEL.fullmatch(f"rcp-{version}-py3-none-any.whl")
-        or version.rsplit(".g", 1)[-1] != commit[:7]
+        or not version.endswith(".g" + commit[:7])
     ):
         raise ReleaseBuildError(f"{label} version does not match its build commit")
     return identity

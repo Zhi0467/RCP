@@ -14,7 +14,6 @@ import json
 import os
 import pwd
 import re
-import shlex
 import shutil
 import socket
 import sqlite3
@@ -30,7 +29,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tests.supervisor_reboot_guest import run, service, wait_for, write_json  # noqa: E402
+from tests.supervisor_reboot_guest import (  # noqa: E402
+    initialize_team,
+    run,
+    service,
+    wait_for,
+    write_json,
+)
 
 ROOT = Path("/opt/rcp-installed-upgrade")
 DATA = Path("/home/rcp/rcp-server/data")
@@ -167,7 +172,7 @@ def assert_serves(fixture: dict, version: str) -> None:
     assert selected["version_string"] == version
     assert running["running_commit"] == selected["commit"]
     assert os.readlink("/etc/rcp/current") == selected["release_directory"]
-    with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+    with closing(sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True)) as database:
         assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         columns = {row[1] for row in database.execute("PRAGMA table_info(provider_login_states)")}
         backend = "machine_id='backend'" if "machine_id" in columns else "host=''"
@@ -181,7 +186,7 @@ def assert_serves(fixture: dict, version: str) -> None:
     assert empty_patches.is_dir() and not list(empty_patches.iterdir())
     cookie = session(fixture)
     if fixture["paper"]["writer"] == "legacy":
-        with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+        with closing(sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True)) as database:
             live = database.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='paper_files'"
             ).fetchone()
@@ -368,7 +373,7 @@ def fault_sentinel() -> None:
 
 def retained_transfer_state(previous: dict | None = None) -> dict:
     result = {}
-    with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+    with closing(sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True)) as database:
         for table in ("project_transfer_requests", "project_transfer_uploads"):
             columns = (
                 previous[table]["columns"]
@@ -390,7 +395,7 @@ def assert_identity(expected: dict, selected: dict) -> None:
     current = json.loads(SELECTED.read_text())
     assert current == selected
     assert os.readlink("/etc/rcp/current") == selected["release_directory"]
-    with sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True) as database:
+    with closing(sqlite3.connect(f"file:{DATA / 'rcp.sqlite3'}?mode=ro", uri=True)) as database:
         assert database.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         if "project_ids" in expected:
             assert {row[0] for row in database.execute("SELECT project_id FROM projects")} == set(
@@ -487,6 +492,8 @@ def prepare_guest(base: Path, candidate: Path, token: str, uid: int, gid: int) -
             "/home/rcp",
             "--shell",
             "/bin/bash",
+            "--password",
+            "*NP*",
             "rcp",
         ]
     )
@@ -1133,10 +1140,7 @@ def install_source(
     first = operator("install", "--team-name", "Installed upgrade", expected=3)
     events = [json.loads(line) for line in first.stdout.splitlines()]
     (action,) = events[-1]["step"]["actions"]
-    initialized = run(
-        ["script", "--quiet", "--return", "--command", shlex.join(action["argv"]), "/dev/null"]
-    ).stdout
-    (code,) = re.findall(r"rcp_bootstrap_[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{43}", initialized)
+    code = initialize_team(action)
     operator("install", "--team-name", "Installed upgrade")
     wait_health()
     selected = json.loads(SELECTED.read_text())
@@ -1455,11 +1459,11 @@ def main() -> None:
         if sys.argv[1] == "setup":
             setup()
         elif sys.argv[1] == "prepare-candidate":
-            from rcp_supervisor.driver import prepare_release
-            from rcp_supervisor.releases import verify_release
+            from rcp_supervisor.driver import followed_release, prepare_release
             from rcp_supervisor.runtime import SystemRuntime
 
-            prepare_release(SystemRuntime(), verify_release(ROOT / "bundles/target"))
+            runtime = SystemRuntime()
+            prepare_release(runtime, followed_release(runtime))
         elif sys.argv[1] == "seed":
             seed()
         elif sys.argv[1] in {"codex-home-upgrade", "codex-home-rollback"}:

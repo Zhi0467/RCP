@@ -189,3 +189,26 @@ def test_case_does_not_arm_faults_before_baseline_application_is_healthy(
     assert not armed.exists()
     assert not (state / "state.json").exists()
     assert retained.read_text() == "baseline startup still running\n"
+
+
+def test_team_initialization_uses_service_home_and_keeps_code_private(
+    tmp_path, monkeypatch, capsys
+):
+    import shlex
+    from types import SimpleNamespace
+
+    home = tmp_path / "service-home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setattr(guest.pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(home)))
+    code = "rcp_bootstrap_" + "a" * 16 + "." + "b" * 43
+    action = {"argv": ["sudo", "-u", "rcp", "-H", "rcp", "space", "init", "--team"]}
+
+    def initialize(argv, **kwargs):
+        assert kwargs["cwd"] == str(home)
+        assert argv[0] == "script" and "--return" in argv
+        assert shlex.split(argv[argv.index("--command") + 1]) == action["argv"]
+        return SimpleNamespace(stdout=code + "\n")
+
+    monkeypatch.setattr(guest, "run", initialize)
+    assert guest.initialize_team(action) == code
+    assert code not in capsys.readouterr().out
