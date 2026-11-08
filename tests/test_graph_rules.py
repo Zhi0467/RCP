@@ -11,11 +11,15 @@ from rcp.agents.graph_rules import (
 from rcp.agents.schema import agent_output_schema
 from rcp.core.models import (
     RELATION_SPEC,
+    Blocker,
     Edge,
     EvidenceAssessment,
     ExperimentProxy,
+    GraphState,
+    Patch,
     ProjectNode,
 )
+from rcp.core.transitions import GraphTransitionManager
 
 NODE_MODELS = get_args(get_args(ProjectNode)[0])
 
@@ -62,3 +66,43 @@ def test_read_only_rules_omit_authoring_method() -> None:
     assert _EDIT_METHOD not in read and _EXTENSION_RULES not in read
     assert _EDIT_METHOD in edit and _EXTENSION_RULES in edit
     assert _EXTENSION_RULES not in graph_rules(edits=True, ontology_extensions=False)
+
+
+def test_supersedes_rules_match_retired_source_and_replacement_target() -> None:
+    state = GraphState(
+        nodes={
+            node_id: Blocker(
+                id=node_id,
+                type="blocker",
+                title=node_id,
+                description="A capacity constraint.",
+            )
+            for node_id in ("blk/retired", "blk/replacement")
+        }
+    )
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Replace the capacity constraint.",
+        ops=[
+            {
+                "op": "supersede_nodes",
+                "nodes": [{"id": "blk/retired", "superseded_by": "blk/replacement"}],
+            }
+        ],
+    )
+
+    result = GraphTransitionManager().prepare_validated(state, [patch]).projection.graph
+
+    edge = result.edges["blk/retired::supersedes::blk/replacement"]
+    assert result.nodes[edge.source].status == "superseded"
+    assert result.nodes[edge.target].status == "open"
+    for edits in (False, True):
+        relation = next(
+            line
+            for line in graph_rules(edits=edits, ontology_extensions=False).splitlines()
+            if line.startswith("- `supersedes`:")
+        )
+        assert "target replaces the source" in relation
