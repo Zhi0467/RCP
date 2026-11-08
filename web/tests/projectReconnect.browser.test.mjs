@@ -357,6 +357,8 @@ test("a new pending preview shows after the previous one was dismissed at 390px"
     viewport: { width: 390, height: 844 },
   });
   const canonical = await (await authoritativeLoaded).json();
+  const previewRevision = canonical.graph_head.revision + 1;
+  const dismissalKey = `rcp:staged-preview-pending:demo:${canonical.graph_head.revision}`;
   const ruleset = "rcp.lifecycle.v4";
   const refused = [];
   const failed = [];
@@ -386,14 +388,20 @@ test("a new pending preview shows after the previous one was dismissed at 390px"
     await route.fulfill({
       json: {
         projection: {
-          head: { ...canonical.graph_head, revision: 2, transition_id: transitionId },
+          head: { ...canonical.graph_head, revision: previewRevision, transition_id: transitionId },
           graph: {
             ...canonical.graph,
-            revision: 2,
+            revision: previewRevision,
             nodes: Object.fromEntries(
               request.custom_nodes.map((node) => [
                 node.id,
-                { ...node, standing: "asserted", created_rev: 2, updated_rev: 2, source_refs: [] },
+                {
+                  ...node,
+                  standing: "asserted",
+                  created_rev: previewRevision,
+                  updated_rev: previewRevision,
+                  source_refs: [],
+                },
               ]),
             ),
           },
@@ -426,7 +434,7 @@ test("a new pending preview shows after the previous one was dismissed at 390px"
     await page.getByRole("button", { name: "Node", exact: true }).click();
     await page.getByLabel("Node title", { exact: true }).fill(title);
     await page.getByLabel("Node title", { exact: true }).press("Enter");
-    assert.equal((await requested).postDataJSON().base_revision, 1);
+    assert.equal((await requested).postDataJSON().base_revision, canonical.graph_head.revision);
     await pending.waitFor().catch(() => assert.fail(`Pending preview ${index + 1} did not show`));
     assert.equal(
       await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
@@ -440,13 +448,10 @@ test("a new pending preview shows after the previous one was dismissed at 390px"
       ),
     );
     gates[index].resolve();
-    await page.getByText("Staged preview · revision 2", { exact: true }).waitFor();
+    await page.getByText(`Staged preview · revision ${previewRevision}`, { exact: true }).waitFor();
   }
   assert.equal(requests.length, 2);
-  assert.deepEqual(dismissalKeys, [
-    ["rcp:staged-preview-pending:demo:1"],
-    ["rcp:staged-preview-pending:demo:1"],
-  ]);
+  assert.deepEqual(dismissalKeys, [[dismissalKey], [dismissalKey]]);
   assert.deepEqual(refused, []);
   assert.deepEqual(failed, []);
   assert.deepEqual(errors, []);
