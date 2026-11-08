@@ -344,6 +344,62 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_previous_writer_schedule_replays_consumed_count_after_member_zone_changes(tmp_path: Path):
+    boundary = verify_fixture_integrity(FIXTURE_ROOT / "pre-schedule-command-replay-v44-bbb9380")
+    source = _build_checkout(
+        _metadata_string(boundary, "created_with_commit"), tmp_path / "old-writer", web=False
+    )
+    database = tmp_path / "legacy.sqlite3"
+    helper = REPOSITORY_ROOT / "tests/server_upgrade_state.py"
+    seeded = subprocess.run(
+        [
+            str(source / ".venv/bin/python"),
+            "-c",
+            "import json, runpy, sys; from pathlib import Path; "
+            "seed = runpy.run_path(sys.argv[1])['seed_private_schedule_replay']; "
+            "print(json.dumps(seed(Path(sys.argv[2]))))",
+            str(helper),
+            str(database),
+        ],
+        cwd=source,
+        env={**os.environ, "PYTHONPATH": str(source / "src")},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _assert_previous_writer_schedule_replay(database, json.loads(seeded.stdout))
+
+
+def _assert_previous_writer_schedule_replay(database: Path, seeded: dict) -> None:
+    from rcp.agents.command_protocol import ScheduleCommandRequest
+    from rcp.runs.agent_schedules import handle_schedule
+
+    store = AppStore(database)
+    store.now = lambda: "2026-01-01T12:00:00+00:00"
+    request = ScheduleCommandRequest.model_validate(seeded["request"])
+    assert store.agent_schedules("thread")[0].model_dump(mode="json") == seeded["schedule"]
+    for zone in ("Europe/Berlin", None):
+        with store.connection() as connection:
+            task_request = {**store.agent_task("origin").request, "timezone": zone}
+            connection.execute("UPDATE graph_runs SET request_json=?", (json.dumps(task_request),))
+        replayed = handle_schedule(store, "origin", request)
+        assert replayed.status == "ok", replayed.message
+        assert replayed.result["schedule"] == seeded["schedule"]
+        assert store.agent_schedules("thread")[0].model_dump(mode="json") == seeded["schedule"]
+    explicit = request.model_copy(
+        update={"arguments": request.arguments.model_copy(update={"timezone": "Europe/Berlin"})}
+    )
+    refused = handle_schedule(store, "origin", explicit)
+    assert refused.status == "invalid" and "schedule_key_conflict" in refused.message
+    with store.connection() as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
+    store.close()
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
 def test_historical_writer_answer_crosses_upgrade_and_resumes_once(tmp_path, monkeypatch):
     fixture = FIXTURE_ROOT / "pre-local-question-origin-v43-1226e25"
     metadata = verify_fixture_integrity(fixture)
@@ -904,12 +960,10 @@ def _local_question_before_upgrade(
         return None
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
-        assert (
-            connection.execute(
-                "SELECT MAX(migration_version) FROM storage_schema_migrations"
-            ).fetchone()[0]
-            == 77
-        )
+        ledger = connection.execute(
+            "SELECT MAX(migration_version) FROM storage_schema_migrations"
+        ).fetchone()[0]
+        assert ledger >= 77
         question = dict(
             connection.execute(
                 "SELECT * FROM questions WHERE question_id = ?", (question_id,)
@@ -927,7 +981,10 @@ def _local_question_before_upgrade(
         assert task["stage_root"] == origin["stage_root"]
         assert task["stage_machine_id"] == BACKEND_MACHINE_ID
         assert task["status"] == "succeeded"
-        assert origin["stage_machine_id"] is None
+        if ledger == 77:
+            assert origin["stage_machine_id"] is None
+        else:
+            assert origin["stage_machine_id"] == BACKEND_MACHINE_ID
         assert question["state"] == "pending"
         assert question["answer_revision"] == 0
         assert question["followup_operation_id"] is None
@@ -1125,3 +1182,102 @@ def _assert_raw_impossible_experiment_wrapup(database: Path, episode_id: str) ->
     assert episode["wrapup_state"] == "not_started"
     assert wrapup is not None
     assert wrapup["state"] == "legacy_unavailable"
+
+
+@pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
+def test_previous_writer_nested_forks_keep_their_delivery_target(tmp_path):
+    from rcp.config import load_manifest
+    from rcp.core.authority import WriteAuthority
+    from rcp.core.transition_models import GraphHeadRef
+    from rcp.history import HistoryManager
+    from rcp.storage import AppStore
+
+    boundary = verify_fixture_integrity(FIXTURE_ROOT / "pre-schedule-command-replay-v44-bbb9380")
+    checkout = _build_checkout(
+        _metadata_string(boundary, "created_with_commit"), tmp_path / "old-writer", web=False
+    )
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    written = subprocess.run(
+        [
+            str(checkout / ".venv/bin/python"),
+            "-c",
+            """
+import json
+import sys
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+from rcp.core.models import Patch
+from rcp.runs.graph_forks import create_graph_fork
+from tests.helpers import write_test_manifest
+from tests.test_auto_research_children_storage import _setup_parent, _work_pair
+from tests.test_auto_research_experiments import _service, EXPERIMENT_ID
+
+root = Path(sys.argv[1])
+with patch('rcp.rcp_home.rcp_home', return_value=root / 'rcp-home'):
+    service = _service(write_test_manifest(root), root)
+    store, parent, actor = _setup_parent(root)
+    forks = []
+    source = service.history.head_ref()
+    for depth in range(3):
+        fork = create_graph_fork(
+            service.history, store, project_id=parent.project_id,
+            branch_id=str(uuid.uuid4()), owner_episode_id=parent.episode_id,
+            parent_head=source, authorized_by=parent.authorized_by,
+            created_by='orchestrator:upgrade', auto_archive=True,
+        )
+        forks.append(fork)
+        source = fork.head_ref()
+    route, task = _work_pair(store, parent, actor, worker_id='historical-grandchild')
+    task = task.model_copy(update={'graph_target': forks[-1].graph_target})
+    store.create_auto_research_child_work(route, task)
+    forks[-1].append(Patch(
+        kind='work', author='agent', summary='Retained nested result',
+        run_truth_scope=['repo-a'], ops=[{'op': 'update_nodes', 'nodes': [
+            {'id': EXPERIMENT_ID, 'changes': {'title': 'Nested result'}}]}],
+    ))
+    store.complete_agent_task(
+        task.operation_id, applied_revision=forks[-1].head_ref().revision, result={},
+    )
+    store.set_branch_archived(parent.project_id, forks[1].branch_id, archived=True)
+    print(json.dumps({'head': forks[0].head_ref().model_dump(mode='json'),
+                      'manifest': str(service.manifest.path),
+                      'branch_ids': [fork.branch_id for fork in forks]}))
+    store.close()
+""",
+            str(seed),
+        ],
+        cwd=checkout,
+        env={**os.environ, "PYTHONPATH": str(checkout / "src")},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    metadata = json.loads(written.stdout)
+    manifest = load_manifest(metadata["manifest"])
+    history = HistoryManager(manifest, write_authority=WriteAuthority())
+    canonical = {path: path.read_bytes() for path in seed.rglob("patches/*.json")}
+    assert canonical
+    database = seed / "rcp.sqlite3"
+    with sqlite3.connect(database) as connection:
+        branches = connection.execute(
+            "SELECT * FROM graph_branches ORDER BY project_id, branch_id"
+        ).fetchall()
+    store = AppStore(database)
+    head = GraphHeadRef.model_validate(metadata["head"])
+    with history.workspace.transaction():
+        assert history.branch(head.target.branch_id, initialize=False).head_ref() == head
+        assert not store.archive_empty_auto_research_fork("project", head)
+    with store.connection() as connection:
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM graph_branches ORDER BY project_id, branch_id"
+            )
+        ] == branches
+    assert {path: path.read_bytes() for path in seed.rglob("patches/*.json")} == canonical
+    assert [
+        store.graph_branch("project", branch_id).archived for branch_id in metadata["branch_ids"]
+    ] == [False, True, False]
+    store.close()

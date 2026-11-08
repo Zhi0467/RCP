@@ -403,10 +403,12 @@ runs, is readable by that command only, and the launch still reports `enforced`.
 Masking it would write a stand-in into the home, and flagging it would mark every
 launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
-on the execution host, outside every write root and inside the hidden set. A
-launch already resolved unhidden runs its commands silently; if hiding was
-enforced at launch and the sandbox later becomes unavailable, the wrapper
-refuses the command rather than run it unhidden.
+on the execution host, outside every write root and inside the hidden set.
+When the hiding wrapper is unavailable at command time, the shell runs unwrapped
+without per-command traces only if the launch recorded `wrapper_unavailable` or
+`userns_blocked`. A wrapper that was available at launch but later becomes
+unavailable refuses the command, even when another coverage gap made the overall
+launch `unhidden`.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine.
@@ -1904,6 +1906,12 @@ its reason and `handoff` as the next step. Its
 `CompositeWriteScope` holds the admitted same-machine `ProjectWriteScope`s
 and the Space stage. Each project keeps its ordinary repository overlap checks,
 exact `projects/<project_id>` stage, main graph target and dispatch binding.
+Each turn resolves the local base machine card's current writable paths through
+the ordinary Project Work resolver: grants require an eligible repository and
+retain its canonicalization and protected-storage exclusions. The same composite
+roots feed provider enforcement and the staged master. Adding or removing a
+machine grant takes effect next turn without changing the graph fingerprint or
+the native session.
 The stored fingerprint hashes the sorted project fingerprints. With no admitted
 projects the provider can write its own stage but the graph-write fingerprint
 is NULL. A changed admitted project set is recorded on the turn and does not

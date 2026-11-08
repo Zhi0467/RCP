@@ -223,7 +223,9 @@ coach writes no diffs or line numbers.
 
 Execution follows [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
 Remote snapshots are fixed stage inputs, never the live publication directory.
-Only changes are writable. Bounded read-back refuses symlinks and hardlinks and
+The changes folder and attached saved-artifact folders are writable under the
+[containment contract](providers-and-containment.md#provider-enforcement).
+Bounded read-back refuses symlinks and hardlinks and
 uses the same card collection. Shared supervised passes, process receipts, and
 quiescence prevent overlapping providers. Collection stores the task and round
 receipt with the cards. Replay therefore duplicates neither cards nor refreshes.

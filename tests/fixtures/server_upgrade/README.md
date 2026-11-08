@@ -216,3 +216,10 @@ with the historical storage API before candidate upgrade, then proves one
 continuation on the original session and stage with one claim and debit. The
 gate fetches the recorded writer commit when it is absent from a shallow
 checkout.
+
+`pre-schedule-command-replay-v44-bbb9380` freezes migration 78 before private
+schedule commands gain durable replay receipts (migration 79). Exact source
+`bbb93804fa24c5cba5c22b101d4d20ae375d012a` upgrades a copy of
+`pre-local-question-origin-v43-1226e25` through the existing fixture builder.
+It retains the previous histories and records, including the repaired local
+question origin. Older fixture directories remain unchanged.

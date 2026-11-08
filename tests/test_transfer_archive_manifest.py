@@ -350,6 +350,8 @@ def test_project_linked_sqlite_inventory_is_exact_and_follows_child_tables(tmp_p
         inventory = inspect_transfer_table_inventory(connection)
         assert set(inventory.project_linked_tables) == PROJECT_LINKED_TABLES
         assert set(inventory.global_tables) == TRANSFER_GLOBAL_TABLES
+        assert "agent_schedule_command_receipts" in inventory.global_tables
+        assert "agent_schedule_command_receipts" not in inventory.project_linked_tables
         assert inventory.unclassified_tables == ()
         assert inventory.complete is True
         assert set(inspect_project_linked_tables(connection)) == PROJECT_LINKED_TABLES

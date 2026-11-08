@@ -60,6 +60,7 @@ def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
         parent_head=destination.head_ref(),
         authorized_by=harness.episode.authorized_by,
         created_by="orchestrator:test",
+        auto_archive=True,
     )
     with store.connection() as connection:
         connection.execute(
@@ -95,4 +96,46 @@ def test_autoarchive_waits_for_incoming_merge(manifest, tmp_path):
     archive_settled_auto_research_forks(
         store, lambda _: harness.service, logger=logging.getLogger(__name__)
     )
+    assert not store.graph_branch(task.project_id, destination.branch_id).archived
+    assert store.graph_branch(task.project_id, source.branch_id).archived
+    archive_settled_auto_research_forks(
+        store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
     assert store.graph_branch(task.project_id, destination.branch_id).archived
+
+
+def test_autoarchive_retires_empty_forks_from_leaves_without_rewriting_history(manifest, tmp_path):
+    service = _service(manifest, tmp_path)
+    store, parent, _root = _setup_parent(tmp_path)
+    source = service.history.head_ref()
+    forks = []
+    for _depth in range(3):
+        fork = create_graph_fork(
+            service.history,
+            store,
+            project_id=parent.project_id,
+            branch_id=str(uuid.uuid4()),
+            owner_episode_id=parent.episode_id,
+            parent_head=source,
+            authorized_by=parent.authorized_by,
+            created_by="orchestrator:test",
+            auto_archive=True,
+        )
+        forks.append(fork)
+        source = fork.head_ref()
+    histories = [service.history, *forks]
+    patches = {
+        path: path.read_bytes() for history in histories for path in history.patches_dir.glob("*")
+    }
+    heads = [history.head_ref() for history in histories]
+    for retired in range(1, len(forks) + 1):
+        archive_settled_auto_research_forks(
+            store, lambda _: service, logger=logging.getLogger(__name__)
+        )
+        assert [
+            store.graph_branch(parent.project_id, fork.branch_id).archived for fork in forks
+        ] == ([False] * (len(forks) - retired) + [True] * retired)
+    assert [history.head_ref() for history in histories] == heads
+    assert {
+        path: path.read_bytes() for history in histories for path in history.patches_dir.glob("*")
+    } == patches

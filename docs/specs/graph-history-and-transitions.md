@@ -138,11 +138,14 @@ candidate against the initial graph once, after generated effects. Validator exi
 **Why:** deterministic checks can flag shape, not scientific meaning. Quality
 advice belongs in validation, not a mandatory second scanner.
 
-Operation models reject extra fields and wrong types, including nested payloads.
+Operation models reject extra fields and wrong types in their declared fields,
+including typed nested payloads.
 Proposal operations use their intent-restricted union. Persisted-input adaptation
 handles supported older wire shapes without rewriting bytes. Malformed input
 reports the operation index and field. Nested errors also report Proposal identity.
-Malformed input never reaches admission. Core consumers use typed models.
+Dynamic `NodeUpdate.changes` values are decoded as a map; admission validates
+the resulting node and rejects unknown fields or invalid values there.
+Core consumers use typed models.
 JSON conversion belongs only at serialization and compatibility boundaries.
 
 ## Append-only history and graph targets

@@ -295,8 +295,28 @@ on every target, and deletes consolidation schedules until a member configures t
 
 Private threads expose `schedule add`, `list`, `pause`, `resume`, and `cancel` to
 every thread turn, wakes included. The agent adds one when the member asks for a
-reminder or a recurring check. Mutations carry an idempotency key keyed on the turn's
-Resume/Retry lineage root, so a re-run returns the same schedule.
+reminder or a recurring check. Mutations carry an idempotency key scoped to the
+turn's Resume/Retry lineage root and action. Separate actions may reuse a key.
+The [schedule store](../../src/rcp/storage/agent_schedules.py) commits each mutation
+and its successful result in one transaction. An identical replay returns that
+result with the current request id before checking the clock and leaves the
+current schedule unchanged, including a later Pause, Resume, fire or restore.
+The same action/key with different typed arguments or a different schedule
+refuses. Request identity includes the original count and whether the timezone
+was omitted; transport ids, mailboxes and credentials are excluded. Both fresh
+commands and replay require the current task's live private thread and project
+membership, rechecked inside the transaction. List always reads current schedules.
+
+Schedules created before command receipts retain the limited Add match over their
+immutable fields, checked before the clock. Their remaining count cannot recover
+the original count, so this match does not compare count. An omitted timezone
+uses the stored zone for this match, while an explicit zone must match it. Legacy
+Add returns the current row without resetting state, due time, pending notes or
+remaining count and without inventing a receipt. Old Pause, Resume and Cancel
+keys were never saved and cannot be backfilled. Full durable replay begins with
+the receipt-writing version. Receipts live with their schedule and are deleted
+with it; operational run pruning leaves them intact. They remain space-local,
+excluded from project transfer, and SQLite backup retains them.
 `AGENT_SCHEDULES_MAX_ACTIVE` bounds active schedules per thread. A turn carrying the
 member's own message (composer, voice, or the member's Space handoff, with no
 question-follow-up binding) may schedule any cadence. A wake turn's cron or
@@ -306,6 +326,9 @@ A schedule names an IANA timezone and exactly one time: a local
 `YYYY-MM-DDTHH:MM` one-shot (`--at`), a plain interval (`--every`, such as `1m`,
 `90m`, `2h` or `1d`), or five cron fields with wildcards, lists, ranges, steps, `JAN`-`DEC` and
 `SUN`-`SAT` names, or `@hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`.
+[`ScheduleArguments`](../../src/rcp/agents/command_protocol.py) owns the input
+bounds: `--count` is positive and capped, and the note is nonblank with a bounded
+length; their maxima live in [`limits.py`](../../src/rcp/limits.py).
 Only a repeat (cron or interval) takes bounds, all local times in its zone.
 `--from` sets its start. Without it, cron starts at its next match and an interval
 starts one interval from now. `--until` makes it done after its last fire at or

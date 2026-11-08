@@ -30,6 +30,11 @@
 .desktop-update-notice > strong {
   font-size: var(--type-2xs);
   font-weight: 650;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.desktop-update-notice > svg {
+  flex-shrink: 0;
 }
 .desktop-update-notice.error {
   border-color: color-mix(in srgb, var(--red) 48%, var(--line));
@@ -38,17 +43,6 @@
 .desktop-update-notice .button {
   min-height: 28px;
   padding: 0 9px;
-}
-.desktop-update-dismiss {
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  cursor: pointer;
-  font: 700 var(--type-3xs) var(--ui);
-  padding: 7px;
-}
-.desktop-update-dismiss:hover {
-  color: var(--ink);
 }
 .release-update-notice {
   flex-wrap: wrap;
@@ -60,6 +54,12 @@
 .release-check-row {
   padding: 12px;
   margin: 0;
+}
+
+@media (max-width: 560px) {
+  .desktop-update-notice {
+    min-height: 46px;
+  }
 }
 
 .spin {

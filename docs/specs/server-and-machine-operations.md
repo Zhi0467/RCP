@@ -122,7 +122,8 @@ installation identity is distinct from space and member identities.
 Provider updates run the native updater as the service account. They refuse,
 before changing anything, while a backend agent turn running that provider is
 running or pausing. An unreadable database does not block them. They never
-collect credentials. They check the executable and login independently.
+collect credentials. They verify the updated executable and version. Login
+readiness is checked separately in Settings Sign-ins and provider readiness.
 Discovery saves stable command paths rather than resolved versioned symlinks.
 Product login behavior belongs to
 [Providers and containment](providers-and-containment.md#login-state-and-failure). Operator actions belong to
@@ -692,6 +693,8 @@ Apply or claim unreachable projects are protected.
 inventory, recovery descriptors and exclusions.
 [server.md](../server.md#back-up-the-team-server) owns configuration, capture
 and restore commands.
+Restore verifies the archive's recorded SQLite schema against supported fresh
+and in-place migration fingerprints before opening a copy.
 
 One immutable online SQLite snapshot determines referenced durable bytes:
 canonical main and branch history, typed chats, saved and published Paper,

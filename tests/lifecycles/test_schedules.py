@@ -5,7 +5,7 @@ from pathlib import Path
 from tests.lifecycles.engine import explore
 from tests.lifecycles.schedules import Schedules
 
-STATES = 101
+STATES = 186
 
 
 def _root(tmp_path: Path) -> Path:
@@ -19,12 +19,10 @@ def test_schedule_lifecycle_holds_within_bound(tmp_path: Path) -> None:
 
     The machine has no Goal: the spec's progress rule, that each tick claims a
     waiting note, keeps it for an active turn, or records why, is the Step rule
-    ``waiting_note_says_why``. Three actions reach every trace this PR fixed:
-    ``tick 15`` (missed fires past --count), ``close`` and ``fence, tick 1,
-    close`` (a disabled row keeping its next fire and note), and ``fence,
-    tick 1`` (a claim refusal with no reason). Each fix has a plain regression
-    test in ``tests/test_agent_schedules.py``; no seam reverts them, so the
-    machine has no witness. Restore leaving a paused schedule paused is the
+    ``waiting_note_says_why``. Three actions also cross keyed Pause/Resume,
+    a newer opposite member control, and receipt replay; delayed Add and
+    restore replay preserve their recorded results and the current schedule.
+    The machine has no defect seam. Restore leaving a paused schedule paused is the
     spec's rule, not a defect: a paused schedule holds no note and fires only
     after the member's Resume.
     """

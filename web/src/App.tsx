@@ -779,7 +779,6 @@ function MemberApp({
     reconnectBackend: reconnectDesktopBackend,
     applyUpdate: applyDesktopShellUpdate,
     expandUpdate,
-    dismissUpdate,
   } = useDesktopShell(desktop);
   useRecheckOnRelease(releaseUpdate, desktopUpdate?.version, refreshDesktopUpdate);
   const [experimentStartOverlap, setExperimentStartOverlap] = useState<{
@@ -905,6 +904,9 @@ function MemberApp({
     if (stagedConflictScope && !draftPreviewConflict)
       forgetBanners(`staged-conflict:${stagedConflictScope}:`);
   }, [stagedConflictScope, draftPreviewConflict]);
+  useEffect(() => {
+    if (projectId && !draftPreviewPending) forgetBanners(`staged-preview-pending:${projectId}:`);
+  }, [projectId, draftPreviewPending]);
   useEffect(() => {
     if (projectId && !replayDegraded) forgetBanners(`replay-degraded:${projectId}:`);
   }, [projectId, replayDegraded]);
@@ -4270,7 +4272,6 @@ function MemberApp({
       error={updateError}
       onExpand={expandUpdate}
       onApply={() => void applyUpdate()}
-      onDismiss={dismissUpdate}
     />
   );
   const desktopAccessSurface = pendingDesktopProject ? (

@@ -1,0 +1,29 @@
+{
+  "schema_generation": 1,
+  "branch_id": "5d2c6641-a141-4463-a92e-35578244f481",
+  "episode_id": "5d2c6641-a141-4463-a92e-35578244f481",
+  "project_id": "cb6bdc99-6c49-4085-9ed0-f77bcb1137f2",
+  "kind": "auto_research",
+  "base_head": {
+    "target": {
+      "kind": "main",
+      "branch_id": null
+    },
+    "revision": 1,
+    "transition_id": null
+  },
+  "head": {
+    "target": {
+      "kind": "branch",
+      "branch_id": "5d2c6641-a141-4463-a92e-35578244f481"
+    },
+    "revision": 2,
+    "transition_id": "607cc246559e88d4c5a3c263b6a225901f7ef12affde47e0248f3cee33a2c590"
+  },
+  "created_at": "2026-10-17T23:00:08.900280Z",
+  "authorized_by": {
+    "space_id": "325f1c1f-d175-4f90-b243-10a4837326ed",
+    "user_id": "397de88b-7e8c-4ee9-a6a5-8c295dad5373",
+    "display_name": "Upgrade Fixture Member"
+  }
+}

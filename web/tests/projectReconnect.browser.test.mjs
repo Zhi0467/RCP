@@ -349,6 +349,114 @@ async function openDemoProject(t, initialFreshness, options = {}) {
   return { page, errors, state, readinessLoaded, authoritativeLoaded };
 }
 
+test("a new pending preview shows after the previous one was dismissed at 390px", async (t) => {
+  const gates = [Promise.withResolvers(), Promise.withResolvers()];
+  t.after(() => gates.forEach((gate) => gate.resolve()));
+  const { page, errors, authoritativeLoaded } = await openDemoProject(t, "fresh", {
+    connected: true,
+    viewport: { width: 390, height: 844 },
+  });
+  const canonical = await (await authoritativeLoaded).json();
+  const previewRevision = canonical.graph_head.revision + 1;
+  const dismissalKey = `rcp:staged-preview-pending:demo:${canonical.graph_head.revision}`;
+  const ruleset = "rcp.lifecycle.v4";
+  const refused = [];
+  const failed = [];
+  page.on("response", (response) => {
+    if (response.status() >= 400) refused.push(`${response.status()} ${response.url()}`);
+  });
+  page.on("requestfailed", (request) => {
+    if (request.failure()?.errorText !== "net::ERR_ABORTED") failed.push(request.url());
+  });
+  await page.route("**/api/projects/demo/transition-manifest*", (route) =>
+    route.fulfill({
+      json: {
+        ruleset_tag: ruleset,
+        triggers: [{ operation: "create_nodes", node_types: [], node_fields: [], relations: [] }],
+      },
+    }),
+  );
+  await page.route("**/api/projects/demo/graph-edit-options", (route) =>
+    route.fulfill({ json: { node_prefixes: { research_question: "rq" }, relations: [] } }),
+  );
+  const requests = [];
+  await page.route("**/api/projects/demo/sync/preview", async (route) => {
+    const request = route.request().postDataJSON();
+    const index = requests.push(request) - 1;
+    await gates[index].promise;
+    const transitionId = String(index + 1).repeat(64);
+    await route.fulfill({
+      json: {
+        projection: {
+          head: { ...canonical.graph_head, revision: previewRevision, transition_id: transitionId },
+          graph: {
+            ...canonical.graph,
+            revision: previewRevision,
+            nodes: Object.fromEntries(
+              request.custom_nodes.map((node) => [
+                node.id,
+                {
+                  ...node,
+                  standing: "asserted",
+                  created_rev: previewRevision,
+                  updated_rev: previewRevision,
+                  source_refs: [],
+                },
+              ]),
+            ),
+          },
+          attention: canonical.attention,
+          primary_question: null,
+          counts: canonical.counts,
+          experiment_control: {},
+          guidance_validity: {},
+          ruleset_tag: ruleset,
+          transition_id: transitionId,
+          canonical: false,
+          base_head: canonical.graph_head,
+        },
+        transition: {
+          transition_id: transitionId,
+          pre_head: canonical.graph_head,
+          ruleset_tag: ruleset,
+        },
+      },
+    });
+  });
+  await page.goto(`${origin}/#/projects/demo?view=dag`);
+  await page.reload();
+  const pending = page
+    .getByRole("status")
+    .filter({ hasText: "Preparing staged transition preview." });
+  const dismissalKeys = [];
+  for (const [index, title] of ["First staged question", "Second staged question"].entries()) {
+    const requested = page.waitForRequest("**/api/projects/demo/sync/preview");
+    await page.getByRole("button", { name: "Node", exact: true }).click();
+    await page.getByLabel("Node title", { exact: true }).fill(title);
+    await page.getByLabel("Node title", { exact: true }).press("Enter");
+    assert.equal((await requested).postDataJSON().base_revision, canonical.graph_head.revision);
+    await pending.waitFor().catch(() => assert.fail(`Pending preview ${index + 1} did not show`));
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+      true,
+    );
+    await pending.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await pending.waitFor({ state: "detached" });
+    dismissalKeys.push(
+      await page.evaluate(() =>
+        Object.keys(localStorage).filter((key) => key.startsWith("rcp:staged-preview-pending:")),
+      ),
+    );
+    gates[index].resolve();
+    await page.getByText(`Staged preview · revision ${previewRevision}`, { exact: true }).waitFor();
+  }
+  assert.equal(requests.length, 2);
+  assert.deepEqual(dismissalKeys, [[dismissalKey], [dismissalKey]]);
+  assert.deepEqual(refused, []);
+  assert.deepEqual(failed, []);
+  assert.deepEqual(errors, []);
+});
+
 test("the actual App keeps global Space artifact interest out of project watermark requests", async (t) => {
   const { page, errors, authoritativeLoaded } = await openDemoProject(t, "fresh");
   await authoritativeLoaded;

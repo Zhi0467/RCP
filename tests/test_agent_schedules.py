@@ -90,6 +90,262 @@ def test_old_writer_member_message_can_add_and_idempotently_cancel(schedule_stor
 
 
 @pytest.mark.parametrize(
+    "timing",
+    [{"at": "2026-01-01T09:00"}, {"every": "1h", "until": "2026-01-01T09:30"}],
+)
+def test_delayed_add_replays_its_result_after_its_time_passes(schedule_store, timing):
+    import uuid
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    schedule_store.now = lambda: "2026-01-01T08:00:00+00:00"
+    add = command(action="add", timezone="UTC", note="Check", **timing)
+    accepted = handle_schedule(schedule_store, "origin", add)
+    assert accepted.status == "ok", accepted.message
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 10, tzinfo=UTC))
+    current = schedule_store.agent_schedules("thread")
+    schedule_store.now = lambda: "2026-01-01T10:00:00+00:00"
+    retry = add.model_copy(update={"request_id": uuid.uuid4().hex})
+    replayed = handle_schedule(schedule_store, "origin", retry)
+    assert replayed.status == "ok", replayed.message
+    assert replayed.request_id == retry.request_id
+    assert replayed.result == accepted.result
+    assert schedule_store.agent_schedules("thread") == current
+
+
+@pytest.mark.parametrize("action,opposite", [("pause", "resume"), ("resume", "pause")])
+def test_stale_mutation_replay_preserves_a_newer_opposite_change(schedule_store, action, opposite):
+    from rcp.runs.agent_schedules import handle_schedule, resume_schedule
+
+    schedule_store.now = lambda: "2026-01-01T08:00:00+00:00"
+    added = _added(
+        handle_schedule(
+            schedule_store,
+            "origin",
+            command(action="add", every="1h", timezone="UTC", note="Check"),
+        )
+    )
+    schedule_id = added["schedule_id"]
+    if action == "resume":
+        schedule_store.pause_agent_schedule("thread", schedule_id)
+    request = command(key="control", action=action, schedule_id=schedule_id)
+    accepted = handle_schedule(schedule_store, "origin", request)
+    assert accepted.status == "ok", accepted.message
+    if opposite == "resume":
+        resume_schedule(schedule_store, "thread", schedule_id)
+    else:
+        schedule_store.pause_agent_schedule("thread", schedule_id)
+    current = schedule_store.agent_schedules("thread")
+    replayed = handle_schedule(schedule_store, "origin", request)
+    assert replayed.status == "ok", replayed.message
+    assert replayed.result == accepted.result
+    assert schedule_store.agent_schedules("thread") == current
+
+
+def test_add_identity_keeps_original_count_and_timezone_omission(schedule_store):
+    import json
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    schedule_store.now = lambda: "2026-01-01T08:00:00+00:00"
+    with schedule_store.connection() as connection:
+        request = {**schedule_store.agent_task("origin").request, "timezone": "UTC"}
+        connection.execute("UPDATE graph_runs SET request_json=?", (json.dumps(request),))
+    add = command(action="add", every="1h", count=2, note="Check")
+    first = handle_schedule(schedule_store, "origin", add)
+    assert first.status == "ok", first.message
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 9, tzinfo=UTC))
+    with schedule_store.connection() as connection:
+        request["timezone"] = "Europe/Berlin"
+        connection.execute("UPDATE graph_runs SET request_json=?", (json.dumps(request),))
+    assert handle_schedule(schedule_store, "origin", add).result == first.result
+    for changed in ({"count": 1}, {"timezone": "UTC"}):
+        collision = add.model_copy(update={"arguments": add.arguments.model_copy(update=changed)})
+        assert "schedule_key_conflict" in _refusal(
+            handle_schedule(schedule_store, "origin", collision)
+        )
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel"])
+def test_same_action_key_cannot_name_a_different_schedule(schedule_store, action):
+    from rcp.runs.agent_schedules import handle_schedule
+
+    schedule_ids = [
+        _added(
+            handle_schedule(
+                schedule_store,
+                "origin",
+                command(key=key, action="add", every="1h", timezone="UTC", note=key),
+            )
+        )["schedule_id"]
+        for key in ("first", "second")
+    ]
+    if action == "resume":
+        for schedule_id in schedule_ids:
+            schedule_store.pause_agent_schedule("thread", schedule_id)
+    accepted = handle_schedule(
+        schedule_store, "origin", command(key="control", action=action, schedule_id=schedule_ids[0])
+    )
+    assert accepted.status == "ok", accepted.message
+    before = schedule_store.agent_schedules("thread")
+    collision = handle_schedule(
+        schedule_store, "origin", command(key="control", action=action, schedule_id=schedule_ids[1])
+    )
+    assert "schedule_key_conflict" in _refusal(collision)
+    assert schedule_store.agent_schedules("thread") == before
+
+
+@pytest.mark.parametrize("access_lost", ["closed", "membership", "removed_member"])
+def test_replay_requires_live_access_even_after_outer_authorization(
+    schedule_store, monkeypatch, access_lost
+):
+    from rcp.runs import agent_schedules
+
+    add = command(action="add", every="1h", timezone="UTC", note="Check")
+    assert agent_schedules.handle_schedule(schedule_store, "origin", add).status == "ok"
+    authorized_thread = agent_schedules.schedule_thread
+
+    def lose_access(store, operation_id):
+        thread = authorized_thread(store, operation_id)
+        assert thread is not None
+        with store.connection() as connection:
+            if access_lost == "closed":
+                connection.execute("UPDATE agent_threads SET closed_at=?", (store.now(),))
+            elif access_lost == "membership":
+                connection.execute("DELETE FROM project_members")
+            else:
+                connection.execute("UPDATE space_users SET removal_started_at=?", (store.now(),))
+        return thread
+
+    monkeypatch.setattr(agent_schedules, "schedule_thread", lose_access)
+    assert agent_schedules.handle_schedule(schedule_store, "origin", add).status == "invalid"
+
+
+@pytest.mark.parametrize("action", ["add", "pause", "resume", "cancel"])
+def test_receipt_failure_rolls_back_the_schedule_mutation(schedule_store, action):
+    import sqlite3
+
+    from rcp.runs.agent_schedules import handle_schedule
+
+    add = command(action="add", every="1h", timezone="UTC", note="Check")
+    if action == "add":
+        request = add
+    else:
+        schedule_id = _added(handle_schedule(schedule_store, "origin", add))["schedule_id"]
+        if action == "resume":
+            schedule_store.pause_agent_schedule("thread", schedule_id)
+        request = command(key="control", action=action, schedule_id=schedule_id)
+    before = schedule_store.agent_schedules("thread")
+    with schedule_store.connection() as connection:
+        connection.execute(
+            "CREATE TRIGGER refuse_schedule_receipt BEFORE INSERT ON "
+            "agent_schedule_command_receipts BEGIN SELECT RAISE(ABORT, 'receipt unavailable'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="receipt unavailable"):
+        handle_schedule(schedule_store, "origin", request)
+    assert schedule_store.agent_schedules("thread") == before
+    with schedule_store.connection() as connection:
+        connection.execute("DROP TRIGGER refuse_schedule_receipt")
+    assert handle_schedule(schedule_store, "origin", request).status == "ok"
+
+
+def test_receipts_survive_restart_pruning_and_restored_sqlite_backup(tmp_path):
+    import sqlite3
+
+    from rcp.runs.agent_schedules import handle_schedule
+    from rcp.storage import AppStore
+
+    path = tmp_path / "state.sqlite3"
+    store = build_schedule_store(path, lambda: "2026-01-01T08:00:00+00:00")
+    add = command(action="add", every="1h", count=2, timezone="UTC", note="Check")
+    accepted = handle_schedule(store, "origin", add)
+    schedule_id = _added(accepted)["schedule_id"]
+    store.pause_agent_schedule("thread", schedule_id)
+    resume = command(key="control", action="resume", schedule_id=schedule_id)
+    resumed = handle_schedule(store, "origin", resume)
+    assert resumed.status == "ok", resumed.message
+    store.close()
+    store = AppStore(path)
+    store.now = lambda: "2026-02-01T08:00:00+00:00"
+    store.prune_operational_storage(now=datetime(2026, 2, 1, tzinfo=UTC))
+    with store.connection() as connection, sqlite3.connect(tmp_path / "backup.sqlite3") as backup:
+        connection.backup(backup)
+    store.close()
+    restored = AppStore(tmp_path / "backup.sqlite3")
+    restored.detach_restored_lifecycle(diagnostic="replay test", confirmed_by="member")
+    before = restored.agent_schedules("thread")
+    assert before[0].state == "disabled" and before[0].disabled_reason == "restore"
+    assert handle_schedule(restored, "origin", add).result == accepted.result
+    assert handle_schedule(restored, "origin", resume).result == resumed.result
+    assert restored.agent_schedules("thread") == before
+    listed = handle_schedule(restored, "origin", command(action="list"))
+    assert listed.result["schedules"][0]["state"] == "disabled"
+    with restored.connection() as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 2
+        )
+        connection.execute("DELETE FROM agent_schedules")
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
+    restored.close()
+
+
+def test_project_deletion_cleans_schedule_receipts(schedule_store):
+    from rcp.runs.agent_schedules import handle_schedule
+
+    added = handle_schedule(
+        schedule_store, "origin", command(action="add", every="1h", timezone="UTC", note="Check")
+    )
+    assert added.status == "ok", added.message
+    schedule_store.delete_project_records("project")
+    with schedule_store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM agent_schedules").fetchone()[0] == 0
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
+
+
+def test_legacy_add_returns_current_row_without_reconstructing_original_count(schedule_store):
+    from rcp.runs.agent_schedules import handle_schedule
+
+    schedule_store.now = lambda: "2026-01-01T08:00:00+00:00"
+    schedule_store.add_agent_schedule(
+        thread_id="thread",
+        operation_id="origin",
+        key="legacy",
+        cron=None,
+        at=None,
+        timezone="UTC",
+        note="Check",
+        every_minutes=60,
+        count=2,
+        until="2026-01-01T09:30",
+        next_fire_at="2026-01-01T09:00:00+00:00",
+    )
+    schedule_store.advance_agent_schedules(datetime(2026, 1, 1, 10, tzinfo=UTC))
+    current = schedule_store.agent_schedules("thread")[0]
+    schedule_store.now = lambda: "2026-01-01T12:00:00+00:00"
+    add = command(
+        key="legacy", action="add", every="1h", until="2026-01-01T09:30", count=3, note="Check"
+    )
+    assert _added(handle_schedule(schedule_store, "origin", add)) == current.model_dump(mode="json")
+    explicit = add.model_copy(
+        update={"arguments": add.arguments.model_copy(update={"timezone": "Europe/Berlin"})}
+    )
+    assert "schedule_key_conflict" in _refusal(handle_schedule(schedule_store, "origin", explicit))
+    assert schedule_store.agent_schedules("thread") == [current]
+    with schedule_store.connection() as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM agent_schedule_command_receipts").fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
     "trigger,source,followup,every_minute_ok",
     [
         ("human", None, False, True),
@@ -415,6 +671,43 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     assert client.delete(path + "/" + past.schedule_id).status_code == 204
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 204
     assert client.get(path).json()["schedules"][0]["state"] == "cancelled"
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.runs.questions import WorkCommandHandler
+
+    handler = WorkCommandHandler(
+        execution=SimpleNamespace(store=schedule_store, operation_id="origin"),
+        compute_commands=None,
+        allowed_verbs=frozenset({"schedule"}),
+    )
+    turn = CommandTurnIdentity(None, "origin", "test-turn", "broker")
+    added = handler(
+        command(key="keyed", action="add", every="1h", timezone="UTC", note="Keyed"), turn
+    )
+    schedule_id = _added(added)["schedule_id"]
+    control_path = path + "/" + schedule_id
+    pause = command(key="pause", action="pause", schedule_id=schedule_id)
+    assert handler(pause, turn).status == "ok"
+    assert client.post(control_path + "/resume").json()["state"] == "active"
+    assert handler(pause, turn).status == "ok"
+    assert (
+        next(
+            row for row in client.get(path).json()["schedules"] if row["schedule_id"] == schedule_id
+        )["state"]
+        == "active"
+    )
+    assert client.post(control_path + "/pause").json()["state"] == "paused"
+    resume = command(key="resume", action="resume", schedule_id=schedule_id)
+    resumed = handler(resume, turn)
+    assert resumed.status == "ok", resumed.message
+    assert client.post(control_path + "/pause").json()["state"] == "paused"
+    assert handler(resume, turn).result == resumed.result
+    listed = handler(command(action="list"), turn)
+    assert (
+        next(row for row in listed.result["schedules"] if row["schedule_id"] == schedule_id)[
+            "state"
+        ]
+        == "paused"
+    )
 
 
 def test_nameless_owner_can_list_schedules(schedule_store):

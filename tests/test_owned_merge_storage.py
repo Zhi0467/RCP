@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -164,6 +165,7 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     from rcp.agents.hidden_read import host_facts
     from rcp.core.models import Patch
     from rcp.history.manager import HistoryManager
+    from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
     from rcp.runs.branch_merge_admission import start_owned_branch_merge
 
     from .helpers import unchecked_write_authority, wait_for_task
@@ -190,7 +192,13 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
         authorized_by=harness.episode.authorized_by,
         created_by=harness.root.operation_id,
         owner_episode_id=harness.episode.episode_id,
+        auto_archive=True,
     )
+    with harness.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_branches SET auto_archive=1 WHERE project_id=? AND branch_id=?",
+            (harness.project_id, destination.branch_id),
+        )
     stream = Mock(wraps=merge_task.stream_branch_merge_run)
     monkeypatch.setattr(merge_task, "stream_branch_merge_run", stream)
     ops = [
@@ -234,6 +242,11 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     monkeypatch.setattr(harness.app.state.background_tasks, "on_task_settled", None)
+    source_patches = {path: path.read_bytes() for path in source.patches_dir.glob("*.json")}
+    archive_settled_auto_research_forks(
+        harness.store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
+    assert not harness.store.graph_branch(harness.project_id, destination.branch_id).archived
     before = harness.store.episode_budget_meter(harness.episode.episode_id).invocations_used
     result = start_owned_branch_merge(
         harness.app.state.background_tasks,
@@ -269,6 +282,29 @@ async def test_owned_merge_delivers_to_parent_and_reuses_key(
     receipt = source.reconcile_merge_receipt(source.merge_receipts()[0].provenance.merge_id)
     assert receipt is not None
     assert receipt.result_main_head.target == destination.graph_target
+    archive_settled_auto_research_forks(
+        harness.store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
+    assert not harness.store.graph_branch(harness.project_id, source.branch_id).archived
+    assert not harness.store.graph_branch(harness.project_id, destination.branch_id).archived
+    delivery = start_owned_branch_merge(
+        harness.app.state.background_tasks,
+        harness.service,
+        episode=harness.episode,
+        dispatcher_operation_id=harness.root.operation_id,
+        branch_id=destination.branch_id,
+        command_key="deliver-parent",
+    )
+    parent_operation_id = delivery["operation_id"]
+    assert isinstance(parent_operation_id, str)
+    await asyncio.to_thread(wait_for_task, harness.store, parent_operation_id, expect="succeeded")
+    assert harness.branch.state().nodes["blk/merge-ready"].title == "Fork choice"
+    assert {path: path.read_bytes() for path in source.patches_dir.glob("*.json")} == source_patches
+    archive_settled_auto_research_forks(
+        harness.store, lambda _: harness.service, logger=logging.getLogger(__name__)
+    )
+    assert not harness.store.graph_branch(harness.project_id, source.branch_id).archived
+    assert not harness.store.graph_branch(harness.project_id, destination.branch_id).archived
 
 
 @pytest.mark.parametrize("root_status", ["succeeded", "interrupted"])

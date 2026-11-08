@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
 from rcp.limits import AGENT_SCHEDULES_MAX_ACTIVE
+from rcp.storage.agent_threads import AgentThreadRecord, thread_binds_task
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -222,7 +225,86 @@ def migrate_agent_schedules(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_agent_schedule_command_receipts(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE IF NOT EXISTS agent_schedule_command_receipts (
+        lineage_root_operation_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK(action IN ('add','pause','resume','cancel')),
+        idempotency_key TEXT NOT NULL, thread_id TEXT NOT NULL,
+        schedule_id TEXT NOT NULL REFERENCES agent_schedules(schedule_id) ON DELETE CASCADE,
+        arguments_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY(lineage_root_operation_id, action, idempotency_key)
+    )""")
+
+
 class AgentSchedulesStoreMixin(StoreMixinBase):
+    def run_agent_schedule_command(
+        self,
+        *,
+        task: AgentTaskRecord,
+        thread_id: str,
+        lineage_root_operation_id: str,
+        action: str,
+        key: str,
+        arguments: dict[str, object],
+        mutate: Callable[[sqlite3.Connection], tuple[str | None, dict[str, object]]],
+    ) -> dict[str, object]:
+        """Commit a fresh command with its result, or replay without changing its schedule.
+
+        A legacy Add returns no receipt target: its original count and zone omission
+        were not retained, so its current row cannot establish a new receipt identity.
+        """
+        arguments_json = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_schedule_command_thread(connection, task, thread_id)
+            receipt = connection.execute(
+                "SELECT * FROM agent_schedule_command_receipts "
+                "WHERE lineage_root_operation_id=? AND action=? AND idempotency_key=?",
+                (lineage_root_operation_id, action, key),
+            ).fetchone()
+            if receipt is not None:
+                if receipt["thread_id"] != thread_id or receipt["arguments_json"] != arguments_json:
+                    raise ValueError("schedule_key_conflict")
+                return json.loads(receipt["result_json"])
+            schedule_id, result = mutate(connection)
+            if schedule_id is not None:
+                connection.execute(
+                    "INSERT INTO agent_schedule_command_receipts "
+                    "(lineage_root_operation_id,action,idempotency_key,thread_id,schedule_id,"
+                    "arguments_json,result_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        lineage_root_operation_id,
+                        action,
+                        key,
+                        thread_id,
+                        schedule_id,
+                        arguments_json,
+                        json.dumps(result),
+                        self.now(),
+                    ),
+                )
+            return result
+
+    def _require_schedule_command_thread(
+        self, connection: sqlite3.Connection, task: AgentTaskRecord, thread_id: str
+    ) -> None:
+        row = connection.execute(
+            "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (thread_id,)
+        ).fetchone()
+        store = cast("AppStore", self)
+        if row is None or not thread_binds_task(
+            AgentThreadRecord.model_validate(dict(row)), task, store.space_id
+        ):
+            raise ValueError("schedule_thread_required")
+        try:
+            store._require_active_space_user_from_connection(connection, row["user_id"])
+        except KeyError as exc:
+            raise ValueError("schedule_thread_required") from exc
+        if row["project_id"] and not live_project_member(
+            connection, row["project_id"], row["user_id"]
+        ):
+            raise ValueError("schedule_thread_required")
+
     def agent_schedules(self, thread_id: str | None = None) -> list[AgentSchedule]:
         with self.connection() as connection:
             rows = connection.execute(
@@ -251,85 +333,166 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
     ) -> AgentSchedule:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT * FROM agent_schedules WHERE created_operation_id=? AND idempotency_key=?",
-                (operation_id, key),
-            ).fetchone()
-            if existing is not None:
-                record = AgentSchedule.model_validate(dict(existing))
-                # The fires left change as it fires, so --count is not compared.
-                if (
-                    record.thread_id,
-                    record.cron,
-                    record.every_minutes,
-                    record.at_local,
-                    record.start_local,
-                    record.until_local,
-                    record.timezone,
-                    record.note,
-                ) != (thread_id, cron, every_minutes, at, start, until, timezone, note):
-                    raise ValueError("schedule_key_conflict")
-                return record
-            active = connection.execute(
-                "SELECT COUNT(*) FROM agent_schedules WHERE thread_id=? AND state='active'",
-                (thread_id,),
-            ).fetchone()[0]
-            if active >= AGENT_SCHEDULES_MAX_ACTIVE:
-                raise ValueError("schedule_limit")
-            schedule = AgentSchedule(
-                schedule_id=str(uuid.uuid4()),
+            return self._add_agent_schedule(
+                connection,
                 thread_id=thread_id,
-                created_operation_id=operation_id,
-                idempotency_key=key,
+                operation_id=operation_id,
+                key=key,
                 cron=cron,
-                every_minutes=every_minutes,
-                at_local=at,
-                start_local=start,
-                until_local=until,
-                fires_left=count,
+                at=at,
                 timezone=timezone,
                 note=note,
-                state="active",
                 next_fire_at=next_fire_at,
-                created_at=self.now(),
+                every_minutes=every_minutes,
+                start=start,
+                until=until,
+                count=count,
             )
-            values = schedule.model_dump()
-            connection.execute(
-                f"INSERT INTO agent_schedules ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
-                tuple(values.values()),
-            )
-            return schedule
+
+    def existing_agent_schedule(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        thread_id: str,
+        operation_id: str,
+        key: str,
+        cron: str | None,
+        at: str | None,
+        timezone: str | None,
+        note: str,
+        every_minutes: int | None = None,
+        start: str | None = None,
+        until: str | None = None,
+    ) -> AgentSchedule | None:
+        """Match an old Add before clock validation; only its remaining count survives."""
+        existing = connection.execute(
+            "SELECT * FROM agent_schedules WHERE created_operation_id=? AND idempotency_key=?",
+            (operation_id, key),
+        ).fetchone()
+        if existing is None:
+            return None
+        record = AgentSchedule.model_validate(dict(existing))
+        if (
+            record.thread_id,
+            record.cron,
+            record.every_minutes,
+            record.at_local,
+            record.start_local,
+            record.until_local,
+            record.timezone,
+            record.note,
+        ) != (
+            thread_id,
+            cron,
+            every_minutes,
+            at,
+            start,
+            until,
+            record.timezone if timezone is None else timezone,
+            note,
+        ):
+            raise ValueError("schedule_key_conflict")
+        return record
+
+    def _add_agent_schedule(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        thread_id: str,
+        operation_id: str,
+        key: str,
+        cron: str | None,
+        at: str | None,
+        timezone: str,
+        note: str,
+        next_fire_at: str,
+        every_minutes: int | None = None,
+        start: str | None = None,
+        until: str | None = None,
+        count: int | None = None,
+    ) -> AgentSchedule:
+        existing = self.existing_agent_schedule(
+            connection,
+            thread_id=thread_id,
+            operation_id=operation_id,
+            key=key,
+            cron=cron,
+            at=at,
+            timezone=timezone,
+            note=note,
+            every_minutes=every_minutes,
+            start=start,
+            until=until,
+        )
+        if existing is not None:
+            return existing
+        active = connection.execute(
+            "SELECT COUNT(*) FROM agent_schedules WHERE thread_id=? AND state='active'",
+            (thread_id,),
+        ).fetchone()[0]
+        if active >= AGENT_SCHEDULES_MAX_ACTIVE:
+            raise ValueError("schedule_limit")
+        schedule = AgentSchedule(
+            schedule_id=str(uuid.uuid4()),
+            thread_id=thread_id,
+            created_operation_id=operation_id,
+            idempotency_key=key,
+            cron=cron,
+            every_minutes=every_minutes,
+            at_local=at,
+            start_local=start,
+            until_local=until,
+            fires_left=count,
+            timezone=timezone,
+            note=note,
+            state="active",
+            next_fire_at=next_fire_at,
+            created_at=self.now(),
+        )
+        values = schedule.model_dump()
+        connection.execute(
+            f"INSERT INTO agent_schedules ({','.join(values)}) VALUES ({','.join('?' for _ in values)})",
+            tuple(values.values()),
+        )
+        return schedule
 
     def cancel_agent_schedule(self, thread_id: str, schedule_id: str) -> None:
         with self.connection() as connection:
-            changed = connection.execute(
-                "UPDATE agent_schedules SET state='cancelled', pending_since=NULL, next_fire_at=NULL WHERE thread_id=? AND schedule_id=?",
-                (thread_id, schedule_id),
-            ).rowcount
-            if not changed:
-                raise KeyError(schedule_id)
+            self._cancel_agent_schedule(connection, thread_id, schedule_id)
+
+    def _cancel_agent_schedule(
+        self, connection: sqlite3.Connection, thread_id: str, schedule_id: str
+    ) -> None:
+        changed = connection.execute(
+            "UPDATE agent_schedules SET state='cancelled', pending_since=NULL, next_fire_at=NULL WHERE thread_id=? AND schedule_id=?",
+            (thread_id, schedule_id),
+        ).rowcount
+        if not changed:
+            raise KeyError(schedule_id)
 
     def pause_agent_schedule(self, thread_id: str, schedule_id: str) -> AgentSchedule:
         """A paused schedule keeps its next fire and limits; its waiting note is dropped."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            state = connection.execute(
-                "SELECT state FROM agent_schedules WHERE thread_id=? AND schedule_id=?",
-                (thread_id, schedule_id),
-            ).fetchone()
-            if state is None:
-                raise KeyError(schedule_id)
-            if state[0] not in ("active", "paused"):
-                raise ValueError("schedule_not_active")
-            connection.execute(
-                "UPDATE agent_schedules SET state='paused', pending_since=NULL, "
-                "deferred_reason=NULL WHERE schedule_id=?",
-                (schedule_id,),
-            )
-            row = connection.execute(
-                "SELECT * FROM agent_schedules WHERE schedule_id=?", (schedule_id,)
-            ).fetchone()
-            return AgentSchedule.model_validate(dict(row))
+            return self._pause_agent_schedule(connection, thread_id, schedule_id)
+
+    def _pause_agent_schedule(
+        self, connection: sqlite3.Connection, thread_id: str, schedule_id: str
+    ) -> AgentSchedule:
+        state = connection.execute(
+            "SELECT state FROM agent_schedules WHERE thread_id=? AND schedule_id=?",
+            (thread_id, schedule_id),
+        ).fetchone()
+        if state is None:
+            raise KeyError(schedule_id)
+        if state[0] not in ("active", "paused"):
+            raise ValueError("schedule_not_active")
+        connection.execute(
+            "UPDATE agent_schedules SET state='paused', pending_since=NULL, "
+            "deferred_reason=NULL WHERE schedule_id=?",
+            (schedule_id,),
+        )
+        return self._agent_schedule(connection, thread_id, schedule_id)
 
     def reactivate_agent_schedule(
         self,
@@ -342,30 +505,51 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
         """Switch a disabled or paused schedule back on; with no fire left it is done."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            count = connection.execute(
-                "SELECT COUNT(*) FROM agent_schedules WHERE thread_id=? AND state='active'",
-                (thread_id,),
-            ).fetchone()[0]
-            if next_fire_at is not None and count >= AGENT_SCHEDULES_MAX_ACTIVE:
-                raise ValueError("schedule_limit")
-            changed = connection.execute(
-                "UPDATE agent_schedules SET state=?, disabled_reason=NULL, next_fire_at=?, "
-                "pending_since=NULL, deferred_reason=NULL "
-                "WHERE thread_id=? AND schedule_id=? AND state=?",
-                (
-                    "done" if next_fire_at is None else "active",
-                    next_fire_at,
-                    thread_id,
-                    schedule_id,
-                    was,
-                ),
-            ).rowcount
-            if not changed:
-                raise ValueError(f"schedule_not_{was}")
-            row = connection.execute(
-                "SELECT * FROM agent_schedules WHERE schedule_id=?", (schedule_id,)
-            ).fetchone()
-            return AgentSchedule.model_validate(dict(row))
+            return self._reactivate_agent_schedule(
+                connection, thread_id, schedule_id, next_fire_at, was=was
+            )
+
+    def _reactivate_agent_schedule(
+        self,
+        connection: sqlite3.Connection,
+        thread_id: str,
+        schedule_id: str,
+        next_fire_at: str | None,
+        *,
+        was: Literal["disabled", "paused"],
+    ) -> AgentSchedule:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM agent_schedules WHERE thread_id=? AND state='active'",
+            (thread_id,),
+        ).fetchone()[0]
+        if next_fire_at is not None and count >= AGENT_SCHEDULES_MAX_ACTIVE:
+            raise ValueError("schedule_limit")
+        changed = connection.execute(
+            "UPDATE agent_schedules SET state=?, disabled_reason=NULL, next_fire_at=?, "
+            "pending_since=NULL, deferred_reason=NULL "
+            "WHERE thread_id=? AND schedule_id=? AND state=?",
+            (
+                "done" if next_fire_at is None else "active",
+                next_fire_at,
+                thread_id,
+                schedule_id,
+                was,
+            ),
+        ).rowcount
+        if not changed:
+            raise ValueError(f"schedule_not_{was}")
+        return self._agent_schedule(connection, thread_id, schedule_id)
+
+    def _agent_schedule(
+        self, connection: sqlite3.Connection, thread_id: str, schedule_id: str
+    ) -> AgentSchedule:
+        row = connection.execute(
+            "SELECT * FROM agent_schedules WHERE thread_id=? AND schedule_id=?",
+            (thread_id, schedule_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(schedule_id)
+        return AgentSchedule.model_validate(dict(row))
 
     def defer_agent_schedules(self, schedules: list[AgentSchedule], reason: str) -> None:
         """Keep the notes pending and say why the wake has not started."""

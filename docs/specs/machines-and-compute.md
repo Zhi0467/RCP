@@ -193,8 +193,8 @@ acknowledgement or
 request attribution. The server otherwise uses the recorded OS owner outside
 the provider's containment, stops it
 idempotently, writes a new cancellation acknowledgement, and checks absence afresh.
-An exit receipt discovered during the stop is also preserved before writing
-that acknowledgement; that request retains its stop attribution. A retry that
+An exit receipt discovered during the stop is also preserved without a
+cancellation acknowledgement; that request retains its stop attribution. A retry that
 finds the exited record performs no new stop and clears its unused request claim.
 Only confirmed absence settles the job as cancelled. Explicit recovery preserves
 earlier loss diagnostics and invents no exit status. Marker, transport, or

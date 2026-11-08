@@ -1,4 +1,4 @@
-import type { DesktopBuildIdentity } from "../core/desktopRuntime";
+import type { DesktopBuildIdentity, DesktopUpdate } from "../core/desktopRuntime";
 import type { UpdateNotice } from "../core/types";
 
 export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuildIdentity | null) {
@@ -47,3 +47,11 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
 }
 
 export const releaseDismissKey = (release: string) => `update-dismissed:${release}`;
+
+export const desktopUpdateErrorDismissPrefix = "desktop-update-error:";
+
+export function desktopUpdateDismissKey(update: DesktopUpdate | null, error: string | null) {
+  return error
+    ? `${desktopUpdateErrorDismissPrefix}${error}`
+    : `desktop-update:${update?.version ?? "unknown"}`;
+}
