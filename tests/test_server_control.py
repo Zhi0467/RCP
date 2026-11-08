@@ -49,6 +49,7 @@ from rcp.server_runtime import (
     published_server_metadata,
 )
 from rcp.storage import AppStore
+from rcp.storage.provisioning import ProjectTransferRestartRequired
 from rcp.transfer.target import upload_target_transfer_archive
 from tests.helpers import TASK_SETTLE_TIMEOUT, signed_in_client
 from tests.test_project_transfer_request_storage import _archive_bound_pair
@@ -480,6 +481,99 @@ def test_update_maintenance_refuses_an_active_upload_before_closing_admission(
     )
     assert isinstance(completed, ServerControlProjectTransferUploadResult)
     assert completed.state == "complete"
+
+
+@pytest.mark.parametrize(
+    ("upload_status", "active_upload_order"),
+    [
+        ("active", "none"),
+        ("complete", "none"),
+        ("consumed", "none"),
+        ("invalidated", "none"),
+        ("consumed", "before"),
+        ("consumed", "after"),
+    ],
+)
+def test_update_maintenance_only_considers_active_transfer_uploads(
+    tmp_path: Path,
+    control_root: Path,
+    upload_status: str,
+    active_upload_order: str,
+) -> None:
+    _source, store, _source_request, request = _archive_bound_pair(tmp_path / "fixture")
+    store.rename_space("Transfer maintenance lab")
+    if active_upload_order == "before":
+        store.begin_target_project_transfer_upload(request.request_id)
+    fixture_path = (
+        Path(__file__).parent / "fixtures/production_upgrade_state/terminal-transfer/rows.json"
+    )
+    tables = json.loads(fixture_path.read_text())["tables"]
+    historical_request_id = tables["project_transfer_requests"][0]["request_id"]
+    with store.connection() as connection:
+        for table, rows in tables.items():
+            for row in rows:
+                columns = ", ".join(row)
+                placeholders = ", ".join("?" for _ in row)
+                connection.execute(
+                    f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", tuple(row.values())
+                )
+        connection.execute(
+            """UPDATE project_transfer_uploads
+               SET status = ?,
+                   receipt_json = CASE WHEN ? IN ('active', 'invalidated')
+                                       THEN NULL ELSE receipt_json END,
+                   invalidated_at = CASE WHEN ? = 'invalidated' THEN ? ELSE NULL END
+               WHERE request_id = ?""",
+            (upload_status, upload_status, upload_status, store.now(), historical_request_id),
+        )
+    if active_upload_order == "after":
+        store.begin_target_project_transfer_upload(request.request_id)
+    with pytest.raises(ProjectTransferRestartRequired):
+        store.project_transfer_request(historical_request_id)
+
+    data_dir = store.path.parent
+    data_dir.chmod(0o700)
+    metadata = ServerMetadata.create(
+        data_dir,
+        host="127.0.0.1",
+        port=8421,
+        owner_kind="cli",
+        control_socket=control_root / "legacy-transfer-control.sock",
+        running_commit="a" * 40,
+        web_build_id="sha256:" + "b" * 64,
+    )
+    app = create_app(data_dir=data_dir, instance_metadata=metadata)
+    app.state.server_control.peer_resolver = lambda _connection: ServerControlPeer(
+        pid=os.getpid(), uid=0, gid=0
+    )
+    maintenance_id = str(uuid.uuid4())
+    boundary_sha256 = "a" * 64
+    with published_server_metadata(data_dir, metadata), signed_in_client(app):
+        client = ServerControlClient.from_data_dir(data_dir, expected_server_uid=os.geteuid())
+        if upload_status == "active" or active_upload_order != "none":
+            with pytest.raises(ServerControlError, match="active project transfer upload"):
+                client.maintenance(
+                    "maintenance_enter",
+                    maintenance_id=maintenance_id,
+                    boundary_sha256=boundary_sha256,
+                )
+            assert not app.state.background_admission_gate.closed
+        else:
+            entered = client.maintenance(
+                "maintenance_enter",
+                maintenance_id=maintenance_id,
+                boundary_sha256=boundary_sha256,
+            )
+            assert entered.closed and entered.quiescent
+            assert entered.capture is not None
+            released = client.maintenance(
+                "maintenance_release",
+                maintenance_id=maintenance_id,
+                boundary_sha256=boundary_sha256,
+            )
+            assert not released.closed
+    with pytest.raises(ProjectTransferRestartRequired):
+        store.project_transfer_request(historical_request_id)
 
 
 def test_control_socket_is_refused_for_a_personal_or_non_cli_app(

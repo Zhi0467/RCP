@@ -365,7 +365,7 @@ def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
     assert leased.archive_size_bytes == target_request.archive_size_bytes
     assert target.begin_target_project_transfer_upload(target_request.request_id) == leased
     assert target.target_project_transfer_upload(target_request.request_id) == leased
-    assert target.target_project_transfer_uploads() == [leased]
+    assert target.has_active_target_project_transfer_uploads()
 
     completed = target.complete_target_project_transfer_upload(
         target_request.request_id,

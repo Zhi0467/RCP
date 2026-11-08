@@ -678,7 +678,8 @@ retirement or removal. Corrupt or missing archives remain repairable. The
 historical membership audit remains.
 
 An active upload causes update refusal without closing the upload completion
-route. Completed receipt-backed inboxes survive preparation and rollback.
+route. This checks active leases directly; reading historical transfer requests
+is unnecessary for idleness. Completed receipt-backed inboxes survive preparation and rollback.
 Backups exclude transfer inboxes and exports. Restore invalidates leases and
 marks unfinished requests for operator action. Re-entry must validate the
 restored review, actor and archive before a new lease. Target restore never
