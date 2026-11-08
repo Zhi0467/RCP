@@ -375,7 +375,7 @@
   "supervisor/src/rcp_supervisor/install.py": {"comment": 12},
   "supervisor/src/rcp_supervisor/limits.py": {"comment": 9},
   "supervisor/src/rcp_supervisor/migration.py": {"comment": 15},
-  "supervisor/src/rcp_supervisor/operations.py": {"comment": 11},
+  "supervisor/src/rcp_supervisor/operations.py": {"comment": 7},
   "supervisor/src/rcp_supervisor/releases.py": {"comment": 11},
   "supervisor/src/rcp_supervisor/restore.py": {"comment": 1},
   "supervisor/src/rcp_supervisor/retention.py": {"comment": 20},
