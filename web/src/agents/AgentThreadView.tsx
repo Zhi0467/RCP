@@ -443,6 +443,22 @@ const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, stri
   unschedulable: "Paused because its time can no longer be worked out",
 };
 
+function WakeFacts({ watcher }: { watcher: WatcherRecord }) {
+  const machines = useSpaceMachines().machines;
+  const machineName = (machineId: string) =>
+    spaceMachineById(machines ?? [], machineId)?.name ?? machineId;
+  return (
+    <dl className="upcoming-facts">
+      {watcherFacts(watcher, machineName).map(({ label, value, code }) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{code ? <code>{value}</code> : value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function WakesPopover({
   thread,
   schedules,
@@ -459,9 +475,6 @@ function WakesPopover({
   const [open, setOpen] = useState(false);
   const [opened, setOpened] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const machines = useSpaceMachines().machines;
-  const machineName = (machineId: string) =>
-    spaceMachineById(machines ?? [], machineId)?.name ?? machineId;
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -516,16 +529,7 @@ function WakesPopover({
                 <span className="upcoming-when">
                   <time>{when}</time>
                 </span>
-                {shown && (
-                  <dl className="upcoming-facts">
-                    {watcherFacts(watcher, machineName).map(({ label, value, code }) => (
-                      <div key={label}>
-                        <dt>{label}</dt>
-                        <dd>{code ? <code>{value}</code> : value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
+                {shown && <WakeFacts watcher={watcher} />}
                 <span className="upcoming-actions">
                   {watcher.can_stop_watching && (
                     <button
