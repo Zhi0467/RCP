@@ -259,6 +259,7 @@ class RebuildableCache:
             and not path.is_symlink()
             and path.name != _ACCESS_FILE
             and not path.name.startswith(f"{_ACCESS_FILE}.")
+            and not path.name.startswith(".history-")
         }
 
     def _accesses(self, entries: set[Path]) -> dict[str, float]:

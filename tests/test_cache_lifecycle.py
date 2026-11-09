@@ -216,6 +216,23 @@ def test_file_cache_expires_then_uses_deterministic_lru_and_ignores_mtime(
     assert after.reclaimable_count == 2
 
 
+def test_a_history_write_in_flight_is_not_a_cache_entry(tmp_path) -> None:
+    clock = FakeClock()
+    root = tmp_path / "graph-history"
+    root.mkdir()
+    cache = RebuildableCache(
+        root, CacheLimits(ttl_seconds=1, max_count=1, max_bytes=1), layout="files", clock=clock
+    )
+    in_flight = root / ".history-abc123"
+    in_flight.write_text("partial", encoding="utf-8")
+    clock.advance(seconds=5)
+
+    swept = cache.sweep()
+
+    assert in_flight.exists()
+    assert swept.count == 0
+
+
 def test_active_entry_is_never_expired_or_evicted(tmp_path) -> None:
     clock = FakeClock()
     root = tmp_path / "session-slices"
