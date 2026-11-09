@@ -1259,7 +1259,9 @@ export function AgentThreadView({
   });
   const relayed = thread.kind === "space";
   const dockCards: StackCard[] = [
-    ...cards.proposals.map((view) => proposalStackCard(view, relayed)),
+    ...cards.proposals
+      .filter((view) => !view.stale)
+      .map((view) => proposalStackCard(view, relayed)),
     ...cards.asked.map((question) =>
       askedStackCard(question, relayed ? question.project_name : null),
     ),

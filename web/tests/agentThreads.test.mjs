@@ -39,7 +39,6 @@ import {
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
 import { ApiError } from "../src/core/api.ts";
-import { MAIN_GRAPH, projectViewHash } from "../src/core/graphTarget.ts";
 
 const thread = (overrides) => ({
   thread_id: "t",
@@ -379,9 +378,7 @@ const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/Age
 const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );
-const { AskedApprovalCard, ProposalApprovalCard } = await renderServer.ssrLoadModule(
-  "/src/agents/ApprovalCard.tsx",
-);
+const { AskedApprovalCard } = await renderServer.ssrLoadModule("/src/agents/ApprovalCard.tsx");
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
@@ -441,69 +438,25 @@ test("the header names the pinned Proposal's title", () => {
   assert.ok(!named.includes("branch"));
 });
 
-test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {
-  let memory = { order: [], index: 0, folded: false };
+test("Later puts the front card away, and a refetch keeps survivors' order and appends new cards", () => {
+  let memory = { order: [], index: 0, later: [] };
   memory = stackLater(memory, ["a", "b", "c"]);
-  assert.deepEqual(memory.order, ["b", "c", "a"]);
-  assert.equal(memory.folded, false);
-  assert.deepEqual(stackOrder(memory.order, ["a", "b", "c", "d"]), ["b", "c", "a", "d"]);
-  assert.deepEqual(stackOrder(memory.order, ["d", "a", "c"]), ["c", "a", "d"]);
+  assert.deepEqual(memory.order, ["b", "c"]);
+  assert.deepEqual(memory.later, ["a"]);
+  assert.deepEqual(stackOrder(memory.order, ["b", "c", "d"]), ["b", "c", "d"]);
+  assert.deepEqual(stackOrder(memory.order, ["d", "c"]), ["c", "d"]);
   assert.deepEqual(stackOrder([], ["x", "y"]), ["x", "y"]);
-  const last = stackLater({ order: ["a", "b"], index: 1, folded: false }, ["a", "b"]);
-  assert.deepEqual(last.order, ["a", "b"]);
+  const last = stackLater({ order: ["a", "b"], index: 1, later: [] }, ["a", "b"]);
+  assert.deepEqual(last.order, ["a"]);
   assert.equal(last.index, 0);
 });
 
-test("Later on the last card folds the stack", () => {
-  const folded = stackLater({ order: ["a", "b"], index: 0, folded: false }, ["b"]);
-  assert.equal(folded.folded, true);
-  assert.deepEqual(folded.order, ["b"]);
-});
-
-const proposalView = (extra = {}) => ({
-  project_id: "p 1",
-  project_name: "Project",
-  thread_id: "t",
-  turn_id: "op",
-  turn_created_at: "2026-11-01T10:00:00Z",
-  proposal: {
-    id: "pr/1",
-    title: "H2 standing",
-    status: "pending",
-    card: { situation_cold: "s", why_human_now: "w", consequences: "c", decision_needed: "d" },
-  },
-  stale: false,
-  changes: [],
-  ...extra,
-});
-
-test("an out-of-date Proposal card offers only the project Inbox", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(ProposalApprovalCard, {
-      view: proposalView({ stale: true }),
-      decided: null,
-      showProject: false,
-      onDecided: () => undefined,
-      onChanged: () => undefined,
-    }),
-  );
-  const href = projectViewHash("p 1", MAIN_GRAPH, "attention").replaceAll("&", "&amp;");
-  assert.ok(html.includes(`href="${href}"`));
-  assert.doesNotMatch(html, /<button/);
-});
-
-test("an out-of-date Proposal card in a stack can still go to the back", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(ProposalApprovalCard, {
-      view: proposalView({ stale: true }),
-      decided: null,
-      showProject: false,
-      onDecided: () => undefined,
-      onChanged: () => undefined,
-      onLater: () => undefined,
-    }),
-  );
-  assert.equal(html.match(/<button/g)?.length, 1);
+test("Later on the last open card leaves every card put away, and a decided card drops out", () => {
+  const away = stackLater({ order: ["a", "b"], index: 0, later: ["a"] }, ["a", "b"]);
+  assert.deepEqual(away.order, []);
+  assert.deepEqual(away.later, ["a", "b"]);
+  const decided = stackLater({ order: ["b"], index: 0, later: ["a"] }, ["b"]);
+  assert.deepEqual(decided.later, ["b"]);
 });
 
 test("a settled asked card reads its stored outcome, including why its Proposal stayed pending", () => {

@@ -727,3 +727,27 @@ def test_local_question_origin_repair_requires_asking_task_provenance(
     reopened = AppStore(path)
     assert reopened.storage_schema_ledger_head() == AppStoreBase._STORAGE_SCHEMA_MIGRATIONS[-1][0]
     reopened.close()
+
+
+def test_a_space_chat_session_from_before_machine_cards_resumes_on_the_backend(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+
+    def seed(connection: sqlite3.Connection) -> None:
+        for session, kind in (("space", "space_chat"), ("project", "project_chat")):
+            connection.execute(
+                "INSERT INTO chat_session_contexts VALUES ('claude', 'local', ?, 'owner', ?, "
+                "'chat', NULL, 1, '{}', 'digest', 'op', ?, ?)",
+                (session, kind, NOW, NOW),
+            )
+
+    _old_store(path, monkeypatch, seed)
+    store = AppStore(path)
+    assert store.chat_session_context("claude", BACKEND, "space") is not None
+    with store.connection() as connection:
+        project = connection.execute(
+            "SELECT machine_id FROM chat_session_contexts WHERE native_session_id = 'project'"
+        ).fetchone()[0]
+    assert project == "local"
+    store.close()

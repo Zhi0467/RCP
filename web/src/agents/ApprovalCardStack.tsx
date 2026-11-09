@@ -28,10 +28,10 @@ export type StackCard =
   | { kind: "question"; key: string; question: RelayedQuestion };
 
 /**
- * Where a stack stands: its card order, the front card, whether Later folded it,
- * and whether it ever held more than one card, so its space stays put as it empties.
+ * Where a stack stands: its shown card order, the front card, the cards Later put
+ * away, and whether it ever held more than one card, so its space stays put as it empties.
  */
-export type StackMemory = { order: string[]; index: number; folded: boolean; held?: boolean };
+export type StackMemory = { order: string[]; index: number; later: string[]; held?: boolean };
 
 export function proposalCardKey(view: ProposalCardView): string {
   return `proposal:${view.project_id}:${view.proposal.id}`;
@@ -53,18 +53,27 @@ export function stackOrder(previous: readonly string[], keys: readonly string[])
   return [...kept, ...keys.filter((key) => !known.has(key))];
 }
 
-/** Later sends the front card to the back; on the last card it folds the stack. */
+/** Later puts the front card away; once every card is away the stack folds to one line. */
 export function stackLater(memory: StackMemory, keys: readonly string[]): StackMemory {
-  const order = stackOrder(memory.order, keys);
-  if (order.length <= 1) return { ...memory, order, index: 0, folded: true };
+  const later = memory.later.filter((key) => keys.includes(key));
+  const order = stackOrder(
+    memory.order,
+    keys.filter((key) => !later.includes(key)),
+  );
+  if (!order.length) return { ...memory, order, index: 0, later };
   const index = Math.min(memory.index, order.length - 1);
-  const next = [...order.slice(0, index), ...order.slice(index + 1), order[index]];
-  return { ...memory, order: next, index: index >= next.length - 1 ? 0 : index, folded: false };
+  const rest = order.filter((_, at) => at !== index);
+  return {
+    ...memory,
+    order: rest,
+    index: index >= rest.length ? 0 : index,
+    later: [...later, order[index]],
+  };
 }
 
 /** Each rendered stack's place, per stack key; a reload restores server order. */
 const memories = new Map<string, StackMemory>();
-const FRESH: StackMemory = { order: [], index: 0, folded: false };
+const FRESH: StackMemory = { order: [], index: 0, later: [] };
 
 function cardIsOpen(card: StackCard): boolean {
   if (card.kind === "proposal") return card.decided === null;
@@ -103,13 +112,17 @@ export function ApprovalCardStack({
   const settled = cards.filter((card) => !cardIsOpen(card));
   const keys = open.map((card) => card.key);
   const memory = memories.get(stackKey) ?? FRESH;
-  const order = stackOrder(memory.order, keys);
+  const putAway = memory.later.filter((key) => keys.includes(key));
+  const order = stackOrder(
+    memory.order,
+    keys.filter((key) => !putAway.includes(key)),
+  );
   const index = Math.min(memory.index, Math.max(order.length - 1, 0));
-  const folded = memory.folded && order.length > 0;
+  const folded = order.length === 0 && putAway.length > 0;
   const held = Boolean(memory.held) || order.length > 1;
-  const shown: StackMemory = { order, index, folded, held };
+  const shown: StackMemory = { order, index, later: putAway, held };
   useEffect(() => {
-    memories.set(stackKey, { order, index, folded, held });
+    memories.set(stackKey, shown);
   });
   useEffect(() => () => void memories.delete(stackKey), [stackKey]);
   useEffect(() => {
@@ -180,28 +193,28 @@ export function ApprovalCardStack({
     );
   const later = () => {
     const next = stackLater(shown, keys);
-    remember(next, next.folded ? "fold" : "front");
+    remember(next, next.order.length === 0 ? "fold" : "front");
   };
   const step = (by: number) =>
     remember({ ...shown, index: (index + by + order.length) % order.length }, "front");
   return (
     <>
       {settled.map((card) => render(card))}
-      {front &&
-        (folded ? (
-          <button
-            ref={foldRef}
-            className="approval-quiet approval-fold"
-            type="button"
-            aria-expanded={false}
-            onClick={() => remember({ ...shown, folded: false }, "front")}
-          >
-            <span>
-              {order.length} {order.length === 1 ? "card" : "cards"} waiting
-            </span>
-            <ChevronDown size={14} aria-hidden="true" />
-          </button>
-        ) : (
+      {folded ? (
+        <button
+          ref={foldRef}
+          className="approval-quiet approval-fold"
+          type="button"
+          aria-expanded={false}
+          onClick={() => remember({ ...shown, order: putAway, index: 0, later: [] }, "front")}
+        >
+          <span>
+            {putAway.length} {putAway.length === 1 ? "card" : "cards"} waiting
+          </span>
+          <ChevronDown size={14} aria-hidden="true" />
+        </button>
+      ) : (
+        front && (
           <div
             className="approval-stack"
             data-stacked={order.length > 1 ? "" : undefined}
@@ -224,7 +237,8 @@ export function ApprovalCardStack({
               {render(front, later)}
             </div>
           </div>
-        ))}
+        )
+      )}
     </>
   );
 }

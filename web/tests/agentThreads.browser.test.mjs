@@ -2049,7 +2049,7 @@ test("a project thread docks its Proposal cards in one stack and decides them in
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `cards-stack-${width}`);
 
-      await stack.getByRole("button", { name: "Later" }).click();
+      await stack.getByRole("button", { name: "Next card" }).click();
       assert.ok((await front()).includes("Retire"));
       assert.equal(await focusedCard(page), await front());
       if (width === 390)
@@ -2176,7 +2176,7 @@ test("deciding the front card keeps its stack, its result and the focus through 
   });
 });
 
-test("an out-of-date Proposal card links to the Inbox and a failed card read hides only the cards", async () => {
+test("an out-of-date Proposal stays out of the dock and a failed card read hides only the cards", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     await mockApi(page, []);
@@ -2188,19 +2188,15 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
       route.fulfill({ json: [] }),
     );
+    const read = page.waitForResponse((response) =>
+      response.url().includes("/api/agent-threads/cards"),
+    );
     await page.goto(`${base}#/agent/moss`);
     const thread = page.getByRole("region", { name: "Moss" });
-    const stale = thread.locator(".approval-quiet");
-    await stale.waitFor();
-    assert.equal(
-      await stale.getByRole("link").getAttribute("href"),
-      "#/projects/p1?view=attention",
-    );
-    assert.equal(await thread.locator(".approval-stack-nav").count(), 0);
-    assert.equal(await thread.locator(".approval-stack[data-held]").count(), 0);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
-    await stale.getByRole("button", { name: "Later" }).click();
-    await thread.locator(".approval-fold").waitFor();
+    await read;
+    await page.waitForTimeout(300);
+    assert.equal(await thread.locator(".approval-dock").count(), 0);
+    assert.equal(await thread.locator(".approval-quiet").count(), 0);
     await page.close();
 
     const elsewhere = await browser.newPage({ viewport: { width: 1280, height: 900 } });

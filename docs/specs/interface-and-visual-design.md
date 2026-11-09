@@ -526,8 +526,9 @@ ordered fallbacks as an asked card: the turn's lines, then its time position,
 then the end. Running retries and wakes may have no shown line, so a slot after
 a turn's last line would lose their cards. Cards at one position form one stack:
 the front card with two offset edges behind it, and "‹ 1 of N ›" above its right
-edge. Later sends the front card to the back; on the last card it folds the
-stack to "N card(s) waiting", which unfolds on a tap. Later, the arrows and the
+edge. Later puts the front card away for as long as the stack is shown; once
+every open card is away the stack folds to "N card(s) waiting", which brings
+them back on a tap. Later, the arrows and the
 fold move keyboard focus to the new front card or the fold line. Order and fold
 last while the stack is shown; a refetch keeps surviving cards in order, appends
 new ones and drops settled ones, and a reload restores server order. A stack that
@@ -536,8 +537,9 @@ transcript does not jump. A decision keeps its stack in place and moves focus
 to the next front card. A tapped card shows its result, including a failure
 reason, through the open-card change its own tap causes; it drops at a fetch
 after a later change that no longer lists it, or when the member leaves the
-thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
-and can still be sent back with Later. A failed card fetch hides the cards and
+thread. The turn keeps its "sent to Inbox" chip. A stale Proposal stays out of
+the dock; the Inbox still lists it. A card whose Proposal was decided elsewhere
+shows "Out of date" with an Open Inbox link. A failed card fetch hides the cards and
 leaves the transcript as it is; an amber cards icon in the composer says so on
 hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the

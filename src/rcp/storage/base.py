@@ -150,6 +150,7 @@ class AppStoreBase:
         (77, "machine_identity_v1"),
         (78, "local_question_origins_v1"),
         (79, "agent_schedule_command_receipts_v1"),
+        (80, "space_chat_session_machines_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1063,7 +1064,11 @@ class AppStoreBase:
             name="paper_coach_steers_v1",
             migration=migrate_paper_coach_steers,
         )
-        from rcp.machine_upgrade import migrate_local_question_origins, migrate_machine_identity
+        from rcp.machine_upgrade import (
+            migrate_local_question_origins,
+            migrate_machine_identity,
+            migrate_space_chat_session_machines,
+        )
 
         self._run_storage_schema_migration(
             connection,
@@ -1082,6 +1087,12 @@ class AppStoreBase:
             version=79,
             name="agent_schedule_command_receipts_v1",
             migration=migrate_agent_schedule_command_receipts,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=80,
+            name="space_chat_session_machines_v1",
+            migration=migrate_space_chat_session_machines,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
