@@ -259,7 +259,6 @@ class RebuildableCache:
             and not path.is_symlink()
             and path.name != _ACCESS_FILE
             and not path.name.startswith(f"{_ACCESS_FILE}.")
-            and not path.name.startswith(".history-")
         }
 
     def _accesses(self, entries: set[Path]) -> dict[str, float]:
@@ -374,12 +373,17 @@ class RebuildableCache:
 
 
 def _entry_size(path: Path) -> int:
-    if path.is_file() and not path.is_symlink():
-        return path.stat().st_size
+    """Size an entry; a file a writer renamed after the listing has none."""
+    files = [path] if path.is_file() else list(path.rglob("*"))
     total = 0
-    for child in path.rglob("*"):
-        if child.is_file() and not child.is_symlink():
-            total += child.stat().st_size
+    for child in files:
+        if child.is_symlink():
+            continue
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except FileNotFoundError:
+            continue
     return total
 
 

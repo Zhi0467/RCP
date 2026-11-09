@@ -382,6 +382,7 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
     proposals,
     asked,
     questions,
+    loading: loaded?.scope !== scope,
     unavailable: loaded?.scope === scope && loaded.list === null,
     decisionOf,
     markDecided,

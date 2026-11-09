@@ -1547,7 +1547,7 @@ Boundary:
 Optional watcher handoff:
 - If this turn needs a later wake, you may write `{watch_path}` as one non-empty watcher object with
   exactly `external` and `graph` lists, for example
-  `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
+  `{{"external":[{{"purpose":"training run finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
   At least one list is non-empty.
 - Every `graph` item is exactly one of two canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item

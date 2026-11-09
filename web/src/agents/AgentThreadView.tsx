@@ -1266,9 +1266,11 @@ export function AgentThreadView({
   const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
   const cardsElsewhere = new Set([
     ...cards.asked.map((question) => question.question_id),
-    ...questions.flatMap((question) =>
-      question.card && question.state === "pending" ? [question.question_id] : [],
-    ),
+    ...(cards.loading
+      ? questions.flatMap((question) =>
+          question.card && question.state === "pending" ? [question.question_id] : [],
+        )
+      : []),
   ]);
   const cardsChanged = () => {
     void cards.refetch();

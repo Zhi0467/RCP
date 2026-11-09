@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import re
-import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -291,11 +291,10 @@ class GraphHistoryStore:
             if len(content.encode()) > GRAPH_HISTORY_STORE_MAX_BYTES:
                 _LOGGER.warning("Graph history cache entry exceeds the disk budget")
                 return
-            with self.cache.pin([path]):
+            temporary = self.root / f".history-{uuid.uuid4().hex}"
+            with self.cache.pin([path, temporary]):
                 self.root.mkdir(parents=True, exist_ok=True)
-                descriptor, name = tempfile.mkstemp(prefix=".history-", dir=self.root)
-                temporary = Path(name)
-                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                with temporary.open("x", encoding="utf-8") as handle:
                     handle.write(content)
                     handle.flush()
                     os.fsync(handle.fileno())
