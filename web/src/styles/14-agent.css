@@ -313,6 +313,56 @@
   height: 28px;
   width: 28px;
 }
+.upcoming-open {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  gap: 4px;
+  grid-column: 1;
+  margin-left: -4px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+.upcoming-open svg {
+  color: var(--faint);
+  flex: none;
+  transition: transform 0.15s ease;
+}
+.upcoming-open[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+.upcoming-row[data-state="degraded"] .upcoming-when {
+  color: var(--coral);
+}
+.upcoming-facts {
+  animation: agent-pop-in 0.14s ease-out;
+  display: grid;
+  gap: 4px;
+  grid-column: 1;
+  margin: 6px 0 2px;
+}
+.upcoming-facts > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 76px minmax(0, 1fr);
+}
+.upcoming-facts dt {
+  color: var(--faint);
+  font-size: var(--type-2xs);
+}
+.upcoming-facts dd {
+  font-size: var(--type-2xs);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.upcoming-facts code {
+  font: var(--type-2xs) var(--mono);
+}
 /* A pause, or a stop with no error row, sits in the message column shaped like
    the failed-turn row: one rounded line with its actions at the end. */
 .agent-thread .node-chat-lines > .chat-task-inline.paused {
@@ -1284,4 +1334,7 @@
   .chat-line-time {
     transition: none;
   }
+}
+.upcoming-row:has(.upcoming-facts) .upcoming-actions {
+  align-self: start;
 }

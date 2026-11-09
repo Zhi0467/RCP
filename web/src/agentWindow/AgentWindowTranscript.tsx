@@ -17,7 +17,6 @@ import type {
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
-  ProposalCardView,
   TurnOutcome,
 } from "../core/types";
 import type { GlossaryIndex } from "../graph/glossary";
@@ -47,8 +46,8 @@ interface Props {
   continuedTaskIds: Set<string>;
   latestGraphReceiptLineIds: Set<string>;
   renderQuestion?: (question: AgentQuestion) => ReactNode;
-  /** Cards that the owner derives itself; placed by their raising turn. */
-  proposalCards?: ProposalCardView[];
+  /** Card questions the owner shows elsewhere; their typed answers stay hidden here too. */
+  shownElsewhere?: ReadonlySet<string>;
   /** Shows each position's cards as one unit; without it each asked card uses `renderQuestion`. */
   renderCards?: (entry: AgentWindowCardsEntry) => ReactNode;
   lineLead?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
@@ -85,7 +84,7 @@ interface Props {
 }
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 const NO_ERRORS = new Map<string, string>();
-const NO_PROPOSAL_CARDS: ProposalCardView[] = [];
+const NONE_ELSEWHERE: ReadonlySet<string> = new Set();
 
 /** Shared turn bodies; owners supply their questions, progress, and controls. */
 export function AgentWindowTranscript({
@@ -99,7 +98,7 @@ export function AgentWindowTranscript({
   continuedTaskIds,
   latestGraphReceiptLineIds,
   renderQuestion,
-  proposalCards = NO_PROPOSAL_CARDS,
+  shownElsewhere = NONE_ELSEWHERE,
   renderCards,
   lineLead,
   lineClassName,
@@ -151,7 +150,7 @@ export function AgentWindowTranscript({
     const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [transcript]);
-  const entries = agentWindowEntries(transcript, questions, proposalCards);
+  const entries = agentWindowEntries(transcript, questions, shownElsewhere);
   const dividers = timeDividers(entries);
   const now = new Date();
   const toggleTime = (lineId: string, target: EventTarget) => {
@@ -478,24 +477,27 @@ export type AgentWindowCardsEntry = {
   kind: "cards";
   key: string;
   asked: AgentQuestion[];
-  proposals: ProposalCardView[];
 };
 
 type PlacedCard = {
   kind: "card";
   turnId: string;
   at: string;
-  card: { asked: AgentQuestion } | { proposal: ProposalCardView };
+  question: AgentQuestion;
 };
 
 /** Cards remain inside their owning turn, even when settlement stamps both messages together. */
 export function agentWindowEntries(
   lines: TaskTranscriptLine[],
   questions: AgentQuestion[],
-  proposalCards: ProposalCardView[] = [],
+  shownElsewhere: ReadonlySet<string> = NONE_ELSEWHERE,
 ) {
-  const asked = questions.filter((question) => question.card);
-  const cardIds = new Set(asked.map((question) => question.question_id));
+  const cardIds = new Set(
+    questions.filter((question) => question.card).map((question) => question.question_id),
+  );
+  const asked = questions.filter(
+    (question) => question.card && !shownElsewhere.has(question.question_id),
+  );
   const visible = lines.filter(
     (line) => !(line.role === "human" && line.questionId && cardIds.has(line.questionId)),
   );
@@ -505,20 +507,12 @@ export function agentWindowEntries(
     visible,
     questions.filter((question) => !question.card),
   );
-  const cards: PlacedCard[] = [
-    ...asked.map((question) => ({
-      kind: "card" as const,
-      turnId: question.operation_id,
-      at: question.created_at,
-      card: { asked: question },
-    })),
-    ...proposalCards.map((proposal) => ({
-      kind: "card" as const,
-      turnId: proposal.turn_id,
-      at: proposal.turn_created_at,
-      card: { proposal },
-    })),
-  ];
+  const cards: PlacedCard[] = asked.map((question) => ({
+    kind: "card" as const,
+    turnId: question.operation_id,
+    at: question.created_at,
+    question,
+  }));
   for (const card of cards.sort((a, b) => a.at.localeCompare(b.at))) {
     const ownerLines = entries.flatMap((entry, index) =>
       entry.kind === "line" && entry.line.taskId === card.turnId ? [index] : [],
@@ -560,11 +554,10 @@ export function agentWindowEntries(
     if (group?.kind !== "cards") {
       const seen = groupsAfterLine.get(anchor) ?? 0;
       groupsAfterLine.set(anchor, seen + 1);
-      group = { kind: "cards", key: `cards:${anchor}:${seen}`, asked: [], proposals: [] };
+      group = { kind: "cards", key: `cards:${anchor}:${seen}`, asked: [] };
       grouped.push(group);
     }
-    if ("asked" in entry.card) group.asked.push(entry.card.asked);
-    else group.proposals.push(entry.card.proposal);
+    group.asked.push(entry.question);
   }
   return grouped;
 }

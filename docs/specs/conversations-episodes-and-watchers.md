@@ -101,9 +101,10 @@ adds verbs:
   checks membership, the private owner, write admission and continuation, so an
   ended episode's answer still offers Add turns.
 
-Each Project Agent uses the same question dock, limited to that project's
-shared chats and episodes. Its own questions and approval cards stay inline,
-so a question never appears twice in the thread. The same recipient, private
+Each Project Agent uses the same dock, limited to that project's shared chats
+and episodes, and also docks its own open approval cards. Its plain questions
+stay inline, and a card shows inline only after it leaves the dock, so nothing
+appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
 
 Both reads refresh on the member's `agent_cards` version, which never moves on
@@ -1020,8 +1021,11 @@ shared Experiment allowance gates.
 
 Every watcher file has two all-or-none lists:
 
-- `external` observations with required literal `check_command`, absolute
-  `log_path`, and absolute `cwd`, plus optional nonblank `cancel_command`; and
+- `external` observations with a required one-line `purpose` (at most 120
+  characters), literal `check_command`, absolute `log_path`, and absolute `cwd`,
+  plus optional nonblank `cancel_command`. The purpose titles the watcher in
+  Wakes, where several watchers may share one log; a watcher saved before
+  purposes existed shows its check script name instead; and
 - `graph` conditions from a closed vocabulary.
 
 This is one external watcher form for direct scheduler submissions and

@@ -38,7 +38,7 @@ from rcp.storage.models import (
     WatcherClaimConflict,
     WatcherRecord,
 )
-from rcp.watchers import WatchSpec, run_watcher_cancel, run_watcher_check
+from rcp.watchers import AgentWatchSpec, WatchSpec, run_watcher_cancel, run_watcher_check
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -190,7 +190,7 @@ def _cancel_external_work(
     actions: dict[tuple[str, str, str], tuple[WatchSpec, str, str]] = {}
     uncancellable: dict[tuple[str, str, str], tuple[WatchSpec, str, str]] = {}
     for job in work.compute_jobs:
-        spec = WatchSpec.model_validate(helper_watch_spec(job))
+        spec = AgentWatchSpec.model_validate(helper_watch_spec(job))
         assert spec.cancel_command is not None
         actions[(job.machine_id, spec.cwd, spec.cancel_command)] = (
             spec,

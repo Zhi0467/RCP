@@ -300,6 +300,7 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
             {
                 "external": [
                     {
+                        "purpose": "job finishes",
                         "check_command": "false",
                         "log_path": str(Path(repository) / "check.log"),
                         "cwd": repository,

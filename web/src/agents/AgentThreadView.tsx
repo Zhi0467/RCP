@@ -39,6 +39,8 @@ import { browserReason } from "../core/browserStatus";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
+import { spaceMachineById } from "../projects/spaceMachines";
+import { useSpaceMachines } from "../projects/useSpaceMachines";
 import { graphProfile } from "../graph/graphResources";
 import { providerChange } from "../projects/providers";
 import { ChatComposer, ComposerField } from "../chat/ChatComposer";
@@ -110,6 +112,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherFacts,
   watcherWake,
 } from "./agentThreadModel";
 import {
@@ -440,6 +443,22 @@ const PAUSED_BECAUSE: Record<NonNullable<AgentSchedule["disabled_reason"]>, stri
   unschedulable: "Paused because its time can no longer be worked out",
 };
 
+function WakeFacts({ watcher }: { watcher: WatcherRecord }) {
+  const machines = useSpaceMachines().machines;
+  const machineName = (machineId: string) =>
+    spaceMachineById(machines ?? [], machineId)?.name ?? machineId;
+  return (
+    <dl className="upcoming-facts">
+      {watcherFacts(watcher, machineName).map(({ label, value, code }) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{code ? <code>{value}</code> : value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 function WakesPopover({
   thread,
   schedules,
@@ -454,6 +473,7 @@ function WakesPopover({
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [opened, setOpened] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
@@ -490,12 +510,26 @@ function WakesPopover({
           <h3>Wakes</h3>
           {watchers.map((watcher) => {
             const { what, when } = watcherWake(watcher, nodes);
+            const shown = opened === watcher.watcher_id;
             return (
-              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
-                <strong title={what}>{what}</strong>
+              <div
+                className="upcoming-row"
+                data-state={watcher.status === "degraded" ? "degraded" : "active"}
+                key={watcher.watcher_id}
+              >
+                <button
+                  className="upcoming-open"
+                  type="button"
+                  aria-expanded={shown}
+                  onClick={() => setOpened(shown ? null : watcher.watcher_id)}
+                >
+                  <ChevronRight size={13} aria-hidden="true" />
+                  <strong title={what}>{what}</strong>
+                </button>
                 <span className="upcoming-when">
                   <time>{when}</time>
                 </span>
+                {shown && <WakeFacts watcher={watcher} />}
                 <span className="upcoming-actions">
                   {watcher.can_stop_watching && (
                     <button
@@ -1234,6 +1268,14 @@ export function AgentThreadView({
   };
 
   const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cardsElsewhere = new Set([
+    ...cards.asked.map((question) => question.question_id),
+    ...(cards.loading
+      ? questions.flatMap((question) =>
+          question.card && question.state === "pending" ? [question.question_id] : [],
+        )
+      : []),
+  ]);
   const cardsChanged = () => {
     void cards.refetch();
     if (thread.kind === "project") void refresh();
@@ -1251,13 +1293,14 @@ export function AgentThreadView({
     question,
     projectName,
   });
+  const relayed = thread.kind === "space";
   const dockCards: StackCard[] = [
-    ...(thread.kind === "space"
-      ? [
-          ...cards.proposals.map((view) => proposalStackCard(view, true)),
-          ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
-        ]
-      : []),
+    ...cards.proposals
+      .filter((view) => !view.stale)
+      .map((view) => proposalStackCard(view, relayed)),
+    ...cards.asked.map((question) =>
+      askedStackCard(question, relayed ? question.project_name : null),
+    ),
     ...cards.questions.map((question): StackCard => ({
       kind: "question",
       key: questionCardKey(question),
@@ -1436,14 +1479,11 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
-          proposalCards={thread.kind === "project" ? cards.proposals : undefined}
+          shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (
             <ApprovalCardStack
               stackKey={`${thread.thread_id}:${entry.key}`}
-              cards={[
-                ...entry.proposals.map((view) => proposalStackCard(view, true)),
-                ...entry.asked.map((question) => askedStackCard(question, thread.project_name)),
-              ]}
+              cards={entry.asked.map((question) => askedStackCard(question, thread.project_name))}
               onDecided={cards.markDecided}
               onResolved={cards.markResolved}
               onAnswered={cards.markAnswered}

@@ -1462,6 +1462,7 @@ def _watch_specs(cwd: Path) -> list[dict[str, str]]:
     jobs = cwd / _JOBS_DIRECTORY
     return [
         {
+            "purpose": f"{name} finishes",
             "check_command": f"test -f {str(jobs / f'{name}.done')!r}",
             "log_path": str(jobs / f"{name}.log"),
             "cwd": str(jobs),

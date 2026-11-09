@@ -873,6 +873,20 @@ def migrate_local_question_origins(connection: sqlite3.Connection) -> None:
     )
 
 
+def migrate_space_chat_session_machines(connection: sqlite3.Connection) -> None:
+    """Name the backend card in space chat session baselines.
+
+    Migration 77 left session baselines for the per-project rewrite, which reads
+    each project's manifest. A space chat has no manifest, so its baseline kept
+    the old backend alias "local" and every later turn refused the session.
+    """
+    connection.execute(
+        "UPDATE chat_session_contexts SET machine_id = ? "
+        "WHERE kind = 'space_chat' AND machine_id = 'local'",
+        (BACKEND_MACHINE_ID,),
+    )
+
+
 def _migrate_artifact_edit_stages(connection: sqlite3.Connection, cards: _Cards) -> None:
     rows = connection.execute(
         "SELECT operation_id, request_json FROM graph_runs "

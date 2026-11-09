@@ -151,7 +151,7 @@ def test_child_watcher_wake_preserves_route_session_payload_and_spends_once(tmp_
     job = store.compute_job("job-1")
     assert {
         field: getattr(helper, field)
-        for field in ("check_command", "log_path", "cwd", "cancel_command")
+        for field in ("purpose", "check_command", "log_path", "cwd", "cancel_command")
     } == helper_watch_spec(job)
     assert '"job_id"' not in payload
     assert '"exit_status"' not in payload

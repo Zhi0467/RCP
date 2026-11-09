@@ -36,6 +36,7 @@ def _watch_handoff(watcher_cwd: Path) -> str:
         {
             "external": [
                 {
+                    "purpose": "job finishes",
                     "check_command": "false",
                     "log_path": str(watcher_cwd / "detached.log"),
                     "cwd": str(watcher_cwd),
@@ -349,7 +350,13 @@ async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
         service,
         request,
         execution,
-        _recorded_pass("", _ANSWER, json.dumps({"external": [{"check_command": ""}], "graph": []})),
+        _recorded_pass(
+            "",
+            _ANSWER,
+            json.dumps(
+                {"external": [{"purpose": "job finishes", "check_command": ""}], "graph": []}
+            ),
+        ),
     )
 
     errors = [item["text"] for item in events if item["event"] == "error"]
@@ -583,7 +590,10 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
 
     async def invalid_handoff(_provider, prompt, **kwargs):
         Path(kwargs["cwd"]).joinpath("watch.json").write_text(
-            json.dumps({"external": [{"check_command": ""}], "graph": []}), encoding="utf-8"
+            json.dumps(
+                {"external": [{"purpose": "job finishes", "check_command": ""}], "graph": []}
+            ),
+            encoding="utf-8",
         )
         async for event in _LoopLauncher.stream(launcher, _provider, prompt, **kwargs):
             yield event

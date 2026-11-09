@@ -42,6 +42,7 @@ from rcp.storage import (
 )
 from rcp.transport import StateUnavailable
 from rcp.watchers import (
+    AgentWatchSpec,
     WatcherBinding,
     WatcherCheckResult,
     WatcherInitialCheckError,
@@ -367,7 +368,9 @@ def _watcher_ids(groups: list[list[StoredWatcherRecord]]) -> list[list[str]]:
 
 
 def test_watch_json_validation_is_all_or_none_across_external_and_graph(store) -> None:
-    spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
+    spec = AgentWatchSpec(
+        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+    )
     valid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
     checked: list[str] = []
@@ -430,7 +433,9 @@ def test_watch_json_validation_is_all_or_none_across_external_and_graph(store) -
 def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watchers(
     store,
 ) -> None:
-    spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
+    spec = AgentWatchSpec(
+        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+    )
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
 
     def active_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
@@ -470,7 +475,9 @@ def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watch
 
 
 def test_supplied_watcher_ids_follow_external_then_graph_order(store) -> None:
-    spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
+    spec = AgentWatchSpec(
+        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+    )
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
 
     def active_check(
@@ -519,7 +526,9 @@ def test_invalid_supplied_watcher_ids_fail_before_checks_or_insertion(
     store,
     watcher_ids: list[str],
 ) -> None:
-    spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
+    spec = AgentWatchSpec(
+        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+    )
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     checked: list[str] = []
 

@@ -223,3 +223,9 @@ schedule commands gain durable replay receipts (migration 79). Exact source
 `pre-local-question-origin-v43-1226e25` through the existing fixture builder.
 It retains the previous histories and records, including the repaired local
 question origin. Older fixture directories remain unchanged.
+
+`pre-space-chat-machines-v45-07622f7` freezes migration 79 before space-chat
+session contexts move to the backend machine id (migration 80) and watchers
+gain a purpose (migration 81). Exact source
+`07622f747488eb2f1aa9411323882720ebcc735f` upgrades a copy of
+`pre-schedule-command-replay-v44-bbb9380` through the existing fixture builder.

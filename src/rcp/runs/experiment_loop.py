@@ -890,6 +890,7 @@ def prepare_experiment_watcher_records(
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
+                purpose=spec.purpose,
                 continuation=binding.continuation,
                 status="completed" if completed else "active",
                 created_at=created_at,

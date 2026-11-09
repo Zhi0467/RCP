@@ -399,6 +399,7 @@ class _LoopLauncher:
                     {
                         "external": [
                             {
+                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": str(self.watcher_cwd / "detached.log"),
                                 "cwd": str(self.watcher_cwd),
@@ -715,6 +716,7 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
                     self.diagnostics.append(Path(line.split("`")[1]).read_text(encoding="utf-8"))
             workspace = Path(kwargs["cwd"])
             observer = {
+                "purpose": "job finishes",
                 "check_command": "false",
                 "log_path": str(tmp_path / "detached.log"),
                 "cwd": str(tmp_path),

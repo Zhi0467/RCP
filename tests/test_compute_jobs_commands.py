@@ -181,7 +181,13 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
         "watcher": jobs.helper_watch_spec(job),
         "startup": {"status": "running"},
     }
-    assert set(first.result["watcher"]) == {"check_command", "cancel_command", "cwd", "log_path"}
+    assert set(first.result["watcher"]) == {
+        "purpose",
+        "check_command",
+        "cancel_command",
+        "cwd",
+        "log_path",
+    }
     assert job.origin_operation_id == "work-turn"
     assert commands.backend.starts[0][1] == (str(commands.workspace), job.job_root)
     assert commands.backend.protected_paths == tuple(

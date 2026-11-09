@@ -509,7 +509,11 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
     binding = _handoff_binding()
     prepared = prepare_experiment_watcher_records(
         execution,
-        [ExperimentWatchSpec(check_command="true", log_path="/tmp/result.log", cwd="/tmp")],
+        [
+            ExperimentWatchSpec(
+                purpose="job finishes", check_command="true", log_path="/tmp/result.log", cwd="/tmp"
+            )
+        ],
         [WatcherCheckResult(state="complete", checked_at="2026-08-19T00:01:00+00:00")],
         binding,
     )

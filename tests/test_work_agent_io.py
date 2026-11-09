@@ -431,6 +431,7 @@ async def test_work_watcher_binding_keeps_originating_episode_lineage(
                     {
                         "external": [
                             {
+                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": str(tmp_path / "work.log"),
                                 "cwd": str(tmp_path),
@@ -1394,7 +1395,7 @@ def test_recovery_makes_the_stage_hold_exactly_the_watcher_outputs_the_pass_wrot
 
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
-    kept = '{"observers": [{"check_command": "true"}], "stops": []}'
+    kept = '{"observers": [{"purpose": "job finishes", "check_command": "true"}], "stops": []}'
     workspace.joinpath("experiment-watch-aaaa.json").write_text("{}", encoding="utf-8")
     workspace.joinpath("experiment-watch-cccc.json").write_text("{}", encoding="utf-8")
 

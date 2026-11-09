@@ -98,7 +98,7 @@ from rcp.transport import (
     StateUnavailable,
     StateUnreachable,
 )
-from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
+from rcp.watchers import AgentWatchSpec, WatcherBinding, WatcherCheckResult
 from tests.helpers import sign_in_async_client, signed_in_client
 
 from .helpers import (
@@ -7785,6 +7785,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
                     {
                         "external": [
                             {
+                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/bounded-loop.log",
                                 "cwd": "/tmp",
@@ -8078,7 +8079,12 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
         "watch.json": json.dumps(
             {
                 "external": [
-                    {"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}
+                    {
+                        "purpose": "job finishes",
+                        "check_command": "false",
+                        "log_path": "/tmp/loop.log",
+                        "cwd": "/tmp",
+                    }
                 ],
                 "graph": [],
             }
@@ -8137,6 +8143,7 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
                     {
                         "external": [
                             {
+                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/recovered-loop.log",
                                 "cwd": "/tmp",
@@ -8171,7 +8178,8 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     repeated = persist_experiment_watchers_idempotently(
         execution,
         [
-            WatchSpec(
+            AgentWatchSpec(
+                purpose="job finishes",
                 check_command=stored.check_command,
                 log_path=stored.log_path,
                 cwd=stored.cwd,
@@ -8213,6 +8221,7 @@ async def test_readable_watch_value_error_gets_same_session_correction(
         {
             "external": [
                 {
+                    "purpose": "job finishes",
                     "check_command": "false",
                     "log_path": str(tmp_path / "fixture.log"),
                     "cwd": str(tmp_path),
@@ -8274,6 +8283,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     )
     execution = _chat_task_execution(app, request, "watch-origin")
     common = {
+        "purpose": "job finishes",
         "log_path": str(tmp_path / "fixture.log"),
         "cwd": str(tmp_path),
     }

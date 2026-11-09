@@ -649,6 +649,27 @@ def forget_compared_column(connection: sqlite3.Connection, table: str, column: s
         connection.execute(rewritten)
 
 
+def compare_added_column(connection: sqlite3.Connection, trigger: str, column: str) -> None:
+    """Make an all-column UPDATE trigger compare a column added after it was installed.
+
+    A fresh install compares every column in table order; appending the new last
+    column's comparison gives an upgraded store the same trigger.
+    """
+    sql = str(
+        connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (trigger,)
+        ).fetchone()[0]
+    )
+    clause = f'OLD."{column}" IS NOT NEW."{column}"'
+    if clause in sql:
+        return
+    head, separator, body = sql.partition(" BEGIN ")
+    if not separator:
+        raise RuntimeError(f"trigger {trigger} has no body")
+    connection.execute(f'DROP TRIGGER "{trigger}"')
+    connection.execute(f"{head} OR {clause}{separator}{body}")
+
+
 def install_provider_login_versions(connection: sqlite3.Connection) -> None:
     """Rebuilt login/cache tables and member settings publish Settings changes."""
     for event in ("insert", "update", "delete"):

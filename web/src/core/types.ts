@@ -1012,6 +1012,7 @@ export interface ExternalWatcherRecord extends WatcherDeliveryRecord {
   check_command: string;
   log_path: string;
   cwd: string;
+  purpose: string | null;
   cancel_command: string | null;
   cancel_requested_by: string | null;
   cancel_requested_by_name?: string | null;

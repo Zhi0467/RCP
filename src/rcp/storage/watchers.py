@@ -437,8 +437,8 @@ class WatcherStoreMixin(StoreMixinBase):
                 consecutive_error_count, group_id, group_label, notified,
                 notification_operation_id, stopped_by, stop_reason, stopped_at,
                 stop_operation_id, worker_id, cancel_command, cancel_requested_by,
-                cancel_requested_at, cancel_error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cancel_requested_at, cancel_error, purpose
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.watcher_id,
@@ -477,6 +477,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 record.cancel_requested_by if isinstance(record, WatcherRecord) else None,
                 record.cancel_requested_at if isinstance(record, WatcherRecord) else None,
                 record.cancel_error if isinstance(record, WatcherRecord) else None,
+                record.purpose if isinstance(record, WatcherRecord) else None,
             ),
         )
 

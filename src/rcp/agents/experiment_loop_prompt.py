@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v20"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v21"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -368,7 +368,7 @@ Watcher handoff protocol:
 
   ```json
   {{
-    "external": [{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],
+    "external": [{{"purpose":"seed 3 sweep finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],
     "graph": [{{"node_id": "blk/foo", "status_in": ["resolved"]}}]
   }}
   ```

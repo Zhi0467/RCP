@@ -12,13 +12,25 @@ import type {
 } from "../core/types";
 import { isExternalWatcherRecord, jobLabel } from "../experiments/runProjection.ts";
 
-/** What a Wakes row waits for and when it fires, named by the node's title when loaded. */
+/** The script a check command runs, which tells apart watchers saved before purposes. */
+function checkScript(command: string): string | null {
+  const script = command.split(/\s+/).find((token) => /\.(sh|bash|py)$/.test(token));
+  return script ? (script.split("/").at(-1) ?? null) : null;
+}
+
+/**
+ * What a Wakes row waits for and when it fires: an agent's stated purpose, else the
+ * check script or log, and a graph wake by its node's title when loaded.
+ */
 export function watcherWake(
   watcher: WatcherRecord,
   nodes: Record<string, Pick<GraphNode, "title">> | undefined,
 ): { what: string; when: string } {
   if (isExternalWatcherRecord(watcher))
-    return { what: jobLabel(watcher.log_path), when: "When the job ends" };
+    return {
+      what: watcher.purpose || checkScript(watcher.check_command) || jobLabel(watcher.log_path),
+      when: watcher.last_error || "When the job ends",
+    };
   const { condition } = watcher;
   const what = nodes?.[condition.node_id]?.title || condition.node_id;
   if (!("status_in" in condition)) return { what, when: "When its Proposal is resolved" };
@@ -26,6 +38,33 @@ export function watcherWake(
   const listed =
     states.length > 1 ? `${states.slice(0, -1).join(", ")} or ${states.at(-1)}` : states[0];
   return { what, when: `When it's ${listed}` };
+}
+
+/** What an opened Wakes row shows: when it was set and checked, and what it runs where. */
+export function watcherFacts(
+  watcher: WatcherRecord,
+  machineName: (machineId: string) => string,
+): Array<{ label: string; value: string; code?: boolean }> {
+  const facts: Array<{ label: string; value: string; code?: boolean }> = [
+    { label: "Set", value: scheduleInstant(watcher.created_at) },
+  ];
+  if (!isExternalWatcherRecord(watcher)) {
+    if (watcher.last_evaluated_at)
+      facts.push({ label: "Last check", value: scheduleInstant(watcher.last_evaluated_at) });
+    facts.push({ label: "Node", value: watcher.condition.node_id, code: true });
+    return facts;
+  }
+  if (watcher.last_checked_at)
+    facts.push({ label: "Last check", value: scheduleInstant(watcher.last_checked_at) });
+  if (watcher.next_check_at)
+    facts.push({ label: "Next check", value: scheduleInstant(watcher.next_check_at) });
+  facts.push(
+    { label: "Check", value: watcher.check_command, code: true },
+    { label: "Log", value: watcher.log_path, code: true },
+    { label: "Folder", value: watcher.cwd, code: true },
+    { label: "Machine", value: machineName(watcher.machine_id) },
+  );
+  return facts;
 }
 
 /** How long ago, as the Agents list shows it: now, 12m, 3h, then a date. */

@@ -12,9 +12,9 @@ from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AppStore
 from rcp.watchers import (
+    AgentWatchSpec,
     WatcherCheckResult,
     WatcherPoller,
-    WatchSpec,
     arm_watchers,
     parse_experiment_watch_json,
     parse_watch_json,
@@ -53,7 +53,12 @@ def test_probe_storage_is_latest_per_project_and_machine(tmp_path):
 @pytest.mark.parametrize("parser", [parse_watch_json, parse_experiment_watch_json])
 @pytest.mark.parametrize("cancel_command", [None, "scancel 1234"])
 def test_one_shell_contract_preserves_optional_human_action(parser, cancel_command):
-    item = {"check_command": "false", "log_path": "/logs/1234", "cwd": "/work"}
+    item = {
+        "purpose": "job finishes",
+        "check_command": "false",
+        "log_path": "/logs/1234",
+        "cwd": "/work",
+    }
     if cancel_command is not None:
         item["cancel_command"] = cancel_command
     handoff = parser(json.dumps({"external": [item], "graph": []}))
@@ -67,9 +72,26 @@ def test_one_shell_contract_preserves_optional_human_action(parser, cancel_comma
     "item",
     [
         {"job_id": "rcp-job"},
-        {"check_command": "false", "log_path": "/log", "cwd": "/work", "job_id": "rcp-job"},
-        {"check_command": "false", "log_path": "/log", "cwd": "/work", "cancel_command": " "},
-        {"check_command": "false", "log_path": "/log", "cancel_command": "scancel 1"},
+        {
+            "purpose": "job finishes",
+            "check_command": "false",
+            "log_path": "/log",
+            "cwd": "/work",
+            "job_id": "rcp-job",
+        },
+        {
+            "purpose": "job finishes",
+            "check_command": "false",
+            "log_path": "/log",
+            "cwd": "/work",
+            "cancel_command": " ",
+        },
+        {
+            "purpose": "job finishes",
+            "check_command": "false",
+            "log_path": "/log",
+            "cancel_command": "scancel 1",
+        },
     ],
 )
 def test_no_native_job_observer_or_partial_shell_action(item, parser):
@@ -99,7 +121,8 @@ def test_shell_action_survives_restart_and_runs_in_saved_working_directory(tmp_p
     store = AppStore(tmp_path / "app.sqlite")
     running = tmp_path / "running"
     running.touch()
-    spec = WatchSpec(
+    spec = AgentWatchSpec(
+        purpose="job finishes",
         check_command="test ! -e running",
         log_path=str(tmp_path / "output.log"),
         cwd=str(tmp_path),
@@ -232,7 +255,8 @@ def test_failed_fresh_check_refuses_cancellation_without_attribution(tmp_path):
 
 def test_cancel_process_is_bounded(tmp_path):
     marker = tmp_path / "late-side-effect"
-    spec = WatchSpec(
+    spec = AgentWatchSpec(
+        purpose="job finishes",
         check_command="false",
         log_path=str(tmp_path / "log"),
         cwd=str(tmp_path),
@@ -258,6 +282,7 @@ def test_watcher_actions_upgrade_preserves_old_shell_rows_and_indexes(tmp_path):
             "cancel_requested_at",
             "cancel_error",
             "worker_id",
+            "purpose",
         ):
             connection.execute(f"ALTER TABLE watchers DROP COLUMN {field}")
         downgrade_artifacts(connection)
@@ -275,7 +300,8 @@ def test_watcher_actions_upgrade_preserves_old_shell_rows_and_indexes(tmp_path):
 def test_arming_polling_and_stop_never_execute_cancel_command(tmp_path):
     store = AppStore(tmp_path / "app.sqlite")
     marker = tmp_path / "cancel-was-run"
-    spec = WatchSpec(
+    spec = AgentWatchSpec(
+        purpose="job finishes",
         check_command="false",
         cancel_command=f"touch {shlex.quote(str(marker))}",
         log_path=str(tmp_path / "log"),

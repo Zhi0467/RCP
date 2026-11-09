@@ -21,6 +21,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherFacts,
   watcherWake,
 } from "../src/agents/agentThreadModel.ts";
 import {
@@ -39,7 +40,6 @@ import {
   threadTasksPath,
 } from "../src/agents/agentThreadsApi.ts";
 import { ApiError } from "../src/core/api.ts";
-import { MAIN_GRAPH, projectViewHash } from "../src/core/graphTarget.ts";
 
 const thread = (overrides) => ({
   thread_id: "t",
@@ -261,10 +261,37 @@ test("a wake row names what the watcher waits for and when it fires", () => {
       .when,
     "When its Proposal is resolved",
   );
-  assert.deepEqual(
-    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {}),
-    { what: "s43/log", when: "When the job ends" },
+  assert.equal(
+    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {})
+      .what,
+    "s43/log",
   );
+});
+
+test("job wakes on one log read apart by purpose, else by check script, and open to what they run", () => {
+  const job = {
+    watcher_id: "w4",
+    check_command: "bash /repro/check_gcp2.sh",
+    log_path: "/repro/astra.25645.log",
+    cwd: "/repro",
+    machine_id: "m1",
+    created_at: "2026-11-09T03:32:00Z",
+    last_checked_at: "2026-11-09T08:42:00Z",
+    next_check_at: null,
+    last_error: null,
+  };
+  assert.equal(
+    watcherWake({ ...job, purpose: "GCP2 astra run finishes" }, {}).what,
+    "GCP2 astra run finishes",
+  );
+  assert.equal(watcherWake({ ...job, purpose: null }, {}).what, "check_gcp2.sh");
+  const failing = watcherWake({ ...job, purpose: null, last_error: "check timed out" }, {});
+  assert.equal(failing.when, "check timed out");
+  const facts = watcherFacts({ ...job, purpose: null }, (id) => (id === "m1" ? "GCP2" : id));
+  const values = facts.map((fact) => fact.value);
+  for (const value of [job.check_command, job.log_path, job.cwd, "GCP2"])
+    assert.ok(values.includes(value));
+  assert.equal(facts.filter((fact) => fact.code).length, 3);
 });
 
 test("a card is expired by its state or its time", () => {
@@ -379,9 +406,7 @@ const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/Age
 const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );
-const { AskedApprovalCard, ProposalApprovalCard } = await renderServer.ssrLoadModule(
-  "/src/agents/ApprovalCard.tsx",
-);
+const { AskedApprovalCard } = await renderServer.ssrLoadModule("/src/agents/ApprovalCard.tsx");
 after(() => renderServer.close());
 
 test("fresh session marker requires an earlier turn and keeps its reason on hover", () => {
@@ -441,69 +466,25 @@ test("the header names the pinned Proposal's title", () => {
   assert.ok(!named.includes("branch"));
 });
 
-test("Later sends a card to the back, and a refetch keeps survivors' order and appends new cards", () => {
-  let memory = { order: [], index: 0, folded: false };
+test("Later puts the front card away, and a refetch keeps survivors' order and appends new cards", () => {
+  let memory = { order: [], index: 0, later: [] };
   memory = stackLater(memory, ["a", "b", "c"]);
-  assert.deepEqual(memory.order, ["b", "c", "a"]);
-  assert.equal(memory.folded, false);
-  assert.deepEqual(stackOrder(memory.order, ["a", "b", "c", "d"]), ["b", "c", "a", "d"]);
-  assert.deepEqual(stackOrder(memory.order, ["d", "a", "c"]), ["c", "a", "d"]);
+  assert.deepEqual(memory.order, ["b", "c"]);
+  assert.deepEqual(memory.later, ["a"]);
+  assert.deepEqual(stackOrder(memory.order, ["b", "c", "d"]), ["b", "c", "d"]);
+  assert.deepEqual(stackOrder(memory.order, ["d", "c"]), ["c", "d"]);
   assert.deepEqual(stackOrder([], ["x", "y"]), ["x", "y"]);
-  const last = stackLater({ order: ["a", "b"], index: 1, folded: false }, ["a", "b"]);
-  assert.deepEqual(last.order, ["a", "b"]);
+  const last = stackLater({ order: ["a", "b"], index: 1, later: [] }, ["a", "b"]);
+  assert.deepEqual(last.order, ["a"]);
   assert.equal(last.index, 0);
 });
 
-test("Later on the last card folds the stack", () => {
-  const folded = stackLater({ order: ["a", "b"], index: 0, folded: false }, ["b"]);
-  assert.equal(folded.folded, true);
-  assert.deepEqual(folded.order, ["b"]);
-});
-
-const proposalView = (extra = {}) => ({
-  project_id: "p 1",
-  project_name: "Project",
-  thread_id: "t",
-  turn_id: "op",
-  turn_created_at: "2026-11-01T10:00:00Z",
-  proposal: {
-    id: "pr/1",
-    title: "H2 standing",
-    status: "pending",
-    card: { situation_cold: "s", why_human_now: "w", consequences: "c", decision_needed: "d" },
-  },
-  stale: false,
-  changes: [],
-  ...extra,
-});
-
-test("an out-of-date Proposal card offers only the project Inbox", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(ProposalApprovalCard, {
-      view: proposalView({ stale: true }),
-      decided: null,
-      showProject: false,
-      onDecided: () => undefined,
-      onChanged: () => undefined,
-    }),
-  );
-  const href = projectViewHash("p 1", MAIN_GRAPH, "attention").replaceAll("&", "&amp;");
-  assert.ok(html.includes(`href="${href}"`));
-  assert.doesNotMatch(html, /<button/);
-});
-
-test("an out-of-date Proposal card in a stack can still go to the back", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(ProposalApprovalCard, {
-      view: proposalView({ stale: true }),
-      decided: null,
-      showProject: false,
-      onDecided: () => undefined,
-      onChanged: () => undefined,
-      onLater: () => undefined,
-    }),
-  );
-  assert.equal(html.match(/<button/g)?.length, 1);
+test("Later on the last open card leaves every card put away, and a decided card drops out", () => {
+  const away = stackLater({ order: ["a", "b"], index: 0, later: ["a"] }, ["a", "b"]);
+  assert.deepEqual(away.order, []);
+  assert.deepEqual(away.later, ["a", "b"]);
+  const decided = stackLater({ order: ["b"], index: 0, later: ["a"] }, ["b"]);
+  assert.deepEqual(decided.later, ["b"]);
 });
 
 test("a settled asked card reads its stored outcome, including why its Proposal stayed pending", () => {

@@ -11,7 +11,7 @@ from rcp.agents import acceptance
 from rcp.agents.acceptance import ACCEPTANCE_GENERIC_WATCHER_MARKER
 from rcp.core.models import Patch
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord
-from rcp.watchers import WatchSpec, run_watcher_check
+from rcp.watchers import AgentWatchSpec, run_watcher_check
 from tests.helpers import signed_in_client
 
 from .helpers import (
@@ -288,7 +288,7 @@ def test_the_detached_fixture_jobs_write_what_their_watcher_checks_ask_for(
     stage.mkdir()
     acceptance._start_fixture_jobs(stage)
 
-    specs = [WatchSpec(**spec) for spec in acceptance._watch_specs(stage)]
+    specs = [AgentWatchSpec(**spec) for spec in acceptance._watch_specs(stage)]
     assert len(specs) == 2
     assert len({spec.check_command for spec in specs}) == 2
 

@@ -462,8 +462,11 @@ counts the schedules that will run without the member plus those watchers and
 opens a popover of them. The backend marks each watcher `wakes_chat`, by the same
 rule the agent's own watcher list uses, so an Experiment loop's watcher, which
 wakes its episode, stays in Runs. Every row has the same shape: what wakes the agent,
-then when. A watcher names its node by title or its job by log file, says
-which states or event wake the agent, and can be stopped there. The popover is sized to the viewport and
+then when. A watcher names its node by title, or its job by the agent's stated
+purpose (an older one by its check script, else its log file). It says which
+states or event wake the agent, or a job's current check error, and can be
+stopped there. Tapping a watcher opens when it was set and checked, and for a
+job its check command, log, folder, and machine. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a
@@ -526,8 +529,9 @@ ordered fallbacks as an asked card: the turn's lines, then its time position,
 then the end. Running retries and wakes may have no shown line, so a slot after
 a turn's last line would lose their cards. Cards at one position form one stack:
 the front card with two offset edges behind it, and "‹ 1 of N ›" above its right
-edge. Later sends the front card to the back; on the last card it folds the
-stack to "N card(s) waiting", which unfolds on a tap. Later, the arrows and the
+edge. Later puts the front card away for as long as the stack is shown; once
+every open card is away the stack folds to "N card(s) waiting", which brings
+them back on a tap. Later, the arrows and the
 fold move keyboard focus to the new front card or the fold line. Order and fold
 last while the stack is shown; a refetch keeps surviving cards in order, appends
 new ones and drops settled ones, and a reload restores server order. A stack that
@@ -536,15 +540,18 @@ transcript does not jump. A decision keeps its stack in place and moves focus
 to the next front card. A tapped card shows its result, including a failure
 reason, through the open-card change its own tap causes; it drops at a fetch
 after a later change that no longer lists it, or when the member leaves the
-thread. The turn keeps its "sent to Inbox" chip. A stale Proposal card shows "Out of date" with an Open Inbox link
-and can still be sent back with Later. A failed card fetch hides the cards and
+thread. The turn keeps its "sent to Inbox" chip. A stale Proposal stays out of
+the dock; the Inbox still lists it. A card whose Proposal was decided elsewhere
+shows "Out of date" with an Open Inbox link. A failed card fetch hides the cards and
 leaves the transcript as it is; an amber cards icon in the composer says so on
 hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
-dock for that project's relayed questions; its own questions and approval cards
-stay inline. Both docks hide when empty. Docked cards
+dock for its own open Proposal and asked cards, then that project's relayed
+questions, without project chips; its plain questions stay inline. A decided card
+leaves the dock at the next change, and an asked card's result then shows in its
+turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
 Left of Wakes, the Space thread header holds a Running button, present only

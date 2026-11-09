@@ -331,8 +331,12 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     // Switch while the Space send is in flight, then let it fail.
     await page.getByRole("listbox", { name: "Threads" }).getByRole("option").nth(1).click();
     const moss = page.getByRole("region", { name: "Moss" });
+    const mossRead = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/read",
+    );
     failSend();
     await moss.getByRole("button", { name: "Approve" }).waitFor();
+    await mossRead;
     await page.waitForTimeout(300);
     assert.equal(await moss.getByRole("button", { name: "Resend" }).count(), 0);
     await moss.getByRole("textbox", { name: "Message" }).fill("Next");
@@ -615,17 +619,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await projectFrame.getAttribute("src"),
       /\/api\/projects\/p1\/tasks\/op-moss\/artifacts\/report\/viewer/,
     );
-    assert.equal(
-      await project
-        .locator(".approval-card")
-        .evaluate((card) =>
-          Boolean(
-            card.compareDocumentPosition(document.querySelector(".chat-annotatable-answer")) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-          ),
-        ),
-      true,
-    );
+    assert.equal(await project.locator(".approval-dock .approval-card").count(), 1);
     await project.getByRole("button", { name: "Approve", exact: true }).click();
     await project.locator(".approval-card[data-state='approved']").waitFor();
     assert.equal(await project.locator(".node-chat-line.human").count(), 1);
@@ -2008,7 +2002,7 @@ async function shoot(page, name) {
   await page.screenshot({ path: `${shots}/${name}.png` });
 }
 
-test("a project thread stacks its Proposal cards in the raising turn and decides them in place", async () => {
+test("a project thread docks its Proposal cards in one stack and decides them in place", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({
@@ -2044,27 +2038,18 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
       });
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
-      const stack = thread.locator(".approval-stack");
+      const stack = thread.locator(".approval-dock .approval-stack");
       await stack.waitFor();
       assert.equal(await thread.locator(".approval-stack").count(), 1);
       assert.equal(await stack.locator(".approval-card").count(), 1);
       assert.equal(await stack.locator(".approval-stack-nav").count(), 1);
-      assert.ok(
-        await stack.evaluate((node) =>
-          Boolean(
-            node.compareDocumentPosition(
-              [...document.querySelectorAll(".chat-annotatable-answer")].at(-1),
-            ) & Node.DOCUMENT_POSITION_FOLLOWING,
-          ),
-        ),
-      );
       const front = () => stack.locator(".approval-card").getAttribute("aria-label");
       const first = await front();
       assert.ok(first.includes("H2 standing"));
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `cards-stack-${width}`);
 
-      await stack.getByRole("button", { name: "Later" }).click();
+      await stack.getByRole("button", { name: "Next card" }).click();
       assert.ok((await front()).includes("Retire"));
       assert.equal(await focusedCard(page), await front());
       if (width === 390)
@@ -2191,7 +2176,7 @@ test("deciding the front card keeps its stack, its result and the focus through 
   });
 });
 
-test("an out-of-date Proposal card links to the Inbox and a failed card read hides only the cards", async () => {
+test("an out-of-date Proposal stays out of the dock and a failed card read hides only the cards", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     await mockApi(page, []);
@@ -2203,19 +2188,15 @@ test("an out-of-date Proposal card links to the Inbox and a failed card read hid
     await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
       route.fulfill({ json: [] }),
     );
+    const read = page.waitForResponse((response) =>
+      response.url().includes("/api/agent-threads/cards"),
+    );
     await page.goto(`${base}#/agent/moss`);
     const thread = page.getByRole("region", { name: "Moss" });
-    const stale = thread.locator(".approval-quiet");
-    await stale.waitFor();
-    assert.equal(
-      await stale.getByRole("link").getAttribute("href"),
-      "#/projects/p1?view=attention",
-    );
-    assert.equal(await thread.locator(".approval-stack-nav").count(), 0);
-    assert.equal(await thread.locator(".approval-stack[data-held]").count(), 0);
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
-    await stale.getByRole("button", { name: "Later" }).click();
-    await thread.locator(".approval-fold").waitFor();
+    await read;
+    await page.waitForTimeout(300);
+    assert.equal(await thread.locator(".approval-dock").count(), 0);
+    assert.equal(await thread.locator(".approval-quiet").count(), 0);
     await page.close();
 
     const elsewhere = await browser.newPage({ viewport: { width: 1280, height: 900 } });
@@ -2486,7 +2467,7 @@ test("Pip's dock relays a project question with its origin and time, and answeri
   });
 });
 
-test("Moss relays project questions above its composer while its own cards stay inline", async () => {
+test("Moss docks its own cards and relayed questions above its composer, keeping its plain questions inline", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({
@@ -2514,7 +2495,7 @@ test("Moss relays project questions above its composer while its own cards stay 
         source_label: "Validation sweep",
       };
       const served = {
-        proposals: [],
+        proposals: [proposalCard("proposal/a", "H2 standing → supported")],
         asked: [{ ...card, project_name: "Sparse attention" }],
         questions: [relayed, { ...own, project_id: "p1" }],
       };
@@ -2537,13 +2518,17 @@ test("Moss relays project questions above its composer while its own cards stay 
       const thread = page.getByRole("region", { name: "Moss" });
       const dock = thread.locator(".approval-dock");
       const question = dock.locator(".question-card[data-question-id='q-project-relay']");
-      await question.waitFor();
+      await dock.locator(".approval-card").waitFor();
       releaseQuestions();
       await thread.locator(".question-card[data-question-id='q-own']").waitFor();
       assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
       assert.equal(await dock.locator(".question-card[data-question-id='q-own']").count(), 0);
-      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
-      assert.equal(await dock.locator(".approval-card").count(), 0);
+      assert.equal(await thread.locator(".approval-card").count(), 1);
+      assert.equal(await dock.locator(".approval-card").count(), 1);
+      assert.equal(await dock.locator(".approval-stack-nav").count(), 1);
+      await dock.getByRole("button", { name: "Next card" }).click();
+      await dock.getByRole("button", { name: "Next card" }).click();
+      await question.waitFor();
       assert.match(await question.locator(".question-origin").textContent(), /Validation sweep/);
       assert.equal(
         await question.locator(".entity-chip.project").getAttribute("href"),
@@ -2552,7 +2537,7 @@ test("Moss relays project questions above its composer while its own cards stay 
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `moss-dock-question-${width}`);
       await question.getByRole("button", { name: "3e-4" }).click();
-      await dock.waitFor({ state: "detached" });
+      await question.waitFor({ state: "detached" });
       assert.deepEqual(writes.at(-1), {
         path: "/api/projects/p1/questions/q-project-relay/answer",
         answer: "",
@@ -3073,5 +3058,56 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     assert.equal(await pip.locator(".thread-queue").count(), 0);
     assert.deepEqual(errors, []);
     await page.close();
+  });
+});
+
+test("job wakes on one log read apart and open to what they run, on a phone too", async () => {
+  await withFixture(async (browser, base) => {
+    const job = (watcher_id, check, purpose, extra = {}) => ({
+      watcher_id,
+      project_id: "p1",
+      chat_id: "moss",
+      wakes_chat: true,
+      status: "active",
+      can_stop_watching: true,
+      machine_id: "backend",
+      check_command: `bash /data/repro/${check}`,
+      log_path: "/data/repro/astra.25645.log",
+      cwd: "/data/repro",
+      purpose,
+      created_at: ago(300),
+      last_checked_at: ago(2),
+      next_check_at: new Date(now + 120_000).toISOString(),
+      last_error: null,
+      ...extra,
+    });
+    const watchers = [
+      job("w1", "check.sh", "GCP2 astra run finishes"),
+      job("w2", "check_gcp2.sh", null),
+      job("w3", "check_repro.sh", null, { status: "degraded", last_error: "check timed out" }),
+    ];
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      await page.route("**/api/projects/p1/watchers", (route) => route.fulfill({ json: watchers }));
+      await page.goto(`${base}#/agent/moss`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      await thread.getByRole("button", { name: /wakes$/ }).click();
+      const popover = page.getByRole("dialog", { name: "Wakes" });
+      const titles = await popover.locator(".upcoming-open strong").allTextContents();
+      assert.equal(new Set(titles).size, 3);
+      assert.ok(titles.includes("GCP2 astra run finishes"));
+      const second = popover.locator(".upcoming-row:has(.upcoming-open)").nth(1);
+      await second.getByRole("button", { name: titles[1] }).click();
+      const facts = second.locator(".upcoming-facts");
+      await facts.waitFor();
+      const text = await facts.textContent();
+      for (const value of [watchers[1].check_command, watchers[1].log_path, watchers[1].cwd])
+        assert.ok(text.includes(value));
+      assert.equal(await popover.locator(".upcoming-facts").count(), 1);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `wakes-open-${width}`);
+      await page.close();
+    }
   });
 });

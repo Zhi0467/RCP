@@ -253,7 +253,7 @@ export function ProposalApprovalCard({
   const [error, setError] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
   const title = `Approve Proposal: ${view.proposal.title}?`;
-  if ((view.stale || gone) && !decided)
+  if (gone && !decided)
     return (
       <div className="approval-quiet" role="status" title={title} tabIndex={-1}>
         <span>Out of date</span>

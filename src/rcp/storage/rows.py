@@ -153,6 +153,7 @@ class RowMappingMixin:
         ):
             data.pop(field, None)
         data.pop("check_command", None)
+        data.pop("purpose", None)
         data.pop("log_path", None)
         data.pop("cwd", None)
         data["last_evaluated_at"] = data.pop("last_checked_at", None)

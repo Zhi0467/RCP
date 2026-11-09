@@ -216,6 +216,24 @@ def test_file_cache_expires_then_uses_deterministic_lru_and_ignores_mtime(
     assert after.reclaimable_count == 2
 
 
+def test_a_pinned_history_write_survives_a_sweep_and_an_orphan_expires(tmp_path) -> None:
+    clock = FakeClock()
+    root = tmp_path / "graph-history"
+    root.mkdir()
+    cache = RebuildableCache(
+        root, CacheLimits(ttl_seconds=1, max_count=1, max_bytes=1), layout="files", clock=clock
+    )
+    orphan = root / ".history-orphan"
+    orphan.write_text("left by a killed writer", encoding="utf-8")
+    in_flight = root / ".history-live"
+    with cache.pin([in_flight]):
+        in_flight.write_text("partial", encoding="utf-8")
+        clock.advance(seconds=5)
+        cache.sweep()
+        assert in_flight.exists()
+    assert not orphan.exists()
+
+
 def test_active_entry_is_never_expired_or_evicted(tmp_path) -> None:
     clock = FakeClock()
     root = tmp_path / "session-slices"
