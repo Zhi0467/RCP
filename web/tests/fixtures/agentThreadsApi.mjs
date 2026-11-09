@@ -265,7 +265,14 @@ export async function mockApi(page, writes) {
     }
     if (path === "/api/agent-threads") return json({ threads: threads.map(withAgent) });
     if (path === "/api/agent-threads/cards")
-      return json({ proposal_cards: [], asked_cards: [], questions: [] });
+      return json({
+        proposal_cards: [],
+        asked_cards:
+          url.searchParams.get("thread_id") === "moss"
+            ? [{ ...card, project_name: "Sparse attention" }]
+            : [],
+        questions: [],
+      });
     if (path === "/api/agent-threads/running") return json({ rows: [], needs: 0, total: 0 });
     if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path) && method === "GET")
       return json({ items: [] });

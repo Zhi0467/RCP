@@ -101,9 +101,10 @@ adds verbs:
   checks membership, the private owner, write admission and continuation, so an
   ended episode's answer still offers Add turns.
 
-Each Project Agent uses the same question dock, limited to that project's
-shared chats and episodes. Its own questions and approval cards stay inline,
-so a question never appears twice in the thread. The same recipient, private
+Each Project Agent uses the same dock, limited to that project's shared chats
+and episodes, and also docks its own open approval cards. Its plain questions
+stay inline, and a card shows inline only after it leaves the dock, so nothing
+appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
 
 Both reads refresh on the member's `agent_cards` version, which never moves on

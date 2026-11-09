@@ -331,8 +331,12 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     // Switch while the Space send is in flight, then let it fail.
     await page.getByRole("listbox", { name: "Threads" }).getByRole("option").nth(1).click();
     const moss = page.getByRole("region", { name: "Moss" });
+    const mossRead = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/read",
+    );
     failSend();
     await moss.getByRole("button", { name: "Approve" }).waitFor();
+    await mossRead;
     await page.waitForTimeout(300);
     assert.equal(await moss.getByRole("button", { name: "Resend" }).count(), 0);
     await moss.getByRole("textbox", { name: "Message" }).fill("Next");
@@ -615,17 +619,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await projectFrame.getAttribute("src"),
       /\/api\/projects\/p1\/tasks\/op-moss\/artifacts\/report\/viewer/,
     );
-    assert.equal(
-      await project
-        .locator(".approval-card")
-        .evaluate((card) =>
-          Boolean(
-            card.compareDocumentPosition(document.querySelector(".chat-annotatable-answer")) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-          ),
-        ),
-      true,
-    );
+    assert.equal(await project.locator(".approval-dock .approval-card").count(), 1);
     await project.getByRole("button", { name: "Approve", exact: true }).click();
     await project.locator(".approval-card[data-state='approved']").waitFor();
     assert.equal(await project.locator(".node-chat-line.human").count(), 1);
@@ -2008,7 +2002,7 @@ async function shoot(page, name) {
   await page.screenshot({ path: `${shots}/${name}.png` });
 }
 
-test("a project thread stacks its Proposal cards in the raising turn and decides them in place", async () => {
+test("a project thread docks its Proposal cards in one stack and decides them in place", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({
@@ -2044,20 +2038,11 @@ test("a project thread stacks its Proposal cards in the raising turn and decides
       });
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
-      const stack = thread.locator(".approval-stack");
+      const stack = thread.locator(".approval-dock .approval-stack");
       await stack.waitFor();
       assert.equal(await thread.locator(".approval-stack").count(), 1);
       assert.equal(await stack.locator(".approval-card").count(), 1);
       assert.equal(await stack.locator(".approval-stack-nav").count(), 1);
-      assert.ok(
-        await stack.evaluate((node) =>
-          Boolean(
-            node.compareDocumentPosition(
-              [...document.querySelectorAll(".chat-annotatable-answer")].at(-1),
-            ) & Node.DOCUMENT_POSITION_FOLLOWING,
-          ),
-        ),
-      );
       const front = () => stack.locator(".approval-card").getAttribute("aria-label");
       const first = await front();
       assert.ok(first.includes("H2 standing"));
@@ -2486,7 +2471,7 @@ test("Pip's dock relays a project question with its origin and time, and answeri
   });
 });
 
-test("Moss relays project questions above its composer while its own cards stay inline", async () => {
+test("Moss docks its own cards and relayed questions above its composer, keeping its plain questions inline", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({
@@ -2514,7 +2499,7 @@ test("Moss relays project questions above its composer while its own cards stay 
         source_label: "Validation sweep",
       };
       const served = {
-        proposals: [],
+        proposals: [proposalCard("proposal/a", "H2 standing → supported")],
         asked: [{ ...card, project_name: "Sparse attention" }],
         questions: [relayed, { ...own, project_id: "p1" }],
       };
@@ -2537,13 +2522,17 @@ test("Moss relays project questions above its composer while its own cards stay 
       const thread = page.getByRole("region", { name: "Moss" });
       const dock = thread.locator(".approval-dock");
       const question = dock.locator(".question-card[data-question-id='q-project-relay']");
-      await question.waitFor();
+      await dock.locator(".approval-card").waitFor();
       releaseQuestions();
       await thread.locator(".question-card[data-question-id='q-own']").waitFor();
       assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
       assert.equal(await dock.locator(".question-card[data-question-id='q-own']").count(), 0);
-      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
-      assert.equal(await dock.locator(".approval-card").count(), 0);
+      assert.equal(await thread.locator(".approval-card").count(), 1);
+      assert.equal(await dock.locator(".approval-card").count(), 1);
+      assert.equal(await dock.locator(".approval-stack-nav").count(), 1);
+      await dock.getByRole("button", { name: "Next card" }).click();
+      await dock.getByRole("button", { name: "Next card" }).click();
+      await question.waitFor();
       assert.match(await question.locator(".question-origin").textContent(), /Validation sweep/);
       assert.equal(
         await question.locator(".entity-chip.project").getAttribute("href"),
@@ -2552,7 +2541,7 @@ test("Moss relays project questions above its composer while its own cards stay 
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `moss-dock-question-${width}`);
       await question.getByRole("button", { name: "3e-4" }).click();
-      await dock.waitFor({ state: "detached" });
+      await question.waitFor({ state: "detached" });
       assert.deepEqual(writes.at(-1), {
         path: "/api/projects/p1/questions/q-project-relay/answer",
         answer: "",

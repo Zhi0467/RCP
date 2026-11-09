@@ -543,8 +543,10 @@ hover and leaves at the next good read. The Space thread docks one stack above i
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
-dock for that project's relayed questions; its own questions and approval cards
-stay inline. Both docks hide when empty. Docked cards
+dock for its own open Proposal and asked cards, then that project's relayed
+questions, without project chips; its plain questions stay inline. A decided card
+leaves the dock at the next change, and an asked card's result then shows in its
+turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
 Left of Wakes, the Space thread header holds a Running button, present only

@@ -1234,6 +1234,12 @@ export function AgentThreadView({
   };
 
   const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cardsElsewhere = new Set([
+    ...cards.asked.map((question) => question.question_id),
+    ...questions.flatMap((question) =>
+      question.card && question.state === "pending" ? [question.question_id] : [],
+    ),
+  ]);
   const cardsChanged = () => {
     void cards.refetch();
     if (thread.kind === "project") void refresh();
@@ -1251,13 +1257,12 @@ export function AgentThreadView({
     question,
     projectName,
   });
+  const relayed = thread.kind === "space";
   const dockCards: StackCard[] = [
-    ...(thread.kind === "space"
-      ? [
-          ...cards.proposals.map((view) => proposalStackCard(view, true)),
-          ...cards.asked.map((question) => askedStackCard(question, question.project_name)),
-        ]
-      : []),
+    ...cards.proposals.map((view) => proposalStackCard(view, relayed)),
+    ...cards.asked.map((question) =>
+      askedStackCard(question, relayed ? question.project_name : null),
+    ),
     ...cards.questions.map((question): StackCard => ({
       kind: "question",
       key: questionCardKey(question),
@@ -1436,14 +1441,11 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
-          proposalCards={thread.kind === "project" ? cards.proposals : undefined}
+          shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (
             <ApprovalCardStack
               stackKey={`${thread.thread_id}:${entry.key}`}
-              cards={[
-                ...entry.proposals.map((view) => proposalStackCard(view, true)),
-                ...entry.asked.map((question) => askedStackCard(question, thread.project_name)),
-              ]}
+              cards={entry.asked.map((question) => askedStackCard(question, thread.project_name))}
               onDecided={cards.markDecided}
               onResolved={cards.markResolved}
               onAnswered={cards.markAnswered}
