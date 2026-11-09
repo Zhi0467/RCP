@@ -32,6 +32,7 @@ from rcp.storage import (
     watcher_next_check_at,
 )
 from rcp.watchers import (
+    AgentWatchSpec,
     ExperimentWatchSpec,
     WatcherBinding,
     WatcherCheckResult,
@@ -206,13 +207,14 @@ def _loop_task(
 
 def test_watch_json_is_a_nonempty_strict_two_list_object() -> None:
     parsed = parse_watch_json(
-        '{"external":[{"check_command":"squeue -h -j 4471 >/dev/null",'
+        '{"external":[{"purpose":"job finishes","check_command":"squeue -h -j 4471 >/dev/null",'
         '"log_path":"/logs/4471.log","cwd":"/work"}],'
         '"graph":[{"node_id":"blk/waiting","status_in":["resolved"]}]}'
     )
 
     assert parsed.external == [
-        WatchSpec(
+        AgentWatchSpec(
+            purpose="job finishes",
             check_command="squeue -h -j 4471 >/dev/null",
             log_path="/logs/4471.log",
             cwd="/work",
@@ -224,9 +226,9 @@ def test_watch_json_is_a_nonempty_strict_two_list_object() -> None:
     for payload in (
         '{"external":[],"graph":[]}',
         "[]",
-        '{"check_command":"true","log_path":"/tmp/x","cwd":"/tmp"}',
-        '{"external":[{"check_command":"true","log_path":"relative","cwd":"/tmp"}],"graph":[]}',
-        '{"external":[{"check_command":"true","log_path":"/tmp/x","cwd":"/tmp",'
+        '{"purpose":"job finishes","check_command":"true","log_path":"/tmp/x","cwd":"/tmp"}',
+        '{"external":[{"purpose":"job finishes","check_command":"true","log_path":"relative","cwd":"/tmp"}],"graph":[]}',
+        '{"external":[{"purpose":"job finishes","check_command":"true","log_path":"/tmp/x","cwd":"/tmp",'
         '"host":"bad"}],"graph":[]}',
         '{"external":[],"graph":[{"node_id":"blk/waiting","standing":"accepted"}]}',
     ):
@@ -238,18 +240,26 @@ def test_experiment_watch_json_accepts_external_maintenance_and_graph_conditions
     assert parse_experiment_watch_json('{"external":[],"graph":[]}').is_empty
     handoff = parse_experiment_watch_json(
         '{"external":['
-        '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
-        '{"group":"eval-shards","check_command":"exit 1","log_path":"/tmp/b.log","cwd":"/tmp"},'
+        '{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
+        '{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/b.log","cwd":"/tmp"},'
         '{"stop_watcher_id":"old-watcher","reason":"Cancelled superseded job"}'
         '],"graph":[{"node_id":"hyp/result","proposal_resolved":true}]}'
     )
 
     assert handoff.observers == [
         ExperimentWatchSpec(
-            group="eval-shards", check_command="exit 1", log_path="/tmp/a.log", cwd="/tmp"
+            purpose="job finishes",
+            group="eval-shards",
+            check_command="exit 1",
+            log_path="/tmp/a.log",
+            cwd="/tmp",
         ),
         ExperimentWatchSpec(
-            group="eval-shards", check_command="exit 1", log_path="/tmp/b.log", cwd="/tmp"
+            purpose="job finishes",
+            group="eval-shards",
+            check_command="exit 1",
+            log_path="/tmp/b.log",
+            cwd="/tmp",
         ),
     ]
     assert handoff.stops == [
@@ -260,12 +270,12 @@ def test_experiment_watch_json_accepts_external_maintenance_and_graph_conditions
     ]
     with pytest.raises(ValidationError):
         parse_watch_json(
-            '{"external":[{"group":"eval-shards","check_command":"exit 1",'
+            '{"external":[{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1",'
             '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
         )
     with pytest.raises(ValueError, match="at least two"):
         parse_experiment_watch_json(
-            '{"external":[{"group":"eval-shards","check_command":"exit 1",'
+            '{"external":[{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1",'
             '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
         )
 
@@ -1064,10 +1074,16 @@ def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
     common = {"log_path": str(tmp_path / "job.log"), "cwd": cwd}
 
     complete = run_watcher_check(
-        WatchSpec(check_command=f'test "$PWD" = {shlex.quote(cwd)}', **common)
+        AgentWatchSpec(
+            purpose="job finishes", check_command=f'test "$PWD" = {shlex.quote(cwd)}', **common
+        )
     )
-    active = run_watcher_check(WatchSpec(check_command="exit 1", **common))
-    error = run_watcher_check(WatchSpec(check_command="echo broken >&2; exit 9", **common))
+    active = run_watcher_check(
+        AgentWatchSpec(purpose="job finishes", check_command="exit 1", **common)
+    )
+    error = run_watcher_check(
+        AgentWatchSpec(purpose="job finishes", check_command="echo broken >&2; exit 9", **common)
+    )
 
     assert complete.state == "complete"
     assert complete.exit_code == 0
@@ -1079,7 +1095,8 @@ def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
 
 def test_check_has_a_hard_timeout(tmp_path) -> None:
     result = run_watcher_check(
-        WatchSpec(
+        AgentWatchSpec(
+            purpose="job finishes",
             check_command="sleep 1",
             log_path=str(tmp_path / "job.log"),
             cwd=str(tmp_path),
@@ -1103,7 +1120,12 @@ def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:
     monkeypatch.setattr("rcp.watchers.run_check_process", fake_run)
 
     result = run_watcher_check(
-        WatchSpec(check_command="squeue -h -j 4471", log_path="/logs/job", cwd="/work/a b"),
+        AgentWatchSpec(
+            purpose="job finishes",
+            check_command="squeue -h -j 4471",
+            log_path="/logs/job",
+            cwd="/work/a b",
+        ),
         "gpu.example",
     )
 
@@ -1148,8 +1170,11 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
     with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as observed:
         try:
             result = run_watcher_check(
-                WatchSpec(
-                    check_command=check_command, log_path=str(tmp_path / "log"), cwd=str(tmp_path)
+                AgentWatchSpec(
+                    purpose="job finishes",
+                    check_command=check_command,
+                    log_path=str(tmp_path / "log"),
+                    cwd=str(tmp_path),
                 ),
                 "fixture-host" if remote else "",
                 timeout=2,
@@ -1232,6 +1257,7 @@ def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(sto
     live = _record("live", origin="loop-root", continuation=continuation)
     store.persist_experiment_watchers_idempotently([live], binding=binding)
     spec = ExperimentWatchSpec(
+        purpose="job finishes",
         check_command=live.check_command,
         log_path=live.log_path,
         cwd=live.cwd,
@@ -1259,8 +1285,12 @@ def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(sto
 
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(store) -> None:
     specs = [
-        WatchSpec(check_command="one", log_path="/tmp/one.log", cwd="/tmp"),
-        WatchSpec(check_command="two", log_path="/tmp/two.log", cwd="/tmp"),
+        AgentWatchSpec(
+            purpose="job finishes", check_command="one", log_path="/tmp/one.log", cwd="/tmp"
+        ),
+        AgentWatchSpec(
+            purpose="job finishes", check_command="two", log_path="/tmp/two.log", cwd="/tmp"
+        ),
     ]
 
     def one_bad(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:

@@ -538,8 +538,10 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
 
 _EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
   10 minutes, hand off a watcher to avoid repeated agent polling. This is guidance, not a cutoff.
-- Each `external` observer contains `check_command`, `log_path`, and `cwd`, with optional
-  `cancel_command`: `{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
+- Each `external` observer contains `purpose`, `check_command`, `log_path`, and `cwd`, with optional
+  `cancel_command`: `{"purpose":"GCP2 qwen3 repro finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
+- `purpose` is the one line, at most 120 characters, the member reads in Wakes. Name the work and
+  where it runs so two watchers on one log read differently.
 - Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
   `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
   work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
@@ -636,8 +638,8 @@ Node-attached Experiment watcher maintenance:
   session, execution-host, kind, or surface field to the JSON.
 - Each maintenance file is one JSON object with exactly `external` and `graph` lists. `external`
   contains observer items, plus an optional non-blank `group`, or stop items with exactly
-  `stop_watcher_id` and a non-blank `reason`. Observers use `check_command`, `log_path`, and `cwd`,
-  with optional `cancel_command`. Same-label observers form an immutable group and each new group
+  `stop_watcher_id` and a non-blank `reason`. Observers use `purpose`, `check_command`, `log_path`,
+  and `cwd`, with optional `cancel_command`. Same-label observers form an immutable group and each new group
   needs at least two observers. A stop may name any compatible staged watcher, external observer or
   graph condition alike, and never requests the human-only **Stop loop** action. Every stop goes in
   `external`, including one retiring a graph condition; `graph` holds only conditions you are
@@ -1015,7 +1017,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v15"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v31"
+WORK_POLICY_VERSION = "work-v32"
 
 
 class PromptFactory:

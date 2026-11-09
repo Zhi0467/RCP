@@ -1021,8 +1021,11 @@ shared Experiment allowance gates.
 
 Every watcher file has two all-or-none lists:
 
-- `external` observations with required literal `check_command`, absolute
-  `log_path`, and absolute `cwd`, plus optional nonblank `cancel_command`; and
+- `external` observations with a required one-line `purpose` (at most 120
+  characters), literal `check_command`, absolute `log_path`, and absolute `cwd`,
+  plus optional nonblank `cancel_command`. The purpose titles the watcher in
+  Wakes, where several watchers may share one log; a watcher saved before
+  purposes existed shows its check script name instead; and
 - `graph` conditions from a closed vocabulary.
 
 This is one external watcher form for direct scheduler submissions and

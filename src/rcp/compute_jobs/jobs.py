@@ -205,10 +205,21 @@ def _parse_exit_receipt(text: str) -> tuple[int, str]:
     return status, epoch_timestamp(epoch)
 
 
+_LAUNCHERS = frozenset({"sh", "bash", "env", "uv", "run", "python", "python3", "srun", "nohup"})
+
+
+def _job_program(argv: list[str]) -> str:
+    """The first word of a launched command that names the work, not its launcher."""
+    words = [PurePosixPath(word.split()[0]).name for word in argv if word.strip()]
+    named = [word for word in words if word not in _LAUNCHERS and not word.startswith("-")]
+    return (named or words or ["Job"])[0][:80]
+
+
 def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
     """The same shell watcher contract used by directly submitted external jobs."""
     script = str(PurePosixPath(job.job_root) / "owner.py")
     return {
+        "purpose": (job.label or f"{_job_program(job.argv)} finishes")[:120],
         "check_command": shlex.join(
             [
                 "python3",
@@ -243,7 +254,11 @@ def helper_cancel_action(store: AppStore, watcher: WatcherRecord) -> Callable[[]
             watcher.project_id, watcher.machine_id, watcher.log_path
         )
         if job.origin_operation_id == watcher.origin_operation_id
-        and all(getattr(watcher, name) == value for name, value in helper_watch_spec(job).items())
+        and all(
+            getattr(watcher, name) == value
+            for name, value in helper_watch_spec(job).items()
+            if name != "purpose"
+        )
     ]
     if len(matches) != 1:
         return None

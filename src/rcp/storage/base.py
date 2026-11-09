@@ -151,6 +151,7 @@ class AppStoreBase:
         (78, "local_question_origins_v1"),
         (79, "agent_schedule_command_receipts_v1"),
         (80, "space_chat_session_machines_v1"),
+        (81, "watcher_purposes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1093,6 +1094,12 @@ class AppStoreBase:
             version=80,
             name="space_chat_session_machines_v1",
             migration=migrate_space_chat_session_machines,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=81,
+            name="watcher_purposes_v1",
+            migration=self._migrate_watcher_purpose_versions,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2767,6 +2774,7 @@ class AppStoreBase:
         self._migrate_compute_jobs(connection)
         self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
+        self._migrate_watcher_purposes(connection)
         self._migrate_compute_job_labels(connection)
         self._migrate_agent_task_failure_kind(connection)
         self._migrate_episode_archives(connection)
@@ -2990,6 +2998,17 @@ class AppStoreBase:
         for (object_type, _name), row in expected.items():
             if object_type == "index" and row[2] == "graph_runs":
                 connection.execute(row[3])
+
+    @classmethod
+    def _migrate_watcher_purposes(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "watchers", "purpose", "TEXT")
+
+    @classmethod
+    def _migrate_watcher_purpose_versions(cls, connection: sqlite3.Connection) -> None:
+        from rcp.storage.resource_versions import compare_added_column
+
+        cls._migrate_watcher_purposes(connection)
+        compare_added_column(connection, "resource_watchers_update", "purpose")
 
     @classmethod
     def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:

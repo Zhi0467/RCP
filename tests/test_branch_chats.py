@@ -486,6 +486,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
                 {
                     "external": [
                         {
+                            "purpose": "job finishes",
                             "check_command": "false",
                             "log_path": str(Path(repository) / "check.log"),
                             "cwd": repository,

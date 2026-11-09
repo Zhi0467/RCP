@@ -462,8 +462,11 @@ counts the schedules that will run without the member plus those watchers and
 opens a popover of them. The backend marks each watcher `wakes_chat`, by the same
 rule the agent's own watcher list uses, so an Experiment loop's watcher, which
 wakes its episode, stays in Runs. Every row has the same shape: what wakes the agent,
-then when. A watcher names its node by title or its job by log file, says
-which states or event wake the agent, and can be stopped there. The popover is sized to the viewport and
+then when. A watcher names its node by title, or its job by the agent's stated
+purpose (an older one by its check script, else its log file). It says which
+states or event wake the agent, or a job's current check error, and can be
+stopped there. Tapping a watcher opens when it was set and checked, and for a
+job its check command, log, folder, and machine. The popover is sized to the viewport and
 scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
 threads share that pick: one `provider · model · effort` row that opens the
 shared fields in the menu. Opening the menu reads provider readiness again, so a

@@ -198,6 +198,7 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
                         {
                             "external": [
                                 {
+                                    "purpose": "job finishes",
                                     "check_command": "false",
                                     "log_path": str(workspace / "external.log"),
                                     "cwd": str(workspace),

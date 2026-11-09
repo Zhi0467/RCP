@@ -87,12 +87,26 @@ class WatchSpec(BaseModel):
         return value
 
 
+class AgentWatchSpec(WatchSpec):
+    """A watcher an agent declares, named by the one line a member reads in Wakes."""
+
+    purpose: str = Field(min_length=1, max_length=120)
+
+    @field_validator("purpose")
+    @classmethod
+    def purpose_is_not_blank(cls, value: str) -> str:
+        stripped = " ".join(value.split())
+        if not stripped:
+            raise ValueError("purpose must not be blank")
+        return stripped
+
+
 class WatchHandoff(BaseModel):
     """One all-or-none watcher declaration with two closed condition kinds."""
 
     model_config = ConfigDict(extra="forbid")
 
-    external: list[WatchSpec]
+    external: list[AgentWatchSpec]
     graph: list[GraphCondition]
 
     @property
@@ -100,7 +114,7 @@ class WatchHandoff(BaseModel):
         return not self.external and not self.graph
 
 
-class ExperimentWatchSpec(WatchSpec):
+class ExperimentWatchSpec(AgentWatchSpec):
     """An Experiment observer may opt into one immutable delivery group."""
 
     group: str | None = None
@@ -1315,7 +1329,7 @@ def validate_watch_specs(
 
 def arm_watchers(
     store: AppStore,
-    specs: list[WatchSpec],
+    specs: list[AgentWatchSpec],
     binding: WatcherBinding,
     *,
     graph_conditions: list[GraphCondition] | None = None,
@@ -1447,6 +1461,7 @@ def arm_watchers(
                 check_command=spec.check_command,
                 log_path=spec.log_path,
                 cwd=spec.cwd,
+                purpose=spec.purpose,
                 continuation=binding.continuation,
                 status="completed" if completed else "active",
                 created_at=created_at,
@@ -1492,7 +1507,7 @@ def arm_watchers(
 
 def _active_twins(
     store: AppStore,
-    specs: list[WatchSpec],
+    specs: list[AgentWatchSpec],
     conditions: list[GraphCondition],
     binding: WatcherBinding,
 ) -> list[StoredWatcherRecord | None]:

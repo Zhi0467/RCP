@@ -169,7 +169,10 @@ def test_old_database_with_child_routes_backfills_watcher_worker_and_episode(tmp
         connection.execute("UPDATE watchers SET episode_id = NULL")
         downgrade_resource_watermarks(connection)
         connection.execute("ALTER TABLE watchers DROP COLUMN worker_id")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 11")
+        connection.execute("ALTER TABLE watchers DROP COLUMN purpose")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (11, 81)"
+        )
     upgraded = AppStore(tmp_path / "rcp.sqlite3")
     assert upgraded.auto_research_child_work(route.worker_id) == route
     assert upgraded.watcher(watcher.watcher_id).worker_id == route.worker_id

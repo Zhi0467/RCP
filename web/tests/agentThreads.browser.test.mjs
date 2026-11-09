@@ -3060,3 +3060,54 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await page.close();
   });
 });
+
+test("job wakes on one log read apart and open to what they run, on a phone too", async () => {
+  await withFixture(async (browser, base) => {
+    const job = (watcher_id, check, purpose, extra = {}) => ({
+      watcher_id,
+      project_id: "p1",
+      chat_id: "moss",
+      wakes_chat: true,
+      status: "active",
+      can_stop_watching: true,
+      machine_id: "backend",
+      check_command: `bash /data/repro/${check}`,
+      log_path: "/data/repro/astra.25645.log",
+      cwd: "/data/repro",
+      purpose,
+      created_at: ago(300),
+      last_checked_at: ago(2),
+      next_check_at: new Date(now + 120_000).toISOString(),
+      last_error: null,
+      ...extra,
+    });
+    const watchers = [
+      job("w1", "check.sh", "GCP2 astra run finishes"),
+      job("w2", "check_gcp2.sh", null),
+      job("w3", "check_repro.sh", null, { status: "degraded", last_error: "check timed out" }),
+    ];
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      await page.route("**/api/projects/p1/watchers", (route) => route.fulfill({ json: watchers }));
+      await page.goto(`${base}#/agent/moss`);
+      const thread = page.getByRole("region", { name: "Moss" });
+      await thread.getByRole("button", { name: /wakes$/ }).click();
+      const popover = page.getByRole("dialog", { name: "Wakes" });
+      const titles = await popover.locator(".upcoming-open strong").allTextContents();
+      assert.equal(new Set(titles).size, 3);
+      assert.ok(titles.includes("GCP2 astra run finishes"));
+      const second = popover.locator(".upcoming-row:has(.upcoming-open)").nth(1);
+      await second.getByRole("button", { name: titles[1] }).click();
+      const facts = second.locator(".upcoming-facts");
+      await facts.waitFor();
+      const text = await facts.textContent();
+      for (const value of [watchers[1].check_command, watchers[1].log_path, watchers[1].cwd])
+        assert.ok(text.includes(value));
+      assert.equal(await popover.locator(".upcoming-facts").count(), 1);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      await shoot(page, `wakes-open-${width}`);
+      await page.close();
+    }
+  });
+});

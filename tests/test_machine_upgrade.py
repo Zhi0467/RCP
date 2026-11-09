@@ -751,3 +751,26 @@ def test_a_space_chat_session_from_before_machine_cards_resumes_on_the_backend(
         ).fetchone()[0]
     assert project == "local"
     store.close()
+
+
+def test_a_store_from_before_watcher_purposes_upgrades_to_the_fresh_schema(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    from rcp.storage.resource_versions import forget_compared_column
+
+    def before_purposes(connection: sqlite3.Connection) -> None:
+        forget_compared_column(connection, "watchers", "purpose")
+        connection.execute("ALTER TABLE watchers DROP COLUMN purpose")
+
+    _old_store(path, monkeypatch, before_purposes, through_version=80)
+    store = AppStore(path)
+    with store.connection() as connection:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(watchers)")]
+        trigger = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'resource_watchers_update'"
+        ).fetchone()[0]
+    assert columns[-1] == "purpose"
+    assert 'OLD."purpose" IS NOT NEW."purpose"' in trigger
+    assert store.storage_schema_ledger_head() == AppStoreBase._STORAGE_SCHEMA_MIGRATIONS[-1][0]
+    store.close()

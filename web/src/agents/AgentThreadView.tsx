@@ -39,6 +39,8 @@ import { browserReason } from "../core/browserStatus";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
+import { spaceMachineById } from "../projects/spaceMachines";
+import { useSpaceMachines } from "../projects/useSpaceMachines";
 import { graphProfile } from "../graph/graphResources";
 import { providerChange } from "../projects/providers";
 import { ChatComposer, ComposerField } from "../chat/ChatComposer";
@@ -110,6 +112,7 @@ import {
   turnCommands,
   turnCommandsSummary,
   upcomingSchedules,
+  watcherFacts,
   watcherWake,
 } from "./agentThreadModel";
 import {
@@ -454,7 +457,11 @@ function WakesPopover({
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [opened, setOpened] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const machines = useSpaceMachines().machines;
+  const machineName = (machineId: string) =>
+    spaceMachineById(machines ?? [], machineId)?.name ?? machineId;
   const trigger = useRef<HTMLButtonElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -490,12 +497,35 @@ function WakesPopover({
           <h3>Wakes</h3>
           {watchers.map((watcher) => {
             const { what, when } = watcherWake(watcher, nodes);
+            const shown = opened === watcher.watcher_id;
             return (
-              <div className="upcoming-row" data-state="active" key={watcher.watcher_id}>
-                <strong title={what}>{what}</strong>
+              <div
+                className="upcoming-row"
+                data-state={watcher.status === "degraded" ? "degraded" : "active"}
+                key={watcher.watcher_id}
+              >
+                <button
+                  className="upcoming-open"
+                  type="button"
+                  aria-expanded={shown}
+                  onClick={() => setOpened(shown ? null : watcher.watcher_id)}
+                >
+                  <ChevronRight size={13} aria-hidden="true" />
+                  <strong title={what}>{what}</strong>
+                </button>
                 <span className="upcoming-when">
                   <time>{when}</time>
                 </span>
+                {shown && (
+                  <dl className="upcoming-facts">
+                    {watcherFacts(watcher, machineName).map(({ label, value, code }) => (
+                      <div key={label}>
+                        <dt>{label}</dt>
+                        <dd>{code ? <code>{value}</code> : value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
                 <span className="upcoming-actions">
                   {watcher.can_stop_watching && (
                     <button

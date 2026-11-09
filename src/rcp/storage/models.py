@@ -3338,6 +3338,7 @@ class WatcherRecord(WatcherDeliveryRecord):
     check_command: str
     log_path: str
     cwd: str
+    purpose: str | None = None
     cancel_command: str | None = None
     cancel_requested_by: str | None = None
     cancel_requested_at: str | None = None
