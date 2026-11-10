@@ -220,15 +220,8 @@ export function coachSteersAfterPrompts(lines: TaskTranscriptLine[]): TaskTransc
 }
 
 export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
-  const continuedTaskIds = new Set(
-    tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
-  );
-  return (
-    [...tasks]
-      .reverse()
-      .find((task) => task.paused && task.can_resume && !continuedTaskIds.has(task.operation_id)) ??
-    null
-  );
+  const latest = tasks.at(-1);
+  return latest?.paused && latest.can_resume ? latest : null;
 }
 
 export function chatTasksMissingFromHistory(

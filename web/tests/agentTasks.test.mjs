@@ -146,7 +146,7 @@ test("node chat reconstruction can select an older explicit chat id", () => {
   );
 });
 
-test("paused resumable attempts block a new chat turn", () => {
+test("a paused attempt stays open until a later turn", () => {
   const paused = task({ operation_id: "paused", status: "paused", can_resume: true });
   assert.equal(resumablePausedChatTask([paused])?.operation_id, "paused");
   assert.equal(resumablePausedChatTask([{ ...paused, can_resume: false }]), null);
@@ -156,6 +156,8 @@ test("paused resumable attempts block a new chat turn", () => {
     status: "succeeded",
   });
   assert.equal(resumablePausedChatTask([paused, resumed]), null);
+  const followUp = task({ operation_id: "follow-up", status: "succeeded" });
+  assert.equal(resumablePausedChatTask([paused, followUp]), null);
 });
 
 test("task identity, not repeated prompt text, decides reconstruction", () => {
