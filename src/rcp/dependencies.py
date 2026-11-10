@@ -466,8 +466,8 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         "tectonic",
         "Compile paper snapshots using RCP's checksum-pinned runtime install.",
         optional_on=frozenset({"local"}),
-        feature="LaTeX preview",
-        fallback="Preview shows unavailable.",
+        feature="LaTeX preview and arXiv export",
+        fallback="Preview shows unavailable; arXiv export is refused with the reason.",
         note="Installed by Paper into the data directory; PATH installations are not used.",
     ),
     Dependency(
