@@ -1116,8 +1116,8 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
       const thread = page.getByRole("region", { name: "Pip" });
       const banner = thread.locator(".node-chat-lines > .chat-task-inline.paused");
       await banner.waitFor();
-      assert.equal(await banner.getByRole("button", { name: "Resume" }).count(), 1);
-      assert.equal(await banner.getByRole("button", { name: "Retry" }).count(), 1);
+      assert.equal(await banner.getByRole("button").count(), 1);
+      assert.equal(await banner.getByRole("button", { name: "Continue" }).count(), 1);
       // The retry's own copy of the message goes once its lineage reaches the first attempt.
       await page.waitForFunction(
         () => document.querySelectorAll(".agent-thread .node-chat-line.human").length === 1,
@@ -1137,18 +1137,8 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
           "the stop and the composer share the message column",
         );
       assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
-      // The paused turn holds the thread, so Enter sends nothing and Send stays off.
-      let posted = 0;
-      page.on("request", (request) => {
-        if (request.method() === "POST" && request.url().endsWith("/turns")) posted += 1;
-      });
-      const field = thread.getByRole("textbox", { name: "Message" });
-      await field.fill("Another one");
-      await field.press("Enter");
-      assert.ok(await thread.getByRole("button", { name: "Send" }).isDisabled());
-      await page.waitForTimeout(200);
-      assert.equal(posted, 0);
-      assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
+      await thread.getByRole("textbox", { name: "Message" }).fill("Another one");
+      assert.ok(await thread.getByRole("button", { name: "Send" }).isEnabled());
       if (shots) await page.screenshot({ path: `${shots}/stopped-retry-${width}.png` });
       await page.close();
     }
@@ -2893,9 +2883,13 @@ test("waiting turns show one line each above the composer; remove and dismiss le
       await page.waitForTimeout(300);
       await shoot(page, `thread-queue-${width}`);
 
-      await rows.nth(1).getByRole("button", { name: "Remove" }).click();
+      await rows.nth(1).getByRole("button", { name: "Edit" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 2);
       assert.deepEqual(served.deleted, ["q1"]);
+      assert.equal(
+        await moss.getByRole("textbox", { name: "Message" }).inputValue(),
+        "Then plot the loss curve against the 8k baseline",
+      );
 
       await moss.getByRole("textbox", { name: "Message" }).fill("draft");
       await rows.nth(1).getByRole("button", { name: "Dismiss" }).click();
@@ -3056,6 +3050,62 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await pip.getByRole("textbox", { name: "Message" }).fill("");
     assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
     assert.equal(await pip.locator(".thread-queue").count(), 0);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+});
+
+test("Stop with a typed message stops the turn and sends it as the next one", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, []);
+    await serveQueue(page, { items: [], posted: [], deleted: [] });
+    let task = {
+      ...settled("op-moss"),
+      active: true,
+      settled: false,
+      finished: false,
+      can_pause: true,
+      status_message: "Working",
+    };
+    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    const paused = [];
+    await page.route("**/api/projects/p1/tasks/op-moss/pause", (route) => {
+      paused.push(route.request().method());
+      task = {
+        ...settled("op-moss"),
+        settled: false,
+        paused: true,
+        can_resume: true,
+        status_message: "Provider process paused.",
+      };
+      return route.fulfill({ json: task });
+    });
+    const sent = [];
+    await page.route("**/api/projects/p1/tasks/project_chat", (route) => {
+      sent.push(route.request().postDataJSON());
+      return route.fulfill({ json: { operation_id: "op-next" } });
+    });
+
+    await page.goto(`${base}#/agent/moss`);
+    const moss = page.getByRole("region", { name: "Moss" });
+    await moss.getByRole("button", { name: "Stop", exact: true }).waitFor();
+    await moss.getByRole("textbox", { name: "Message" }).fill("Answer now");
+    const stop = moss.getByRole("button", { name: "Stop and send", exact: true });
+    await stop.waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await shoot(page, "thread-stop-send-390");
+    await stop.click();
+    await page.waitForFunction(
+      () => document.querySelector('textarea[aria-label="Message"]').value === "",
+    );
+    assert.deepEqual(paused, ["POST"]);
+    assert.deepEqual(
+      sent.map((turn) => turn.message),
+      ["Answer now"],
+    );
     assert.deepEqual(errors, []);
     await page.close();
   });

@@ -2039,7 +2039,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 )
             )
         ):
-            if self._has_resumable_paused_chat_task(
+            if record.request.get(
+                "trigger", "human"
+            ) != "human" and self._has_resumable_paused_chat_task(
                 connection, record.project_id, record.kind, chat_id
             ):
                 raise AgentTaskAdmissionConflict(
@@ -3974,9 +3976,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> bool:
         """Whether this conversation has a paused attempt awaiting a decision.
 
-        A Resume or Retry creates a child operation immediately. Once that child
-        exists, the paused parent no longer blocks a later ordinary turn; if the
-        child itself pauses, it is independently found by this query.
+        A Resume or Retry creates a child operation immediately, and a member's
+        next message starts a later turn in the same session. Either closes the
+        paused attempt; a later turn that itself pauses is found by this query.
         Server-bound consolidation operations are never resumable.
         """
 
@@ -4011,13 +4013,21 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 )
                 AND NOT EXISTS (
                     SELECT 1
+                    FROM graph_runs AS later
+                    WHERE later.project_id = paused.project_id
+                      AND later.kind = paused.kind
+                      AND json_extract(later.request_json, '$.chat_id') = ?
+                      AND (later.created_at, later.rowid) > (paused.created_at, paused.rowid)
+                )
+                AND NOT EXISTS (
+                    SELECT 1
                     FROM graph_run_receipts AS receipt
                     WHERE receipt.operation_id = paused.operation_id
                       AND receipt.category = 'experiment_recovery_abandoned'
                 )
             LIMIT 1
             """,
-            (project_id, kind, BACKEND_MACHINE_ID, chat_id),
+            (project_id, kind, BACKEND_MACHINE_ID, chat_id, chat_id),
         ).fetchone()
         return row is not None
 

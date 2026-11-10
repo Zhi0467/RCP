@@ -1083,7 +1083,6 @@ export function NodeChat({
       !(text || artifactContext) ||
       attachmentsUnready ||
       relatedActive ||
-      pausedAttempt ||
       submitting ||
       repairingTaskId ||
       reviewPending ||
@@ -1620,7 +1619,6 @@ export function NodeChat({
                     ? composer.staged || artifactContext !== null
                     : attachmentsUnready ||
                       relatedActive ||
-                      Boolean(pausedAttempt) ||
                       Boolean(repairingTaskId) ||
                       reviewPending ||
                       !providerReady)

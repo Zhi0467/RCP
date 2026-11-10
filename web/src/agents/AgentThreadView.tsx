@@ -10,6 +10,7 @@ import {
   Paperclip,
   Pause,
   Play,
+  Pencil,
   RotateCcw,
   Send,
   Square,
@@ -97,7 +98,7 @@ import {
 } from "./ApprovalCardStack";
 import { RunningPopover } from "./RunningPopover";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
-import { pausedTaskText } from "./agentTasks";
+import { pausedTaskText, stoppedByMember } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
 import {
   browserTimezone,
@@ -372,16 +373,28 @@ function ThreadQueue({
                 Dismiss
               </button>
             ) : (
-              <button
-                className="icon-button"
-                type="button"
-                aria-label="Remove"
-                title="Remove"
-                disabled={leaving.has(item.queue_id)}
-                onClick={() => setLeaving((known) => new Map(known).set(item.queue_id, false))}
-              >
-                <X size={14} />
-              </button>
+              <>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Edit"
+                  title="Edit"
+                  disabled={leaving.has(item.queue_id)}
+                  onClick={() => setLeaving((known) => new Map(known).set(item.queue_id, true))}
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Remove"
+                  title="Remove"
+                  disabled={leaving.has(item.queue_id)}
+                  onClick={() => setLeaving((known) => new Map(known).set(item.queue_id, false))}
+                >
+                  <X size={14} />
+                </button>
+              </>
             )}
           </li>
         );
@@ -709,6 +722,7 @@ export function AgentThreadView({
   const [, refreshComposer] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
+  const [sendAfterStop, setSendAfterStop] = useState<string | null>(null);
   const linesRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { picker, reload: reloadPicker } = useThreadPicker(thread);
@@ -1127,7 +1141,6 @@ export function AgentThreadView({
       updateComposer(key, { sending: { ...pending, error }, error });
     }
   };
-  // A paused turn holds the conversation until it is resumed or retried.
   const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
   const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
   const queue = view?.queue ?? NO_QUEUE;
@@ -1137,21 +1150,17 @@ export function AgentThreadView({
     Boolean(
       latest?.active || queue.some((item) => item.kind === "handoff" || !item.refusal_reason),
     );
-  const sendBlocked = Boolean(
-    pausedTask || (queueable ? artifactContext : latest?.active && !steerable),
-  );
+  const sendBlocked = Boolean(queueable ? artifactContext : latest?.active && !steerable);
   const action = steerable ? "Steer" : queueable ? "Queue" : "Send";
   // A disabled Send says why on hover.
   const sendReason = inFlight
     ? "Sending"
     : sendBlocked
-      ? pausedTask
-        ? "Resume or retry the last turn first"
-        : queueable
-          ? "Comments wait until this thread is idle"
-          : steeringTask
-            ? "Attachments and comments wait until this turn ends"
-            : "Wait until this turn ends"
+      ? queueable
+        ? "Comments wait until this thread is idle"
+        : steeringTask
+          ? "Attachments and comments wait until this turn ends"
+          : "Wait until this turn ends"
       : attachments.unready
         ? "Attachments are still uploading"
         : !comments.complete
@@ -1240,6 +1249,7 @@ export function AgentThreadView({
     try {
       await endpoints.control(task.operation_id, action, crypto.randomUUID());
     } catch (failure) {
+      setSendAfterStop(null);
       if (isCurrent(target.thread_id))
         setNotice({ threadId: target.thread_id, text: errorMessage(failure) });
     } finally {
@@ -1247,6 +1257,25 @@ export function AgentThreadView({
       if (isCurrent(target.thread_id)) void refresh();
     }
   };
+  const stopSends =
+    !inFlight &&
+    queue.length === 0 &&
+    !attachments.unready &&
+    comments.complete &&
+    (draftSendable || artifactContext);
+  const stopped = !latest?.active;
+  const submitNow = useRef(submit);
+  useEffect(() => {
+    submitNow.current = submit;
+  });
+  useEffect(() => {
+    if (sendAfterStop === null) return;
+    if (sendAfterStop !== thread.thread_id) setSendAfterStop(null);
+    else if (stopped) {
+      setSendAfterStop(null);
+      submitNow.current(false);
+    }
+  }, [sendAfterStop, thread.thread_id, stopped]);
   const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
     const target = thread;
     const targetDraft = draft;
@@ -1579,9 +1608,12 @@ export function AgentThreadView({
                   type="button"
                   className="button compact secondary"
                   disabled={controlBusy || latest.pausing}
-                  onClick={() => void control("pause", latest)}
+                  onClick={() => {
+                    if (stopSends) setSendAfterStop(thread.thread_id);
+                    void control("pause", latest);
+                  }}
                 >
-                  <Square size={11} /> Stop
+                  <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
                 </button>
               )}
             </span>
@@ -1590,24 +1622,18 @@ export function AgentThreadView({
         {(pausedTask || stoppedTask) && (
           <div className="chat-task-inline paused" role="status">
             <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
-            {pausedTask && (
+            {!(pausedTask && stoppedByMember(pausedTask)) && (
               <button
                 type="button"
                 className="button compact primary"
                 disabled={controlBusy}
-                onClick={() => void control("resume", pausedTask)}
+                onClick={() =>
+                  void control(pausedTask ? "resume" : "retry", (pausedTask ?? stoppedTask)!)
+                }
               >
-                <Play size={12} /> Resume
+                <Play size={12} /> Continue
               </button>
             )}
-            <button
-              type="button"
-              className="button compact secondary"
-              disabled={controlBusy}
-              onClick={() => void control("retry", (pausedTask ?? stoppedTask)!)}
-            >
-              <RotateCcw size={12} /> Retry
-            </button>
           </div>
         )}
         {shownNotice && (

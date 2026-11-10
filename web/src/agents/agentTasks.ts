@@ -220,15 +220,8 @@ export function coachSteersAfterPrompts(lines: TaskTranscriptLine[]): TaskTransc
 }
 
 export function resumablePausedChatTask(tasks: AgentTask[]): AgentTask | null {
-  const continuedTaskIds = new Set(
-    tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
-  );
-  return (
-    [...tasks]
-      .reverse()
-      .find((task) => task.paused && task.can_resume && !continuedTaskIds.has(task.operation_id)) ??
-    null
-  );
+  const latest = tasks.at(-1);
+  return latest?.paused && latest.can_resume ? latest : null;
 }
 
 export function chatTasksMissingFromHistory(
@@ -473,8 +466,12 @@ function taskAttachments(value: unknown): ChatAttachmentDescriptor[] {
 const REQUESTED_PAUSE_NOTICE = "Provider process paused.";
 
 /** A paused turn's line, in a person's words when they stopped it. */
+export function stoppedByMember(task: AgentTask): boolean {
+  return task.status_message === REQUESTED_PAUSE_NOTICE;
+}
+
 export function pausedTaskText(task: AgentTask): string {
-  return task.status_message === REQUESTED_PAUSE_NOTICE ? "Stopped." : task.status_message;
+  return stoppedByMember(task) ? "Stopped." : task.status_message;
 }
 
 /**

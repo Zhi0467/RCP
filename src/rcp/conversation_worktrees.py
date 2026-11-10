@@ -318,8 +318,11 @@ def admit_conversation_worktree(
     """Called under the chat admission lock before the durable task is created."""
     assert request.chat_id is not None
     binding = store.conversation_worktree(project_id, request.chat_id)
-    if _chat_busy(store, project_id, request.chat_id):
-        raise ValueError("This conversation already has an active or paused turn.")
+    if any(
+        store.has_active_chat_task(project_id, kind, request.chat_id)
+        for kind in ("node_chat", "project_chat")
+    ):
+        raise ValueError("This conversation already has an active turn.")
     if request.worktree and request.mode != "work":
         raise ValueError("A worktree is created only by the first ticked Work turn.")
     if binding is None and request.worktree:

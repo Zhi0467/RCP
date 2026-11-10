@@ -36,7 +36,7 @@
   },
   "src/agents/AgentThreadView.tsx": {
     "rcp/no-comments": {
-      "count": 36
+      "count": 35
     }
   },
   "src/agents/ApprovalCard.tsx": {
@@ -931,7 +931,7 @@
   },
   "tests/agentThreads.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 53
+      "count": 52
     }
   },
   "tests/agentThreads.test.mjs": {

@@ -483,15 +483,18 @@ button. Once a thread's transcript has loaded empty, a centered welcome lists
 what the agent can do under the header that names it, rendered from the
 capability lines the backend gives each verb the thread kind's turns are
 granted, above four starters. A starter fills the composer without sending, and the first turn removes the welcome.
-A failed turn shows its error once, in the message column, with Retry.
-A member's Stop reads Stopped, with Resume and Retry, in the same column, on
-one rounded row shaped like the failed turn's. Send stays off until the stopped
-turn is resumed or retried. A
-Resume or Retry continues its turn, so the member's message shows once. In a
+A failed turn shows its error once, in the message column, with Continue. A
+turn that paused by itself shows the same row. A member's Stop reads Stopped
+with no button, on one rounded row shaped like the failed turn's, and Send
+stays on: the next message continues the session. While a turn runs and the
+composer holds a sendable message, Stop reads Stop and send: it stops the turn
+and sends that message as the next one. With rows already waiting it stays
+Stop, so a new message never jumps the queue. Continue
+continues its turn, so the member's message shows once. In a
 project thread, what waits for the next turn shows as one-line rows above the
 composer, oldest first: a ready handoff with its chip and Space agent, each
-queued message with Remove, and a refused one with its reason and Dismiss,
-which puts its text back in the draft. Rows grow in and collapse out. While a
+queued message with Edit and Remove, and a refused one with its reason and Dismiss,
+which, like Edit, puts its text back in the draft. Rows grow in and collapse out. While a
 running turn can be steered and nothing is staged, Enter steers and Queue sits
 beside it; with an active turn or waiting rows otherwise, Enter queues, so a new
 message never jumps the line. A message with files queues because a steer
