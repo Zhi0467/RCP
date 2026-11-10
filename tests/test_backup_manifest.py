@@ -77,6 +77,7 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
         "chat-attachments",
         "jobs",
         "paper-snapshots",
+        "paper-git",
         "project-caches",
         "providers",
         "provider-homes",

@@ -386,10 +386,9 @@ class PaperGit:
         return output.split()[0].decode() if output else ""
 
     def link(self, project_id: str):
-        with self.lock(project_id), self.admission(project_id):
+        with self.lock(project_id):
             link = self._record(project_id)
             try:
-                self._head(link)
                 directory = self.directory(project_id)
                 probe = build_commit(directory, {}, "", "Paper link probe", "RCP", "paper")
                 _git(
@@ -401,9 +400,11 @@ class PaperGit:
                         probe + ":refs/heads/rcp-link-probe",
                     ],
                 )
-                link.state = "linked"
-                self.store.save_paper_git_link(link)
-                self._pull(link)
+                head = self._fetch(link)
+                with self.admission(project_id):
+                    link.state = "linked"
+                    self.store.save_paper_git_link(link)
+                    self._merge(link, head)
             except Exception as exc:
                 self._error(project_id, exc)
                 raise
@@ -415,12 +416,14 @@ class PaperGit:
         self.store.save_paper_git_link(link)
 
     def pull(self, project_id: str, *, refresh: bool = False):
-        with self.lock(project_id), self.admission(project_id):
+        with self.lock(project_id):
             link = self._record(project_id)
             if link.state != "linked":
                 raise GitError("Paper link is pending")
             try:
-                self._pull(link, refresh=refresh)
+                head = self._fetch(link)
+                with self.admission(project_id):
+                    self._merge(link, head, refresh=refresh)
             except Exception as exc:
                 self._error(project_id, exc)
                 raise
@@ -460,19 +463,12 @@ class PaperGit:
         _git(directory, ["reflog", "expire", "--expire=now", "--all"])
         _git(directory, ["gc", "--prune=now"])
 
-    def _pull(self, link, *, refresh: bool = False) -> None:
-        from rcp.limits import PAPER_GIT_APPLY_RETRIES
-        from rcp.paper.changes import InvalidChanges
-        from rcp.paper.git_merge import merge_trees
-        from rcp.paper.models import PaperLimit, PaperPrecondition, PaperRateLimit
-        from rcp.regular_tree_reader import RegularTree
-
-        link = self._release(link)
+    def _fetch(self, link) -> str:
         directory = self.directory(link.project_id)
         self._budget(directory)
         head = self._head(link)
-        if head == link.synced_commit and not refresh:
-            return
+        if not head and link.synced_commit:
+            raise GitError("Paper Git branch is missing from the remote")
         if head and head != link.synced_commit:
             _git(
                 directory,
@@ -486,7 +482,25 @@ class PaperGit:
             )
             head = _git(directory, ["rev-parse", "FETCH_HEAD"]).decode().strip()
             _git(directory, ["update-ref", "refs/rcp/incoming", head])
-        self._budget(directory)
+            try:
+                self._budget(directory)
+            except GitError:
+                _git(directory, ["update-ref", "-d", "refs/rcp/incoming"])
+                _git(directory, ["gc", "--prune=now"])
+                raise
+        return head
+
+    def _merge(self, link, head: str, *, refresh: bool = False) -> None:
+        from rcp.limits import PAPER_GIT_APPLY_RETRIES
+        from rcp.paper.changes import InvalidChanges
+        from rcp.paper.git_merge import merge_trees
+        from rcp.paper.models import PaperLimit, PaperPrecondition, PaperRateLimit
+        from rcp.regular_tree_reader import RegularTree
+
+        link = self._release(link)
+        if head == link.synced_commit and not refresh:
+            return
+        directory = self.directory(link.project_id)
         theirs = read_tree(directory, head)
         base = read_tree(directory, link.synced_commit)
         for item in link.skipped:
@@ -668,25 +682,31 @@ class PaperGit:
     def push(self, project_id: str, message: str, name: str, user_id: str) -> str:
         if not message.strip() or "\0" in message:
             raise ValueError("A commit message is required")
-        with self.lock(project_id), self.admission(project_id):
+        with self.lock(project_id):
             for attempt in range(limits.PAPER_GIT_PUSH_ATTEMPTS):
                 link = self._record(project_id)
                 if link.state != "linked":
                     raise GitError("Paper link is pending")
+                directory = self.directory(project_id)
                 try:
-                    self._pull(link)
-                    link = self._release(self._record(project_id))
-                    if self._head(link) != link.synced_commit:
-                        raise GitError("retry")
+                    head = self._fetch(link)
                 except Exception as exc:
                     self._error(project_id, exc)
                     raise GitError("retry") from exc
-                if link.held:
-                    raise GitError("conflicts")
-                directory = self.directory(project_id)
-                snapshot = self.live.run_sync(self.live.snapshot(project_id))
-                tree = self._push_tree(link, snapshot)
-                commit = build_commit(directory, tree, link.synced_commit, message, name, user_id)
+                with self.admission(project_id):
+                    try:
+                        self._merge(link, head)
+                    except Exception as exc:
+                        self._error(project_id, exc)
+                        raise GitError("retry") from exc
+                    link = self._release(self._record(project_id))
+                    if link.held:
+                        raise GitError("conflicts")
+                    snapshot = self.live.run_sync(self.live.snapshot(project_id))
+                    tree = self._push_tree(link, snapshot)
+                    commit = build_commit(
+                        directory, tree, link.synced_commit, message, name, user_id
+                    )
                 try:
                     _git(
                         directory,
@@ -701,11 +721,12 @@ class PaperGit:
                         continue
                     self._error(project_id, exc)
                     raise
-                link.synced_commit = commit
-                link.synced_revision = snapshot.revision
-                link.last_error = ""
-                link.checked_at = self.store.now()
-                self.store.save_paper_git_link(link)
-                self._pin(link)
+                with self.admission(project_id):
+                    link.synced_commit = commit
+                    link.synced_revision = snapshot.revision
+                    link.last_error = ""
+                    link.checked_at = self.store.now()
+                    self.store.save_paper_git_link(link)
+                    self._pin(link)
                 return commit
         raise GitError("retry")

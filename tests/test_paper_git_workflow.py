@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.paper import PaperLive
+from rcp.paper import PaperLive, git_sync
 from rcp.paper.git_sync import GitEntry, PaperGit, _git, build_commit, read_tree
 from rcp.storage import AppStore
 from rcp.transport import LocalStateWorkspace
@@ -408,3 +408,52 @@ def test_typing_elsewhere_during_pull_stays_unpushed(sync, monkeypatch: pytest.M
     monkeypatch.setattr(git_merge, "merge_trees", type_elsewhere)
     manager.pull("p")
     assert manager.status("p")["unpushed"]
+
+
+def test_vanished_remote_branch_refuses_and_keeps_the_paper(sync):
+    from rcp.paper.git_sync import GitError
+
+    manager, live, remote = sync
+    first = commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    _git(remote, ["update-ref", "-d", "refs/heads/main"])
+    with pytest.raises(GitError):
+        manager.pull("p")
+    assert saved(live).files[0].text == "base"
+    assert manager.store.paper_git_link("p").synced_commit == first
+
+
+def test_network_git_runs_outside_project_admission(sync, monkeypatch: pytest.MonkeyPatch):
+    from contextlib import contextmanager
+
+    manager, live, remote = sync
+    admitted = []
+    network = []
+
+    @contextmanager
+    def admission(_):
+        admitted.append(True)
+        try:
+            yield
+        finally:
+            admitted.pop()
+
+    original = git_sync._git
+
+    def watch(directory, args, *rest, **kwargs):
+        if args[0] in {"ls-remote", "fetch", "push"}:
+            network.append((args[0], bool(admitted)))
+        return original(directory, args, *rest, **kwargs)
+
+    manager.admission = admission
+    monkeypatch.setattr(git_sync, "_git", watch)
+    first = commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    commit_remote(remote, {"paper.md": GitEntry(b"remote")}, first)
+    manager.pull("p")
+    human_edit(live, saved(live).files[0].file_id, "local")
+    manager.push("p", "message", "Member", "member")
+    assert {name for name, _ in network} == {"ls-remote", "fetch", "push"}
+    assert not any(held for _, held in network)
