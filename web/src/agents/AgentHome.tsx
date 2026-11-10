@@ -20,6 +20,7 @@ import {
   chosenThread,
   railThreads,
   threadIsLive,
+  threadShowsUnread,
   threadTimeLabel,
 } from "./agentThreadModel";
 
@@ -37,6 +38,7 @@ function RailRow({
   onOpen: () => void;
 }) {
   const subtitle = thread.kind === "space" ? "Space" : (thread.project_name ?? "");
+  const unread = threadShowsUnread(thread, active ? thread.thread_id : null);
   return (
     <div className="agent-row thread-row">
       <button
@@ -44,8 +46,8 @@ function RailRow({
         role="option"
         aria-selected={active}
         aria-current={active ? "page" : undefined}
-        aria-label={`${thread.agent_name}, ${subtitle}${thread.unread ? ", unread" : ""}${thread.live_state === "needs_you" ? ", needs you" : ""}`}
-        className={`${active ? "active" : ""}${thread.unread ? " has-unread" : ""}`}
+        aria-label={`${thread.agent_name}, ${subtitle}${unread ? ", unread" : ""}${thread.live_state === "needs_you" ? ", needs you" : ""}`}
+        className={`${active ? "active" : ""}${unread ? " has-unread" : ""}`}
         data-state={thread.live_state}
         onClick={onOpen}
       >
@@ -56,7 +58,7 @@ function RailRow({
             <LoaderCircle className="spin" size={14} />
           ) : thread.live_state === "needs_you" ? (
             <span className="needs-you-dot" />
-          ) : thread.unread ? (
+          ) : unread ? (
             <span className="unread-dot" />
           ) : (
             <MessageCircle size={14} />

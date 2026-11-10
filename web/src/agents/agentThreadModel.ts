@@ -87,6 +87,14 @@ export function railThreads(threads: readonly AgentThread[]): AgentThread[] {
   ];
 }
 
+/** The thread on screen is being read, so only other threads show the unread mark. */
+export function threadShowsUnread(
+  thread: Pick<AgentThread, "thread_id" | "unread">,
+  openThreadId: string | null,
+): boolean {
+  return thread.unread && thread.thread_id !== openThreadId;
+}
+
 /** A turn is live while it is queued or running; the rail shows a spinner then. */
 export function threadIsLive(thread: AgentThread): boolean {
   return thread.live_state === "running" || thread.live_state === "queued";

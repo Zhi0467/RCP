@@ -1,6 +1,11 @@
 import { AgentRename } from "./AgentRename";
 import { AgentThreadView } from "../agents/AgentThreadView";
-import { sinceLabel, threadIsLive, threadTimeLabel } from "../agents/agentThreadModel";
+import {
+  sinceLabel,
+  threadIsLive,
+  threadShowsUnread,
+  threadTimeLabel,
+} from "../agents/agentThreadModel";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import type { AgentThread } from "../core/types";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
@@ -398,6 +403,9 @@ export function ChatsWorkspace({
   useEffect(() => setRenamed({}), [summaryNames]);
   const ownThreadId = ownThread?.thread.thread_id ?? null;
   const showingOwnThread = ownThreadId !== null && selectedChatId === ownThreadId;
+  const ownThreadUnread =
+    ownThread !== null &&
+    threadShowsUnread(ownThread.thread, showingOwnThread ? ownThreadId : null);
   useEffect(() => {
     if (showingOwnThread) setListCollapsed(true);
   }, [showingOwnThread]);
@@ -1026,8 +1034,8 @@ export function ChatsWorkspace({
                 role="option"
                 aria-selected={showingOwnThread}
                 aria-current={showingOwnThread ? "page" : undefined}
-                aria-label={`${ownThread.thread.agent_name}, your agent${ownThread.thread.unread ? ", unread" : ""}`}
-                className={`${showingOwnThread ? "active" : ""}${ownThread.thread.unread ? " has-unread" : ""}`}
+                aria-label={`${ownThread.thread.agent_name}, your agent${ownThreadUnread ? ", unread" : ""}`}
+                className={`${showingOwnThread ? "active" : ""}${ownThreadUnread ? " has-unread" : ""}`}
                 onClick={() => {
                   onSelect(ownThread.thread.thread_id);
                   if (narrow) setMobileListOpen(false);
@@ -1040,7 +1048,7 @@ export function ChatsWorkspace({
                     <span className="thread-row-icon" aria-hidden="true">
                       {threadIsLive(ownThread.thread) ? (
                         <LoaderCircle className="spin" size={12} />
-                      ) : ownThread.thread.unread ? (
+                      ) : ownThreadUnread ? (
                         <span className="unread-dot" />
                       ) : (
                         <MessageCircle size={12} />
