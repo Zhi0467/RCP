@@ -722,6 +722,7 @@ export function AgentThreadView({
   const [, refreshComposer] = useState(0);
   const [renaming, setRenaming] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
+  const [sendAfterStop, setSendAfterStop] = useState<string | null>(null);
   const linesRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { picker, reload: reloadPicker } = useThreadPicker(thread);
@@ -1248,6 +1249,7 @@ export function AgentThreadView({
     try {
       await endpoints.control(task.operation_id, action, crypto.randomUUID());
     } catch (failure) {
+      setSendAfterStop(null);
       if (isCurrent(target.thread_id))
         setNotice({ threadId: target.thread_id, text: errorMessage(failure) });
     } finally {
@@ -1255,6 +1257,21 @@ export function AgentThreadView({
       if (isCurrent(target.thread_id)) void refresh();
     }
   };
+  const stopSends =
+    !inFlight && !attachments.unready && comments.complete && (draftSendable || artifactContext);
+  const stopped = !latest?.active;
+  const submitNow = useRef(submit);
+  useEffect(() => {
+    submitNow.current = submit;
+  });
+  useEffect(() => {
+    if (sendAfterStop === null) return;
+    if (sendAfterStop !== thread.thread_id) setSendAfterStop(null);
+    else if (stopped) {
+      setSendAfterStop(null);
+      submitNow.current(false);
+    }
+  }, [sendAfterStop, thread.thread_id, stopped]);
   const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
     const target = thread;
     const targetDraft = draft;
@@ -1587,9 +1604,12 @@ export function AgentThreadView({
                   type="button"
                   className="button compact secondary"
                   disabled={controlBusy || latest.pausing}
-                  onClick={() => void control("pause", latest)}
+                  onClick={() => {
+                    if (stopSends) setSendAfterStop(thread.thread_id);
+                    void control("pause", latest);
+                  }}
                 >
-                  <Square size={11} /> Stop
+                  <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
                 </button>
               )}
             </span>

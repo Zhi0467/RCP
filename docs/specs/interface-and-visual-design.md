@@ -486,7 +486,9 @@ granted, above four starters. A starter fills the composer without sending, and 
 A failed turn shows its error once, in the message column, with Continue. A
 turn that paused by itself shows the same row. A member's Stop reads Stopped
 with no button, on one rounded row shaped like the failed turn's, and Send
-stays on: the next message continues the session. Continue
+stays on: the next message continues the session. While a turn runs and the
+composer holds a sendable message, Stop reads Stop and send: it stops the turn
+and sends that message as the next one. Continue
 continues its turn, so the member's message shows once. In a
 project thread, what waits for the next turn shows as one-line rows above the
 composer, oldest first: a ready handoff with its chip and Space agent, each

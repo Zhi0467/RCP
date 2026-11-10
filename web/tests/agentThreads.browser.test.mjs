@@ -3055,6 +3055,62 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
   });
 });
 
+test("Stop with a typed message stops the turn and sends it as the next one", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, []);
+    await serveQueue(page, { items: [], posted: [], deleted: [] });
+    let task = {
+      ...settled("op-moss"),
+      active: true,
+      settled: false,
+      finished: false,
+      can_pause: true,
+      status_message: "Working",
+    };
+    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    const paused = [];
+    await page.route("**/api/projects/p1/tasks/op-moss/pause", (route) => {
+      paused.push(route.request().method());
+      task = {
+        ...settled("op-moss"),
+        settled: false,
+        paused: true,
+        can_resume: true,
+        status_message: "Provider process paused.",
+      };
+      return route.fulfill({ json: task });
+    });
+    const sent = [];
+    await page.route("**/api/projects/p1/tasks/project_chat", (route) => {
+      sent.push(route.request().postDataJSON());
+      return route.fulfill({ json: { operation_id: "op-next" } });
+    });
+
+    await page.goto(`${base}#/agent/moss`);
+    const moss = page.getByRole("region", { name: "Moss" });
+    await moss.getByRole("button", { name: "Stop", exact: true }).waitFor();
+    await moss.getByRole("textbox", { name: "Message" }).fill("Answer now");
+    const stop = moss.getByRole("button", { name: "Stop and send", exact: true });
+    await stop.waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await shoot(page, "thread-stop-send-390");
+    await stop.click();
+    await page.waitForFunction(
+      () => document.querySelector('textarea[aria-label="Message"]').value === "",
+    );
+    assert.deepEqual(paused, ["POST"]);
+    assert.deepEqual(
+      sent.map((turn) => turn.message),
+      ["Answer now"],
+    );
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+});
+
 test("job wakes on one log read apart and open to what they run, on a phone too", async () => {
   await withFixture(async (browser, base) => {
     const job = (watcher_id, check, purpose, extra = {}) => ({
