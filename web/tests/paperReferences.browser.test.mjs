@@ -14,29 +14,36 @@ after(async () => {
 });
 const bib =
   "@article{one, title={A Reference}, author={An Author}, year=2024, doi={10.123/example}, abstract={An abstract}}";
-async function open(t, width = 1280) {
+async function open(
+  t,
+  width = 1280,
+  { source = "See [@one]", bibliography = bib, format = "markdown" } = {},
+) {
   return openPaper(t, {
     browser,
     origin: server.origin,
     width,
-    room: new PaperTestRoom("See [@one]"),
-    initialText: "See [@one]",
+    room: new PaperTestRoom(source),
+    initialText: source,
     configure(fixture) {
       fixture.tree.files[0].sha256 = "source";
+      fixture.tree.files[0].format = format;
       fixture.tree.files.push({
         file_id: "bib",
         path: "references.bib",
         kind: "text",
         format: "bibtex",
         sha256: "bib1",
-        size: bib.length,
+        size: bibliography.length,
       });
-      fixture.rooms.set("bib", new PaperTestRoom(bib));
+      fixture.rooms.set("bib", new PaperTestRoom(bibliography));
       const respond = fixture.respond.bind(fixture);
       fixture.respond = (path, method, body) =>
         path.endsWith("/bib/raw")
-          ? { body: bib, contentType: "text/plain" }
-          : respond(path, method, body);
+          ? { body: bibliography, contentType: "text/plain" }
+          : format === "typst" && path.endsWith("/engines")
+            ? { json: { latex: "ready", typst: "unavailable", errors: {} } }
+            : respond(path, method, body);
     },
   });
 }
@@ -133,4 +140,56 @@ for (const width of [1280, 390]) {
 test("export is disabled for a non-LaTeX file", async (t) => {
   const { page } = await open(t);
   assert.ok(await page.getByRole("button", { name: "Export for arXiv" }).isDisabled());
+});
+
+test("citation clicks require glyph bounds, empty selection and no modifiers", async (t) => {
+  const { page, errors } = await open(t, 1280, { source: "See @one", format: "typst" });
+  await page.locator(".cm-content").waitFor();
+  const bounds = await page
+    .locator(".cm-line")
+    .first()
+    .evaluate((element) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const at = node.textContent.indexOf("one");
+        if (at < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + 3);
+        const rect = range.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, y: rect.top + rect.height / 2 };
+      }
+    });
+  const x = (bounds.left + bounds.right) / 2;
+  await page.mouse.click(bounds.right + 40, bounds.y);
+  assert.equal(await page.locator(".paper-reference-page:visible").count(), 0);
+  for (const modifier of ["Alt", "Control", "Meta", "Shift"]) {
+    await page.keyboard.down(modifier);
+    await page.mouse.click(x, bounds.y);
+    await page.keyboard.up(modifier);
+    assert.equal(await page.locator(".paper-reference-page:visible").count(), 0);
+  }
+  await page.mouse.click(bounds.left - 20, bounds.y);
+  await page.mouse.down();
+  await page.mouse.move(x, bounds.y, { steps: 5 });
+  await page.mouse.up();
+  assert.ok(await page.evaluate(() => !!window.getSelection()?.toString()));
+  assert.equal(await page.locator(".paper-reference-page:visible").count(), 0);
+  await page.mouse.click(x, bounds.y);
+  await page.locator(".paper-reference-page").waitFor();
+  assert.deepEqual(errors, []);
+});
+
+test("filtered groups disappear and keyless unreadable entries are not duplicates", async (t) => {
+  const { page, errors } = await open(t, 390, { bibliography: "@article{,}\n@book{,}" });
+  await page.getByRole("button", { name: "Refs", exact: true }).click({ timeout: 5000 });
+  await page.locator(".paper-reference-entry:visible").first().waitFor();
+  assert.equal(await page.locator(".paper-reference-entry:visible").count(), 2);
+  for (const row of await page.locator(".paper-reference-entry:visible").all())
+    assert.equal(await row.locator(".paper-reference-warning").count(), 1);
+  await page.getByRole("searchbox", { name: "Search references" }).fill("absent");
+  assert.equal(await page.locator(".paper-reference-group:visible").count(), 0);
+  assert.equal(await page.locator(".paper-reference-entry:visible").count(), 0);
+  assert.deepEqual(errors, []);
 });

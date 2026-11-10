@@ -3,6 +3,48 @@ import { test } from "node:test";
 import { parseBibtex } from "../src/paper/bibtex.ts";
 import { citeKeys, citation } from "../src/paper/citeKeys.ts";
 
+test("percent comments outside entries cannot introduce entries", () => {
+  const source =
+    "% @article{old, title={x}}\n@misc{new, title={100% valid}} % @book{hidden}\n% @misc{last}";
+  const entries = parseBibtex(source);
+  assert.deepEqual(
+    entries.map((entry) => entry.key),
+    ["new"],
+  );
+  assert.equal(entries[0].fields.title, "100% valid");
+  assert.equal(entries[0].from, source.indexOf("@misc{new"));
+});
+
+test("malformed-entry recovery skips percent-commented entries", () => {
+  const entries = parseBibtex("@article{bad, broken\n% @book{hidden}\n@misc{kept}");
+  assert.deepEqual(
+    entries.map(({ key }) => key),
+    ["bad", "kept"],
+  );
+});
+
+test("Markdown strips sentence punctuation and excludes email addresses", () => {
+  const source = "[see @c.] [me@x.com; @real:key.]";
+  assert.deepEqual(citeKeys(source, "markdown"), [
+    { key: "c", from: source.indexOf("@c") + 1, to: source.indexOf("@c") + 2 },
+    { key: "real:key", from: source.indexOf("@real") + 1, to: source.indexOf("@real") + 9 },
+  ]);
+});
+
+test("Typst explicit cite ranges start inside angle brackets", () => {
+  for (const key of ["c", "cite", "i"]) {
+    const source = `#cite(<${key}>)`;
+    assert.deepEqual(citeKeys(source, "typst"), [{ key, from: 7, to: 7 + key.length }]);
+  }
+  assert.deepEqual(citeKeys("me@x.com", "typst"), []);
+});
+
+test("LaTeX bibliography records are not citation commands", () => {
+  const source = String.raw`\bibcite{g} \cite{g}`;
+  const from = source.lastIndexOf("g");
+  assert.deepEqual(citeKeys(source, "latex"), [{ key: "g", from, to: from + 1 }]);
+});
+
 test("BibTeX reads nested braces, quoted fields, strings and concatenation", () => {
   const source = String.raw`@string{conf = "Neur" # "IPS"}
 @comment{ignored}

@@ -283,13 +283,33 @@ export function PaperEditor({
           }),
           EditorView.domEventHandlers({
             click(event, editor) {
+              if (
+                event.altKey ||
+                event.ctrlKey ||
+                event.metaKey ||
+                event.shiftKey ||
+                editor.state.selection.ranges.some((range) => !range.empty)
+              )
+                return;
               const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
               const cite =
                 position === null
                   ? undefined
-                  : citeKeys(editor.state.doc.toString(), format).find(
-                      (item) => position >= item.from && position <= item.to,
-                    );
+                  : citeKeys(editor.state.doc.toString(), format).find((item) => {
+                      if (position < item.from || position > item.to) return false;
+                      const start = editor.domAtPos(item.from, 1);
+                      const end = editor.domAtPos(item.to, -1);
+                      const range = editor.dom.ownerDocument.createRange();
+                      range.setStart(start.node, start.offset);
+                      range.setEnd(end.node, end.offset);
+                      return Array.from(range.getClientRects()).some(
+                        (rect) =>
+                          event.clientX > rect.left &&
+                          event.clientX < rect.right &&
+                          event.clientY > rect.top &&
+                          event.clientY < rect.bottom,
+                      );
+                    });
               if (cite) referenceState.current.onReference?.(cite.key);
             },
           }),

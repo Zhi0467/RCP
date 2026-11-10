@@ -33,7 +33,7 @@ export function PaperExport({
         setTimeout(() => URL.revokeObjectURL(link.href), 0);
       }
     } catch (error) {
-      setFailure({ reason: String(error), log_tail: "" });
+      setFailure({ reason: "failed", log_tail: String(error) });
     } finally {
       setBusy(false);
     }
@@ -57,7 +57,13 @@ export function PaperExport({
           onClose={() => setFailure(null)}
         >
           <header className="paper-bar">
-            <strong>{failure.reason}</strong>
+            <strong>
+              {failure.reason === "not_root"
+                ? "Select a LaTeX root file"
+                : failure.reason === "unavailable"
+                  ? "LaTeX engine unavailable"
+                  : "Export failed"}
+            </strong>
             <span className="paper-grow" />
             <button
               className="icon-button"

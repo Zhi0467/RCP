@@ -493,16 +493,16 @@
   }
 }
 
-.paper-live-workspace .icon-button,
-.paper-live-workspace .button,
+.paper-live-workspace .icon-button:not(.primary):not(:disabled),
+.paper-live-workspace .button:not(.primary):not(:disabled),
 .paper-live-workspace .segmented button[aria-pressed="true"] {
   background: var(--paper-surface);
   box-shadow: var(--paper-raised);
   border-color: transparent;
   color: var(--paper-ink);
 }
-.paper-live-workspace .icon-button:hover:not(:disabled),
-.paper-live-workspace .button:hover:not(:disabled) {
+.paper-live-workspace .icon-button:not(.primary):hover:not(:disabled),
+.paper-live-workspace .button:not(.primary):hover:not(:disabled) {
   background: var(--paper-selected);
 }
 .paper-live-workspace .segmented {

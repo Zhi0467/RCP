@@ -74,9 +74,10 @@ class BibReader {
 export function parseBibtex(source: string): BibEntry[] {
   const entries: BibEntry[] = [];
   const strings = new Map<string, string>();
-  const start = /@(\w+)\s*([{(])/g;
+  const start = /%[^\r\n]*|@(\w+)\s*([{(])/g;
   let match: RegExpExecArray | null;
   while ((match = start.exec(source))) {
+    if (!match[1]) continue;
     const type = match[1].toLowerCase();
     const close = match[2] === "{" ? "}" : ")";
     const reader = new BibReader(source, start.lastIndex, strings);
@@ -127,9 +128,11 @@ export function parseBibtex(source: string): BibEntry[] {
       start.lastIndex = reader.at;
     } catch {
       entry.unreadable = true;
-      const next = /@\w+\s*[{(]/g;
+      const next = new RegExp(start.source, "g");
       next.lastIndex = start.lastIndex;
-      entry.to = next.exec(source)?.index ?? source.length;
+      let boundary = next.exec(source);
+      while (boundary && !boundary[1]) boundary = next.exec(source);
+      entry.to = boundary?.index ?? source.length;
       start.lastIndex = entry.to;
     }
     if (!["string", "comment", "preamble"].includes(type)) entries.push(entry);

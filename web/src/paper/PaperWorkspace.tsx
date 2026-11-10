@@ -33,6 +33,7 @@ import {
   type PaperReference,
 } from "./PaperReferences";
 import { PaperExport } from "./PaperExport";
+import { findReference } from "./referenceFiles";
 import { citation } from "./citeKeys";
 import { PaperFiles } from "./PaperFiles";
 import { usePaperSplit } from "./usePaperSplit";
@@ -84,14 +85,8 @@ export function PaperWorkspace({
   const [reference, setReference] = useState<{
     key: string;
     fileId?: string;
-    from?: number;
   } | null>(null);
-  const referenceEntry = references.entries.find(
-    (entry) =>
-      entry.key === reference?.key &&
-      (!reference.fileId ||
-        (entry.file.file_id === reference.fileId && entry.from === reference.from)),
-  );
+  const referenceEntry = findReference(references.entries, reference);
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
@@ -425,12 +420,13 @@ export function PaperWorkspace({
     } else focusEditor(id);
   };
   const openReference = (key: string) => {
-    setReference({ key });
+    const entry = findReference(references.entries, { key });
+    setReference({ key, fileId: entry?.file.file_id });
     setRight("reference");
     setView("refs");
   };
   const chooseReference = (entry: PaperReference) => {
-    setReference({ key: entry.key, fileId: entry.file.file_id, from: entry.from });
+    setReference({ key: entry.key, fileId: entry.file.file_id });
     if (phone) return;
     const dom = writingPane.current?.querySelector<HTMLElement>(".cm-editor");
     const editor = dom && EditorView.findFromDOM(dom);

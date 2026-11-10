@@ -44,10 +44,17 @@ export function PaperReferences({
   const [open, setOpen] = useState(!folded);
   const [search, setSearch] = useState("");
   const groups = new Map<string, PaperReference[]>();
-  for (const entry of entries)
-    groups.set(entry.file.path, [...(groups.get(entry.file.path) ?? []), entry]);
+  for (const entry of entries) {
+    if (
+      `${entry.key} ${Object.values(entry.fields).join(" ")}`
+        .toLowerCase()
+        .includes(search.toLowerCase())
+    )
+      groups.set(entry.file.path, [...(groups.get(entry.file.path) ?? []), entry]);
+  }
   const counts = new Map<string, number>();
-  for (const entry of entries) counts.set(entry.key, (counts.get(entry.key) ?? 0) + 1);
+  for (const entry of entries)
+    if (entry.key) counts.set(entry.key, (counts.get(entry.key) ?? 0) + 1);
   return (
     <section className={`paper-box paper-references ${open ? "expanded" : ""}`}>
       <button
@@ -72,31 +79,23 @@ export function PaperReferences({
           {[...groups].map(([path, group]) => (
             <div key={path}>
               <div className="paper-reference-group">{path}</div>
-              {group
-                .filter((entry) =>
-                  `${entry.key} ${Object.values(entry.fields).join(" ")}`
-                    .toLowerCase()
-                    .includes(search.toLowerCase()),
-                )
-                .map((entry) => (
-                  <button
-                    className="paper-reference-entry"
-                    key={entry.from}
-                    onClick={() => onChoose(entry)}
-                    title={entry.key}
-                  >
-                    <strong>{entry.fields.title || entry.key || "Unreadable entry"}</strong>
-                    <span>
-                      {[entry.fields.author, entry.fields.year].filter(Boolean).join(" · ")}
-                    </span>
-                    {entry.unreadable && (
-                      <span className="paper-reference-warning">Unreadable</span>
-                    )}
-                    {(counts.get(entry.key) ?? 0) > 1 && (
-                      <span className="paper-reference-warning">Duplicate</span>
-                    )}
-                  </button>
-                ))}
+              {group.map((entry) => (
+                <button
+                  className="paper-reference-entry"
+                  key={entry.from}
+                  onClick={() => onChoose(entry)}
+                  title={entry.key}
+                >
+                  <strong>{entry.fields.title || entry.key || "Unreadable entry"}</strong>
+                  <span>
+                    {[entry.fields.author, entry.fields.year].filter(Boolean).join(" · ")}
+                  </span>
+                  {entry.unreadable && <span className="paper-reference-warning">Unreadable</span>}
+                  {(counts.get(entry.key) ?? 0) > 1 && (
+                    <span className="paper-reference-warning">Duplicate</span>
+                  )}
+                </button>
+              ))}
             </div>
           ))}
         </div>
