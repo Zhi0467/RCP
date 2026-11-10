@@ -23,8 +23,8 @@ Only acknowledgment means an edit is saved. Disconnected browser edits wait.
 Publication replaces `paper/` as one staged tree after idle editing and
 periodically during continuous editing. Renames and edits therefore never appear
 apart. Failed or unreachable publication backs off while saving continues.
-Paper never enters the state repository. A paper may link one GitHub repository
-([GitHub sync](#github-sync)). Workers reconstruct documents and perform SQLite
+The published tree is never committed to the state repository's history. A
+paper may link one GitHub repository ([GitHub sync](#github-sync)). Workers reconstruct documents and perform SQLite
 work under the project lock. After commit, the owner installs and broadcasts the
 result even if callers cancel. The paper badge means that saved revisions still
 await publication.
@@ -243,9 +243,11 @@ symlinks, submodules, or case collisions to defend against. The directory is
 Fetch is shallow and takes the one branch. A repository over its disk limit
 stops syncing with a stated error.
 
-The link is machine-local, like the key. Backup, restore, and transfer carry
-neither the link nor the directory, and restore drops Git cards. A restored or
-transferred project arrives unlinked. Project deletion removes both. A link
+The link is machine-local, like the key. Backup and transfer never carry the
+directory. Transfer carries no link and drops Git cards on import. A backup's
+database keeps the link row and Git cards, and the missing-key check below
+removes them after a restore. A restored or transferred project arrives
+unlinked. Project deletion removes both. A link
 whose key file is missing at backend start is removed with its Git cards. An
 older database opens as not linked.
 
@@ -253,9 +255,11 @@ older database opens as not linked.
 editor, on a fixed interval, and once when a member opens the workspace. A
 paper nobody has open is not fetched, so remote edits never apply unwatched. A
 check that finds the same remote head changes nothing, so cards keep their ids.
-A failed pull changes nothing, records the error on the link, and waits before
-that paper is polled again. Network Git runs outside project admission, so a
-slow remote never blocks Paper work. The merge and link writes take it.
+A pull that fails before the merge applies changes nothing. One that fails
+after its clean edits applied keeps them and does not advance the synced
+commit. Either way it records the error on the link and waits before that
+paper is polled again. Network Git runs outside project admission, so a
+slow remote never blocks Paper work. The merge and the link writes of a successful sync take it.
 A missing branch or an empty repository counts as the empty tree, and the first
 push creates the branch. A branch that vanishes after a sync refuses the pull
 and keeps the Paper.
@@ -338,8 +342,8 @@ It then refuses with:
 A rejected push refetches, merges, and tries once more before it reports
 Git's message.
 
-The unpushed mark compares the tree a push would send with the synced commit's
-tree, not revisions. An edit typed and then undone leaves no mark.
+The unpushed mark is off while the Paper revision equals the synced revision.
+Otherwise it compares the tree a push would send with the synced commit's tree. An edit typed and then undone leaves no mark.
 
 **Unlink** deletes the link, the directory, and all Git cards. Paper files stay.
 

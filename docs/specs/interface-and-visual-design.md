@@ -60,8 +60,8 @@ rail labels. Long research text reads slower in a pixel face, so
 questions, node text, chat, Paper, and data stay in Figtree. All three fonts are
 pinned packages bundled into the web build, so the desktop app needs no font
 install. Paper has one exception in every theme: `--paper-serif`, a system
-serif stack with no bundled font, sets a reference's title in the cite hover
-card and the Reference tab, and nothing else.
+serif stack with no bundled font, sets the heading of the cite hover card and
+of the Reference tab, and nothing else.
 
 ## No commentary lines
 
@@ -609,11 +609,11 @@ one reference as a page. At phone width, Refs shows the list, and a chosen
 entry shows its page with a back control.
 
 The Git pill sits in the file header. It shows the branch, a count of files in
-conflict, and a mark for unpushed edits. Its hover shows the last sync time or
-the last error. It opens one dialog that links the repository, lists conflicts
+conflict, and a mark for unpushed edits. Its hover shows the last error, or else
+the last sync time. It opens one dialog that links the repository, lists conflicts
 above the changed and skipped files, and pushes with a commit message. At phone
 width the pill keeps its place as an icon without the branch name, and hides in
-Coach view with the other file-row controls.
+Coach view with presence and History.
 
 The arXiv export control is a box icon in the file header. It is disabled for a
 non-LaTeX file, and its hover says why. At phone width it moves into the Files

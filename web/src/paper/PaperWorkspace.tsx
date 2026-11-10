@@ -437,6 +437,7 @@ export function PaperWorkspace({
   const chooseReference = (entry: PaperReference) => {
     setReference({ key: entry.key, fileId: entry.file.file_id });
     if (phone) return;
+    setRight("reference");
     const dom = writingPane.current?.querySelector<HTMLElement>(".cm-editor");
     const editor = dom && EditorView.findFromDOM(dom);
     const insert = citation(entry.key, file?.format ?? "");
