@@ -440,9 +440,11 @@ Task insertion resolves the latest native-session binding of the exact chat in
 the same transaction as overlap and stage admission. Client hints and transcript
 text cannot select it; resolution never skips an unusable current binding.
 
-- Active and paused-resumable turns block human turns and defer wakes. Wakes
-  additionally defer queued, pausing or interrupted current turns; a human may
-  continue after interruption.
+- Active turns block human turns. Active and paused-resumable turns defer wakes
+  and queued messages. A human message after a paused turn starts the next turn
+  in the same native session, and that later turn closes the paused one: it no
+  longer offers Resume or Retry. Wakes additionally defer queued, pausing or
+  interrupted current turns; a human may continue after interruption.
 - Human model changes keep the session. Provider or machine changes start fresh
   with a recorded reason. The composer offers provider/model/reasoning, defaulting
   to the last turn then Settings, but not machine selection.

@@ -3603,11 +3603,12 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     assert records[-1]["nativeSessionId"] == launcher.native_session_id
 
 
-def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
+def test_new_chat_turn_after_a_paused_attempt_continues_its_session(app, tmp_path) -> None:
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
     now = store.now()
+    session_id = str(uuid.uuid4())
     store.create_agent_task(
         AgentTaskRecord(
             operation_id="paused-project-chat",
@@ -3618,11 +3619,16 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
                 "chat_scope": "project",
                 "chat_id": chat_id,
                 "message": "unfinished question",
+                "provider": "codex",
+                "model": "",
+                "reasoning": "medium",
+                "run_on": "backend",
             },
             created_at=now,
             updated_at=now,
             status_message="paused",
-            native_session_id=str(uuid.uuid4()),
+            runtime_id="codex.exec-json.v1",
+            native_session_id=session_id,
             stage_machine_id=BACKEND_MACHINE_ID,
             stage_root=str(tmp_path / "paused-stage"),
         )
@@ -3633,8 +3639,12 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
         json={"chat_id": chat_id, "message": "start another turn"},
     )
 
-    assert response.status_code == 409
-    assert "paused turn" in response.json()["detail"]
+    assert response.status_code == 202, response.text
+    started = store.agent_task(response.json()["operation_id"])
+    assert started is not None
+    assert started.native_session_id == session_id
+    assert started.parent_operation_id is None
+    assert not store.has_resumable_paused_chat_task(project_id, "project_chat", chat_id)
 
 
 def test_new_chat_turn_refuses_archived_chat_until_restored(app) -> None:

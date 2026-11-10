@@ -981,7 +981,7 @@ def test_a_queued_message_waits_out_a_racing_turn_and_its_deferral_restarts(
                 ).model_dump(mode="json"),
             )
         )
-        raise ValueError("This conversation already has an active or paused turn.")
+        raise ValueError("This conversation already has an active turn.")
 
     monkeypatch.setattr(world.background, "admit_provider_task", missing)
     world.drain()

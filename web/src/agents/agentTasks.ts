@@ -473,8 +473,12 @@ function taskAttachments(value: unknown): ChatAttachmentDescriptor[] {
 const REQUESTED_PAUSE_NOTICE = "Provider process paused.";
 
 /** A paused turn's line, in a person's words when they stopped it. */
+export function stoppedByMember(task: AgentTask): boolean {
+  return task.status_message === REQUESTED_PAUSE_NOTICE;
+}
+
 export function pausedTaskText(task: AgentTask): string {
-  return task.status_message === REQUESTED_PAUSE_NOTICE ? "Stopped." : task.status_message;
+  return stoppedByMember(task) ? "Stopped." : task.status_message;
 }
 
 /**
