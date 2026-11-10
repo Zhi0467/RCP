@@ -242,8 +242,11 @@ Rules that follow:
 - Local refs pin `synced_commit` and each held base commit against garbage
   collection.
 
-A rejected conflict stays rejected across a re-derive when the remote side of
-that region is unchanged. It shows again only when the remote changed it.
+A rejected conflict stays rejected across a re-derive while neither side of
+that region changed. It shows again when the remote changed the region or the
+member edited it, because the card then proposes a different replacement.
+That is the change store's existing rule for a decided proposal, so Git sync
+adds no rejection memory of its own.
 
 ## B2. Records
 
@@ -673,8 +676,8 @@ Part B:
   linked repository can put text into Paper, and a Coach turn reads Paper
   with network access. Linking gives repository writers the trust a member
   typing in Paper has. The link dialog says who can write.
-- **A rejected conflict can reappear** when the remote later changes the
-  same region.
+- **A rejected conflict can reappear** when either side later changes the
+  same region while the file is still held.
 - **Restore then push removes remote work.** Restoring a version from before
   a pull and pushing takes the co-author's edits off GitHub. The push dialog
   lists them first.
