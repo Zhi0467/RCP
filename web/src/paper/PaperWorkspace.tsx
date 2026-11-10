@@ -26,6 +26,15 @@ import {
   type PaperDocument,
 } from "./paperDocuments";
 import { carryPaperSelection, changeFocus, PaperEditor, type PaperFocus } from "./PaperEditor";
+import {
+  PaperReferences,
+  PaperReferencePage,
+  usePaperReferences,
+  type PaperReference,
+} from "./PaperReferences";
+import { PaperExport } from "./PaperExport";
+import { findReference } from "./referenceFiles";
+import { citation } from "./citeKeys";
 import { PaperFiles } from "./PaperFiles";
 import { usePaperSplit } from "./usePaperSplit";
 import { ResizeHandle } from "../ui/ResizeHandle";
@@ -44,8 +53,8 @@ import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../cha
 /** Route snapshots retain where the member was; IndexedDB owns all document content. */
 export interface PaperEditorState {
   fileId?: string;
-  view?: "write" | "preview" | "coach";
-  right?: "preview" | "coach";
+  view?: "write" | "preview" | "coach" | "refs";
+  right?: "preview" | "coach" | "reference";
   coach?: CoachOpening;
 }
 interface Props {
@@ -72,6 +81,12 @@ export function PaperWorkspace({
   const profile = paperProfile(project.id);
   const resource = useResource(`${project.id}:paper-view`, profile);
   const tree = resource.value?.tree;
+  const references = usePaperReferences(project.id, tree);
+  const [reference, setReference] = useState<{
+    key: string;
+    fileId?: string;
+  } | null>(null);
+  const referenceEntry = findReference(references.entries, reference);
   const [identity, setIdentity] = useState<IdentityResponse | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
   const [identityRetry, setIdentityRetry] = useState(0);
@@ -166,7 +181,7 @@ export function PaperWorkspace({
     );
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
-  const segmentLabel = (panel: "write" | "preview" | "coach") => (
+  const segmentLabel = (panel: "write" | "preview" | "coach" | "refs" | "reference") => (
     <>
       {panel[0].toUpperCase() + panel.slice(1)}
       {panel === "coach" && waiting > 0 && (
@@ -179,7 +194,7 @@ export function PaperWorkspace({
       )}
     </>
   );
-  const segmentMark = (panel: "write" | "preview" | "coach") =>
+  const segmentMark = (panel: "write" | "preview" | "coach" | "refs" | "reference") =>
     panel === "coach"
       ? {
           className: coachError ? "paper-coach-segment paper-failure" : "paper-coach-segment",
@@ -401,8 +416,25 @@ export function PaperWorkspace({
     setView(next);
     if (next !== "write") {
       focusPending.current = null;
-      setRight(next);
+      setRight(next === "refs" ? "reference" : next);
     } else focusEditor(id);
+  };
+  const openReference = (key: string) => {
+    const entry = findReference(references.entries, { key });
+    setReference({ key, fileId: entry?.file.file_id });
+    setRight("reference");
+    setView("refs");
+  };
+  const chooseReference = (entry: PaperReference) => {
+    setReference({ key: entry.key, fileId: entry.file.file_id });
+    if (phone) return;
+    const dom = writingPane.current?.querySelector<HTMLElement>(".cm-editor");
+    const editor = dom && EditorView.findFromDOM(dom);
+    const insert = citation(entry.key, file?.format ?? "");
+    if (!entry.unreadable && editor && insert && !document?.getSnapshot().closed) {
+      editor.dispatch(editor.state.replaceSelection(insert));
+      editor.focus();
+    }
   };
   const locate = (next: PaperFocus) => {
     setSelected(next.file_id);
@@ -426,19 +458,23 @@ export function PaperWorkspace({
       data-view={view}
       style={split.style}
     >
-      <PaperFiles
-        apiBase={apiBase}
-        projectId={project.id}
-        files={tree?.files ?? []}
-        selected={file?.file_id ?? null}
-        onSelect={(id, existsAt) => {
-          setSelected(id, existsAt);
-          setFilesOpen(false);
-          switchView("write", id);
-        }}
-        onFold={fold}
-        onChanged={refresh}
-      />
+      <div className="paper-files-column">
+        <PaperFiles
+          apiBase={apiBase}
+          projectId={project.id}
+          files={tree?.files ?? []}
+          selected={file?.file_id ?? null}
+          onSelect={(id, existsAt) => {
+            setSelected(id, existsAt);
+            setFilesOpen(false);
+            switchView("write", id);
+          }}
+          onFold={fold}
+          onChanged={refresh}
+          exportControl={phone ? <PaperExport projectId={project.id} file={file} /> : undefined}
+        />
+        {!phone && <PaperReferences {...references} folded onChoose={chooseReference} />}
+      </div>
       <main className="paper-box paper-editor-box" id="paper-editor-pane" ref={split.editor}>
         <header className="paper-bar paper-document-header">
           <button className="icon-button paper-show-files" aria-label="Show files" onClick={unfold}>
@@ -528,14 +564,18 @@ export function PaperWorkspace({
           >
             <History size={16} />
           </button>
+          {!phone && <PaperExport projectId={project.id} file={file} />}
         </header>
         <div className="paper-phone-segments">
           <div className="segmented" role="group" aria-label="Paper view">
-            {(["write", "preview", "coach"] as const).map((panel) => (
+            {(["write", "preview", "coach", "refs"] as const).map((panel) => (
               <button
                 key={panel}
                 aria-pressed={view === panel}
-                onClick={() => switchView(panel)}
+                onClick={() => {
+                  if (panel === "refs") setReference(null);
+                  switchView(panel);
+                }}
                 {...segmentMark(panel)}
               >
                 {segmentLabel(panel)}
@@ -548,6 +588,8 @@ export function PaperWorkspace({
           {document ? (
             <LiveEditor
               owner={document}
+              references={references.entries}
+              onReference={openReference}
               onReady={focusReady}
               maxBytes={tree?.max_doc_bytes}
               format={file!.format}
@@ -580,11 +622,11 @@ export function PaperWorkspace({
       <aside className="paper-box paper-right-box" id="paper-right-pane" ref={split.right}>
         <header className="paper-bar paper-desktop-segments">
           <div className="segmented" role="group" aria-label="Paper panel">
-            {(["preview", "coach"] as const).map((panel) => (
+            {(["preview", "coach", "reference"] as const).map((panel) => (
               <button
                 key={panel}
                 aria-pressed={right === panel}
-                onClick={() => switchView(panel)}
+                onClick={() => switchView(panel === "reference" ? "refs" : panel)}
                 {...segmentMark(panel)}
               >
                 {segmentLabel(panel)}
@@ -630,6 +672,20 @@ export function PaperWorkspace({
                 onDirectCancel={comments.cancelExternal}
               />
             ))}
+        </div>
+        <div className="paper-right-pane" hidden={right !== "reference"}>
+          {phone && !reference ? (
+            <PaperReferences {...references} onChoose={chooseReference} />
+          ) : (
+            <PaperReferencePage
+              entry={referenceEntry}
+              unknown={reference?.key ?? null}
+              onBack={phone ? () => setReference(null) : undefined}
+              onSource={(entry) =>
+                locate({ kind: "reference", file_id: entry.file.file_id, from: entry.from })
+              }
+            />
+          )}
         </div>
         <div className="paper-right-pane" hidden={right !== "coach"}>
           <PaperCoach

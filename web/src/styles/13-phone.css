@@ -592,3 +592,29 @@
     padding-block: 10px;
   }
 }
+
+@media (max-width: 700px) {
+  .paper-live-workspace .paper-files-column {
+    gap: 0;
+  }
+  .paper-phone-segments .segmented {
+    flex: 1;
+  }
+  .paper-phone-segments .segmented button {
+    padding-inline: 8px;
+    flex: 1;
+  }
+  .paper-live-workspace[data-view="refs"] .paper-panel-bar {
+    display: none;
+  }
+  .paper-right-pane > .paper-references {
+    flex: 1;
+    max-height: none;
+  }
+  .paper-reference-page {
+    padding: 16px;
+  }
+  .paper-reference-entry {
+    min-height: 44px;
+  }
+}
