@@ -45,6 +45,7 @@ TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
         "chat-attachments",
         "checkout-recovery",
         "jobs",
+        "paper-git",
         "paper-snapshots",
         "project-caches",
         "project-snapshots",

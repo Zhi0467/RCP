@@ -21,6 +21,7 @@ dependencies = [
   "pillow>=13.0.0",
   "cryptography>=45",
   "pycrdt==0.14.10",
+  "typing-extensions>=4.16.0",
 ]
 
 [project.scripts]

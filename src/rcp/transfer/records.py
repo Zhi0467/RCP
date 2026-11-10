@@ -105,6 +105,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "compute_jobs",
         "compute_backend_probes",
         "conversation_worktrees",
+        "paper_git_links",
         "episode_merge_request_receipts",
         "episode_isolations",
         "episode_isolation_states",

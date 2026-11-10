@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Literal, TypedDict
+from typing import Literal
 
 from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 
 from rcp.storage.mixin_base import StoreMixinBase
 
@@ -40,7 +41,7 @@ class PaperGitLink(BaseModel):
 
 
 def migrate_paper_git_links(connection: sqlite3.Connection) -> None:
-    connection.execute("""CREATE TABLE paper_git_links (
+    connection.execute("""CREATE TABLE IF NOT EXISTS paper_git_links (
         project_id TEXT PRIMARY KEY,
         state TEXT NOT NULL CHECK(state IN ('pending','linked')),
         repository TEXT NOT NULL, branch TEXT NOT NULL, key_fingerprint TEXT NOT NULL,

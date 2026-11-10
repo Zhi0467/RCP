@@ -331,6 +331,18 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/paper/history"),
     (("POST",), "/api/projects/{project_id}/paper/history/{version_id}/restore"),
     (("POST",), "/api/projects/{project_id}/paper/hold/resolve"),
+    (("GET",), "/api/projects/{project_id}/paper/git"),
+    (("POST",), "/api/projects/{project_id}/paper/git/key"),
+    (("POST",), "/api/projects/{project_id}/paper/git/link"),
+    (("DELETE",), "/api/projects/{project_id}/paper/git"),
+    (("POST",), "/api/projects/{project_id}/paper/git/fetch"),
+    (("GET",), "/api/projects/{project_id}/paper/git/changes"),
+    (("GET",), "/api/projects/{project_id}/paper/git/conflicts"),
+    (("POST",), "/api/projects/{project_id}/paper/git/conflicts/resolve"),
+    (("POST",), "/api/projects/{project_id}/paper/git/conflicts/decide"),
+    (("POST",), "/api/projects/{project_id}/paper/git/conflicts/refresh"),
+    (("POST",), "/api/projects/{project_id}/paper/git/push"),
+    (("GET",), "/api/projects/{project_id}/paper/export/arxiv"),
     (("POST",), "/api/projects/{project_id}/paper/uploads"),
     (("PUT",), "/api/projects/{project_id}/paper/files/{file_id}/content"),
     (("GET",), "/api/projects/{project_id}/paper/sessions"),
@@ -394,8 +406,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 326
+    assert len(_FROZEN_ROUTE_INVENTORY) == 338
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 322
+    assert sum(isinstance(route, APIRoute) for route in routes) == 334
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

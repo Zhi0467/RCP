@@ -191,6 +191,21 @@ export function createPaperFixture({
       if (path.endsWith("/tree")) return { json: tree };
       if (path.endsWith("/sessions")) return { json: [] };
       if (path.endsWith("/tasks")) return { json: [] };
+      if (path.endsWith("/paper/git"))
+        return {
+          json: {
+            state: "none",
+            repository: "",
+            branch: "",
+            public_key: "",
+            head: { commit: "", author: "" },
+            unpushed: false,
+            conflicts: 0,
+            skipped: [],
+            last_error: "",
+            checked_at: "",
+          },
+        };
       if (path.endsWith("/engines"))
         return {
           json: { latex: "ready", typst: "ready", errors: { latex: null, typst: null } },

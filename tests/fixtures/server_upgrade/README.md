@@ -229,3 +229,8 @@ session contexts move to the backend machine id (migration 80) and watchers
 gain a purpose (migration 81). Exact source
 `07622f747488eb2f1aa9411323882720ebcc735f` upgrades a copy of
 `pre-schedule-command-replay-v44-bbb9380` through the existing fixture builder.
+
+`pre-paper-git-links-v46-42ce9f4` freezes migration 81 before a paper gains its
+Git link record (migration 82). Exact source
+`42ce9f418c9491f8db9b9b723f5bd56eb6e54d04` upgrades a copy of
+`pre-space-chat-machines-v45-07622f7` through the existing fixture builder.

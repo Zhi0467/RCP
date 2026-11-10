@@ -475,8 +475,11 @@ def test_edit_reverted_to_the_synced_text_is_not_unpushed(sync):
     manager.link("p")
     file = saved(live).files[0]
     assert not manager.status("p")["unpushed"]
+    objects = manager.directory("p") / "repo.git" / "objects"
+    stored = sorted(path for path in objects.rglob("*") if path.is_file())
     human_edit(live, file.file_id, "edited")
     assert manager.status("p")["unpushed"]
+    assert sorted(path for path in objects.rglob("*") if path.is_file()) == stored
     human_edit(live, file.file_id, "base")
     assert not manager.status("p")["unpushed"]
     assert manager.changed_files("p") == []

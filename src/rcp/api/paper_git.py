@@ -79,7 +79,7 @@ def link(project_id: str, request: Request):
 @router.delete("")
 def unlink(project_id: str, request: Request):
     def remove(manager, project):
-        manager.unlink(project)
+        manager.disconnect(project)
         return Response(status_code=204)
 
     return _call(project_id, request, remove)

@@ -369,7 +369,7 @@ class PaperGit:
         if directory.exists():
             shutil.rmtree(directory)
 
-    def unlink(self, project_id: str) -> None:
+    def disconnect(self, project_id: str) -> None:
         with self.lock(project_id), self.admission(project_id):
             self._unlink(project_id)
 
@@ -663,12 +663,11 @@ class PaperGit:
         }
 
     def _differs(self, link, snapshot) -> bool:
-        directory = self.directory(link.project_id)
         try:
-            ours = write_tree(directory, self._push_tree(link, snapshot))
+            ours = self._push_tree(link, snapshot)
         except GitError:
             return True
-        return ours != write_tree(directory, read_tree(directory, link.synced_commit))
+        return ours != read_tree(self.directory(link.project_id), link.synced_commit)
 
     def changed_files(self, project_id: str):
         with self.lock(project_id):
