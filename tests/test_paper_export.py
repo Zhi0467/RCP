@@ -76,7 +76,7 @@ async def test_export_waits_for_compile_slot_without_cancelling_preview(tmp_path
     preview = asyncio.create_task(compiler.compile("project", "file"))
     await preview_started.wait()
     export = asyncio.create_task(compiler.bibliography("project", "paper.tex"))
-    await asyncio.sleep(0)
+    await asyncio.sleep(0.05)
     assert not exports
     assert not preview.done()
     release.set()
@@ -119,12 +119,14 @@ def test_arxiv_export_route(manifest, tmp_path, monkeypatch, mode):
             "paper/style.sty": b"style",
             "paper/article.cls": b"class",
             "paper/plain.bst": b"bst",
-            "figures/image.png": b"\x89PNG\x00",
-            "figures/plot.pdf": b"%PDF-1.7",
+            "paper/figures/image.png": b"\x89PNG\x00",
+            "paper/figures/plot.pdf": b"%PDF-1.7",
+            "paper/data.csv": b"1,2",
+            "elsewhere/other.tex": b"other",
             "notes.md": b"notes",
-            "other.typ": b"typst",
-            "page.html": b"<p>html</p>",
-            "paper/main.aux": b"auxiliary",
+            "paper/other.typ": b"typst",
+            "paper/page.html": b"<p>html</p>",
+            "paper/notes.md": b"notes",
         }
         if mode == "existing":
             files["paper/main.bbl"] = b"saved references"
@@ -152,12 +154,12 @@ def test_arxiv_export_route(manifest, tmp_path, monkeypatch, mode):
         assert response.headers["content-type"] == "application/zip"
         assert response.headers["x-content-type-options"] == "nosniff"
         expected = {
-            path: data
+            path.removeprefix("paper/"): data
             for path, data in files.items()
-            if path not in {"notes.md", "other.typ", "page.html", "paper/main.aux"}
+            if path.startswith("paper/") and not path.endswith((".md", ".typ", ".html"))
         }
         if mode in {"bbl", "concurrent"}:
-            expected["paper/main.bbl"] = b"generated references"
+            expected["main.bbl"] = b"generated references"
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
             assert {name: archive.read(name) for name in archive.namelist()} == expected
 
@@ -207,8 +209,8 @@ A reference \cite{knuth1984}.
         assert response.status_code == 200, response.text
         unpacked = tmp_path / "unpacked"
         with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-            assert set(archive.namelist()) == {*sources, "paper/article.bbl"}
-            assert b"knuth1984" in archive.read("paper/article.bbl")
+            assert set(archive.namelist()) == {"article.tex", "references.bib", "article.bbl"}
+            assert b"knuth1984" in archive.read("article.bbl")
             archive.extractall(unpacked)
         output = tmp_path / "offline"
         output.mkdir()
@@ -221,7 +223,7 @@ A reference \cite{knuth1984}.
                 "--only-cached",
                 "--outdir",
                 str(output),
-                str(unpacked / "paper/article.tex"),
+                str(unpacked / "article.tex"),
             ],
             cwd=unpacked,
             env={**os.environ, "TECTONIC_CACHE_DIR": str(app.state.paper_compiler.cache_dir)},

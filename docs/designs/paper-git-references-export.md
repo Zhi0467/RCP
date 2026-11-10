@@ -147,10 +147,12 @@ Route: `GET /api/projects/{id}/paper/export/arxiv?file_id=…`.
   names export as a second feature.
   **Why:** arXiv does not run BibTeX.
 - A new `arxiv_archive` beside `folder_archive` in `api/paper.py` writes the
-  ZIP the same way. It holds every tree file whose format is LaTeX, BibTeX,
-  image, or PDF, plus `.sty`, `.cls`, and `.bst` files, at tree paths. It adds
-  the `.bbl` beside the root unless the tree already has that file.
-  Markdown, Typst, and HTML files are left out.
+  ZIP the same way. It holds every file in the root's folder and below, at
+  paths relative to that folder, so the root sits at the top of the archive.
+  Markdown, Typst, and HTML files are left out. It adds the `.bbl` beside the
+  root unless the folder already has that file.
+  **Why:** arXiv compiles from the archive's top level, and a LaTeX build
+  reads files of any type, so a format allowlist would drop inputs.
 - A document with no bibliography exports with no `.bbl`.
 - On 409 the Web shows the reason and log in a `PaperDialog`.
 

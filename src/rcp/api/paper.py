@@ -404,22 +404,26 @@ async def arxiv_archive(file_id: str, request: Request, project_id: str = _membe
         return JSONResponse(
             {"reason": bibliography.status, "log_tail": bibliography.log_tail}, status_code=409
         )
-    bbl_path = str(PurePosixPath(root).with_suffix(".bbl"))
+    folder = PurePosixPath(root).parent
+    bbl_name = PurePosixPath(root).with_suffix(".bbl").name
 
     def compress() -> bytes:
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            names = set()
             for file in tree.files:
-                if (
-                    file_format(file.path, file.kind) in {"latex", "bibtex", "image", "pdf"}
-                    or PurePosixPath(file.path).suffix.lower() in {".sty", ".cls", ".bst"}
-                    or file.path == bbl_path
-                ):
-                    archive.writestr(file.path, tree.file_bytes(file))
-            if bibliography.bbl is not None and not any(
-                file.path == bbl_path for file in tree.files
-            ):
-                archive.writestr(bbl_path, bibliography.bbl)
+                path = PurePosixPath(file.path)
+                if not path.is_relative_to(folder) or file_format(file.path, file.kind) in {
+                    "markdown",
+                    "typst",
+                    "html",
+                }:
+                    continue
+                name = str(path.relative_to(folder))
+                names.add(name)
+                archive.writestr(name, tree.file_bytes(file))
+            if bibliography.bbl is not None and bbl_name not in names:
+                archive.writestr(bbl_name, bibliography.bbl)
         return buffer.getvalue()
 
     return Response(
