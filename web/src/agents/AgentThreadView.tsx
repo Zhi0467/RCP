@@ -1258,7 +1258,11 @@ export function AgentThreadView({
     }
   };
   const stopSends =
-    !inFlight && !attachments.unready && comments.complete && (draftSendable || artifactContext);
+    !inFlight &&
+    queue.length === 0 &&
+    !attachments.unready &&
+    comments.complete &&
+    (draftSendable || artifactContext);
   const stopped = !latest?.active;
   const submitNow = useRef(submit);
   useEffect(() => {
