@@ -134,11 +134,17 @@ Route: `GET /api/projects/{id}/paper/export/arxiv?file_id=…`.
 
 - The root is the file being read, because Paper has no main file. For a
   non-LaTeX file the button is disabled and its hover says why.
-- `PaperCompiler` gains `bibliography(project_id, root)`. It snapshots the
-  tree and calls the existing `_run` with one new argument that adds
-  Tectonic's `--keep-intermediates`. It returns the bytes of `<root stem>.bbl`
-  or nothing. It takes the compile concurrency limit but not the per-project
-  preview job slot, so it never cancels a live preview.
+- The route resolves `file_id` to a path in one snapshot. If that path is not
+  in `root_candidates`, it returns 409 `not_root`.
+- `PaperCompiler` gains `bibliography(project_id, root)`. It calls
+  `engines.ensure("latex")`, reuses the preview's cancel-safe tree
+  materialization, and calls the existing `_run` with one new argument that
+  adds Tectonic's `--keep-intermediates`. It returns
+  `Bibliography(status, bbl, log_tail)`; `status` is `ok`, `unavailable`, or
+  `failed`, and `bbl` is the bytes of `<root stem>.bbl` or nothing. It takes
+  the compile concurrency limit but not the per-project preview job slot, so
+  it never cancels a live preview. The `tectonic` entry in `dependencies.py`
+  names export as a second feature.
   **Why:** arXiv does not run BibTeX.
 - A new `arxiv_archive` beside `folder_archive` in `api/paper.py` writes the
   ZIP the same way. It holds every tree file whose format is LaTeX, BibTeX,
@@ -219,16 +225,25 @@ and the next push would overwrite their text on GitHub.
 
 Rules that follow:
 
-- Every pull re-derives all conflicts in every held file from
+- A **re-derive** rebuilds all conflicts in every held file from
   (held base, remote head, live text). Nothing is carried in a card alone.
-- A held file is released when it has no undecided conflict. Its base then
-  becomes `synced_commit`'s version.
+  It runs in two cases only: a pull whose fetched head differs from
+  `synced_commit`, and an explicit Refresh. A poll that finds the same head
+  touches nothing, so cards keep their ids.
+- A held text file is **undecided** while the change store has a `paper-git`
+  group on its `file_id` that is `pending` or `outdated` with no committed
+  receipt. That is `PaperChanges.undecided_group_ids`. A held file conflict
+  is undecided until a member picks a side.
+- A held file with nothing undecided is released: it leaves the `held` list
+  and its base becomes `synced_commit`'s version. Release is computed under
+  the sync lock at every pull, push, and conflict action. The status route
+  reads the same rule without writing.
 - Push is refused while any file is held.
 - Local refs pin `synced_commit` and each held base commit against garbage
   collection.
 
-A decision is lost only in one visible way: if a pull re-derives a held file,
-a conflict the member already rejected in that file shows again.
+A rejected conflict stays rejected across a re-derive when the remote side of
+that region is unchanged. It shows again only when the remote changed it.
 
 ## B2. Records
 
@@ -246,20 +261,28 @@ that copies `storage/paper_coach_steers.py`. It registers as schema migration
 | `linked_by`, `linked_at` | The member who linked, and when. |
 | `synced_commit` | The remote commit Paper last merged or pushed. Empty before the first sync. |
 | `synced_revision` | The Paper revision that matched `synced_commit`. The pill compares it with the live revision to mark unpushed edits. |
-| `held` | JSON list of `{path, base_commit, kind}`. `kind` is `text` or `file`. |
-| `skipped` | JSON list of `{path, reason}` from the last pull. |
+| `held` | JSON list of `{file_id, path, base_commit, kind}`. `kind` is `text` or `file`. `file_id` is empty when Paper has no file at the path. |
+| `skipped` | JSON list of `{path, reason}`: every entry of the `synced_commit` tree that Paper does not hold. |
 | `last_error`, `checked_at` | The last failure text and last fetch time. |
 
-Lifecycle:
+The migration also adds 82 to `SUPPORTED_RESTORE_DATABASE_SCHEMAS` in
+`server_ops/restore.py` and extends the upgrade-gate seed.
 
-- **Project delete** removes the row and the directory. The table joins the
-  per-project delete list.
-- **Backup** carries the row. It joins the `backup_paper.py` table list. The
-  key and repository are not backed up.
-- **Transfer** excludes the row. A transferred project arrives unlinked.
-- **A row whose key file is missing** (after restore) reads as `pending`. The
-  member links again with a new key. The first fetch asks for `synced_commit`
-  by hash. If GitHub no longer has it, the base is the empty tree.
+Lifecycle. The link is machine-local state, like the key:
+
+- The table stays **out of** `PAPER_PROJECT_TABLES`. That one list drives
+  backup, restore, transfer, and delete, so the row, key, and repository are
+  never backed up or transferred. A restored or transferred project arrives
+  unlinked.
+- **Project delete** removes the row in the explicit per-project delete list
+  in `storage/projects.py`, and removes the directory.
+- **Git cards** do travel, because `paper_change_groups` is in that list. The
+  shared Paper restore step in `backup_paper.py` drops every `paper-git`
+  group as it inserts.
+- **A row whose key file is missing** is deleted at backend start, with its
+  Git cards, by one reconciliation step in `api/app.py`. The member links
+  again. Relinking starts from the empty base: identical files do nothing
+  and differing files become conflicts.
 - **An old database** without the table opens as not linked. The old-writer
   regression covers that.
 
@@ -292,7 +315,8 @@ attach an agent socket, and Paper wants neither.
 
 The repository is created with `git init --bare --template=`. Every command
 passes `-c core.hooksPath=/dev/null` and the full URL. No remote is stored in
-the repository config. So a tampered `config` or hook cannot redirect or run.
+the repository config. Hooks never run. The directory is write-protected from
+agents, which is what keeps its `config` honest.
 
 **Host trust.** The repository field accepts only `owner/name` and always
 resolves to `git@github.com:owner/name.git`. RCP ships GitHub's published SSH
@@ -302,10 +326,10 @@ host keys as `rcp/paper/github_known_hosts`, listed in
 personal space has no operator. The cost: a GitHub host key rotation needs an
 RCP release. The failure text says so.
 
-**Protection from agents.** `<data dir>/paper-git` joins two lists for every
-launch: the hidden-read paths built in `agents/provider_environment.py` and
-the protected write paths in `agents/write_scope.py`. A test asserts both for
-a personal data directory and a server data directory. Where a provider
+**Protection from agents.** `<data dir>/paper-git` joins the hidden-read
+paths built in `agents/hidden_read.py` for every launch. The whole data
+directory is already write-protected by `agents/write_scope.py`. A test
+asserts both for a personal data directory and a server data directory. Where a provider
 cannot hide reads, the existing `unhidden` status applies and is already
 shown. The key grants write access to one paper repository and nothing else.
 
@@ -330,14 +354,22 @@ with a stated error.
    the key, and returns the public half. The dialog shows it with Copy.
 2. The member adds it to the repository as a deploy key with write access and
    presses Link.
-3. The backend probes write access with `git push --dry-run`. A failure
-   returns Git's message and keeps the row `pending`. Asking for a key again
-   on a `pending` row returns the same key.
+3. The backend probes in two steps. `git ls-remote <url>` proves the key can
+   read and returns the branch head, if any. Then the backend writes a commit
+   of the empty tree locally and runs
+   `git push --dry-run <url> <commit>:refs/heads/rcp-link-probe`, which
+   GitHub refuses for a read-only key. Nothing is created on GitHub. A
+   failure returns Git's message and keeps the row `pending`. Asking for a
+   key again on a `pending` row returns the same key.
 4. Success sets `linked` and runs the first pull.
 
+Every poll starts with `git ls-remote` for the branch. A fetch runs only when
+the head it reports differs from `synced_commit`. A repository with no such
+branch, or no commits at all, is the empty tree, not an error. The first push
+creates the branch.
+
 There is no first-link special case. Before the first sync the base is the
-empty tree. An empty repository imports nothing, and the first push creates
-its first commit. A non-empty repository merges into a non-empty paper by the
+empty tree. A non-empty repository merges into a non-empty paper by the
 merge table; files present on both sides with different content become
 conflicts.
 
@@ -349,15 +381,17 @@ Unlink deletes the row, the directory, and all Git cards. Paper files stay.
 
 `PaperGitPoller` copies `ConsolidationPoller`: `poll_once` plus
 `stop.wait(interval)`, started in `api/app.py`, with the same startup fence
-and maintenance admission checks. Each round it fetches every linked paper
-that has a live editor room. Opening the Paper workspace also fetches at
+and maintenance admission checks. Each round it checks every linked paper
+that has a live editor room. A new `PaperLive.open_projects()` returns the
+project ids with at least one room that has a subscriber; the poller thread
+calls it through `live.run_sync`. Opening the Paper workspace also checks at
 once. A paper nobody has open is not fetched, so remote edits never apply
 with nobody watching.
 
 ### Locking
 
 `git_sync` holds one sync lock per project. Poll, push, link, unlink, and
-conflict actions take it. Typing never does.
+every decision on a Git conflict take it. Typing never does.
 
 The Paper lock is never held across Git or a merge. A pull runs like
 `PaperLive.restore`:
@@ -365,10 +399,15 @@ The Paper lock is never held across Git or a merge. A pull runs like
 1. Fetch.
 2. Read a Paper snapshot at revision R through `live.run_sync`.
 3. Compute the merge outside any Paper lock.
-4. Call `apply` with `expect` holding a text check from the snapshot for every
-   file the ops replace or delete.
-5. On `PaperPrecondition`, go to step 2, up to `PAPER_GIT_APPLY_RETRIES`.
-   After that, or on `PaperRateLimit`, stop and let the next round retry.
+4. Call `apply` with `expect` built from the snapshot, as `restore` does: a
+   whole-text check for each text file replaced or deleted, a `blob_sha256`
+   check for each binary file replaced or deleted, and `path_free` for each
+   create. A text replace is the minimal op from `text_replacement`, so
+   co-editors keep their cursors and the document state stays small.
+5. On `PaperPrecondition` or `PaperLimit`, go to step 2, up to
+   `PAPER_GIT_APPLY_RETRIES`. After that, or on `PaperRateLimit`, the pull
+   **fails**: nothing in the link row changes, `last_error` is set, and the
+   next round retries.
 
 ### The merge table
 
@@ -395,6 +434,15 @@ A remote rename is a delete plus a create. Rename detection is left out.
 
 Bytes pass through unchanged. There is no line-ending conversion.
 
+The merge covers only paths that are not skipped. A path in the stored
+`skipped` list has an absent base, so an entry that later fits arrives as a
+plain "take theirs".
+
+The pure merge checks its own result against the Paper limits before
+anything is written. A merged text, or a proposed `--theirs` text, over
+`PAPER_MAX_DOC_BYTES` becomes a file conflict. So `apply` and `collect` see
+only trees they accept.
+
 ### Text merge
 
 For one file the backend writes base, ours, and theirs into `tmp/` and runs
@@ -413,12 +461,15 @@ In this order, each step safe to repeat:
 1. **Clean part.** All "take theirs", deletes, and merged texts go into one
    `PaperLive.apply(project_id, ops, actor, expect, checkpoint=True)` call.
    That is one Paper revision, and `checkpoint=True` saves an automatic
-   version first, so History restore undoes the pull. The actor is the fixed
-   id `github`, which History shows as "GitHub". An empty op list skips the
-   call.
-2. **Text conflicts.** One `PaperChanges.collect` call with the post-apply
-   snapshot and an output tree holding the `--theirs` text of every held text
-   file. It replaces all undecided Git groups.
+   version first. That version is the undo point and shows in History like
+   any automatic version. The revision's actor is the fixed id `github`. An
+   empty op list skips the call.
+2. **Text conflicts.** One `PaperChanges.collect` call with task id
+   `paper-git`, the post-apply snapshot, and a `RegularTree` holding
+   `files/<path>` with the `--theirs` text of every held text file.
+   `replace_group_ids` is every `paper-git` group on those files, decided
+   ones included. `collect` deletes the undecided ones and uses the decided
+   ones to leave out any proposal a member already decided.
 3. **Link row.** `synced_commit`, `held`, `skipped`, and `synced_revision`
    update in one statement. `synced_revision` moves only when the live
    revision equaled it before the pull.
@@ -428,17 +479,18 @@ applied now equal theirs and fall under row two.
 
 ### Entries Paper cannot hold
 
-An incoming entry is skipped with a reason when:
+Every pull judges the **whole** remote tree, not only what changed. An entry
+is skipped with a reason when:
 
 - `paper_path` refuses the path
 - it is a symlink or submodule
 - it is over `PAPER_MAX_UPLOAD_BYTES`, or is text over `PAPER_MAX_DOC_BYTES`
-- taking it would break a Paper tree limit or collide with a local file or
-  folder of the same name
+- Paper does not hold it and taking it would break a Paper tree limit or
+  collide with a local file or folder of the same name
 
-Entries are considered in path order, so which ones a limit skips is stable.
+Entries are judged in path order, so which ones a limit skips is stable.
 Skipped entries are listed in the Git dialog. One bad entry never blocks the
-rest of the pull.
+rest of the pull. Push carries every skipped entry through unchanged.
 
 ## B6. Conflicts
 
@@ -447,19 +499,21 @@ the editor. They do not show in the Coach pane, which filters to Coach tasks.
 
 ### Text conflicts reuse the change store
 
-- All Git groups use one fixed `task_id`, `paper-git`. `collect`'s existing
-  replace rule then works unchanged.
-- `Change` gains one nullable payload field `origin`: the commit author
-  names, stripped of control characters and cut to 120 characters, and the
-  short commit. It lives in the stored payload JSON, so the table does not
-  change. The card header shows it.
-- Accept and Reject use the existing routes, with the member as actor.
+- All Git groups use one fixed `task_id`, `paper-git`. The change store and
+  its tables do not change.
+- The card header says "GitHub". The dialog shows the remote head's short
+  commit and author once, from the status.
+- Accept and Reject go through the Git decide route below. It takes the sync
+  lock, then calls the same `PaperChanges` decision with the member as
+  actor. So a decision never races a re-derive. The Coach decision route
+  refuses a `paper-git` group.
+- Git cards have no Undo. History restore is the undo.
 - An outdated Git card is refreshed by re-deriving. The workspace sends
   Refresh for a Git card to the Git route below, not the Coach route.
 - Above 40% changed lines or 12 regions the store makes one whole-file card.
   Accept takes their file. Reject keeps ours.
-- `collect` drops a trailing newline that only one side has. The next pull
-  treats that as an ordinary remote edit.
+- `collect` drops a trailing newline that theirs added to a base without
+  one. The next pull treats that as an ordinary remote edit.
 
 ### File conflicts are two buttons
 
@@ -477,16 +531,19 @@ Either choice releases the file.
 1. The member opens the Git dialog. It lists changed files with added and
    removed line counts.
 2. The member types a commit message and presses Push.
-3. The backend fetches and runs a pull if the remote moved.
+3. The backend checks the remote head and runs a pull if it moved. If that
+   pull fails, or `synced_commit` does not equal the remote head afterwards,
+   the push stops with `retry`. **Why:** a commit built from a Paper that
+   has not merged the remote head would revert the co-author's work.
 4. If any file is held, the push stops. The dialog shows the conflicts.
 5. If any Paper path equals a skipped entry's path or sits under or over it,
    the push stops and names the path.
 6. The backend builds the commit from a snapshot at one revision:
-   - start a temporary index from the remote head tree
-   - remove every remote entry that is not skipped
+   - start a temporary index from the `synced_commit` tree
+   - remove every entry that is not in the `skipped` list
    - add every Paper file with `git hash-object -w` and `update-index
      --cacheinfo`; a path that existed keeps its mode, a new one is `100644`
-   - `write-tree`, then `commit-tree` with the remote head as parent
+   - `write-tree`, then `commit-tree` with `synced_commit` as parent
 7. `git push <url> <commit>:refs/heads/<branch>`, never forced. A rejection
    reruns from step 3 once, then returns Git's message.
 8. Success updates `synced_commit` and `synced_revision`.
@@ -498,6 +555,10 @@ also calls. Both are passed as `GIT_AUTHOR_*` and `GIT_COMMITTER_*`.
 The changed-file list in step 1 builds the same tree without committing and
 runs `git diff --numstat` against `synced_commit`.
 
+Push sends what Paper holds. If a member restored a version from before a
+pull, the changed-file list shows the co-author's edits as removals, and the
+push removes them on GitHub.
+
 Push is a member action on that member's page, so it needs no new authority
 rule under invariant 3.
 
@@ -507,7 +568,7 @@ All under `/api/projects/{id}/paper/git`. All require a project member.
 
 | Route | Body | Returns |
 | --- | --- | --- |
-| `GET` | | `{state, repository, branch, public_key, unpushed, conflicts, skipped, last_error, checked_at}`; `state` is `none`, `pending`, or `linked` |
+| `GET` | | `{state, repository, branch, public_key, head, unpushed, conflicts, skipped, last_error, checked_at}`; `state` is `none`, `pending`, or `linked`; `head` is `{commit, author}` with the author name stripped of control characters and cut to 120 characters; `conflicts` is the number of held files |
 | `POST /key` | `{repository, branch}` | The status, now `pending`. 409 with the reason when `ssh-keygen` is absent. |
 | `POST /link` | | The status. 409 `{reason}` with Git's message when the probe fails. |
 | `DELETE` | | 204 |
@@ -515,10 +576,11 @@ All under `/api/projects/{id}/paper/git`. All require a project member.
 | `GET /changes` | | `[{path, status, added, removed}]` |
 | `GET /conflicts` | | `[{path, kind, ours, theirs}]` for file conflicts; `ours` and `theirs` are `present` or `absent` |
 | `POST /conflicts/resolve` | `{path, take}`; `take` is `theirs` or `mine` | The status. |
+| `POST /conflicts/decide` | `{group_id, decision}`; `decision` is `accept` or `reject` | The status. 404 when a re-derive replaced the card. |
 | `POST /conflicts/refresh` | | The status after re-deriving. |
-| `POST /push` | `{message}` | `{commit}`. 409 `{reason}`; `reason` is `conflicts`, `collision`, or Git's message. |
+| `POST /push` | `{message}` | `{commit}`. 409 `{reason}`; `reason` is `retry`, `conflicts`, `collision`, or Git's message. |
 
-Text conflict cards keep using `/paper/changes`.
+Text conflict cards are still listed by `/paper/changes`.
 
 ## B9. Web
 
@@ -528,8 +590,8 @@ Text conflict cards keep using `/paper/changes`.
   conflicts exist. Its hover shows the last sync time or `last_error`.
 - The push dialog shows file conflicts and text conflict cards above the
   changed-file list, using `PaperChanges` with Git handlers.
-- `PaperCoach.tsx` filters its change list to Coach tasks.
-- History shows the `github` actor as "GitHub".
+- `PaperCoach.tsx` already filters cards to its own tasks. Its unfiltered
+  fallback list leaves out `paper-git` groups.
 
 The mockup shows a number beside the branch. That becomes a mark, because an
 exact count needs a tree build on every edit.
@@ -585,8 +647,7 @@ Part B:
    skipped entries.
 9. Pull wiring: snapshot, apply with checks and retry, `collect`, link row.
 10. Push, conflict actions, routes, poller.
-11. `Change.origin`, Coach pane filter, History actor.
-12. Web: pill and dialogs.
+11. Web: pill and dialogs, Coach pane fallback filter.
 
 ## Verification
 
@@ -594,7 +655,8 @@ Part B:
   test that links, pulls a clean edit, pulls an overlap, leaves it undecided,
   pulls again, checks the conflict is still offered, accepts it, pushes, and
   reads the commit from the bare remote. A test that push refuses while a
-  file is held. A crash-rerun test for each write step.
+  file is held, and refuses when its own pull failed. A test that a skipped
+  remote entry survives two pulls and a push. A crash-rerun test for each write step.
 - Old writer: a database from the previous release opens, edits, and
   publishes with no link row.
 - Web: parser tests on real-world `.bib` shapes; browser tests for hover,
@@ -611,8 +673,13 @@ Part B:
   linked repository can put text into Paper, and a Coach turn reads Paper
   with network access. Linking gives repository writers the trust a member
   typing in Paper has. The link dialog says who can write.
-- **A rejected conflict can reappear** when a later pull touches the same
-  file before every conflict in it is decided.
+- **A rejected conflict can reappear** when the remote later changes the
+  same region.
+- **Restore then push removes remote work.** Restoring a version from before
+  a pull and pushing takes the co-author's edits off GitHub. The push dialog
+  lists them first.
+- **The write probe** relies on GitHub refusing a dry-run push from a
+  read-only key. The served journey checks that with a read-only key.
 - **Host key rotation** blocks sync until an RCP release.
 - **Unhidden reads.** On a provider that cannot hide paths, an agent shell
   could read the paper key.
