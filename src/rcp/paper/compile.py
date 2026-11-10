@@ -11,7 +11,7 @@ import signal
 import tempfile
 import uuid
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -47,6 +47,12 @@ class CompileResult(BaseModel):
     pdf_url: str | None = None
     # Per tree path, each source line's first PDF mark: [line, page, y points from top].
     synctex: SyncTexMap = {}
+
+
+class Bibliography(BaseModel):
+    status: Literal["ok", "unavailable", "failed"]
+    bbl: bytes | None = None
+    log_tail: str = ""
 
 
 def _reference(source: str, target: str, suffix: str) -> str | None:
@@ -191,69 +197,100 @@ class PaperCompiler:
                 result.status = "unavailable"
                 result.log_tail = self.engines.error("latex")
                 return result
-            async with self._slots:
-                with tempfile.TemporaryDirectory(prefix="rcp-paper-") as temporary:
-                    tree = Path(temporary) / "source"
-                    tree.mkdir()
-                    materialization = asyncio.create_task(
-                        asyncio.to_thread(self.live.materialize, snapshot, tree)
-                    )
-                    try:
-                        await asyncio.shield(materialization)
-                    except asyncio.CancelledError:
-                        # Cancellation cannot stop the writer thread. Keep its
-                        # temporary tree alive and drain it before releasing ownership.
-                        while not materialization.done():
-                            with contextlib.suppress(asyncio.CancelledError, Exception):
-                                await asyncio.shield(materialization)
-                        with contextlib.suppress(Exception):
-                            materialization.result()
-                        raise
-                    output = Path(temporary) / "output"
-                    output.mkdir()
-                    self.cache_dir.mkdir(parents=True, exist_ok=True)
-                    code, log = await self._run(tree, output, roots[0])
-                    result.log_tail = log
-                    pdf = output / (Path(roots[0]).stem + ".pdf")
-                    if code == 0 and pdf.is_file() and not pdf.is_symlink():
-                        if pdf.stat().st_size > PAPER_COMPILE_MAX_OUTPUT_BYTES:
-                            raise ValueError("Compiled PDF exceeds the output limit.")
-                        data = pdf.read_bytes()
-                        if not data.startswith(b"%PDF-"):
-                            raise ValueError("Compiler did not produce a PDF.")
-                        self._pdfs[compile_id] = (project_id, data)
-                        synctex = output / (Path(roots[0]).stem + ".synctex.gz")
-                        if synctex.is_file() and not synctex.is_symlink():
-                            mapping = await asyncio.to_thread(read_synctex, synctex, tree)
-                            if mapping is None:
-                                result.log_tail += "\nSyncTeX data exceeds its limit."
-                            else:
-                                result.synctex = mapping
-                        while len(self._pdfs) > PAPER_COMPILE_RESULT_LIMIT:
-                            self._pdfs.popitem(last=False)
-                        result.status = "ok"
-                        result.pdf_url = (
-                            f"/api/projects/{project_id}/paper/compile/{compile_id}/pdf"
-                        )
+            async with self._materialized(snapshot) as (tree, output):
+                code, log = await self._run(tree, output, roots[0])
+                result.log_tail = log
+                pdf = output / (Path(roots[0]).stem + ".pdf")
+                if code == 0 and pdf.is_file() and not pdf.is_symlink():
+                    if pdf.stat().st_size > PAPER_COMPILE_MAX_OUTPUT_BYTES:
+                        raise ValueError("Compiled PDF exceeds the output limit.")
+                    data = pdf.read_bytes()
+                    if not data.startswith(b"%PDF-"):
+                        raise ValueError("Compiler did not produce a PDF.")
+                    self._pdfs[compile_id] = (project_id, data)
+                    synctex = output / (Path(roots[0]).stem + ".synctex.gz")
+                    if synctex.is_file() and not synctex.is_symlink():
+                        mapping = await asyncio.to_thread(read_synctex, synctex, tree)
+                        if mapping is None:
+                            result.log_tail += "\nSyncTeX data exceeds its limit."
+                        else:
+                            result.synctex = mapping
+                    while len(self._pdfs) > PAPER_COMPILE_RESULT_LIMIT:
+                        self._pdfs.popitem(last=False)
+                    result.status = "ok"
+                    result.pdf_url = f"/api/projects/{project_id}/paper/compile/{compile_id}/pdf"
         except TimeoutError:
             result.log_tail = "Compile exceeded the wall-time limit."
         except (OSError, ValueError) as exc:
             result.log_tail = str(exc)[-PAPER_COMPILE_MAX_LOG_BYTES:]
         return result
 
-    async def _run(self, tree: Path, output: Path, root: str) -> tuple[int, str]:
+    @contextlib.asynccontextmanager
+    async def _materialized(self, snapshot: PaperSnapshot) -> AsyncIterator[tuple[Path, Path]]:
+        async with self._slots:
+            with tempfile.TemporaryDirectory(prefix="rcp-paper-") as temporary:
+                tree = Path(temporary) / "source"
+                tree.mkdir()
+                materialization = asyncio.create_task(
+                    asyncio.to_thread(self.live.materialize, snapshot, tree)
+                )
+                try:
+                    await asyncio.shield(materialization)
+                except asyncio.CancelledError:
+                    while not materialization.done():
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await asyncio.shield(materialization)
+                    with contextlib.suppress(Exception):
+                        materialization.result()
+                    raise
+                output = Path(temporary) / "output"
+                output.mkdir()
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+                yield tree, output
+
+    async def bibliography(
+        self, project_id: str, root: str, *, snapshot: PaperSnapshot | None = None
+    ) -> Bibliography:
+        try:
+            if not await self.engines.ensure("latex"):
+                return Bibliography(status="unavailable", log_tail=self.engines.error("latex"))
+            if snapshot is None:
+                snapshot = await self.live.snapshot(project_id)
+            async with self._materialized(snapshot) as (tree, output):
+                code, log = await self._run(tree, output, root, keep_intermediates=True)
+                if code != 0:
+                    return Bibliography(status="failed", log_tail=log)
+                bbl = output / (Path(root).stem + ".bbl")
+                data = None
+                if bbl.is_file() and not bbl.is_symlink():
+                    if bbl.stat().st_size > PAPER_COMPILE_MAX_OUTPUT_BYTES:
+                        raise ValueError("Compiled bibliography exceeds the output limit.")
+                    data = bbl.read_bytes()
+                return Bibliography(status="ok", bbl=data, log_tail=log)
+        except TimeoutError:
+            return Bibliography(status="failed", log_tail="Compile exceeded the wall-time limit.")
+        except (OSError, ValueError) as exc:
+            return Bibliography(status="failed", log_tail=str(exc)[-PAPER_COMPILE_MAX_LOG_BYTES:])
+
+    async def _run(
+        self, tree: Path, output: Path, root: str, *, keep_intermediates: bool = False
+    ) -> tuple[int, str]:
         source_sizes = {p: p.stat().st_size for p in tree.rglob("*") if p.is_file()}
-        # Root is an absolute positional argument: paper names cannot become flags.
+        command = [
+            str(self.engines.binary()),
+            "-X",
+            "compile",
+            "--untrusted",
+            "--synctex",
+            "--outdir",
+            str(output),
+        ]
+        if keep_intermediates:
+            command.append("--keep-intermediates")
+        command.append(str(tree / root))
         launch = asyncio.create_task(
             asyncio.create_subprocess_exec(
-                str(self.engines.binary()),
-                "-X",
-                "compile",
-                "--untrusted",
-                "--synctex",
-                "--outdir",
-                str(output),
-                str(tree / root),
+                *command,
                 cwd=tree,
                 env={**os.environ, "TECTONIC_CACHE_DIR": str(self.cache_dir)},
                 stdout=asyncio.subprocess.PIPE,
