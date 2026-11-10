@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from rcp import limits
 from rcp.paper.git_sync import GitEntry, GitError, _git
@@ -68,11 +69,37 @@ def tree_reason(tree: dict[str, GitEntry]) -> str:
     return ""
 
 
+def _check(path: str, old: GitEntry, kind: Literal["text", "binary"]) -> dict[str, object]:
+    check: dict[str, object] = {"file_id": old.file_id or path, "path": path, "kind": kind}
+    check.update(
+        {"text": old.data.decode()} if kind == "text" else {"blob_sha256": digest(old.data)}
+    )
+    return check
+
+
+def _create(path: str, new: GitEntry, kind: Literal["text", "binary"]) -> PaperOp:
+    return PaperOp(
+        kind="create",
+        path=path,
+        file_kind=kind,
+        text=new.data.decode() if kind == "text" else "",
+        data=new.data if kind == "binary" else None,
+    )
+
+
+def _update(
+    file_id: str, old: GitEntry, new: GitEntry, kind: Literal["text", "binary"]
+) -> PaperOp | None:
+    if kind == "text":
+        return text_replacement(file_id, old.data.decode(), new.data.decode())
+    return PaperOp(kind="binary", file_id=file_id, data=new.data)
+
+
 def tree_ops(
     ours: dict[str, GitEntry], target: dict[str, GitEntry]
 ) -> tuple[list[PaperOp], list[dict[str, object]]]:
     deletes: list[PaperOp] = []
-    edits: list[PaperOp] = []
+    edits: list[PaperOp | None] = []
     checks: list[dict[str, object]] = []
     for path in sorted(ours.keys() | target.keys()):
         old, new = ours.get(path), target.get(path)
@@ -80,38 +107,60 @@ def tree_ops(
             continue
         old_kind = paper_file_kind(path, old.data) if old else None
         new_kind = paper_file_kind(path, new.data) if new else None
-        file_id = old.file_id or path if old else ""
-        if old is not None:
-            check: dict[str, object] = {"file_id": file_id, "path": path, "kind": old_kind}
-            check.update(
-                {"text": old.data.decode()}
-                if old_kind == "text"
-                else {"blob_sha256": digest(old.data)}
-            )
-            checks.append(check)
-        if old is not None and (new is None or old_kind != new_kind):
-            deletes.append(PaperOp(kind="delete", file_id=file_id))
+        if old is None:
+            checks.append({"path_free": path})
+        else:
+            checks.append(_check(path, old, old_kind or "text"))
+            if old_kind != new_kind:
+                deletes.append(PaperOp(kind="delete", file_id=old.file_id or path))
         if new is None:
             continue
         if old is None or old_kind != new_kind:
-            if old is None:
-                checks.append({"path_free": path})
-            edits.append(
-                PaperOp(
-                    kind="create",
-                    path=path,
-                    file_kind=new_kind or "text",
-                    text=new.data.decode() if new_kind == "text" else "",
-                    data=new.data if new_kind == "binary" else None,
-                )
-            )
-        elif new_kind == "text":
-            op = text_replacement(file_id, old.data.decode(), new.data.decode())
-            if op is not None:
-                edits.append(op)
+            edits.append(_create(path, new, new_kind or "text"))
         else:
-            edits.append(PaperOp(kind="binary", file_id=file_id, data=new.data))
-    return deletes + edits, checks
+            edits.append(_update(old.file_id or path, old, new, new_kind or "text"))
+    return deletes + [op for op in edits if op is not None], checks
+
+
+def _candidate(
+    path: str, ancestor: GitEntry | None, remote: GitEntry | None, local: GitEntry | None
+) -> tuple[GitEntry | None, str, bytes | None]:
+    old = ancestor.data if ancestor is not None else None
+    if (local.data if local is not None else None) == old:
+        return remote, "", None
+    if (
+        local is None
+        or remote is None
+        or any(
+            paper_file_kind(path, entry.data) != "text"
+            for entry in (ancestor, local, remote)
+            if entry is not None
+        )
+    ):
+        return local, "file", None
+    merged, proposal = text_merge(old or b"", local.data, remote.data)
+    if max(len(merged), len(proposal or b"")) > limits.PAPER_MAX_DOC_BYTES:
+        return local, "file", None
+    return (
+        GitEntry(merged, local.mode, local.file_id),
+        "text" if proposal is not None else "",
+        proposal,
+    )
+
+
+def _fit_reason(
+    trial: dict[str, GitEntry], proposals: dict[str, bytes], path: str, proposal: bytes | None
+) -> str:
+    reason = tree_reason(trial)
+    if proposal is None and not proposals:
+        return reason
+    if proposal is not None:
+        try:
+            paper_path("files/" + path)
+        except ValueError:
+            return "change_path_limit"
+        proposals = proposals | {path: proposal}
+    return reason or tree_reason(trial | {name: GitEntry(body) for name, body in proposals.items()})
 
 
 def merge_trees(
@@ -130,48 +179,15 @@ def merge_trees(
         if remote is not None and (reason := entry_reason(path, remote)):
             skipped.append({"path": path, "reason": reason})
             continue
-        old = ancestor.data if ancestor is not None else None
         new = remote.data if remote is not None else None
-        current = local.data if local is not None else None
-        if new in (old, current):
+        if new in (ancestor.data if ancestor else None, local.data if local else None):
             continue
-        conflict = ""
-        proposal = None
-        if current == old:
-            candidate = remote
-        elif (
-            local is not None
-            and remote is not None
-            and (ancestor is None or paper_file_kind(path, ancestor.data) == "text")
-            and paper_file_kind(path, local.data) == paper_file_kind(path, remote.data) == "text"
-        ):
-            merged, proposal = text_merge(old or b"", current or b"", new or b"")
-            candidate = GitEntry(merged, local.mode, local.file_id)
-            conflict = "text" if proposal is not None else ""
-            if len(merged) > limits.PAPER_MAX_DOC_BYTES or (
-                proposal is not None and len(proposal) > limits.PAPER_MAX_DOC_BYTES
-            ):
-                candidate, conflict, proposal = local, "file", None
-        else:
-            candidate, conflict = local, "file"
-        trial = dict(result)
-        if candidate is None:
-            trial.pop(path, None)
-        else:
+        candidate, conflict, proposal = _candidate(path, ancestor, remote, local)
+        trial = {name: entry for name, entry in result.items() if name != path}
+        if candidate is not None:
             trial[path] = candidate
-        reason = tree_reason(trial)
-        if proposal is not None:
-            try:
-                paper_path("files/" + path)
-            except ValueError:
-                reason = "change_path_limit"
-        if proposals or proposal is not None:
-            proposed = trial | {name: GitEntry(body) for name, body in proposals.items()}
-            if proposal is not None:
-                proposed[path] = GitEntry(proposal)
-            reason = reason or tree_reason(proposed)
-        if reason:
-            if local is None and remote is not None:
+        if reason := _fit_reason(trial, proposals, path, proposal):
+            if local is None:
                 skipped.append({"path": path, "reason": reason})
                 continue
             conflict, proposal, trial = "file", None, result

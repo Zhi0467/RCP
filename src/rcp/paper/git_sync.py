@@ -491,21 +491,8 @@ class PaperGit:
                 raise
         return head
 
-    def _merge(self, link, head: str, *, refresh: bool = False) -> None:
-        from rcp.limits import PAPER_GIT_APPLY_RETRIES
-        from rcp.paper.changes import InvalidChanges
-        from rcp.paper.git_merge import merge_trees
-        from rcp.paper.models import PaperLimit, PaperPrecondition, PaperRateLimit
-        from rcp.regular_tree_reader import RegularTree
-
-        link = self._release(link)
-        if head == link.synced_commit and not refresh:
-            link.last_error = ""
-            link.checked_at = self.store.now()
-            self.store.save_paper_git_link(link)
-            return
+    def _base(self, link) -> dict[str, GitEntry]:
         directory = self.directory(link.project_id)
-        theirs = read_tree(directory, head)
         base = read_tree(directory, link.synced_commit)
         for item in link.skipped:
             base.pop(item["path"], None)
@@ -515,69 +502,91 @@ class PaperGit:
                 base.pop(item["path"], None)
             else:
                 base[item["path"]] = ancestor
+        return base
+
+    def _apply(self, link, merged, before):
+        from rcp.paper.models import PaperPrecondition
+        from rcp.regular_tree_reader import RegularTree
+
+        revision = before.revision
+        if merged.ops:
+            revision = self.live.run_sync(
+                self.live.apply(
+                    link.project_id,
+                    merged.ops,
+                    "github",
+                    {"checks": merged.checks},
+                    checkpoint=True,
+                )
+            ).revision
+        after = self.live.run_sync(self.live.snapshot(link.project_id))
+        current = snapshot_tree(after)
+        if any(current.get(path) != merged.tree[path] for path in merged.proposals):
+            raise PaperPrecondition("Paper conflict text changed during merge")
+        paths = {item["path"] for item in link.held + merged.held}
+        groups = {
+            group.group_id
+            for group in self.changes.groups(link.project_id, "paper-git")
+            if any(change.path in paths for change in group.changes)
+        }
+        self.changes.collect(
+            link.project_id,
+            "paper-git",
+            after,
+            RegularTree({"files/" + path: body for path, body in merged.proposals.items()}, []),
+            replace_group_ids=groups,
+        )
+        return revision, after
+
+    def _settled(self, link, head: str, merged, before, revision: int, after) -> None:
+        held_bases = {item["path"]: item["base_commit"] for item in link.held}
+        files = {file.path: file.file_id for file in after.files}
+        for item in merged.held:
+            item["base_commit"] = held_bases.get(item["path"], link.synced_commit)
+            item["file_id"] = files.get(item["path"], "")
+        link.held = merged.held
+        link.held = self._active_held(link)
+        link.skipped = merged.skipped
+        link.synced_commit = head
+        if before.revision == link.synced_revision and revision == before.revision + bool(
+            merged.ops
+        ):
+            link.synced_revision = revision
+        self._checked(link)
+        self._pin(link)
+
+    def _checked(self, link) -> None:
+        link.last_error = ""
+        link.checked_at = self.store.now()
+        self.store.save_paper_git_link(link)
+
+    def _merge(self, link, head: str, *, refresh: bool = False) -> None:
+        from rcp.limits import PAPER_GIT_APPLY_RETRIES
+        from rcp.paper.changes import InvalidChanges
+        from rcp.paper.git_merge import merge_trees
+        from rcp.paper.models import PaperLimit, PaperPrecondition, PaperRateLimit
+
+        link = self._release(link)
+        if head == link.synced_commit and not refresh:
+            self._checked(link)
+            return
+        theirs = read_tree(self.directory(link.project_id), head)
+        base = self._base(link)
         for attempt in range(PAPER_GIT_APPLY_RETRIES):
             before = self.live.run_sync(self.live.snapshot(link.project_id))
             merged = merge_trees(base, theirs, snapshot_tree(before))
             try:
-                applied_revision = before.revision
-                if merged.ops:
-                    receipt = self.live.run_sync(
-                        self.live.apply(
-                            link.project_id,
-                            merged.ops,
-                            "github",
-                            {"checks": merged.checks},
-                            checkpoint=True,
-                        )
-                    )
-                    applied_revision = receipt.revision
-                after = self.live.run_sync(self.live.snapshot(link.project_id))
-                current = snapshot_tree(after)
-                if any(current.get(path) != merged.tree[path] for path in merged.proposals):
-                    raise PaperPrecondition("Paper conflict text changed during merge")
-                paths = {item["path"] for item in link.held + merged.held}
-                groups = {
-                    group.group_id
-                    for group in self.changes.groups(link.project_id, "paper-git")
-                    if any(change.path in paths for change in group.changes)
-                }
-                self.changes.collect(
-                    link.project_id,
-                    "paper-git",
-                    after,
-                    RegularTree(
-                        {"files/" + path: body for path, body in merged.proposals.items()}, []
-                    ),
-                    replace_group_ids=groups,
-                )
+                revision, after = self._apply(link, merged, before)
             except PaperRateLimit:
                 raise
             except (PaperPrecondition, PaperLimit, InvalidChanges) as exc:
-                if isinstance(exc, InvalidChanges) and not isinstance(
+                raced = not isinstance(exc, InvalidChanges) or isinstance(
                     exc.__cause__, (PaperPrecondition, PaperLimit)
-                ):
-                    raise
-                if attempt + 1 == PAPER_GIT_APPLY_RETRIES:
+                )
+                if not raced or attempt + 1 == PAPER_GIT_APPLY_RETRIES:
                     raise
                 continue
-            held_bases = {item["path"]: item["base_commit"] for item in link.held}
-            files = {file.path: file.file_id for file in after.files}
-            for item in merged.held:
-                item["base_commit"] = held_bases.get(item["path"], link.synced_commit)
-                item["file_id"] = files.get(item["path"], "")
-            link.held = merged.held
-            link.held = self._active_held(link)
-            link.skipped = merged.skipped
-            link.synced_commit = head
-            if (
-                before.revision == link.synced_revision
-                and applied_revision == before.revision + bool(merged.ops)
-            ):
-                link.synced_revision = applied_revision
-            link.last_error = ""
-            link.checked_at = self.store.now()
-            self.store.save_paper_git_link(link)
-            self._pin(link)
+            self._settled(link, head, merged, before, revision, after)
             return
 
     def decide(self, project_id: str, group_id: str, decision: str, actor: str):
