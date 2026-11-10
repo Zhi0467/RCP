@@ -422,6 +422,15 @@ def test_vanished_remote_branch_refuses_and_keeps_the_paper(sync):
         manager.pull("p")
     assert saved(live).files[0].text == "base"
     assert manager.store.paper_git_link("p").synced_commit == first
+    with pytest.raises(GitError) as error:
+        manager.push("p", "message", "Member", "member")
+    assert str(error.value) != "retry"
+    assert manager.status("p")["last_error"]
+    _git(remote, ["update-ref", "refs/heads/main", first])
+    manager.pull("p")
+    status = manager.status("p")
+    assert not status["last_error"]
+    assert status["checked_at"]
 
 
 def test_network_git_runs_outside_project_admission(sync, monkeypatch: pytest.MonkeyPatch):
@@ -457,3 +466,17 @@ def test_network_git_runs_outside_project_admission(sync, monkeypatch: pytest.Mo
     manager.push("p", "message", "Member", "member")
     assert {name for name, _ in network} == {"ls-remote", "fetch", "push"}
     assert not any(held for _, held in network)
+
+
+def test_edit_reverted_to_the_synced_text_is_not_unpushed(sync):
+    manager, live, remote = sync
+    commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    file = saved(live).files[0]
+    assert not manager.status("p")["unpushed"]
+    human_edit(live, file.file_id, "edited")
+    assert manager.status("p")["unpushed"]
+    human_edit(live, file.file_id, "base")
+    assert not manager.status("p")["unpushed"]
+    assert manager.changed_files("p") == []

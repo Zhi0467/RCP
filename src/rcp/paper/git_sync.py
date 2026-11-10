@@ -322,7 +322,8 @@ class PaperGit:
                 "branch": link.branch,
                 "public_key": key.read_text() if key.exists() else "",
                 "head": {"commit": link.synced_commit, "author": author},
-                "unpushed": snapshot.revision != link.synced_revision,
+                "unpushed": snapshot.revision != link.synced_revision
+                and self._differs(link, snapshot),
                 "conflicts": len(self._active_held(link)),
                 "skipped": link.skipped,
                 "last_error": link.last_error,
@@ -499,6 +500,9 @@ class PaperGit:
 
         link = self._release(link)
         if head == link.synced_commit and not refresh:
+            link.last_error = ""
+            link.checked_at = self.store.now()
+            self.store.save_paper_git_link(link)
             return
         directory = self.directory(link.project_id)
         theirs = read_tree(directory, head)
@@ -649,6 +653,14 @@ class PaperGit:
             for path, entry in ours.items()
         }
 
+    def _differs(self, link, snapshot) -> bool:
+        directory = self.directory(link.project_id)
+        try:
+            ours = write_tree(directory, self._push_tree(link, snapshot))
+        except GitError:
+            return True
+        return ours != write_tree(directory, read_tree(directory, link.synced_commit))
+
     def changed_files(self, project_id: str):
         with self.lock(project_id):
             link = self._record(project_id)
@@ -692,7 +704,7 @@ class PaperGit:
                     head = self._fetch(link)
                 except Exception as exc:
                     self._error(project_id, exc)
-                    raise GitError("retry") from exc
+                    raise
                 with self.admission(project_id):
                     try:
                         self._merge(link, head)

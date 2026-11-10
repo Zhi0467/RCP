@@ -33,6 +33,8 @@ import {
   type PaperReference,
 } from "./PaperReferences";
 import { PaperExport } from "./PaperExport";
+import { PaperGit } from "./PaperGit";
+import { decidePaperGit, PAPER_GIT_TASK } from "./gitSync";
 import { findReference } from "./referenceFiles";
 import { citation } from "./citeKeys";
 import { PaperFiles } from "./PaperFiles";
@@ -379,9 +381,16 @@ export function PaperWorkspace({
       setActionError({ error: String(error), retry: action });
     }
   };
+  const gitChanges = changeFeed.changes.filter(
+    (change) =>
+      change.task_id === PAPER_GIT_TASK &&
+      (change.state === "pending" || change.state === "outdated"),
+  );
   const act = async (id: string, action: PaperChangeAction) => {
     try {
-      await changeFeed.act(id, action);
+      if (gitChanges.some((change) => change.group_id === id))
+        await decidePaperGit(apiBase, id, action).finally(changeFeed.refresh);
+      else await changeFeed.act(id, action);
     } finally {
       refresh();
     }
@@ -557,6 +566,17 @@ export function PaperWorkspace({
               <RotateCcw size={16} />
             </button>
           )}
+          <PaperGit
+            apiBase={apiBase}
+            refreshKey={`${tree?.revision}:${gitChanges.map((change) => `${change.change_id}:${change.state}`).join("|")}`}
+            changes={gitChanges}
+            onAction={act}
+            onChanged={() => {
+              refresh();
+              void changeFeed.refresh();
+            }}
+            onLocate={(change) => locate(changeFocus(change))}
+          />
           <button
             className="icon-button paper-history-button"
             aria-label="Paper history"
