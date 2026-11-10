@@ -420,3 +420,91 @@ button:disabled {
 .resize-handle:active {
   background: color-mix(in srgb, var(--teal) 16%, transparent);
 }
+
+:root {
+  --paper-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --paper-ground: #e5e8ec;
+  --paper-depth: #dbe0e6;
+  --paper-sheet: #f1f3f5;
+  --paper-ink: #303944;
+  --paper-muted: #5b6673;
+  --paper-accent: #386792;
+  --paper-teal: #326d72;
+  --paper-warning: #886014;
+  --paper-danger: #a8483e;
+  --paper-success: #38644e;
+  --paper-rule: #bec7d0;
+  --paper-tint: #dbe8f4;
+  --paper-shadow-rgb: 61 77 96;
+  --paper-surface: linear-gradient(145deg, #f2f4f6, #e1e5e9);
+  --paper-raised:
+    inset 1px 1px 0 rgb(255 255 255 / 92%), inset -1px -1px 0 rgb(var(--paper-shadow-rgb) / 7%),
+    3px 3px 7px rgb(var(--paper-shadow-rgb) / 19%), -2px -2px 5px rgb(255 255 255 / 80%);
+  --paper-inset:
+    inset 2px 2px 5px rgb(var(--paper-shadow-rgb) / 22%),
+    inset -2px -2px 4px rgb(255 255 255 / 86%), 0 1px 0 rgb(255 255 255 / 70%);
+  --paper-field: #e9edf1;
+  --paper-selected: linear-gradient(145deg, #cbdced, #e1edf8);
+}
+:root[data-color-mode="dark"] {
+  --paper-ground: #202832;
+  --paper-depth: #19212b;
+  --paper-sheet: #2d3743;
+  --paper-ink: #e4eaf0;
+  --paper-muted: #b1becb;
+  --paper-accent: #98badc;
+  --paper-teal: #86c3c7;
+  --paper-warning: #ddbc78;
+  --paper-danger: #eaa194;
+  --paper-success: #9dc9ae;
+  --paper-rule: #526170;
+  --paper-tint: #354c63;
+  --paper-shadow-rgb: 0 0 0;
+  --paper-surface: linear-gradient(145deg, #34404e, #29333f);
+  --paper-raised:
+    inset 1px 1px 0 rgb(255 255 255 / 10%), inset -1px -1px 0 rgb(0 0 0 / 25%),
+    3px 3px 7px rgb(0 0 0 / 30%);
+  --paper-inset: inset 2px 2px 5px rgb(0 0 0 / 32%), inset -1px -1px 3px rgb(255 255 255 / 6%);
+  --paper-field: #252e39;
+  --paper-selected: linear-gradient(145deg, #364e67, #405b75);
+}
+:root[data-theme="classic"] {
+  --paper-ground: var(--paper-deep);
+  --paper-depth: var(--paper);
+  --paper-sheet: var(--sheet);
+  --paper-ink: var(--walnut);
+  --paper-muted: var(--ink-soft);
+  --paper-accent: var(--oxblood);
+  --paper-teal: var(--teal);
+  --paper-warning: var(--mustard);
+  --paper-danger: var(--coral);
+  --paper-success: var(--forest);
+  --paper-rule: var(--rule);
+  --paper-tint: var(--rose-paper);
+  --paper-shadow-rgb: var(--shadow-rgb);
+  --paper-surface: var(--sheet);
+  --paper-raised: 0 2px 7px rgb(var(--shadow-rgb) / 19%);
+  --paper-inset: inset 0 1px 4px rgb(var(--shadow-rgb) / 16%);
+  --paper-field: var(--paper);
+  --paper-selected: var(--rose-paper);
+}
+:root[data-theme="snowbound"] {
+  --paper-ground: var(--paper-deep);
+  --paper-depth: var(--paper);
+  --paper-sheet: var(--sheet);
+  --paper-ink: var(--walnut);
+  --paper-muted: var(--ink-soft);
+  --paper-accent: var(--oxblood);
+  --paper-teal: var(--teal);
+  --paper-warning: var(--mustard);
+  --paper-danger: var(--coral);
+  --paper-success: var(--forest);
+  --paper-rule: var(--rule);
+  --paper-tint: var(--rose-paper);
+  --paper-shadow-rgb: var(--shadow-rgb);
+  --paper-surface: var(--aqua-surface);
+  --paper-raised: var(--aqua-raised);
+  --paper-inset: var(--aqua-inset);
+  --paper-field: var(--aqua-field);
+  --paper-selected: var(--aqua-selected);
+}

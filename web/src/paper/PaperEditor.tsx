@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
-import { Decoration, EditorView, keymap, lineNumbers, WidgetType } from "@codemirror/view";
+import {
+  Decoration,
+  EditorView,
+  hoverTooltip,
+  keymap,
+  lineNumbers,
+  WidgetType,
+} from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { defaultHighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
@@ -9,6 +16,8 @@ import { typst_lezer } from "codemirror-lang-typst/lezer";
 import * as Y from "yjs";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
 import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
+import { citeKeys } from "./citeKeys";
+import type { PaperReference } from "./PaperReferences";
 import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import { paperDocumentKey, type PaperDocument, type PaperDocumentKey } from "./paperDocuments";
 import type { PaperChange } from "./PaperChanges";
@@ -88,6 +97,7 @@ function settleCursorLine(
 
 /** Where the editor moves when asked: a change card's anchor, or a spot double-clicked in the preview. */
 export type PaperFocus =
+  | { kind: "reference"; file_id: string; from: number }
   | { kind: "change"; file_id: string; change: PaperChange }
   | { kind: "source"; file_id: string; spot: PreviewSourceSpot };
 
@@ -103,8 +113,12 @@ export function PaperEditor({
   focus,
   maxBytes,
   onCursorLine,
+  references = [],
+  onReference,
 }: {
   owner: PaperDocument;
+  references?: PaperReference[];
+  onReference?: (key: string) => void;
   maxBytes?: number;
   format: string;
   changes: PaperChange[];
@@ -113,6 +127,8 @@ export function PaperEditor({
   /** The cursor's line once it settles, for a preview that follows it. */
   onCursorLine?: (line: number) => void;
 }) {
+  const referenceState = useRef({ references, onReference });
+  referenceState.current = { references, onReference };
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const suggestions = useRef(new Compartment());
@@ -230,6 +246,53 @@ export function PaperEditor({
             : EditorSelection.single(anchor, head),
         extensions: [
           lineNumbers(),
+          hoverTooltip((editor, position) => {
+            const cite = citeKeys(editor.state.doc.toString(), format).find(
+              (item) => position >= item.from && position <= item.to,
+            );
+            if (!cite) return null;
+            return {
+              pos: cite.from,
+              end: cite.to,
+              above: true,
+              create() {
+                const entry = referenceState.current.references.find(
+                  (item) => item.key === cite.key,
+                );
+                const dom = document.createElement("div");
+                dom.className = "paper-cite-tooltip";
+                const title = document.createElement("h3");
+                title.textContent = entry
+                  ? entry.fields.title || entry.key
+                  : `Unknown reference: ${cite.key}`;
+                dom.append(title);
+                if (entry)
+                  for (const text of [
+                    entry.fields.author,
+                    [entry.fields.journal || entry.fields.booktitle, entry.fields.year]
+                      .filter(Boolean)
+                      .join(" · "),
+                  ]) {
+                    const line = document.createElement("p");
+                    line.textContent = text ?? "";
+                    dom.append(line);
+                  }
+                return { dom };
+              },
+            };
+          }),
+          EditorView.domEventHandlers({
+            click(event, editor) {
+              const position = editor.posAtCoords({ x: event.clientX, y: event.clientY });
+              const cite =
+                position === null
+                  ? undefined
+                  : citeKeys(editor.state.doc.toString(), format).find(
+                      (item) => position >= item.from && position <= item.to,
+                    );
+              if (cite) referenceState.current.onReference?.(cite.key);
+            },
+          }),
           EditorState.changeFilter.of((transaction) => {
             if (
               !transaction.docChanged ||
@@ -344,6 +407,8 @@ export function PaperEditor({
   }, [pending, owner, text, anchors]);
 
   const focusRange = (target: PaperFocus) => {
+    if (target.kind === "reference")
+      return { from: Math.min(target.from, text.length), to: Math.min(target.from, text.length) };
     if (target.kind === "source") return sourceSpotRange(text, target.spot);
     const anchor = anchors.get(target.change);
     const range = anchor && resolvePaperAnchor(anchor, target.change, owner.text);
