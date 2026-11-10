@@ -9,12 +9,7 @@ import type {
   GraphNode,
   ProjectSnapshot,
 } from "../core/types";
-import {
-  resolvedChatSessionId,
-  relatedChatTasks,
-  resumablePausedChatTask,
-  taskArtifacts,
-} from "../agents/agentTasks";
+import { resolvedChatSessionId, relatedChatTasks, taskArtifacts } from "../agents/agentTasks";
 import {
   latestPersistedChatConfig,
   originRunConfig,
@@ -124,8 +119,6 @@ function conversationRefusal(
   }
   const active = relatedTasks.find((task) => task.active);
   if (active) return active.status_message || "A turn in this conversation is already active.";
-  const paused = resumablePausedChatTask(relatedTasks);
-  if (paused) return paused.status_message || "Resume or retry the paused turn before sending.";
   if (taskStartPending) return "Another task start is already being submitted.";
   if (!providerReady) return "The configured provider is not ready on its execution machine.";
   return null;
