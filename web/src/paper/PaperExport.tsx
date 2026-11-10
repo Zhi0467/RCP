@@ -73,7 +73,15 @@ export function PaperExport({
               <X size={16} />
             </button>
           </header>
-          {failure.log_tail && <pre>{failure.log_tail}</pre>}
+          {failure.log_tail && (
+            <pre
+              ref={(node) => {
+                if (node) node.scrollTop = node.scrollHeight;
+              }}
+            >
+              {failure.log_tail}
+            </pre>
+          )}
         </PaperDialog>
       )}
     </>

@@ -71,6 +71,7 @@ export function PaperReferences({
         <div className="paper-reference-list paper-well">
           <input
             aria-label="Search references"
+            placeholder="Search"
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
