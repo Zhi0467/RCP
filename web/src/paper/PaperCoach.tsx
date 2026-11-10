@@ -40,6 +40,7 @@ import type { AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
 import { latestPersistedChatConfig } from "../chat/chatWorkspace";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
+import { PAPER_GIT_TASK } from "./gitSync";
 import "./paper-coach.css";
 
 const NO_QUESTIONS: AgentQuestion[] = [];
@@ -468,7 +469,7 @@ export function PaperCoach({
               {!sessionTasks.length && !fresh && (
                 <PaperChanges
                   apiBase={apiBase}
-                  changes={changes}
+                  changes={changes.filter((change) => change.task_id !== PAPER_GIT_TASK)}
                   onAction={onChangeAction}
                   onUndoAll={onUndoAll}
                   onLocate={onLocate}

@@ -142,7 +142,7 @@
   "src/rcp/notifications.py": {"comment": 47},
   "src/rcp/operator_commands.py": {"comment": 1},
   "src/rcp/paper/changes.py": {"comment": 31},
-  "src/rcp/paper/compile.py": {"comment": 9},
+  "src/rcp/paper/compile.py": {"comment": 6},
   "src/rcp/paper/engines.py": {"comment": 5},
   "src/rcp/paper/live.py": {"comment": 26},
   "src/rcp/paper/models.py": {"comment": 1},

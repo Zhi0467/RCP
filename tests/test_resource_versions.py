@@ -265,6 +265,7 @@ _EXEMPT_TABLES = {
     "team_device_pairings": "pairing",
     "team_member_tokens": "credential",
     "team_sessions": "authentication",
+    "paper_git_links": "machine-local Paper transport",
     "paper_files": "paper content",
     "paper_updates": "paper content",
     "paper_doc_states": "paper content",

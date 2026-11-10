@@ -1,0 +1,25 @@
+name = "Upgrade Fixture Project"
+machines = ["backend"]
+
+[[repositories]]
+alias = "repo"
+machine = "backend"
+path = "."
+
+[project]
+truth_scope = ["repo"]
+
+[state]
+repository = "repo"
+
+[agent]
+default_run_truth_scope = ["repo"]
+
+[agent.paper_coach]
+provider = "codex"
+model = ""
+reasoning = "medium"
+[sources]
+claude_roots = ["provider-sources/claude"]
+codex_roots = ["provider-sources/codex"]
+

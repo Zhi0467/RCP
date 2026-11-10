@@ -247,7 +247,13 @@ and Paper.
 
 Code defaults cover RCP databases/backups/checkpoints, provider credentials,
 mailbox checkpoints, service keys, remote Claude tokens, private sockets and
-selected WebKit storage. Added-login provider homes, under
+selected WebKit storage. They also cover `<data dir>/paper-git`, which holds each
+linked paper's deploy key and bare repository
+([GitHub sync](paper-artifacts-and-result-views.md#github-sync)). It is hidden
+whole from every launch, and no grant makes it writable, because RCP's data
+directory is never a write root. Where a provider cannot hide reads, the
+launch's `unhidden` status covers it. The key writes to one paper repository
+and nothing else. Added-login provider homes, under
 `<data dir>/provider-homes` and `~/.rcp/provider-homes`, are hidden whole from
 Claude and OpenCode runs. Codex runs hide only each home's `auth.json`, through a
 glob over login IDs, so a sign-in added later is covered too. A launch that

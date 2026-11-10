@@ -255,9 +255,19 @@ def restore_paper_section(
 ) -> None:
     """Insert exact durable state into the caller's transaction; never publish it."""
     project_id = project_id or section.project_id
+    git_groups = {
+        str(row["group_id"])
+        for row in section.tables.get("paper_change_groups", ())
+        if row.get("task_id") == "paper-git"
+    }
     for table in (*PAPER_SHARED_TABLES, *PAPER_PROJECT_TABLES):
         for archived in section.tables.get(table, ()):
             row = dict(archived)
+            if (
+                table in {"paper_change_groups", "paper_changes", "paper_change_receipts"}
+                and row.get("group_id") in git_groups
+            ):
+                continue
             if table in PAPER_PROJECT_TABLES:
                 row["project_id"] = project_id
             columns = tuple(row)

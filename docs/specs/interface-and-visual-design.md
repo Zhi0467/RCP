@@ -59,7 +59,9 @@ heading, project and group tile titles, Settings section titles, and Settings
 rail labels. Long research text reads slower in a pixel face, so
 questions, node text, chat, Paper, and data stay in Figtree. All three fonts are
 pinned packages bundled into the web build, so the desktop app needs no font
-install.
+install. Paper has one exception in every theme: `--paper-serif`, a system
+serif stack with no bundled font, sets the heading of the cite hover card and
+of the Reference tab, and nothing else.
 
 ## No commentary lines
 
@@ -589,16 +591,35 @@ belongs to [Providers and containment](providers-and-containment.md#member-termi
 
 ## Paper
 
-The file tree folds beside a live editor and a pane for Preview or Coach.
+The file tree folds beside a live editor and a pane for Preview, Coach, or
+Reference, chosen by a segmented control. The three are floating rounded panels
+on a darker ground.
 Files retain their identity across renames. Copy links open that file.
 The editor shows durable save coverage separately from publication. Markdown
 previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
 HTML previews put Zoom out, percentage reset, Zoom in and Comment in the panel
 header. Their loading and error states occupy that same preview surface.
-At phone width, Write, Preview, and Coach occupy one pane selected by the segmented
-control. HTML tools occupy a second row so warnings do not displace Comment or
-change the toolbar height. Files and History open as panels.
+At phone width, Write, Preview, Coach, and Refs occupy one pane selected by the
+segmented control. HTML tools occupy a second row so warnings do not displace
+Comment or change the toolbar height. Files and History open as panels.
+
+References fold under Files as one row with a count. The Reference tab shows
+one reference as a page. At phone width, Refs shows the list, and a chosen
+entry shows its page with a back control.
+
+The Git pill sits in the file header. It shows the branch, a count of files in
+conflict, and a mark for unpushed edits. Its hover shows the last error, or else
+the last sync time. It opens one dialog that links the repository, lists conflicts
+above the changed and skipped files, and pushes with a commit message. At phone
+width the pill keeps its place as an icon without the branch name, and hides in
+Coach view with presence and History.
+
+The arXiv export control is a box icon in the file header. It is disabled for a
+non-LaTeX file, and its hover says why. At phone width it moves into the Files
+panel header. A refused export opens a dialog with the reason and the log.
+[Paper](paper-artifacts-and-result-views.md#github-sync) owns the behavior
+behind these surfaces.
 
 ## Auto-research and episode history
 

@@ -864,7 +864,7 @@ for (const state of ["ready", "warning", "refusal"])
       }
     }
     const controls = toolbar.locator(":is(button, [role=status]):visible");
-    assert.equal(await controls.count(), state === "ready" ? 7 : 8);
+    assert.equal(await controls.count(), state === "ready" ? 8 : 9);
     const segments = await toolbar.getByRole("group", { name: "Paper view" }).boundingBox();
     const tools = await toolbar.locator(".paper-panel-tools").boundingBox();
     assert.ok(tools.y >= segments.y + segments.height);

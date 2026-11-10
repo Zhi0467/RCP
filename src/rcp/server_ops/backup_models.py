@@ -58,6 +58,7 @@ BACKUP_APP_DATA_EXCLUSIONS = frozenset(
         "chat-attachments",
         "jobs",
         "paper-snapshots",
+        "paper-git",
         "project-caches",
         "project-snapshots",
         # Provider credentials RCP holds for the execution account; a restored

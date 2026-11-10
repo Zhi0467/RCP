@@ -17,6 +17,7 @@ import {
   railThreads,
   scheduleLimits,
   scheduleWhen,
+  threadShowsUnread,
   threadTimeLabel,
   turnCommands,
   turnCommandsSummary,
@@ -572,4 +573,12 @@ test("a Proposal decision posts to its encoded route and sorts refusals", async 
     assert.equal(refused.outcome, "refused");
     assert.equal(refused.reason, `why ${status}`);
   }
+});
+
+test("the open thread never shows as unread", () => {
+  const thread = { thread_id: "t1", unread: true };
+  assert.equal(threadShowsUnread(thread, "t2"), true);
+  assert.equal(threadShowsUnread(thread, null), true);
+  assert.equal(threadShowsUnread(thread, "t1"), false);
+  assert.equal(threadShowsUnread({ thread_id: "t1", unread: false }, "t2"), false);
 });

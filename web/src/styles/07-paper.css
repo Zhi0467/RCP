@@ -7,7 +7,18 @@
   height: calc(100dvh - 190px);
   min-height: 420px;
   min-width: 0;
-  color: var(--walnut);
+  color: var(--paper-ink);
+  background: var(--paper-ground);
+}
+.paper-files-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+}
+.paper-files-column > .paper-files {
+  flex: 1;
 }
 .paper-live-workspace.files-folded {
   grid-template-columns: minmax(0, var(--paper-editor-width, 1fr)) minmax(0, 1fr);
@@ -41,7 +52,7 @@
 .paper-split-handle:hover::before,
 .paper-split-handle:focus-visible::before,
 .paper-split-handle:active::before {
-  background: var(--teal);
+  background: var(--paper-accent);
 }
 .paper-box {
   display: flex;
@@ -49,13 +60,13 @@
   min-width: 0;
   min-height: 0;
   border-radius: 12px;
-  background: var(--aqua-surface, var(--surface));
-  box-shadow: var(--aqua-raised, var(--shadow));
+  background: var(--paper-surface);
+  box-shadow: var(--paper-raised);
   overflow: hidden;
 }
 .paper-well {
-  background: var(--aqua-field, var(--paper-deep));
-  box-shadow: var(--aqua-inset, inset 0 1px 4px rgb(0 0 0 / 14%));
+  background: var(--paper-field);
+  box-shadow: var(--paper-inset);
   border-radius: 9px;
 }
 .paper-bar {
@@ -98,8 +109,8 @@
   font-size: 10px;
   font-weight: 600;
   padding: 2px 7px;
-  background: color-mix(in srgb, var(--teal) 12%, transparent);
-  color: var(--teal);
+  background: color-mix(in srgb, var(--paper-accent) 12%, transparent);
+  color: var(--paper-accent);
   border-radius: 999px;
 }
 .paper-presence {
@@ -170,11 +181,11 @@
   flex: 1;
 }
 .paper-row.selected {
-  background: var(--aqua-selected, var(--paper));
-  box-shadow: var(--aqua-inset, inset 0 0 0 1px var(--rule));
+  background: var(--paper-selected);
+  box-shadow: var(--paper-raised);
 }
 .paper-row:hover {
-  background: color-mix(in srgb, var(--teal) 10%, transparent);
+  background: color-mix(in srgb, var(--paper-accent) 10%, transparent);
 }
 .paper-tree-menu-button {
   flex: none;
@@ -194,7 +205,7 @@
 .paper-tree-menu-button:hover,
 .paper-tree-menu-button[aria-expanded="true"] {
   color: var(--walnut);
-  background: color-mix(in srgb, var(--teal) 14%, transparent);
+  background: color-mix(in srgb, var(--paper-accent) 14%, transparent);
 }
 .paper-row:hover .paper-tree-menu-button,
 .paper-row:focus-within .paper-tree-menu-button,
@@ -322,7 +333,7 @@
 .paper-phone-segments {
   display: none;
 }
-.files-folded .paper-files {
+.files-folded .paper-files-column {
   display: none;
 }
 .files-folded .paper-show-files {
@@ -391,10 +402,10 @@
   .paper-right-box {
     display: none;
   }
-  .paper-files {
+  .paper-files-column {
     display: none;
   }
-  .files-open .paper-files {
+  .files-open .paper-files-column {
     display: flex;
     position: absolute;
     inset: 0;
@@ -432,6 +443,7 @@
   }
   /* Beside the coach the file row keeps only its path, as chat keeps its title. */
   .paper-live-workspace[data-view="coach"] .paper-presence,
+  .paper-live-workspace[data-view="coach"] .paper-git-pill,
   .paper-live-workspace[data-view="coach"] .paper-history-button {
     display: none;
   }
@@ -479,5 +491,341 @@
   /* Paper's icon buttons take the phone target at this width, so its composer does too. */
   .paper-live-workspace {
     --composer-control: 44px;
+  }
+}
+
+.paper-live-workspace .icon-button:not(.primary):not(:disabled),
+.paper-live-workspace .button:not(.primary):not(:disabled),
+.paper-live-workspace .segmented button[aria-pressed="true"] {
+  background: var(--paper-surface);
+  box-shadow: var(--paper-raised);
+  border-color: transparent;
+  color: var(--paper-ink);
+}
+.paper-live-workspace .icon-button:not(.primary):hover:not(:disabled),
+.paper-live-workspace .button:not(.primary):hover:not(:disabled) {
+  background: var(--paper-selected);
+}
+.paper-live-workspace .segmented {
+  background: var(--paper-field);
+  box-shadow: var(--paper-inset);
+  border: 0;
+  min-width: 0;
+}
+.paper-live-workspace .segmented button {
+  color: var(--paper-muted);
+}
+.paper-live-workspace .paper-bar > span:has(.paper-export-button) {
+  flex: none;
+}
+.paper-references {
+  flex: none;
+  max-height: 50%;
+}
+.paper-reference-fold {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  width: 100%;
+}
+.paper-reference-fold svg {
+  transition: transform 160ms ease;
+}
+.paper-reference-fold svg.open {
+  transform: rotate(90deg);
+}
+.paper-reference-fold-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-height: 0;
+  transition: grid-template-rows 160ms ease;
+}
+.paper-references.expanded .paper-reference-fold-body {
+  grid-template-rows: 1fr;
+  overflow: auto;
+}
+.paper-reference-list {
+  overflow: auto;
+  min-height: 0;
+  margin: 0 10px;
+  padding: 0 8px;
+  transition:
+    padding 160ms ease,
+    margin-bottom 160ms ease;
+}
+.paper-references.expanded .paper-reference-list {
+  padding: 8px;
+  margin-bottom: 10px;
+}
+.paper-reference-list input {
+  background: var(--paper-sheet);
+  color: var(--paper-ink);
+  border: 1px solid var(--paper-rule);
+  border-radius: 7px;
+  padding: 5px 7px;
+  width: 100%;
+  min-width: 0;
+}
+.paper-reference-group {
+  color: var(--paper-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin: 10px 4px 3px;
+}
+.paper-reference-entry {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 8px;
+  text-align: left;
+  overflow-wrap: anywhere;
+  color: var(--paper-ink);
+}
+.paper-reference-entry:hover,
+.paper-reference-entry:focus-visible {
+  background: var(--paper-selected);
+}
+.paper-reference-entry strong {
+  font-size: 12px;
+}
+.paper-reference-entry span {
+  color: var(--paper-muted);
+  font-size: 11px;
+}
+.paper-reference-entry .paper-reference-warning {
+  color: var(--paper-danger);
+}
+.paper-reference-page {
+  background: var(--paper-sheet);
+  box-shadow: var(--paper-inset);
+  border-radius: 9px;
+  margin: 0 10px 10px;
+  padding: 22px 24px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-height: 0;
+}
+.paper-reference-page h2,
+.paper-cite-tooltip h3 {
+  font-family: var(--paper-serif);
+  font-weight: 400;
+  line-height: 1.18;
+  margin: 10px 0 6px;
+}
+.paper-reference-page h2 {
+  font-size: 24px;
+}
+.paper-reference-page p {
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+.paper-reference-page .paper-reference-abstract {
+  line-height: 1.62;
+}
+.paper-reference-page nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0;
+}
+.paper-reference-page a {
+  color: var(--paper-accent);
+}
+.paper-reference-source {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.paper-cite-tooltip {
+  background: var(--paper-surface);
+  color: var(--paper-ink);
+  box-shadow: var(--paper-raised);
+  border-radius: 10px;
+  padding: 12px 14px;
+  max-width: min(340px, calc(100vw - 24px));
+  overflow-wrap: anywhere;
+}
+.paper-cite-tooltip h3 {
+  font-size: 18px;
+  margin-top: 0;
+}
+.paper-cite-tooltip p {
+  font: 12px/1.5 var(--ui);
+  margin: 4px 0 0;
+}
+.paper-export-dialog {
+  color: var(--paper-ink);
+  width: min(640px, calc(100vw - 20px));
+}
+.paper-export-dialog strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.paper-export-dialog pre {
+  overflow: auto;
+  padding: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.paper-live-workspace .paper-bar .paper-git-pill {
+  border-radius: 999px;
+  flex: none;
+  font-size: 12px;
+  gap: 4px;
+  max-width: 170px;
+  padding-inline: 9px;
+  width: auto;
+}
+.paper-git-pill[data-failed="true"] {
+  color: var(--coral);
+}
+.paper-git-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paper-git-count {
+  color: var(--coral);
+  font-weight: 700;
+}
+.paper-git-unpushed {
+  color: var(--paper-accent);
+  flex: none;
+}
+.paper-git-dialog {
+  color: var(--paper-ink);
+  width: min(520px, calc(100vw - 20px));
+}
+.paper-git-dialog .paper-bar > svg {
+  flex: none;
+}
+.paper-git-head {
+  color: var(--paper-muted);
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paper-git-body,
+.paper-git-body form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+.paper-git-body {
+  overflow: auto;
+  padding: 2px 14px 14px;
+}
+.paper-git-body > * {
+  flex: none;
+}
+.paper-git-body .paper-changes > :first-child {
+  margin-top: 0;
+}
+.paper-git-body input {
+  background: var(--paper-sheet);
+  color: var(--paper-ink);
+  border: 1px solid var(--paper-rule);
+  border-radius: 7px;
+  padding: 7px 9px;
+  min-width: 0;
+}
+.paper-git-body a {
+  color: var(--paper-accent);
+  font-size: 12px;
+}
+.paper-git-repository,
+.paper-git-key {
+  overflow-wrap: anywhere;
+}
+.paper-git-key {
+  font: 11px/1.5 var(--mono);
+  padding: 8px 10px;
+  user-select: all;
+}
+.paper-git-files {
+  font-size: 12px;
+  list-style: none;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 5px 10px;
+}
+.paper-git-files li {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-height: 26px;
+}
+.paper-git-files li > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.paper-git-files li[data-status="deleted"] > span {
+  text-decoration: line-through;
+}
+.paper-git-files em {
+  color: var(--paper-muted);
+  flex: none;
+  font-style: normal;
+}
+.paper-git-files .paper-git-added {
+  color: var(--forest);
+}
+.paper-git-files .paper-git-removed {
+  color: var(--coral);
+}
+.paper-git-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.paper-git-failure {
+  color: var(--coral);
+  flex: 1;
+  font-size: 12px;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+@media (max-width: 700px) {
+  .paper-git-branch {
+    display: none;
+  }
+  .paper-git-dialog .button,
+  .paper-git-body input {
+    min-height: 44px;
+  }
+}
+@keyframes paper-pane-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.paper-right-pane:not([hidden]) {
+  animation: paper-pane-enter 160ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-right-pane:not([hidden]) {
+    animation: none;
+  }
+  .paper-reference-list,
+  .paper-reference-fold-body,
+  .paper-reference-fold svg {
+    transition: none;
   }
 }

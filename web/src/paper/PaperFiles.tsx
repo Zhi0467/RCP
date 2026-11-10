@@ -64,7 +64,9 @@ export function PaperFiles({
   onSelect,
   onFold,
   onChanged,
+  exportControl,
 }: {
+  exportControl?: ReactNode;
   apiBase: string;
   projectId: string;
   files: PaperFile[];
@@ -355,6 +357,7 @@ export function PaperFiles({
     >
       <header className="paper-bar">
         <strong className="paper-grow">Files</strong>
+        {exportControl}
         {looseFailure && (
           <button
             className="icon-button"

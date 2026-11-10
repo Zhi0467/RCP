@@ -424,6 +424,10 @@ function apiError(status: number, body: unknown): ApiError {
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
     return new ApiError(detail[0].msg, status);
   }
+  const reason = (body as { reason?: unknown } | null)?.reason;
+  if (detail === undefined && typeof reason === "string") {
+    return new ApiError(reason, status, { reason });
+  }
   return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
 }
 

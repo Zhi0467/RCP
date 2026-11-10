@@ -39,6 +39,7 @@ from rcp.core.models import (
 )
 from rcp.machine_upgrade import _migrate_projects
 from rcp.paper.changes import ChangeGroup, PaperChanges
+from rcp.paper.git_sync import PaperGit
 from rcp.paper.live import PaperLive
 from rcp.paper.models import PaperTree
 from rcp.projects import ProjectCatalog
@@ -677,6 +678,7 @@ PAPER_CHANGES = Entry(
         PaperChanges.accept_all,
         PaperChanges.undo_all,
         PaperLive._apply,
+        PaperGit._unlink,
         restore_paper_section,
     ),
     rules=(
@@ -1129,6 +1131,7 @@ NOT_LIFECYCLE: dict[str, str] = {
     "paper_doc_states": "compacted document cache",
     "paper_drafts": "legacy draft content",
     "paper_files": "file tree rows; deleted_at is a tombstone",
+    "paper_git_links": "one Git link per paper; removing the link deletes the row",
     "paper_revisions": "append-only revision log, pruned",
     "paper_saved_snapshots": "saved manifests per revision",
     "paper_updates": "append-only edit log, compacted",

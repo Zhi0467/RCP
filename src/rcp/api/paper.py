@@ -16,6 +16,7 @@ from starlette.datastructures import UploadFile
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
+from rcp.api.paper_compile import get_paper_compiler
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
 from rcp.artifact_renderer import ArtifactRendererUnavailable, paper_math_addon
@@ -26,8 +27,9 @@ from rcp.artifact_views import (
 )
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
+from rcp.paper.compile import root_candidates
 from rcp.paper.live import text_replacement
-from rcp.paper.models import Receipt, paper_file_kind
+from rcp.paper.models import Receipt, file_format, paper_file_kind
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -382,6 +384,54 @@ async def folder_archive(path: str, request: Request, project_id: str = _member)
         headers={
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.zip",
+        },
+    )
+
+
+@router.get(_PREFIX + "/export/arxiv")
+async def arxiv_archive(file_id: str, request: Request, project_id: str = _member):
+    tree = await get_paper_live(request).snapshot(project_id)
+    root = next((file.path for file in tree.files if file.file_id == file_id), None)
+    if root is None:
+        raise HTTPException(404, "Paper file not found")
+    texts = {
+        file.path: file.text for file in tree.files if file.kind == "text" and file.text is not None
+    }
+    if root not in root_candidates(texts, root):
+        return JSONResponse({"reason": "not_root", "log_tail": ""}, status_code=409)
+    bibliography = await get_paper_compiler(request).bibliography(project_id, root, snapshot=tree)
+    if bibliography.status != "ok":
+        return JSONResponse(
+            {"reason": bibliography.status, "log_tail": bibliography.log_tail}, status_code=409
+        )
+    folder = PurePosixPath(root).parent
+    bbl_name = PurePosixPath(root).with_suffix(".bbl").name
+
+    def compress() -> bytes:
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            names = set()
+            for file in tree.files:
+                path = PurePosixPath(file.path)
+                if not path.is_relative_to(folder) or file_format(file.path, file.kind) in {
+                    "markdown",
+                    "typst",
+                    "html",
+                }:
+                    continue
+                name = str(path.relative_to(folder))
+                names.add(name)
+                archive.writestr(name, tree.file_bytes(file))
+            if bibliography.bbl is not None and bbl_name not in names:
+                archive.writestr(bbl_name, bibliography.bbl)
+        return buffer.getvalue()
+
+    return Response(
+        await asyncio.to_thread(compress),
+        media_type="application/zip",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(PurePosixPath(root).stem)}.zip",
         },
     )
 

@@ -23,7 +23,8 @@ Only acknowledgment means an edit is saved. Disconnected browser edits wait.
 Publication replaces `paper/` as one staged tree after idle editing and
 periodically during continuous editing. Renames and edits therefore never appear
 apart. Failed or unreachable publication backs off while saving continues.
-Paper is never committed to Git. Workers reconstruct documents and perform SQLite
+The published tree is never committed to the state repository's history. A
+paper may link one GitHub repository ([GitHub sync](#github-sync)). Workers reconstruct documents and perform SQLite
 work under the project lock. After commit, the owner installs and broadcasts the
 result even if callers cancel. The paper badge means that saved revisions still
 await publication.
@@ -207,6 +208,189 @@ pointer; the Coach has no whole-file comment, so such a reader names the place i
 a typed Coach message. An HTML page runs scripts written by any member or the
 Coach in each viewer's browser under the sandbox rules, and its quotes come from
 the page itself.
+
+### GitHub sync
+
+A paper may link one GitHub repository and branch. The link belongs to the
+project, and any member may push. SQLite stays the only truth for Paper. The
+repository is a transport copy, like the published `paper/` tree. It lets a
+co-author work from a clone, or from an Overleaf project linked to the same
+repository. [`PaperGit`](../../src/rcp/paper/git_sync.py) owns the mechanism,
+[`PaperGitLink`](../../src/rcp/storage/paper_git_links.py) the record, and
+[the routes](../../src/rcp/api/paper_git.py) the member actions. Limits live in
+`limits.py` as `PAPER_GIT_*`.
+
+**Linking.** The repository is `owner/name` and always resolves to GitHub over
+SSH. RCP generates one deploy key per paper and shows the public half. A member
+adds it to the repository with write access and presses Link. The backend then
+proves the key can write with a dry-run push that creates nothing on GitHub,
+and runs the first pull. A failed probe returns Git's message and keeps the
+link pending. Asking again for the same pending repository and branch returns
+the same key. Changing them needs Unlink first. A relink always makes a new
+key, because GitHub refuses a deploy key already attached to another
+repository. Without `ssh-keygen`, linking is refused with the reason.
+
+RCP ships GitHub's SSH host keys and trusts nothing else: no operator step and
+no trust on first use. **Why:** a personal space has no operator. A GitHub host
+key rotation therefore needs an RCP release, and the failure says so. Git runs
+with no user or system configuration, no hooks, and no stored remote.
+
+**Storage.** Each linked paper has one bare repository, its key, and scratch
+space under `<data dir>/paper-git/<project id>/`. Nothing is ever checked out.
+**Why:** remote content is untrusted, and without a checkout there are no
+symlinks, submodules, or case collisions to defend against. The directory is
+[hidden from and protected against every launch](providers-and-containment.md#cooperative-project-write-containment).
+Fetch is shallow and takes the one branch. A repository over its disk limit
+stops syncing with a stated error.
+
+The link is machine-local, like the key. Backup and transfer never carry the
+directory. Transfer carries no link and drops Git cards on import. A backup's
+database keeps the link row and Git cards, and the missing-key check below
+removes them after a restore. A restored or transferred project arrives
+unlinked. Project deletion removes both. A link
+whose key file is missing at backend start is removed with its Git cards. An
+older database opens as not linked.
+
+**Pull is automatic.** The backend checks each linked paper that has a live
+editor, on a fixed interval, and once when a member opens the workspace. A
+paper nobody has open is not fetched, so remote edits never apply unwatched. A
+check that finds the same remote head changes nothing, so cards keep their ids.
+A pull that fails before the merge applies changes nothing. One that fails
+after its clean edits applied keeps them and does not advance the synced
+commit. Either way it records the error on the link and waits before that
+paper is polled again. Network Git runs outside project admission, so a
+slow remote never blocks Paper work. The merge and the link writes of a successful sync take it.
+A missing branch or an empty repository counts as the empty tree, and the first
+push creates the branch. A branch that vanishes after a sync refuses the pull
+and keeps the Paper.
+**Why:** treating a vanished branch as empty would delete every synced file.
+
+**Merge.** The merge is path-wise over three versions of each file: the base
+both sides last agreed on, the remote head, and the live Paper file. It never
+reads Git history, so a remote force-push is only a different remote version.
+Bytes pass through unchanged. A remote rename is a delete plus a create.
+
+| Paper vs base | Remote vs base | Result |
+| --- | --- | --- |
+| any | same | Nothing. |
+| same as remote | any | Nothing. |
+| same | changed or added | Take the remote file. |
+| same | deleted | Delete. |
+| changed or added | changed or added, both text | Three-way text merge. |
+| changed or added | changed or added, binary or kinds differ | File conflict. |
+| changed | deleted | File conflict. |
+| deleted | changed | File conflict. |
+
+Clean results apply as one Paper revision by the actor `github`, after an
+automatic History version that serves as the undo point. Text edits apply as
+minimal replacements, so co-editors keep their cursors. A pull that loses a
+race with live typing recomputes from a fresh snapshot a bounded number of
+times, then fails.
+
+**Conflicts.** A text merge with overlaps applies every non-overlapping remote
+edit and keeps the Paper side of each overlap. The remote side becomes
+[change cards](#writing-coach) under the fixed task id `paper-git`. Members
+accept or reject them through the Git decision route, which serializes with
+sync. The Coach change routes refuse them, and the Coach pane leaves them out.
+Git cards have no Undo. History restore is the undo. A merged or proposed text
+over the document limit becomes a file conflict.
+
+Binary, kind-change, and delete-against-edit conflicts have no line view. The
+member picks **Take theirs** or **Keep mine** for the whole file. Keep mine
+changes nothing in Paper.
+
+A file with an undecided conflict is held. It keeps its own base until every
+conflict in it is decided.
+**Why:** if the base moved to the new remote head, the co-author's side would
+live only in a card. A later pull or an outdated card would lose it, and the
+next push would overwrite their text on GitHub.
+
+A pull that fetched a new head, and an explicit Refresh, rebuild every held
+file's cards from its held base, the remote head, and the live text. A rejected
+card stays rejected while neither side of that region changes. That is the
+change store's rule for a decided proposal, so sync keeps no rejection memory.
+
+**Entries Paper cannot hold.** Every pull judges the whole remote tree. It
+skips, with a reason, an entry whose path Paper refuses, a symlink or submodule,
+a file over the upload or document limit, and a new entry that would break a
+Paper tree limit or collide with a local file or folder. Entries are judged in
+path order, so the skipped set is stable. One bad entry never blocks the rest.
+Push carries every skipped entry through unchanged. An entry that later fits
+arrives as an ordinary remote file.
+[`entry_reason` and `tree_reason`](../../src/rcp/paper/git_merge.py) own the
+reasons.
+
+**Push is manual.** The member reviews the changed files, writes a commit
+message, and pushes. The commit holds every Paper file plus the skipped
+entries. Its author and committer are that member. Its parent is the synced
+commit, and it is never forced. Push sends what Paper holds. After a restore
+to a version from before a pull, the changed-file list shows the co-author's
+edits as removals, and pushing removes them on GitHub.
+
+Push first fetches and merges the remote head.
+**Why:** a commit built from a Paper that has not merged the remote head would
+revert the co-author's work.
+It then refuses with:
+
+| Reason | Meaning |
+| --- | --- |
+| `conflicts` | A file is held. |
+| `collision` | A Paper path equals, contains, or sits under a skipped entry's path. |
+| `retry` | The merge before the push failed, as when it lost a race with live editing. |
+| The real cause | The fetch failed, or GitHub rejected the push twice. |
+
+A rejected push refetches, merges, and tries once more before it reports
+Git's message.
+
+The unpushed mark is off while the Paper revision equals the synced revision.
+Otherwise it compares the tree a push would send with the synced commit's tree. An edit typed and then undone leaves no mark.
+
+**Unlink** deletes the link, the directory, and all Git cards. Paper files stay.
+
+Anyone who can write to the linked repository can put text into Paper, where a
+Coach turn reads it. Linking gives repository writers the trust of a member
+typing in Paper.
+
+### References
+
+The paper's `.bib` files are the reference library. There is no other reference
+store and no lookup service. The browser parses every `.bib` file in the tree
+and reloads one when its content changes. A malformed entry shows as unreadable
+and never hides the rest of its file. A key defined twice is marked duplicate.
+
+The References panel is read-only. It folds under Files with a count, groups
+entries by file, and filters by search. Choosing an entry opens it in the
+Reference tab and inserts a cite at the cursor in the open file's syntax:
+`\cite{key}` in LaTeX, `[@key]` in Markdown, `#cite(<key>)` in Typst. On a
+phone, choosing an entry only opens it. Hovering a cite key in the editor shows
+the reference's title, authors, venue, and year, or says the key is unknown.
+Clicking a cite key opens that reference. The Reference tab shows one reference
+as a page, with its abstract and its DOI, URL, and eprint links when present.
+It names the `.bib` file and opens it at the entry.
+
+Adding, fixing, deleting, and checking references is [Coach](#writing-coach)
+work. The edits return as ordinary change cards.
+**Why:** verifying an entry against its source needs the network, and every
+`.bib` edit stays reviewable like any other file change.
+
+### arXiv export
+
+Export produces a source ZIP of the LaTeX file being read. Paper has no main
+file, so that file is the root. The archive holds every file in the root's
+folder and below, at paths relative to that folder, without Markdown, Typst,
+and HTML files.
+**Why:** arXiv compiles from the archive's top level. A LaTeX build reads files
+of any type, so an allowlist would drop inputs.
+
+RCP compiles the root once and adds the generated `.bbl` beside it, unless the
+folder already has that file.
+**Why:** arXiv does not run BibTeX.
+A document with no bibliography exports without a `.bbl`. The export compile
+shares the compile concurrency limit and never cancels a live preview.
+
+Export refuses with `not_root` when the file is not a LaTeX root, `unavailable`
+when the LaTeX engine is missing, and `failed` with the log tail when the
+compile fails. For a non-LaTeX file the control is disabled.
 
 ## Writing coach
 

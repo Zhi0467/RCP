@@ -1095,6 +1095,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-multipart" },
     { name = "tomlkit" },
+    { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1123,6 +1124,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "tomlkit", specifier = ">=0.13.3" },
+    { name = "typing-extensions", specifier = ">=4.16.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.35.0" },
 ]
 
