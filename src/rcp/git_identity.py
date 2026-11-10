@@ -24,6 +24,10 @@ def _quoted(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("\t", "\\t") + '"'
 
 
+def member_git_email(user_id: str) -> str:
+    return user_id + "@members.rcp.invalid"
+
+
 def write_git_identity(
     data_dir: Path, identity: GitIdentity, *, git_path: str | None = None
 ) -> Path:
@@ -33,7 +37,7 @@ def write_git_identity(
     content = '[include]\n\tpath = "/etc/gitconfig"\n' if Path("/etc/gitconfig").is_file() else ""
     content += (
         f"[user]\n\tname = {_quoted(identity.display_name)}\n"
-        f"\temail = {_quoted(identity.user_id + '@members.rcp.invalid')}\n"
+        f"\temail = {_quoted(member_git_email(identity.user_id))}\n"
     )
     try:
         version = subprocess.run(

@@ -72,6 +72,8 @@ def proposed(project_id: str, change_id: str, request: Request):
 
 @router.post("/api/projects/{project_id}/paper/changes/undo-all")
 def undo_all(project_id: str, body: TaskChangesRequest, request: Request):
+    if body.task_id == "paper-git":
+        raise HTTPException(status_code=409, detail="Git conflicts require the Git decision route")
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
     canonical, manager = _manager(project_id, request)
     try:
@@ -146,6 +148,10 @@ def decide(
     actor = get_identity_access(request).require_patch_capable_identity(request).user_id
     canonical, manager = _manager(project_id, request)
     try:
+        if manager.group(canonical, group_id).task_id == "paper-git":
+            raise HTTPException(
+                status_code=409, detail="Git conflicts require the Git decision route"
+            )
         if action == "refresh":
             group = manager.group(canonical, group_id)
             with project_write_admission(project_id, request):

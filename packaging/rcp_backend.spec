@@ -15,7 +15,12 @@ RUNTIME_HOOK = PROJECT_ROOT / "packaging" / "hooks" / "validate_frozen_resources
 # package so new helpers, nested skill assets, and service templates ship by default.
 package_data = collect_data_files("rcp", include_py_files=True)
 WATCHDOG = SOURCE_ROOT / "rcp" / "machine_power_watchdog.sh"
-datas = [(str(WEB_DIST), "rcp/web_dist"), *package_data, (str(WATCHDOG), "rcp")]
+datas = [
+    (str(WEB_DIST), "rcp/web_dist"),
+    *package_data,
+    (str(WATCHDOG), "rcp"),
+    (str(SOURCE_ROOT / "rcp" / "paper" / "github_known_hosts"), "rcp/paper"),
+]
 manifest_dir = PROJECT_ROOT / "packaging" / "build" / "resources"
 manifest_dir.mkdir(parents=True, exist_ok=True)
 manifest_path = manifest_dir / MANIFEST_NAME

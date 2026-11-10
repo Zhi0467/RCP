@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from dataclasses import dataclass
 
@@ -610,7 +611,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 }
                 # Shared blobs and version texts remain content-addressed: another
                 # project or retained history may still reference the same bytes.
-                for table in reversed(PAPER_PROJECT_TABLES):
+                for table in ("paper_git_links", *reversed(PAPER_PROJECT_TABLES)):
                     if table in existing_tables:
                         counts[table] = connection.execute(
                             f'DELETE FROM "{table}" WHERE project_id = ?', (project_id,)
@@ -862,6 +863,9 @@ class ProjectStoreMixin(StoreMixinBase):
             except Exception:
                 connection.rollback()
                 raise
+        directory = self.path.parent / "paper-git" / project_id
+        if directory.is_dir() and directory.parent == self.path.parent / "paper-git":
+            shutil.rmtree(directory)
         return counts
 
     def project_live_work(self, project_id: str) -> ProjectLiveWork:

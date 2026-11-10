@@ -193,6 +193,9 @@ class PaperLive:
         self._last_collection = time.monotonic()
         self._rates: dict[str, deque[float]] = {}
 
+    async def open_projects(self) -> set[str]:
+        return {project for (project, _file_id), room in self.rooms.items() if room.subscribers}
+
     def run_sync(self, action: Coroutine[Any, Any, _Result]) -> _Result:
         """Marshal a control worker to this room owner without blocking its event loop."""
         try:

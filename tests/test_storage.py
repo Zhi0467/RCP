@@ -2204,6 +2204,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "project_invitations": 0,
         "project_members": 1,
         "paper_drafts": 1,
+        "paper_git_links": 0,
         "paper_change_groups": 0,
         "paper_change_receipts": 0,
         "paper_changes": 0,
