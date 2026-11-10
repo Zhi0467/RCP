@@ -114,6 +114,8 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
 def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
     """Exercise the live REST writer while divergent migration holds publication."""
     base = f"/api/projects/{fixture['project_id']}/paper"
+    with request(base + "/git", cookie=cookie) as response:
+        assert json.load(response)["state"] == "none"
 
     def call(path, *, body=None, method="GET", content_type="application/json"):
         with request(

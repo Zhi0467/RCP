@@ -81,6 +81,7 @@ from rcp.api.paper import router as paper_router
 from rcp.api.paper_changes import router as paper_changes_router
 from rcp.api.paper_compile import assets_router as paper_assets_router
 from rcp.api.paper_compile import router as paper_compile_router
+from rcp.api.paper_git import router as paper_git_router
 from rcp.api.paper_live import router as paper_live_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
@@ -139,6 +140,8 @@ from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
 from rcp.paper.compile import PaperCompiler
 from rcp.paper.engines import EngineStore
+from rcp.paper.git_poller import PaperGitPoller
+from rcp.paper.git_sync import PaperGit
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -855,6 +858,10 @@ def create_app(
             yield
 
     catalog.paper_admission = paper_admission
+    paper_git = PaperGit(store, paper_live, app_data, paper_admission)
+    paper_git_poller = PaperGitPoller(
+        paper_git, admission=background_admission_gate, startup_effect_fence=startup_effect_fence
+    )
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
         _experiment_control_node_id,
@@ -1977,6 +1984,7 @@ def create_app(
 
         watcher_poller.stop()
         consolidation_poller.stop(timeout=timeout)
+        paper_git_poller.stop(timeout=timeout)
         graph_watcher_retry_worker.stop(timeout=timeout)
         notification_sender.stop(timeout=timeout)
         digest_projector.stop(timeout=timeout)
@@ -1990,7 +1998,7 @@ def create_app(
             )
         if watcher_poller.is_running() or graph_watcher_retry_worker.is_running():
             raise MaintenanceRefused("Timed out stopping watcher polling at the update boundary.")
-        if consolidation_poller.is_running():
+        if consolidation_poller.is_running() or paper_git_poller.is_running():
             raise MaintenanceRefused(
                 "Timed out stopping consolidation polling at the update boundary."
             )
@@ -2019,6 +2027,7 @@ def create_app(
         graph_watcher_retry_worker.start()
         watcher_poller.start()
         consolidation_poller.start()
+        paper_git_poller.start()
         notification_sender.start()
         digest_projector.start()
         if phone_listener is not None:
@@ -2103,6 +2112,7 @@ def create_app(
                 await terminals.start()
                 await paper_live.start()
                 register_paper_live(store, paper_live)
+                await asyncio.to_thread(paper_git.reconcile)
                 sync_coordinator.start()
                 # Records must name cards by id before recovery reads them.
                 await asyncio.to_thread(fill_space_machines, store, app_data)
@@ -2316,6 +2326,7 @@ def create_app(
                 graph_watcher_retry_worker.signal()
                 watcher_poller.start()
                 consolidation_poller.start()
+                paper_git_poller.start()
                 notification_sender.start()
                 digest_projector.start()
                 if phone_listener is not None:
@@ -2337,6 +2348,7 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await sync_coordinator.stop()
+                await asyncio.to_thread(paper_git_poller.stop)
                 paper_live.fence()
                 await asyncio.to_thread(background_tasks.shutdown)
                 await paper_compiler.close()
@@ -2375,6 +2387,7 @@ def create_app(
                         await start_deferred_runtime()
                     except BaseException as exc:
                         await sync_coordinator.stop()
+                        await asyncio.to_thread(paper_git_poller.stop)
                         paper_live.fence()
                         await asyncio.to_thread(background_tasks.shutdown)
                         await paper_compiler.close()
@@ -2397,6 +2410,7 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
+            await asyncio.to_thread(paper_git_poller.stop)
             paper_live.fence()
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
@@ -2452,6 +2466,8 @@ def create_app(
     app.state.services = services
     app.state.server_layout = server_layout
     app.state.catalog = catalog
+    app.state.paper_git = paper_git
+    app.state.paper_git_poller = paper_git_poller
     app.state.paper_live = paper_live
     app.state.provider_skills = provider_skills
     app.state.setup = setup
@@ -2821,6 +2837,7 @@ def create_app(
     app.include_router(proposal_refresh_router)
     app.include_router(history_router)
     app.include_router(paper_router)
+    app.include_router(paper_git_router)
     app.include_router(paper_live_router)
     app.include_router(paper_changes_router)
     app.include_router(paper_compile_router)

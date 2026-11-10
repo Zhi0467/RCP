@@ -151,6 +151,7 @@ def hidden_read_defaults(
         directories.extend(
             (
                 app_data_dir + "/providers/command-mailboxes",
+                app_data_dir + "/paper-git",
                 app_data_dir + "/service-connections",
                 app_data_dir + "/chat-attachments",
                 app_data_dir + "/run-stage/project-transfer-activation",
