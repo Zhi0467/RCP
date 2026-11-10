@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -173,11 +174,13 @@ def read_tree(project: Path, commit: str) -> dict[str, GitEntry]:
     }
 
 
-def write_tree(project: Path, tree: dict[str, GitEntry]) -> str:
+def write_tree(
+    project: Path, tree: dict[str, GitEntry], environment: dict[str, str] | None = None
+) -> str:
     scratch = project / "tmp"
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=scratch) as directory:
-        env = {"GIT_INDEX_FILE": str(Path(directory) / "index")}
+        env = {**(environment or {}), "GIT_INDEX_FILE": str(Path(directory) / "index")}
         _git(project, ["read-tree", "--empty"], environment=env)
         records = bytearray()
         for path, entry in sorted(tree.items()):
@@ -186,7 +189,9 @@ def write_tree(project: Path, tree: dict[str, GitEntry]) -> str:
                 if entry.oid
                 else entry.data
                 if entry.mode == "160000"
-                else _git(project, ["hash-object", "-w", "--stdin"], data=entry.data).strip()
+                else _git(
+                    project, ["hash-object", "-w", "--stdin"], data=entry.data, environment=env
+                ).strip()
             )
             records.extend(
                 entry.mode.encode()
@@ -398,7 +403,7 @@ class PaperGit:
                         "push",
                         "--dry-run",
                         remote_url(link.repository),
-                        probe + ":refs/heads/rcp-link-probe",
+                        f"{probe}:refs/heads/rcp-link-probe-{uuid.uuid4().hex}",
                     ],
                 )
                 head = self._fetch(link)
@@ -675,9 +680,18 @@ class PaperGit:
             directory = self.directory(project_id)
             snapshot = self.live.run_sync(self.live.snapshot(project_id))
             tree = self._push_tree(link, snapshot)
-            target = write_tree(directory, tree)
-            base = link.synced_commit or write_tree(directory, {})
-            output = _git(directory, ["diff", "--no-renames", "--numstat", "-z", base, target])
+            with tempfile.TemporaryDirectory(dir=directory / "tmp") as scratch:
+                env = {
+                    "GIT_OBJECT_DIRECTORY": scratch,
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(directory / "repo.git" / "objects"),
+                }
+                target = write_tree(directory, tree, env)
+                base = link.synced_commit or write_tree(directory, {}, env)
+                output = _git(
+                    directory,
+                    ["diff", "--no-renames", "--numstat", "-z", base, target],
+                    environment=env,
+                )
             remote = read_tree(directory, link.synced_commit)
             changed = []
             for record in output.split(b"\0"):
