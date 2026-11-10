@@ -131,8 +131,9 @@ Linux desktop packages, a hosted service, and multi-server failover.
 - Provider containment is not a provider-neutral hostile-process sandbox. Episode
   Stop is graceful and never interrupts a running provider; only Pause terminates
   the live provider process: a member's Pause from Runs or the member's own Work
-  chat, an orchestrator's pause or stop of its worker, or server shutdown. There is no persistent provider
-  daemon. Steering uses
+  chat, an orchestrator's pause or stop of its worker, a lost canonical state
+  lock, or server shutdown. Deleting a project stops its providers outright.
+  There is no persistent provider daemon. Steering uses
   the existing ordinary chat attempt.
 - [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
   connects the orchestrator to its workers in a star. There is no peer or
