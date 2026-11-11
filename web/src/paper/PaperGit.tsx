@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowUp, Check, Copy, GitBranch, RefreshCw, Unlink, X } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  GitBranch,
+  RefreshCw,
+  Unlink,
+  X,
+} from "lucide-react";
 import { copyText } from "../core/MarkdownCodeBlock";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import { PaperConfirm } from "./PaperConfirm";
+import "./paper-coach.css";
 import { PaperDialog } from "./PaperDialog";
 import {
   deployKeyUrl,
@@ -11,6 +22,7 @@ import {
   validRepository,
   type PaperGitChangedFile,
   type PaperGitFileConflict,
+  type PaperGitFileDiff,
   type PaperGitStatus,
 } from "./gitSync";
 
@@ -299,14 +311,7 @@ export function PaperGit({
               {files && files.length + status.skipped.length > 0 && (
                 <ul className="paper-well paper-git-files">
                   {files.map((file) => (
-                    <li key={file.path} data-status={file.status}>
-                      <span>{file.path}</span>
-                      {file.added === null && <em>{file.status}</em>}
-                      {Boolean(file.added) && <em className="paper-git-added">+{file.added}</em>}
-                      {Boolean(file.removed) && (
-                        <em className="paper-git-removed">−{file.removed}</em>
-                      )}
-                    </li>
+                    <ChangedFile key={file.path} apiBase={apiBase} file={file} />
                   ))}
                   {status.skipped.map((entry) => (
                     <li key={entry.path} data-status="skipped" title={entry.reason}>
@@ -376,4 +381,58 @@ function Failure({ text }: { text: string }) {
       {text}
     </p>
   );
+}
+
+function ChangedFile({ apiBase, file }: { apiBase: string; file: PaperGitChangedFile }) {
+  const [open, setOpen] = useState(false);
+  const [diff, setDiff] = useState<PaperGitFileDiff | null>(null);
+  const [failure, setFailure] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    let current = true;
+    setFailure("");
+    paperGit<PaperGitFileDiff>(apiBase, `/changes/diff?path=${encodeURIComponent(file.path)}`)
+      .then((next) => current && setDiff(next))
+      .catch(
+        (error) => current && setFailure(String(error instanceof Error ? error.message : error)),
+      );
+    return () => {
+      current = false;
+    };
+  }, [apiBase, open, file.path, file.added, file.removed]);
+  const Chevron = open ? ChevronDown : ChevronRight;
+  return (
+    <li className="paper-git-changed" data-status={file.status}>
+      <button
+        type="button"
+        className="paper-git-file"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <Chevron size={13} aria-hidden="true" />
+        <span>{file.path}</span>
+        {file.added === null && <em>{file.status}</em>}
+        {Boolean(file.added) && <em className="paper-git-added">+{file.added}</em>}
+        {Boolean(file.removed) && <em className="paper-git-removed">−{file.removed}</em>}
+      </button>
+      {open && failure && <Failure text={failure} />}
+      {open && diff && !diff.binary && (
+        <div className="paper-change-diff">
+          {diff.lines.map((line, index) => (
+            <div key={index} className={diffLineKind(line)}>
+              {line.startsWith("@@") ? "⋯" : line.slice(1) || " "}
+            </div>
+          ))}
+          {diff.more > 0 && <div className="paper-change-more">+{diff.more} more lines</div>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+const DIFF_LINE_KINDS: Record<string, string> = { "+": "added", "-": "removed" };
+
+function diffLineKind(line: string) {
+  if (line.startsWith("@@")) return "hunk";
+  return DIFF_LINE_KINDS[line[0]];
 }

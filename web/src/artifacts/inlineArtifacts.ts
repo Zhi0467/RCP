@@ -126,7 +126,8 @@ export function inlineViewerUrl(viewerUrl: string): string {
 export type InlineShellMessage =
   | { kind: "error"; message: string; count: number }
   | { kind: "error-clear" }
-  | { kind: "selection"; selection: InlineSelection | null; description: string };
+  | { kind: "selection"; selection: InlineSelection | null; description: string }
+  | { kind: "source"; word: string; occurrence: number };
 
 export type InlineSelection =
   | Omit<Extract<ArtifactSelection, { kind: "text" }>, "comment">
@@ -156,6 +157,13 @@ export function readInlineShellMessage(
     return { kind: "error", message: data.message, count: data.count };
   }
   if (data.version !== 1) return null;
+  if (data.type === "rcp-paper-source")
+    return typeof data.word === "string" &&
+      data.word.length <= 256 &&
+      Number.isSafeInteger(data.occurrence) &&
+      (data.occurrence as number) >= 0
+      ? { kind: "source", word: data.word, occurrence: data.occurrence as number }
+      : null;
   if (data.type !== "rcp-artifact-selection" || !("selection" in data)) return null;
   const description = typeof data.description === "string" ? data.description.slice(0, 512) : "";
   if (data.selection === null) return { kind: "selection", selection: null, description: "" };

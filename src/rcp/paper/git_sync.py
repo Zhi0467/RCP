@@ -9,12 +9,14 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from itertools import dropwhile
 from pathlib import Path
 
 from rcp import limits
 from rcp.git_identity import member_git_email
-from rcp.limits import PAPER_GIT_TIMEOUT_SECONDS
+from rcp.limits import PAPER_GIT_DIFF_LINES, PAPER_GIT_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -674,7 +676,8 @@ class PaperGit:
             return True
         return ours != read_tree(self.directory(link.project_id), link.synced_commit)
 
-    def changed_files(self, project_id: str):
+    @contextmanager
+    def _diff_range(self, project_id: str):
         with self.lock(project_id):
             link = self._record(project_id)
             directory = self.directory(project_id)
@@ -687,31 +690,51 @@ class PaperGit:
                 }
                 target = write_tree(directory, tree, env)
                 base = link.synced_commit or write_tree(directory, {}, env)
-                output = _git(
-                    directory,
-                    ["diff", "--no-renames", "--numstat", "-z", base, target],
-                    environment=env,
+                yield (
+                    link,
+                    tree,
+                    lambda argv, paths=(): _git(
+                        directory,
+                        ["diff", "--no-renames", *argv, base, target, "--", *paths],
+                        environment={**env, "GIT_LITERAL_PATHSPECS": "1"},
+                    ),
                 )
-            remote = read_tree(directory, link.synced_commit)
-            changed = []
-            for record in output.split(b"\0"):
-                if not record:
-                    continue
-                added, removed, name = record.split(b"\t", 2)
-                path = name.decode("utf-8", errors="replace")
-                changed.append(
-                    {
-                        "path": path,
-                        "status": "added"
-                        if path not in remote
-                        else "deleted"
-                        if path not in tree
-                        else "modified",
-                        "added": int(added) if added != b"-" else None,
-                        "removed": int(removed) if removed != b"-" else None,
-                    }
-                )
-            return changed
+
+    def changed_files(self, project_id: str):
+        with self._diff_range(project_id) as (link, tree, diff):
+            output = diff(["--numstat", "-z"])
+            remote = read_tree(self.directory(project_id), link.synced_commit)
+        changed = []
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            added, removed, name = record.split(b"\t", 2)
+            path = name.decode("utf-8", errors="replace")
+            changed.append(
+                {
+                    "path": path,
+                    "status": "added"
+                    if path not in remote
+                    else "deleted"
+                    if path not in tree
+                    else "modified",
+                    "added": int(added) if added != b"-" else None,
+                    "removed": int(removed) if removed != b"-" else None,
+                }
+            )
+        return changed
+
+    def file_diff(self, project_id: str, path: str):
+        with self._diff_range(project_id) as (_, _, diff):
+            output = diff(["--no-color", "--no-ext-diff"], [path])
+        lines = output.decode("utf-8", errors="replace").splitlines()
+        binary = any(line.startswith("Binary files ") for line in lines)
+        body = list(dropwhile(lambda line: not line.startswith("@@"), lines))
+        return {
+            "lines": body[:PAPER_GIT_DIFF_LINES],
+            "more": max(0, len(body) - PAPER_GIT_DIFF_LINES),
+            "binary": binary,
+        }
 
     def push(self, project_id: str, message: str, name: str, user_id: str) -> str:
         if not message.strip() or "\0" in message:

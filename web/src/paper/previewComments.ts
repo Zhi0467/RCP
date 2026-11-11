@@ -245,6 +245,34 @@ export function previewSourceSpot(
   };
 }
 
+/** Where a word double-clicked in an HTML page sits in its source: the page reports the
+ * word and how often its text showed the word before, and the same count over the source
+ * with its markup blanked finds it. */
+export function htmlSourceSpot(
+  path: string,
+  source: string,
+  word: string,
+  occurrence: number,
+): PreviewSourceSpot | null {
+  const blank = (markup: string) => markup.replace(/[^\n]/g, " ");
+  const body = source.search(/<body[\s>]/i);
+  let text = source.replace(
+    /<!--[\s\S]*?-->|<(script|style|template|noscript)\b[\s\S]*?<\/\1\s*>|<[^>]*>/gi,
+    blank,
+  );
+  if (body > 0) text = blank(text.slice(0, body)) + text.slice(body);
+  let at = -1;
+  for (let seen = 0; word && seen <= occurrence; seen++) {
+    const next = text.indexOf(word, at + 1);
+    if (next < 0) break;
+    at = next;
+  }
+  if (at < 0) return null;
+  const line = source.slice(0, at).split("\n").length;
+  const lineStart = source.lastIndexOf("\n", at - 1) + 1;
+  return { path, from: line, to: line, word, occurrence: count(source.slice(lineStart, at), word) };
+}
+
 function textBefore(container: Node, range: Range) {
   const before = document.createRange();
   before.setStart(container, 0);

@@ -120,3 +120,64 @@ test("a held legacy paper keeps its version choice modal until one is chosen", a
     body: { keep: "draft" },
   });
 });
+
+test("a changed file in the Git panel unfolds into its own diff", async (t) => {
+  const diffs = [];
+  const { page, errors } = await openPaper(t, {
+    browser,
+    origin: server.origin,
+    width: 390,
+    height: 700,
+    configure(fixture) {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body) => {
+        if (path.endsWith("/paper/git"))
+          return {
+            json: {
+              state: "linked",
+              repository: "owner/repo",
+              branch: "main",
+              public_key: "",
+              head: { commit: "abc", author: "Member" },
+              unpushed: true,
+              conflicts: 0,
+              skipped: [],
+              last_error: "",
+              checked_at: "",
+            },
+          };
+        if (path.endsWith("/paper/git/fetch")) return { json: {} };
+        if (path.endsWith("/paper/git/changes"))
+          return {
+            json: [
+              { path: "README.md", status: "modified", added: 1, removed: 1 },
+              { path: "figure.png", status: "added", added: null, removed: null },
+            ],
+          };
+        if (path.endsWith("/paper/git/changes/diff")) {
+          diffs.push(path);
+          return {
+            json: { lines: ["@@ -1,2 +1,2 @@", " title", "-old", "+new"], more: 3, binary: false },
+          };
+        }
+        return respond(path, method, body);
+      };
+    },
+  });
+  await page.getByRole("button", { name: "Paper Git" }).click();
+  const row = page.getByRole("button", { name: /README\.md/ });
+  assert.equal(await row.getAttribute("aria-expanded"), "false");
+  await row.click();
+  const diff = page.locator(".paper-git-changed .paper-change-diff");
+  await diff.waitFor();
+  assert.equal(await diff.locator(".removed").textContent(), "old");
+  assert.equal(await diff.locator(".added").textContent(), "new");
+  assert.equal(diffs.length, 1);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+  );
+  await row.click();
+  assert.equal(await diff.count(), 0);
+  assert.deepEqual(errors, []);
+});

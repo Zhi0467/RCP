@@ -12,7 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from rcp import limits
 from rcp.artifact_preview import _html_attributes, _is_inline_image
-from rcp.artifacts import ARTIFACT_MEDIA_TYPES
+from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
 from rcp.paper.models import PaperFile, PaperLimit, file_format, paper_path
 from rcp.paper.persistence import PaperSnapshotReader
 
@@ -250,4 +250,33 @@ def read_html_content(
         preview.revision,
         inline_html_images(preview, reader, project_id),
         preview.warnings,
+    )
+
+
+def source_frame_addon() -> FrameAddon:
+    """Reports a double-clicked word and how often the page's text showed it before."""
+    return FrameAddon(
+        frame_script="""
+listen(document,'dblclick',()=>{
+  const selection=document.getSelection();
+  const word=String(selection||'').trim();
+  if(!word||!selection.rangeCount||!document.body) return;
+  const start=selection.getRangeAt(0);
+  const hidden='script,style,template,noscript';
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{acceptNode:(node)=>
+    node.parentElement?.closest(hidden)?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT});
+  let before='';
+  for(let node=walker.nextNode();node;node=walker.nextNode()){
+    if(node===start.startContainer){before+=node.data.slice(0,start.startOffset);break;}
+    if(start.comparePoint(node,0)>0) break;
+    before+=node.data;
+  }
+  send({kind:'rcp-paper-source',word,occurrence:before.split(word).length-1});
+});
+""",
+        wrapper_script="""channelListeners.push((value)=>{
+  if(value.kind==='rcp-paper-source' && window.parent!==window)
+    parentPost({type:'rcp-paper-source',version:1,word:value.word,occurrence:value.occurrence},'*');
+});
+""",
     )

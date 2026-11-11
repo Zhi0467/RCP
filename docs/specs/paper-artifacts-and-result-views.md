@@ -83,8 +83,11 @@ Timing rows prune only after publication and retained History both cover them.
 
 ### Preview
 
-Markdown renders in the browser with images from the paper tree. Paper links open
-the editor. HTTP(S) links open a new tab. Other links are inert. Large files render
+Markdown renders in the browser with images from the paper tree. Raw HTML renders
+through GitHub's sanitizer allowlist, so a centered `<img>` figure shows as on
+GitHub and scripts, styles, and event handlers are dropped. Paper links open
+the editor. HTTP(S) links open a new tab. A `#heading` link scrolls to the heading
+with that GitHub anchor. Other links are inert. Large files render
 after typing pauses. Typst runs in the browser with a compiler and fonts downloaded
 by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backend
 with `--untrusted` and bounded time, output, and concurrency. Compilation changes
@@ -108,7 +111,10 @@ file's line, so a section opens at its own page rather than page 1. Typst and a
 LaTeX file outside the map keep the per-root remembered scroll. The reverse holds
 too: double-clicking a word in a Markdown, plain-text, or mapped LaTeX preview opens
 its source file in the editor with that word selected, found within the lines the
-clicked block renders from. The preview's actions
+clicked block renders from. In an HTML preview the page reports only the word and
+how often its text showed that word before; the editor takes the same occurrence in
+the source with markup and scripts blanked. Text a script writes can shift the
+count, and a missing occurrence takes the last one. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
@@ -321,7 +327,8 @@ arrives as an ordinary remote file.
 reasons.
 
 **Push is manual.** The member reviews the changed files, writes a commit
-message, and pushes. The commit holds every Paper file plus the skipped
+message, and pushes. Clicking a changed file unfolds its line diff against the
+synced commit, bounded in `limits.py`; a binary file shows none. The commit holds every Paper file plus the skipped
 entries. Its author and committer are that member. Its parent is the synced
 commit, and it is never forced. Push sends what Paper holds. After a restore
 to a version from before a pull, the changed-file list shows the co-author's

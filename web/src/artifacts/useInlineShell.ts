@@ -18,6 +18,8 @@ interface InlineShellHandlers {
   onCancel: (clear: () => void) => void;
   /** The page reported an error, or that it cleared. */
   onPageError: (error: { message: string; count: number } | null) => void;
+  /** A word double-clicked in the page, with how often the page's text showed it before. */
+  onSourceWord?: (word: string, occurrence: number) => void;
 }
 
 /** Talks to one inline viewer shell frame: reads its messages and keeps its comment mode.
@@ -54,6 +56,10 @@ export function useInlineShell(
       if (!value) return;
       if (value.kind === "error" || value.kind === "error-clear") {
         handlersRef.current.onPageError(value.kind === "error" ? value : null);
+        return;
+      }
+      if (value.kind === "source") {
+        handlersRef.current.onSourceWord?.(value.word, value.occurrence);
         return;
       }
       const selection = ++selections.current;

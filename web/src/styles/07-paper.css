@@ -755,7 +755,7 @@
   font-size: 12px;
   list-style: none;
   margin: 0;
-  max-height: 220px;
+  max-height: min(50vh, 420px);
   overflow: auto;
   padding: 5px 10px;
 }
@@ -770,8 +770,40 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.paper-git-files li[data-status="deleted"] > span {
+.paper-git-files li[data-status="deleted"] span {
   text-decoration: line-through;
+}
+.paper-git-files li.paper-git-changed {
+  display: block;
+}
+.paper-git-file {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+.paper-git-file > span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.paper-git-file > svg {
+  color: var(--paper-muted);
+  flex: none;
+}
+.paper-git-changed .paper-change-diff {
+  margin: 2px 0 8px;
+}
+.paper-change-diff .hunk {
+  color: var(--paper-muted);
 }
 .paper-git-files em {
   color: var(--paper-muted);

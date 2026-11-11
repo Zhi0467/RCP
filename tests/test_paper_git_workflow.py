@@ -484,3 +484,19 @@ def test_edit_reverted_to_the_synced_text_is_not_unpushed(sync):
     human_edit(live, file.file_id, "base")
     assert not manager.status("p")["unpushed"]
     assert manager.changed_files("p") == []
+
+
+def test_one_changed_file_diff_is_bounded(sync, monkeypatch: pytest.MonkeyPatch):
+    manager, live, remote = sync
+    commit_remote(remote, {"paper.md": GitEntry(b"one\ntwo\nthree\n")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    human_edit(live, saved(live).files[0].file_id, "one\n2\nthree\n")
+    diff = manager.file_diff("p", "paper.md")
+    assert [line for line in diff["lines"] if line[0] in "+-"] == ["-two", "+2"]
+    assert diff["lines"][0].startswith("@@")
+    assert (diff["binary"], diff["more"]) == (False, 0)
+    monkeypatch.setattr(git_sync, "PAPER_GIT_DIFF_LINES", 2)
+    capped = manager.file_diff("p", "paper.md")
+    assert len(capped["lines"]) == 2 and capped["more"] > 0
+    assert manager.file_diff("p", "missing.md")["lines"] == []

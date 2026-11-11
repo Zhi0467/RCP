@@ -141,6 +141,22 @@ window.addEventListener("message", (event) => {
   if (!value || typeof value !== "object") return;
   if (inlineFrame && event.source === inlineFrame.contentWindow) {
     if (
+      value.type === "rcp-paper-source" &&
+      value.version === 1 &&
+      typeof value.word === "string" &&
+      value.word.trim() &&
+      Number.isSafeInteger(value.occurrence) &&
+      value.occurrence >= 0
+    ) {
+      toChat({
+        type: "rcp-paper-source",
+        version: 1,
+        word: value.word.trim().slice(0, 256),
+        occurrence: value.occurrence,
+      });
+      return;
+    }
+    if (
       inlineConfig.selectable &&
       commentMode &&
       value.type === "rcp-artifact-selection" &&

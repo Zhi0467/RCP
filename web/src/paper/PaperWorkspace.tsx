@@ -47,6 +47,7 @@ import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
 import {
   previewSourceSpot,
+  type PreviewSourceSpot,
   resolvePreviewSelection,
   type PreviewDirectComment,
 } from "./previewComments";
@@ -451,11 +452,12 @@ export function PaperWorkspace({
     setFocus(next);
     setView("write");
   };
-  const locateSource = (event: React.MouseEvent) => {
-    const spot = previewSourceSpot(event.target as Element, window.getSelection(), event.clientY);
+  const locateSpot = (spot: PreviewSourceSpot | null) => {
     const source = spot && tree?.files.find((item) => item.path === spot.path);
     if (spot && source) locate({ kind: "source", file_id: source.file_id, spot });
   };
+  const locateSource = (event: React.MouseEvent) =>
+    locateSpot(previewSourceSpot(event.target as Element, window.getSelection(), event.clientY));
   const previewActive = right === "preview" && (!phone || view === "preview");
   // Mounted on first view, then kept while hidden so its PDF and position survive.
   const [previewShown, setPreviewShown] = useState(previewActive);
@@ -678,6 +680,7 @@ export function PaperWorkspace({
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
                 onDirectCancel={comments.cancelExternal}
+                onSourceSpot={locateSpot}
               />
             ) : (
               <PaperPreview
@@ -691,6 +694,7 @@ export function PaperWorkspace({
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
                 onDirectComment={openPreviewComment}
                 onDirectCancel={comments.cancelExternal}
+                onSourceSpot={locateSpot}
               />
             ))}
         </div>
