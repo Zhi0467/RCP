@@ -114,7 +114,8 @@ its source file in the editor with that word selected, found within the lines th
 clicked block renders from. In an HTML preview the page reports only the word and
 how often its text showed that word before; the editor takes the same occurrence in
 the source with markup and scripts blanked. Text a script writes can shift the
-count, and a missing occurrence takes the last one. The preview's actions
+count, and a missing occurrence takes the last one. While the editor holds unsaved
+edits the page shows an older text, so a double-click does nothing. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option

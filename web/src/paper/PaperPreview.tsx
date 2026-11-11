@@ -230,6 +230,7 @@ function HtmlPreview({
   projectId,
   file,
   text,
+  saved,
   savedRevision,
   active,
   toolbar,
@@ -240,6 +241,8 @@ function HtmlPreview({
   projectId: string;
   file: PaperFile;
   text: string;
+  /** The editor holds what the frame shows, so a word's count matches the source. */
+  saved: boolean;
   savedRevision: number;
   active: boolean;
   toolbar: HTMLElement | null;
@@ -263,6 +266,7 @@ function HtmlPreview({
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onSourceWord: (word, occurrence) => {
+      if (!saved) return;
       const spot = htmlSourceSpot(file.path, text, word, occurrence);
       if (spot) onSourceSpot?.(spot);
     },
@@ -619,6 +623,7 @@ export function PaperPreview({
         projectId={projectId}
         file={file}
         text={text}
+        saved={tree.revision === tree.saved_revision}
         savedRevision={tree.saved_revision}
         active={active}
         toolbar={toolbar}

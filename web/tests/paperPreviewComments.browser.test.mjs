@@ -82,7 +82,7 @@ async function openHtmlPreview(t, width) {
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
           window.comments = []; window.cancelled = []; window.spots = [];
-          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision,saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} />);`;
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} />);`;
       },
     },
   ]);
@@ -718,11 +718,19 @@ test("a double-clicked word in an HTML preview names its source line", async (t)
   await page.evaluate(() => window.show());
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
   const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
-  await shell.childFrames()[0].childFrames()[0].locator("#word").dblclick();
+  const word = () => shell.childFrames()[0].childFrames()[0].locator("#word");
+  await word().dblclick();
   await page.waitForFunction(() => window.spots.length === 1);
   const [spot] = await page.evaluate(() => window.spots);
   assert.equal(spot.path, "html.html");
   assert.equal(spot.from, 2);
   assert.ok(htmlPreview.source.split("\n")[1].includes(spot.word));
+  await page.evaluate(() => {
+    window.unsaved = true;
+    window.show();
+  });
+  await word().dblclick();
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.spots.length), 1);
   assert.deepEqual(errors, []);
 });
