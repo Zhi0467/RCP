@@ -41,7 +41,8 @@ test("Markdown preview resolves paper references without navigating outside the 
     appType: "custom",
   });
   try {
-    const { PaperPreview } = await server.ssrLoadModule("/src/paper/PaperPreview.tsx");
+    const { PaperPreview, loadRawHtml } = await server.ssrLoadModule("/src/paper/PaperPreview.tsx");
+    await loadRawHtml();
     const file = {
       file_id: "intro",
       path: "sections/intro.md",
@@ -107,6 +108,12 @@ test("Markdown preview resolves paper references without navigating outside the 
         text: [
           "## Reproduction details",
           "",
+          "## A",
+          "",
+          "## A",
+          "",
+          "## A-1",
+          "",
           '<p align="center">\n  <img src="../figures/chart.svg" alt="chart" onerror="alert(1)" style="width: 50%">\n</p>',
           "",
           "<script>alert(2)</script>",
@@ -123,6 +130,10 @@ test("Markdown preview resolves paper references without navigating outside the 
     );
     assert.doesNotMatch(raw, /onerror|<script|alert\(2\)/);
     assert.match(raw, /<h2 id="reproduction-details"/);
+    assert.deepEqual(
+      [...raw.matchAll(/<h2 id="(a[^"]*)"/g)].map((match) => match[1]),
+      ["a", "a-1", "a-1-1"],
+    );
     assert.match(raw, /<a href="#reproduction-details">details<\/a>/);
     assert.match(raw, /class="katex"/);
   } finally {

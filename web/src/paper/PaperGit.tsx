@@ -311,7 +311,12 @@ export function PaperGit({
               {files && files.length + status.skipped.length > 0 && (
                 <ul className="paper-well paper-git-files">
                   {files.map((file) => (
-                    <ChangedFile key={file.path} apiBase={apiBase} file={file} />
+                    <ChangedFile
+                      key={file.path}
+                      apiBase={apiBase}
+                      file={file}
+                      refreshKey={refreshKey}
+                    />
                   ))}
                   {status.skipped.map((entry) => (
                     <li key={entry.path} data-status="skipped" title={entry.reason}>
@@ -383,7 +388,15 @@ function Failure({ text }: { text: string }) {
   );
 }
 
-function ChangedFile({ apiBase, file }: { apiBase: string; file: PaperGitChangedFile }) {
+function ChangedFile({
+  apiBase,
+  file,
+  refreshKey,
+}: {
+  apiBase: string;
+  file: PaperGitChangedFile;
+  refreshKey: string;
+}) {
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<PaperGitFileDiff | null>(null);
   const [failure, setFailure] = useState("");
@@ -399,7 +412,7 @@ function ChangedFile({ apiBase, file }: { apiBase: string; file: PaperGitChanged
     return () => {
       current = false;
     };
-  }, [apiBase, open, file.path, file.added, file.removed]);
+  }, [apiBase, open, file.path, refreshKey]);
   const Chevron = open ? ChevronDown : ChevronRight;
   return (
     <li className="paper-git-changed" data-status={file.status}>

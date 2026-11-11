@@ -254,10 +254,11 @@ def read_html_content(
 
 
 def source_frame_addon() -> FrameAddon:
-    """Reports a double-clicked word and how often the page's text showed it before."""
+    """Reports a word the member double-clicked and how often the page's text showed it before."""
     return FrameAddon(
         frame_script="""
-listen(document,'dblclick',()=>{
+listen(document,'dblclick',(event)=>{
+  if(!event.isTrusted) return;
   const selection=document.getSelection();
   const word=String(selection||'').trim();
   if(!word||!selection.rangeCount||!document.body) return;

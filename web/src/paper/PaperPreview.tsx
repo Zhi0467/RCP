@@ -49,7 +49,8 @@ import {
 } from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { useInlineShell } from "../artifacts/useInlineShell";
-import { PAPER_RAW_HTML, rehypeHeadingIds } from "./markdownHtml";
+import { rehypeHeadingIds } from "./markdownHtml";
+import type { PluggableList } from "unified";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
 type EngineState = "ready" | "installing" | "unavailable";
@@ -135,6 +136,14 @@ function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string 
     </span>
   );
 }
+let rawHtmlPlugins: PluggableList | null = null;
+/** Loads the raw-HTML renderer, kept out of the Paper chunk until a file has HTML. */
+export async function loadRawHtml() {
+  rawHtmlPlugins ??= (await import("./markdownRawHtml")).PAPER_RAW_HTML;
+  return rawHtmlPlugins;
+}
+const HAS_HTML = /<[a-zA-Z!/]/;
+
 // Tree saves and callbacks update links without reparsing the unchanged preview text.
 const MarkdownPreview = memo(function MarkdownPreview({
   text,
@@ -143,12 +152,17 @@ const MarkdownPreview = memo(function MarkdownPreview({
   text: string;
   path: string;
 }) {
+  const [raw, setRaw] = useState(rawHtmlPlugins);
+  const wantsRaw = HAS_HTML.test(text);
+  useEffect(() => {
+    if (wantsRaw && !raw) void loadRawHtml().then(setRaw);
+  }, [wantsRaw, raw]);
   return (
     <article className="paper-markdown chat-markdown" data-paper-path={path}>
       <ReactMarkdown
         remarkPlugins={[...ANSWER_SYNTAX_PLUGINS]}
         rehypePlugins={[
-          ...PAPER_RAW_HTML,
+          ...(wantsRaw && raw ? raw : []),
           rehypeHeadingIds,
           rehypeSourceLines,
           [rehypeKatex, KATEX_OPTIONS],
