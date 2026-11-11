@@ -385,4 +385,8 @@ test("a double-clicked word in an HTML page lands on its text in the source, not
   const offset = source.indexOf("another loop") + "another ".length;
   assert.deepEqual(range, { from: offset, to: offset + 4 });
   assert.equal(htmlSourceSpot("page.html", source, "absent", 0), null);
+  const encoded = "<body>\n<p>caf&eacute; one</p>\n<p>caf&#233; two caf\u00e9</p>\n</body>";
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 1).from, 3);
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 2).from, 3);
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 0).from, 2);
 });

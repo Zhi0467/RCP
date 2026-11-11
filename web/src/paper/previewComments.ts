@@ -1,6 +1,7 @@
 import type { Element as HastElement, ElementContent, Root } from "hast";
 import type { ResolvedSelection } from "../chat/answerComments";
 import type { ChatAnnotationAnchor } from "../chat/chatInput";
+import { decodeNamedCharacterReference } from "decode-named-character-reference";
 import { synctexSource, type SyncTexMap } from "./synctex";
 
 /** A comment the preview opens itself: a box on a PDF page or image, or an HTML frame selection. */
@@ -261,16 +262,46 @@ export function htmlSourceSpot(
     blank,
   );
   if (body > 0) text = blank(text.slice(0, body)) + text.slice(body);
-  let at = -1;
+  const shown = decodeReferences(text);
+  let found = -1;
   for (let seen = 0; word && seen <= occurrence; seen++) {
-    const next = text.indexOf(word, at + 1);
+    const next = shown.text.indexOf(word, found + 1);
     if (next < 0) break;
-    at = next;
+    found = next;
   }
-  if (at < 0) return null;
+  if (found < 0) return null;
+  const at = shown.source[found];
   const line = source.slice(0, at).split("\n").length;
   const lineStart = source.lastIndexOf("\n", at - 1) + 1;
   return { path, from: line, to: line, word, occurrence: count(source.slice(lineStart, at), word) };
+}
+
+function referenceValue(name: string): string | false {
+  if (!name.startsWith("#")) return decodeNamedCharacterReference(name);
+  const hex = name[1] === "x" || name[1] === "X";
+  const code = Number.parseInt(name.slice(hex ? 2 : 1), hex ? 16 : 10);
+  return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : false;
+}
+
+/** The text with its character references decoded, and each character's source offset. */
+function decodeReferences(text: string) {
+  let decoded = "";
+  const source: number[] = [];
+  let last = 0;
+  const keep = (end: number) => {
+    for (let index = last; index < end; index++) source.push(index);
+    decoded += text.slice(last, end);
+  };
+  for (const match of text.matchAll(/&(#x[0-9a-f]+|#[0-9]+|[a-z][a-z0-9]*);/gi)) {
+    const value = referenceValue(match[1]);
+    if (value === false) continue;
+    keep(match.index);
+    for (let index = 0; index < value.length; index++) source.push(match.index);
+    decoded += value;
+    last = match.index + match[0].length;
+  }
+  keep(text.length);
+  return { text: decoded, source };
 }
 
 function textBefore(container: Node, range: Range) {
