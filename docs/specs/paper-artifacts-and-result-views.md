@@ -407,7 +407,7 @@ or propose file edits, creation, renames, and deletion. Each turn reads an immut
 saved snapshot. It proposes complete Paper files under `changes/files/` and records
 moves and deletions in `changes/moves.json`. Temporary scripts and working files
 may remain elsewhere in the changes folder; they are not Paper deliverables and
-do not block collection. Scripts intended for the Paper belong under `files/`
+do not block collection, since collection opens only `files/` and `moves.json`. Scripts intended for the Paper belong under `files/`
 like any other deliverable. RCP validates the bounded tree's paths and regular
 files, and validates the declared Paper output together or rejects it all. It then
 diffs the output against the snapshot to create cards. A rename and its dependent edits form one group. The

@@ -1070,6 +1070,7 @@ finally:
         max_files: int,
         max_file_bytes: int,
         max_total_bytes: int,
+        only: list[str] | None = None,
     ) -> RegularTree:
         """Read a bounded regular-file tree with the same traversal as local reads."""
         if self.root is None:
@@ -1095,6 +1096,7 @@ finally:
                 str(max_files),
                 str(max_file_bytes),
                 str(max_total_bytes),
+                *([json.dumps(only)] if only is not None else []),
             ]
         )
         if result.returncode == 45:

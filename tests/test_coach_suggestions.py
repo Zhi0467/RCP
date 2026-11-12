@@ -910,3 +910,25 @@ async def test_a_coach_turn_with_browser_use_gets_the_browser(coach, monkeypatch
     events = await run_coach(service, cast(AgentLauncher, Launcher()), data, request=request)
     assert not [event.text for event in events if event.event == "error"]
     assert seen == granted
+
+
+@pytest.mark.asyncio
+async def test_hard_linked_scratch_outside_files_does_not_block_collection(coach):
+    import os
+
+    service, _live, data = coach
+
+    class Launcher:
+        async def stream(self, *_args, **kwargs):
+            changes = kwargs["write_dirs"][0]
+            (changes / "venv").mkdir()
+            (changes / "venv" / "cached.py").write_text("x = 1\n")
+            os.link(changes / "venv" / "cached.py", changes / "venv" / "linked.py")
+            (changes / "files").mkdir()
+            (changes / "files" / "paper.md").write_text("# Revised\n")
+            yield AgentEvent(event="answer", text="Revised the paper.")
+            yield AgentEvent(event="done")
+
+    events = await run_coach(service, cast(AgentLauncher, Launcher()), data)
+    assert not [event.text for event in events if event.event == "error"]
+    assert len(service.paper_changes.groups(service.paper.project_id)) == 1

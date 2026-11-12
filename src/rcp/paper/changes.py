@@ -112,12 +112,15 @@ def _path(value: str) -> str:
 
 
 def read_paper_changes(path: Path, *, remote_stage: RemoteRunStage | None = None) -> RegularTree:
-    """Read one bounded changes tree locally or from its owning remote stage."""
+    """Read one bounded changes tree locally or from its owning remote stage.
+
+    Only `files/` and `moves.json` are read; the coach's scratch beside them is not."""
     limits = {
         "max_entries": PAPER_CHANGES_MAX_ENTRIES,
         "max_files": PAPER_CHANGES_MAX_FILES + 1,
         "max_file_bytes": PAPER_CHANGES_MAX_FILE_BYTES,
         "max_total_bytes": PAPER_CHANGES_MAX_TOTAL_BYTES,
+        "only": ["files", "moves.json"],
     }
     if remote_stage is not None:
         return remote_stage.read_workspace_directory(
