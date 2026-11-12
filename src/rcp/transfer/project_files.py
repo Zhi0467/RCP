@@ -406,6 +406,7 @@ def _capture_project_files_locked(
                 )
 
         artifact_digests: dict[str, tuple[str, int]] = {}
+        records = _store_kept_bindings(records, artifacts)
         for filename, references in _kept_artifact_references(records).items():
             data = _stable_workspace_bytes(lambda name=filename: workspace.read_kept_artifact(name))
             digest = hashlib.sha256(data).hexdigest()
@@ -440,6 +441,32 @@ def _capture_project_files_locked(
     except BaseException:
         _discard_new_capture_root(capture_root)
         raise
+
+
+def _store_kept_bindings(
+    records: TransferRecordBundle, artifacts: tuple[Artifact, ...]
+) -> TransferRecordBundle:
+    """Give a legacy kept file the store-kept form once the store holds it as kept.
+
+    The store's artifact versions carry those bytes; the legacy file may be gone.
+    """
+    store_kept = {artifact.artifact_id for artifact in artifacts if artifact.kept_at is not None}
+    tasks = tuple(
+        task.model_copy(
+            update={
+                "artifacts": tuple(
+                    artifact.model_copy(update={"kept_filename": None})
+                    if artifact.kept_filename is not None and artifact.artifact_id in store_kept
+                    else artifact
+                    for artifact in task.artifacts
+                )
+            }
+        )
+        for task in records.tasks
+    )
+    return TransferRecordBundle.model_validate(
+        {**records.model_dump(mode="python"), "tasks": tasks}
+    )
 
 
 def _kept_artifact_references(

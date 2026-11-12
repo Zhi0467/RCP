@@ -488,6 +488,39 @@ def test_capture_inventory_is_bound_to_the_copied_database(
     assert snapshot_store.project(late_project.project_id) is None
 
 
+def test_legacy_kept_artifact_imported_into_the_store_is_captured_from_the_store(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Imported lab")
+    project = _register_completed_project(store, data_dir, name="Imported")
+    operation_id = _create_task_with_kept_artifact(store, project.project_id)
+    now = store.now()
+    store.create_artifact(
+        Artifact(
+            artifact_id="d" * 24,
+            project_id=project.project_id,
+            supplier="turn",
+            supplier_id=operation_id,
+            origin_operation_id=operation_id,
+            source_name="figure.png",
+            media_type="image/png",
+            created_at=now,
+            expires_at=None,
+            kept_at=now,
+        ),
+        data=b"imported",
+    )
+
+    receipt = (
+        BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite().receipt
+    )
+
+    captured = receipt.projects[0]
+    assert captured.status == "capturable"
+    assert captured.kept_artifacts == ()
+
+
 def test_malformed_and_cross_project_references_make_only_their_projects_uncaptured(
     tmp_path: Path,
 ) -> None:

@@ -295,6 +295,39 @@ def test_project_file_capture_uses_the_remote_export_and_named_reader_seams(
     assert view_reads == 0
 
 
+def test_legacy_kept_file_imported_into_the_store_transfers_from_the_store(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    service, records, artifact, artifact_name, _view, _view_name = _finished_project(
+        manifest, tmp_path
+    )
+    task = records.tasks[0]
+    legacy = task.artifacts[0]
+    service.paper.store.create_artifact(
+        Artifact(
+            artifact_id=legacy.artifact_id,
+            project_id=records.project_id,
+            supplier="turn",
+            supplier_id=task.operation_id,
+            origin_operation_id=task.operation_id,
+            source_name=legacy.source_name,
+            media_type=legacy.media_type,
+            created_at=legacy.kept_at,
+            kept_at=legacy.kept_at,
+        ),
+        data=artifact,
+    )
+    (service.history.workspace.root.parent / "artifacts" / artifact_name).unlink()
+
+    capture = capture_project_transfer_files(service, records, tmp_path / "capture")
+
+    assert f"artifacts/{artifact_name}" not in [entry.archive_path for entry in capture.entries]
+    bound = capture.records.tasks[0].artifacts[0]
+    assert (bound.kept_filename, bound.kept_at) == (None, legacy.kept_at)
+    assert legacy.artifact_id in {item.artifact_id for item in capture.artifacts}
+
+
 def test_project_file_capture_rejects_a_missing_remote_kept_file(
     manifest,
     tmp_path: Path,
