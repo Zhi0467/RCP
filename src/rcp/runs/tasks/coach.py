@@ -5,7 +5,7 @@ import hashlib
 import os
 import tempfile
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from contextlib import aclosing
+from contextlib import AsyncExitStack, aclosing
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -47,6 +47,8 @@ from rcp.machine_cards import card
 from rcp.paper import PaperLive, PaperService, PaperSnapshot, WritingSession
 from rcp.paper.changes import InvalidChanges, get_paper_changes, read_paper_changes
 from rcp.providers import ProviderSkillReference
+from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
+from rcp.runs.browser_lifecycle import browser_turn
 from rcp.runs.chat import (
     _discover_chat_artifacts,
     _prepare_local_artifact_directory,
@@ -1110,6 +1112,7 @@ async def _run_rounds(
     launch: _CoachLaunch,
     execution: AgentTaskExecution,
     hidden_read_scope: HiddenReadScope,
+    browser_grant: BrowserGrant,
 ) -> AsyncGenerator[str | _CoachResult, None]:
     """Stream each pass immediately, then yield its single terminal turn result."""
     request, stages = launch.request, launch.stages
@@ -1147,6 +1150,7 @@ async def _run_rounds(
                 capability="paper_suggest",
                 invocation_gate=launch.history.invocation_gate,
                 hidden_read_scope=hidden_read_scope,
+                browser_grant=browser_grant,
                 binary=provider_binary,
                 forward_labelled_events=True,
                 outcome=outcome,
@@ -1269,9 +1273,24 @@ async def _stream_coach(
         resume_context={"graph_read_scope": launch.graph_read_scope.model_dump(mode="json")},
     )
     result = _CoachResult.FAILED
+    browser = AsyncExitStack()
     try:
+        browser_grant = await browser.enter_async_context(
+            browser_turn(
+                request,
+                workspace=stages.workspace,
+                machine_id=request.run_on or service.manifest.base_machine,
+                execution_host=stages.remote.host if stages.remote else "",
+                execution=execution,
+                remote_stage=stages.remote,
+                capability="paper_suggest",
+                hidden_read_scope=hidden_read_scope,
+            )
+        )
+        if browser_grant.status != "not_requested":
+            launch.prompt += "\n\n" + browser_prompt_line(browser_grant)
         async with aclosing(
-            _run_rounds(service, launcher, launch, execution, hidden_read_scope)
+            _run_rounds(service, launcher, launch, execution, hidden_read_scope, browser_grant)
         ) as rounds:
             async for frame in rounds:
                 if isinstance(frame, _CoachResult):
@@ -1300,6 +1319,7 @@ async def _stream_coach(
         yield _sse(AgentEvent(event="error", text=str(exc)))
         return
     finally:
+        await browser.aclose()
         outcome = launch.provider_outcome
         if outcome.remote_result_pending:
             history.detach()

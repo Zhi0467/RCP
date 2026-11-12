@@ -73,7 +73,9 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
         chat_id="chat",
     )
     assert grant.status == status
-    assert len(calls) == int(requested and capability in {"work_auto", "orchestrate", "discuss"})
+    assert len(calls) == int(
+        requested and capability in {"work_auto", "orchestrate", "discuss", "paper_suggest"}
+    )
     if calls:
         assert grant.reason_code == "runtime_checked"
         assert calls[0].stage_name == "chat"

@@ -64,7 +64,7 @@ def acquire_turn_browser(
 ) -> BrowserGrant:
     if not requested:
         return BrowserGrant()
-    if capability not in {"work_auto", "orchestrate", "discuss"}:
+    if capability not in {"work_auto", "orchestrate", "discuss", "paper_suggest"}:
         return BrowserGrant(requested=True, status="unavailable", reason_code="capability_denied")
     if store is None or project_id is None:
         return BrowserGrant(requested=True, status="unavailable", reason_code="owner_unavailable")
@@ -327,11 +327,11 @@ async def browser_turn(
 ) -> AsyncIterator[BrowserGrant]:
     """Resolve before rendering; release even if rendering or staging fails."""
     from rcp.runs.auto_research import AutoResearchRunRequest
-    from rcp.service import RunRequest
+    from rcp.service import CoachRequest, RunRequest
 
     requested = (
         request.browser_requested
-        if isinstance(request, (RunRequest, AutoResearchRunRequest))
+        if isinstance(request, (RunRequest, AutoResearchRunRequest, CoachRequest))
         else False
     )
     chat_id = request.chat_id if isinstance(request, RunRequest) else None

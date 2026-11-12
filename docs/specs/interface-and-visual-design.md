@@ -284,7 +284,9 @@ chip counts enabled options. On phones, the menu spans the screen-height compose
 An outside click, Escape, or a chat change closes it.
 Browser use starts off in new chats. A failed save returns to the server value,
 outlines the control in red, and offers one icon-only retry with the error on
-hover. Coaching has no Browser switch.
+hover. The Coach's Browser use sits at the bottom of its agent picker, starts on,
+and is remembered per paper in this browser, since checking its own figures is
+part of coaching.
 
 Episode options sit inside the agent picker below the provider fields.
 The chip matches Start's height and counts enabled options.

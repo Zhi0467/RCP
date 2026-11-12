@@ -1162,6 +1162,7 @@ class RunRequest(BaseModel):
 
 class CoachRequest(BaseModel):
     message: str
+    browser_requested: bool = False
     mode: Literal["review", "apply_directly"] = "review"
     refresh_source_task_id: str | None = None
     refresh_group_ids: list[str] = Field(default_factory=list)

@@ -883,3 +883,30 @@ async def test_a_coach_preview_in_its_artifact_folder_reaches_the_reply(coach):
     assert not [event.text for event in events if event.event == "error"]
     [artifact] = [event.artifact for event in events if event.event == "artifact"]
     assert artifact.name == "diagram.svg"
+
+
+@pytest.mark.asyncio
+async def test_a_coach_turn_with_browser_use_gets_the_browser(coach, monkeypatch):
+    from rcp.providers.browser_grant import BrowserGrant
+    from rcp.runs import browser_runtime_seam
+
+    service, _live, data = coach
+    granted = []
+
+    def acquire(owner, **_kwargs):
+        granted.append(BrowserGrant(requested=True, status="unavailable", owner=owner))
+        return granted[-1]
+
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire)
+    seen = []
+
+    class Launcher:
+        async def stream(self, *_args, **kwargs):
+            seen.append(kwargs["browser_grant"])
+            yield AgentEvent(event="answer", text="Checked the figure.")
+            yield AgentEvent(event="done")
+
+    request = CoachRequest(message="Check the figure", browser_requested=True)
+    events = await run_coach(service, cast(AgentLauncher, Launcher()), data, request=request)
+    assert not [event.text for event in events if event.event == "error"]
+    assert seen == granted

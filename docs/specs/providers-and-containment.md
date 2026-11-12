@@ -470,8 +470,8 @@ App-server verifies that this profile is active before delivering the turn.
 
 Browser is a per-chat human grant, off by default for ordinary chats and on when
 a member's agent thread is created, resolved immutably at admission
-and passed through launch construction. Work, orchestration and Discuss may use
-it; Paper, ingestion, scratch correction and recorded replay may not. Prompts
+and passed through launch construction. Work, orchestration, Discuss and the
+Paper coach may use it; ingestion, scratch correction and recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.
 `open`, `close`, `close-all` and `kill-all` end that session for the turn;
 `delete-data` also removes logins. Continuations send explicit off/unavailable.
