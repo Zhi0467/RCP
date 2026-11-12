@@ -1649,13 +1649,14 @@ Graph Patch (optional):
         )
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v13"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v14"
 
     @staticmethod
     def paper_coach_task_contract(
         *,
         paper_path: str,
         changes_path: str,
+        artifact_path: str,
         graph_path: str,
         research_path: str,
         repositories: list[dict[str, str]],
@@ -1681,6 +1682,7 @@ propose complete file changes in the one changes folder below.
 Required inputs:
 - Saved paper snapshot (read-only folder): `{paper_path}`
 - Changes folder (writable, as are the attached saved artifacts below): `{changes_path}`
+- Preview artifact directory (writable): `{artifact_path}`
 - Current graph: `{graph_path}`
 - Current research rendering: `{research_path}`
 - Human request: `{human_request_path}`
@@ -1717,11 +1719,15 @@ Authorship contract:
   figures. Temporary scripts and working files may stay in the changes folder outside `files/`;
   RCP publishes only the contents of `files/` and the moves declared in `moves.json`.
   Put a script under `files/` too when it is part of the requested Paper deliverable.
-- Do not write anywhere outside the named changes folder and the attached saved artifacts,
-  including the snapshot.
+- Show the human a preview, diagram, or draft figure as an artifact in the preview artifact
+  directory, embedded in your reply; a change to the paper itself goes under `files/`.
+- Do not write anywhere outside the named changes folder, the preview artifact directory, and
+  the attached saved artifacts, including the snapshot.
 - This task cannot produce a graph Patch and has no validator client. Do not create `patch.json`.
 - The paper is a shared draft, not canonical graph truth. Distinguish its claims
   from each graph node's explicit accepted, asserted, or contested standing.
+
+{artifact_contract(artifact_path)}
 """
 
     @staticmethod

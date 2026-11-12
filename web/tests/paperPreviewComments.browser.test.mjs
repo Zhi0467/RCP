@@ -46,17 +46,20 @@ const htmlPreview = JSON.parse(
       `import json
 from dataclasses import replace
 from rcp.artifact_comments import selection_frame_addon
+from rcp.artifact_views import _combined_addon
+from rcp.paper.html_preview import source_frame_addon
 from rcp.artifact_views import artifact_content, inline_viewer_document
 source = b'''<!doctype html><html><body style="margin:0;font:20px Georgia;background:white;color:black">
 <p id="words" style="margin:24px"><span id="word">Select</span> these preview words.</p>
 <svg id="plot" aria-label="Saved plot" width="220" height="180" viewBox="0 0 220 180" style="margin:0 24px"><rect width="220" height="180" fill="teal"/></svg>
 <button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>
-<div style="height:1800px"></div></body></html>'''
+<a id="jump" href="#far">Jump</a>
+<div style="height:1800px"></div><p id="far">Far section</p></body></html>'''
 shell, shell_csp = inline_viewer_document('figure.html', 'html', content_url='/html-preview-content', live=None, selectable=True)
 selection = selection_frame_addon()
 selection = replace(selection, frame_script=selection.frame_script + "\\nlisten(privatePort,'message',event=>{if(event.data?.kind==='rcp-artifact-selection-enable') document.documentElement.dataset.selectionReady='true';});")
-content, _, content_csp = artifact_content('figure.html', 'text/html', source, frame_addon=selection)
-print(json.dumps(dict(shell=shell,shell_csp=shell_csp,content=content,content_csp=content_csp)))`,
+content, _, content_csp = artifact_content('figure.html', 'text/html', source, frame_addon=_combined_addon(selection, source_frame_addon()))
+print(json.dumps(dict(shell=shell,shell_csp=shell_csp,content=content,content_csp=content_csp,source=source.decode())))`,
     ],
     {
       cwd: new URL("../..", import.meta.url),
@@ -79,8 +82,8 @@ async function openHtmlPreview(t, width) {
           import '/src/styles.css';
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
-          window.comments = []; window.cancelled = [];
-          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision,saved_revision:revision}} text="" active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} />);`;
+          window.comments = []; window.cancelled = []; window.spots = []; window.offers = [];
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer)} />);`;
       },
     },
   ]);
@@ -708,4 +711,58 @@ test("a touch drag on a PDF page draws no box", async (t) => {
   });
   assert.equal(await page.locator(".paper-select-box").count(), 0);
   assert.equal(await page.evaluate(() => window.boxes), 0);
+});
+
+test("a double-clicked word in an HTML preview names its source line", async (t) => {
+  const { page, errors, release } = await openHtmlPreview(t, 390);
+  release();
+  await page.evaluate(() => window.show());
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const word = () => shell.childFrames()[0].childFrames()[0].locator("#word");
+  await word().dblclick();
+  await page.waitForFunction(() => window.spots.length === 1);
+  const [spot] = await page.evaluate(() => window.spots);
+  assert.equal(spot.path, "html.html");
+  assert.equal(spot.from, 2);
+  assert.ok(htmlPreview.source.split("\n")[1].includes(spot.word));
+  await page.evaluate(() => {
+    window.unsaved = true;
+    window.show();
+  });
+  await word().dblclick();
+  await page.waitForTimeout(300);
+  assert.equal(await page.evaluate(() => window.spots.length), 1);
+  assert.deepEqual(errors, []);
+});
+
+test("text selected in an HTML preview offers Comment beside it, with no comment mode", async (t) => {
+  const { page, errors, release } = await openHtmlPreview(t, 1280);
+  release();
+  await page.evaluate(() => window.show());
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const word = shell.childFrames()[0].childFrames()[0].locator("#word");
+  await word.dblclick();
+  await page.waitForFunction(() => window.offers.some((offer) => offer));
+  const offer = await page.evaluate(() => window.offers.findLast((item) => item));
+  assert.equal(offer.quote, "Select");
+  const box = await word.boundingBox();
+  assert.ok(Math.abs(offer.rect.left - box.x) < 4);
+  assert.ok(Math.abs(offer.rect.top - box.y) < 6);
+  assert.equal(await page.evaluate(() => window.comments.length), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("an in-page link in an HTML preview scrolls to its target", async (t) => {
+  const { page, errors, release } = await openHtmlPreview(t, 1280);
+  release();
+  await page.evaluate(() => window.show());
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const content = shell.childFrames()[0].childFrames()[0];
+  assert.equal(await content.evaluate(() => scrollY), 0);
+  await content.locator("#jump").click();
+  await content.waitForFunction(() => scrollY > 1000);
+  assert.deepEqual(errors, []);
 });

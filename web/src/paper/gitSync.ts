@@ -20,6 +20,11 @@ export interface PaperGitChangedFile {
   added: number | null;
   removed: number | null;
 }
+export interface PaperGitFileDiff {
+  lines: string[];
+  more: number;
+  binary: boolean;
+}
 export interface PaperGitFileConflict {
   path: string;
   kind: "file";

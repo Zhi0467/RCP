@@ -41,7 +41,8 @@ test("Markdown preview resolves paper references without navigating outside the 
     appType: "custom",
   });
   try {
-    const { PaperPreview } = await server.ssrLoadModule("/src/paper/PaperPreview.tsx");
+    const { PaperPreview, loadRawHtml } = await server.ssrLoadModule("/src/paper/PaperPreview.tsx");
+    await loadRawHtml();
     const file = {
       file_id: "intro",
       path: "sections/intro.md",
@@ -92,6 +93,49 @@ test("Markdown preview resolves paper references without navigating outside the 
     );
     assert.match(html, /<span>missing<\/span>/);
     assert.match(html, /<span>unsafe<\/span>/);
+    const raw = renderToStaticMarkup(
+      createElement(PaperPreview, {
+        projectId: "p",
+        file,
+        tree: {
+          revision: 3,
+          saved_revision: 3,
+          published_revision: 2,
+          publish_state: "pending",
+          hold: null,
+          files: [file, image, vector],
+        },
+        text: [
+          "## Reproduction details",
+          "",
+          "## A",
+          "",
+          "## A",
+          "",
+          "## A-1",
+          "",
+          '<p align="center">\n  <img src="../figures/chart.svg" alt="chart" onerror="alert(1)" style="width: 50%">\n</p>',
+          "",
+          "<script>alert(2)</script>",
+          "",
+          "See [details](#reproduction-details) and $x^2$.",
+        ].join("\n"),
+        onOpenFile() {},
+        active: true,
+      }),
+    );
+    assert.match(
+      raw,
+      /<p align="center"[^>]*>\s*<img[^>]*src="\/api\/projects\/p\/paper\/files\/chart\/raw\?sha256=def"/,
+    );
+    assert.doesNotMatch(raw, /onerror|<script|alert\(2\)/);
+    assert.match(raw, /<h2 id="reproduction-details"/);
+    assert.deepEqual(
+      [...raw.matchAll(/<h2 id="(a[^"]*)"/g)].map((match) => match[1]),
+      ["a", "a-1", "a-1-1"],
+    );
+    assert.match(raw, /<a href="#reproduction-details">details<\/a>/);
+    assert.match(raw, /class="katex"/);
   } finally {
     await server.close();
   }
@@ -312,4 +356,37 @@ test("reverse SyncTeX takes the nearest mark above the point on that page, acros
   assert.deepEqual(synctexSource(map, 2, 120), { path: "sections/results.tex", line: 3 });
   assert.equal(synctexSource(map, 2, 100), null);
   assert.equal(synctexSource(map, 3, 700), null);
+});
+
+test("a double-clicked word in an HTML page lands on its text in the source, not in markup", async (t) => {
+  const { createServer } = await import("vite");
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    configFile: false,
+    optimizeDeps: { noDiscovery: true },
+    server: { middlewareMode: true, hmr: false },
+    appType: "custom",
+  });
+  t.after(() => server.close());
+  const { htmlSourceSpot, sourceSpotRange } = await server.ssrLoadModule(
+    "/src/paper/previewComments.ts",
+  );
+  const source = [
+    "<html><head><title>loop</title><style>.loop{}</style></head>",
+    '<body class="loop">',
+    "<!-- loop -->",
+    '<p data-x="loop">A loop, then <b>another loop</b></p>',
+    "<script>const loop = 1;</script>",
+    "</body></html>",
+  ].join("\n");
+  const second = htmlSourceSpot("page.html", source, "loop", 1);
+  assert.equal(second.from, 4);
+  const range = sourceSpotRange(source, second);
+  const offset = source.indexOf("another loop") + "another ".length;
+  assert.deepEqual(range, { from: offset, to: offset + 4 });
+  assert.equal(htmlSourceSpot("page.html", source, "absent", 0), null);
+  const encoded = "<body>\n<p>caf&eacute; one</p>\n<p>caf&#233; two caf\u00e9</p>\n</body>";
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 1).from, 3);
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 2).from, 3);
+  assert.equal(htmlSourceSpot("page.html", encoded, "café", 0).from, 2);
 });

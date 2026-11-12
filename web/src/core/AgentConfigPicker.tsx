@@ -25,6 +25,7 @@ export function useAgentConfigPicker({
   workLike = false,
   workLikeCapable = true,
   panelClassName,
+  options,
 }: {
   project: AgentConfigSource;
   value: AgentRunConfig;
@@ -35,6 +36,8 @@ export function useAgentConfigPicker({
   workLike?: boolean;
   workLikeCapable?: boolean;
   panelClassName: string;
+  /** Launch options the picker carries below the agent, such as Browser use. */
+  options?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement>(null);
@@ -80,6 +83,7 @@ export function useAgentConfigPicker({
           workLikeCapable={workLikeCapable}
           compact
         />
+        {options}
       </div>
     ),
   };

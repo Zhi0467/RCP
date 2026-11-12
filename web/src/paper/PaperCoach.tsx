@@ -17,6 +17,7 @@ import { launchProviderReady, profileRunConfig } from "../core/AgentConfigContro
 import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import { api } from "../core/api";
 import { readPref, writePref } from "../core/prefStorage";
+import { BrowserToggle } from "../core/BrowserControls";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { useResource } from "../core/useResource";
 import { paperSessionTasksProfile } from "../agents/taskResources";
@@ -126,6 +127,8 @@ export function PaperCoach({
   );
   const modeKey = `rcp:paper-coach-mode:${apiBase}`;
   const [applyDirectly, setApplyDirectly] = useState(() => readPref(modeKey) === "apply");
+  const browserKey = `rcp:paper-coach-browser:${apiBase}`;
+  const [browserOn, setBrowserOn] = useState(() => readPref(browserKey) !== "off");
   const text = assembleChatTurn(message, comments.annotations);
   const composer = useComposerAttachments({
     project,
@@ -246,6 +249,18 @@ export function PaperCoach({
     disabled: Boolean(activeTask) || submitting,
     workLikeCapable: false,
     panelClassName: "paper-agent-popover",
+    options: (
+      <div className="agent-config-options" role="group" aria-label="Launch options">
+        <BrowserToggle
+          checked={browserOn}
+          disabled={Boolean(activeTask) || submitting}
+          onChange={(on) => {
+            setBrowserOn(on);
+            writePref(browserKey, on ? "on" : "off");
+          }}
+        />
+      </div>
+    ),
   });
   const skills = useSkillPicker({
     source: project,
@@ -297,6 +312,7 @@ export function PaperCoach({
         model: config.model || null,
         session_id: currentSessionId,
         paper_apply_directly: applyDirectly,
+        browser_requested: browserOn,
         ...skills.fields,
         ...composer.turnFields(),
       });

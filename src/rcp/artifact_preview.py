@@ -90,6 +90,8 @@ class ArtifactHTMLSanitizer(HTMLParser):
             if lowered == "href":
                 if tag == "a" and value and _is_http_url(value):
                     rendered.append(("data-rcp-href", value))
+                elif tag == "a" and value and value.startswith("#"):
+                    rendered.append(("data-rcp-fragment", value[1:]))
                 elif tag != "a":
                     self.removed.append(f"<{tag} {name}>")
                 continue

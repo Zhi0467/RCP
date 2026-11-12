@@ -213,6 +213,7 @@ def test_provider_native_invocation_preserves_metadata_and_native_token() -> Non
     paper = PromptFactory.paper_coach_task_contract(
         paper_path="/project/paper",
         changes_path="/stage/changes",
+        artifact_path="/stage/turns/t/artifacts",
         graph_path="/project/graph.json",
         research_path="/project/research.md",
         repositories=[],
@@ -542,6 +543,7 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     paper = PromptFactory.paper_coach_task_contract(
         paper_path="/state/paper",
         changes_path="/stage/changes",
+        artifact_path="/stage/turns/t/artifacts",
         graph_path="/state/graph.json",
         research_path="/state/research.md",
         repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],

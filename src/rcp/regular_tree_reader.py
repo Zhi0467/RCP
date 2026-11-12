@@ -26,8 +26,11 @@ def read_regular_tree(
     max_files: int,
     max_file_bytes: int,
     max_total_bytes: int,
+    only: list[str] | None = None,
 ) -> RegularTree:
-    """Walk relative to open descriptors, refusing links and changed entries."""
+    """Walk relative to open descriptors, refusing links and changed entries.
+
+    `only` names the top-level entries to read; others are never opened."""
     parts = PurePosixPath(directory)
     if parts.is_absolute() or ".." in parts.parts:
         raise ValueError("workspace tree directory must be relative")
@@ -45,6 +48,8 @@ def read_regular_tree(
         names: list[str] = []
         with os.scandir(fd) as entries:
             for entry in entries:
+                if not prefix and only is not None and entry.name not in only:
+                    continue
                 count += 1
                 if count > max_entries:
                     raise ValueError("workspace tree exceeds entry limit")
@@ -106,6 +111,7 @@ if __name__ == "__main__":
             max_files=int(sys.argv[4]),
             max_file_bytes=int(sys.argv[5]),
             max_total_bytes=int(sys.argv[6]),
+            only=json.loads(sys.argv[7]) if len(sys.argv) > 7 else None,
         )
     except (OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

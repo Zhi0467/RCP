@@ -18,6 +18,17 @@ interface InlineShellHandlers {
   onCancel: (clear: () => void) => void;
   /** The page reported an error, or that it cleared. */
   onPageError: (error: { message: string; count: number } | null) => void;
+  /** A word double-clicked in the page, with how often the page's text showed it before. */
+  onSourceWord?: (word: string, occurrence: number) => void;
+  /** Text selected in the page and where it sits in the window, or null once it is gone. */
+  onTextOffer?: (offer: InlineTextOffer | null) => void;
+}
+
+/** Text selected in the frame outside comment mode, placed in the window's coordinates. */
+export interface InlineTextOffer {
+  text: string;
+  rect: { left: number; top: number; right: number; bottom: number };
+  clear: () => void;
 }
 
 /** Talks to one inline viewer shell frame: reads its messages and keeps its comment mode.
@@ -54,6 +65,34 @@ export function useInlineShell(
       if (!value) return;
       if (value.kind === "error" || value.kind === "error-clear") {
         handlersRef.current.onPageError(value.kind === "error" ? value : null);
+        return;
+      }
+      if (value.kind === "source") {
+        handlersRef.current.onSourceWord?.(value.word, value.occurrence);
+        return;
+      }
+      if (value.kind === "text-offer") {
+        const frameRect = frame.current?.getBoundingClientRect();
+        if (!value.text || !value.rect || !frameRect) {
+          handlersRef.current.onTextOffer?.(null);
+          return;
+        }
+        const left = frameRect.left + value.rect.x * frameRect.width;
+        const top = frameRect.top + value.rect.y * frameRect.height;
+        handlersRef.current.onTextOffer?.({
+          text: value.text,
+          rect: {
+            left,
+            top,
+            right: left + value.rect.width * frameRect.width,
+            bottom: top + value.rect.height * frameRect.height,
+          },
+          clear: () =>
+            frame.current?.contentWindow?.postMessage(
+              { type: "rcp-inline-selection-clear", version: 1 },
+              window.location.origin,
+            ),
+        });
         return;
       }
       const selection = ++selections.current;

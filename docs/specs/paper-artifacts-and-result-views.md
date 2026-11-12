@@ -83,8 +83,11 @@ Timing rows prune only after publication and retained History both cover them.
 
 ### Preview
 
-Markdown renders in the browser with images from the paper tree. Paper links open
-the editor. HTTP(S) links open a new tab. Other links are inert. Large files render
+Markdown renders in the browser with images from the paper tree. Raw HTML renders
+through GitHub's sanitizer allowlist, so a centered `<img>` figure shows as on
+GitHub and scripts, styles, and event handlers are dropped. Paper links open
+the editor. HTTP(S) links open a new tab. A `#heading` link scrolls to the heading
+with that GitHub anchor. Other links are inert. Large files render
 after typing pauses. Typst runs in the browser with a compiler and fonts downloaded
 by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backend
 with `--untrusted` and bounded time, output, and concurrency. Compilation changes
@@ -108,7 +111,11 @@ file's line, so a section opens at its own page rather than page 1. Typst and a
 LaTeX file outside the map keep the per-root remembered scroll. The reverse holds
 too: double-clicking a word in a Markdown, plain-text, or mapped LaTeX preview opens
 its source file in the editor with that word selected, found within the lines the
-clicked block renders from. The preview's actions
+clicked block renders from. In an HTML preview the page reports only the word and
+how often its text showed that word before; the editor takes the same occurrence in
+the source with markup and scripts blanked. Text a script writes can shift the
+count, and a missing occurrence takes the last one. While the editor holds unsaved
+edits the page shows an older text, so a double-click does nothing. The preview's actions
 (engine install, root choice, compile log, Download) sit in the panel header
 beside the Preview and Coach switch, so the PDF starts under it. Typst errors identify
 the path, line, and message. Tectonic has no OS sandbox. Its `--untrusted` option
@@ -129,6 +136,7 @@ counts every expanded reference against the limits in `limits.py`. Missing,
 unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
+A `#id` link scrolls the page to the element with that id or name.
 
 On entry and when the saved Paper revision or HTML bytes change, the preview
 checks its member-only `/preview/state` route and hides the prior page behind
@@ -158,14 +166,15 @@ saves and its other previews need source links and tree images.
 
 ### Commenting on the preview
 
-A native text selection in the preview offers the same Comment button and window
-as chat answers. A drawn area or an HTML selection opens the window directly.
-While a comment window is open, a native selection offers no Comment button. Text
-selects natively, also on touch, except inside an HTML page, which takes a mouse
-or pen. With a mouse or pen, a drag that starts off text draws an area on a PDF
-page or image. An HTML page takes comments only in comment mode, a toggle in the
-panel header that starts off for each file shown, because it turns the page's
-drags into selections for comments.
+A text selection in the preview offers the same Comment button and window as chat
+answers, placed at the selection; inside an HTML page the page reports the selected
+text and where it sits, so it needs no mode. A drawn area, or a selection made in
+an HTML page's comment mode, opens the window directly. While a comment window is
+open, a selection offers no Comment button. Text selects natively, also on touch,
+except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a drag
+that starts off text draws an area on a PDF page or image. An area on an HTML page
+needs comment mode, a toggle in the panel header that starts off for each file
+shown, because it turns the page's drags into area selections.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
@@ -321,7 +330,8 @@ arrives as an ordinary remote file.
 reasons.
 
 **Push is manual.** The member reviews the changed files, writes a commit
-message, and pushes. The commit holds every Paper file plus the skipped
+message, and pushes. Clicking a changed file unfolds its line diff against the
+synced commit, bounded in `limits.py`; a binary file shows none. The commit holds every Paper file plus the skipped
 entries. Its author and committer are that member. Its parent is the synced
 commit, and it is never forced. Push sends what Paper holds. After a restore
 to a version from before a pull, the changed-file list shows the co-author's
@@ -399,15 +409,18 @@ or propose file edits, creation, renames, and deletion. Each turn reads an immut
 saved snapshot. It proposes complete Paper files under `changes/files/` and records
 moves and deletions in `changes/moves.json`. Temporary scripts and working files
 may remain elsewhere in the changes folder; they are not Paper deliverables and
-do not block collection. Scripts intended for the Paper belong under `files/`
+do not block collection, since collection opens only `files/` and `moves.json`. Scripts intended for the Paper belong under `files/`
 like any other deliverable. RCP validates the bounded tree's paths and regular
 files, and validates the declared Paper output together or rejects it all. It then
 diffs the output against the snapshot to create cards. A rename and its dependent edits form one group. The
-coach writes no diffs or line numbers.
+coach writes no diffs or line numbers. Like a chat turn, each coach turn also has
+its own artifact folder: a preview, diagram, or draft figure it writes there is
+published with the reply and embeds in it, following
+[Artifacts inside a reply](#artifacts-inside-a-reply).
 
 Execution follows [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
 Remote snapshots are fixed stage inputs, never the live publication directory.
-The changes folder and attached saved-artifact folders are writable under the
+The changes folder, the turn's artifact folder, and attached saved-artifact folders are writable under the
 [containment contract](providers-and-containment.md#provider-enforcement).
 Bounded read-back refuses symlinks and hardlinks and
 uses the same card collection. Shared supervised passes, process receipts, and

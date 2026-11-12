@@ -12,7 +12,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from rcp import limits
 from rcp.artifact_preview import _html_attributes, _is_inline_image
-from rcp.artifacts import ARTIFACT_MEDIA_TYPES
+from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
 from rcp.paper.models import PaperFile, PaperLimit, file_format, paper_path
 from rcp.paper.persistence import PaperSnapshotReader
 
@@ -250,4 +250,50 @@ def read_html_content(
         preview.revision,
         inline_html_images(preview, reader, project_id),
         preview.warnings,
+    )
+
+
+def source_frame_addon() -> FrameAddon:
+    """Reports a word the member double-clicked, with how often the page's text showed it
+    before, and each text selection with where it sits, for the Comment offer."""
+    return FrameAddon(
+        frame_script="""
+listen(document,'dblclick',(event)=>{
+  if(!event.isTrusted) return;
+  const selection=document.getSelection();
+  const word=String(selection||'').trim();
+  if(!word||!selection.rangeCount||!document.body) return;
+  const start=selection.getRangeAt(0);
+  const hidden='script,style,template,noscript';
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,{acceptNode:(node)=>
+    node.parentElement?.closest(hidden)?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_ACCEPT});
+  let before='';
+  for(let node=walker.nextNode();node;node=walker.nextNode()){
+    if(node===start.startContainer){before+=node.data.slice(0,start.startOffset);break;}
+    if(start.comparePoint(node,0)>0) break;
+    before+=node.data;
+  }
+  send({kind:'rcp-paper-source',word,occurrence:before.split(word).length-1});
+});
+const unitOf=(value)=>Math.min(1,Math.max(0,value));
+const offerSelection=()=>{
+  const selection=document.getSelection();
+  const text=String(selection||'').trim();
+  if(!text||!selection.rangeCount){send({kind:'rcp-paper-selection',text:''});return;}
+  const box=selection.getRangeAt(0).getBoundingClientRect();
+  const width=innerWidth||1,height=innerHeight||1;
+  send({kind:'rcp-paper-selection',text:text.slice(0,4096),rect:{
+    x:unitOf(box.left/width),y:unitOf(box.top/height),
+    width:unitOf(box.width/width),height:unitOf(box.height/height)}});
+};
+listen(document,'pointerup',(event)=>{if(event.isTrusted) setTimeout(offerSelection,0);});
+listen(document,'keyup',(event)=>{if(event.isTrusted && event.shiftKey) offerSelection();});
+""",
+        wrapper_script="""channelListeners.push((value)=>{
+  if(value.kind==='rcp-paper-source' && window.parent!==window)
+    parentPost({type:'rcp-paper-source',version:1,word:value.word,occurrence:value.occurrence},'*');
+  if(value.kind==='rcp-paper-selection' && window.parent!==window)
+    parentPost({type:'rcp-paper-selection',version:1,text:value.text,rect:value.rect},'*');
+});
+""",
     )

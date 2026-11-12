@@ -95,6 +95,11 @@ def changes(project_id: str, request: Request):
     return _call(project_id, request, lambda manager, project: manager.changed_files(project))
 
 
+@router.get("/changes/diff")
+def change_diff(project_id: str, path: str, request: Request):
+    return _call(project_id, request, lambda manager, project: manager.file_diff(project, path))
+
+
 @router.get("/conflicts")
 def conflicts(project_id: str, request: Request):
     return _call(project_id, request, lambda manager, project: manager.conflicts(project))

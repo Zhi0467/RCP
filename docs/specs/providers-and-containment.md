@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
-| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
+| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, its turn's artifact folder, and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
 
@@ -470,8 +470,8 @@ App-server verifies that this profile is active before delivering the turn.
 
 Browser is a per-chat human grant, off by default for ordinary chats and on when
 a member's agent thread is created, resolved immutably at admission
-and passed through launch construction. Work, orchestration and Discuss may use
-it; Paper, ingestion, scratch correction and recorded replay may not. Prompts
+and passed through launch construction. Work, orchestration, Discuss and the
+Paper coach may use it; ingestion, scratch correction and recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.
 `open`, `close`, `close-all` and `kill-all` end that session for the turn;
 `delete-data` also removes logins. Continuations send explicit off/unavailable.

@@ -40,9 +40,18 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
-import { boxArea, rehypeSourceLines, type PreviewDirectComment } from "./previewComments";
+import {
+  boxArea,
+  htmlSourceSpot,
+  rehypeSourceLines,
+  type PreviewDirectComment,
+  type PreviewSelectionOffer,
+  type PreviewSourceSpot,
+} from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { useInlineShell } from "../artifacts/useInlineShell";
+import { rehypeHeadingIds } from "./markdownHtml";
+import type { PluggableList } from "unified";
 
 const PaperPdf = lazy(() => import("./PaperPdf"));
 type EngineState = "ready" | "installing" | "unavailable";
@@ -77,6 +86,23 @@ type MarkdownContext = {
 const PaperMarkdownContext = createContext<MarkdownContext>(null!);
 function PaperLink({ href = "", children }: { href?: string; children?: React.ReactNode }) {
   const { file, tree, onOpenFile } = useContext(PaperMarkdownContext);
+  if (href.startsWith("#"))
+    return (
+      <a
+        href={href}
+        onClick={(event) => {
+          event.preventDefault();
+          const id = decodeURIComponent(href.slice(1));
+          const article = event.currentTarget.closest("article");
+          const target = [id, `user-content-${id}`]
+            .map((name) => article?.querySelector(`[id="${CSS.escape(name)}"]`))
+            .find(Boolean);
+          target?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }}
+      >
+        {children}
+      </a>
+    );
   if (/^https?:\/\//i.test(href))
     return (
       <a href={href} target="_blank" rel="noopener noreferrer">
@@ -111,6 +137,14 @@ function PaperImage({ src = "", alt = "" }: { src?: string | Blob; alt?: string 
     </span>
   );
 }
+let rawHtmlPlugins: PluggableList | null = null;
+/** Loads the raw-HTML renderer, kept out of the Paper chunk until a file has HTML. */
+export async function loadRawHtml() {
+  rawHtmlPlugins ??= (await import("./markdownRawHtml")).PAPER_RAW_HTML;
+  return rawHtmlPlugins;
+}
+const HAS_HTML = /<[a-zA-Z!/]/;
+
 // Tree saves and callbacks update links without reparsing the unchanged preview text.
 const MarkdownPreview = memo(function MarkdownPreview({
   text,
@@ -119,11 +153,21 @@ const MarkdownPreview = memo(function MarkdownPreview({
   text: string;
   path: string;
 }) {
+  const [raw, setRaw] = useState(rawHtmlPlugins);
+  const wantsRaw = HAS_HTML.test(text);
+  useEffect(() => {
+    if (wantsRaw && !raw) void loadRawHtml().then(setRaw);
+  }, [wantsRaw, raw]);
   return (
     <article className="paper-markdown chat-markdown" data-paper-path={path}>
       <ReactMarkdown
         remarkPlugins={[...ANSWER_SYNTAX_PLUGINS]}
-        rehypePlugins={[rehypeSourceLines, [rehypeKatex, KATEX_OPTIONS]]}
+        rehypePlugins={[
+          ...(wantsRaw && raw ? raw : []),
+          rehypeHeadingIds,
+          rehypeSourceLines,
+          [rehypeKatex, KATEX_OPTIONS],
+        ]}
         components={{ pre: MarkdownCodeBlock, a: PaperLink, img: PaperImage }}
       >
         {text}
@@ -186,19 +230,28 @@ function useHtmlPreviewState(source: string, revision: number, hash: string, act
 function HtmlPreview({
   projectId,
   file,
+  text,
+  saved,
   savedRevision,
   active,
   toolbar,
   onDirectComment,
   onDirectCancel,
+  onSourceSpot,
+  onSelectionOffer,
 }: {
   projectId: string;
   file: PaperFile;
+  text: string;
+  /** The editor holds what the frame shows, so a word's count matches the source. */
+  saved: boolean;
   savedRevision: number;
   active: boolean;
   toolbar: HTMLElement | null;
   onDirectComment?: (comment: PreviewDirectComment) => void;
   onDirectCancel?: (clear: () => void) => void;
+  onSourceSpot?: (spot: PreviewSourceSpot) => void;
+  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(false);
@@ -215,6 +268,17 @@ function HtmlPreview({
   } = useHtmlPreviewState(source, savedRevision, file.sha256, active);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
+    onSourceWord: (word, occurrence) => {
+      if (!saved) return;
+      const spot = htmlSourceSpot(file.path, text, word, occurrence);
+      if (spot) onSourceSpot?.(spot);
+    },
+    onTextOffer: (offer) => {
+      if (commentMode) return;
+      onSelectionOffer?.(
+        offer && { quote: offer.text, where: file.path, rect: offer.rect, clear: offer.clear },
+      );
+    },
     onCancel: (clear) => onDirectCancel?.(clear),
     onSelection: ({ selection, anchor, clear }) => {
       // An element's own text before a label it may inherit from a section around it.
@@ -343,6 +407,8 @@ export function PaperPreview({
   cursorLine,
   onDirectComment,
   onDirectCancel,
+  onSourceSpot,
+  onSelectionOffer,
 }: {
   projectId: string;
   file: PaperFile;
@@ -359,6 +425,10 @@ export function PaperPreview({
   onDirectComment?: (comment: PreviewDirectComment) => void;
   /** The HTML frame cancelled the selection whose comment carries this clear. */
   onDirectCancel?: (clear: () => void) => void;
+  /** A word double-clicked inside an HTML page, placed in its source. */
+  onSourceSpot?: (spot: PreviewSourceSpot) => void;
+  /** Text selected inside an HTML page, offered Comment as a native selection is. */
+  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -564,11 +634,15 @@ export function PaperPreview({
         key={file.file_id}
         projectId={projectId}
         file={file}
+        text={text}
+        saved={tree.revision === tree.saved_revision}
         savedRevision={tree.saved_revision}
         active={active}
         toolbar={toolbar}
         onDirectComment={onDirectComment}
         onDirectCancel={onDirectCancel}
+        onSourceSpot={onSourceSpot}
+        onSelectionOffer={onSelectionOffer}
       />
     );
   if (file.format === "pdf")

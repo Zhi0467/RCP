@@ -86,6 +86,7 @@ interface Props {
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: (section?: SpaceSettingsSectionId) => void;
+  onRefresh: () => Promise<unknown>;
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
   /** The page's voice session, which a thread's mic binds to that thread. */
   voice: VoiceAgent;
@@ -365,10 +366,17 @@ export function ProjectLanding({
   onRequestIdentityName,
   onExitTeamSpace,
   onOpenSpaceSettings,
+  onRefresh,
   onOpenSignIns,
   voice,
   palette,
 }: Props) {
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    void onRefresh().finally(() => setRefreshing(false));
+  };
   const [groupId, setGroupId] = useState(() =>
     parseProjectGroupHash(typeof window === "undefined" ? "" : window.location.hash),
   );
@@ -619,6 +627,16 @@ export function ProjectLanding({
           onActivate={onActivateProjectTab}
           onClose={onCloseProjectTab}
         />
+        <button
+          className="landing-space-settings landing-refresh"
+          type="button"
+          aria-label="Refresh"
+          aria-busy={refreshing}
+          title="Refresh"
+          onClick={refresh}
+        >
+          <RotateCw className={refreshing ? "spin" : undefined} size={16} aria-hidden="true" />
+        </button>
         {onOpenSpaceSettings && (
           <button
             className="landing-space-settings"

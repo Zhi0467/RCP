@@ -28,6 +28,7 @@ from rcp.artifact_views import (
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
 from rcp.paper.compile import root_candidates
+from rcp.paper.html_preview import source_frame_addon
 from rcp.paper.live import text_replacement
 from rcp.paper.models import Receipt, file_format, paper_file_kind
 
@@ -345,7 +346,9 @@ async def html_preview_content(
             "text/html",
             preview.data,
             frame_addon=_combined_addon(
-                selection_frame_addon(), paper_math_addon(preview.warnings)
+                selection_frame_addon(),
+                paper_math_addon(preview.warnings),
+                source_frame_addon(),
             ),
         )
     except ArtifactRendererUnavailable as exc:
