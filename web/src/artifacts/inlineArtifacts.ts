@@ -127,7 +127,16 @@ export type InlineShellMessage =
   | { kind: "error"; message: string; count: number }
   | { kind: "error-clear" }
   | { kind: "selection"; selection: InlineSelection | null; description: string }
-  | { kind: "source"; word: string; occurrence: number };
+  | { kind: "source"; word: string; occurrence: number }
+  | { kind: "text-offer"; text: string; rect: InlineRect | null };
+
+/** A part of the frame's viewport, each side a fraction of it. */
+export interface InlineRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 export type InlineSelection =
   | Omit<Extract<ArtifactSelection, { kind: "text" }>, "comment">
@@ -164,6 +173,19 @@ export function readInlineShellMessage(
       (data.occurrence as number) >= 0
       ? { kind: "source", word: data.word, occurrence: data.occurrence as number }
       : null;
+  if (data.type === "rcp-paper-selection") {
+    if (typeof data.text !== "string" || data.text.length > 4096) return null;
+    const rect = data.rect as Record<string, unknown> | null;
+    const sides = ["x", "y", "width", "height"] as const;
+    return {
+      kind: "text-offer",
+      text: data.text,
+      rect:
+        rect && typeof rect === "object" && sides.every((side) => fraction(rect[side]))
+          ? (rect as unknown as InlineRect)
+          : null,
+    };
+  }
   if (data.type !== "rcp-artifact-selection" || !("selection" in data)) return null;
   const description = typeof data.description === "string" ? data.description.slice(0, 512) : "";
   if (data.selection === null) return { kind: "selection", selection: null, description: "" };

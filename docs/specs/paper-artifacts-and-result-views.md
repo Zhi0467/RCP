@@ -165,14 +165,15 @@ saves and its other previews need source links and tree images.
 
 ### Commenting on the preview
 
-A native text selection in the preview offers the same Comment button and window
-as chat answers. A drawn area or an HTML selection opens the window directly.
-While a comment window is open, a native selection offers no Comment button. Text
-selects natively, also on touch, except inside an HTML page, which takes a mouse
-or pen. With a mouse or pen, a drag that starts off text draws an area on a PDF
-page or image. An HTML page takes comments only in comment mode, a toggle in the
-panel header that starts off for each file shown, because it turns the page's
-drags into selections for comments.
+A text selection in the preview offers the same Comment button and window as chat
+answers, placed at the selection; inside an HTML page the page reports the selected
+text and where it sits, so it needs no mode. A drawn area, or a selection made in
+an HTML page's comment mode, opens the window directly. While a comment window is
+open, a selection offers no Comment button. Text selects natively, also on touch,
+except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a drag
+that starts off text draws an area on a PDF page or image. An area on an HTML page
+needs comment mode, a toggle in the panel header that starts off for each file
+shown, because it turns the page's drags into area selections.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"

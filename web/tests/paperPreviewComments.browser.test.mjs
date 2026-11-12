@@ -81,8 +81,8 @@ async function openHtmlPreview(t, width) {
           import '/src/styles.css';
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
-          window.comments = []; window.cancelled = []; window.spots = [];
-          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} />);`;
+          window.comments = []; window.cancelled = []; window.spots = []; window.offers = [];
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer)} />);`;
       },
     },
   ]);
@@ -732,5 +732,23 @@ test("a double-clicked word in an HTML preview names its source line", async (t)
   await word().dblclick();
   await page.waitForTimeout(300);
   assert.equal(await page.evaluate(() => window.spots.length), 1);
+  assert.deepEqual(errors, []);
+});
+
+test("text selected in an HTML preview offers Comment beside it, with no comment mode", async (t) => {
+  const { page, errors, release } = await openHtmlPreview(t, 1280);
+  release();
+  await page.evaluate(() => window.show());
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const word = shell.childFrames()[0].childFrames()[0].locator("#word");
+  await word.dblclick();
+  await page.waitForFunction(() => window.offers.some((offer) => offer));
+  const offer = await page.evaluate(() => window.offers.findLast((item) => item));
+  assert.equal(offer.quote, "Select");
+  const box = await word.boundingBox();
+  assert.ok(Math.abs(offer.rect.left - box.x) < 4);
+  assert.ok(Math.abs(offer.rect.top - box.y) < 6);
+  assert.equal(await page.evaluate(() => window.comments.length), 0);
   assert.deepEqual(errors, []);
 });

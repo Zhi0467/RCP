@@ -194,6 +194,14 @@ function linesWhere(path: string, from: number, to: number) {
   return to > from ? `${path}, lines ${from}-${to}` : `${path}, line ${from}`;
 }
 
+/** Text selected inside an HTML preview frame, placed in the window, offered Comment. */
+export interface PreviewSelectionOffer {
+  quote: string;
+  where: string;
+  rect: { left: number; top: number; right: number; bottom: number };
+  clear: () => void;
+}
+
 /** A double-clicked preview point in its source: the file, the lines it renders from, and
  * which occurrence of the clicked word within those lines it is. */
 export interface PreviewSourceSpot {

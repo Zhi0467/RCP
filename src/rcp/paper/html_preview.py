@@ -254,7 +254,8 @@ def read_html_content(
 
 
 def source_frame_addon() -> FrameAddon:
-    """Reports a word the member double-clicked and how often the page's text showed it before."""
+    """Reports a word the member double-clicked, with how often the page's text showed it
+    before, and each text selection with where it sits, for the Comment offer."""
     return FrameAddon(
         frame_script="""
 listen(document,'dblclick',(event)=>{
@@ -274,10 +275,25 @@ listen(document,'dblclick',(event)=>{
   }
   send({kind:'rcp-paper-source',word,occurrence:before.split(word).length-1});
 });
+const unitOf=(value)=>Math.min(1,Math.max(0,value));
+const offerSelection=()=>{
+  const selection=document.getSelection();
+  const text=String(selection||'').trim();
+  if(!text||!selection.rangeCount){send({kind:'rcp-paper-selection',text:''});return;}
+  const box=selection.getRangeAt(0).getBoundingClientRect();
+  const width=innerWidth||1,height=innerHeight||1;
+  send({kind:'rcp-paper-selection',text:text.slice(0,4096),rect:{
+    x:unitOf(box.left/width),y:unitOf(box.top/height),
+    width:unitOf(box.width/width),height:unitOf(box.height/height)}});
+};
+listen(document,'pointerup',(event)=>{if(event.isTrusted) setTimeout(offerSelection,0);});
+listen(document,'keyup',(event)=>{if(event.isTrusted && event.shiftKey) offerSelection();});
 """,
         wrapper_script="""channelListeners.push((value)=>{
   if(value.kind==='rcp-paper-source' && window.parent!==window)
     parentPost({type:'rcp-paper-source',version:1,word:value.word,occurrence:value.occurrence},'*');
+  if(value.kind==='rcp-paper-selection' && window.parent!==window)
+    parentPost({type:'rcp-paper-selection',version:1,text:value.text,rect:value.rect},'*');
 });
 """,
     )

@@ -157,6 +157,24 @@ window.addEventListener("message", (event) => {
       return;
     }
     if (
+      value.type === "rcp-paper-selection" &&
+      value.version === 1 &&
+      typeof value.text === "string"
+    ) {
+      const rect = value.rect;
+      const text = value.text.trim().slice(0, 4096);
+      toChat({
+        type: "rcp-paper-selection",
+        version: 1,
+        text,
+        rect:
+          text && rect && ["x", "y", "width", "height"].every((key) => unit(rect[key]))
+            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+            : null,
+      });
+      return;
+    }
+    if (
       inlineConfig.selectable &&
       commentMode &&
       value.type === "rcp-artifact-selection" &&

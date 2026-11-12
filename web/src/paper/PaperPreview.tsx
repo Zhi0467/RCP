@@ -45,6 +45,7 @@ import {
   htmlSourceSpot,
   rehypeSourceLines,
   type PreviewDirectComment,
+  type PreviewSelectionOffer,
   type PreviewSourceSpot,
 } from "./previewComments";
 import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
@@ -237,6 +238,7 @@ function HtmlPreview({
   onDirectComment,
   onDirectCancel,
   onSourceSpot,
+  onSelectionOffer,
 }: {
   projectId: string;
   file: PaperFile;
@@ -249,6 +251,7 @@ function HtmlPreview({
   onDirectComment?: (comment: PreviewDirectComment) => void;
   onDirectCancel?: (clear: () => void) => void;
   onSourceSpot?: (spot: PreviewSourceSpot) => void;
+  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(false);
@@ -269,6 +272,12 @@ function HtmlPreview({
       if (!saved) return;
       const spot = htmlSourceSpot(file.path, text, word, occurrence);
       if (spot) onSourceSpot?.(spot);
+    },
+    onTextOffer: (offer) => {
+      if (commentMode) return;
+      onSelectionOffer?.(
+        offer && { quote: offer.text, where: file.path, rect: offer.rect, clear: offer.clear },
+      );
     },
     onCancel: (clear) => onDirectCancel?.(clear),
     onSelection: ({ selection, anchor, clear }) => {
@@ -399,6 +408,7 @@ export function PaperPreview({
   onDirectComment,
   onDirectCancel,
   onSourceSpot,
+  onSelectionOffer,
 }: {
   projectId: string;
   file: PaperFile;
@@ -417,6 +427,8 @@ export function PaperPreview({
   onDirectCancel?: (clear: () => void) => void;
   /** A word double-clicked inside an HTML page, placed in its source. */
   onSourceSpot?: (spot: PreviewSourceSpot) => void;
+  /** Text selected inside an HTML page, offered Comment as a native selection is. */
+  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -630,6 +642,7 @@ export function PaperPreview({
         onDirectComment={onDirectComment}
         onDirectCancel={onDirectCancel}
         onSourceSpot={onSourceSpot}
+        onSelectionOffer={onSelectionOffer}
       />
     );
   if (file.format === "pdf")

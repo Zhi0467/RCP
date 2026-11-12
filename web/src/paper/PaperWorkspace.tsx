@@ -47,6 +47,7 @@ import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
 import {
   previewSourceSpot,
+  type PreviewSelectionOffer,
   type PreviewSourceSpot,
   resolvePreviewSelection,
   type PreviewDirectComment,
@@ -182,6 +183,8 @@ export function PaperWorkspace({
       },
       { clear: comment.clear, origin: previewPane.current },
     );
+  const offerPreviewComment = (offer: PreviewSelectionOffer | null) =>
+    comments.offerExternal(offer && { ...offer, origin: previewPane.current });
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
   const segmentLabel = (panel: "write" | "preview" | "coach" | "refs" | "reference") => (
@@ -681,6 +684,7 @@ export function PaperWorkspace({
                 onDirectComment={openPreviewComment}
                 onDirectCancel={comments.cancelExternal}
                 onSourceSpot={locateSpot}
+                onSelectionOffer={offerPreviewComment}
               />
             ) : (
               <PaperPreview
@@ -695,6 +699,7 @@ export function PaperWorkspace({
                 onDirectComment={openPreviewComment}
                 onDirectCancel={comments.cancelExternal}
                 onSourceSpot={locateSpot}
+                onSelectionOffer={offerPreviewComment}
               />
             ))}
         </div>
