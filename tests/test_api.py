@@ -4445,7 +4445,10 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
     )
     assert completed["status"] == "succeeded"
     assert completed["kind"] == "paper_coach"
-    assert completed["result"] == {"messages": [answer]}
+    assert completed["result"] == {
+        "messages": [answer],
+        "artifact_omissions": {"discovery_failed": False},
+    }
     assert completed["applied_revision"] is None
     launch = next(
         receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
@@ -4605,7 +4608,10 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
         resumed_response.json()["operation_id"],
     )
     assert resumed["status"] == "succeeded"
-    assert resumed["result"] == {"messages": [answer]}
+    assert resumed["result"] == {
+        "messages": [answer],
+        "artifact_omissions": {"discovery_failed": False},
+    }
     assert launcher.sessions == [None, session_id]
     assert service.paper.sessions()[0].native_session_id == session_id
 

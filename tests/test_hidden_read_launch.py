@@ -339,7 +339,7 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
         return BrowserGrant()
 
     monkeypatch.setattr(browser_lifecycle, "acquire_turn_browser", acquire)
-    request = SimpleNamespace()
+    request = SimpleNamespace(run_on=None)
     turn = SimpleNamespace(
         request=request,
         workspace=tmp_path,
@@ -358,6 +358,7 @@ async def test_task_browser_admission_receives_resolved_scope(monkeypatch, tmp_p
             request=request,
             turn=turn,
             stage=stage,
+            stages=stage,
             workspace=tmp_path,
             execution_host="",
             execution=None,
