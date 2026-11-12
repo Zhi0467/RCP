@@ -53,7 +53,8 @@ source = b'''<!doctype html><html><body style="margin:0;font:20px Georgia;backgr
 <p id="words" style="margin:24px"><span id="word">Select</span> these preview words.</p>
 <svg id="plot" aria-label="Saved plot" width="220" height="180" viewBox="0 0 220 180" style="margin:0 24px"><rect width="220" height="180" fill="teal"/></svg>
 <button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button>
-<div style="height:1800px"></div></body></html>'''
+<a id="jump" href="#far">Jump</a>
+<div style="height:1800px"></div><p id="far">Far section</p></body></html>'''
 shell, shell_csp = inline_viewer_document('figure.html', 'html', content_url='/html-preview-content', live=None, selectable=True)
 selection = selection_frame_addon()
 selection = replace(selection, frame_script=selection.frame_script + "\\nlisten(privatePort,'message',event=>{if(event.data?.kind==='rcp-artifact-selection-enable') document.documentElement.dataset.selectionReady='true';});")
@@ -750,5 +751,18 @@ test("text selected in an HTML preview offers Comment beside it, with no comment
   assert.ok(Math.abs(offer.rect.left - box.x) < 4);
   assert.ok(Math.abs(offer.rect.top - box.y) < 6);
   assert.equal(await page.evaluate(() => window.comments.length), 0);
+  assert.deepEqual(errors, []);
+});
+
+test("an in-page link in an HTML preview scrolls to its target", async (t) => {
+  const { page, errors, release } = await openHtmlPreview(t, 1280);
+  release();
+  await page.evaluate(() => window.show());
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const content = shell.childFrames()[0].childFrames()[0];
+  assert.equal(await content.evaluate(() => scrollY), 0);
+  await content.locator("#jump").click();
+  await content.waitForFunction(() => scrollY > 1000);
   assert.deepEqual(errors, []);
 });

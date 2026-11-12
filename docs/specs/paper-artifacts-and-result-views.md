@@ -136,6 +136,7 @@ counts every expanded reference against the limits in `limits.py`. Missing,
 unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
+A `#id` link scrolls the page to the element with that id or name.
 
 On entry and when the saved Paper revision or HTML bytes change, the preview
 checks its member-only `/preview/state` route and hides the prior page behind

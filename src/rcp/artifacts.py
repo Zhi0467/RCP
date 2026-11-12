@@ -331,6 +331,15 @@ listen(window,'error',(event)=>{
 listen(window,'unhandledrejection',(event)=>recordError(reasonGetter(event)),true);
 listen(window,'click',(event)=>{
   if(!event.isTrusted || !(event.target instanceof Element)) return;
+  const jump=closest(event.target,'a[data-rcp-fragment]');
+  if(jump){
+    event.preventDefault();
+    let id=jump.getAttribute('data-rcp-fragment');
+    try { id=decodeURIComponent(id); } catch {}
+    const target=document.getElementById(id) || document.getElementsByName(id)[0];
+    if(target) target.scrollIntoView();
+    return;
+  }
   const anchor=closest(event.target,'a[data-rcp-href]');
   if(!anchor) return;
   event.preventDefault(); event.stopImmediatePropagation();
