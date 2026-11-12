@@ -798,7 +798,9 @@ empty); `PUT /api/projects/{id}/group` moves one project.
 The header identity panel edits display name and shows a copyable user id.
 An unnamed personal owner's Sign in names their durable identity; authentication
 is separate. Team members manage their credential through the team boundary.
-Pending invitations appear here. Membership-hidden projects never appear locked;
+Pending invitations appear here. The space home re-reads them every minute
+and when the window regains focus. Its Refresh button, left of Space settings,
+re-reads the project index and invitations at once. Membership-hidden projects never appear locked;
 access loss closes their tabs and returns to index.
 
 Team Devices lists the member's unexpired sessions, refreshing on open, revoke,

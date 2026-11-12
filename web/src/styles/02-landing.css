@@ -635,6 +635,9 @@
   background: var(--landing-sheet);
   border-color: color-mix(in srgb, var(--landing-rule) 72%, var(--landing-ink));
 }
+.landing-refresh + .landing-space-settings {
+  margin-left: 8px;
+}
 .landing-space-settings + .landing-identity-menu {
   margin-left: 8px;
 }

@@ -1,4 +1,6 @@
 export const NOTICE_TIMEOUT_MS = 3000;
+/** The space home re-reads invitations this often, and whenever the window regains focus. */
+export const INVITATION_REFRESH_MS = 60_000;
 export const CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD = 320;
 export const CHAT_SCROLL_BOTTOM_TOLERANCE_PX = 48;
 export const CHAT_ARROW_SCROLL_STEP_PX = 40;

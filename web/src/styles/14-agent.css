@@ -1181,7 +1181,8 @@
   .space-header .landing-identity-trigger > svg {
     display: none;
   }
-  .space-header .landing-space-settings + .landing-identity-menu {
+  .space-header .landing-space-settings + .landing-identity-menu,
+  .space-header .landing-refresh + .landing-space-settings {
     margin-left: 6px;
   }
   .agent-mode .landing-main {

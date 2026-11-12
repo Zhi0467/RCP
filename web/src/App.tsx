@@ -332,7 +332,11 @@ import {
   type TextScaleAction,
 } from "./ui/textScale";
 import { useTheme } from "./ui/useTheme";
-import { IDEMPOTENT_TASK_START_TIMEOUT_MS, NOTICE_TIMEOUT_MS } from "./core/uiConstants";
+import {
+  IDEMPOTENT_TASK_START_TIMEOUT_MS,
+  INVITATION_REFRESH_MS,
+  NOTICE_TIMEOUT_MS,
+} from "./core/uiConstants";
 import {
   createWebMcpToolRegistry,
   episodeStopRefusal,
@@ -2066,6 +2070,21 @@ function MemberApp({
     refresh: refreshConsolidation,
     updateFlag: updateEvidenceFlag,
   } = useConsolidation(backendSessionReady ? apiBase : "", String(graph.revision));
+  const refreshSpaceHome = useCallback(
+    () => Promise.all([loadProjectIndex().catch(() => undefined), refreshProjectInvitations()]),
+    [loadProjectIndex, refreshProjectInvitations],
+  );
+  const spaceHomeOpen = backendSessionReady && !projectId && !setupOpen;
+  useEffect(() => {
+    if (!spaceHomeOpen) return;
+    const reread = () => void refreshProjectInvitations();
+    const timer = window.setInterval(reread, INVITATION_REFRESH_MS);
+    window.addEventListener("focus", reread);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", reread);
+    };
+  }, [spaceHomeOpen, refreshProjectInvitations]);
   const refreshProjectIndexQuietly = useCallback(() => {
     // The landing count follows Caught up; a failed index read keeps the old list.
     void loadProjectIndex().catch(() => undefined);
@@ -4581,6 +4600,7 @@ function MemberApp({
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={openSpaceSettings}
+          onRefresh={refreshSpaceHome}
           onOpenSignIns={openSignIns}
           voice={voice}
         />
