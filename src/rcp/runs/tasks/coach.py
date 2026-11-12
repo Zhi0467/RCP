@@ -47,7 +47,12 @@ from rcp.machine_cards import card
 from rcp.paper import PaperLive, PaperService, PaperSnapshot, WritingSession
 from rcp.paper.changes import InvalidChanges, get_paper_changes, read_paper_changes
 from rcp.providers import ProviderSkillReference
-from rcp.runs.chat import _validated_local_chat_resume_stage, open_remote_conversation_stage
+from rcp.runs.chat import (
+    _discover_chat_artifacts,
+    _prepare_local_artifact_directory,
+    _validated_local_chat_resume_stage,
+    open_remote_conversation_stage,
+)
 from rcp.runs.patch_validator import (
     stage_patch_validation_mailbox,
 )
@@ -367,15 +372,19 @@ async def _finish_coach_turn(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
 ) -> list[str]:
-    """After the final round, publish each attached artifact the coach changed in place,
-    then apply directly when the turn asked for it. Returns the published artifacts' frames."""
+    """After the final round, publish the turn's new artifacts and each attached artifact the
+    coach changed in place, then apply directly when the turn asked for it. Returns the
+    published artifacts' frames."""
     token = _task_token(execution)
+    directory = turn_artifact_directory(workspace, token)
     published = publish_session_artifacts(
         execution,
         edited_artifacts(execution, None, request.attachments),
-        turn_artifact_directory(workspace, token),
+        directory,
         remote_stage,
-        artifacts=[],
+        artifacts=_discover_chat_artifacts(
+            execution, token, Path(directory), remote_stage, service=service
+        ),
         service=service,
     )
     if request.mode == "apply_directly":
@@ -953,13 +962,22 @@ async def _prepare_coach_launch(
             {"alias": item.alias, "host": item.host, "path": item.path}
             for item in context.repositories
         ]
+        artifact_path = (
+            remote_stage.prepare_artifact_directory(token, reuse=False)
+            if remote_stage is not None
+            else _prepare_local_artifact_directory(workspace, token, reuse=False)
+        )
         edit_paths = sync_session_artifacts(
             execution,
             edited_artifacts(execution, None, request.attachments),
-            turn_artifact_directory(workspace, token),
+            artifact_path,
             remote_stage,
         )
-        edit_dirs = list(dict.fromkeys(Path(path).parent for path in edit_paths.values()))
+        edit_dirs = list(
+            dict.fromkeys(
+                [Path(str(artifact_path)), *(Path(path).parent for path in edit_paths.values())]
+            )
+        )
         attachment_pointers, attachment_dirs = stage_turn_attachments(
             data_dir,
             request.attachment_batch_id,
@@ -1013,6 +1031,7 @@ async def _prepare_coach_launch(
                 PromptFactory.paper_coach_task_contract(
                     paper_path=str(snapshot_path),
                     changes_path=str(changes_path),
+                    artifact_path=str(artifact_path),
                     graph_path=context.graph_path,
                     research_path=context.research_md_path,
                     repositories=repositories,
@@ -1029,6 +1048,7 @@ async def _prepare_coach_launch(
             values = _coach_master_values(
                 paper_path=str(current.paper_path),
                 changes_path=str(workspace / current.changes),
+                artifact_path=str(artifact_path),
                 graph_path=context.graph_path,
                 research_path=context.research_md_path,
                 repositories=repositories,
@@ -1303,6 +1323,7 @@ def _coach_master_values(
     *,
     paper_path: str,
     changes_path: str,
+    artifact_path: str,
     graph_path: str,
     research_path: str,
     repositories: list[dict[str, str]],
@@ -1313,6 +1334,7 @@ def _coach_master_values(
     return {
         "paper": paper_path,
         "changes": changes_path,
+        "artifacts": artifact_path,
         "graph": graph_path,
         "research_rendering": research_path,
         "repositories": {

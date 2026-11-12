@@ -40,8 +40,17 @@ class CoachRemoteStage(_LocalBackedRemoteStage):
 
     def prepare_artifact_directory(self, scope_id, *, reuse):
         target = self.workspace / "turns" / scope_id / "artifacts"
+        if not reuse:
+            shutil.rmtree(target.parent, ignore_errors=True)
         target.mkdir(parents=True, exist_ok=reuse)
         return target
+
+    def list_artifact_files(self, scope_id):
+        folder = self.workspace / "turns" / scope_id / "artifacts"
+        return [(item.name, item.stat().st_size) for item in folder.iterdir() if item.is_file()]
+
+    def read_artifact_bytes(self, scope_id, name, *, max_bytes):
+        return (self.workspace / "turns" / scope_id / "artifacts" / name).read_bytes()[:max_bytes]
 
     def read_workspace_directory(self, name, **limits):
         from rcp.regular_tree_reader import read_regular_tree
@@ -194,7 +203,7 @@ async def test_saved_snapshot_refreshes_same_session_only_affected_files(
             assert (base / "paper.md").stat().st_mode & 0o222 == 0
             assert (base / "other.md").exists() == (len(paths) == 1)
             assert kwargs["capability"] == "paper_suggest"
-            assert len(kwargs["write_dirs"]) == 1
+            assert len(kwargs["write_dirs"]) == 2
             if len(paths) > 1:
                 assert str(base) in _prompt
                 assert str(kwargs["write_dirs"][0]) in _prompt
@@ -448,7 +457,7 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
             assert_attachment_launch(request, kwargs["read_dirs"], contracts)
             assert str(Path(state_repository.path) / ".research" / "graph.json") in contracts
             assert str(Path(state_repository.path) / ".research" / "research.md") in contracts
-            assert len(kwargs["write_dirs"]) == 1
+            assert len(kwargs["write_dirs"]) == 2
             output_dir = kwargs["write_dirs"][0]
             assert output_dir.is_relative_to(stage.workspace)
             snapshot = staged_snapshots[-1]
@@ -851,3 +860,26 @@ async def test_coach_launch_oserror_propagates(coach, monkeypatch):
     monkeypatch.setattr(service, "coach_context", fail)
     with pytest.raises(OSError, match="unreadable launch input"):
         await run_coach(service, cast(AgentLauncher, None), data)
+
+
+@pytest.mark.asyncio
+async def test_a_coach_preview_in_its_artifact_folder_reaches_the_reply(coach):
+    service, _live, data = coach
+
+    class Launcher:
+        async def stream(self, _provider, prompt, **kwargs):
+            [folder] = [
+                Path(path)
+                for path in kwargs["write_dirs"]
+                if Path(path).name == "artifacts" and Path(path).parent.parent.name == "turns"
+            ]
+            (folder / "diagram.svg").write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>'
+            )
+            yield AgentEvent(event="answer", text="![Diagram](diagram.svg)")
+            yield AgentEvent(event="done")
+
+    events = await run_coach(service, cast(AgentLauncher, Launcher()), data)
+    assert not [event.text for event in events if event.event == "error"]
+    [artifact] = [event.artifact for event in events if event.event == "artifact"]
+    assert artifact.name == "diagram.svg"

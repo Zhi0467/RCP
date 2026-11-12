@@ -411,11 +411,14 @@ do not block collection. Scripts intended for the Paper belong under `files/`
 like any other deliverable. RCP validates the bounded tree's paths and regular
 files, and validates the declared Paper output together or rejects it all. It then
 diffs the output against the snapshot to create cards. A rename and its dependent edits form one group. The
-coach writes no diffs or line numbers.
+coach writes no diffs or line numbers. Like a chat turn, each coach turn also has
+its own artifact folder: a preview, diagram, or draft figure it writes there is
+published with the reply and embeds in it, following
+[Artifacts inside a reply](#artifacts-inside-a-reply).
 
 Execution follows [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
 Remote snapshots are fixed stage inputs, never the live publication directory.
-The changes folder and attached saved-artifact folders are writable under the
+The changes folder, the turn's artifact folder, and attached saved-artifact folders are writable under the
 [containment contract](providers-and-containment.md#provider-enforcement).
 Bounded read-back refuses symlinks and hardlinks and
 uses the same card collection. Shared supervised passes, process receipts, and
