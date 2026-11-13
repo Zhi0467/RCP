@@ -417,16 +417,14 @@ export function PaperGitChanges({
             ))}
           </ul>
         )}
-        {status.conflicts > 0 && (
-          <button
-            className="button compact paper-git-refresh"
-            disabled={busy}
-            onClick={() => void git.run(() => paperGit(apiBase, "/conflicts/refresh", "POST"))}
-          >
-            <RefreshCw size={14} />
-            Refresh from GitHub
-          </button>
-        )}
+        <button
+          className="button compact paper-git-refresh"
+          disabled={busy}
+          onClick={() => void git.run(() => paperGit(apiBase, "/conflicts/refresh", "POST"))}
+        >
+          <RefreshCw size={14} />
+          Refresh from GitHub
+        </button>
         <PaperChanges
           apiBase={apiBase}
           changes={changes}
