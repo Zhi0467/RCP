@@ -431,12 +431,11 @@ class PaperGit:
                 self.directory(project_id),
                 ["ls-remote", "--heads", remote_url(link.repository)],
             )
-        names = sorted(
+        return sorted(
             line.split(b"\trefs/heads/", 1)[1].decode(errors="replace")
             for line in output.splitlines()
             if b"\trefs/heads/" in line
         )
-        return names[: limits.PAPER_GIT_BRANCHES_MAX]
 
     def switch(self, project_id: str, branch: str, *, create: bool):
         with self.lock(project_id):
