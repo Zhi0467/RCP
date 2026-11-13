@@ -500,3 +500,73 @@ def test_one_changed_file_diff_is_bounded(sync, monkeypatch: pytest.MonkeyPatch)
     capped = manager.file_diff("p", "paper.md")
     assert len(capped["lines"]) == 2 and capped["more"] > 0
     assert manager.file_diff("p", "missing.md")["lines"] == []
+
+
+def test_switch_branch_carries_unpushed_edits_onto_the_branch_files(sync):
+    manager, live, remote = sync
+    base = "".join(f"line {i}\n" for i in range(30))
+    main = commit_remote(
+        remote, {"paper.md": GitEntry(base.encode()), "main-only.md": GitEntry(b"main")}
+    )
+    review = build_commit(
+        remote,
+        {
+            "paper.md": GitEntry(base.replace("line 25\n", "reviewed\n").encode()),
+            "review.md": GitEntry(b"review"),
+        },
+        main,
+        "review",
+        "Coauthor",
+        "coauthor",
+    )
+    _git(remote, ["update-ref", "refs/heads/review", review])
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    assert manager.branches("p") == ["main", "review"]
+    paper = next(file for file in saved(live).files if file.path == "paper.md")
+    human_edit(live, paper.file_id, base.replace("line 5\n", "local\n"))
+
+    status = manager.switch("p", "review", create=False)
+
+    files = {file.path: file.text for file in saved(live).files}
+    assert set(files) == {"paper.md", "review.md"}
+    assert "local\n" in files["paper.md"] and "reviewed\n" in files["paper.md"]
+    assert (status["branch"], status["unpushed"]) == ("review", True)
+    commit = manager.push("p", "carry", "Member", "member")
+    assert _git(remote, ["rev-parse", "refs/heads/review"]).decode().strip() == commit
+    assert _git(remote, ["rev-parse", "refs/heads/main"]).decode().strip() == main
+
+
+def test_new_branch_starts_at_the_synced_commit_and_takes_the_next_push(sync):
+    manager, live, remote = sync
+    main = commit_remote(remote, {"paper.md": GitEntry(b"draft\n")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    human_edit(live, saved(live).files[0].file_id, "edited\n")
+
+    status = manager.switch("p", "camera-ready", create=True)
+
+    assert (status["branch"], status["unpushed"]) == ("camera-ready", True)
+    assert saved(live).files[0].text == "edited\n"
+    assert _git(remote, ["rev-parse", "refs/heads/camera-ready"]).decode().strip() == main
+    commit = manager.push("p", "edit", "Member", "member")
+    assert read_tree(remote, commit)["paper.md"].data == b"edited\n"
+    assert _git(remote, ["rev-parse", "refs/heads/main"]).decode().strip() == main
+
+
+def test_switch_refusals_keep_the_current_branch(sync):
+    from rcp.paper.git_sync import GitError
+
+    manager, live, remote = sync
+    commit_remote(remote, {"paper.md": GitEntry(b"draft\n")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    with pytest.raises(GitError):
+        manager.switch("p", "missing", create=False)
+    with pytest.raises(GitError):
+        manager.switch("p", "main", create=True)
+    with pytest.raises(GitError):
+        manager.switch("p", "bad..name", create=True)
+    status = manager.status("p")
+    assert (status["branch"], status["last_error"]) == ("main", "")
+    assert saved(live).files[0].text == "draft\n"

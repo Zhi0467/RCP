@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
 import { EditorView } from "@codemirror/view";
-import { Download, FileWarning, History, LoaderCircle, PanelLeft, RotateCcw } from "lucide-react";
+import {
+  Download,
+  FileWarning,
+  History,
+  LoaderCircle,
+  PanelLeft,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { api } from "../core/api";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
@@ -33,7 +41,7 @@ import {
   type PaperReference,
 } from "./PaperReferences";
 import { PaperExport } from "./PaperExport";
-import { PaperGit } from "./PaperGit";
+import { PaperGitChanges, PaperGitDiff, PaperGitPill, usePaperGit } from "./PaperGit";
 import { decidePaperGit, PAPER_GIT_TASK } from "./gitSync";
 import { findReference } from "./referenceFiles";
 import { citation } from "./citeKeys";
@@ -390,6 +398,29 @@ export function PaperWorkspace({
       change.task_id === PAPER_GIT_TASK &&
       (change.state === "pending" || change.state === "outdated"),
   );
+  const gitRefresh = `${tree?.revision}:${gitChanges.map((change) => `${change.change_id}:${change.state}`).join("|")}`;
+  const git = usePaperGit(apiBase, gitRefresh, () => {
+    refresh();
+    void changeFeed.refresh();
+  });
+  const gitLinked = git.status?.state === "linked";
+  const [sideTab, setSideTab] = useState<"files" | "changes">("files");
+  const [diffPath, setDiffPath] = useState<string | null>(null);
+  const changesTab = gitLinked && sideTab === "changes";
+  const shownDiff = gitLinked ? diffPath : null;
+  const changeCount = git.files.length + (git.status?.conflicts ?? 0);
+  const sideTabs = gitLinked ? (
+    <div className="segmented paper-grow paper-side-tabs" role="group" aria-label="Sidebar">
+      {(["files", "changes"] as const).map((tab) => (
+        <button key={tab} aria-pressed={sideTab === tab} onClick={() => setSideTab(tab)}>
+          {tab === "files" ? "Files" : "Changes"}
+          {tab === "changes" && changeCount > 0 && (
+            <span className="paper-tab-count">{changeCount}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  ) : undefined;
   const act = async (id: string, action: PaperChangeAction) => {
     try {
       if (gitChanges.some((change) => change.group_id === id))
@@ -474,20 +505,49 @@ export function PaperWorkspace({
       style={split.style}
     >
       <div className="paper-files-column">
-        <PaperFiles
-          apiBase={apiBase}
-          projectId={project.id}
-          files={tree?.files ?? []}
-          selected={file?.file_id ?? null}
-          onSelect={(id, existsAt) => {
-            setSelected(id, existsAt);
-            setFilesOpen(false);
-            switchView("write", id);
-          }}
-          onFold={fold}
-          onChanged={refresh}
-          exportControl={phone ? <PaperExport projectId={project.id} file={file} /> : undefined}
-        />
+        {changesTab ? (
+          <aside className="paper-box paper-files paper-git-side">
+            <header className="paper-bar">
+              {sideTabs}
+              <button className="icon-button" aria-label="Fold files" onClick={fold}>
+                <PanelLeft size={16} />
+              </button>
+            </header>
+            <PaperGitChanges
+              git={git}
+              changes={gitChanges}
+              openPath={shownDiff}
+              onAction={act}
+              onLocate={(change) => {
+                setDiffPath(null);
+                setFilesOpen(false);
+                locate(changeFocus(change));
+              }}
+              onOpenDiff={(path) => {
+                setDiffPath(path);
+                setFilesOpen(false);
+                switchView("write");
+              }}
+            />
+          </aside>
+        ) : (
+          <PaperFiles
+            title={sideTabs}
+            apiBase={apiBase}
+            projectId={project.id}
+            files={tree?.files ?? []}
+            selected={file?.file_id ?? null}
+            onSelect={(id, existsAt) => {
+              setDiffPath(null);
+              setSelected(id, existsAt);
+              setFilesOpen(false);
+              switchView("write", id);
+            }}
+            onFold={fold}
+            onChanged={refresh}
+            exportControl={phone ? <PaperExport projectId={project.id} file={file} /> : undefined}
+          />
+        )}
         {!phone && <PaperReferences {...references} folded onChoose={chooseReference} />}
       </div>
       <main className="paper-box paper-editor-box" id="paper-editor-pane" ref={split.editor}>
@@ -495,10 +555,20 @@ export function PaperWorkspace({
           <button className="icon-button paper-show-files" aria-label="Show files" onClick={unfold}>
             <PanelLeft size={16} />
           </button>
-          <strong className="paper-path" title={file?.path}>
-            {file?.path ?? "Paper"}
+          <strong className="paper-path" title={shownDiff ?? file?.path}>
+            {shownDiff ?? file?.path ?? "Paper"}
           </strong>
-          {file && <span className="paper-format">{file.format}</span>}
+          {shownDiff ? (
+            <button
+              className="icon-button"
+              aria-label="Close diff"
+              onClick={() => setDiffPath(null)}
+            >
+              <X size={16} />
+            </button>
+          ) : (
+            file && <span className="paper-format">{file.format}</span>
+          )}
           <span className="paper-grow" />
           {strandedElsewhere && (
             <button
@@ -572,17 +642,7 @@ export function PaperWorkspace({
               <RotateCcw size={16} />
             </button>
           )}
-          <PaperGit
-            apiBase={apiBase}
-            refreshKey={`${tree?.revision}:${gitChanges.map((change) => `${change.change_id}:${change.state}`).join("|")}`}
-            changes={gitChanges}
-            onAction={act}
-            onChanged={() => {
-              refresh();
-              void changeFeed.refresh();
-            }}
-            onLocate={(change) => locate(changeFocus(change))}
-          />
+          <PaperGitPill git={git} />
           <button
             className="icon-button paper-history-button"
             aria-label="Paper history"
@@ -610,7 +670,13 @@ export function PaperWorkspace({
           </div>
           {phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </div>
-        <div className="paper-writing-pane" ref={writingPane} data-file={document?.key.file}>
+        {shownDiff && <PaperGitDiff git={git} path={shownDiff} refreshKey={gitRefresh} />}
+        <div
+          className="paper-writing-pane"
+          ref={writingPane}
+          data-file={document?.key.file}
+          style={shownDiff ? { display: "none" } : undefined}
+        >
           {document ? (
             <LiveEditor
               owner={document}

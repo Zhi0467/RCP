@@ -690,28 +690,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.paper-git-count {
-  color: var(--coral);
-  font-weight: 700;
-}
-.paper-git-unpushed {
-  color: var(--paper-accent);
-  flex: none;
-}
 .paper-git-dialog {
   color: var(--paper-ink);
   width: min(520px, calc(100vw - 20px));
-}
-.paper-git-dialog .paper-bar > svg {
-  flex: none;
-}
-.paper-git-head {
-  color: var(--paper-muted);
-  font-size: 12px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .paper-git-body,
 .paper-git-body form {
@@ -773,9 +754,6 @@
 .paper-git-files li[data-status="deleted"] span {
   text-decoration: line-through;
 }
-.paper-git-files li.paper-git-changed {
-  display: block;
-}
 .paper-git-file {
   align-items: center;
   background: none;
@@ -795,26 +773,132 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.paper-git-file > svg {
-  color: var(--paper-muted);
-  flex: none;
-}
-.paper-git-changed .paper-change-diff {
-  margin: 2px 0 8px;
-}
 .paper-change-diff .hunk {
   color: var(--paper-muted);
 }
-.paper-git-files em {
+.paper-git-files em,
+.paper-git-list em {
   color: var(--paper-muted);
   flex: none;
   font-style: normal;
 }
-.paper-git-files .paper-git-added {
+.paper-git-list .paper-git-added {
   color: var(--forest);
 }
-.paper-git-files .paper-git-removed {
+.paper-git-list .paper-git-removed {
   color: var(--coral);
+}
+.paper-side-tabs {
+  min-width: 0;
+}
+.paper-side-tabs button {
+  flex: 1;
+  gap: 6px;
+}
+.paper-tab-count {
+  color: var(--paper-muted);
+  font-variant-numeric: tabular-nums;
+}
+.paper-git-changes {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.paper-git-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 8px 8px;
+}
+.paper-git-scroll > * {
+  flex: none;
+}
+.paper-git-refresh {
+  align-self: flex-start;
+}
+.paper-git-list {
+  font: 12px/1.4 var(--mono);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.paper-git-list .paper-git-file {
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 0 8px;
+}
+.paper-git-list button.paper-git-file:hover,
+.paper-git-list .paper-git-file[aria-pressed="true"] {
+  background: var(--paper);
+}
+.paper-git-list li[data-status="skipped"] {
+  color: var(--paper-muted);
+}
+.paper-git-commit {
+  border-top: 1px solid var(--paper-rule);
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+.paper-git-commit textarea {
+  background: var(--paper-sheet);
+  border: 1px solid var(--paper-rule);
+  border-radius: 7px;
+  color: var(--paper-ink);
+  font: inherit;
+  padding: 7px 9px;
+  resize: none;
+}
+.paper-git-diff-view {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.paper-git-diff-view .paper-change-diff {
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+  flex: 1;
+  margin: 0;
+  max-height: none;
+  overflow: auto;
+  padding: 10px 0;
+}
+.paper-git-diff-view .paper-change-diff > div {
+  padding: 0 16px;
+}
+.paper-git-binary {
+  color: var(--paper-muted);
+  padding: 14px;
+}
+.paper-git-menu {
+  width: min(300px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.paper-git-filter {
+  background: var(--paper-sheet);
+  border: 1px solid var(--paper-rule);
+  border-radius: 7px;
+  color: var(--paper-ink);
+  font: inherit;
+  margin: 2px;
+  padding: 7px 9px;
+}
+.paper-git-menu .paper-git-new {
+  color: var(--muted);
+  font-weight: 500;
+}
+.paper-git-menu .paper-git-failure {
+  padding: 4px 8px;
 }
 .paper-git-actions {
   align-items: center;
@@ -836,7 +920,9 @@
     display: none;
   }
   .paper-git-dialog .button,
-  .paper-git-body input {
+  .paper-git-body input,
+  .paper-git-commit .button,
+  .paper-git-list .paper-git-file {
     min-height: 44px;
   }
 }
