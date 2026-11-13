@@ -760,15 +760,14 @@ def _kept_artifact_references(
                 )
             if descriptor.kept_at is None:
                 continue
-            if descriptor.kept_filename is None:
-                # Keep since the artifact store records only `kept_at`; the bytes
-                # are captured from the store's own inventory, so the project's
-                # store must hold that artifact as kept.
-                if descriptor.artifact_id not in store_kept:
-                    raise BackupProjectInventoryUnavailable(
-                        "A kept task artifact is missing from the project's artifact store."
-                    )
+            # The store's own inventory captures the bytes of every artifact it
+            # holds as kept, including a legacy kept file the importer moved in.
+            if descriptor.artifact_id in store_kept:
                 continue
+            if descriptor.kept_filename is None:
+                raise BackupProjectInventoryUnavailable(
+                    "A kept task artifact is missing from the project's artifact store."
+                )
             revision = unresolved_revisions.get((task.operation_id, descriptor.artifact_id))
             references.append(
                 BackupKeptArtifactReference(

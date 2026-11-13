@@ -489,6 +489,8 @@ Temporary expiry uses the stage's last-touch time. Repository-kept originals nev
 expire. Unresolved candidates import independently with full retention. Errors
 distinguish retryable backoff from terminal missing, expired, or invalid sources.
 Import cannot replace artifacts. Maintenance and shutdown drain active passes.
+Once the store holds an imported repository-kept original as kept, backup and
+transfer read its bytes from the store, never the original file.
 
 HTML follows [invariant 10e](../../AGENTS.md#stable-invariants). It uses an opaque
 sandbox with no RCP access or navigation, popups, forms, downloads, or ordinary

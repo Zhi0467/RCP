@@ -252,7 +252,7 @@
   "src/rcp/server_ops/_local_primitives.py": {"comment": 1},
   "src/rcp/server_ops/application_validation.py": {"comment": 41},
   "src/rcp/server_ops/backup.py": {"comment": 3},
-  "src/rcp/server_ops/backup_capture.py": {"comment": 10},
+  "src/rcp/server_ops/backup_capture.py": {"comment": 9},
   "src/rcp/server_ops/backup_models.py": {"comment": 7},
   "src/rcp/server_ops/backup_paper.py": {"comment": 3},
   "src/rcp/server_ops/backup_project_files.py": {"comment": 5},
