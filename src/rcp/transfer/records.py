@@ -24,7 +24,11 @@ from pydantic import (
 
 from rcp.artifacts import kept_binding_is_complete
 from rcp.core.models import GraphBranchMetadata
-from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PaperSection
+from rcp.server_ops.backup_paper import (
+    PAPER_PROJECT_TABLES,
+    PAPER_SECTION_TABLES,
+    PaperSection,
+)
 from rcp.transfer.archive import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -73,7 +77,7 @@ TRANSFER_RECORD_TABLES = frozenset(
     }
 )
 
-TRANSFER_RECORD_TABLES |= frozenset(PAPER_PROJECT_TABLES)
+TRANSFER_RECORD_TABLES |= frozenset(PAPER_SECTION_TABLES)
 
 TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
@@ -108,6 +112,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "paper_git_links",
         "paper_state",
         "paper_turn_files",
+        "paper_migrations",
+        *(table for table in PAPER_PROJECT_TABLES if table not in PAPER_SECTION_TABLES),
         "episode_merge_request_receipts",
         "episode_isolations",
         "episode_isolation_states",

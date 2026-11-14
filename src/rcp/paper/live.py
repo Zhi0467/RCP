@@ -226,9 +226,15 @@ class _Read:
 
 
 class PaperLive:
-    def __init__(self, store: AppStore, folder_for: Callable[[str], PaperFolder]):
+    def __init__(
+        self,
+        store: AppStore,
+        folder_for: Callable[[str], PaperFolder],
+        prepare: Callable[[str], object] = lambda _project: None,
+    ):
         self.store = store
         self.folder_for = folder_for
+        self.prepare = prepare
         self.loop: asyncio.AbstractEventLoop | None = None
         self.rooms: dict[tuple[str, str], Room] = {}
         self.projects: dict[str, _Project] = {}
@@ -277,7 +283,7 @@ class PaperLive:
 
     async def start(self) -> None:
         if self.loop is not None and self.loop.is_closed():
-            self.__init__(self.store, self.folder_for)
+            self.__init__(self.store, self.folder_for, self.prepare)
         await self._start()
 
     @_owned
@@ -364,6 +370,7 @@ class PaperLive:
         return state
 
     def _initialize(self, project: str) -> _Project:
+        self.prepare(project)
         folder = self.folder_for(project)
         with self.store.connection() as conn:
             conn.execute(

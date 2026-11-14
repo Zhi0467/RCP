@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
 import time
@@ -204,6 +205,56 @@ def rename(root: Path, source: str, destination: str) -> None:
             _rename(source_directory, source_name, target_directory, target_name, _NO_REPLACE_FLAG)
             os.fsync(target_directory)
         os.fsync(source_directory)
+
+
+def install(root: Path, files: dict[str, bytes]) -> bool:
+    """Fill an empty root with a whole tree through a sibling staging directory.
+
+    A non-empty root is already installed and stays untouched. A staging
+    directory left by an interrupted install is deleted first.
+    """
+    with os.scandir(root) as entries:
+        if any(True for _ in entries):
+            return False
+    staging = root.parent / f".install-{root.name}"
+    if staging.is_symlink() or staging.is_file():
+        staging.unlink()
+    elif staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(mode=0o700)
+    for path, data in sorted(files.items()):
+        write(staging, path, data, None)
+    os.rename(staging, root)
+    descriptor = os.open(root.parent, _DIRECTORY_FLAGS)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    return True
+
+
+def change_project_folder(data_dir: Path, project_id: str, destination: str | None) -> None:
+    """Move a project's folder to another project id, or remove it when none is named."""
+    parent = data_dir / "paper"
+    root = parent / safe_component(project_id)
+    if not root.exists() and not root.is_symlink():
+        return
+    if not stat.S_ISDIR(parent.lstat().st_mode):
+        raise ValueError("Paper folder cannot be a symlink")
+    if destination is None:
+        if root.is_symlink() or not root.is_dir():
+            root.unlink()
+        else:
+            shutil.rmtree(root)
+        return
+    target = parent / safe_component(destination)
+    if (
+        not stat.S_ISDIR(root.lstat().st_mode)
+        or target.is_symlink()
+        or (target.exists() and (not target.is_dir() or any(target.iterdir())))
+    ):
+        raise ValueError("Paper folder cannot move onto an existing folder")
+    os.rename(root, target)
 
 
 def _result(sha: str | None, displaced: bytes | None, expect_sha: str | None) -> WriteResult:
@@ -404,8 +455,11 @@ def _encoded_result(result: WriteResult) -> dict:
 
 def handle(request: dict, data_dir: Path) -> dict:
     """One JSON request against `<data_dir>/paper/<project_id>`."""
-    root = paper_root(data_dir, request["project_id"])
     operation = request["op"]
+    if operation == "change":
+        change_project_folder(data_dir, request["project_id"], request["destination"])
+        return {}
+    root = paper_root(data_dir, request["project_id"])
     settle = {
         "settle_seconds": request.get("settle_seconds", 0.0),
         "settle_max_seconds": request.get("settle_max_seconds", 0.0),
@@ -428,6 +482,9 @@ def handle(request: dict, data_dir: Path) -> dict:
     if operation == "rename":
         rename(root, request["source"], request["destination"])
         return {}
+    if operation == "install":
+        files = {path: base64.b64decode(data) for path, data in request["files"].items()}
+        return {"installed": install(root, files)}
     raise ValueError(f"unknown Paper folder operation: {operation}")
 
 

@@ -18,6 +18,7 @@ from rcp.core.models import HiddenReadScope
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
 from rcp.machine_cards import host_of
+from rcp.paper.folder import change_project_paper
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, ProjectRecord
@@ -172,6 +173,7 @@ def _retry_memory_cleanup(store: AppStore) -> None:
         for pending in pending_memory:
             try:
                 project = ProjectRecord.model_validate_json(pending["project_json"])
+                change_project_paper(store, project, None)
                 change_project_memory(store, project, None)
                 with store.connection() as connection:
                     connection.execute(

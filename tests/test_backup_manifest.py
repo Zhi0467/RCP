@@ -68,7 +68,13 @@ FINGERPRINT = "SHA256:" + ("A" * 43)
 
 
 def test_backup_root_classification_is_an_exact_closed_policy() -> None:
-    assert {"project-sources", "artifacts", "agent-threads", "memory"} == BACKUP_APP_DATA_CAPTURED
+    assert {
+        "project-sources",
+        "artifacts",
+        "agent-threads",
+        "memory",
+        "paper",
+    } == BACKUP_APP_DATA_CAPTURED
     assert {
         "bootstrap-manifests",
         "checkout-recovery",
