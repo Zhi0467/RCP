@@ -16,9 +16,9 @@ per-launch settings, deny-beats-allow file rules, a model catalog, a skill
 inventory, and a zero-token authenticated quota call. Its containment story is
 close to Claude's: the file tools are bounded and the Work shell is not.
 
-Three facts make it different from every existing provider. The first is open
-decision D1. The second was accepted as D2. The third is handled in code (see
-[Open decisions](#open-decisions)):
+Three facts make it different from every existing provider. The first is
+handled by a shell-less tool list (D1). The second was accepted as D2. The
+third is handled in code (see [Open decisions](#open-decisions)):
 
 1. **An unapproved action ends the turn.** In headless mode, a tool call that
    no rule allows is "soft-denied". The run stops at once with an empty reply
@@ -60,7 +60,7 @@ placeholders.
 | P9 | `.agents/agents/rcp-probe.md` in cwd with `tools: [view_file, list_dir, grep_search]`, `--agent rcp-probe` | The agent loaded from an untrusted `/tmp` folder. The model reported only two tools. Input tokens fell from ~11k to ~5.6k. `init.tools` still lists the full static set, so it is not evidence. |
 | P10 | `PreInvocation` hooks in `<cwd>/.agents/hooks.json` and `<repo>/.agents/hooks.json`, `--add-dir <repo>` | **Both ran** (marker files created). |
 | P11 | `SHELL=<logging wrapper>` | Never invoked. `run_command` does not use `$SHELL`. |
-| P12 | `grep_search`, `list_dir` by name | "not available in the current environment" despite `init.tools`. The model reaches for shell `grep` instead, which a Discuss policy soft-denies. |
+| P12 | `grep_search`, `list_dir` by name | "not available in the current environment" despite `init.tools`. The model reaches for shell `grep` instead, which a policy without `command(*)` soft-denies. |
 | P13 | `agy -p /usage --output-format json` | Zero tokens, `conversation_id:""`, per-bucket `remaining_fraction`. Signed out: exit 1, `"error":"authentication failed or timed out"`, and an OAuth URL on stderr. |
 | P14 | `agy -p /skills --output-format json` | `command.data.skills[]` with `name`, `description`, `path`, `builtin`, `model_invocable`. |
 | P15 | `agy models` | Tab-separated `slug<TAB>label`. The effort is part of the slug (`gemini-3.8-flash-low/-medium/-high`). Signed out: exit 1, "Please sign in". |
@@ -131,14 +131,14 @@ profile translates. **Missing** names the consequence.
 
 | Contract | Owner | Existing | agy | Status |
 | --- | --- | --- | --- | --- |
-| Capability modes | `command` per `AgentCapability` `base.py:29` | Claude modes per capability | `--mode accept-edits` for writers. `agentMode:""` (default) for Discuss and readers. Never `auto` (a model reviewer approves commands) or `--dangerously-skip-permissions` | Adapter |
+| Capability modes | `command` per `AgentCapability` `base.py:29` | Claude modes per capability | `--mode accept-edits` for writers. `agentMode:""` (default) for the shell-less kinds and readers. Never `auto` (a model reviewer approves commands) or `--dangerously-skip-permissions` | Adapter |
 | Override user mode | — | Claude `--setting-sources`; OpenCode agent precedence | `--settings` sets `agentMode` (P5, P6b). The `--mode` flag also works for `accept-edits` and `plan` | Adapter, **required** |
 | Tool set per capability | Claude `_CLAUDE_TOOLS` | Claude `--tools`; OpenCode deny-first rules | A staged agent `.agents/agents/rcp-<digest>.md` in the stage cwd with `tools: […]`, selected by `--agent rcp-<digest>` (P9). Named by a digest of its content, so no user agent can collide | Adapter |
 | Work write roots | `ProviderWriteScope`; `_require_project_write_scope` `base.py:702` | Claude `Edit(…)` allows; OpenCode edit rules | Workspace = cwd + `--add-dir` roots (edits auto-approved in `accept-edits`). `write_file(<root>)` allows for other writable roots. `write_file(<protected>)` denies. `allowNonWorkspaceAccess:false` | Native (P8) |
 | Protected path inside a root | spec "Machine writable paths" | Claude: deny beats allow, so a protected parent of the own stage is left undenied | Same: deny beats ask beats allow | Native, same exception as Claude |
 | Work shell | `canonical_state_boundary` `base.py:613` | Claude and OpenCode `file_tools_only` | `command(*)` allow, no `--sandbox`. The agy sandbox cuts networking on Linux (namespaces) and filters sockets on macOS, so compute would break, as with Claude's sandbox | Adapter; boundary `file_tools_only` |
-| Discuss read context | spec "Claude" section | Claude per-dir `Read/Glob/Grep` allows, never `--add-dir` | `read_file(<dir>)` allows, never `--add-dir`: `--add-dir` makes a folder an auto-editable workspace in `accept-edits`, and it also loads that folder's hooks (P10) | Adapter |
-| Discuss shell | broker client and browser grants | Claude `Bash(<client>:*)`; OpenCode deny-first | `command(<exact client argv>)`, `command(playwright-cli)`, `command(<preview>)` allows. Every other command is soft-denied, **which ends the turn** | Adapter + [decision D1](#d1-a-denied-action-ends-the-turn) |
+| Read context for scratch kinds | spec "Claude" section | Claude per-dir `Read/Glob/Grep` allows, never `--add-dir` | `read_file(<dir>)` allows, never `--add-dir`: `--add-dir` makes a folder an auto-editable workspace in `accept-edits`, and it also loads that folder's hooks (P10) | Adapter |
+| Shell for `discuss` and `scratch_patch` | invocation gate client; browser grant | Claude `Bash(<client>:*)`; OpenCode deny-first | No `run_command` in the staged tool list unless the launch carries a client. Then only `command(<exact client argv>)` is allowed. Any other command is soft-denied, **which ends the turn** | Adapter + [D1](#d1-a-denied-action-ends-the-turn-settled) |
 | Paper coach | `_paper_write_roots` `base.py:688` | changes folder + attached artifacts | The workspace (cwd) gets no write grant, as for the other providers. `write_file(<root>)` allows the changes folder and each attached artifact folder. `command(*)` is allowed, as for Work | Adapter |
 | Session summary | `session_summary` capability | Codex read-only; Claude no tools; OpenCode refuses | Staged agent with an empty tool list, plus `agentMode:""`. Unproven: the docs give `tools` a default of `[]`, so empty may mean "default set". Refuse until probed | Missing until probed |
 | Hooks | — | Claude `disableAllHooks`; OpenCode `--pure` | **No switch.** Global `~/.gemini/config/hooks.json`, plugin hooks, `<cwd>/.agents/hooks.json` and every `--add-dir` root's `.agents/hooks.json` run (P10) | **Missing**, accepted: [D2](#d2-hooks-cannot-be-disabled-settled-accepted) |
@@ -279,12 +279,12 @@ Allow rules per capability:
 | Capability | allow | Tools in the staged agent |
 | --- | --- | --- |
 | Work, orchestrate | `command(*)`, `read_file(*)`, `write_file(<root>)` per writable root outside the workspace, `read_url(*)` | file read/write/edit, `run_command`, `command_status`, `send_command_input`, `search_web`, `read_url_content`, subagent tools |
-| Discuss | `read_file(<dir>)` per read dir, `command(<client argv>)`, browser commands when granted, `read_url(*)` | file read/write/edit (write_file covers only the stage and memory, through the workspace and allows), `run_command` only when a client or browser grant exists, `search_web`, `read_url_content` |
-| Seed, Refresh, scratch Patch | as Discuss, no browser | as Discuss |
+| `discuss` (the scratch artifact edit only) | `read_file(<dir>)` per read dir, `read_url(*)` | file read/write/edit (writes reach only the stage, which is the workspace), `search_web`, `read_url_content`. No `run_command` |
+| `scratch_patch` (Seed, Refresh, scratch Patch) | as `discuss`, plus `command(<client argv>)` when the launch carries a client | as `discuss`, plus `run_command` only with a client |
 | Paper coach | `command(*)`, `read_file(*)`, `write_file(<root>)` per coach root | as Work |
 | Session summary | none | refused until probed |
 
-Read-only grants for Discuss use `read_file`, never `--add-dir`. A Work turn's
+Read-only grants for the scratch kinds use `read_file`, never `--add-dir`. A Work turn's
 `--add-dir` gives the repository edits and also loads its hooks. See D2.
 
 Hidden reads render as `read_file(<path>)` denies on every capability. The
@@ -321,7 +321,8 @@ object.
   `canonical_state_boundary` is `file_tools_only`. The agy sandbox is off for
   Work, because it would cut the network and devices that real compute needs.
   This is the same reasoning as Claude's.
-- **Discuss has no general shell.** Unlisted commands are soft-denied.
+- **The scratch kinds have no general shell.** The artifact edit has no shell
+  tool at all. A scratch Patch with a client may run only that client.
 - **Graph authority stays with the stage** (invariant 4b). Nothing is parsed
   from answers.
 - **Gaps that agy adds:**
@@ -479,7 +480,9 @@ Test-first, scoped to the change:
 2. **Argv and policy tests per capability:**
    - forbidden flags never appear;
    - all three permission lists are always present;
-   - Discuss never gets `--add-dir`;
+   - `discuss` and `scratch_patch` never get `--add-dir`;
+   - `run_command` is in the staged tool list only for Work-like kinds and a
+     client-carrying `scratch_patch`;
    - Work's `write_file` allows equal `scope.writable_roots` minus the workspace;
    - protected and hidden denies are present;
    - the agent digest is stable.
@@ -489,8 +492,8 @@ Test-first, scoped to the change:
    catalog fallback, readiness version floor.
 5. **Real-turn checks** (live, not in CI) on throwaway data, as in the live
    agent turn recipe, with real `agy` 1.5.1, local and on one SSH Linux host:
-   - Discuss: reads a read dir. A file write outside is soft-denied, and RCP
-     shows a clear error.
+   - Artifact edit in a running orchestrator's chat: the edit lands in the
+     stage. A file write outside is soft-denied, and RCP shows a clear error.
    - Work: writes a repo root. A protected path fails. The shell can reach the
      network.
    - Resume keeps the conversation.
@@ -509,30 +512,45 @@ Test-first, scoped to the change:
 
 ## Open decisions
 
-### D1. A denied action ends the turn
+### D1. A denied action ends the turn (settled)
 
 In headless mode an action no rule allows stops the run with an empty reply.
-Discuss denies the general shell, and models reach for `grep` and `cat` by
-habit (P12). So Discuss turns would often end with nothing.
+Models reach for `grep` and `cat` by habit (P12).
 
-- **(Recommended) Leave the shell out of the Discuss tool list unless a client
-  or browser grant needs it.** The model then cannot call it. When it is
-  present, render `denied_actions` as a visible error ("Antigravity stopped: it
-  needed shell access Discuss does not grant"). The prompt tells the model to
-  use only the client command.
-- Generate an explicit RE2 deny rule that matches every command except the
-  allowed prefixes, so a denial becomes a tool error and the turn goes on.
-  agy is written in Go, and RE2 has no lookahead, so the complement regex is
-  machine-built and fragile.
-- Give Discuss the agy sandbox with `command(*)`. Reads are then bounded by the
-  sandbox, but it is no longer RCP's Discuss contract.
+Since one chat mode, every human chat turn is Work, which allows `command(*)`.
+agy never runs a historical Discuss task, because none can be admitted for a
+new provider. The `discuss` capability reaches agy only as the scratch artifact
+edit (`launch_kind="revoking"`): a comment on an artifact in a chat that refuses
+human turns, a running orchestrator or a read-only child.
+
+The rule:
+
+- **The artifact edit has no shell tool.** Its staged agent leaves out
+  `run_command`, `command_status` and `send_command_input`, so the model cannot
+  call a command. It reads and edits with the file tools.
+- **A `scratch_patch` launch gets `run_command` only when it carries a client**,
+  and then only `command(<exact client argv>)` is allowed.
+- **A refusal still ends the turn visibly.** A `result` with `denied_actions`
+  decodes to an error naming the refused action, for example "Antigravity
+  stopped: it tried to run a command this edit does not allow." Never an empty
+  answer.
+
+Rejected: a machine-built RE2 deny rule that matches every other command (RE2
+has no lookahead, so the regex is fragile), and the agy sandbox with
+`command(*)` (a different contract from every other provider's scratch kinds).
+
+The artifact edit resumes the master's agy conversation with a different staged
+agent and policy. agy accepting that switch on `--conversation` is unprobed. If
+it refuses, the existing refused-resume path rebuilds the edit as a recorded
+fresh session (`refused_artifact_edit_request`). This is a build-time probe, not
+a decision.
 
 ### D2. Hooks cannot be disabled (settled: accepted)
 
 Global, plugin, cwd and `--add-dir` `.agents/hooks.json` commands run on every
 launch, outside every rule. The human accepted this gap. The containment spec
-documents it beside the unbounded Work shell. Discuss never uses `--add-dir`,
-so only the member's own global and plugin hooks reach Discuss.
+documents it beside the unbounded Work shell. The scratch kinds never use
+`--add-dir`, so only the member's own global and plugin hooks reach them.
 
 ### D3. Sign-in (settled)
 
