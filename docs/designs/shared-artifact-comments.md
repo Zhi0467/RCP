@@ -195,6 +195,11 @@ existing field is renamed, so stored requests parse unchanged.
 - **Compatibility:** an old-writer replay test covers stored
   `ArtifactContextRequest` rows.
 
+**PDF artifacts:** the artifact viewer shows a PDF with pdf.js pages and a text
+layer, reusing `PaperPdf`'s rendering, inside the comments bundle. Download
+stays. That replaces the "system viewer or Download" rule and the "no viewer
+URL" rule for PDFs.
+
 **Element picking:** in comment mode, hovering outlines an element and shows its
 name chip. A click picks it.
 
