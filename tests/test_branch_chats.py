@@ -21,6 +21,7 @@ from .helpers import (
     append_fixture_patch,
     authorized_human,
     create_named_app,
+    discuss_turn,
     fake_launch_admitted,
     seed_patch,
     shape_invalid_patch,
@@ -107,7 +108,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
         "run_truth_scope": ["repo-a"],
     }
     url = f"/api/projects/{project_id}/tasks/{kind}?branch_id={branch_id}"
-    first = client.post(url, json=payload)
+    first = discuss_turn(client, url, payload)
     assert first.status_code == 202, first.json()
     first_task = wait_for_task(store, first.json()["operation_id"])
     assert first_task.status == "succeeded", first_task.error
@@ -134,10 +135,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
     assert launcher.workspaces[0] == launcher.workspaces[1]
     assert launcher.launch_kwargs[1]["capability"] == "work_auto"
 
-    third = client.post(
-        url,
-        json={**payload, "session_id": second_task.native_session_id},
-    )
+    third = discuss_turn(client, url, {**payload, "session_id": second_task.native_session_id})
     assert third.status_code == 202, third.json()
     assert wait_for_task(store, third.json()["operation_id"]).status == "succeeded"
     transcript_url = f"/api/projects/{project_id}/chats/{chat_id}"
@@ -169,7 +167,9 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
         item["graph_target"] == episode.graph_target.model_dump(mode="json")
         for item in branch_tasks
     )
-    rejected = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=payload)
+    rejected = client.post(
+        f"/api/projects/{project_id}/tasks/{kind}", json={**payload, "mode": "work"}
+    )
     assert rejected.status_code == 422
     assert "another graph target" in rejected.json()["detail"]
 
@@ -189,9 +189,7 @@ def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
 
 
 @pytest.mark.parametrize("kind", ["project_chat", "node_chat"])
-def test_branch_merge_admits_fresh_discuss_without_graph_authority(
-    manifest, tmp_path, monkeypatch, kind
-):
+def test_branch_merge_refuses_a_chat_turn_on_its_source(manifest, tmp_path, monkeypatch, kind):
     app, main, episode, root = _app_branch(manifest, tmp_path)
     client = signed_in_client(app)
     store = app.state.catalog.store
@@ -201,7 +199,7 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
     branch = main.for_graph_target(episode.graph_target)
     before = branch.history.head_ref()
     launcher = ScriptedLauncher(
-        [{"patch.json": agent_patch_json(_branch_patch("ev/discuss-cannot-apply"))}],
+        [{"patch.json": agent_patch_json(_branch_patch("ev/merge-source-chat"))}],
         message="This branch records the episode's research context.",
     )
     monkeypatch.setattr(app.state.launcher, "stream", launcher.stream)
@@ -209,32 +207,15 @@ def test_branch_merge_admits_fresh_discuss_without_graph_authority(
         "chat_id": str(uuid.uuid4()),
         "node_id": "rq/learning-after-shift" if kind == "node_chat" else None,
         "message": "Explain the episode graph while it merges.",
-        "mode": "discuss",
         "run_truth_scope": ["repo-a"],
     }
     url = f"/api/projects/{episode.project_id}/tasks/{kind}?branch_id={episode.graph_target.branch_id}"
 
-    response = client.post(url, json=payload)
-    assert response.status_code == 202, response.json()
-    task = wait_for_task(store, response.json()["operation_id"])
-    assert task.status == "succeeded", task.error
-    assert task.episode_id is None
-    assert task.graph_target == episode.graph_target
-    assert task.request["mode"] == "discuss"
-    assert task.dispatch_authority.task_contract == "discuss"
-    assert launcher.launch_kwargs[0]["capability"] == "discuss"
-    assert branch.history.head_ref() == before
-    assert "ev/discuss-cannot-apply" not in branch.history.state().nodes
-    assert "ev/discuss-cannot-apply" not in main.history.state().nodes
-    assert store.agent_task(merge.operation_id).status == "queued"
-
-    refused = client.post(
-        url,
-        json={**payload, "mode": "work", "session_id": task.native_session_id},
-    )
+    refused = client.post(url, json=payload)
     assert refused.status_code == 409, refused.json()
-    assert "merge" in refused.json()["detail"]
-    assert launcher.calls == 1
+    assert launcher.calls == 0
+    assert branch.history.head_ref() == before
+    assert store.agent_task(merge.operation_id).status == "queued"
 
 
 def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(manifest, tmp_path):
@@ -366,7 +347,7 @@ def test_orchestrator_chat_turn_blocks_chain_continuation(manifest, tmp_path, mo
     response = signed_in_client(app).post(
         f"/api/projects/{episode.project_id}/tasks/project_chat"
         f"?branch_id={episode.graph_target.branch_id}",
-        json={"chat_id": episode.episode_id, "message": "Summarize.", "mode": "discuss"},
+        json={"chat_id": episode.episode_id, "message": "Summarize."},
     )
     assert response.status_code == 202, response.json()
     source = store.episode(episode.episode_id)
@@ -592,7 +573,7 @@ def test_branch_retry_does_not_initialize_branch(manifest, tmp_path, monkeypatch
         started = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
             params={"branch_id": episode.graph_target.branch_id},
-            json={"chat_id": str(uuid.uuid4()), "message": "Explain.", "mode": "discuss"},
+            json={"chat_id": str(uuid.uuid4()), "message": "Explain."},
         )
         assert started.status_code == 202, started.text
         original = wait_for_task(store, started.json()["operation_id"], expect="failed")

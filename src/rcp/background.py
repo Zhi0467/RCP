@@ -3219,6 +3219,8 @@ class BackgroundAgentTasks:
         inside the transaction that would insert it.
         """
 
+        if self.store.agent_task_has_receipt(operation_id, "transport_auto_retry_superseded"):
+            return True
         settled = self.store.agent_task(operation_id)
         superseded = (
             settled is None

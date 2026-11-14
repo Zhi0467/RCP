@@ -272,8 +272,6 @@ def admit_chat_artifact_comment(
     # comments, which keep the origin-bound Discuss edit the viewer uses. Any
     # other chat, Experiment chats included, takes an ordinary human turn.
     if store.child_human_turn_refusal(project_id, request.chat_id) is not None:
-        if request.mode == "work":
-            raise ValueError("This artifact can only be edited in Discuss here.")
         if request.references:
             raise ValueError("Project references require an ordinary chat.")
         return admit_artifact_edit(store, service, project_id, request)

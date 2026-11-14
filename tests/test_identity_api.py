@@ -234,7 +234,6 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
             json={
                 "chat_id": str(uuid.uuid4()),
                 "message": "Explain the project.",
-                "mode": "discuss",
             },
         )
     )
@@ -548,16 +547,16 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
         result={},
     )
 
-    discuss = client.post(
+    chat = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={"chat_id": str(uuid.uuid4()), "message": "Explain.", "mode": "discuss"},
+        json={"chat_id": str(uuid.uuid4()), "message": "Explain."},
     )
     coach = client.post(
         f"/api/projects/{project_id}/tasks/paper_coach",
         json={"message": "Review the introduction."},
     )
-    assert discuss.status_code == coach.status_code == 202
-    assert discuss.json()["authorized_by"]["display_name"] == "Later name"
+    assert chat.status_code == coach.status_code == 202
+    assert chat.json()["authorized_by"]["display_name"] == "Later name"
     assert coach.json()["authorized_by"]["display_name"] == "Later name"
 
 

@@ -41,6 +41,7 @@ def edit_origin(manifest, tmp_path):
 def _request(task, artifact, *, fresh=False):
     return RunRequest(
         message="Update the explanation.",
+        mode="work",
         artifact_context={
             "operation_id": task.operation_id,
             "artifact_id": artifact.artifact_id,
@@ -439,8 +440,7 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
     assert len(now.splitlines()) == len(queued.splitlines()) + 1
 
 
-@pytest.mark.parametrize("mode", ["discuss", "work"])
-def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch, mode):
+def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Original</p>")
     with store.connection() as connection:
@@ -478,7 +478,6 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         f"/api/projects/{task.project_id}/tasks/project_chat",
         json={
             "chat_id": task.request["chat_id"],
-            "mode": mode,
             "provider": "codex",
             "model": "gpt-5.6-codex",
             "reasoning": "high",
@@ -492,7 +491,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
     )
     assert response.status_code == 202, response.text
     (admitted,) = started
-    assert admitted.mode == mode
+    assert admitted.mode == "work"
     assert (admitted.provider, admitted.model, admitted.reasoning, admitted.run_on) == (
         "codex",
         "gpt-5.6-codex",
@@ -580,8 +579,7 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
         "resolved_skill_packages": [{"id": "stale-skill", "kind": "skill", "version": "1"}],
     }
     url = f"/api/projects/{task.project_id}/tasks/project_chat"
-    assert client.post(url, json={**body, "mode": "work"}).status_code == 422
-    response = client.post(url, json={**body, "mode": "discuss"})
+    response = client.post(url, json={**body, "mode": "work"})
     assert response.status_code == 202, response.text
     (admitted,) = started
     assert admitted.mode == "discuss"

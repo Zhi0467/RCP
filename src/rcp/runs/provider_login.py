@@ -166,6 +166,7 @@ def auth_retry_candidates(
             current is None
             or not current.can_retry
             or store.agent_task_has_continuation(current.operation_id)
+            or store.agent_task_has_receipt(current.operation_id, "transport_auto_retry_superseded")
             or store.consolidation_run_for_operation(current.operation_id) is not None
         ):
             continue

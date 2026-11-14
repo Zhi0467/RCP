@@ -425,6 +425,8 @@ def start_ordinary_task(
     branch_id: str | None,
 ) -> AgentTaskRecord:
     """Validate, admit, and start one task exactly as the task route does."""
+    supersedes = body.get("supersedes") if kind in {"node_chat", "project_chat"} else None
+    body = {key: value for key, value in body.items() if key != "supersedes"}
     thread = store.agent_thread(str(body.get("chat_id", "")))
     if thread is not None:
         if thread.user_id != authorized_by.user_id or thread.project_id != project_id:
@@ -482,6 +484,10 @@ def start_ordinary_task(
             assert request.chat_id is not None
             chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
             request = chat_admission_lock.__enter__()
+            if supersedes is not None:
+                _require_superseded_discuss_turn(
+                    store, catalog.resolve_project_id(project_id), request, supersedes
+                )
         operation_id = (
             request.artifact_edit.operation_id
             if isinstance(request, RunRequest) and request.artifact_edit is not None
@@ -527,6 +533,13 @@ def start_ordinary_task(
                         "This artifact changed to a new version after the parts "
                         "were selected. Select them again."
                     )
+            if supersedes is not None:
+                store.record_agent_task_receipt(
+                    str(supersedes),
+                    "transport_auto_retry_superseded",
+                    {"reason": "sent again as an ordinary turn"},
+                    tier="summary",
+                )
             record = background_tasks.start(
                 project_id,
                 kind,
@@ -547,6 +560,28 @@ def start_ordinary_task(
         if chat_admission_lock is not None:
             chat_admission_lock.__exit__(None, None, None)
     return record
+
+
+def _discuss_chat_turn(task: AgentTaskRecord) -> bool:
+    return (
+        task.kind in {"node_chat", "project_chat"}
+        and task.request.get("mode", "discuss") == "discuss"
+        and task.request.get("artifact_edit") is None
+    )
+
+
+def _require_superseded_discuss_turn(
+    store: AppStore, project_id: str, request: RunRequest, supersedes: object
+) -> None:
+    old = store.agent_task(supersedes) if isinstance(supersedes, str) else None
+    if (
+        old is None
+        or old.project_id != project_id
+        or not _discuss_chat_turn(old)
+        or old.request.get("chat_id") != request.chat_id
+        or old.status in {"queued", "running", "pausing"}
+    ):
+        raise ValueError("Only a settled Discuss turn of this chat can be sent again.")
 
 
 @router.post(
@@ -577,6 +612,10 @@ def start_agent_task(
             status_code=405,
             detail="Use the project episode endpoint for Auto-research and branch merge.",
         )
+    if kind in {"node_chat", "project_chat"}:
+        if body.get("mode", "work") != "work":
+            raise HTTPException(status_code=422, detail="Conversation turns are Work turns.")
+        body = {**body, "mode": "work"}
     authorized_by = identity_access.require_patch_capable_identity(http_request)
     if idempotency_key is not None:
         project_id = catalog.resolve_project_id(project_id)
@@ -1281,6 +1320,8 @@ def retry_agent_task(
             status_code=409,
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
+    if _discuss_chat_turn(previous):
+        raise HTTPException(status_code=409, detail="Send it again as an ordinary turn.")
     authorized_by = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     try:

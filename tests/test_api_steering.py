@@ -22,7 +22,13 @@ from rcp.service import (
 )
 from tests.helpers import resource_watermark_tokens, signed_in_client
 
-from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, store_test_claude_token, wait_until
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    create_named_app,
+    discuss_turn,
+    store_test_claude_token,
+    wait_until,
+)
 
 
 @pytest.fixture
@@ -76,10 +82,12 @@ def _running_turn(manifest, tmp_path, monkeypatch, provider, kind):
 
     background.stream = stream
     chat_id = str(uuid.uuid4())
-    response = client.post(
-        f"/api/projects/{project_id}/tasks/{kind}",
-        json={"message": "Original prompt.", "provider": provider}
-        | ({"chat_id": chat_id, "mode": "discuss"} if kind == "project_chat" else {}),
+    url = f"/api/projects/{project_id}/tasks/{kind}"
+    body = {"message": "Original prompt.", "provider": provider}
+    response = (
+        discuss_turn(client, url, body | {"chat_id": chat_id})
+        if kind == "project_chat"
+        else client.post(url, json=body)
     )
     assert response.status_code == 202, response.text
     accepted = response.json()
@@ -562,12 +570,12 @@ time.sleep(120)
     chat_id = str(uuid.uuid4())
     client = signed_in_client(app)
     try:
-        accepted = client.post(
+        accepted = discuss_turn(
+            client,
             f"/api/projects/{project_id}/tasks/project_chat",
-            json={
+            {
                 "chat_id": chat_id,
                 "message": "Original prompt.",
-                "mode": "discuss",
                 "provider": "claude",
             },
         )

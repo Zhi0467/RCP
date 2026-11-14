@@ -333,6 +333,7 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
         append_fixture_patch,
         changed_values,
         create_named_app,
+        discuss_turn,
         seed_patch,
         wait_for_task_response,
     )
@@ -356,15 +357,17 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
 
     tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
-        f"/api/projects/{project_id}/tasks/project_chat",
-        json={
-            "chat_id": str(uuid4()),
-            "message": "Choose the next route.",
-            "run_truth_scope": ["repo-a"],
-            "mode": mode,
-            "invoked_skill_ids": ["graph-audit"],
-        },
+    url = f"/api/projects/{project_id}/tasks/project_chat"
+    body = {
+        "chat_id": str(uuid4()),
+        "message": "Choose the next route.",
+        "run_truth_scope": ["repo-a"],
+        "invoked_skill_ids": ["graph-audit"],
+    }
+    response = (
+        discuss_turn(client, url, body)
+        if mode == "discuss"
+        else client.post(url, json=body | {"mode": mode})
     )
     assert response.status_code == 202, response.text
     operation_id = response.json()["operation_id"]
@@ -429,9 +432,7 @@ def test_answer_followup_stream_preserves_origin_and_refuses_session_drift(
                 "A changed question origin must fail before staging"
             ),
         )
-        retried = client.post(f"/api/projects/{project_id}/tasks/{followup_id}/retry", json={})
-        assert retried.status_code == 202, retried.text
-        retry_id = retried.json()["operation_id"]
+        retry_id = tasks.retry(followup_id, authorized_by=followup.authorized_by).operation_id
         retry_result = wait_for_task_response(client, project_id, retry_id)
         retry_task = store.agent_task(retry_id)
         assert retry_task is not None

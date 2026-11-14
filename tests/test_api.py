@@ -108,6 +108,7 @@ from .helpers import (
     async_wait_until,
     changed_values,
     create_named_app,
+    discuss_turn,
     gated_patch,
     launch_contract_path,
     refresh_patch,
@@ -3887,7 +3888,6 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         json={
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
-            "mode": "discuss",
             "run_on": BACKEND_MACHINE_ID,
             "reasoning": "high",
             "artifact_context": {
@@ -3900,7 +3900,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     )
     assert asked.status_code == 202
     admitted = admitted_requests[-1]
-    assert admitted.mode == "discuss"
+    assert admitted.mode == "work"
     assert admitted.session_id is None
     assert admitted.reasoning == "high"
     assert admitted.artifact_context is not None
@@ -8646,12 +8646,12 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     app.state.catalog.launcher.stream = launcher.stream
     client = signed_in_client(app)
 
-    started = client.post(
+    started = discuss_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": str(uuid.uuid4()),
             "message": "Explain this project.",
-            "mode": "discuss",
             "run_truth_scope": ["repo-a"],
         },
     )

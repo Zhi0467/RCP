@@ -288,6 +288,43 @@ def authorized_human(
     )
 
 
+def discuss_turn(client: TestClient, url: str, body: dict[str, Any]) -> httpx.Response:
+    """Admit a Discuss chat turn as the previous release's chat route did.
+
+    The route now admits only Work; this records the old writer's Discuss rows.
+    """
+
+    from fastapi import HTTPException
+
+    from rcp.api.tasks import _agent_task_response, start_ordinary_task
+
+    parsed = httpx.URL(url)
+    *_, project_id, _, kind = parsed.path.split("/")
+    services = client.app.state.services  # type: ignore[attr-defined]
+    identity = client.get("/api/identity").json()
+    authorized_by = AuthorizedHuman(
+        space_id=identity["space_id"],
+        user_id=identity["user"]["user_id"],
+        display_name=identity["user"]["display_name"],
+    )
+    try:
+        record = start_ordinary_task(
+            project_id,
+            kind,  # type: ignore[arg-type]
+            {**body, "mode": "discuss"},
+            catalog=services.catalog,
+            store=services.store,
+            attachment_store=services.attachment_store,
+            background_tasks=services.background_tasks,
+            authorized_by=authorized_by,
+            branch_id=parsed.params.get("branch_id"),
+        )
+    except HTTPException as exc:
+        return httpx.Response(exc.status_code, json={"detail": exc.detail})
+    payload = _agent_task_response(services.store, record, services.background_tasks)
+    return httpx.Response(202, json=payload)
+
+
 def seated_on_every_project(_project_id: str, _user_id: str) -> bool:
     """A membership check for histories built without a project catalog.
 
