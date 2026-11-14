@@ -166,9 +166,6 @@ def _write_canonical_sources(service, operation_id: str) -> tuple[str, str]:
         "".join(json.dumps(record, separators=(",", ":")) + "\n" for record in records),
         encoding="utf-8",
     )
-    paper = research / "paper"
-    paper.mkdir(exist_ok=True)
-    (paper / "introduction.md").write_bytes(b"# Canonical introduction\n")
     facts = research / "facts" / "methods"
     facts.mkdir(parents=True, exist_ok=True)
     (facts / "protocol.bin").write_bytes(b"opaque fact bytes")
@@ -199,11 +196,9 @@ def test_project_file_capture_transforms_human_history_and_binds_kept_bytes(
             f"artifacts/{artifact_name}",
             f"chats/project-{chat_id}.jsonl",
             "facts/methods/protocol.bin",
-            "paper/introduction.md",
             f"artifacts/{view_name}",
         ]
     )
-    assert (capture_root / "paper/introduction.md").read_bytes() == b"# Canonical introduction\n"
     assert (capture_root / "facts/methods/protocol.bin").read_bytes() == b"opaque fact bytes"
     assert (capture_root / "artifacts" / artifact_name).read_bytes() == artifact
     assert (capture_root / "artifacts" / view_name).read_bytes() == view
@@ -461,7 +456,7 @@ def test_canonical_fact_reader_rejects_a_replaced_root(tmp_path: Path) -> None:
         b"".join(iter_canonical_fact_bytes(research, source, chunk_size=16))
 
 
-@pytest.mark.parametrize("failure", ["unsafe_paper", "unsafe_fact", "missing_artifact"])
+@pytest.mark.parametrize("failure", ["unsafe_fact", "missing_artifact"])
 def test_project_file_capture_fails_closed_without_a_partial_root(
     manifest,
     tmp_path: Path,
@@ -473,9 +468,7 @@ def test_project_file_capture_fails_closed_without_a_partial_root(
     )
     _write_canonical_sources(service, records.tasks[0].operation_id)
     research = service.history.workspace.root
-    if failure == "unsafe_paper":
-        (research / "paper/unsafe-link").symlink_to(tmp_path / "outside")
-    elif failure == "unsafe_fact":
+    if failure == "unsafe_fact":
         (research / "facts/unsafe-link").symlink_to(tmp_path / "outside")
     else:
         (research.parent / "artifacts" / artifact_name).unlink()
@@ -591,31 +584,6 @@ def test_legacy_result_view_preserves_writer_values(filename: str) -> None:
     )
     assert view.origin_operation_id == view.latest_operation_id == operation_id
     assert view.source_name == view.kept_filename == filename
-
-
-def test_transfer_projection_keeps_nested_text_and_binary_separate_from_saved_state(
-    manifest, tmp_path: Path
-) -> None:
-    service, records, *_ = _finished_project(manifest, tmp_path)
-    _write_canonical_sources(service, records.tasks[0].operation_id)
-    paper = service.history.workspace.root / "paper"
-    (paper / "sections").mkdir()
-    (paper / "figures").mkdir()
-    (paper / "sections/results.tex").write_text("Published results", encoding="utf-8")
-    figure = b"\x89PNG\r\n\x1a\nfigure"
-    (paper / "figures/renamed.png").write_bytes(figure)
-    root = tmp_path / "capture"
-    captured = capture_project_transfer_files(service, records, root)
-    projection = {
-        entry.archive_path for entry in captured.entries if entry.group == "paper_projection"
-    }
-    assert projection == {
-        "paper/projection/introduction.md",
-        "paper/projection/sections/results.tex",
-        "paper/projection/figures/renamed.png",
-    }
-    assert (root / "paper/projection/figures/renamed.png").read_bytes() == figure
-    assert captured.records.paper == records.paper
 
 
 def test_private_thread_export_keeps_patch_provenance_without_text_or_artifacts(manifest, tmp_path):

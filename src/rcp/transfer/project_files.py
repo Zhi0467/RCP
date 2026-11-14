@@ -19,9 +19,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_STABLE_READ_ATTEMPTS,
 )
 from rcp.operation_ids import canonical_operation_uuid
-from rcp.paper.service import validate_canonical_introduction_backup
 from rcp.rcp_home import rcp_temp_dir
-from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.service import (
     ProjectService,
     canonical_chat_backup_sources,
@@ -374,23 +372,6 @@ def _capture_project_files_locked(
                         ),
                     )
                 )
-            paper_sources = paper_projection_sources(source_root)
-            legacy_introduction = records.paper is None and paper_sources == (
-                source_root / "paper/introduction.md",
-            )
-            for source in paper_sources:
-                relative = source.relative_to(source_root / "paper")
-                entry = _capture_regular_file(
-                    capture_root,
-                    source,
-                    PurePosixPath("paper/introduction.md")
-                    if legacy_introduction
-                    else PurePosixPath("paper/projection") / relative.as_posix(),
-                    "paper_introduction" if legacy_introduction else "paper_projection",
-                )
-                if legacy_introduction:
-                    validate_canonical_introduction_backup(capture_root / entry.archive_path)
-                captured.append(entry)
             for source in canonical_fact_sources(source_root):
                 captured.append(
                     _capture_chunks(

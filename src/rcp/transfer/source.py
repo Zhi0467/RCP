@@ -109,6 +109,7 @@ def advance_source_project_transfer(
 ) -> ProjectTransferRequestRecord:
     """Settle, fence, capture, seal, and bind one confirmed source transfer."""
 
+    from rcp.paper.folder import read_paper_folder
     from rcp.server_ops.paper_lifecycle import stop_paper_project
 
     transfer = _source_transfer(store, request_id)
@@ -160,6 +161,7 @@ def advance_source_project_transfer(
             records = store.export_project_transfer_records(
                 transfer.project_id,
                 attributions=attributions,
+                paper_files=read_paper_folder(catalog.paper_folder(transfer.project_id)),
             )
             proof = store.expose_project_transfer_proof(request_id)
             readback = _capture_and_seal_source_archive(

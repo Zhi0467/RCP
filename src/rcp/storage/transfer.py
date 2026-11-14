@@ -258,7 +258,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         project_id: str,
         *,
         attributions: tuple[TransferArchiveAttribution, ...],
+        paper_files: Mapping[str, bytes] | None = None,
     ) -> TransferRecordBundle:
+        """Project one settled source; `paper_files` are the Paper folder's bytes."""
         with self.connection() as connection:
             connection.execute("BEGIN")
             project = connection.execute(
@@ -313,7 +315,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     for episode in episodes
                 )
             paper = self._transfer_paper_draft(connection, project_id)
-            saved_paper = capture_paper_section(connection, project_id)
+            saved_paper = capture_paper_section(connection, project_id, paper_files or {})
         return TransferRecordBundle(
             project_id=project_id,
             attributions=attributions,

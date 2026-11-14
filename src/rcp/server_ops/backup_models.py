@@ -45,7 +45,9 @@ _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
-BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts", "agent-threads", "memory"})
+BACKUP_APP_DATA_CAPTURED = frozenset(
+    {"project-sources", "artifacts", "agent-threads", "memory", "paper"}
+)
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
@@ -117,6 +119,7 @@ BackupFileGroup = Literal[
     "chat",
     "paper_introduction",
     "paper_projection",
+    "paper_folder",
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
@@ -286,6 +289,10 @@ class BackupFileEntry(_StrictBackupModel):
             if not (len(source.parts) > 2 and source.parts[:2] == (".research", "paper")):
                 raise ValueError("Paper projection entries must stay below .research/paper")
             safe_paper_path(PurePosixPath(*source.parts[2:]).as_posix())
+        elif self.group == "paper_folder":
+            if not (len(source.parts) > 1 and source.parts[0] == "paper"):
+                raise ValueError("Paper folder entries must stay below paper")
+            safe_paper_path(PurePosixPath(*source.parts[1:]).as_posix())
         elif self.group == "fact" and not (
             len(source.parts) > 2 and source.parts[:2] == (".research", "facts")
         ):
@@ -330,7 +337,9 @@ class BackupFileEntry(_StrictBackupModel):
             if not valid:
                 raise ValueError("imported provider-history entries require owned sealed paths")
         forbidden = {".git", "credentials", "run-stage", "chat-attachments"}
-        if self.group != "paper_projection" and forbidden.intersection(source.parts):
+        if self.group not in {"paper_projection", "paper_folder"} and forbidden.intersection(
+            source.parts
+        ):
             raise ValueError("backup entries cannot include credentials, source Git, or stages")
         return self
 

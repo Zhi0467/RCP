@@ -23,9 +23,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_upgrade import load_upgraded_manifest, snapshot_cards
-from rcp.paper.service import (
-    validate_canonical_introduction_backup,
-)
+from rcp.paper.folder import PaperFolder, paper_folder_on, read_paper_folder
 from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.backup_capture import (
     BackupCaptureUnavailable,
@@ -41,7 +39,6 @@ from rcp.server_ops.backup_models import (
     BackupImportedProviderSourceCapture,
     BackupProjectCapture,
 )
-from rcp.server_ops.backup_paper import paper_projection_sources
 from rcp.server_ops.backup_project_io import (
     BackupProjectFileUnavailable,
     capture_app_data_root,
@@ -612,35 +609,13 @@ class BackupProjectFileCaptureCoordinator:
                     operation_projects=operation_projects,
                 )
             )
-            with (
-                closing(AppStore.open_read_only_snapshot(capture_root / "rcp.sqlite3")) as store,
-                store.connection() as connection,
-            ):
-                # A capture taken before the live-paper migration has no Paper tables.
-                saved = (
-                    connection.execute(
-                        "SELECT 1 FROM sqlite_schema WHERE name = 'paper_publication'"
-                    ).fetchone()
-                    and connection.execute(
-                        "SELECT 1 FROM paper_publication WHERE project_id = ?",
-                        (inventory.project_id,),
-                    ).fetchone()
-                )
-            sources = paper_projection_sources(source_root)
-            for source in sources:
-                legacy = saved is None and sources == (source_root / "paper/introduction.md",)
-                paper_entry = stable_copy_entry(
-                    source,
-                    project_root,
-                    inventory.project_id,
-                    PurePosixPath(".research") / source.relative_to(source_root).as_posix(),
-                    group="paper_introduction" if legacy else "paper_projection",
-                )
-                if legacy:
-                    validate_canonical_introduction_backup(
-                        project_root / paper_entry.source_relative_path
-                    )
-                files.append(paper_entry)
+            folder = paper_folder_on(
+                self.data_dir,
+                inventory.project_id,
+                _inventory_state_machine_id(inventory) or BACKEND_MACHINE_ID,
+                lambda card: cards[card].host,
+            )
+            files.extend(capture_paper_folder(folder, project_root, inventory.project_id))
             for fact in fact_backup_sources(source_root):
                 files.append(
                     stable_copy_fact_entry(
@@ -705,6 +680,18 @@ class BackupProjectFileCaptureCoordinator:
             recovery=recovery,
             total_bytes=sum(item.size_bytes for item in ordered),
         )
+
+
+def capture_paper_folder(
+    folder: PaperFolder, project_root: Path, project_id: str
+) -> list[BackupFileEntry]:
+    """Copy every supported Paper file, local or over SSH, as `paper/<path>`."""
+    return [
+        write_bytes_entry(
+            data, project_root, project_id, PurePosixPath("paper") / path, group="paper_folder"
+        )
+        for path, data in sorted(read_paper_folder(folder).items())
+    ]
 
 
 def _inventory_state_is_remote(inventory: BackupSnapshotProjectInventory) -> bool:

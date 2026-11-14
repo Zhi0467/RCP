@@ -57,8 +57,8 @@ def _coach(store: AppStore, project_id: str, operation_id: str, status: str) -> 
     if status != "running":
         with store.connection() as connection:
             connection.execute(
-                "UPDATE graph_runs SET status=?, result_json=? WHERE operation_id=?",
-                (status, json.dumps({"answer": f"Coach answer {operation_id}"}), operation_id),
+                "UPDATE graph_runs SET status=?, result_json=?, finished_at=? WHERE operation_id=?",
+                (status, json.dumps({"answer": f"Coach answer {operation_id}"}), now, operation_id),
             )
 
 

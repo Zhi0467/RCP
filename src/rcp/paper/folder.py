@@ -107,19 +107,34 @@ class RemotePaperFolder:
         return self._call("install", files=encoded)["installed"]
 
 
+def paper_folder_on(
+    data_dir: Path, project_id: str, machine_id: str, host_of: Callable[[str], str]
+) -> PaperFolder:
+    """The folder of one project whose state lives on `machine_id`."""
+    from rcp.machine_cards import BACKEND_MACHINE_ID
+    from rcp.transport.run_stage import RemoteRunStage
+
+    if machine_id != BACKEND_MACHINE_ID:
+        return RemotePaperFolder(RemoteRunStage(host_of(machine_id)), project_id)
+    return LocalPaperFolder(folder_io.paper_root(data_dir, project_id))
+
+
 def paper_folders(store: AppStore, data_dir: Path) -> Callable[[str], PaperFolder]:
     """The folder on each project's state machine, where its agents run."""
     from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
-    from rcp.transport.run_stage import RemoteRunStage
 
     def folder(project_id: str) -> PaperFolder:
         project = store.project(project_id)
-        if project is not None and project.state_machine_id != BACKEND_MACHINE_ID:
-            stage = RemoteRunStage(host_of(store, project.state_machine_id))
-            return RemotePaperFolder(stage, project_id)
-        return LocalPaperFolder(folder_io.paper_root(data_dir, project_id))
+        machine = project.state_machine_id if project is not None else BACKEND_MACHINE_ID
+        return paper_folder_on(data_dir, project_id, machine, lambda card: host_of(store, card))
 
     return folder
+
+
+def read_paper_folder(folder: PaperFolder) -> dict[str, bytes]:
+    """Every supported file's bytes; a file that vanishes between scan and read is skipped."""
+    paths = [entry.path for entry in folder.scan() if entry.kind == "file"]
+    return {path: data for path, data in folder.read(paths).items() if data is not None}
 
 
 def change_project_paper(store: AppStore, project: ProjectRecord, destination: str | None) -> None:
