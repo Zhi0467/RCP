@@ -1,125 +1,96 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { History, ListChecks, MessageCirclePlus, RotateCcw, Send, Square, Zap } from "lucide-react";
-import {
-  coachConversation,
-  coachSteersAfterPrompts,
-  isActiveTask,
-  type TaskTranscriptLine,
-} from "../agents/agentTasks";
-import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
-import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
-import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
-import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
-import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
-import { useAgentWindowLines } from "../agentWindow/useAgentWindowLines";
-import { panelTools } from "./panelTools";
-import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
-import { useAgentConfigPicker } from "../core/AgentConfigPicker";
-import { api } from "../core/api";
-import { readPref, writePref } from "../core/prefStorage";
-import { BrowserToggle } from "../core/BrowserControls";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { History, MessageCirclePlus } from "lucide-react";
+import { isActiveTask } from "../agents/agentTasks";
+import { AgentChatView } from "../chat/AgentChatView";
+import { chatResourceProfile, chatsResourceProfile } from "../chat/chatResources";
+import type { StartConversationTask } from "../chat/chatWorkspace";
+import type { SendThreads } from "../comments/react/useComments";
+import { MAIN_GRAPH } from "../core/graphTarget";
+import type { AgentTask, GraphUpdateRecovery, ProjectSnapshot } from "../core/types";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { useResource } from "../core/useResource";
-import { paperSessionTasksProfile } from "../agents/taskResources";
-import { returnSends } from "../ui/composerKeys";
-import { useSkillPicker } from "../core/SkillPicker";
-import type {
-  AgentQuestion,
-  AgentRunConfig,
-  AgentTask,
-  ChatMessage,
-  ProjectSnapshot,
-  SteerRequest,
-  WritingSession,
-} from "../core/types";
-import { taskRetryRequestBody } from "../taskRecovery";
-import { ChatComposer, ComposerField } from "../chat/ChatComposer";
-import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
-import { AgentStatusStrip } from "../chat/AgentStatusStrip";
-import { useComposerAttachments } from "../chat/composerAttachments";
-import type { AnswerComments } from "../chat/answerComments";
-import { assembleChatTurn } from "../chat/chatInput";
-import { latestPersistedChatConfig, type StartConversationTask } from "../chat/chatWorkspace";
-import type { SendThreads } from "../comments/react/useComments";
-import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
-import { PAPER_GIT_TASK } from "./gitSync";
+import { panelTools } from "./panelTools";
+import { PaperTurnChanges, PaperTurnDiff } from "./PaperTurn";
 import "./paper-coach.css";
 
-const NO_QUESTIONS: AgentQuestion[] = [];
-
-/** A session's agent pick; the coach always runs on its profile's machine, the base. */
-function sessionConfig(session: WritingSession, baseMachine: string): AgentRunConfig {
-  return {
-    provider: session.provider,
-    model: session.model === "provider-default" ? "" : session.model,
-    reasoning: session.reasoning ?? "medium",
-    run_on: baseMachine,
-  };
-}
-
+/** The open Coach chat, kept with the Paper's place; null opens the newest one. */
 export interface CoachOpening {
-  sessionId: string | null;
-  fresh: boolean;
+  chatId: string | null;
 }
 
+/** A Coach turn's file shown as a diff. */
+export interface CoachDiff {
+  chatId: string;
+  operationId: string;
+  path: string;
+}
+
+/** The ordinary chat handlers the app gives every chat view. */
+export interface CoachChatActions {
+  actorId: string | null;
+  onResumeTask: (task: AgentTask) => void;
+  onRetryTask: (task: AgentTask) => void;
+  onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  onInspectTask: (taskId: string) => void;
+  onOpenInbox: () => void;
+  onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
+}
+
+/** The Coach: the member's Paper chats in the ordinary chat view. Each finished turn
+ *  lists the files it changed; a file's diff opens beside the chat and takes comments. */
 export function PaperCoach({
   apiBase,
   project,
   tasks,
   onStartTask,
-  changes,
-  onChangeAction,
-  onUndoAll,
-  onLocate,
+  actions,
   toolbar,
-  comments,
-  submitting,
-  setSubmitting,
-  error,
-  setError,
-  transcriptRef,
-  textarea,
   threadSender,
   opening,
   onOpening,
+  diff,
+  onDiff,
+  inlineDiff,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
   tasks: AgentTask[];
   onStartTask: StartConversationTask;
-  changes: PaperChange[];
-  onChangeAction: (groupId: string, action: PaperChangeAction) => Promise<void>;
-  onUndoAll: (taskId: string) => Promise<void>;
-  onLocate: (change: PaperChange) => void;
-  /** Where History and New chat sit: the Paper view row, while the coach shows. */
+  actions: CoachChatActions;
+  /** Where History and New chat sit: the Paper view row, while the Coach shows. */
   toolbar: HTMLElement | null;
-  /** Comments on coach answers, staged for the next turn; the workspace owns them. */
-  comments: AnswerComments;
-  submitting: boolean;
-  setSubmitting: (value: boolean) => void;
-  error: string | null;
-  setError: (value: string | null) => void;
-  transcriptRef: RefObject<HTMLDivElement | null>;
-  textarea: RefObject<HTMLTextAreaElement | null>;
-  /** Set to this composer's sender, which Paper's comment threads ride. */
+  /** Set to the chat composer's sender, which Paper's comment threads ride. */
   threadSender: RefObject<SendThreads | null>;
   opening?: CoachOpening;
   onOpening: (opening: CoachOpening) => void;
+  diff: CoachDiff | null;
+  onDiff: (diff: CoachDiff | null) => void;
+  /** The diff stacks above the chat here, as on a phone; else the host shows it beside. */
+  inlineDiff: boolean;
 }) {
-  const baseMachine = project.run_on;
-  const [sessions, setSessions] = useState<WritingSession[]>([]);
-  const [sessionId, setSessionId] = useState<string | null>(opening?.sessionId ?? null);
-  const [fresh, setFresh] = useState(opening?.fresh ?? false);
-  // Turns started here, kept from admission until the task list carries them.
-  const [started, setStarted] = useState<AgentTask[]>([]);
-  // The human's pick for the next turns, kept while the same conversation stays open.
-  const [configOverride, setConfigOverride] = useState<{
-    anchor: string | null;
-    config: AgentRunConfig;
-  } | null>(null);
-  const [message, setMessage] = useState("");
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const [sessionRefresh, setSessionRefresh] = useState(0);
+  const inventory = useResource(
+    `${project.id}:paper-chats`,
+    useMemo(() => chatsResourceProfile(project.id, apiBase), [project.id, apiBase]),
+  );
+  const chats = useMemo(
+    () =>
+      (inventory.value?.summaries ?? [])
+        .filter((summary) => summary.focus === "paper")
+        .sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
+    [inventory.value],
+  );
+  const [picked, setPicked] = useState<string | null>(opening?.chatId ?? null);
+  const [fresh] = useState(() => crypto.randomUUID());
+  const chatId = picked ?? chats[0]?.chat_id ?? fresh;
+  const summary = chats.find((chat) => chat.chat_id === chatId);
+  useEffect(() => onOpening({ chatId: picked }), [picked, onOpening]);
+  const transcript = useResource(
+    `${project.id}:paper-chat`,
+    useMemo(
+      () => (summary ? chatResourceProfile(project.id, MAIN_GRAPH, chatId, apiBase) : null),
+      [summary, project.id, chatId, apiBase],
+    ),
+  );
   const [historyOpen, setHistoryOpen] = useState(false);
   const historyButton = useRef<HTMLButtonElement>(null);
   const historyList = useRef<HTMLDivElement>(null);
@@ -129,505 +100,117 @@ export function PaperCoach({
     [historyList, historyButton],
     historyButton,
   );
-  const modeKey = `rcp:paper-coach-mode:${apiBase}`;
-  const [applyDirectly, setApplyDirectly] = useState(() => readPref(modeKey) === "apply");
-  const browserKey = `rcp:paper-coach-browser:${apiBase}`;
-  const [browserOn, setBrowserOn] = useState(() => readPref(browserKey) !== "off");
-  const text = assembleChatTurn(message, comments.annotations);
-  const composer = useComposerAttachments({
-    project,
-    referencesKey: null,
-    input: textarea,
-    message: { get: () => message, set: setMessage },
-    onError: setError,
-  });
-  const taskRevision = tasks
-    .filter((task) => task.kind === "paper_coach")
-    .map((task) => `${task.operation_id}:${task.updated_at}`)
-    .join("|");
-  useEffect(() => {
-    const controller = new AbortController();
-    api<WritingSession[]>(`${apiBase}/paper/sessions`, { signal: controller.signal })
-      .then((next) => {
-        setSessions(next);
-        setSessionError(null);
-      })
-      .catch((cause) => {
-        if (!controller.signal.aborted) setSessionError(String(cause));
-      });
-    return () => controller.abort();
-  }, [apiBase, taskRevision, sessionRefresh]);
-  const attach = (session: WritingSession) => {
-    setSessionId(session.native_session_id);
-    setFresh(false);
-    setStarted([]);
-    setConfigOverride(null);
+  const open = (next: string) => {
+    setPicked(next);
+    onDiff(null);
     setHistoryOpen(false);
-    setError(null);
   };
-  const knownTasks = useMemo(
-    () => [
-      ...tasks,
-      ...started.filter((turn) => !tasks.some((task) => task.operation_id === turn.operation_id)),
-    ],
-    [tasks, started],
+  const startTask = useCallback<StartConversationTask>(
+    (kind, request, requestId) =>
+      onStartTask(
+        kind,
+        { ...request, chat_scope: "project", focus: "paper" },
+        requestId,
+        MAIN_GRAPH,
+      ),
+    [onStartTask],
   );
-  const openedSession =
-    sessionId ??
-    (!fresh
-      ? (knownTasks.find((task) => task.kind === "paper_coach" && task.native_session_id)
-          ?.native_session_id ??
-        sessions[0]?.native_session_id ??
-        null)
-      : null);
-  const sessionRead = useResource(
-    `${project.id}:paper-coach`,
-    openedSession ? paperSessionTasksProfile(project.id, openedSession) : null,
-  );
-  const mergedTasks = useMemo(() => {
-    const byId = new Map(knownTasks.map((task) => [task.operation_id, task]));
-    for (const task of sessionRead.value ?? []) {
-      const known = byId.get(task.operation_id);
-      if (!known || known.updated_at <= task.updated_at) byId.set(task.operation_id, task);
-    }
-    return [...byId.values()];
-  }, [knownTasks, sessionRead.value]);
-  const conversation = coachConversation(
-    mergedTasks,
-    openedSession,
-    started.map((task) => task.operation_id),
-  );
-  // The session the next turn resumes: the newest turn's, as in chat.
-  const currentSessionId = conversation.sessionId;
-  const openedAt = openedSession ?? currentSessionId;
-  useEffect(
-    () => onOpening(openedAt ? { sessionId: openedAt, fresh: false } : { sessionId: null, fresh }),
-    [openedAt, fresh, onOpening],
-  );
-  const selectedSession = sessions.find(
-    (session) => session.native_session_id === currentSessionId,
-  );
-  const sessionTasks = conversation.tasks;
-  const config = {
-    ...(configOverride && configOverride.anchor === openedSession
-      ? configOverride.config
-      : latestPersistedChatConfig(
-          [],
-          sessionTasks,
-          selectedSession
-            ? sessionConfig(selectedSession, baseMachine)
-            : profileRunConfig(project.agent_profiles.paper_coach, baseMachine),
-        )),
-    run_on: baseMachine,
-  };
-  const activeTask = sessionTasks.find(isActiveTask);
-  const steeringTask =
-    activeTask?.steer_visible && activeTask.can_steer && activeTask.steer_turn_id
-      ? activeTask
-      : null;
-  const [receivedSteers, setReceivedSteers] = useState<ChatMessage[]>([]);
-  const steers = useMemo(() => {
-    const byId = new Map(
-      sessionTasks.flatMap((task) => task.steers ?? []).map((steer) => [steer.message_id, steer]),
-    );
-    for (const steer of receivedSteers)
-      if (sessionTasks.some((task) => task.operation_id === steer.operation_id))
-        byId.set(steer.message_id, steer);
-    return [...byId.values()];
-  }, [sessionTasks, receivedSteers]);
-  const lines = useAgentWindowLines({ messages: steers, tasks: sessionTasks });
-  const transcript = useMemo(() => coachSteersAfterPrompts(lines.transcript), [lines.transcript]);
-  const scroll = useRef<AgentWindowScroll>(null);
-  const endpoints = useMemo(
-    () => ({
-      ...projectAgentWindowEndpoints(project.id, `paper-coach:${openedSession ?? ""}`),
-      canCommentArtifacts: false,
-    }),
-    [project.id, openedSession],
-  );
-  const agentPicker = useAgentConfigPicker({
-    project,
-    value: config,
-    onChange: (next) => setConfigOverride({ anchor: openedSession, config: next }),
-    label: "Coach agent",
-    disabled: Boolean(activeTask) || submitting,
-    workLikeCapable: false,
-    panelClassName: "paper-agent-popover",
-    options: (
-      <div className="agent-config-options" role="group" aria-label="Launch options">
-        <BrowserToggle
-          checked={browserOn}
-          disabled={Boolean(activeTask) || submitting}
-          onChange={(on) => {
-            setBrowserOn(on);
-            writePref(browserKey, on ? "on" : "off");
-          }}
-        />
-      </div>
-    ),
-  });
-  const skills = useSkillPicker({
-    source: project,
-    target: config,
-    message: { get: () => message, set: setMessage },
-    input: textarea,
-    onComplete: () => setError(null),
-  });
-  /** Sends the typed text, staged comments, and any Paper threads: a steer while a
-   *  turn takes one, else a new turn. `key` makes a retried thread send repeat itself. */
-  const deliver = async (threadIds: readonly string[] = [], key?: string) => {
-    const sent = comments.annotations;
-    const threads = threadIds.length ? { comment_thread_ids: [...threadIds] } : {};
-    scroll.current?.follow();
-    if (steeringTask) {
-      const request: SteerRequest = {
-        message_id: key ?? crypto.randomUUID(),
-        attempt: steeringTask.attempt,
-        expected_turn_id: steeringTask.steer_turn_id!,
-        message: text,
-        ...threads,
-      };
-      const receipt = await endpoints.steer(steeringTask.operation_id, request);
-      setReceivedSteers((current) => [
-        ...current.filter((item) => item.message_id !== receipt.message_id),
-        receipt,
-      ]);
-      setMessage("");
-      skills.reset();
-      comments.clear(sent);
-      return;
-    }
-    const task = await onStartTask(
-      "paper_coach",
-      {
-        message: text,
-        ...config,
-        model: config.model || null,
-        session_id: currentSessionId,
-        paper_apply_directly: applyDirectly,
-        browser_requested: browserOn,
-        ...skills.fields,
-        ...composer.turnFields(),
-        ...threads,
-      },
-      key,
-    );
-    // The conversation follows this turn, even into the fresh session a provider
-    // switch starts, and stays anchored where it opened.
-    setSessionId(openedSession);
-    setStarted((current) => [...current, task]);
-    setMessage("");
-    skills.reset();
-    composer.clear();
-    comments.clear(sent);
-  };
-  const send = async () => {
-    if (steeringTask) {
-      if (!text || composer.staged || submitting || !steeringTask.steer_turn_id) return;
-    } else if (!text || composer.unready || activeTask || submitting) return;
-    if (!comments.requireComplete()) return;
-    if (!steeringTask) composer.closeMenu();
-    setSubmitting(true);
-    setError(null);
-    try {
-      await deliver();
-    } catch (cause) {
-      setError(
-        steeringTask
-          ? `Steering receipt could not be read. Nothing was resent. ${String(cause)}`
-          : String(cause),
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  };
-  const sendThreads: SendThreads = async (threadIds, key) => {
-    if (submitting) throw new Error("A coach message is being sent.");
-    if (activeTask && !steeringTask)
-      throw new Error(activeTask.steer_unavailable_reason || "The coach is busy.");
-    if (steeringTask && composer.staged)
-      throw new Error("Staged files go with the next turn; send them first.");
-    if (!steeringTask && composer.unready) throw new Error("Files are still uploading.");
-    if (!comments.requireComplete()) throw new Error("Finish the waiting coach comment first.");
-    setSubmitting(true);
-    setError(null);
-    try {
-      await deliver(threadIds, key);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-  useLayoutEffect(() => {
-    threadSender.current = sendThreads;
-  });
-  useLayoutEffect(
-    () => () => {
-      threadSender.current = null;
+  const send = useCallback<SendThreads>(
+    (ids, key) => {
+      const sender = threadSender.current;
+      return sender ? sender(ids, key) : Promise.reject(new Error("The Coach is not ready."));
     },
     [threadSender],
   );
-  // One UUID per attempt, so a repeated click replays the same retry admission.
-  const retryKeys = useRef(new Map<string, string>());
-  const continueTask = async (task: AgentTask, action: "resume" | "retry") => {
-    setSubmitting(true);
-    setError(null);
-    const attempt = `${task.operation_id}:${task.attempt}:${action}`;
-    const key = retryKeys.current.get(attempt) ?? crypto.randomUUID();
-    retryKeys.current.set(attempt, key);
-    try {
-      const next = await api<AgentTask>(
-        `${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/${action}`,
-        {
-          method: "POST",
-          headers: { "Idempotency-Key": key },
-          ...(action === "retry"
-            ? { body: JSON.stringify(taskRetryRequestBody(task, config)) }
-            : {}),
-        },
-      );
-      setStarted((current) => [...current, next]);
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setSubmitting(false);
-    }
+  const turnTrail = (taskId: string) => {
+    const task = tasks.find((item) => item.operation_id === taskId);
+    if (task && isActiveTask(task)) return null;
+    return (
+      <PaperTurnChanges
+        apiBase={apiBase}
+        operationId={taskId}
+        openPath={diff?.operationId === taskId ? diff.path : null}
+        onOpen={(path: string) => onDiff({ chatId, operationId: taskId, path })}
+      />
+    );
   };
-  const stop = async (task: AgentTask) => {
-    setError(null);
-    try {
-      await api(`${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/pause`, {
-        method: "POST",
-      });
-    } catch (cause) {
-      setError(String(cause));
-    }
-  };
-  const cards = (taskId: string) => (
-    <PaperChanges
-      apiBase={apiBase}
-      changes={changes.filter((change) => change.task_id === taskId)}
-      onAction={onChangeAction}
-      onUndoAll={onUndoAll}
-      onLocate={onLocate}
-    />
-  );
-  // Each turn's cards follow its last reply.
-  const lastReplies = new Map(
-    transcript.filter((line) => line.role === "agent").map((line) => [line.taskId, line.lineId]),
-  );
-  const replyTask = (line: TaskTranscriptLine) =>
-    lastReplies.get(line.taskId) === line.lineId
-      ? sessionTasks.find((task) => task.operation_id === line.taskId)
-      : undefined;
-  const artifacts = useAgentWindowArtifacts({
-    endpoints,
-    chatId: endpoints.scopeKey,
-    relatedTasks: sessionTasks,
-    transcript,
-    comments,
-    onRefreshTask: endpoints.loadTask,
-    setSubmitError: setError,
-  });
   return (
-    <div className="chat-dock paper-coach">
-      {panelTools(
-        toolbar,
-        <>
-          <AgentStatusStrip tasks={sessionTasks} />
-          <button
-            ref={historyButton}
-            className="icon-button compact"
-            aria-label="Coach chat history"
-            aria-expanded={historyOpen && sessions.length > 0}
-            disabled={!sessions.length}
-            onClick={() => setHistoryOpen(!historyOpen)}
-          >
-            <History size={15} />
-          </button>
-          <button
-            className="icon-button compact"
-            aria-label="New coach chat"
-            onClick={() => {
-              setSessionId(null);
-              setFresh(true);
-              setStarted([]);
-              setConfigOverride(null);
-              skills.reset();
-              setError(null);
-            }}
-          >
-            <MessageCirclePlus size={15} />
-          </button>
-          {sessionError && (
+    <div className="paper-coach">
+      <div className="paper-coach-body" data-diff={inlineDiff && diff ? "open" : undefined}>
+        {panelTools(
+          toolbar,
+          <>
+            <button
+              ref={historyButton}
+              className="icon-button compact"
+              aria-label="Coach chat history"
+              aria-expanded={historyOpen && chats.length > 0}
+              disabled={!chats.length}
+              onClick={() => setHistoryOpen(!historyOpen)}
+            >
+              <History size={15} />
+            </button>
             <button
               className="icon-button compact"
-              aria-label="Retry chat history"
-              title={sessionError}
-              onClick={() => setSessionRefresh((value) => value + 1)}
+              aria-label="New coach chat"
+              onClick={() => open(crypto.randomUUID())}
             >
-              <RotateCcw size={15} />
+              <MessageCirclePlus size={15} />
             </button>
-          )}
-        </>,
-        Boolean(sessionError),
-      )}
-      {historyOpen && sessions.length > 0 && (
-        <div className="paper-session-list" ref={historyList}>
-          {sessions.map((session) => (
-            <button
-              key={session.native_session_id}
-              aria-pressed={currentSessionId === session.native_session_id}
-              onClick={() => attach(session)}
-            >
-              {session.title || new Date(session.created_at).toLocaleString()}
-            </button>
-          ))}
-        </div>
-      )}
-      <AgentWindowLines
-        scrollKey={endpoints.scopeKey}
-        linesRef={transcriptRef}
-        transcript={transcript}
-        questions={NO_QUESTIONS}
-        scroll={scroll}
-      >
-        <AgentWindowTranscript
-          transcript={transcript}
-          tasks={sessionTasks}
-          questions={NO_QUESTIONS}
-          endpoints={endpoints}
-          artifacts={artifacts}
-          comments={comments}
-          compactionByLine={lines.compactionByLine}
-          continuedTaskIds={lines.continuedTaskIds}
-          latestGraphReceiptLineIds={lines.latestGraphReceiptLineIds}
-          showModes={false}
-          submitting={submitting}
-          onResumeTask={(task) => void continueTask(task, "resume")}
-          onRetryTask={(task) => void continueTask(task, "retry")}
-          lineTrail={(line) => {
-            const task = replyTask(line);
-            return task && cards(task.operation_id);
-          }}
-          footer={
-            <>
-              {sessionTasks
-                .filter((task) => !lastReplies.has(task.operation_id))
-                .map((task) => (
-                  <div key={task.operation_id} className="agent-chat-view-line agent">
-                    {cards(task.operation_id)}
-                  </div>
-                ))}
-              {!sessionTasks.length && !fresh && (
-                <PaperChanges
-                  apiBase={apiBase}
-                  changes={changes.filter((change) => change.task_id !== PAPER_GIT_TASK)}
-                  onAction={onChangeAction}
-                  onUndoAll={onUndoAll}
-                  onLocate={onLocate}
-                />
-              )}
-            </>
-          }
-        />
-      </AgentWindowLines>
-      <ChatComposer
-        hint={
-          <ProviderSwitchHint
-            project={project}
-            config={config}
-            tasks={sessionTasks}
-            sessionId={currentSessionId}
-          />
-        }
-        composer={composer}
-        comments={comments}
-        skills={skills.props}
-        addDisabled={composer.full || composer.preparing || submitting}
-        className={error ? "paper-failure" : undefined}
-        field={
-          <ComposerField
-            ref={textarea}
-            aria-label="Message"
-            value={message}
-            onChange={(event) => {
-              setMessage(event.target.value);
-              skills.readMessage(event.target.value);
-              setError(null);
-            }}
-            onPaste={composer.paste}
-            onKeyDown={(event) => {
-              if (skills.handleKeyDown(event)) return;
-              if (returnSends(event)) {
-                event.preventDefault();
-                void send();
-              }
-            }}
-          />
-        }
-        tools={
-          <>
-            {agentPicker.chip}
-            <div className="segmented" role="group" aria-label="Coach changes">
-              {([false, true] as const).map((apply) => (
-                <button
-                  key={String(apply)}
-                  aria-label={apply ? "Accept edits" : "Review edits"}
-                  title={apply ? "Accept edits" : "Review edits"}
-                  aria-pressed={applyDirectly === apply}
-                  onClick={() => {
-                    setApplyDirectly(apply);
-                    writePref(modeKey, apply ? "apply" : "review");
-                  }}
-                >
-                  {apply ? <Zap size={15} /> : <ListChecks size={15} />}
-                </button>
-              ))}
-            </div>
-          </>
-        }
-        actions={
-          <>
-            {activeTask?.can_pause && (
+          </>,
+        )}
+        {historyOpen && chats.length > 0 && (
+          <div className="paper-session-list" ref={historyList}>
+            {chats.map((chat) => (
               <button
-                className="icon-button"
-                aria-label="Stop coach"
-                onClick={() => void stop(activeTask)}
+                key={chat.chat_id}
+                aria-pressed={chat.chat_id === chatId}
+                onClick={() => open(chat.chat_id)}
               >
-                <Square size={14} />
+                {chat.title || new Date(chat.updated_at).toLocaleString()}
               </button>
-            )}
-            <button
-              className="icon-button primary chat-send-button"
-              aria-label={
-                steeringTask
-                  ? steeringTask.steer_action_label
-                  : error
-                    ? "Retry message"
-                    : "Send coach message"
-              }
-              title={
-                (activeTask && !steeringTask ? activeTask.steer_unavailable_reason : error) ||
-                undefined
-              }
-              disabled={
-                !text ||
-                !comments.complete ||
-                submitting ||
-                (steeringTask
-                  ? composer.staged
-                  : composer.unready ||
-                    Boolean(activeTask) ||
-                    !launchProviderReady(project, config, false, Boolean(currentSessionId)))
-              }
-              onClick={() => void send()}
-            >
-              {error && !steeringTask ? <RotateCcw size={16} /> : <Send size={16} />}
-            </button>
-          </>
-        }
-      />
-      {agentPicker.panel}
+            ))}
+          </div>
+        )}
+        <AgentChatView
+          key={chatId}
+          project={project}
+          actorId={actions.actorId}
+          graphTarget={MAIN_GRAPH}
+          conversationTitle="Coach"
+          tasks={tasks}
+          historyMessages={transcript.value?.messages}
+          agentSetup={summary?.agent_setup}
+          chatId={chatId}
+          presentation="workspace"
+          profileName="paper_coach"
+          fixedConversation
+          onStartTask={startTask}
+          onInspectTask={actions.onInspectTask}
+          onOpenInbox={actions.onOpenInbox}
+          onRepairGraphUpdate={actions.onRepairGraphUpdate}
+          onResumeTask={actions.onResumeTask}
+          onRetryTask={actions.onRetryTask}
+          onRefreshTask={actions.onRefreshTask}
+          onNewSession={() => open(crypto.randomUUID())}
+          onClose={() => undefined}
+          turnTrail={turnTrail}
+          threadSender={threadSender}
+        />
+        {inlineDiff && diff && (
+          <PaperTurnDiff
+            key={`${diff.operationId}:${diff.path}`}
+            projectId={project.id}
+            apiBase={apiBase}
+            chatId={chatId}
+            operationId={diff.operationId}
+            path={diff.path}
+            send={send}
+            canPost
+            onClose={() => onDiff(null)}
+          />
+        )}
+      </div>
     </div>
   );
 }

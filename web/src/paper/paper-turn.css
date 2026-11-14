@@ -1,0 +1,213 @@
+.paper-coach {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  position: relative;
+}
+.paper-coach-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.paper-coach-body > .chat-dock {
+  flex: 1;
+  min-width: 0;
+}
+.paper-turn {
+  background: var(--sheet);
+  border-radius: 9px;
+  box-shadow: var(--aqua-raised, var(--shadow));
+  margin-top: 10px;
+  overflow: hidden;
+}
+.paper-turn-head,
+.paper-turn-file,
+.paper-turn-more {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: inherit;
+  display: flex;
+  gap: 8px;
+  min-height: 36px;
+  padding: 7px 12px;
+  text-align: left;
+  width: 100%;
+}
+.paper-turn-head {
+  background: var(--aqua-field, var(--paper));
+  font-size: 13px;
+}
+.paper-turn-head strong {
+  flex: 1;
+}
+.paper-turn-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.paper-turn-files > li {
+  border-top: 1px solid var(--line, color-mix(in srgb, var(--muted) 30%, transparent));
+}
+.paper-turn-file {
+  font-size: 12.5px;
+  transition: background-color 0.15s ease;
+}
+.paper-turn-file:hover {
+  background: var(--aqua-field, var(--paper));
+}
+.paper-turn-file[aria-pressed="true"] {
+  background: var(--amber-soft, color-mix(in srgb, var(--amber) 28%, transparent));
+}
+.paper-turn-file.clash {
+  background: var(--red-soft);
+  color: var(--coral);
+}
+.paper-turn-file.clash[aria-pressed="true"] {
+  box-shadow: inset 3px 0 0 var(--coral);
+}
+.paper-turn-file > svg {
+  flex: none;
+}
+.paper-turn-path {
+  flex: 1;
+  font-family: var(--mono);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.paper-turn-more {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.paper-turn-counts {
+  display: inline-flex;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  gap: 8px;
+}
+.paper-turn-added {
+  color: var(--forest);
+}
+.paper-turn-removed {
+  color: var(--coral);
+}
+.paper-turn-diff {
+  animation: paper-turn-diff-in 0.18s ease-out;
+  background: var(--sheet);
+  border-left: 1px solid var(--line, color-mix(in srgb, var(--muted) 30%, transparent));
+  display: flex;
+  flex: 0 0 min(52%, 560px);
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.paper-turn-diff-bar {
+  gap: 8px;
+}
+.paper-turn-diff-bar .paper-turn-path {
+  font-size: 12.5px;
+}
+.paper-turn-code {
+  flex: 1;
+  font: 12.5px/1.7 var(--mono);
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+.paper-turn-line {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  padding: 0 10px;
+}
+.paper-turn-line > b {
+  color: var(--muted);
+  flex: none;
+  font-weight: 400;
+  text-align: right;
+  width: 3ch;
+}
+.paper-turn-line > span,
+.paper-turn-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.paper-turn-text {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: inherit;
+  cursor: text;
+  font: inherit;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
+}
+.paper-turn-line.added {
+  background: var(--forest-soft);
+}
+.paper-turn-line.removed {
+  background: var(--red-soft);
+}
+.paper-turn-line.selected {
+  outline: 2px solid var(--ink, currentColor);
+  outline-offset: -2px;
+}
+.paper-turn-line.gap {
+  color: var(--muted);
+}
+.paper-turn-pin {
+  flex: none;
+  position: static;
+  transform: none;
+}
+.paper-turn-binary,
+.paper-turn-code > .paper-failure {
+  color: var(--muted);
+  margin: 12px;
+}
+.paper-turn-loading {
+  height: 2px;
+  margin: 12px;
+  background: var(--aqua-field, var(--paper));
+}
+@keyframes paper-turn-diff-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+}
+.paper-coach-body[data-diff] {
+  flex-direction: column-reverse;
+}
+.paper-coach-body[data-diff] > .paper-turn-diff {
+  animation-name: paper-turn-diff-down;
+  border-bottom: 1px solid var(--line, color-mix(in srgb, var(--muted) 30%, transparent));
+  border-left: 0;
+  flex: 0 0 55%;
+}
+.paper-editor-box > .paper-turn-diff {
+  border-left: 0;
+  flex: 1;
+}
+@keyframes paper-turn-diff-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-turn-diff {
+    animation: none;
+  }
+}

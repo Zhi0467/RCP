@@ -5648,6 +5648,15 @@ function MemberApp({
                     project={project}
                     tasks={projectTasks}
                     onStartTask={startAgentTask}
+                    coachActions={{
+                      actorId: draftActorId,
+                      onResumeTask: (task) => void operateTask(task, "resume"),
+                      onRetryTask: requestRetry,
+                      onRefreshTask: refreshAgentTask,
+                      onInspectTask: selectTaskInspector,
+                      onOpenInbox: () => changeView("attention"),
+                      onRepairGraphUpdate: repairGraphUpdate,
+                    }}
                     editorState={paperEditorStates.current.get(project.id)}
                     requestedFileId={requestedPaperFile}
                     onEditorStateChange={(state) =>

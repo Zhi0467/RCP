@@ -11,10 +11,31 @@ const project = {
   id: "p",
   revision: 1,
   agent_profiles: {
-    paper_coach: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
+    paper_coach: { provider: "codex", model: "", reasoning: "high", run_on: "local" },
+    project_chat: {
+      provider: "codex",
+      model: "",
+      reasoning: "medium",
+      run_on: "local",
+      effective_model: "",
+      work_like_capable: true,
+    },
   },
-  provider_readiness: {},
-  machines: [],
+  provider_readiness: {
+    local: {
+      codex: {
+        provider: "codex",
+        label: "Codex",
+        installed: true,
+        authenticated: true,
+        models: [],
+      },
+    },
+  },
+  repositories: [],
+  project_truth_scope: [],
+  run_on: "local",
+  machines: [{ alias: "local", host: null }],
 };
 // A test's init script may seed coach turns and record the turns the coach starts.
 const coach = (window as { paperCoachFixture?: { tasks: unknown[]; started: unknown[] } })
@@ -44,6 +65,18 @@ function Tab() {
         remembered.current = state;
       }}
       tasks={(coach?.tasks ?? []) as never}
+      coachActions={{
+        actorId: "member",
+        onResumeTask: () => undefined,
+        onRetryTask: () => undefined,
+        onRefreshTask: async (taskId) =>
+          (coach?.tasks.find(
+            (task) => (task as { operation_id: string }).operation_id === taskId,
+          ) ?? null) as never,
+        onInspectTask: () => undefined,
+        onOpenInbox: () => undefined,
+        onRepairGraphUpdate: async () => undefined,
+      }}
       onStartTask={async (kind, request, requestId) => {
         if (!coach) throw new Error("unused");
         coach.started.push({ kind, request, requestId });

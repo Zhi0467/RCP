@@ -141,6 +141,9 @@ export function createPaperFixture({
   const tree = structuredClone(paperTestTree);
   const posts = [];
   const threads = [];
+  /** Paper chats the Coach lists, and each finished turn's files by operation id. */
+  const chats = [];
+  const turns = {};
   const rooms = new Map([["f1", room]]);
   let nextFile = 10;
   const versions = [
@@ -172,6 +175,8 @@ export function createPaperFixture({
     posts,
     threads,
     versions,
+    chats,
+    turns,
     respond(path, method = "GET", body = {}) {
       if (method === "POST") posts.push({ path, body });
       if (path === "/api/health")
@@ -188,6 +193,32 @@ export function createPaperFixture({
       if (path.endsWith("/tree")) return { json: tree };
       if (path.endsWith("/sessions")) return { json: [] };
       if (path.endsWith("/tasks")) return { json: [] };
+      if (path.endsWith("/chats"))
+        return {
+          json: { items: chats, total: chats.length, offset: 0, limit: 200 },
+        };
+      if (path.endsWith("/chat-reads"))
+        return { json: { baseline: "", reads: {}, latest_finished: {}, archived: [] } };
+      if (/\/chats\/[^/]+\/questions$/.test(path)) return { json: [] };
+      if (/\/chats\/[^/]+\/worktree$/.test(path))
+        return {
+          json: {
+            show_chooser: false,
+            can_choose: false,
+            binding: null,
+            integration_options: [],
+            can_remove: false,
+          },
+        };
+      const chat = chats.find((item) => path.endsWith(`/chats/${item.chat_id}`));
+      if (chat) return { json: { ...chat, messages: [] } };
+      const turn = path.match(/\/paper\/turns\/([^/]+)(?:\/files\/(.+))?$/);
+      if (turn) {
+        const known = turns[turn[1]];
+        if (!known) return { status: 404, json: { detail: "Paper turn not found" } };
+        if (!turn[2]) return { json: known.list };
+        return { json: known.files[decodeURIComponent(turn[2])] };
+      }
       if (path.endsWith("/paper/git"))
         return {
           json: {

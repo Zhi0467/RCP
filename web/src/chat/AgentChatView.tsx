@@ -31,7 +31,16 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import {
   ApiError,
   loadServiceConnections,
@@ -97,6 +106,7 @@ import {
   stopDesktopDictation,
 } from "../core/desktopRuntime";
 import type {
+  AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
   ChatMessage,
@@ -169,6 +179,12 @@ interface Props {
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
   composerRetry?: AgentTask | null;
   onComposerRetryTaken?: () => void;
+  /** The Settings profile a turn starts from; a chat's own surface by default. */
+  profileName?: AgentExecutionProfile;
+  /** What follows a turn's last line, such as a Paper turn's changed files. */
+  turnTrail?: (taskId: string) => ReactNode;
+  /** Set to this composer's thread sender, which the host's own comment threads ride. */
+  threadSender?: RefObject<SendThreads | null>;
 }
 
 export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
@@ -252,6 +268,9 @@ export function AgentChatView({
   onRefreshTask,
   composerRetry = null,
   onComposerRetryTaken,
+  turnTrail,
+  threadSender,
+  profileName,
 }: Props) {
   const readOnly = archived || requestedReadOnly;
   const allowArtifactComments = !archived && requestedArtifactComments;
@@ -292,7 +311,10 @@ export function AgentChatView({
       latestPersistedChatConfig(
         historyMessages,
         relatedTasks,
-        originRunConfig(origin, profileRunConfig(project.agent_profiles[surface], project.run_on)),
+        originRunConfig(
+          origin,
+          profileRunConfig(project.agent_profiles[profileName ?? surface], project.run_on),
+        ),
         agentSetup,
       ),
     [
@@ -303,6 +325,7 @@ export function AgentChatView({
       project.run_on,
       relatedTasks,
       surface,
+      profileName,
     ],
   );
   // The human's pick for this chat's next turns. It is keyed by chat, so another
@@ -1216,6 +1239,19 @@ export function AgentChatView({
     ],
     [transcript],
   );
+  useLayoutEffect(() => {
+    if (threadSender) threadSender.current = readOnly ? null : sendThreads;
+  });
+  useLayoutEffect(
+    () => () => {
+      if (threadSender) threadSender.current = null;
+    },
+    [threadSender],
+  );
+  const lastTurnLines = useMemo(
+    () => new Map(transcript.map((line) => [line.taskId, line.lineId])),
+    [transcript],
+  );
   const replyComments = useReplyComments({
     projectId: project.id,
     chatId,
@@ -1295,7 +1331,7 @@ export function AgentChatView({
     </button>
   );
 
-  const profile = project.agent_profiles[surface];
+  const profile = project.agent_profiles[profileName ?? surface];
   const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
   const agentSummary = (
     <AgentConfigChip
@@ -1419,6 +1455,10 @@ export function AgentChatView({
           artifacts={artifacts}
           comments={comments}
           answerComments={false}
+          lineTrail={
+            turnTrail &&
+            ((line) => lastTurnLines.get(line.taskId) === line.lineId && turnTrail(line.taskId))
+          }
           compactionByLine={compactionByLine}
           continuedTaskIds={continuedTaskIds}
           latestGraphReceiptLineIds={latestGraphReceiptLineIds}

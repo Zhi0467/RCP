@@ -549,11 +549,6 @@
       "count": 4
     }
   },
-  "src/paper/PaperCoach.tsx": {
-    "rcp/no-comments": {
-      "count": 7
-    }
-  },
   "src/paper/PaperDialog.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -581,7 +576,7 @@
   },
   "src/paper/PaperWorkspace.tsx": {
     "rcp/no-comments": {
-      "count": 24
+      "count": 20
     }
   },
   "src/paper/paperDocuments.ts": {

@@ -2997,6 +2997,8 @@ export interface ChatSummary {
   updated_at: string;
   message_count: number;
   last_message_preview: string;
+  /** "paper" for a Coach chat, fixed by its first turn. */
+  focus?: "paper" | null;
 }
 
 /** Per-project display choices: archived chats and human-given names. */
