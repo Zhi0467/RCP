@@ -4,7 +4,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("a wide annotation composer stays interactive inside a keyboard-shrunken visual viewport", async () => {
+test("a pointer selection on a reply offers Comment, keeps the selection copyable, and opens the shared composer only on request", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -17,119 +17,11 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 844, height: 520 } });
-    await page.addInitScript(() => {
-      class TestVisualViewport extends EventTarget {
-        width = window.innerWidth;
-        height = window.innerHeight;
-        offsetLeft = 0;
-        offsetTop = 0;
-
-        shrink(height, offsetTop) {
-          this.height = height;
-          this.offsetTop = offsetTop;
-          this.dispatchEvent(new Event("resize"));
-        }
-      }
-      const viewport = new TestVisualViewport();
-      Object.defineProperty(window, "visualViewport", {
-        configurable: true,
-        value: viewport,
-      });
-      window.shrinkTestVisualViewport = (height, offsetTop) => viewport.shrink(height, offsetTop);
-    });
-
     await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
-    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
-    const comment = page.getByRole("button", { name: "Comment on this answer" });
-    await comment.waitFor({ state: "visible" });
-    assert.equal(await page.evaluate(() => window.innerWidth), 844);
-    await comment.click();
-    const composer = page.getByRole("form", { name: "Select answer text" });
-    await composer.waitFor({ state: "visible" });
-
-    await page.evaluate(() => window.shrinkTestVisualViewport(196, 48));
-    await page.waitForFunction(() => {
-      const element = document.querySelector(".chat-annotation-composer");
-      return element instanceof HTMLElement && element.getBoundingClientRect().bottom <= 232;
-    });
-
-    const layout = await composer.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return {
-        top: rect.top,
-        bottom: rect.bottom,
-        width: rect.width,
-        clientHeight: element.clientHeight,
-        scrollHeight: element.scrollHeight,
-        overflowY: style.overflowY,
-      };
-    });
-    assert.ok(layout.top >= 60, `composer top ${layout.top} escaped the visual viewport`);
-    assert.ok(layout.bottom <= 232, `composer bottom ${layout.bottom} escaped the visual viewport`);
-    assert.equal(layout.width, 320);
-    assert.equal(layout.overflowY, "auto");
-    assert.ok(layout.scrollHeight > layout.clientHeight, "constrained composer should scroll");
-
-    const source = page.getByRole("textbox", { name: "Select answer text" });
-    const originalValue = await source.inputValue();
-    await source.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    const selection = await source.evaluate((element) => ({
-      readOnly: element.readOnly,
-      selectionStart: element.selectionStart,
-      selectionEnd: element.selectionEnd,
-      value: element.value,
-    }));
-    assert.deepEqual(selection, {
-      readOnly: true,
-      selectionStart: 0,
-      selectionEnd: originalValue.length,
-      value: originalValue,
-    });
-
-    await page.getByRole("button", { name: "Comment on selection" }).click();
-    const commentBox = page.getByRole("textbox", { name: "Comment" });
-    await commentBox.fill("Show the comparison.");
-    // Enter submits the comment, as the Add comment button does.
-    await commentBox.press("Enter");
-    const annotationCount = page.getByRole("button", { name: "1 annotation" });
-    await annotationCount.waitFor({ state: "visible" });
-    await annotationCount.click();
-    const stagedComment = page.getByRole("textbox", { name: "Comment for annotation 1" });
-    await stagedComment.waitFor({ state: "visible" });
-    await page.getByRole("textbox", { name: "Message" }).fill("Send the staged annotation.");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-
-    assert.equal(await comment.isDisabled(), true);
-    assert.equal(await stagedComment.isDisabled(), true);
-    assert.equal(
-      await page.getByRole("button", { name: "Remove annotation 1" }).isDisabled(),
-      true,
+    await page.route("**/api/projects/*/comment-threads?*", (route) =>
+      route.fulfill({ json: { threads: [] } }),
     );
-    assert.equal(await stagedComment.inputValue(), "Show the comparison.");
-
-    await page.evaluate(() => window.resolveViewportTask());
-    await annotationCount.waitFor({ state: "detached" });
-  } finally {
-    await browser?.close();
-    await server.close();
-  }
-});
-
-test("a pointer selection offers Comment, keeps the selection copyable, and opens the composer only on request", async () => {
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    logLevel: "silent",
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
-  });
-  let browser;
-  try {
-    await server.listen();
-    const address = server.httpServer?.address();
-    assert.ok(address && typeof address === "object");
-    browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage({ viewport: { width: 844, height: 520 } });
-    await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const answer = page.locator(".chat-annotatable-answer");
     await answer.waitFor({ state: "visible" });
@@ -146,9 +38,9 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
 
     // Releasing offers Comment without opening the composer or moving focus, so
     // the platform's Copy still acts on the reader's selection.
-    const offer = page.getByRole("button", { name: "Comment", exact: true });
+    const offer = page.locator(".chat-selection-comment");
     await offer.waitFor({ state: "visible", timeout: 2000 });
-    const composer = page.getByRole("form", { name: "Add annotation" });
+    const composer = page.getByRole("dialog", { name: "Comment" });
     assert.equal(await composer.count(), 0);
     assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
     const offerBox = await offer.boundingBox();
@@ -163,7 +55,7 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
     await offer.click();
     await composer.waitFor({ state: "visible", timeout: 2000 });
     assert.equal(await offer.count(), 0, "The offer gives way to the composer");
-    // The sweep overshot into the Comment button; the staged text stops at the answer's end.
+    // The sweep overshot past the answer; the quote stops at the answer's end.
     assert.equal(
       (await composer.locator("blockquote").innerText()).trim(),
       "he reported improvement needs a stronger comparison and a variance estimate.",
@@ -171,12 +63,10 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
 
     // Dismissing the composer does not bring the offer straight back.
     await page.getByRole("textbox", { name: "Comment", exact: true }).waitFor();
-    assert.equal(
-      await page.evaluate(
-        () => document.activeElement?.closest(".chat-annotation-composer") !== null,
-      ),
-      true,
-      "Choosing Comment puts focus in the composer",
+    await page.waitForFunction(
+      () => document.activeElement?.closest(".rcp-comment-composer") != null,
+      null,
+      { timeout: 2000 },
     );
     await page.keyboard.press("Escape");
     await composer.waitFor({ state: "detached" });
@@ -212,6 +102,105 @@ test("a pointer selection offers Comment, keeps the selection copyable, and open
       const box = button.getBoundingClientRect();
       return box.right <= window.innerWidth && Math.abs(box.bottom + 6 - first.top) < 2;
     });
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("a reply thread pins at its quote, opens from the pin and the header count, and sends through the composer", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 390, height: 760 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const thread = {
+      thread_id: "c1",
+      project_id: "project",
+      target_kind: "reply",
+      target_id: "answer-task",
+      graph_target: "main",
+      drawn_version: null,
+      anchor: {
+        kind: "text",
+        text: "stronger comparison",
+        surrounding_text: "needs a stronger comparison and",
+        comment: "",
+      },
+      state: "open",
+      created_by: "u1",
+      created_at: "2026-11-13T10:00:00Z",
+      closed_by: null,
+      closed_at: null,
+      sent_operation_id: null,
+      can_send: true,
+      posts: [
+        {
+          post_id: "p1",
+          thread_id: "c1",
+          author: { user_id: "u1", display_name: "Ada" },
+          text: "Which baseline?",
+          created_at: "2026-11-13T10:00:00Z",
+        },
+      ],
+    };
+    await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
+    const listed = [];
+    await page.route("**/api/projects/*/comment-threads?*", (route) => {
+      listed.push(new URL(route.request().url()).search);
+      return route.fulfill({ json: { threads: [thread] } });
+    });
+    await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
+    const pin = page.getByRole("button", { name: "Comment 1" });
+    await pin.waitFor();
+    const quoteEnd = await page.evaluate(() => {
+      const answer = document.querySelector(".chat-annotatable-answer");
+      const text = answer.textContent;
+      const at = text.indexOf("stronger comparison") + "stronger comparison".length;
+      const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
+      let offset = 0;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (at <= offset + node.length) {
+          const range = document.createRange();
+          range.setStart(node, at - offset - 1);
+          range.setEnd(node, at - offset);
+          return range.getBoundingClientRect().right;
+        }
+        offset += node.length;
+      }
+      return null;
+    });
+    const pinBox = await pin.boundingBox();
+    assert.ok(Math.abs(pinBox.x + pinBox.width / 2 - quoteEnd) < 2);
+    assert.deepEqual(listed, ["?target_kind=reply&chat_id=viewport-regression"]);
+    await pin.click();
+    const popover = page.getByRole("dialog", { name: "Comment" });
+    await popover.getByText("Which baseline?").waitFor();
+    await page.keyboard.press("Escape");
+    await popover.waitFor({ state: "detached" });
+    await page.getByRole("button", { name: "1 open comment" }).click();
+    const list = page.getByRole("dialog", { name: "Comments" });
+    await list.getByRole("button", { name: "Send thread to agent" }).click();
+    await page.waitForFunction(() => window.started?.length === 1);
+    const [started] = await page.evaluate(() => window.started);
+    assert.equal(started.kind, "project_chat");
+    assert.deepEqual(started.request.comment_thread_ids, ["c1"]);
+    assert.equal(started.request.chat_id, "viewport-regression");
+    assert.match(started.requestId, /^[0-9a-f-]{36}$/);
+    const listBox = await list.boundingBox();
+    assert.ok(listBox.x >= 0 && listBox.x + listBox.width <= 390, JSON.stringify(listBox));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
     await server.close();

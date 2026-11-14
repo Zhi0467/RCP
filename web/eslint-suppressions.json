@@ -1011,7 +1011,7 @@
   },
   "tests/chatAnnotations.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 9
+      "count": 8
     }
   },
   "tests/chatBranch.browser.test.mjs": {

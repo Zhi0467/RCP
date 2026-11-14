@@ -76,8 +76,12 @@ createRoot(document.getElementById("root")!).render(
         historyMessages={historyMessages as never}
         chatId="viewport-regression"
         presentation="workspace"
-        onStartTask={() =>
+        onStartTask={(kind, request, requestId) =>
           new Promise<void>((resolve) => {
+            (window as typeof window & { started?: unknown[] }).started = [
+              ...((window as typeof window & { started?: unknown[] }).started ?? []),
+              { kind, request, requestId },
+            ];
             resolveTask = resolve;
           })
         }

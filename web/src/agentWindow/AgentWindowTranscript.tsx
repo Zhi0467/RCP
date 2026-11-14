@@ -41,6 +41,9 @@ interface Props {
   endpoints: AgentWindowEndpoints;
   artifacts: ReturnType<typeof useAgentWindowArtifacts>;
   comments: AnswerComments;
+  /** Each answer offers its keyboard Comment, staged in the composer; a project chat's
+   *  replies take shared threads instead. */
+  answerComments?: boolean;
   compactionByLine: ReturnType<typeof compactionAnchors>;
   continuedTaskIds: Set<string>;
   latestGraphReceiptLineIds: Set<string>;
@@ -93,6 +96,7 @@ export function AgentWindowTranscript({
   endpoints,
   artifacts,
   comments,
+  answerComments = true,
   compactionByLine,
   continuedTaskIds,
   latestGraphReceiptLineIds,
@@ -274,7 +278,7 @@ export function AgentWindowTranscript({
                           {artifacts.repositoryFileErrors.get(messageId)}
                         </strong>
                       )}
-                      {!readOnly && <AnswerCommentButton comments={comments} />}
+                      {!readOnly && answerComments && <AnswerCommentButton comments={comments} />}
                     </>
                   )
                 )
