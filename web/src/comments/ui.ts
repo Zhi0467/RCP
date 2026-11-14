@@ -161,6 +161,7 @@ export function mountComments(root: HTMLElement, options: CommentsOptions) {
       sendLength: length,
       canSend,
     } = railState(threads, ticked, "", options.maxSelections);
+    if (!chosen.length) return;
     const send = button(
       `Send ${chosen.length} to agent`,
       () => void run(() => options.send(chosen.map((thread) => thread.thread_id))),
@@ -189,12 +190,14 @@ export function mountComments(root: HTMLElement, options: CommentsOptions) {
     const actions = element("div", "rcp-comment-actions");
     const save = button(key === "composer" ? "Comment" : "Reply", () => void savePost(false));
     const send = button("Send to agent", () => void savePost(true), "rcp-comment-primary");
+    const sendsThread = key !== "composer";
     const sync = () => {
       save.disabled = busy || !input.value.trim();
-      send.disabled = save.disabled;
+      send.disabled = sendsThread ? busy : save.disabled;
     };
     async function savePost(toAgent: boolean) {
-      if (!input.value.trim() || busy || !options.canPost || (toAgent && !options.canSend)) return;
+      if (busy || !options.canPost || (toAgent && !options.canSend)) return;
+      if (!input.value.trim() && !(toAgent && sendsThread)) return;
       await run(async () => {
         await submit(encodeCommentMentions(input.value.trim(), candidates()), toAgent);
         drafts.delete(key);
@@ -312,7 +315,7 @@ export function mountComments(root: HTMLElement, options: CommentsOptions) {
         editor(
           thread.thread_id,
           async (text, send) => {
-            await options.reply(thread.thread_id, text);
+            if (text) await options.reply(thread.thread_id, text);
             drafts.delete(thread.thread_id);
             if (send) await options.send([thread.thread_id]);
           },
@@ -326,10 +329,6 @@ export function mountComments(root: HTMLElement, options: CommentsOptions) {
           () => void run(() => options.resolve(thread.thread_id, thread.state === "open")),
         ),
       );
-      if (thread.state === "open" && options.canSend && thread.can_send)
-        actions.append(
-          button("Send thread to agent", () => void run(() => options.send([thread.thread_id]))),
-        );
       node.append(actions);
     }
     return node;

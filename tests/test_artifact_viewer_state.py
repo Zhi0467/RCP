@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import re
 import uuid
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -405,6 +407,11 @@ def test_pdf_viewer_offers_shared_comments(viewer_app):
     assert response.status_code == 200
     assert 'id="previewPdf"' in response.text
     assert "RcpComments.mountViewer" in response.text
+    content_url = html.unescape(re.search(r'data-content-url="([^"]+)"', response.text)[1])
+    content = client.get(content_url)
+    assert content.status_code == 200
+    assert content.headers["content-type"] == "application/pdf"
+    assert content.content == b"%PDF-1.7\n"
     assert client.get(state["download_url"]).content == b"%PDF-1.7\n"
 
 

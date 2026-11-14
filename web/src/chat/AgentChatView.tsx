@@ -1145,6 +1145,11 @@ export function AgentChatView({
     ],
     [transcript],
   );
+  const inlineArtifactComments = useInlineArtifactComments({
+    projectId: project.id,
+    canPost: canSendThreads,
+    send: canSendThreads ? sendThreads : null,
+  });
   const replyComments = useReplyComments({
     projectId: project.id,
     chatId,
@@ -1152,11 +1157,7 @@ export function AgentChatView({
     linesRef: chatLinesRef,
     canPost: !readOnly,
     send: readOnly ? null : sendThreads,
-  });
-  const inlineArtifactComments = useInlineArtifactComments({
-    projectId: project.id,
-    canPost: canSendThreads,
-    send: canSendThreads ? sendThreads : null,
+    artifacts: inlineArtifactComments.artifacts,
   });
 
   const integrateWorktree = async (option: WorktreeIntegrationOption) => {

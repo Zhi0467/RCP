@@ -5,7 +5,8 @@ import type { CommentMember } from "../types.ts";
 const MAX_POST_CHARS = 2048;
 
 /** A post field with the `@` picker: the target's agent first, then members.
- *  Picking the agent saves the post and sends its thread. */
+ *  Picking the agent saves the post and sends its thread; an empty Reply sends the
+ *  thread as it stands. */
 export function CommentEditor({
   label,
   members,
@@ -35,7 +36,7 @@ export function CommentEditor({
   const candidates = useMemo(() => commentMentionCandidates(members, false), [members]);
   const empty = !text.trim();
   const submit = async (value: string, send: boolean) => {
-    if (!value.trim() || busy) return;
+    if (busy || (!value.trim() && !(send && label === "Reply"))) return;
     setQuery(null);
     if (await onSubmit(encodeCommentMentions(value.trim(), candidates), send)) setText("");
   };
@@ -121,7 +122,7 @@ export function CommentEditor({
           <button
             type="button"
             className="rcp-comment-primary"
-            disabled={busy || empty}
+            disabled={busy || (empty && label !== "Reply")}
             onClick={() => void submit(text, true)}
           >
             Send to agent

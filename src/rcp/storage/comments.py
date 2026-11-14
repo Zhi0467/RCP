@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import TypeAdapter
 
 from rcp.comments.models import COMMENT_MEDIA_TYPES, COMMENT_TARGET_ANCHOR_KINDS, CommentAnchor
-from rcp.comments.render import render_thread, thread_budget_chars
+from rcp.comments.render import render_posts, render_thread, thread_budget_chars
 from rcp.limits import COMMENT_POST_MAX_CHARS, COMMENT_THREAD_MAX_CHARS
 from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
@@ -526,7 +526,11 @@ class CommentStoreMixin(StoreMixinBase):
                 if item["state"] != "open" and item["send_key"] != key:
                     raise CommentError("comment_thread_not_sendable", 409)
                 until = item["closed_at"] if item["send_key"] == key else None
-                items.append(({**item, "rendered": render_thread(item, until=until)}, route))
+                rendered = {
+                    "rendered": render_thread(item, until=until),
+                    "rendered_posts": render_posts(item, until=until),
+                }
+                items.append(({**item, **rendered}, route))
             return items
 
     def open_comment_mentions(self, project_id: str, user_id: str) -> list[dict[str, Any]]:

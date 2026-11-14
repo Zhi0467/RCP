@@ -759,8 +759,10 @@ version whose bytes are gone gets no crop, and the prompt says so and gives the
 place. PDF areas send the page, place, and text-layer quote, without pixels.
 Animation uses the first frame and labels it. SVG and oversized images carry only positions. Legacy
 viewer areas are never cropped. Both routes number human comments and regions
-identically. Human bubbles name the
-artifact and selected text, elements, or image area. Editable context provides a
+identically. The human message carries each thread's posts; its anchor, quote, and
+context appear once, in the artifact item. Human bubbles name the artifact and fold
+the sent threads under "Sent N comment threads", each under its selected text,
+elements, or image area. Editable context provides a
 URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions

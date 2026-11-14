@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { InlineComments } from "../agentWindow/useAgentWindowArtifacts";
 import type { Point } from "../comments/box.ts";
 import {
@@ -8,6 +8,7 @@ import {
 } from "../comments/react/CommentComposer";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
 import { useComments, type SendThreads } from "../comments/react/useComments";
+import type { CommentThread } from "../comments/types.ts";
 
 export function useInlineArtifactComments({
   projectId,
@@ -27,6 +28,16 @@ export function useInlineArtifactComments({
   const [shownArtifacts, setShownArtifacts] = useState<ReadonlyMap<string, number>>(
     () => new Map(),
   );
+  const popoverOpen = shown !== null;
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const close = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".rcp-comment-composer")) return;
+      setShown(null);
+    };
+    document.addEventListener("scroll", close, { capture: true });
+    return () => document.removeEventListener("scroll", close, { capture: true });
+  }, [popoverOpen]);
   const artifactIds = useMemo(() => [...shownArtifacts.keys()].sort(), [shownArtifacts]);
   const count = (artifactId: string, change: number) =>
     setShownArtifacts((current) => {
@@ -104,5 +115,9 @@ export function useInlineArtifactComments({
       )}
     </>
   );
-  return { handlers, layer };
+  const locate = (thread: CommentThread) =>
+    document
+      .querySelector(`.chat-inline-artifact[data-artifact-id="${CSS.escape(thread.target_id)}"]`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  return { handlers, layer, artifacts: { comments, locate } };
 }

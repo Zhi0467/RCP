@@ -792,7 +792,7 @@ test("a preview selection starts a shared thread, which the rail sends through t
   assert.deepEqual(created.target_kind, "paper");
   assert.equal(created.anchor.kind, "text");
   assert.match(created.anchor.where, /\(preview\)$/);
-  await rail.getByRole("button", { name: "Send thread to agent" }).click();
+  await rail.getByRole("button", { name: "Send to agent" }).click();
   await page.waitForFunction(() => window.paperCoachFixture.started.length === 1);
   const [started] = await page.evaluate(() => window.paperCoachFixture.started);
   assert.equal(started.kind, "paper_coach");

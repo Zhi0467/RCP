@@ -1046,10 +1046,9 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       author.locator("#drawn").boundingBox(),
       embed.locator("iframe").boundingBox(),
     ]);
-    const pinCenter = { x: pinBox.x + pinBox.width / 2, y: pinBox.y + pinBox.height / 2 };
-    assert.ok(pinCenter.x > drawnBox.x && pinCenter.x < drawnBox.x + 30);
-    assert.ok(Math.abs(pinCenter.y - (drawnBox.y + drawnBox.height)) < 4);
-    assert.ok(pinCenter.y < frameBox.y + frameBox.height);
+    assert.ok(pinBox.x > drawnBox.x && pinBox.x < drawnBox.x + 30);
+    assert.ok(pinBox.y < drawnBox.y + drawnBox.height && pinBox.y + pinBox.height > drawnBox.y);
+    assert.ok(pinBox.y + pinBox.height / 2 < frameBox.y + frameBox.height);
     await pin.click();
     await page.getByRole("dialog", { name: "Comment" }).getByText("Make it bigger").waitFor();
     assert.ok(

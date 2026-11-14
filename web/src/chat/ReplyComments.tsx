@@ -19,7 +19,11 @@ import {
   textRange,
   toRect,
 } from "../comments/react/domText.ts";
-import { useComments, type SendThreads } from "../comments/react/useComments";
+import {
+  useComments,
+  type CommentsController,
+  type SendThreads,
+} from "../comments/react/useComments";
 import {
   SelectionCommentButton,
   useSelectionComment,
@@ -65,6 +69,7 @@ export function useReplyComments({
   linesRef,
   canPost,
   send,
+  artifacts,
 }: {
   projectId: string;
   chatId: string;
@@ -73,6 +78,8 @@ export function useReplyComments({
   linesRef: RefObject<HTMLElement | null>;
   canPost: boolean;
   send: SendThreads | null;
+  /** The threads on artifacts shown in this chat, listed after the replies'. */
+  artifacts: { comments: CommentsController; locate: (thread: CommentThread) => void };
 }) {
   const [offer, setOffer] = useState<CommentOffer | null>(null);
   const [shown, setShown] = useState<{ threadId: string; point: Point | null } | null>(null);
@@ -160,14 +167,16 @@ export function useReplyComments({
 
   const shownThread =
     shown && comments.threads.find((thread) => thread.thread_id === shown.threadId);
-  const openCount = comments.threads.filter((thread) => thread.state === "open").length;
+  const openCount = [...comments.threads, ...artifacts.comments.threads].filter(
+    (thread) => thread.state === "open",
+  ).length;
   const note = (thread: CommentThread) => {
     const root = linesRef.current;
     return thread.state === "open" && root && !threadRange(root, thread) ? GONE : undefined;
   };
 
   const headerButton =
-    comments.threads.length > 0 ? (
+    comments.threads.length + artifacts.comments.threads.length > 0 ? (
       <button
         ref={countButton}
         type="button"
@@ -240,6 +249,15 @@ export function useReplyComments({
             onLocate={locate}
             note={note}
           />
+          {artifacts.comments.threads.length > 0 && (
+            <CommentList
+              comments={artifacts.comments}
+              agentLabel="This chat"
+              wholeLabel="Whole artifact"
+              selected={selected}
+              onLocate={artifacts.locate}
+            />
+          )}
         </CommentPopover>
       )}
     </>

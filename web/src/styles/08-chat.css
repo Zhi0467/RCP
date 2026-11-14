@@ -2451,6 +2451,14 @@
   font: inherit;
   margin-bottom: 8px;
 }
+.chat-artifact-comment-send > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--type-sm);
+}
+.chat-artifact-comment-send[open] > summary {
+  margin-bottom: 8px;
+}
 .chat-artifact-comments {
   display: grid;
   gap: 10px;

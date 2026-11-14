@@ -1,5 +1,6 @@
 import type {
   CommentAnchor,
+  CommentMember,
   CommentMention,
   CommentTarget,
   CommentThread,
@@ -31,14 +32,15 @@ export function createCommentsClient(projectId: string, fetcher: typeof fetch = 
     body?: unknown,
     key?: string,
   ): Promise<T> => {
+    const sent = method === "GET" ? body : (body ?? {});
     const headers: Record<string, string> = {};
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (sent !== undefined) headers["Content-Type"] = "application/json";
     if (key) headers["Idempotency-Key"] = key;
     const response = await fetcher(path, {
       method,
       credentials: "same-origin",
       headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(sent === undefined ? {} : { body: JSON.stringify(sent) }),
     });
     const value = response.status === 204 ? undefined : await response.json();
     if (!response.ok) throw new CommentRequestError(response.status, value?.detail);
@@ -75,6 +77,13 @@ export function createCommentsClient(projectId: string, fetcher: typeof fetch = 
       request<{ ok: boolean }>(`${base}/comment-posts/${encodeURIComponent(id)}`, "DELETE"),
     resolve: (id: string) => threadRequest(`${threadPath(id)}/resolve`, "POST"),
     reopen: (id: string) => threadRequest(`${threadPath(id)}/reopen`, "POST"),
+    members: async (): Promise<CommentMember[]> =>
+      (await request<{ user_id: string; display_name: string | null }[]>(`${base}/members`)).map(
+        (member) => ({
+          user_id: member.user_id,
+          display_name: member.display_name || member.user_id,
+        }),
+      ),
     mentions: async () =>
       (await request<{ mentions: CommentMention[] }>(`${base}/comment-mentions`)).mentions,
     sendArtifact: (id: string, threadIds: readonly string[], freshSession: boolean, key: string) =>

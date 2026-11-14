@@ -62,7 +62,12 @@ def render_thread(thread: dict[str, Any], *, until: str | None = None) -> str:
     anchor = TypeAdapter(CommentAnchor).validate_python(thread["anchor"])
     if thread.get("drawn_version"):
         anchor = anchor.model_copy(update={"drawn_version": thread["drawn_version"]})
-    lines = [render_anchor(anchor)]
+    return f"{render_anchor(anchor)}\n{render_posts(thread, until=until)}"
+
+
+def render_posts(thread: dict[str, Any], *, until: str | None = None) -> str:
+    """The thread's conversation alone, for a prompt that anchors it elsewhere."""
+    lines: list[str] = []
     for post in thread["posts"]:
         if until is not None and post["created_at"] > until:
             continue

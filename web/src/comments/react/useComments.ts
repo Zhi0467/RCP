@@ -2,8 +2,6 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { ResourceProfile } from "../../core/resourceStore";
 import { resourceKeyId } from "../../core/resourceStore";
 import { useRefreshRuntime } from "../../core/useResource";
-import type { ProjectMember } from "../../core/types";
-import { api } from "../../core/api";
 import { projectResourceKey, useProjectResource } from "../../projects/projectResources";
 import { createCommentsClient } from "../api.ts";
 import type { CommentAnchor, CommentMember, CommentTarget, CommentThread } from "../types.ts";
@@ -36,14 +34,10 @@ function threadsProfile(
 /** The project's members, whom the `@` picker offers; the server drops a mention of
  *  one who cannot read the target. */
 function membersPickerProfile(projectId: string): ResourceProfile<CommentMember[]> {
-  const path = `/api/projects/${encodeURIComponent(projectId)}/members`;
   return {
     key: projectResourceKey(projectId, "members", { query: "comment-picker" }),
-    fetch: async (signal) =>
-      (await api<ProjectMember[]>(path, { signal })).map((member) => ({
-        user_id: member.user_id,
-        display_name: member.display_name || member.user_id,
-      })),
+    fetch: (signal) =>
+      createCommentsClient(projectId, (input, init) => fetch(input, { ...init, signal })).members(),
   };
 }
 

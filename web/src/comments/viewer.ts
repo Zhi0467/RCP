@@ -6,7 +6,7 @@ import { mountPdf } from "./pdf.ts";
 import { displayedVersion } from "./viewerModel.ts";
 import { selectionInput } from "./selectionInput.ts";
 import { mountComments } from "./ui.ts";
-import type { CommentRect, CommentThread } from "./types.ts";
+import type { CommentMember, CommentRect, CommentThread } from "./types.ts";
 export { mountComments } from "./ui.ts";
 
 interface ViewerConfig {
@@ -42,6 +42,9 @@ export function mountViewer(config: ViewerConfig) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sendAttempt: { ids: string; key: string; freshSession: boolean } | null = null;
   let freshSessionRequired = false;
+  let members: Promise<CommentMember[]> | undefined;
+  const linkedThread = () => new URLSearchParams(location.hash.slice(1)).get("comment");
+  let pendingThread = linkedThread();
   const imageBounds = (): CommentRect | undefined => {
     if (!image?.naturalWidth || !image.naturalHeight) return undefined;
     const bounds = image.getBoundingClientRect();
@@ -293,7 +296,22 @@ export function mountViewer(config: ViewerConfig) {
       });
       if (!response.ok) throw new Error("Comment availability could not be loaded");
       state = (await response.json()) as ViewerState;
+      if (state.can_comment && !members) {
+        members = client.members();
+        members.then(
+          (list) => {
+            if (!disposed) ui.update({ members: list });
+          },
+          () => {
+            members = undefined;
+          },
+        );
+      }
       await ui.refresh();
+      if (pendingThread && !disposed) {
+        ui.locate(pendingThread);
+        pendingThread = null;
+      }
       if (state.edit_failure) ui.showError(`The last edit did not finish: ${state.edit_failure}`);
     } catch (error) {
       if (!disposed) {
@@ -309,6 +327,14 @@ export function mountViewer(config: ViewerConfig) {
   };
   void poll();
   window.addEventListener("focus", () => void refresh(), { signal: abort.signal });
+  window.addEventListener(
+    "hashchange",
+    () => {
+      pendingThread = linkedThread();
+      void refresh();
+    },
+    { signal: abort.signal },
+  );
   const destroy = () => {
     disposed = true;
     clearTimeout(timer);

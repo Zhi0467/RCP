@@ -497,7 +497,12 @@ function installArtifactLocator(doc, publish) {
     const range = doc.createRange();
     range.setStart(first.node, first.offset);
     range.setEnd(last.node, last.offset + 1);
-    return { rect: range.getBoundingClientRect(), element: first.node.parentElement };
+    const lines = [...range.getClientRects()].filter((line) => line.width > 0 && line.height > 0);
+    return {
+      rect: range.getBoundingClientRect(),
+      end: lines.at(-1),
+      element: first.node.parentElement,
+    };
   }
   function find(anchor) {
     if (anchor.kind === "text") return textRange(anchor);
@@ -534,7 +539,7 @@ function installArtifactLocator(doc, publish) {
   }
   function report(id, anchor) {
     const found = find(anchor);
-    const bounds = found?.rect;
+    const bounds = found?.end ?? found?.rect;
     const rect =
       bounds && bounds.width > 0 && bounds.height > 0
         ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }

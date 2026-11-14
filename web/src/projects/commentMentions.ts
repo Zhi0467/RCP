@@ -1,7 +1,7 @@
-import { api } from "../core/api";
 import { buildNotificationLink } from "../core/notificationLinks";
 import type { ResourceProfile } from "../core/resourceStore";
 import { bulletinDecodeMentions, bulletinMentionCandidates } from "../chat/bulletinModel";
+import { createCommentsClient } from "../comments/api.ts";
 import { anchorQuote } from "../comments/model.ts";
 import type { CommentMention } from "../comments/types.ts";
 import { projectResourceKey } from "./projectResources";
@@ -20,7 +20,10 @@ export function commentMentionsProfile(projectId: string): ResourceProfile<Comme
   const path = `/api/projects/${encodeURIComponent(projectId)}/comment-mentions`;
   return {
     key: projectResourceKey(projectId, "comments", { query: path }),
-    fetch: (signal) => api(path, { signal }),
+    fetch: (signal) =>
+      createCommentsClient(projectId, (input, init) =>
+        fetch(input, { ...init, signal }),
+      ).mentions(),
   };
 }
 

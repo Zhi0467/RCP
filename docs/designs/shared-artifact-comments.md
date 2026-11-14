@@ -389,8 +389,9 @@ replies, and the phone sheet.
 - **Rail:**
   - Thread cards with a checkbox, avatar, author, time, and quote.
   - Replies in one flat column under thin rules.
-  - A reply box, Resolve, and Send thread to agent.
-  - A footer reading "Send N to agent".
+  - A reply box with Reply and Send to agent, then Resolve. Send to agent on an
+    empty reply sends the thread as it stands, so each card has one send.
+  - A footer reading "Send N to agent" once a thread is ticked.
   - The same module serves the viewer, expanded inline artifacts, and Paper
     (beside the source and the preview).
 - **Pins:** red numbered pins at the end of each anchor. A selected card

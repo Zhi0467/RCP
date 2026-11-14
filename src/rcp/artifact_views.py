@@ -470,7 +470,7 @@ def artifact_content(
             document, csp = markdown_document(data, inline)
         elif view == "text":
             document, csp = text_document(name, data, inline)
-        elif view in {"image", "video"}:
+        elif view in {"image", "video", "pdf"}:
             return data, media_type, "default-src 'none'; sandbox"
         else:
             raise ValueError("Artifact has no viewer")

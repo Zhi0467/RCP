@@ -1,5 +1,7 @@
 import type { CommentAnchor, CommentRect } from "./types.ts";
 
+const PIN_ROOM = 30;
+
 type LocatedThread = { thread_id: string; anchor: CommentAnchor };
 
 export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void) {
@@ -64,7 +66,7 @@ export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void
       const x = rect.x + rect.width;
       const y = rect.y + rect.height;
       if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return null;
-      return { x: bounds.x + x, y: bounds.y + y };
+      return { x: bounds.x + Math.min(x, bounds.width - PIN_ROOM), y: bounds.y + y };
     },
   };
 }

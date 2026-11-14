@@ -661,8 +661,12 @@ def prepare_comment_send(
             "operation_id": artifact.origin_operation_id,
             "artifact_id": artifact.artifact_id,
             "selections": [
-                {**thread["anchor"], "comment": text, "drawn_version": thread["drawn_version"]}
-                for thread, text in zip(threads, rendered, strict=True)
+                {
+                    **thread["anchor"],
+                    "comment": thread["rendered_posts"],
+                    "drawn_version": thread["drawn_version"],
+                }
+                for thread in threads
                 if thread["target_kind"] == "artifact"
             ],
         }

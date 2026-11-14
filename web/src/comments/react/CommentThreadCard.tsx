@@ -99,7 +99,11 @@ export function CommentThreadCard({
             canSend={sendable}
             agentLabel={agentLabel}
             busy={comments.busy}
-            onSubmit={(text, send) => comments.reply(thread.thread_id, text, send)}
+            onSubmit={(text, send) =>
+              text
+                ? comments.reply(thread.thread_id, text, send)
+                : comments.send([thread.thread_id])
+            }
           />
           <div className="rcp-comment-actions">
             <button
@@ -109,15 +113,6 @@ export function CommentThreadCard({
             >
               {open ? "Resolve" : "Reopen"}
             </button>
-            {sendable && (
-              <button
-                type="button"
-                disabled={comments.busy}
-                onClick={() => void comments.send([thread.thread_id])}
-              >
-                Send thread to agent
-              </button>
-            )}
           </div>
         </>
       )}
