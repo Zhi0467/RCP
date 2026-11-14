@@ -518,4 +518,4 @@ def test_comment_eligibility_matches_viewer_types():
     from rcp.artifacts import ARTIFACT_MEDIA_TYPES, artifact_view
 
     for media_type in set(ARTIFACT_MEDIA_TYPES.values()) | {"application/octet-stream"}:
-        assert supports_comments(media_type) == (artifact_view(media_type) not in {"pdf", "file"})
+        assert supports_comments(media_type) == (artifact_view(media_type) != "file")
