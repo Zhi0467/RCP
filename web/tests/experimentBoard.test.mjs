@@ -32,7 +32,7 @@ const {
   projectRunsNeedsExperimentIndex,
 } = await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
 const { ExperimentBoard } = await server.ssrLoadModule("/src/experiments/ExperimentBoard.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { AgentChatView } = await server.ssrLoadModule("/src/chat/AgentChatView.tsx");
 const { ExecutionView, focusRunDetail } = await server.ssrLoadModule("/src/graph/GraphViews.tsx");
 
 after(() => server.close());
@@ -1181,7 +1181,7 @@ test("branch-created and branch-modified Experiment transcripts are read-only", 
   branchNodes.forEach((branchNode, index) => {
     const transcriptText = `Branch transcript ${index + 1} remains visible.`;
     const html = renderMarkup(
-      React.createElement(NodeChat, {
+      React.createElement(AgentChatView, {
         project,
         graphTarget: { kind: "branch", branch_id: "parent-episode" },
         node: branchNode,
@@ -1278,9 +1278,11 @@ test("a branch chat uses its explicit target before it has any tasks", () => {
     status: "active",
     continuation: { control_node_id: experiment.id, patch_kind: "experiment_loop" },
   };
-  const ownTarget = renderMarkup(React.createElement(NodeChat, { ...props, watchers: [watcher] }));
+  const ownTarget = renderMarkup(
+    React.createElement(AgentChatView, { ...props, watchers: [watcher] }),
+  );
   const otherTarget = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...props,
       watchers: [{ ...watcher, graph_target: { kind: "main" } }],
     }),

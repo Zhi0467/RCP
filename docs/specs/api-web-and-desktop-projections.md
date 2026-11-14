@@ -1661,7 +1661,7 @@ across provider or machine switches, which each switch turn records as
 turn or its history out of the Paper panel.
 
 Chat task responses include `current_chat_session_id`, resolved from server task
-metadata independently of the displayed historical task. NodeChat and WebMCP
+metadata independently of the displayed historical task. AgentChatView and WebMCP
 use that projection, never a search through task or transcript native-session
 ids. Admission re-resolves and binds atomically; a client hint cannot pin a new
 ordinary turn to a superseded session. Artifact comments keep their artifact's

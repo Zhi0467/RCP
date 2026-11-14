@@ -83,7 +83,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     await single.getByText("Needs you", { exact: true }).waitFor();
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
-      .locator('.node-chat-lines [data-question-id="single"][data-question-state="answered"]')
+      .locator('.agent-chat-view-lines [data-question-id="single"][data-question-state="answered"]')
       .waitFor();
     const multi = page.locator('[data-question-id="multiple"]');
     await multi.getByRole("button", { name: "a", exact: true }).click();
@@ -91,17 +91,17 @@ test("chat question answers stay separate from steering and resolved cards enter
     assert.equal(mutations.length, 1);
     await multi.getByRole("textbox").fill("detail");
     await multi.getByRole("button", { name: "Answer", exact: true }).click();
-    await page.locator('.node-chat-lines [data-question-id="multiple"]').waitFor();
+    await page.locator('.agent-chat-view-lines [data-question-id="multiple"]').waitFor();
     await page
       .locator('[data-question-id="dismiss"]')
       .getByRole("button", { name: "Dismiss", exact: true })
       .click();
-    await page.locator('.node-chat-lines [data-question-id="dismiss"]').waitFor();
+    await page.locator('.agent-chat-view-lines [data-question-id="dismiss"]').waitFor();
     // An ended episode's last card names the turns its answer adds.
     const turns = page.locator('[data-question-id="turns"]');
     await turns.getByRole("spinbutton", { name: "Turns this answer adds" }).fill("4");
     await turns.getByRole("button", { name: "b", exact: true }).click();
-    await page.locator('.node-chat-lines [data-question-id="turns"]').waitFor();
+    await page.locator('.agent-chat-view-lines [data-question-id="turns"]').waitFor();
     const continued = mutations.pop();
     assert.match(continued.body.request_id, /^[0-9a-f-]{36}$/);
     assert.deepEqual(continued, {
@@ -123,7 +123,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     assert.equal(
       await page
         .locator(
-          '.node-chat-lines .question-card:is([data-question-state="answered"], [data-question-state="dismissed"]) textarea',
+          '.agent-chat-view-lines .question-card:is([data-question-state="answered"], [data-question-state="dismissed"]) textarea',
         )
         .count(),
       0,
@@ -173,7 +173,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     const discuss = page.locator('[data-question-id="discuss"]');
     await discuss.getByRole("textbox").fill("Discuss this route");
     await discuss.getByRole("button", { name: "Answer and continue Discuss", exact: true }).click();
-    await page.locator('.node-chat-lines [data-question-id="discuss"]').waitFor();
+    await page.locator('.agent-chat-view-lines [data-question-id="discuss"]').waitFor();
     assert.deepEqual(mutations.at(-1), {
       id: "discuss",
       action: "answer",
@@ -183,7 +183,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     questions[4].can_answer = false;
     await page.evaluate(() => window.refreshQuestions("project", "v5"));
     await page
-      .locator('.node-chat-lines [data-question-id="parked"][data-question-state="ended"]')
+      .locator('.agent-chat-view-lines [data-question-id="parked"][data-question-state="ended"]')
       .waitFor();
     assert.equal(await page.locator('[data-question-id="parked"] textarea').count(), 0);
     assert.deepEqual(errors, []);

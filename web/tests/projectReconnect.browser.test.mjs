@@ -1530,7 +1530,7 @@ test(
     assert.equal(await composer(page).inputValue(), "keep this text");
     assert.equal((await hashParams(page)).chat, "held-chat");
     // The refused send left no failed turn to resend.
-    assert.equal(await page.locator(".node-chat-line.unsent").count(), 0);
+    assert.equal(await page.locator(".agent-chat-view-line.unsent").count(), 0);
   },
 );
 
@@ -1714,7 +1714,7 @@ test("returning Agents admits the current transcript before its first frame at 3
   await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
   await page.getByText("Retained transcript", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
-  await page.locator(".node-chat-lines").waitFor({ state: "detached" });
+  await page.locator(".agent-chat-view-lines").waitFor({ state: "detached" });
   const gate = Promise.withResolvers();
   state.watermarkGate = gate;
   // This request started while Agents was still dormant. Its late reply must
@@ -1728,7 +1728,7 @@ test("returning Agents admits the current transcript before its first frame at 3
   state.transcripts["held-chat"] = [transcriptMessage("Current transcript")];
   const payload = Promise.withResolvers();
   state.payloadGates.set("/api/projects/demo/chats/held-chat", payload);
-  await recordReturningContent(page, ".node-chat-lines", "Retained transcript");
+  await recordReturningContent(page, ".agent-chat-view-lines", "Retained transcript");
   await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   assert.deepEqual(await sampleEntryFrames(page), []);

@@ -223,7 +223,7 @@ test("human lead renders inside the bubble while turn markers stay outside", () 
   assert.match(markup, /data-turn-marker="true"[^]*class="chat-human-message"/);
   assert.match(
     markup,
-    /class="chat-human-message"><i data-source-icon="true"><\/i><span class="node-chat-text">spoken<\/span><\/div>/,
+    /class="chat-human-message"><i data-source-icon="true"><\/i><span class="agent-chat-view-text">spoken<\/span><\/div>/,
   );
 });
 
