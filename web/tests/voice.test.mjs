@@ -15,7 +15,7 @@ import { endOnPageSuspend, openVoiceSession } from "../src/voice/voiceSession.ts
 
 const TOOLS = [
   { name: "rcp_get_project_overview", confirm: () => false, readOnly: true },
-  { name: "rcp_send_conversation_message", confirm: (args) => args.mode === "work" },
+  { name: "rcp_send_conversation_message", confirm: () => true },
   { name: "rcp_start_experiment", confirm: () => true },
   { name: "rcp_run_terminal_command", confirm: () => true, alwaysConfirm: true },
 ];
@@ -125,7 +125,7 @@ test("Confirm refuses when a pinned value changed", async () => {
 
 test("without confirming, a confirm call runs at once", async () => {
   const { executor, runs, asked } = harness({ mode: "none" });
-  await executor.run(call("c1", "rcp_send_conversation_message", { message: "m", mode: "work" }));
+  await executor.run(call("c1", "rcp_send_conversation_message", { message: "m" }));
   assert.equal(asked.length, 0);
   assert.equal(runs.length, 1);
 });
@@ -139,16 +139,14 @@ test("an always-confirm tool shows its card even without confirming", async () =
 
 test("in tap mode, a call its tool does not confirm runs at once", async () => {
   const { executor, runs, asked } = harness();
-  await executor.run(
-    call("c1", "rcp_send_conversation_message", { message: "m", mode: "discuss" }),
-  );
+  await executor.run(call("c1", "rcp_get_project_overview", {}));
   assert.equal(asked.length, 0);
   assert.equal(runs.length, 1);
 });
 
 test("a repeated call_id or an identical unknown-outcome repeat does not run again", async () => {
   const { executor, runs } = harness({ mode: "none", failWith: new TypeError("dropped") });
-  const args = { message: "m", mode: "work" };
+  const args = { message: "m" };
   assert.equal(
     code(await executor.run(call("c1", "rcp_send_conversation_message", args))),
     "unknown_outcome",
@@ -320,7 +318,6 @@ test("a watch is named for the project its result reports, not the open one", ()
   const output = JSON.stringify({ project_id: "origin", episode_id: "e1" });
   const watch = voiceWatchFromResult(
     "rcp_authorize_auto_research",
-    {},
     output,
     (id) => names.get(id) ?? "",
   );
@@ -417,7 +414,7 @@ test("a lost-response Send keeps its request key and an accepted receipt names i
       },
     },
   });
-  const args = { mode: "work", message: "m" };
+  const args = { message: "m" };
   assert.equal(
     code(await first.executor.run(call("a", "rcp_send_conversation_message", args))),
     "unknown_outcome",
@@ -427,11 +424,10 @@ test("a lost-response Send keeps its request key and an accepted receipt names i
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
   assert.equal(first.runs[0].requestId, receipts[0].request_id);
-  assert.equal(receipts[0].mode, "work");
+  assert.equal("mode" in receipts[0], false);
   const accepted = { ...receipts[0], outcome: "accepted", task_id: "task-one" };
   assert.equal(voiceWatchFromReceipt(accepted).id, "task-one");
-  // A Discuss send never becomes watched work.
-  assert.equal(voiceWatchFromReceipt({ ...accepted, mode: "discuss" }), null);
+  assert.equal(voiceWatchFromReceipt({ ...accepted, mode: "work" }).id, "task-one");
 });
 test("refusal receipts only replace a persisted pre-dispatch unknown receipt", async () => {
   for (const dispatched of [false, true]) {

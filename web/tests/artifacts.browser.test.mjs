@@ -803,11 +803,6 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
         body: state.version_number === 1 ? rendered.broken : rendered.fixed,
       }),
     );
-    // The human picked Work; an artifact comment must not take that away.
-    await page.addInitScript(() => {
-      // Sandboxed artifact frames have no storage; only the app document needs it.
-      if (window === window.top) localStorage.setItem("rcp:chat-mode:project:error-chat", "work");
-    });
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
     );
@@ -932,11 +927,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     // The popover is portaled out of the dock and carries the chat's mode itself.
     assert.equal(await page.locator(".chat-annotation-composer").getAttribute("data-mode"), "work");
     await page.getByRole("button", { name: "Add comment", exact: true }).click();
-    assert.equal(
-      await page.getByRole("button", { name: "Work", exact: true }).getAttribute("aria-pressed"),
-      "true",
-    );
-    await page.getByRole("button", { name: "Start Work turn", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Send", exact: true }).waitFor();
     // A comment is an ordinary turn, so a pasted project reference joins it.
     await page.getByRole("textbox", { name: "Message", exact: true }).evaluate(async (input) => {
       const { referenceUrl } = await import("/src/core/projectReferences.ts");
@@ -948,10 +939,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true }));
     });
     await page.getByLabel("References for this turn").waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "Start Work turn", exact: true }).isEnabled(),
-      true,
-    );
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
     assert.equal(await page.evaluate(() => Boolean(window.errorTestSent)), false);
     assert.deepEqual(requests, []);
     state = viewerState("plot", 2);

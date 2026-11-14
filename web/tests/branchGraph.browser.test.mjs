@@ -150,15 +150,14 @@ test("branch graph keeps canvas editing and chat while removed nodes are histori
     assert.equal(staged.nodes[0].changes.title, "Human review title");
     await page.getByRole("button", { name: "Ask about this node", exact: true }).click();
     await page.getByRole("textbox", { name: /message/i }).fill("Why did this claim change?");
-    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
-    assert.equal(requests[0].body.mode, "discuss");
+    assert.equal(requests[0].body.mode, "work");
     assert.equal(new URL(requests[0].url).searchParams.get("branch_id"), "episode-branch");
-    await page.getByRole("button", { name: "Work", exact: true }).click();
     await page
       .getByRole("textbox", { name: /message/i })
       .fill("Refine this claim using the result.");
-    await page.getByRole("button", { name: "Start Work turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
     assert.equal(requests[1].body.mode, "work");
     assert.equal(requests[1].body.chat_id, requests[0].body.chat_id);

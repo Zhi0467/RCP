@@ -38,6 +38,7 @@ import {
   type ConversationAgentStatus,
   orchestratorCanUnlock,
   orchestratorChatTurns,
+  retryRefillsComposer,
   type StartConversationTask,
   chainEpisode,
   withEpisodeAttention,
@@ -841,7 +842,7 @@ export function ChatsWorkspace({
       !conversation.humanTurnRefusal && needsHuman(status) && latest
         ? latest.can_resume
           ? { label: "Resume", run: () => onResumeTask(latest) }
-          : latest.can_retry
+          : latest.can_retry && !retryRefillsComposer(latest)
             ? { label: "Retry", run: () => onRetryTask(latest) }
             : null
         : null;

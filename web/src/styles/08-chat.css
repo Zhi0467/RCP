@@ -1649,16 +1649,6 @@
 .chat-skill-menu-status.stale {
   color: var(--oxblood);
 }
-.chat-mode-toggle button.discuss[aria-pressed="true"] {
-  background: var(--plum);
-  box-shadow: none;
-  color: var(--accent-ink);
-}
-.chat-mode-toggle button.work[aria-pressed="true"] {
-  background: var(--forest);
-  box-shadow: none;
-  color: var(--accent-ink);
-}
 .chat-dock[data-mode="discuss"] .chat-send-button {
   background: var(--plum);
   border-color: var(--plum);

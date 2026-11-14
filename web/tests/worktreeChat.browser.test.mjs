@@ -115,10 +115,9 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     await page.getByRole("checkbox", { name: "Work in a worktree" }).check();
     // The project's one writable repository on this machine needs no choice.
     assert.equal(await page.getByRole("combobox", { name: "Worktree repository" }).count(), 0);
-    await page.getByRole("button", { name: "Work", exact: true }).click();
     await page.getByRole("textbox", { name: "Message" }).fill("Create my change.");
     projection = bound;
-    await page.getByRole("button", { name: "Start Work turn" }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.getByText("Worktree: rcp/chat-one (ready)").waitFor();
     const first = await page.evaluate(() => window.worktreeRequests[0]);
     assert.equal(first.worktree, true);

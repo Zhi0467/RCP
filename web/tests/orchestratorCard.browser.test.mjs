@@ -81,7 +81,7 @@ test("An ended orchestrator card takes ordinary chat turns on the chain's branch
   await withCard("ended", async (page) => {
     assert.equal(await page.getByRole("textbox", { name: "Message orchestrator" }).count(), 0);
     await page.getByRole("textbox", { name: "Message", exact: true }).fill("Summarize the chain.");
-    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => window.startedTasks.length === 1);
     const [[kind, request, , target]] = await page.evaluate(() => window.startedTasks);
     assert.equal(kind, "project_chat");
