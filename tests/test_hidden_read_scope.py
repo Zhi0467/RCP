@@ -438,3 +438,31 @@ def test_private_transcripts_are_hidden_for_every_launch(manifest, tmp_path, mon
         glob.escape(str(manifest.research_dir / "chat")) + "/private-*.jsonl" in scope.hidden_globs
     )
     assert glob.escape(other + "/.research/chat") + "/private-*.jsonl" in scope.hidden_globs
+
+
+def test_profile_gaps_mark_scope_unhidden_and_hide_login_folders(manifest, tmp_path, monkeypatch):
+    from rcp.providers import profile_for
+
+    monkeypatch.setattr(
+        type(profile_for("codex")),
+        "hidden_read_gaps",
+        ("shell_wrapper", "glob_rules"),
+        raising=False,
+    )
+    scope = _resolve(manifest, tmp_path, monkeypatch, provider="codex")
+    assert scope.enforcement.status == "unhidden"
+    assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+    assert str(tmp_path / "data/provider-homes") in scope.hidden_directories
+    assert str(tmp_path / "home/.rcp/provider-homes") in scope.hidden_directories
+
+
+def test_host_facts_include_machine_agy_token(tmp_path, monkeypatch):
+    from rcp.agents import staged_hidden_read
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(staged_hidden_read, "probe_hidden_read_wrapper", lambda: {})
+    facts = staged_hidden_read.host_facts()
+    assert (
+        str(tmp_path / ".gemini/antigravity-cli/antigravity-oauth-token")
+        in facts["provider_login_files"]
+    )

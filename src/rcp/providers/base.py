@@ -233,6 +233,7 @@ class ProviderTurn:
     close_input_after_initial: bool = True
     requires_protocol_completion: bool = False
     initial_input_delivers_prompt: bool = True
+    steer_delivered_on_write: bool = False
     last_error: str = ""
 
     def initial_input(self) -> bytes:
@@ -432,7 +433,9 @@ class ProviderProfile:
     #: What a machine card's auto-compact field accepts for this CLI; None
     #: when RCP passes this CLI no auto-compact setting.
     autocompact_hint: str | None = None
-    shell_timeout_default_seconds: int = SHELL_TIMEOUT_DEFAULT_SECONDS
+    hidden_read_gaps: tuple[str, ...] = ()
+    resume_keeps_tools: bool = False
+    shell_timeout_default_seconds: int | None = SHELL_TIMEOUT_DEFAULT_SECONDS
 
     def canonical_shell_timeout(self, value: str) -> str:
         """Canonical whole minutes for the machine card's shell timeout."""

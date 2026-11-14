@@ -489,3 +489,242 @@ def test_added_claude_token_isolated_from_machine(
     else:
         assert environment.local_env is not None
         assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == "added-token"
+
+
+def _fake_agy(tmp_path: Path) -> Path:
+    binary = tmp_path / "agy"
+    log = tmp_path / "starts.jsonl"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, shutil, sys\n"
+        "args = sys.argv[1:]\n"
+        "names = ['open', 'xdg-open', 'sensible-browser']\n"
+        "shims = {name: shutil.which(name) for name in names}\n"
+        "shims['BROWSER'] = os.environ.get('BROWSER')\n"
+        "record = {'argv': args, 'shims': shims, 'scripts': [pathlib.Path(p).read_text() if p else None for p in shims.values()]}\n"
+        f"with pathlib.Path({str(log)!r}).open('a') as f: f.write(json.dumps(record) + '\\n')\n"
+        "if args == ['--version']:\n"
+        "    print('1.5.8')\n"
+        "elif args == ['models']:\n"
+        "    print('gemini-test\\tGemini test')\n"
+        "elif '/skills' in args:\n"
+        "    print(json.dumps({'command': {'data': {'skills': [{'name': 'review',"
+        " 'description': '', 'path': '/work/review', 'model_invocable': True}]}}}))\n"
+        "elif '/usage' in args:\n"
+        "    print(json.dumps({'status': 'SUCCESS'}))\n"
+        "else:\n"
+        "    print(json.dumps({'event': 'init', 'conversation_id': 'fake-session'}), flush=True)\n"
+        "    for line in sys.stdin:\n"
+        "        assert json.loads(line)['event'] == 'user'\n"
+        "        print(json.dumps({'event': 'result', 'result': {'status': 'SUCCESS',"
+        " 'response': 'Discuss works'}}), flush=True)\n"
+    )
+    binary.chmod(0o755)
+    return binary
+
+
+@pytest.mark.asyncio
+async def test_every_local_agy_start_receives_browser_shims(tmp_path, monkeypatch):
+    from rcp.providers import profile_for
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    binary = _fake_agy(tmp_path)
+    store = AppStore(tmp_path / "app.sqlite3")
+    launcher = AgentLauncher(readiness_snapshots=store)
+    login = LoginKey("agy", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    readiness = launcher.readiness(login, binary=str(binary))
+    assert readiness.authenticated and readiness.work_like_available, readiness.reason
+    skills = ProviderSkillInventoryManager(
+        store,
+        credential_gate=launcher.credential_gate,
+        process_environment=launcher.process_environment,
+    )
+    skills.mark_refreshing("agy", BACKEND_MACHINE_ID, str(binary))
+    inventory = skills.refresh("agy", BACKEND_MACHINE_ID, str(binary), readiness)
+    assert [skill.name for skill in inventory.skills] == ["review"]
+    profile = profile_for("agy")
+    usage = launcher._probe(
+        "",
+        profile.login_probe_command(str(binary)),
+        environment=launcher.process_environment(login),
+    )
+    assert profile.authentication.verification_succeeded(usage)
+    events = [
+        event
+        async for event in launcher.stream(
+            "agy",
+            "Discuss",
+            binary=str(binary),
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
+        )
+    ]
+    assert [event.text for event in events if event.event == "answer"] == ["Discuss works"]
+    starts = _starts(tmp_path)
+    argvs = [start["argv"] for start in starts]
+    assert ["--version"] in argvs and ["models"] in argvs
+    assert any("/skills" in argv for argv in argvs)
+    assert any("/usage" in argv for argv in argvs)
+    assert sum("--input-format" in argv for argv in argvs) >= 2
+    for start in starts:
+        assert not any(argument.startswith("--rcp-agy-") for argument in start["argv"])
+        paths = start["shims"]
+        assert all(paths.values()), start["argv"]
+        assert len({str(Path(path).parent) for path in paths.values()}) == 1
+        assert all(script.strip() == "#!/bin/sh\nexit 1" for script in start["scripts"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote", [False, True])
+async def test_agy_wrapper_is_inside_broker_and_remote_supervisor(tmp_path, monkeypatch, remote):
+    from rcp.agents import ProviderReadiness
+    from rcp.agents.invocation_broker import ProviderInvocationGate
+    from rcp.providers import profile_for
+
+    class CapturedStart(Exception):
+        pass
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    binary = str(tmp_path / "fake-agy")
+    broker = str(tmp_path / "broker.py")
+    supervisor = str(tmp_path / "supervisor.py")
+    host = "fake-host" if remote else ""
+    launcher = AgentLauncher()
+    monkeypatch.setattr(launcher, "machine_host", lambda _: host)
+    monkeypatch.setattr(
+        launcher,
+        "readiness",
+        lambda *_args, **_kwargs: ProviderReadiness(
+            provider="agy",
+            installed=True,
+            authenticated=True,
+            version="1.5.8",
+            binary_path=binary,
+            path_state="resolved",
+        ),
+    )
+    captured = []
+
+    async def capture_local(*command, **_kwargs):
+        captured.extend(command)
+        raise CapturedStart
+
+    def capture_remote(command, **_kwargs):
+        captured.extend(command)
+        raise CapturedStart
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", capture_local)
+    monkeypatch.setattr(launcher, "_remote_login_command", capture_remote)
+    gate = ProviderInvocationGate(
+        mailbox_id="test",
+        broker_path=broker,
+        socket_path=str(tmp_path / "broker.sock"),
+        workspace=str(tmp_path),
+        response_timeout_seconds=1,
+        _token="test",
+    )
+    with pytest.raises(CapturedStart):
+        async for _event in launcher.stream(
+            "agy",
+            "test",
+            binary=binary,
+            cwd=tmp_path,
+            machine_id=BACKEND_MACHINE_ID,
+            host=host,
+            capability="scratch_patch",
+            invocation_gate=gate,
+            supervise_remote=remote,
+            supervisor_path=supervisor if remote else None,
+            remote_pid_file=str(tmp_path / "provider.pid") if remote else None,
+        ):
+            pass
+    prefix = list(profile_for("agy").authentication.unmanaged_environment(host).command_prefix)
+    provider_index = captured.index(binary)
+    assert captured[provider_index - len(prefix) : provider_index] == prefix
+    assert captured.count(binary) == 1
+    assert sum(argument in {"_agy-run", "--agy-run"} for argument in captured) == 1
+    assert captured.index(broker) < provider_index - len(prefix)
+    if remote:
+        assert captured.index(supervisor) < captured.index(broker)
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_agy_probe_commands_compose_one_process_wrapper(tmp_path, monkeypatch, remote):
+    import subprocess
+
+    from rcp.providers import profile_for
+
+    profile = profile_for("agy")
+    binary = str(tmp_path / "fake-agy")
+    host = "fake-host" if remote else ""
+    environment = profile.authentication.unmanaged_environment(host)
+    captured = []
+
+    def capture(command, **_kwargs):
+        captured.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def capture_remote(command, **_kwargs):
+        captured.append(list(command))
+        return "fake-remote-command"
+
+    monkeypatch.setattr("subprocess.run", capture)
+    monkeypatch.setattr(AgentLauncher, "_remote_login_command", staticmethod(capture_remote))
+    commands = [
+        [binary, "--version"],
+        profile.auth_command(binary),
+        profile.catalog_command(binary),
+        profile.skill_probe(binary).command,
+        profile.login_probe_command(binary),
+        profile.work_like_probe_command(binary),
+    ]
+    for command in commands:
+        captured.clear()
+        AgentLauncher._probe(host, command, environment=environment)
+        composed = captured[0]
+        assert command[0] == binary
+        assert composed == [*environment.command_prefix, *command]
+        assert composed.count(binary) == 1
+        assert sum(argument in {"_agy-run", "--agy-run"} for argument in composed) == 1
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_agy_skill_inventory_composes_one_process_wrapper(tmp_path, monkeypatch, remote):
+    import subprocess
+
+    from rcp.providers import profile_for
+
+    profile = profile_for("agy")
+    host = "fake-host" if remote else ""
+    binary = str(tmp_path / "fake-agy")
+    store = AppStore(tmp_path / "skills.sqlite3")
+    machine_id = (
+        store.create_space_machine(name="fake", host=host, os_account="").machine_id
+        if remote
+        else BACKEND_MACHINE_ID
+    )
+    environment = profile.authentication.unmanaged_environment(host)
+    inventory = ProviderSkillInventoryManager(store, process_environment=lambda _: environment)
+    captured = []
+
+    def capture_remote(command, **_kwargs):
+        captured.append(list(command))
+        return "fake-remote-command"
+
+    def capture_group(command, **_kwargs):
+        if not remote:
+            captured.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "{}", "")
+
+    monkeypatch.setattr(AgentLauncher, "_remote_login_command", staticmethod(capture_remote))
+    monkeypatch.setattr("rcp.provider_skills._run_process_group", capture_group)
+    inventory._run_probe(machine_id, profile.skill_probe(binary), provider="agy")
+    (command,) = captured
+    prefix = list(environment.command_prefix)
+    provider_index = command.index(binary)
+    assert command[provider_index - len(prefix) : provider_index] == prefix
+    assert command.count(binary) == 1
+    assert sum(argument in {"_agy-run", "--agy-run"} for argument in command) == 1

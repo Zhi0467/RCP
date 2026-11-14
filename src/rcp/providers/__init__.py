@@ -31,6 +31,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator
 
+from rcp.providers.agy.profile import AgyProfile
 from rcp.providers.base import (
     AgentCapability,
     ModelChoice,
@@ -56,7 +57,8 @@ from rcp.providers.session_format import SESSION_FORMATS
 from rcp.providers.turn_fence import TURN_FENCES
 
 PROVIDERS: dict[str, ProviderProfile] = {
-    profile.id: profile for profile in (CodexProfile(), ClaudeProfile(), OpenCodeProfile())
+    profile.id: profile
+    for profile in (CodexProfile(), ClaudeProfile(), OpenCodeProfile(), AgyProfile())
 }
 #: Iteration order for every place that walks all providers.
 PROVIDER_IDS: tuple[str, ...] = tuple(PROVIDERS)

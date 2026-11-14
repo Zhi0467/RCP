@@ -69,7 +69,7 @@ def prepare_provider_update_command(
             _refuse_while_turns_run(layout.data_dir / "rcp.sqlite3", provider)
             before_path = _discover_provider(account, provider)
             before_version = (
-                _provider_version(account, before_path, process_runner)
+                _provider_version(account, provider, before_path, process_runner)
                 if before_path is not None
                 else None
             )
@@ -118,7 +118,7 @@ def prepare_provider_update_command(
                 raise ProviderUpdateRefused(
                     "The updater completed but no provider executable is discoverable as rcp."
                 )
-            after_version = _provider_version(account, after_path, process_runner)
+            after_version = _provider_version(account, provider, after_path, process_runner)
         except (OSError, ProviderUpdateRefused) as exc:
             emitter.emit_step(_failed(pending[2], str(exc)))
             return
@@ -238,10 +238,12 @@ def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path
 
 def _provider_version(
     account: pwd.struct_passwd,
+    provider: ProviderId,
     binary: Path,
     runner: ProviderProcessRunner,
 ) -> str:
-    result = runner(account, (str(binary), "--version"), _PROBE_TIMEOUT_SECONDS)
+    prefix = profile_for(provider).authentication.unmanaged_environment("").command_prefix
+    result = runner(account, (*prefix, str(binary), "--version"), _PROBE_TIMEOUT_SECONDS)
     if result.returncode != 0:
         raise ProviderUpdateRefused(
             f"The provider version probe failed: {_bounded_diagnostic(result)}"
@@ -263,8 +265,9 @@ def _update_provider(
     update = profile.native_update
     if update.self_update_args is not None:
         assert before_path is not None
+        prefix = profile.authentication.unmanaged_environment("").command_prefix
         result = runner(
-            account, (str(before_path), *update.self_update_args), _UPDATE_TIMEOUT_SECONDS
+            account, (*prefix, str(before_path), *update.self_update_args), _UPDATE_TIMEOUT_SECONDS
         )
         if result.returncode != 0:
             raise ProviderUpdateRefused(

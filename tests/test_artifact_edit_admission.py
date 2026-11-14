@@ -857,3 +857,57 @@ def test_chat_transcript_quotes_what_each_comment_was_drawn_on(edit_origin):
             {"kind": "box", "quote": "", "comment": "Unreadable axis."},
         ],
     }
+
+
+@pytest.mark.parametrize("provider", ["codex", "agy"])
+@pytest.mark.parametrize("missing_stage", [False, True])
+def test_tool_preserving_provider_revoking_edit_is_recorded_fresh(
+    edit_origin, monkeypatch, missing_stage, provider
+):
+    from rcp.providers import profile_for
+    from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+    app, store, task = edit_origin
+    if provider == "codex":
+        monkeypatch.setattr(type(profile_for(provider)), "resume_keeps_tools", True)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ?, runtime_id = ? WHERE operation_id = ?",
+            (
+                json.dumps({**task.request, "provider": provider, "reasoning": None}),
+                profile_for(provider).legacy_runtime_id,
+                task.operation_id,
+            ),
+        )
+    artifact = _stored_artifact(app, task.operation_id, "explanation.md", b"Original")
+    _refuse_human_turns(monkeypatch)
+    if missing_stage:
+        Path(task.stage_root).rmdir()
+    availability = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert availability.can_comment and not availability.fresh_session_required
+    request = _request(task, artifact).model_copy(
+        update={
+            "fork_session_id": "old-session",
+            "fork_source_machine_id": "backend",
+            "fork_source_cwd": "/old-stage",
+        }
+    )
+    admitted = admit_artifact_edit(store, app.state.service, task.project_id, request)
+    assert admitted.provider == provider
+    assert admitted.reasoning is None
+    assert admitted.artifact_edit.fresh_session
+    assert admitted.session_id is None
+    assert admitted.fork_session_id is None
+    assert admitted.fork_source_machine_id is None
+    assert admitted.fork_source_cwd is None
+    assert admitted.artifact_edit.stage_root is None
+    assert admitted.artifact_edit.master_operation_id is None
+    tasks = app.state.background_tasks
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *args, **kwargs: None)
+    fake_launch_admitted(monkeypatch, tasks)
+    record = start_artifact_edit(tasks, task.project_id, admitted, authorized_by=task.authorized_by)
+    persisted = store.agent_task(record.operation_id)
+    assert persisted.request["artifact_edit"]["fresh_session"]
+    assert persisted.native_session_id is None
