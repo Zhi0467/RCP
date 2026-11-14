@@ -684,5 +684,11 @@ def install_provider_login_versions(connection: sqlite3.Connection) -> None:
 
 
 def install_comment_resource_versions(connection: sqlite3.Connection) -> None:
-    for table in ("comment_threads", "comment_posts", "comment_mentions"):
+    for table in ("comment_threads", "comment_posts"):
         _install(connection, table, [_bump("ROW.project_id", "comments")])
+    _install(
+        connection,
+        "comment_mentions",
+        [_bump("ROW.project_id", "comments")],
+        columns=("project_id", "post_id", "thread_id", "user_id", "created_at"),
+    )

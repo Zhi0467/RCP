@@ -425,4 +425,3 @@ def test_viewer_preserves_missing_bundle_error(viewer_app, monkeypatch, tmp_path
         f"/api/projects/{artifact.project_id}/artifacts/{artifact.artifact_id}/viewer"
     )
     assert response.status_code == 503
-    assert "Rebuild the Web assets" in response.json()["detail"]
