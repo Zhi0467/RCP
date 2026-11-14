@@ -83,6 +83,7 @@ from rcp.api.paper_compile import assets_router as paper_assets_router
 from rcp.api.paper_compile import router as paper_compile_router
 from rcp.api.paper_git import router as paper_git_router
 from rcp.api.paper_live import router as paper_live_router
+from rcp.api.paper_turns import router as paper_turns_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -184,6 +185,7 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
+from rcp.runs.paper_turns import end_settled_paper_turns
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
@@ -1265,6 +1267,7 @@ def create_app(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
         watcher_canceller=cancel_watcher_from_work,
+        paper_live=paper_live,
     )
 
     @contextmanager
@@ -2098,6 +2101,7 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                await asyncio.to_thread(catalog.migrate_papers)
                 await paper_live.start()
                 register_paper_live(store, paper_live)
                 await asyncio.to_thread(paper_git.reconcile)
@@ -2107,6 +2111,7 @@ def create_app(
                 await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
+                await asyncio.to_thread(end_settled_paper_turns, store, paper_live)
                 await asyncio.to_thread(reconcile_thread_handoffs)
                 for project in store.projects():
                     if project.machine_ids_pending:
@@ -2828,6 +2833,7 @@ def create_app(
     app.include_router(paper_router)
     app.include_router(paper_git_router)
     app.include_router(paper_live_router)
+    app.include_router(paper_turns_router)
     app.include_router(paper_compile_router)
     app.include_router(paper_assets_router)
     app.include_router(result_views_router)

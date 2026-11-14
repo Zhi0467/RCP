@@ -1474,8 +1474,25 @@ def _recover_repositories(request, manifest, previous_store, members, cards):
     return None
 
 
-def _restore_project_bytes(owners, capture, payload, operation_projects, *, existing_remote):
+def _restore_paper_folder(folder, entries, payload) -> None:
+    """Write the archived Paper folder into an empty folder; a kept folder stays as it is."""
+    files = {}
+    for entry in entries:
+        if entry.group != "paper_folder":
+            continue
+        data = (payload / entry.archive_path).read_bytes()
+        if (hashlib.sha256(data).hexdigest(), len(data)) != (entry.sha256, entry.size_bytes):
+            raise RestoreRefused("An archived Paper file differs from its inventory.")
+        files[PurePosixPath(entry.source_relative_path).relative_to("paper").as_posix()] = data
+    if files:
+        folder.install(files)
+
+
+def _restore_project_bytes(
+    owners, capture, payload, operation_projects, *, existing_remote, paper_folder
+):
     entries = capture.files
+    _restore_paper_folder(paper_folder, entries, payload)
     if existing_remote:
         owners.workspace.refresh()
         _verify_project_publication_bytes(owners.workspace, entries)
@@ -1522,6 +1539,8 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
 def _verify_project_publication_bytes(workspace, entries) -> None:
     for entry in entries:
         relative = PurePosixPath(entry.source_relative_path)
+        if entry.group == "paper_folder":
+            continue
         if entry.group in {"kept_artifact", "legacy_kept_result_view"}:
             if entry.group == "kept_artifact":
                 data = workspace.read_kept_artifact(
@@ -1550,6 +1569,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     from datetime import UTC
 
     from rcp.__main__ import instance_lock
+    from rcp.paper.folder import paper_folders
     from rcp.projects import (
         complete_restored_project_publication,
         rebind_restored_project_registration,
@@ -1831,6 +1851,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 existing_remote=state_remote
                 and previous is not None
                 and previous.project(capture.project_id) is not None,
+                paper_folder=paper_folders(store, app)(capture.project_id),
             )
             complete_restored_project_publication(store, capture, owners, materialization)
             _record_restored_checkout_proofs(store, app, capture, request.progress)

@@ -2297,6 +2297,8 @@ export interface AgentTaskResult {
   artifact_edit_outcomes?: ArtifactEditOutcome[];
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
+  /** A retired Paper coach turn, rendered as text when its Paper migrated. */
+  transcript?: string;
   [key: string]: unknown;
 }
 

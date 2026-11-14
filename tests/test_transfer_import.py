@@ -393,6 +393,7 @@ def _archive_fixture(
     records = source.export_project_transfer_records(
         records.project_id,
         attributions=(attribution,),
+        paper_files={"introduction.md": b"# Paper\n"},
     )
     file_capture_root = tmp_path / "project-file-capture"
     capture = capture_project_transfer_files(service, records, file_capture_root)
@@ -635,7 +636,8 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
         fixture["configuration"].manifest_content
     )
     assert fixture["configuration"].manifest_content != manifest.path.read_text(encoding="utf-8")
-    assert (target_state_root / "paper/introduction.md").is_file()
+    paper = fixture["catalog"].data_dir / "paper" / archive.project_id
+    assert (paper / "introduction.md").read_bytes() == b"# Paper\n"
     assert (target_state_root / "facts/methods/protocol.bin").read_bytes() == (b"opaque fact bytes")
     assert (target_state_root.parent / "artifacts" / fixture["artifact_name"]).read_bytes() == (
         fixture["artifact"]

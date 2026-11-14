@@ -1064,29 +1064,44 @@ def test_fork_records_transfer_parent_names_and_archive_state(manifest, tmp_path
     assert store.export_project_transfer_records(project_id, attributions=attributions) == records
 
 
-def test_saved_paper_records_roundtrip_preserves_revision_history_and_hold(
-    manifest, tmp_path: Path, monkeypatch
+def test_paper_records_carry_a_migrated_old_writer_folder_identity_and_history(
+    manifest, tmp_path: Path
 ) -> None:
+    from rcp.paper.folder import LocalPaperFolder, read_paper_folder
+    from rcp.paper.folder_io import paper_root
+    from rcp.paper.migration import migrate_paper
     from rcp.server_ops import backup_paper
     from rcp.transfer.records import TransferRecordBundle
-    from tests.test_backup_paper import _saved_paper
+    from tests.paper_legacy_seed import legacy_tree, seed_legacy_paper
 
     source, project_id, attributions = _store(manifest, tmp_path)
     target = AppStore(tmp_path / "target.sqlite3")
-    with source.connection() as connection:
-        connection.execute("PRAGMA defer_foreign_keys=ON")
-        _saved_paper(connection, monkeypatch, project_id=project_id)
-    exported = source.export_project_transfer_records(project_id, attributions=attributions)
+    seed_legacy_paper(source, project_id, None)
+    folder = LocalPaperFolder(paper_root(tmp_path / "source-data", project_id))
+    assert migrate_paper(source, project_id, folder, lambda: None)
+    files = read_paper_folder(folder)
+    exported = source.export_project_transfer_records(
+        project_id, attributions=attributions, paper_files=files
+    )
     restored = TransferRecordBundle.model_validate_json(exported.model_dump_json())
     assert restored.schema_version == TRANSFER_RECORD_SCHEMA_VERSION
-    assert restored.paper is not None
-    assert restored.paper == exported.paper
-    for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
-        assert len(restored.paper.tables[table]) == 1
+    assert restored.paper is not None and restored.paper == exported.paper
+    assert set(restored.paper.tables) <= {
+        "paper_files",
+        "paper_versions",
+        "paper_blobs",
+        "paper_version_texts",
+    }
+    assert backup_paper.section_files(restored.paper) == legacy_tree()
+    assert {file.path: file.file_id for file in restored.paper.files} == {
+        "chapter.tex": "chapter",
+        "figures/plot.png": "figure",
+        "sections/intro.md": "intro",
+    }
     with target.connection() as connection:
         target._insert_transfer_paper(connection, restored)
-        assert backup_paper.capture_paper_section(connection, project_id) == exported.paper
-        publication = connection.execute(
-            "SELECT saved_revision, published_revision, hold FROM paper_publication"
-        ).fetchone()
-        assert tuple(publication) == (4, 2, "legacy-divergence")
+        assert backup_paper.capture_paper_section(connection, project_id, files) == exported.paper
+        names = connection.execute(
+            "SELECT name FROM paper_versions WHERE project_id=?", (project_id,)
+        ).fetchall()
+        assert [tuple(row) for row in names] == [("Legacy canonical",)]

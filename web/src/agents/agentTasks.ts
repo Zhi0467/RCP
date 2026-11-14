@@ -322,6 +322,19 @@ export function reconcileChatHistoryArtifacts(
 export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLine[] {
   return [...tasks].sort(compareTaskTime).flatMap((task) => {
     const lines: TaskTranscriptLine[] = [];
+    const legacy = task.kind === "paper_coach" ? textValue(task.result?.transcript) : null;
+    if (legacy) {
+      return [
+        {
+          lineId: `task:${task.operation_id}:transcript`,
+          role: "agent",
+          text: legacy,
+          taskId: task.operation_id,
+          timestamp: task.created_at,
+          shownAt: task.finished_at ?? null,
+        },
+      ];
+    }
     const message = textValue(task.request.message);
     const mode = conversationMode(task.request.mode);
     const trigger = taskTrigger(task.request.trigger);

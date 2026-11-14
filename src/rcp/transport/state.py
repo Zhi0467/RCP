@@ -1417,6 +1417,17 @@ class StateWorkspace:
                 lease._begin_release()
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
+    def remove_paper_tree(self) -> None:
+        """Remove the retired `.research/paper` publication and its marker."""
+        with self.snapshot_lock:
+            paper = self.root / "paper"
+            if paper.is_symlink() or paper.is_file():
+                paper.unlink()
+            elif paper.exists():
+                shutil.rmtree(paper)
+            (self.root / ".publish" / "paper-current.json").unlink(missing_ok=True)
+            self._generations.bump(["paper"])
+
     def publish(self, relative_paths: list[Path | str]) -> None:
         self._generations.bump(relative_paths)
 
@@ -2702,6 +2713,22 @@ class SSHStateWorkspace(StateWorkspace):
             phase="push",
             cwd=self.root,
         )
+
+    def remove_paper_tree(self) -> None:
+        with self.snapshot_lock:
+            result = self._ssh(
+                [
+                    "rm",
+                    "-rf",
+                    "--",
+                    str(self.remote_root / "paper"),
+                    str(self.remote_root / ".publish" / "paper-current.json"),
+                ]
+            )
+            if result.returncode:
+                self._mark_unreachable(result.stderr)
+                raise StateUnavailable("The retired Paper publication could not be removed")
+            super().remove_paper_tree()
 
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []

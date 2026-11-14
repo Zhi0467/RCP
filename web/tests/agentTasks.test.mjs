@@ -128,6 +128,22 @@ test("temporary input attachment metadata follows the human turn only", () => {
   assert.equal(lines[1].attachments, undefined);
 });
 
+test("a migrated Paper coach turn shows its rendered transcript as it is", () => {
+  const transcript = "Tighten the abstract.\n\nShorter now.\n\nChanges accepted: abstract.md";
+  const lines = reconstructTaskTranscript([
+    task({
+      operation_id: "old-coach",
+      kind: "paper_coach",
+      request: { message: "Tighten the abstract." },
+      result: { messages: ["Shorter now."], transcript },
+    }),
+  ]);
+  assert.deepEqual(
+    lines.map(({ role, text }) => ({ role, text })),
+    [{ role: "agent", text: transcript }],
+  );
+});
+
 test("node chat reconstruction can select an older explicit chat id", () => {
   const tasks = [
     task({

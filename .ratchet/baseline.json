@@ -252,7 +252,7 @@
   "src/rcp/server_ops/backup_capture.py": {"comment": 9},
   "src/rcp/server_ops/backup_models.py": {"comment": 7},
   "src/rcp/server_ops/backup_paper.py": {"comment": 3},
-  "src/rcp/server_ops/backup_project_files.py": {"comment": 5},
+  "src/rcp/server_ops/backup_project_files.py": {"comment": 4},
   "src/rcp/server_ops/cli.py": {"comment": 20},
   "src/rcp/server_ops/config.py": {"comment": 3},
   "src/rcp/server_ops/control.py": {"comment": 16},
