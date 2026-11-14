@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { DagView } from "../../src/graph/GraphViews";
 import { DetailDrawer } from "../../src/graph/DetailDrawer";
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import { api } from "../../src/core/api";
 import { graphTargetUrl } from "../../src/core/graphTarget";
 import {
@@ -287,7 +287,7 @@ function Fixture() {
             border: "1px solid var(--rule)",
           }}
         >
-          <NodeChat
+          <AgentChatView
             graphTarget={target}
             project={project}
             node={chat}

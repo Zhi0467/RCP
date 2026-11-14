@@ -11,7 +11,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { AgentChatView } = await server.ssrLoadModule("/src/chat/AgentChatView.tsx");
 const { worktreeRepositoryChoices } = await server.ssrLoadModule(
   "/src/chat/worktreeRepositories.ts",
 );
@@ -84,7 +84,7 @@ const chatProps = {
 };
 
 test("chat shows its agent identity and keeps New session in its menu", () => {
-  const fresh = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
+  const fresh = renderToStaticMarkup(React.createElement(AgentChatView, chatProps));
   assert.match(fresh, /aria-label="Chat agent: Codex"/);
   assert.match(fresh, /class="chat-header-menu"/);
   assert.doesNotMatch(fresh, /scope-trigger/);
@@ -92,7 +92,7 @@ test("chat shows its agent identity and keeps New session in its menu", () => {
   assert.doesNotMatch(fresh, /agent-config-summary/);
 
   const resumed = renderToStaticMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...chatProps,
       historyMessages: [
         {
@@ -118,7 +118,7 @@ test("chat shows its agent identity and keeps New session in its menu", () => {
 });
 
 test("the chat composer marks where to type with field shape, never placeholder copy", () => {
-  const html = renderToStaticMarkup(React.createElement(NodeChat, chatProps));
+  const html = renderToStaticMarkup(React.createElement(AgentChatView, chatProps));
 
   assert.match(html, /<textarea/);
   assert.doesNotMatch(html, /placeholder=/);
@@ -134,7 +134,7 @@ test("a persisted chat draft is restored only for the member who wrote it", () =
   };
   try {
     const composer = (actorId) =>
-      renderToStaticMarkup(React.createElement(NodeChat, { ...chatProps, actorId })).match(
+      renderToStaticMarkup(React.createElement(AgentChatView, { ...chatProps, actorId })).match(
         /<textarea[^>]*>([^<]*)<\/textarea>/,
       )[1];
     assert.equal(composer("member-a"), "unsent words");

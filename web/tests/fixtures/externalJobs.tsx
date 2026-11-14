@@ -2,7 +2,7 @@ import { ResourceRuntime } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ExperimentRunDetail } from "../../src/experiments/ExperimentRunDetail";
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import { buildExperimentRun } from "../../src/experiments/runProjection";
 import { withExperimentControlAnswers } from "../taskAnswers.mjs";
 import { ExternalJobRow } from "../../src/experiments/ExternalJobRow";
@@ -193,7 +193,7 @@ function WatcherFixture() {
           episodeReportHref={() => "#report"}
         />
       </section>
-      <NodeChat
+      <AgentChatView
         graphTarget={{ kind: "main" }}
         project={project as never}
         node={experiment as never}

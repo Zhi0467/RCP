@@ -271,7 +271,7 @@ export function AgentTaskInspector({
                     <h4>Result</h4>
                     <div className="task-result-transcript">
                       {transcript.map((line) => (
-                        <div className={`node-chat-line ${line.role}`} key={line.lineId}>
+                        <div className={`agent-chat-view-line ${line.role}`} key={line.lineId}>
                           {line.text}
                         </div>
                       ))}

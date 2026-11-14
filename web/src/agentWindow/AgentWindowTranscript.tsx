@@ -220,7 +220,7 @@ export function AgentWindowTranscript({
               </div>
             )}
             <div
-              className={`node-chat-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
+              className={`agent-chat-view-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
               data-source={line.source ?? undefined}
               data-task-id={line.taskId}
               data-time-shown={timeShownIds.has(line.lineId) ? "" : undefined}
@@ -293,7 +293,7 @@ export function AgentWindowTranscript({
                           onOpen={() => endpoints.openArtifactPanel?.(artifactComments.artifact_id)}
                         />
                       ) : (
-                        <span className="node-chat-text">{line.text}</span>
+                        <span className="agent-chat-view-text">{line.text}</span>
                       )}
                     </div>
                     {collapsible && (
@@ -334,7 +334,7 @@ export function AgentWindowTranscript({
                   </>
                 ))
               ) : pausedLineTask ? null : (
-                <span className="node-chat-text">{line.text}</span>
+                <span className="agent-chat-view-text">{line.text}</span>
               )}
               {retryLineTask && onRetryTask && (
                 <button

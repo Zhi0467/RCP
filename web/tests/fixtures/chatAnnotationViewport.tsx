@@ -1,7 +1,7 @@
 import { ResourceRuntime } from "./resourceRuntime";
 import { createRoot } from "react-dom/client";
 
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import "../../src/styles.css";
 
 const project = {
@@ -68,7 +68,7 @@ let resolveTask: (() => void) | null = null;
 createRoot(document.getElementById("root")!).render(
   <ResourceRuntime>
     <main style={{ height: "100vh", padding: 24 }}>
-      <NodeChat
+      <AgentChatView
         graphTarget={{ kind: "main" }}
         project={project as never}
         node={null}

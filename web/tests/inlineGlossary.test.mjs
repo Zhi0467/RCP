@@ -22,7 +22,7 @@ const renderMarkup = (element) =>
   renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { DetailDrawer } = await server.ssrLoadModule("/src/graph/DetailDrawer.tsx");
 const { ProposalJudgmentSection } = await server.ssrLoadModule("/src/graph/AttentionRail.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { AgentChatView } = await server.ssrLoadModule("/src/chat/AgentChatView.tsx");
 
 after(() => server.close());
 
@@ -151,7 +151,7 @@ test("node chat passes the prebuilt index into Markdown answers", () => {
     machines: [{ alias: "local", host: null }],
   };
   const html = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       project,
       glossaryIndex,
       tasks: [],

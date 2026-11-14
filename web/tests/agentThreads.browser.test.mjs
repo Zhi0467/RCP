@@ -108,7 +108,7 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.equal(await thread.locator(".chat-progress li").count(), 4);
     assert.equal(await thread.locator('.chat-markdown a[href^="#/projects/"]').count(), 1);
     assert.ok((await thread.locator(".chat-time-divider").count()) >= 1);
-    const firstLine = thread.locator(".node-chat-line:has(> .chat-line-time)").first();
+    const firstLine = thread.locator(".agent-chat-view-line:has(> .chat-line-time)").first();
     const lineBox = await firstLine.boundingBox();
     await firstLine.hover();
     await page.waitForFunction(
@@ -117,7 +117,7 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.deepEqual(await firstLine.boundingBox(), lineBox, "Showing the time moves nothing");
     assert.equal(
       await thread
-        .locator(".node-chat-line.human .node-chat-text")
+        .locator(".agent-chat-view-line.human .agent-chat-view-text")
         .first()
         .evaluate((text) => getComputedStyle(text).whiteSpace),
       "pre-wrap",
@@ -200,8 +200,10 @@ test("the space Agent view lists threads, opens one, and resolves a card by tap"
     assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth), 390);
     await phone.waitForTimeout(150);
     if (shots) await phone.screenshot({ path: `${shots}/agent-thread-390.png` });
-    const phoneLine = phoneThread.locator(".node-chat-line", { hasText: "Mark H2 supported" });
-    await phoneLine.locator(".node-chat-text").tap();
+    const phoneLine = phoneThread.locator(".agent-chat-view-line", {
+      hasText: "Mark H2 supported",
+    });
+    await phoneLine.locator(".agent-chat-view-text").tap();
     assert.equal(await phoneLine.getAttribute("data-time-shown"), "");
     await phone.waitForTimeout(200);
     if (shots) await phone.screenshot({ path: `${shots}/agent-thread-time-390.png` });
@@ -341,7 +343,10 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     assert.equal(await moss.getByRole("button", { name: "Resend" }).count(), 0);
     await moss.getByRole("textbox", { name: "Message" }).fill("Next");
     assert.equal(await moss.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
-    assert.equal(await moss.locator(".node-chat-line").getByText("Plan the sweep").count(), 0);
+    assert.equal(
+      await moss.locator(".agent-chat-view-line").getByText("Plan the sweep").count(),
+      0,
+    );
 
     // Moss is marked read through the finish of the turn its transcript shows.
     const reads = writes.filter((write) => write.path.endsWith("/read"));
@@ -396,7 +401,7 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     assert.equal(await space.locator(".chat-attachment-chip").count(), 0);
     // The failed line stays in its thread, and the composer keeps a copy.
     assert.equal(
-      await space.locator(".node-chat-line.unsent").getByText("Plan the sweep").count(),
+      await space.locator(".agent-chat-view-line.unsent").getByText("Plan the sweep").count(),
       1,
     );
     assert.equal(
@@ -622,7 +627,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     assert.equal(await project.locator(".approval-dock .approval-card").count(), 1);
     await project.getByRole("button", { name: "Approve", exact: true }).click();
     await project.locator(".approval-card[data-state='approved']").waitFor();
-    assert.equal(await project.locator(".node-chat-line.human").count(), 1);
+    assert.equal(await project.locator(".agent-chat-view-line.human").count(), 1);
     assert.equal(
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
@@ -1039,14 +1044,14 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
       );
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
-      const failure = thread.locator(".node-chat-line.error");
+      const failure = thread.locator(".agent-chat-view-line.error");
       await failure.waitFor();
       assert.equal(await thread.getByText("The provider exited before answering.").count(), 1);
       assert.equal(await thread.locator(".chat-task-inline.paused").count(), 0);
       const retry = failure.getByRole("button", { name: "Retry" });
       assert.equal(await thread.getByRole("button", { name: "Retry" }).count(), 1);
       const column = async () => {
-        const human = await thread.locator(".node-chat-line.human").boundingBox();
+        const human = await thread.locator(".agent-chat-view-line.human").boundingBox();
         const error = await failure.boundingBox();
         return { human, error };
       };
@@ -1114,13 +1119,13 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
       );
       await page.goto(`${base}#/agent/space`);
       const thread = page.getByRole("region", { name: "Pip" });
-      const banner = thread.locator(".node-chat-lines > .chat-task-inline.paused");
+      const banner = thread.locator(".agent-chat-view-lines > .chat-task-inline.paused");
       await banner.waitFor();
       assert.equal(await banner.getByRole("button").count(), 1);
       assert.equal(await banner.getByRole("button", { name: "Continue" }).count(), 1);
       // The retry's own copy of the message goes once its lineage reaches the first attempt.
       await page.waitForFunction(
-        () => document.querySelectorAll(".agent-thread .node-chat-line.human").length === 1,
+        () => document.querySelectorAll(".agent-thread .agent-chat-view-line.human").length === 1,
         undefined,
         { timeout: 5_000 },
       );
@@ -1128,7 +1133,7 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
         await page.getByRole("button", { name: "Collapse agent list" }).click();
         await page.waitForTimeout(300);
       }
-      const human = await thread.locator(".node-chat-line.human").boundingBox();
+      const human = await thread.locator(".agent-chat-view-line.human").boundingBox();
       const box = await banner.boundingBox();
       const composer = await thread.locator(".chat-composer").boundingBox();
       for (const other of [box, composer])
@@ -1136,7 +1141,7 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
           Math.abs(other.x - human.x) < 1 && Math.abs(other.width - human.width) < 1,
           "the stop and the composer share the message column",
         );
-      assert.equal(await thread.locator(".node-chat-line.human").count(), 1);
+      assert.equal(await thread.locator(".agent-chat-view-line.human").count(), 1);
       await thread.getByRole("textbox", { name: "Message" }).fill("Another one");
       assert.ok(await thread.getByRole("button", { name: "Send" }).isEnabled());
       if (shots) await page.screenshot({ path: `${shots}/stopped-retry-${width}.png` });
@@ -1178,7 +1183,7 @@ test("a waking watcher turn shows only its live row until it has text", async ()
     const thread = page.getByRole("region", { name: "Pip" });
     await thread.locator(".agent-turn-live").waitFor();
     assert.equal(await thread.locator(".chat-turn-trigger.watcher").count(), 0);
-    assert.equal(await thread.locator(".node-chat-line.agent").count(), 1);
+    assert.equal(await thread.locator(".agent-chat-view-line.agent").count(), 1);
     await page.close();
   });
 });
@@ -1202,7 +1207,7 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     });
     await page.goto(`${base}#/agent/space`);
     const space = page.getByRole("region", { name: "Pip" });
-    const loadError = space.locator(".node-chat-line.error");
+    const loadError = space.locator(".agent-chat-view-line.error");
     await loadError.waitFor();
     await loadError.getByRole("button", { name: "Retry" }).click();
     await space.locator(".chat-progress").waitFor();
@@ -1217,7 +1222,7 @@ test("thread switches keep the last view, a failed load retries, and notices cle
       .waitFor();
     await rail.getByRole("option").first().click();
     await space.locator(".chat-progress").waitFor({ timeout: 300 });
-    assert.equal(await space.locator(".node-chat-lines > [role=status] .spin").count(), 0);
+    assert.equal(await space.locator(".agent-chat-view-lines > [role=status] .spin").count(), 0);
     assert.equal(spaceReads, 3, "the reload is still held");
     releaseSpace();
 
@@ -1233,7 +1238,9 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     const browserItem = page.getByRole("menuitem", { name: /browser/i });
     await menu.click();
     await browserItem.click();
-    const notice = space.locator(".node-chat-lines > .node-chat-line.error[role=alert]");
+    const notice = space.locator(
+      ".agent-chat-view-lines > .agent-chat-view-line.error[role=alert]",
+    );
     await notice.waitFor();
     await menu.click();
     await browserItem.click();
@@ -1936,7 +1943,7 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     const oldest = page.waitForRequest(
       (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-h0",
     );
-    await moss.locator(".node-chat-lines").evaluate((lines) => (lines.scrollTop = 0));
+    await moss.locator(".agent-chat-view-lines").evaluate((lines) => (lines.scrollTop = 0));
     await oldest;
 
     assert.ok(opened.distinct < 30, `history reads: ${opened.distinct}`);
@@ -2234,7 +2241,7 @@ test("an out-of-date Proposal stays out of the dock and a failed card read hides
       state: "detached",
     });
     assert.ok(await moss.locator(".chat-annotatable-answer").count());
-    assert.equal(await moss.locator(".node-chat-line.error").count(), 0);
+    assert.equal(await moss.locator(".agent-chat-view-line.error").count(), 0);
     await moss.locator(".agent-cards-unavailable").waitFor();
     shown.fail = false;
     shown.proposals = [proposalCard("proposal/b", "H3 standing → refuted")];
@@ -2905,7 +2912,7 @@ test("waiting turns show one line each above the composer; remove and dismiss le
 
       served.failRead = true;
       await moveWatermark(page);
-      const failed = moss.locator(".node-chat-line.error");
+      const failed = moss.locator(".agent-chat-view-line.error");
       await failed.waitFor();
       served.failRead = false;
       await failed.getByRole("button", { name: "Retry" }).click();
@@ -3007,7 +3014,7 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await box.press("Enter");
     await moss.locator(".chat-composer [role='alert']").waitFor();
     assert.equal(await box.inputValue(), "Then plot it");
-    assert.equal(await moss.locator(".node-chat-line.unsent").count(), 0);
+    assert.equal(await moss.locator(".agent-chat-view-line.unsent").count(), 0);
     await box.press("Enter");
     await rows.nth(1).waitFor();
     assert.equal(steers.length, 1);
