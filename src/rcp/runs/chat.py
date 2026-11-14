@@ -1026,6 +1026,29 @@ def stage_artifact_context(
     artifact = execution.store.artifact(comment.artifact_id)
     if artifact is None or artifact.project_id != current.project_id:
         raise ValueError("The artifact context is unavailable.")
+    stage_root = str(remote_stage.root if remote_stage is not None else local_stage)
+    stage_machine = execution.stage_machine_id or BACKEND_MACHINE_ID
+    candidate = current
+    seen: set[str] = set()
+    while candidate is not None and candidate.operation_id not in seen:
+        seen.add(candidate.operation_id)
+        if candidate.project_id != current.project_id or candidate.kind != current.kind:
+            raise ValueError("The artifact context recovery crosses a task boundary.")
+        saved = execution.store.agent_task_contract(candidate.operation_id, "artifact_context")
+        if saved is not None:
+            snapshot = json.loads(saved)
+            pointer = snapshot["pointer"]
+            if (
+                snapshot["stage_root"] == stage_root
+                and snapshot["stage_machine"] == stage_machine
+                and pointer["source_artifact_id"] == artifact.artifact_id
+            ):
+                pointer["path"] = edit_path
+                pointer["current_version"] = comment.base_version or artifact.current_version
+                return StagedArtifactContext(pointer=pointer)
+        if execution.continuation not in {"resume", "retry", "handoff"}:
+            break
+        candidate = execution.store.agent_task(candidate.parent_operation_id or "")
     data = execution.store.read_artifact_bytes(
         artifact.artifact_id, comment.base_version or artifact.current_version
     )
@@ -1039,28 +1062,47 @@ def stage_artifact_context(
         raise ValueError("The artifact type does not support comments.")
     if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
-    # Each box the current viewer drew on a raster image is cropped from the exact bytes
-    # staged beside it, so a recovery restages the same crops.
-    boxes = {
-        index: selection.rect
-        for index, selection in enumerate(context.selections, 1)
-        if selection.kind == "box" and selection.elements is not None
+    current_version = comment.base_version or artifact.current_version
+    versions: dict[str, bytes | None] = {current_version: data}
+    for selection in context.selections:
+        version = selection.drawn_version or current_version
+        if version not in versions:
+            try:
+                versions[version] = execution.store.read_artifact_bytes(
+                    artifact.artifact_id, version
+                )
+            except (KeyError, FileNotFoundError):
+                versions[version] = None
+    frames = {
+        version: croppable_frame(content)
+        for version, content in versions.items()
+        if content is not None
+        and descriptor.media_type in CROPPABLE_MEDIA_TYPES
+        and any(
+            selection.kind == "box"
+            and (selection.elements is not None or selection.drawn_version is not None)
+            and (selection.drawn_version or current_version) == version
+            for selection in context.selections
+        )
     }
-    frame, animated = (
-        croppable_frame(data)
-        if boxes and descriptor.media_type in CROPPABLE_MEDIA_TYPES
-        else (None, False)
-    )
-    crops = sorted(boxes) if frame is not None else []
+    crops: dict[int, tuple[bytes, bool]] = {}
+    for index, selection in enumerate(context.selections, 1):
+        if selection.kind != "box" or (
+            selection.elements is None and selection.drawn_version is None
+        ):
+            continue
+        frame, animated = frames.get(selection.drawn_version or current_version, (None, False))
+        if frame is not None:
+            rect = selection.rect
+            crops[index] = (
+                crop_region(frame, x=rect.x, y=rect.y, width=rect.width, height=rect.height),
+                animated,
+            )
 
     def write_crops(folder: Path) -> None:
-        assert frame is not None
-        for index in crops:
-            rect = boxes[index]
+        for index, (content, _) in crops.items():
             path = folder / f"{index}.png"
-            path.write_bytes(
-                crop_region(frame, x=rect.x, y=rect.y, width=rect.width, height=rect.height)
-            )
+            path.write_bytes(content)
             path.chmod(0o400)
 
     label = f"artifact-context-v2-{execution.operation_id}-{descriptor.artifact_id}"
@@ -1071,6 +1113,7 @@ def stage_artifact_context(
             root = Path(temporary)
             _write_artifact_context(root, descriptor.name, data, write_crops if crops else None)
             staged_root = Path(remote_stage.put_directory(root, label, reuse=True))
+            remote_stage.finalize_inputs()
     else:
         assert local_stage is not None
         staged_root = local_stage / "inputs" / label
@@ -1103,13 +1146,15 @@ def stage_artifact_context(
         "sha256": hashlib.sha256(data).hexdigest(),
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
+        "current_version": current_version,
         "selections": [
             {
                 **item.model_dump(mode="json"),
+                "drawn_version_missing": versions[item.drawn_version or current_version] is None,
                 **(
                     {
                         "crop_path": str(staged_root / _SELECTION_CROPS / f"{index}.png"),
-                        "first_frame_only": animated,
+                        "first_frame_only": crops[index][1],
                     }
                     if index in crops
                     else {}
@@ -1119,6 +1164,16 @@ def stage_artifact_context(
         ],
     }
     pointer["path"] = edit_path
+    content = json.dumps(
+        {"stage_root": stage_root, "stage_machine": stage_machine, "pointer": pointer},
+        sort_keys=True,
+    )
+    execution.store.record_agent_task_contract(
+        execution.operation_id,
+        "artifact_context",
+        content,
+        hashlib.sha256(content.encode()).hexdigest(),
+    )
     return StagedArtifactContext(pointer=pointer)
 
 

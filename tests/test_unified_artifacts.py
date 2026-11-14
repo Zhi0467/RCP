@@ -152,6 +152,11 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
         )
 
     class FakeRemoteRunStage:
+        root = Path("/remote/revision-stage")
+
+        def finalize_inputs(self) -> None:
+            pass
+
         def put_directory(self, source: Path, label: str, *, reuse: bool) -> str:
             assert (source / "remote.html").read_bytes() == source_bytes
             return f"/remote/revision-stage/inputs/{label}"
@@ -525,4 +530,4 @@ def test_comment_eligibility_matches_viewer_types():
     from rcp.artifacts import ARTIFACT_MEDIA_TYPES, artifact_view
 
     for media_type in set(ARTIFACT_MEDIA_TYPES.values()) | {"application/octet-stream"}:
-        assert supports_comments(media_type) == (artifact_view(media_type) not in {"pdf", "file"})
+        assert supports_comments(media_type) == (artifact_view(media_type) != "file")

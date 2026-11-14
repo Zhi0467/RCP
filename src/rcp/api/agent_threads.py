@@ -65,9 +65,10 @@ from rcp.api.tasks import (
     released_unless_started,
     require_attachment_pair,
 )
-from rcp.artifact_comments import COMMENTABLE_MEDIA_TYPES, supports_comments
+from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
+from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.history import ReplayHalted
@@ -872,8 +873,11 @@ def _space_artifact_comment(
         descriptor = _agent_artifact_descriptor(task, context.artifact_id)
         if not supports_comments(descriptor.media_type):
             raise ValueError("The artifact type does not support comments.")
-        if context.selections and descriptor.media_type not in COMMENTABLE_MEDIA_TYPES:
-            raise ValueError("This artifact supports a comment without selections.")
+        if any(
+            descriptor.media_type not in COMMENT_MEDIA_TYPES[selection.kind]
+            for selection in context.selections
+        ):
+            raise ValueError("This anchor is not supported by the artifact media type.")
         artifact = store.artifact(context.artifact_id)
         if artifact is None:
             raise ValueError("The artifact is unavailable.")

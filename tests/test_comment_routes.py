@@ -195,7 +195,8 @@ def test_comment_posts_are_author_only(comments_app):
     assert client.delete(path).status_code == 403
 
 
-def test_can_send_needs_named_identity_and_target_chat(comments_app):
+@pytest.mark.parametrize("report", [False, True])
+def test_can_send_needs_named_identity_and_target_chat(comments_app, report):
     from rcp.storage import AgentTaskRecord
 
     _, client, store, project, artifact = comments_app
@@ -215,11 +216,21 @@ def test_can_send_needs_named_identity_and_target_chat(comments_app):
             status_message="completed",
         )
     )
+    if report:
+        origin = store.agent_task("origin")
+        assert origin is not None
+        store.create_agent_task(origin.model_copy(update={"operation_id": "report"}))
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET kind='episode_report', parent_operation_id='origin', "
+                "request_json='{}' WHERE operation_id='report'"
+            )
     with store.connection() as connection:
         connection.execute(
-            "UPDATE artifacts SET metadata=json_set(metadata, '$.origin_operation_id', 'origin') WHERE artifact_id=?",
-            (artifact.artifact_id,),
+            "UPDATE artifacts SET metadata=json_set(metadata, '$.origin_operation_id', ?) WHERE artifact_id=?",
+            ("report" if report else "origin", artifact.artifact_id),
         )
+    assert client.get(path).json()["thread"]["chat_id"] == "public-chat"
     assert client.get(path).json()["thread"]["can_send"] is True
     own_chat = next(
         chat
@@ -243,3 +254,54 @@ def test_can_send_needs_named_identity_and_target_chat(comments_app):
             "UPDATE space_users SET display_name=NULL WHERE user_id=?", (store.local_owner.user_id,)
         )
     assert client.get(path).json()["thread"]["can_send"] is False
+
+
+def test_mentions_include_target_and_member_names(comments_app):
+    _, client, store, project, artifact = comments_app
+    owner = store.local_owner
+    _create(client, project, artifact, f"Hello <@member:{owner.user_id}>")
+    row = client.get(f"/api/projects/{project}/comment-mentions").json()["mentions"][0]
+    assert row["target_name"] == artifact.source_name
+    assert {"user_id": owner.user_id, "display_name": owner.display_name} in row["members"]
+
+
+@pytest.mark.parametrize("kind", ["paper", "reply"])
+def test_mentions_name_paper_and_reply_targets(comments_app, kind):
+    from rcp.storage import AgentTaskRecord
+
+    _, client, store, project, _ = comments_app
+    user_id = store.local_owner.user_id
+    if kind == "paper":
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO paper_files VALUES (?, 'target', 'sections/method.md', 'text', ?, NULL, NULL)",
+                (project, store.now()),
+            )
+        expected = "sections/method.md"
+    else:
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id="target",
+                project_id=project,
+                kind="project_chat",
+                status="succeeded",
+                request={"chat_id": "chat", "message": "Method discussion"},
+                created_at=store.now(),
+                updated_at=store.now(),
+                status_message="completed",
+            )
+        )
+        expected = "Method discussion"
+    response = client.post(
+        f"/api/projects/{project}/comment-threads",
+        json={
+            "target": {"kind": kind, "id": "target"},
+            "anchor": {"kind": "whole"},
+            "text": f"<@member:{user_id}>",
+        },
+    )
+    assert response.status_code == 200, response.text
+    if kind == "reply":
+        assert response.json()["thread"]["chat_id"] == "chat"
+    row = client.get(f"/api/projects/{project}/comment-mentions").json()["mentions"][0]
+    assert row["target_name"] == expected

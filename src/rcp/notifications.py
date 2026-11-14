@@ -61,7 +61,9 @@ def _notification(
     created_at: str | None = None,
 ) -> dict[str, object]:
     identity = json.dumps([project.project_id, target, kind, item_id, occurrence])
-    route = "episode" if kind.startswith("episode_") else kind
+    route = (
+        "episode" if kind.startswith("episode_") else {"comment_mention": "comment"}.get(kind, kind)
+    )
     return {
         "created_at": created_at,
         "notification_id": hashlib.sha256(identity.encode()).hexdigest()[:32],
@@ -185,6 +187,7 @@ class NotificationSender:
         for project in projects:
             try:
                 self._recheck_bulletin_mentions(project)
+                self._recheck_comment_mentions(project)
                 self._recheck_questions(project)
                 self._recheck_agent_threads(project)
                 self._recheck_episodes(project)
@@ -360,6 +363,19 @@ class NotificationSender:
         )
         self._first_baselines[project_id] = state.revision
         return {"revision": state.revision, "attention_json": json.dumps(attention)}
+
+    def _recheck_comment_mentions(self, project: ProjectRecord) -> None:
+        for mention in self.store.unobserved_comment_mentions(project.project_id):
+            notification = _notification(
+                project,
+                target=mention["graph_target"],
+                kind="comment_mention",
+                item_id=mention["thread_id"],
+                occurrence=mention["user_id"],
+                reason="comment_mention",
+                created_at=mention["created_at"],
+            )
+            self.store.observe_comment_mention(mention["user_id"], notification)
 
     def _recheck_bulletin_mentions(self, project: ProjectRecord) -> None:
         for mention in self.store.unobserved_bulletin_mentions(project.project_id):
@@ -680,7 +696,7 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
-            elif row["kind"] in {"bulletin_mention", "agent_thread"}:
+            elif row["kind"] in {"bulletin_mention", "comment_mention", "agent_thread"}:
                 # Private replies are qualified by the owner/read fence above.
                 unresolved = True
             elif row["kind"] == "consolidation":
