@@ -14,10 +14,16 @@ const panels = [
   ["Runs", <FlaskConical size={14} />],
   ["Artifacts", <Files size={14} />],
 ] as const;
-const tabs = ["Scaling laws for sparse mixtures", "Loop steer", "Paper draft"].map((name, i) => ({
-  id: `p${i}`,
-  name,
-}));
+const tabs = [
+  "Scaling laws for sparse mixtures",
+  "Loop steer",
+  "Paper draft",
+  "Tokenizer ablations",
+  "Reward model audit",
+  "Long-context eval",
+  "Data mixture search",
+  "Distillation sweep",
+].map((name, i) => ({ id: `p${i}`, name }));
 const refs = [
   { kind: "main", name: "main", archived: false },
   {
@@ -32,6 +38,7 @@ const refs = [
 
 function Header() {
   const [panel, setPanel] = useState("Runs");
+  const [active, setActive] = useState(tabs[tabs.length - 1].id);
   const current = panels.find(([label]) => label === panel)!;
   return (
     <header className="project-header">
@@ -54,8 +61,8 @@ function Header() {
         </PanelPicker>
         <ProjectDock
           tabs={tabs}
-          activeProjectId="p0"
-          onActivate={() => {}}
+          activeProjectId={active}
+          onActivate={setActive}
           onClose={() => {}}
           onNew={() => {}}
         />

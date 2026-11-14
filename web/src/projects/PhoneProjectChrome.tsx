@@ -48,7 +48,6 @@ export function PhoneProjectBar({
   menu: ReactNode;
 }) {
   const projects = usePanel();
-  const more = usePanel();
   return (
     <header className={`phone-project-bar${hasDraft ? " has-draft" : ""}`}>
       <button className="icon-button phone-bar-back" aria-label="All projects" onClick={onBack}>
@@ -78,31 +77,39 @@ export function PhoneProjectBar({
       </div>
       {branchPicker}
       {hasDraft && <div className="phone-bar-sync">{sync}</div>}
-      <div className="phone-bar-more" ref={more.root}>
-        <button
-          className="icon-button"
-          aria-label="Project menu"
-          aria-expanded={more.open}
-          aria-controls="phone-project-menu"
-          onClick={() => more.setOpen(!more.open)}
-        >
-          <Ellipsis size={20} />
-        </button>
-        {/* Kept mounted so a control's own popover survives the menu closing. */}
-        <div
-          className="phone-bar-panel phone-project-menu"
-          id="phone-project-menu"
-          hidden={!more.open}
-          onClick={(event) => {
-            const target = event.target as Element;
-            if (target.closest("button") && !target.closest(".landing-identity-menu"))
-              more.setOpen(false);
-          }}
-        >
-          {menu}
-        </div>
-      </div>
+      <ProjectMenu>{menu}</ProjectMenu>
     </header>
+  );
+}
+
+/** "⋯" and the labelled-row menu of project controls it opens. */
+export function ProjectMenu({ children }: { children: ReactNode }) {
+  const more = usePanel();
+  return (
+    <div className="project-menu" ref={more.root}>
+      <button
+        className="icon-button"
+        aria-label="Project menu"
+        aria-expanded={more.open}
+        aria-controls="project-menu"
+        onClick={() => more.setOpen(!more.open)}
+      >
+        <Ellipsis size={20} />
+      </button>
+      {/* Kept mounted so a control's own popover survives the menu closing. */}
+      <div
+        className="project-menu-panel"
+        id="project-menu"
+        hidden={!more.open}
+        onClick={(event) => {
+          const target = event.target as Element;
+          if (target.closest("button") && !target.closest(".landing-identity-menu"))
+            more.setOpen(false);
+        }}
+      >
+        {children}
+      </div>
+    </div>
   );
 }
 

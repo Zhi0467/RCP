@@ -36,6 +36,28 @@ test("the one-row header fits its controls and its panel picker drops above the 
       });
       assert.deepEqual(fit, { oneRow: true, picker: true, view: true, newTab: true }, `${width}px`);
 
+      const strip = page.locator(".project-header .project-dock-scroll");
+      const activeShown = () =>
+        strip.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const tab = element.querySelector(".project-dock-tab.active").getBoundingClientRect();
+          return tab.left >= box.left - 1 && tab.right <= box.right + 1;
+        });
+      assert.equal(
+        await strip.evaluate((element) => element.scrollWidth > element.clientWidth),
+        true,
+      );
+      assert.equal(
+        await activeShown(),
+        true,
+        `${width}px: the last, active tab is scrolled into view`,
+      );
+      await strip.evaluate((element) => (element.scrollLeft = 0));
+      await page.locator(".project-dock-select").first().click();
+      await strip.evaluate((element) => (element.scrollLeft = element.scrollWidth));
+      await page.locator(".project-dock-select").filter({ hasText: "Paper draft" }).click();
+      assert.equal(await activeShown(), true, `${width}px`);
+
       const trigger = page.locator(".panel-picker-trigger");
       const menu = page.locator(".panel-picker-menu");
       await trigger.hover();

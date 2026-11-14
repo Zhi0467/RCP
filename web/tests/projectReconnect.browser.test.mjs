@@ -963,6 +963,49 @@ test("a loaded index stays on screen while a quick return refreshes it", async (
   state.projectGate.resolve();
 });
 
+for (const width of [600, 768, 900, 1280]) {
+  test(`the desktop header stays one row with many projects open at ${width}px`, async (t) => {
+    const { page, errors } = await openedShell(t, { viewport: { width, height: 700 } });
+    for (const id of ["second", "third", "fourth", "fifth", "sixth"]) {
+      await page.evaluate((next) => (window.location.hash = `/projects/${next}`), id);
+      await page
+        .locator(".project-dock-tab.active .project-dock-select")
+        .filter({ hasText: `(${id})` })
+        .waitFor();
+    }
+    const layout = await page.locator(".project-header").evaluate((header) => {
+      const box = (selector) => header.querySelector(selector).getBoundingClientRect();
+      const active = box(".project-dock-tab.active");
+      const strip = box(".project-dock-scroll");
+      return {
+        oneRow: header.getBoundingClientRect().height <= 56,
+        navigationClear:
+          box(".project-header-navigation").right <= box(".project-header-actions").left,
+        actionsInside: box(".project-header-actions").right <= window.innerWidth,
+        activeShown: active.left >= strip.left - 1 && active.right <= strip.right + 1,
+        newTab: box(".project-dock-new").right <= box(".project-header-navigation").right,
+      };
+    });
+    assert.deepEqual(layout, {
+      oneRow: true,
+      navigationClear: true,
+      actionsInside: true,
+      activeShown: true,
+      newTab: true,
+    });
+    const menu = page.getByRole("button", { name: "Project menu", exact: true });
+    assert.equal(await menu.count(), width <= 920 ? 1 : 0);
+    if (width <= 920) {
+      await menu.click();
+      await page.locator("#project-menu").getByRole("button", { name: "Auto-research" }).waitFor();
+    }
+    assert.deepEqual(
+      errors.filter((message) => !message.includes("Failed to load resource")),
+      [],
+    );
+  });
+}
+
 test("switching project tabs returns to the panel each project was left on", async (t) => {
   const { page, errors } = await openedShell(t);
   const current = async (name) => (await panelTab(page, name)).getAttribute("aria-current");

@@ -249,8 +249,8 @@ import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
 import { PanelPicker } from "./projects/PanelPicker";
 import { ProjectDock } from "./projects/ProjectDock";
-import { PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
-import { useNarrowViewport } from "./ui/useNarrowViewport";
+import { PhoneProjectBar, ProjectMenu, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { TABLET_MAX_WIDTH_PX, useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
@@ -1011,6 +1011,7 @@ function MemberApp({
   );
   const appearance = useTheme();
   const phone = useNarrowViewport();
+  const compactHeader = useNarrowViewport(TABLET_MAX_WIDTH_PX);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
@@ -4875,7 +4876,7 @@ function MemberApp({
         <Settings size={16} />
       </button>
       <LandingIdentityMenu
-        compact={!phone}
+        compact={!compactHeader}
         identity={actorIdentity}
         identityError={actorIdentityError}
         onRequestName={requestActorName}
@@ -5023,6 +5024,13 @@ function MemberApp({
     onLayout: changeView,
     onTrustView: changeTrustView,
   };
+  const projectMenu = (
+    <>
+      {showTrustFilter && <ViewPicker inline {...viewChoice} />}
+      {autoResearchButton}
+      {projectUtilities}
+    </>
+  );
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -5092,13 +5100,7 @@ function MemberApp({
           onBack={returnToProjects}
           dock={projectDock}
           sync={syncControls}
-          menu={
-            <>
-              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
-              {autoResearchButton}
-              {projectUtilities}
-            </>
-          }
+          menu={projectMenu}
         />
       )}
       {!phone && (
@@ -5121,7 +5123,7 @@ function MemberApp({
           </div>
           <div className="project-header-actions">
             <div className="project-header-group project-ref-group">
-              {showTrustFilter && <ViewPicker {...viewChoice} />}
+              {!compactHeader && showTrustFilter && <ViewPicker {...viewChoice} />}
               {branchPicker}
             </div>
             <div
@@ -5130,15 +5132,19 @@ function MemberApp({
               aria-label="Project actions"
             >
               {syncControls}
-              {autoResearchButton}
+              {!compactHeader && autoResearchButton}
             </div>
-            <div
-              className="project-header-group project-utility-group"
-              role="group"
-              aria-label="Project utilities"
-            >
-              {projectUtilities}
-            </div>
+            {compactHeader ? (
+              <ProjectMenu>{projectMenu}</ProjectMenu>
+            ) : (
+              <div
+                className="project-header-group project-utility-group"
+                role="group"
+                aria-label="Project utilities"
+              >
+                {projectUtilities}
+              </div>
+            )}
           </div>
         </header>
       )}

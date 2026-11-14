@@ -1,5 +1,6 @@
 import type { ProjectSyncHealth } from "../core/refreshScheduler";
 import { Plus, X } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { ProjectTab } from "./projectTabs";
 
 interface Props {
@@ -21,10 +22,16 @@ export function ProjectDock({
   className = "",
   sync,
 }: Props) {
+  const strip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    strip.current
+      ?.querySelector(".project-dock-tab.active")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeProjectId, tabs.length]);
   if (tabs.length === 0) return null;
   return (
     <nav className={`project-dock ${className}`.trim()} aria-label="Open projects">
-      <div className="project-dock-scroll">
+      <div className="project-dock-scroll" ref={strip}>
         {tabs.map((tab) => {
           const active = tab.id === activeProjectId;
           const health = sync?.get(tab.id);

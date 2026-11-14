@@ -314,6 +314,7 @@
   display: flex;
   flex: 0 1 620px;
   max-width: 620px;
+  min-width: 112px;
 }
 .project-header-actions {
   align-items: center;
@@ -346,14 +347,20 @@
   flex: 0 1 auto;
   gap: 2px;
   min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
   padding: 0 4px;
+  scrollbar-width: none;
   width: auto;
+}
+.project-header .project-dock-scroll::-webkit-scrollbar {
+  display: none;
 }
 .project-header .project-dock-tab,
 .project-header .project-dock-tab.active {
   flex: 0 1 200px;
   max-width: 220px;
-  min-width: 72px;
+  min-width: 96px;
 }
 .project-header .project-dock-select {
   font-size: var(--type-sm);
@@ -405,6 +412,95 @@
   color: var(--ink);
 }
 
+.project-menu {
+  flex: none;
+  position: relative;
+}
+.project-menu > .icon-button {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.project-menu-panel {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  max-height: calc(100dvh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: 280px;
+  z-index: 40;
+}
+/* Each control in the menu is a full row, named by its own accessible label. */
+.project-menu-panel:not([hidden]) {
+  display: grid;
+  gap: 2px;
+}
+.project-menu-panel > .button,
+.project-menu-panel > .icon-button {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--ink);
+  font-size: var(--type-sm);
+  gap: 12px;
+  justify-content: flex-start;
+  padding: 0 12px;
+  width: 100%;
+}
+.project-menu-panel > .icon-button::after {
+  content: attr(aria-label);
+}
+.project-menu-panel .auto-research-label {
+  display: inline;
+}
+.project-menu-panel > .view-picker.inline {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+}
+.project-menu-panel > .view-picker.inline .segmented {
+  display: flex;
+  flex: 1;
+}
+.project-menu-panel > .view-picker.inline .segmented button {
+  flex: 1;
+  min-height: 36px;
+  padding: 0 6px;
+}
+/* The account row is a labelled trigger, and its panel opens in the menu's
+   flow rather than floating off the menu's scroll box. */
+.project-menu-panel > .landing-identity-menu {
+  margin: 4px 8px;
+}
+.project-menu-panel .landing-identity-panel {
+  margin-top: 8px;
+  position: static;
+  width: auto;
+}
+/* Menu rows are plain, not raised theme buttons; the :root prefix outranks
+   the theme's own relief. */
+:root
+  :is(
+    .project-menu > .icon-button,
+    .project-menu-panel > .button,
+    .project-menu-panel > .icon-button,
+    .project-menu-panel > .icon-button.primary
+  ) {
+  background: transparent;
+  background-image: none;
+  box-shadow: none;
+  color: var(--ink);
+}
+:root :is(.project-menu-panel > .button, .project-menu-panel > .icon-button):active {
+  background: var(--paper-deep);
+}
 .panel-picker {
   flex: none;
   position: relative;

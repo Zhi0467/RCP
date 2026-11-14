@@ -271,8 +271,7 @@
     color: var(--muted);
     flex: none;
   }
-  .phone-bar-sync,
-  .phone-bar-more {
+  .phone-bar-sync {
     flex: none;
   }
   .phone-bar-sync .header-sync-side {
@@ -285,12 +284,14 @@
     min-height: 36px;
     padding: 0 12px;
   }
-  .phone-bar-more > .icon-button {
-    background: transparent;
-    border: 0;
-    box-shadow: none;
+  .phone-project-bar .project-menu {
+    position: static;
   }
-  .phone-bar-panel {
+  .phone-project-bar .project-menu-panel {
+    width: auto;
+  }
+  .phone-bar-panel,
+  .phone-project-bar .project-menu-panel {
     background: var(--sheet);
     border: 1px solid var(--line-strong);
     border-radius: 12px;
@@ -315,55 +316,6 @@
   .phone-project-dock .project-dock-tab {
     max-width: none;
     width: 100%;
-  }
-  /* Each control in the menu is a full row, named by its own accessible label. */
-  .phone-project-menu:not([hidden]) {
-    display: grid;
-    gap: 2px;
-  }
-  .phone-project-menu > .button,
-  .phone-project-menu > .icon-button {
-    background: transparent;
-    border: 0;
-    box-shadow: none;
-    color: var(--ink);
-    font-size: var(--type-sm);
-    gap: 12px;
-    justify-content: flex-start;
-    padding: 0 12px;
-    width: 100%;
-  }
-  .phone-project-menu > .icon-button::after {
-    content: attr(aria-label);
-  }
-  .phone-project-menu .auto-research-label {
-    display: inline;
-  }
-  /* Research's view picker lives in the menu, since the tab strip is gone. */
-  .phone-project-menu > .view-picker.inline {
-    display: grid;
-    gap: 8px;
-    margin: 0;
-    padding: 8px 12px;
-  }
-  .phone-project-menu > .view-picker.inline .segmented {
-    display: flex;
-    flex: 1;
-  }
-  .phone-project-menu > .view-picker.inline .segmented button {
-    flex: 1;
-    min-height: 36px;
-    padding: 0 6px;
-  }
-  /* The account row is a labelled trigger, and its panel opens in the menu's
-     flow rather than floating off the menu's scroll box. */
-  .phone-project-menu > .landing-identity-menu {
-    margin: 4px 8px;
-  }
-  .phone-project-menu .landing-identity-panel {
-    margin-top: 8px;
-    position: static;
-    width: auto;
   }
   .phone-tab-bar {
     background: var(--surface);
@@ -448,21 +400,11 @@
   }
   /* Bar and menu controls are plain rows, not raised theme buttons; the
      :root prefix outranks the theme's own relief. */
-  :root
-    :is(
-      .phone-bar-back,
-      .phone-bar-more > .icon-button,
-      .phone-project-menu > .button,
-      .phone-project-menu > .icon-button,
-      .phone-project-menu > .icon-button.primary
-    ) {
+  :root :is(.phone-bar-back, .project-menu > .icon-button) {
     background: transparent;
     background-image: none;
     box-shadow: none;
     color: var(--ink);
-  }
-  :root :is(.phone-project-menu > .button, .phone-project-menu > .icon-button):active {
-    background: var(--paper-deep);
   }
   /* The Overview revision is one small line, not a display number. */
   .overview-page > .overview-heading {

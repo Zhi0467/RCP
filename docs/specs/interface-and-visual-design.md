@@ -107,8 +107,11 @@ one column of every panel with its icon and badge, the current one highlighted;
 choosing one or Escape closes it. Inbox's count also shows on the picker
 while another panel is open.
 Project tabs look like browser tabs: the active one joins the page below and
-the others recede. Each has a close control. Tabs shrink before the right-side
-controls do, and below 920px Auto-research is icon-only.
+the others recede. Each has a close control. Tabs shrink to a readable minimum,
+then the strip scrolls sideways without a scrollbar, and the active tab scrolls
+into view. At widths <=920px the header keeps Back, the panel picker, tabs, the
+branch picker, and Sync, and moves View, Auto-research, and the utilities into
+the same labelled-row ⋯ menu phones use.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.

@@ -2544,11 +2544,11 @@ button.agent-provider-label {
     gap: 10px;
     padding: 0 10px 0 14px;
   }
+  .project-ref-group .branch-picker-trigger > span:first-of-type {
+    max-width: 120px;
+  }
   .project-header-actions {
     gap: 10px;
-  }
-  .project-header .auto-research-label {
-    display: none;
   }
   .project-header-group {
     gap: 5px;
