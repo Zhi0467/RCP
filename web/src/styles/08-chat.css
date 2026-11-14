@@ -255,8 +255,7 @@
   --chat-accent: var(--forest);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
-.chat-dock.paper-coach,
-.paper-coach-comment {
+.chat-dock.paper-coach {
   --chat-accent: var(--plum);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
 }

@@ -12,7 +12,6 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
-import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import type {
   AgentTask,
@@ -56,7 +55,6 @@ import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
 import { previewSourceSpot, type PreviewSourceSpot } from "./previewComments";
-import { AnswerCommentLayers, useAnswerComments } from "../chat/answerComments";
 import { usePaperComments } from "./PaperComments";
 import type { SendThreads } from "../comments/react/useComments";
 
@@ -159,51 +157,27 @@ export function PaperWorkspace({
     retry: () => Promise<void>;
   } | null>(null);
   const [resolving, setResolving] = useState(false);
-  // The coach's send state and transcript comments live here: its failures show on
+  // The coach's send state lives here: its failures show on
   // the Coach segment while the coach is hidden.
   const [coachSubmitting, setCoachSubmitting] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
   const coachTranscript = useRef<HTMLDivElement>(null);
   const coachMessage = useRef<HTMLTextAreaElement>(null);
   const previewPane = useRef<HTMLDivElement>(null);
-  const comments = useAnswerComments({
-    // Kept for this tab, as chat keeps its comments, so a reload keeps the waiting ones.
-    storageKey: memberDraftKey(
-      identity?.user.user_id ?? null,
-      `paper-coach-annotations:${encodeURIComponent(project.id)}`,
-    ),
-    enabled: true,
-    busy: coachSubmitting,
-    sources: [],
-    message: coachMessage,
-    onError: setCoachError,
-  });
   /** The Coach composer's sender, which Paper threads ride; the coach sets it while mounted. */
   const coachThreads = useRef<SendThreads | null>(null);
   const sendThreads = useCallback<SendThreads>((ids, key) => {
     const send = coachThreads.current;
     return send ? send(ids, key) : Promise.reject(new Error("The coach is not ready."));
   }, []);
-  const waiting = comments.annotations.length;
-  // The Coach segment carries the waiting comments' count and the coach's failure.
-  const segmentLabel = (panel: "write" | "preview" | "coach" | "refs" | "reference") => (
-    <>
-      {panel[0].toUpperCase() + panel.slice(1)}
-      {panel === "coach" && waiting > 0 && (
-        <>
-          <span className="paper-comment-count" aria-hidden="true">
-            {waiting}
-          </span>
-          <span className="visually-hidden">, {waiting} waiting</span>
-        </>
-      )}
-    </>
-  );
+  // The Coach segment carries the coach's failure.
+  const segmentLabel = (panel: "write" | "preview" | "coach" | "refs" | "reference") =>
+    panel[0].toUpperCase() + panel.slice(1);
   const segmentMark = (panel: "write" | "preview" | "coach" | "refs" | "reference") =>
     panel === "coach"
       ? {
           className: coachError ? "paper-coach-segment paper-failure" : "paper-coach-segment",
-          title: coachError ?? (waiting > 0 ? "Comments waiting for Coach" : undefined),
+          title: coachError ?? undefined,
         }
       : {};
   const changeFeed = usePaperChanges(
@@ -819,7 +793,6 @@ export function PaperWorkspace({
             }}
             onLocate={(change) => locate(changeFocus(change))}
             toolbar={(phone ? view : right) === "coach" ? panelBar : null}
-            comments={comments}
             submitting={coachSubmitting}
             setSubmitting={setCoachSubmitting}
             error={coachError}
@@ -832,7 +805,6 @@ export function PaperWorkspace({
           />
         </div>
       </aside>
-      <AnswerCommentLayers comments={comments} className="paper-coach-comment" />
       {paperComments.layers}
       {history && tree && (
         <PaperHistory

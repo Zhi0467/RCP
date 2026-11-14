@@ -23,6 +23,8 @@ import {
 import { formatBytes } from "../chat/composerAttachments";
 import type { AnswerComments } from "../chat/answerComments";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
+import type { CommentThread } from "../comments/types.ts";
+import type { PickInlineThread } from "../artifacts/InlineArtifactPins";
 import { ReferenceEmbed, resolveReference } from "./ReferenceEmbed";
 
 export interface InlineComments {
@@ -33,6 +35,10 @@ export interface InlineComments {
   ): void;
   cancel(clear: () => void): void;
   versionChanged(artifact: AgentArtifactDescriptor): void;
+  watch?(artifactId: string): () => void;
+  threads?(artifactId: string): readonly CommentThread[];
+  selectedThread?: string | null;
+  pickThread?: PickInlineThread;
 }
 
 export function stagedInlineComments(
@@ -470,6 +476,10 @@ export function useAgentWindowArtifacts({
         onSelection={(event) => artifact && inlineComments?.open(taskId, artifact, event)}
         onSelectionCancel={(clear) => inlineComments?.cancel(clear)}
         onVersionChange={() => artifact && inlineComments?.versionChanged(artifact)}
+        watchThreads={inlineComments?.watch}
+        threads={artifact ? inlineComments?.threads?.(artifact.artifact_id) : undefined}
+        selectedThread={inlineComments?.selectedThread}
+        onPickThread={inlineComments?.pickThread}
       />
     );
   };

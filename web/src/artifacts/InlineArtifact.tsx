@@ -9,6 +9,10 @@ import type { AgentArtifactDescriptor } from "../core/types";
 import { INLINE_ARTIFACT_HEIGHT, inlineViewerUrl, type InlineSelection } from "./inlineArtifacts";
 import { useInlineShell } from "./useInlineShell";
 import { storedArtifactViewerUrl } from "./artifactViewerRequests";
+import type { CommentThread } from "../comments/types.ts";
+import { useInlineArtifactPins, type PickInlineThread } from "./InlineArtifactPins";
+
+const NO_THREADS: readonly CommentThread[] = [];
 
 function useSpaceArtifactWatermark(
   projectId: string | null,
@@ -61,6 +65,10 @@ interface InlineArtifactProps {
   onSelectionCancel: (clear: () => void) => void;
   /** A new version replaced the frame, so selections drawn on the old one are stale. */
   onVersionChange: () => void;
+  watchThreads?: (artifactId: string) => () => void;
+  threads?: readonly CommentThread[];
+  selectedThread?: string | null;
+  onPickThread?: PickInlineThread;
 }
 
 /** One artifact shown in place inside a reply: the viewer shell in a fixed-height frame.
@@ -83,6 +91,10 @@ export function InlineArtifact({
   onSelection,
   onSelectionCancel,
   onVersionChange,
+  watchThreads,
+  threads = NO_THREADS,
+  selectedThread = null,
+  onPickThread,
 }: InlineArtifactProps) {
   const host = useRef<HTMLSpanElement>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -154,6 +166,11 @@ export function InlineArtifact({
   // Derived, so a refresh that withdraws commenting (another edit reserving the
   // artifact) also ends comment mode, with no Done left to press.
   const commentMode = selectable && (commentChoice ?? true);
+  const pins = useInlineArtifactPins(frame, threads);
+  const watch = useRef(watchThreads);
+  watch.current = watchThreads;
+  const watchedId = artifact?.artifact_id;
+  useEffect(() => (watchedId ? watch.current?.(watchedId) : undefined), [watchedId]);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: onSelectionCancel,
@@ -209,7 +226,10 @@ export function InlineArtifact({
             className="chat-inline-artifact-frame"
             src={source}
             title={title}
-            onLoad={shell.onLoad}
+            onLoad={() => {
+              shell.onLoad();
+              pins.onLoad();
+            }}
           />
         ) : (
           error && (
@@ -306,6 +326,7 @@ export function InlineArtifact({
           </strong>
         )}
       </span>
+      {onPickThread && pins.pins(selectedThread, onPickThread)}
     </span>
   );
 }

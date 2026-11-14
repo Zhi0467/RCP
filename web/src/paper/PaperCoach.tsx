@@ -37,8 +37,6 @@ import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { ProviderSwitchHint } from "../chat/ProviderSwitchHint";
 import { AgentStatusStrip } from "../chat/AgentStatusStrip";
 import { useComposerAttachments } from "../chat/composerAttachments";
-import type { AnswerComments } from "../chat/answerComments";
-import { assembleChatTurn } from "../chat/chatInput";
 import { latestPersistedChatConfig, type StartConversationTask } from "../chat/chatWorkspace";
 import type { SendThreads } from "../comments/react/useComments";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
@@ -72,7 +70,6 @@ export function PaperCoach({
   onUndoAll,
   onLocate,
   toolbar,
-  comments,
   submitting,
   setSubmitting,
   error,
@@ -94,7 +91,6 @@ export function PaperCoach({
   /** Where History and New chat sit: the Paper view row, while the coach shows. */
   toolbar: HTMLElement | null;
   /** Comments on coach answers, staged for the next turn; the workspace owns them. */
-  comments: AnswerComments;
   submitting: boolean;
   setSubmitting: (value: boolean) => void;
   error: string | null;
@@ -133,7 +129,7 @@ export function PaperCoach({
   const [applyDirectly, setApplyDirectly] = useState(() => readPref(modeKey) === "apply");
   const browserKey = `rcp:paper-coach-browser:${apiBase}`;
   const [browserOn, setBrowserOn] = useState(() => readPref(browserKey) !== "off");
-  const text = assembleChatTurn(message, comments.annotations);
+  const text = message.trim();
   const composer = useComposerAttachments({
     project,
     referencesKey: null,
@@ -273,10 +269,9 @@ export function PaperCoach({
     input: textarea,
     onComplete: () => setError(null),
   });
-  /** Sends the typed text, staged comments, and any Paper threads: a steer while a
+  /** Sends the typed text and any Paper threads: a steer while a
    *  turn takes one, else a new turn. `key` makes a retried thread send repeat itself. */
   const deliver = async (threadIds: readonly string[] = [], key?: string) => {
-    const sent = comments.annotations;
     const threads = threadIds.length ? { comment_thread_ids: [...threadIds] } : {};
     scroll.current?.follow();
     if (steeringTask) {
@@ -294,7 +289,6 @@ export function PaperCoach({
       ]);
       setMessage("");
       skills.reset();
-      comments.clear(sent);
       return;
     }
     const task = await onStartTask(
@@ -319,13 +313,11 @@ export function PaperCoach({
     setMessage("");
     skills.reset();
     composer.clear();
-    comments.clear(sent);
   };
   const send = async () => {
     if (steeringTask) {
       if (!text || composer.staged || submitting || !steeringTask.steer_turn_id) return;
     } else if (!text || composer.unready || activeTask || submitting) return;
-    if (!comments.requireComplete()) return;
     if (!steeringTask) composer.closeMenu();
     setSubmitting(true);
     setError(null);
@@ -348,7 +340,6 @@ export function PaperCoach({
     if (steeringTask && composer.staged)
       throw new Error("Staged files go with the next turn; send them first.");
     if (!steeringTask && composer.unready) throw new Error("Files are still uploading.");
-    if (!comments.requireComplete()) throw new Error("Finish the waiting coach comment first.");
     setSubmitting(true);
     setError(null);
     try {
@@ -538,7 +529,6 @@ export function PaperCoach({
           />
         }
         composer={composer}
-        comments={comments}
         skills={skills.props}
         addDisabled={composer.full || composer.preparing || submitting}
         className={error ? "paper-failure" : undefined}
@@ -609,7 +599,6 @@ export function PaperCoach({
               }
               disabled={
                 !text ||
-                !comments.complete ||
                 submitting ||
                 (steeringTask
                   ? composer.staged

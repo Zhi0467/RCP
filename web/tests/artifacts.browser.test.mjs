@@ -317,6 +317,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     }
     // A refresh reprojects the existing rows after entering the desktop runtime.
     await artifactsChanged(page, "desktop");
+    await page.getByRole("link", { name: "Open pdf.dat", exact: true }).click();
+    await page
+      .locator('.artifact-viewer iframe[src="/api/projects/project/artifacts/pdf/viewer"]')
+      .waitFor();
+    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     // Every action sits at the row's right end, whatever the title length.
     const plot = page.locator(".artifact-entry").filter({ hasText: "Saved plot" });
     const [download, openBox, rowBox] = await Promise.all([
@@ -337,6 +343,10 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       0,
     );
     // A changed return entry withholds cached rows until its current read lands.
+    await Promise.all([
+      page.waitForResponse("**/api/projects/project/artifacts"),
+      artifactsChanged(page, "before-return"),
+    ]);
     const refreshStarted = Promise.withResolvers();
     const refreshResponse = Promise.withResolvers();
     await page.route("**/api/projects/project/artifacts", async (route) => {
@@ -355,12 +365,6 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     refreshResponse.resolve();
     await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
     assert.equal(await page.locator('.artifacts-view[aria-busy="true"]').count(), 0);
-    await page.getByRole("link", { name: "Open pdf.dat", exact: true }).click();
-    await page
-      .locator('.artifact-viewer iframe[src="/api/projects/project/artifacts/pdf/viewer"]')
-      .waitFor();
-    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
-    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
@@ -979,30 +983,38 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     await page.locator(".artifact-viewer iframe").waitFor();
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     const created = [];
-    await page.route("**/api/projects/project/comment-threads", (route) => {
+    let saved = null;
+    await page.route("**/api/projects/project/comment-threads*", (route) => {
+      if (route.request().method() === "GET")
+        return route.fulfill({ json: { threads: saved ? [saved] : [] } });
       const body = route.request().postDataJSON();
       created.push(body);
-      return route.fulfill({
-        json: {
-          thread: {
+      saved = {
+        thread_id: "inline-thread",
+        project_id: "project",
+        target_kind: "artifact",
+        target_id: "plot",
+        graph_target: "main",
+        drawn_version: body.drawn_version,
+        anchor: body.anchor,
+        state: "open",
+        created_by: "member",
+        created_at: "2026-09-02T12:02:00Z",
+        closed_by: null,
+        closed_at: null,
+        sent_operation_id: null,
+        can_send: true,
+        posts: [
+          {
+            post_id: "post",
             thread_id: "inline-thread",
-            project_id: "project",
-            target_kind: "artifact",
-            target_id: "plot",
-            graph_target: "main",
-            drawn_version: body.drawn_version,
-            anchor: body.anchor,
-            state: "open",
-            created_by: "member",
+            author: { user_id: "member", display_name: "Member" },
+            text: body.text,
             created_at: "2026-09-02T12:02:00Z",
-            closed_by: null,
-            closed_at: null,
-            sent_operation_id: null,
-            can_send: true,
-            posts: [],
           },
-        },
-      });
+        ],
+      };
+      return route.fulfill({ json: { thread: saved } });
     });
     const live = () =>
       page.frames().find((frame) => !frame.isDetached() && frame.url().includes("error-content"));
@@ -1027,6 +1039,19 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.equal(sent.request.chat_id, "error-chat");
     assert.equal(sent.request.artifact_context, undefined);
     await composer.waitFor({ state: "detached" });
+    const pin = page.getByRole("button", { name: "Comment 1", exact: true });
+    await pin.waitFor();
+    const [pinBox, drawnBox, frameBox] = await Promise.all([
+      pin.boundingBox(),
+      author.locator("#drawn").boundingBox(),
+      embed.locator("iframe").boundingBox(),
+    ]);
+    const pinCenter = { x: pinBox.x + pinBox.width / 2, y: pinBox.y + pinBox.height / 2 };
+    assert.ok(pinCenter.x > drawnBox.x && pinCenter.x < drawnBox.x + 30);
+    assert.ok(Math.abs(pinCenter.y - (drawnBox.y + drawnBox.height)) < 4);
+    assert.ok(pinCenter.y < frameBox.y + frameBox.height);
+    await pin.click();
+    await page.getByRole("dialog", { name: "Comment" }).getByText("Make it bigger").waitFor();
     assert.ok(
       errors.every((error) => error === "inline-failure"),
       JSON.stringify(errors),
