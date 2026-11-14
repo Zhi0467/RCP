@@ -217,8 +217,9 @@ def test_temp_policy_uses_execution_host_and_reports_gap(tmp_path, monkeypatch):
 
     outside = replace(request(tmp_path), cwd=Path("/work"))
     turn = AGY.runtime(AGY.legacy_runtime_id).turn(outside)
-    monkeypatch.chdir(tmp_path)
-    _agy_host_policy(turn.command, (), probe=False)
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "cwd", classmethod(lambda cls: Path("/work")))
+        _agy_host_policy(turn.command, (), probe=False)
     policy = json.loads(turn.command[turn.command.index("--settings") + 1])
     assert {"write_file(/tmp)", "write_file(/host-temp)"} <= set(policy["permissions"]["deny"])
     monkeypatch.setenv("TMPDIR", str(tmp_path.parent))
@@ -227,6 +228,7 @@ def test_temp_policy_uses_execution_host_and_reports_gap(tmp_path, monkeypatch):
         _wrapped(turn.command), cwd=tmp_path, capture_output=True, text=True, check=True
     )
     assert result.stderr
+    monkeypatch.chdir(tmp_path)
     _agy_host_policy(turn.command, (), probe=False)
     policy = json.loads(turn.command[turn.command.index("--settings") + 1])
     assert f"write_file({tmp_path.parent.resolve()})" not in policy["permissions"]["deny"]
