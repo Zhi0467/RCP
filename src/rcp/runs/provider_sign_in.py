@@ -453,6 +453,8 @@ class ProviderSignInRunner:
             if not code.strip() or "\n" in code or "\r" in code:
                 raise ProviderLoginRefused("Invalid sign-in code.", status_code=422)
             process, login = entry
+            if process.poll() is not None:
+                raise ProviderLoginRefused("This sign-in is not awaiting a code.")
             status = status.model_copy(update={"awaiting_code": False})
             self._sign_ins[attempt_id] = status
             _write(process, login.code_input(code))

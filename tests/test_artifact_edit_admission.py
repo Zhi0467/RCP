@@ -886,7 +886,7 @@ def test_tool_preserving_provider_revoking_edit_is_recorded_fresh(
     availability = artifact_edit_availability(
         store, app.state.service, store.artifact(artifact.artifact_id)
     )
-    assert availability.can_comment and not availability.fresh_session_required
+    assert availability.can_comment and availability.fresh_session_required
     request = _request(task, artifact).model_copy(
         update={
             "fork_session_id": "old-session",

@@ -90,8 +90,8 @@ def artifact_edit_availability(
             )
         )
     except (KeyError, OSError, ValueError) as exc:
-        return ArtifactEditAvailability(False, str(exc), fresh)
-    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh)
+        return ArtifactEditAvailability(False, str(exc), fresh or provider_fresh)
+    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh or provider_fresh)
 
 
 def _origin_keeps_tools(origin: AgentTaskRecord) -> bool:
@@ -398,6 +398,8 @@ def admit_artifact_edit(
                 "run_on": service.manifest.base_machine,
             }
         )
+    if provider_fresh and not admitted.run_on:
+        admitted = admitted.model_copy(update={"run_on": service.manifest.base_machine})
     resolved = service.resolve_skill_request(admitted)
     assert isinstance(resolved, RunRequest)
     return resolved

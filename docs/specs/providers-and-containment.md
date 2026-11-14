@@ -672,8 +672,9 @@ shell; the `.agents` deny keeps an agent from planting a stage hook.
 
 Every agy process RCP starts runs through one host wrapper, shipped from
 `providers/agy/remote.py`: it puts failing `open`, `xdg-open` and
-`sensible-browser` shims first on `PATH` and in `BROWSER`, writes the staged
-agent and the host's temp denies, then execs agy. A signed-out agy never opens
+`sensible-browser` shims first on `PATH` and in `BROWSER`, then execs agy. For
+turns and the startup probe it also writes the staged agent and adds the host's
+temp, `provider-homes` and shim-folder denies. A signed-out agy never opens
 a browser on any desktop.
 
 An agy conversation keeps the tools it started with when resumed under another

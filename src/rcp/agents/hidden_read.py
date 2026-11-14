@@ -131,10 +131,17 @@ def hidden_read_defaults(
     if app_data_dir:
         login_homes.append(app_data_dir + "/" + LOGIN_HOMES)
     if login_home_credentials:
+        owners = {pattern.split("/", 1)[0] for pattern in login_home_credentials}
         globs.extend(
             glob.escape(root) + "/" + pattern
             for root in login_homes
             for pattern in login_home_credentials
+        )
+        directories.extend(
+            root + "/" + provider
+            for root in login_homes
+            for provider in PROVIDER_IDS
+            if provider not in owners
         )
     else:
         directories.extend(login_homes)

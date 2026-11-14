@@ -374,6 +374,7 @@ def test_machine_shell_timeout_round_trip_and_refusal(app) -> None:
         {"codex": "121"},
         {"opencode": "2.5"},
         {"claude": "auto"},
+        {"agy": "30"},
         {"unknown": "30"},
         {"unknown": ""},
     ):

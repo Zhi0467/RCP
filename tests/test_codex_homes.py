@@ -332,14 +332,36 @@ def test_legacy_process_environment_defers_migration(tmp_path, monkeypatch, runn
 
     home = tmp_path / "added home"
     output = (
-        f"1234 renamed-provider CODEX_HOME={home} OTHER=value\n"
+        f"1234 1 renamed-provider CODEX_HOME={home} OTHER=value\n"
         if running
-        else "1234 unrelated CODEX_HOME=/different/home\n"
+        else "1234 1 unrelated CODEX_HOME=/different/home\n"
     )
     monkeypatch.setattr(
         subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, "")
     )
     assert inspect_legacy_home(home) is not running
+
+
+def test_wrapping_ancestors_do_not_defer_migration(tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    home = tmp_path / "added home"
+    me, parent, grandparent = os.getpid(), 4001, 4002
+    output = (
+        f"{me} {parent} homes-run CODEX_HOME={home}\n"
+        f"{parent} {grandparent} supervisor CODEX_HOME={home}\n"
+        f"{grandparent} 1 broker CODEX_HOME={home}\n"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, output, "")
+    )
+    assert inspect_legacy_home(home)
+    sibling = output + f"5000 1 other-codex CODEX_HOME={home}\n"
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, sibling, "")
+    )
+    assert not inspect_legacy_home(home)
 
 
 def test_unavailable_process_inspection_defers_migration(tmp_path, monkeypatch):
@@ -360,7 +382,7 @@ def test_process_inspector_does_not_inherit_login_home(tmp_path, monkeypatch):
 
     def run(*args, **kwargs):
         assert "CODEX_HOME" not in kwargs["env"]
-        return subprocess.CompletedProcess(args, 0, "1234 ps OTHER=value\n", "")
+        return subprocess.CompletedProcess(args, 0, "1234 1 ps OTHER=value\n", "")
 
     monkeypatch.setattr(subprocess, "run", run)
     assert inspect_legacy_home(home)

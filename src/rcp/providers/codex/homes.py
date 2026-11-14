@@ -95,7 +95,7 @@ def _legacy_home_idle(home: Path) -> bool:
     """Fail closed for migration when execution-host process inspection is unavailable."""
     try:
         processes = subprocess.run(
-            ["ps", "eww", "-U", str(os.getuid()), "-o", "pid=,command="],
+            ["ps", "eww", "-U", str(os.getuid()), "-o", "pid=,ppid=,command="],
             capture_output=True,
             text=True,
             check=True,
@@ -104,11 +104,16 @@ def _legacy_home_idle(home: Path) -> bool:
         if not processes.stdout.strip():
             return False
         pattern = r"(?:^|\s)CODEX_HOME=" + re.escape(str(home)) + r"(?:\s|$)"
-        for line in processes.stdout.splitlines():
-            fields = line.strip().split(None, 1)
-            if len(fields) != 2 or int(fields[0]) == os.getpid():
+        rows = [line.strip().split(None, 2) for line in processes.stdout.splitlines()]
+        parents = {int(row[0]): int(row[1]) for row in rows if len(row) == 3}
+        lineage, pid = set(), os.getpid()
+        while pid in parents and pid not in lineage:
+            lineage.add(pid)
+            pid = parents[pid]
+        for row in rows:
+            if len(row) != 3 or int(row[0]) in lineage:
                 continue
-            if re.search(pattern, fields[1]):
+            if re.search(pattern, row[2]):
                 return False
         return True
     except (OSError, ValueError, subprocess.SubprocessError):

@@ -36,16 +36,17 @@ def execution(tmp_path, monkeypatch):
     return home, workspace, captured
 
 
-def arguments():
+def arguments(*private: str):
     policy = {"permissions": {"allow": ["read_file(*)"], "ask": [], "deny": []}}
     return [
         "/fake/agy",
+        "--rcp-agy-tools",
+        '["view_file"]',
+        *private,
         "--input-format",
         "stream-json",
         "--output-format",
         "stream-json",
-        "--rcp-agy-tools",
-        '["view_file"]',
         "--agent",
         "rcp-preliminary",
         "--settings",
@@ -95,7 +96,7 @@ def test_wrapper_denies_local_and_remote_provider_homes_without_hidden_scope(exe
 def test_probe_uses_separate_workspace_and_strips_private_option(execution):
     _, workspace, captured = execution
     with pytest.raises(Executed):
-        agy_run(["--", *arguments(), "--rcp-agy-probe"])
+        agy_run(["--", *arguments("--rcp-agy-probe")])
     assert captured["cwd"] != workspace
     assert "--rcp-agy-probe" not in captured["argv"]
     assert not (workspace / ".agents").exists()
@@ -153,3 +154,15 @@ def test_local_wrapper_preserves_provider_pid(tmp_path):
         value = json.loads(stdout)
         assert value["pid"] == process.pid
         assert value["browser"] == str(home / ".rcp" / "agy-browser-shims" / "open")
+
+
+def test_wrapper_honours_private_options_only_beside_the_executable():
+    from rcp.providers.agy.remote import _agy_arguments
+
+    command, tools, probe, _, _ = _agy_arguments(
+        ["--", "agy", "--rcp-agy-tools", "[]", "--add-dir", "--rcp-agy-probe"]
+    )
+    assert command == ["agy", "--add-dir", "--rcp-agy-probe"]
+    assert tools == () and not probe
+    with pytest.raises(ValueError):
+        _agy_arguments(["--", "agy", "--settings", "{}", "--settings", "{}"])

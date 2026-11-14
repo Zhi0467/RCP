@@ -48,12 +48,11 @@ _FILE_TOOLS = (
     "write_to_file",
     "replace_file_content",
     "multi_replace_file_content",
-    "sed_file",
     "notebook_edit",
 )
 _WEB_TOOLS = ("search_web", "read_url_content")
 _SHELL_TOOLS = ("run_command", "command_status", "send_command_input")
-_SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "send_message", "wait")
+_SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wait")
 _WORK = {"work_auto", "orchestrate", "paper_suggest"}
 
 

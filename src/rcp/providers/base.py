@@ -440,6 +440,8 @@ class ProviderProfile:
     def canonical_shell_timeout(self, value: str) -> str:
         """Canonical whole minutes for the machine card's shell timeout."""
 
+        if self.shell_timeout_default_seconds is None:
+            raise ValueError(f"{self.label} has no shell timeout setting")
         value = value.strip()
         if value.isascii() and value.isdecimal():
             minutes = int(value)

@@ -86,8 +86,12 @@ def test_scratch_policy_and_host_staging(tmp_path, capability):
     assert f"write_file({tmp_path}/.agents)" in policy["permissions"]["deny"]
     subprocess.run(_wrapped(command), cwd=tmp_path, check=True, capture_output=True)
     agent = next((tmp_path / ".agents" / "agents").glob("rcp-*.md"))
-    assert agent.exists()
-    assert "run_command" not in agent.read_text()
+    front = dict(
+        line.split(": ", 1) for line in agent.read_text().split("---")[1].strip().splitlines()
+    )
+    assert {"name", "description", "tools"} <= front.keys()
+    assert front["name"] == agent.stem
+    assert "run_command" not in front["tools"]
     assert command == AGY.runtime(AGY.legacy_runtime_id).turn(request(tmp_path, capability)).command
 
 
@@ -226,6 +230,21 @@ def test_temp_policy_uses_execution_host_and_reports_gap(tmp_path, monkeypatch):
     _agy_host_policy(turn.command, (), probe=False)
     policy = json.loads(turn.command[turn.command.index("--settings") + 1])
     assert f"write_file({tmp_path.parent.resolve()})" not in policy["permissions"]["deny"]
+
+
+def test_granted_temp_root_needs_no_deny_and_is_no_gap(tmp_path, monkeypatch, capsys):
+    from rcp.providers.agy.remote import _agy_host_policy
+
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(temp))
+    monkeypatch.chdir(tmp_path)
+    policy = {"permissions": {"allow": [f"write_file({temp})"], "ask": [], "deny": []}}
+    command = ["agy", "--agent", "rcp-x", "--settings", json.dumps(policy)]
+    _agy_host_policy(command, (), probe=False)
+    rendered = json.loads(command[command.index("--settings") + 1])
+    assert f"write_file({temp.resolve()})" not in rendered["permissions"]["deny"]
+    assert capsys.readouterr().err == ""
 
 
 def test_every_profile_command_and_auth_prefix_suppress_browsers(tmp_path):
@@ -394,3 +413,11 @@ def test_refused_action_kinds_are_named():
     )
     assert event.event == "error"
     assert all(action in event.text for action in ("command", "write_file"))
+
+
+def test_staged_tools_are_names_the_custom_agent_registry_accepts():
+    from rcp.providers.agy.profile import _tools
+
+    accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
+    for capability in ("work_auto", "orchestrate", "paper_suggest", "scratch_patch", "discuss"):
+        assert set(_tools(capability, None)) <= accepted

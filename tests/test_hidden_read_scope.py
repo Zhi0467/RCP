@@ -258,6 +258,9 @@ def test_login_homes_are_readable_only_to_their_provider(
 
     assert all(hidden(home / "auth.json") for home in (local, remote, later))
     assert hidden(tmp_path / "data/providers/codex/local/logins/id/codex-home/auth.json")
+    agy_token = ".gemini/antigravity-cli/antigravity-oauth-token"
+    assert hidden(credentials.login_home("agy", str(uuid4())) / agy_token)
+    assert hidden(tmp_path / "home/.rcp/provider-homes/agy" / str(uuid4()) / agy_token)
     if provider == "codex":
         assert not any(hidden(home / "tmp/arg0-linux") for home in (local, remote, later))
         homes = [item for item in scope.hidden_globs if "/provider-homes/" in item]

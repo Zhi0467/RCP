@@ -92,7 +92,11 @@ def _agy_stage_agent(command: list[str], tools: list[str]) -> None:
     directory = Path.cwd() / ".agents" / "agents"
     directory.mkdir(parents=True, exist_ok=True)
     (directory / (name + ".md")).write_text(
-        "---\nname: " + name + "\ntools: " + json.dumps(tools) + "\n---\n",
+        "---\nname: "
+        + name
+        + "\ndescription: RCP launch policy\ntools: "
+        + json.dumps(tools)
+        + "\n---\n",
         encoding="utf-8",
     )
 
@@ -118,17 +122,17 @@ def _agy_host_policy(
     ):
         temporary = Path(directory).resolve()
         rule = f"write_file({directory})"
-        inside = any(
-            Path(root).resolve() == temporary or temporary in Path(root).resolve().parents
-            for root in roots
-        )
-        if inside:
+        resolved = [Path(root).resolve() for root in roots]
+        granted = any(root == temporary or root in temporary.parents for root in resolved)
+        nested = any(temporary in root.parents for root in resolved)
+        if granted or nested:
             if rule in permissions["deny"]:
                 permissions["deny"].remove(rule)
-            print(
-                "RCP Antigravity containment gap: writable root inside temporary directory",
-                file=sys.stderr,
-            )
+            if nested and not granted:
+                print(
+                    "RCP Antigravity containment gap: writable root inside temporary directory",
+                    file=sys.stderr,
+                )
         elif rule not in permissions["deny"]:
             permissions["deny"].append(rule)
     directories = [Path.home() / ".rcp" / "provider-homes"]
@@ -160,19 +164,20 @@ def _agy_arguments(
         else:
             raise ValueError("Invalid Antigravity wrapper options")
     command = list(arguments[boundary + 1 :])
+    if not command:
+        raise ValueError("Missing Antigravity executable")
     tools: tuple[str, ...] = ()
-    if "--rcp-agy-tools" in command:
-        index = command.index("--rcp-agy-tools")
-        value = json.loads(command[index + 1])
+    if command[1:2] == ["--rcp-agy-tools"]:
+        value = json.loads(command[2])
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             raise ValueError("Invalid Antigravity tool list")
         tools = tuple(value)
-        del command[index : index + 2]
-    probe = "--rcp-agy-probe" in command
+        del command[1:3]
+    probe = command[1:2] == ["--rcp-agy-probe"]
     if probe:
-        command.remove("--rcp-agy-probe")
-    if not command:
-        raise ValueError("Missing Antigravity executable")
+        del command[1]
+    if command.count("--settings") > 1 or command.count("--agent") > 1:
+        raise ValueError("Antigravity launch repeats a policy option")
     return command, tools, probe, data_dir, home
 
 
@@ -182,7 +187,9 @@ def agy_run(arguments: list[str]) -> None:
     environment = dict(os.environ)
     environment.update(agy_browser_environment(Path.home() / ".rcp" / "agy-browser-shims"))
     if probe:
-        os.chdir(tempfile.mkdtemp(prefix="rcp-agy-probe-"))
+        workspace = Path.home() / ".rcp" / "agy-probe"
+        workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chdir(workspace)
     if tools:
         _agy_host_policy(command, tools, probe=probe, data_dir=data_dir)
         _agy_stage_agent(command, list(tools))
