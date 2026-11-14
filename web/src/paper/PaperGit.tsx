@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, GitBranch, Plus, RefreshCw, Unlink, X } from "lucide-react";
+import { Check, Copy, GitBranch, Github, Plus, RefreshCw, Unlink, X } from "lucide-react";
 import { copyText } from "../core/MarkdownCodeBlock";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
@@ -13,6 +13,7 @@ import {
   deployKeyUrl,
   gitPill,
   paperGit,
+  repositoryFromInput,
   validRepository,
   type PaperGitChangedFile,
   type PaperGitFileConflict,
@@ -125,7 +126,15 @@ export function PaperGitPill({ git }: { git: PaperGitState }) {
         aria-label="Paper Git"
         aria-expanded={open}
         data-failed={pill.failed}
-        title={pill.failed ? pill.hover : linked ? status.repository : "Link to GitHub"}
+        title={
+          pill.failed
+            ? pill.hover
+            : linked
+              ? status.repository
+              : status.state === "pending"
+                ? `Finish linking ${status.repository}`
+                : "Link to GitHub"
+        }
         onClick={() => {
           const placement = popoverPlacement(button.current, MENU_WIDTH);
           if (placement) setPosition(placement);
@@ -133,7 +142,7 @@ export function PaperGitPill({ git }: { git: PaperGitState }) {
           else setOpen(true);
         }}
       >
-        <GitBranch size={15} />
+        {linked ? <GitBranch size={15} /> : <Github size={15} />}
         {pill.branch && <span className="paper-git-branch">{pill.branch}</span>}
       </button>
       {open &&
@@ -266,7 +275,8 @@ function BranchMenu({ git, onDone }: { git: PaperGitState; onDone: () => void })
 function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void }) {
   const status = git.status!;
   const { apiBase, busy, failure } = git;
-  const [repository, setRepository] = useState("");
+  const [repositoryInput, setRepositoryInput] = useState("");
+  const repository = repositoryFromInput(repositoryInput);
   const [branch, setBranch] = useState("main");
   const [copied, setCopied] = useState(false);
   return (
@@ -301,12 +311,12 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
         >
           <input
             aria-label="Repository"
-            placeholder="owner/name"
+            placeholder="https://github.com/owner/name"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
-            value={repository}
-            onChange={(event) => setRepository(event.target.value.trim())}
+            value={repositoryInput}
+            onChange={(event) => setRepositoryInput(event.target.value)}
           />
           <input
             aria-label="Branch"
@@ -336,7 +346,7 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
           {!status.key_source && (
             <>
               <a href={deployKeyUrl(status.repository)} target="_blank" rel="noreferrer">
-                Deploy key, with write access
+                Add this key to the repo&apos;s deploy keys with write access. Any name works.
               </a>
               <code className="paper-well paper-git-key">{status.public_key}</code>
             </>

@@ -6,6 +6,7 @@ import {
   deployKeyUrl,
   gitPill,
   paperGit,
+  repositoryFromInput,
   validRepository,
 } from "../src/paper/gitSync.ts";
 
@@ -46,6 +47,21 @@ test("a repository is owner/name with GitHub's characters", () => {
   ])
     assert.equal(validRepository(bad), false);
   assert.equal(deployKeyUrl("lab/paper"), "https://github.com/lab/paper/settings/keys/new");
+});
+test("a pasted GitHub URL becomes owner/name", () => {
+  for (const input of [
+    "lab/paper",
+    " https://github.com/lab/paper ",
+    "https://github.com/lab/paper.git",
+    "http://www.github.com/lab/paper/",
+    "github.com/lab/paper",
+    "git@github.com:lab/paper.git",
+  ])
+    assert.equal(repositoryFromInput(input), "lab/paper");
+  assert.equal(
+    validRepository(repositoryFromInput("https://github.com/lab/paper/tree/main")),
+    false,
+  );
 });
 test("requests reach the project's Git routes and keep a refusal's reason", async (t) => {
   const calls = [];
