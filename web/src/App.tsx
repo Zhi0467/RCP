@@ -233,6 +233,7 @@ import { AutoResearchDialog } from "./experiments/AutoResearchDialog";
 import { AgentTaskInspector } from "./agents/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./graph/AttentionRail";
 import { ConsolidationInbox } from "./projects/ConsolidationInbox";
+import { CommentMentionsInbox } from "./projects/CommentMentionsInbox";
 import {
   consolidationAttentionCount,
   consolidationNeedsRenewal,
@@ -373,13 +374,17 @@ import {
   projectTabShortcut,
 } from "./projects/projectTabs";
 import {
+  commentThreadGraphTarget,
+  commentThreadHash,
   episodeNotificationHash,
   graphNotificationHash,
   initialNotificationLink,
   isNotificationLinkHash,
   parseNotificationLink,
+  type CommentThreadPlace,
   type NotificationLink,
 } from "./core/notificationLinks";
+import { requestCommentThread } from "./core/commentThreadRequest";
 import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
 import {
   pickerMergeRequestBody,
@@ -2156,7 +2161,9 @@ function MemberApp({
   const initialLinkPending = useRef(initialNotificationLink);
   useEffect(() => {
     if (!backendSessionReady) return;
+    let generation = 0;
     const resolve = async () => {
+      const current = ++generation;
       const link = initialLinkPending.current ?? parseNotificationLink(window.location.hash);
       initialLinkPending.current = null;
       if (!link) return;
@@ -2188,14 +2195,44 @@ function MemberApp({
             .catch(() => []),
         ]);
         next = episodeNotificationHash(link, episodes[0] ?? null, entries);
+      } else if (link.kind === "comment") {
+        const projectPath = `/api/projects/${encodeURIComponent(link.projectId)}`;
+        const thread = await api<CommentThreadPlace>(
+          `${projectPath}/comment-threads/${encodeURIComponent(link.itemId)}`,
+        ).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+        if (current !== generation) return;
+        if (thread instanceof Error) {
+          setNotice({ kind: "error", text: thread.message });
+        } else {
+          next = commentThreadHash(link.projectId, thread);
+          requestCommentThread({
+            projectId: link.projectId,
+            targetKind: thread.target_kind,
+            targetId: thread.target_id,
+            threadId: link.itemId,
+          });
+          if (thread.target_kind === "artifact") {
+            const target = commentThreadGraphTarget(thread);
+            setNotificationNode({
+              projectId: link.projectId,
+              target: target.kind === "main" ? "main" : target.branch_id,
+              kind: "artifact",
+              itemId: thread.target_id,
+            });
+          }
+        }
       } else {
         setNotificationNode(link);
       }
+      if (current !== generation) return;
       window.location.replace(next);
     };
     void resolve();
     window.addEventListener("hashchange", resolve);
-    return () => window.removeEventListener("hashchange", resolve);
+    return () => {
+      generation += 1;
+      window.removeEventListener("hashchange", resolve);
+    };
   }, [backendSessionReady]);
   // Each signed-in visit keeps the server's phone record in step with this browser.
   const teamSpace = verifiedHealth?.space_kind === "team";
@@ -5385,6 +5422,7 @@ function MemberApp({
                       consolidationCount={consolidationCount}
                       onSelectNode={openNode}
                     />
+                    <CommentMentionsInbox key={project.id} projectId={project.id} />
                     <ProposalJudgmentSection
                       proposals={pendingProposals}
                       graph={attentionGraph}
