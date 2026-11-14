@@ -378,6 +378,12 @@ and display math scroll sideways. Paths and URLs wrap.
 Code Copy is icon-only and copies the exact text. It has 44px phone targets.
 New chats open at the bottom and follow new content.
 Scrolled-up chats retain their exact session-memory position despite later loads.
+Every agent window transcript, including chats, threads, and the Paper coach,
+shows a round Jump to latest arrow centered above the composer edge once the
+reader is more than one viewport above the bottom. It fades in and out, is a
+44px target on phones, and names itself only on hover. Clicking it scrolls
+smoothly to the bottom, instantly under reduced motion, and the chat follows new
+content again as if the reader had scrolled down.
 On touch phones, Return inserts a newline. Only Send sends.
 In an empty composer, Up and Down scroll the transcript; once it holds text, or
 the package menu is open, they move the caret or the highlight as before.

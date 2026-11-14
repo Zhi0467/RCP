@@ -314,7 +314,7 @@ test("on a touch phone Return writes a new line and a tap outside closes chat hi
   assert.equal(await message.inputValue(), "one\ntwo");
   await page.getByRole("button", { name: "Coach chat history" }).tap();
   await page.locator(".paper-session-list").waitFor();
-  await page.locator(".paper-coach .node-chat-lines").tap();
+  await page.locator(".paper-coach .agent-chat-view-lines").tap();
   await page.locator(".paper-session-list").waitFor({ state: "detached" });
 });
 
@@ -747,7 +747,9 @@ test("a sent coach turn shows its files and the session's context", async (t) =>
     });
     await coach(page);
     await page
-      .locator(".paper-coach .node-chat-line.human .chat-input-attachment", { hasText: "notes.md" })
+      .locator(".paper-coach .agent-chat-view-line.human .chat-input-attachment", {
+        hasText: "notes.md",
+      })
       .waitFor();
     await page.locator(".paper-panel-tools").getByRole("button", { name: "Context" }).waitFor();
     await fits(page);
@@ -1017,7 +1019,7 @@ test("a running coach turn takes a steer from the composer beside Stop", async (
   await page.getByRole("button", { name: "Stop coach" }).waitFor();
   await page.getByRole("textbox", { name: "Message" }).fill("Focus on section 2.");
   await page.getByRole("button", { name: "Steer", exact: true }).click();
-  const steered = page.locator(".paper-coach .node-chat-line.human", {
+  const steered = page.locator(".paper-coach .agent-chat-view-line.human", {
     has: page.locator(".chat-steering-receipt"),
   });
   await steered.waitFor();
@@ -1029,7 +1031,7 @@ test("a running coach turn takes a steer from the composer beside Stop", async (
     expected_turn_id: "turn-1",
     message: "Focus on section 2.",
   });
-  assert.equal(await steered.locator(".node-chat-text").textContent(), "Focus on section 2.");
+  assert.equal(await steered.locator(".agent-chat-view-text").textContent(), "Focus on section 2.");
   assert.equal(await steered.evaluate((line) => line.previousElementSibling.dataset.taskId), "t2");
   assert.equal(await page.getByRole("textbox", { name: "Message" }).inputValue(), "");
   await page.getByRole("button", { name: "Stop coach" }).waitFor();
@@ -1052,7 +1054,7 @@ test("a settled turn's steers sit between its prompt and reply; an unsteerable t
     init: `window.paperCoachFixture = { tasks: [${JSON.stringify(steered)}, ${JSON.stringify(unsteerable)}], started: [] };`,
   });
   await coach(page);
-  const lines = page.locator(".paper-coach .node-chat-line[data-task-id=t1]");
+  const lines = page.locator(".paper-coach .agent-chat-view-line[data-task-id=t1]");
   await lines.nth(2).waitFor();
   assert.deepEqual(
     await lines.evaluateAll((items) =>
@@ -1102,7 +1104,7 @@ test("a coach session's turns show though the project task list no longer carrie
   });
   await coach(page);
   await page.getByRole("button", { name: "Stop coach" }).waitFor();
-  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  const prompts = page.locator(".paper-coach .agent-chat-view-line.human .agent-chat-view-text");
   assert.deepEqual(await prompts.allTextContents(), [
     "Review the introduction",
     "Check the claims",
@@ -1122,10 +1124,10 @@ test("the coach reopens where the reader left it, as every agent window does", a
   const { page, errors } = await open(t, {
     init: `window.paperCoachFixture = { tasks: ${JSON.stringify(turns)}, started: [] };`,
   });
-  const lines = page.locator(".paper-coach .node-chat-lines");
+  const lines = page.locator(".paper-coach .agent-chat-view-lines");
   await coach(page);
   await page.waitForFunction(() => {
-    const element = document.querySelector(".paper-coach .node-chat-lines");
+    const element = document.querySelector(".paper-coach .agent-chat-view-lines");
     return element && element.scrollTop > 0;
   });
   assert.ok(
@@ -1140,7 +1142,7 @@ test("the coach reopens where the reader left it, as every agent window does", a
   await page.getByRole("button", { name: "Preview", exact: true }).first().click();
   await coach(page);
   await page.waitForFunction(
-    () => document.querySelector(".paper-coach .node-chat-lines")?.scrollTop === 200,
+    () => document.querySelector(".paper-coach .agent-chat-view-lines")?.scrollTop === 200,
   );
   assert.deepEqual(errors, []);
 });
@@ -1170,7 +1172,7 @@ test("returning to Paper reopens the coach chat picked from history", async (t) 
           : respond(path, ...rest);
     },
   });
-  const prompts = page.locator(".paper-coach .node-chat-line.human .node-chat-text");
+  const prompts = page.locator(".paper-coach .agent-chat-view-line.human .agent-chat-view-text");
   await coach(page);
   await page.getByText("Tighten the abstract").waitFor();
   await page.getByRole("button", { name: "Coach chat history" }).click();
@@ -1207,8 +1209,8 @@ test("a failed coach turn shows the shared error line, whose Retry starts the tu
     },
   });
   await coach(page);
-  const line = page.locator(".paper-coach .node-chat-line.error");
-  assert.equal(await line.locator(".node-chat-text").textContent(), failed.error);
+  const line = page.locator(".paper-coach .agent-chat-view-line.error");
+  assert.equal(await line.locator(".agent-chat-view-text").textContent(), failed.error);
   await Promise.all([
     page.waitForResponse(/\/tasks\/t9\/retry$/),
     line.getByRole("button", { name: "Retry" }).click(),

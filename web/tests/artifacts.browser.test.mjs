@@ -392,7 +392,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { ArtifactViewer } = await import("/src/artifacts/ArtifactViewer.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
@@ -457,7 +457,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
           React.createElement(
             RefreshRuntimeContext.Provider,
             { value: runtime },
-            React.createElement(NodeChat, {
+            React.createElement(AgentChatView, {
               key: String(desktop),
               project: {
                 id: "project",
@@ -816,7 +816,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = {
@@ -844,7 +844,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
         React.createElement(
           RefreshRuntimeContext.Provider,
           { value: runtime },
-          React.createElement(NodeChat, {
+          React.createElement(AgentChatView, {
             project: {
               id: "project",
               name: "Project",
@@ -1100,7 +1100,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
@@ -1129,7 +1129,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
           React.createElement(
             RefreshRuntimeContext.Provider,
             { value: runtime },
-            React.createElement(NodeChat, {
+            React.createElement(AgentChatView, {
               project: {
                 id: "project",
                 name: "Project",
@@ -1180,7 +1180,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
     });
     const after = page.locator("p", { hasText: "After the embeds." });
     const top = async () => (await after.boundingBox()).y;
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     const scroll = () =>
       lines.evaluate((element) => ({
         top: element.scrollTop,

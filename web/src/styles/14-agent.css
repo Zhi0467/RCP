@@ -365,7 +365,7 @@
 }
 /* A pause, or a stop with no error row, sits in the message column shaped like
    the failed-turn row: one rounded line with its actions at the end. */
-.agent-thread .node-chat-lines > .chat-task-inline.paused {
+.agent-thread .agent-chat-view-lines > .chat-task-inline.paused {
   border: 0;
   border-radius: 8px;
   display: flex;
@@ -376,7 +376,7 @@
   max-width: var(--thread-column);
   padding: 10px 12px;
 }
-.agent-thread .node-chat-lines > .chat-task-inline.paused > span {
+.agent-thread .agent-chat-view-lines > .chat-task-inline.paused > span {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -449,11 +449,11 @@
 .agent-thread {
   --thread-column: 920px;
 }
-.agent-thread .node-chat-lines {
+.agent-thread .agent-chat-view-lines {
   padding: 24px 18px clamp(20px, 4vw, 42px);
 }
-.agent-thread .node-chat-line,
-.agent-thread .node-chat-lines > .question-card,
+.agent-thread .agent-chat-view-line,
+.agent-thread .agent-chat-view-lines > .question-card,
 .agent-thread .approval-card,
 .agent-thread .approval-stack,
 .agent-thread .approval-quiet {
@@ -462,10 +462,10 @@
 .agent-thread .chat-composer {
   width: min(var(--thread-column), calc(100% - 36px));
 }
-.agent-thread .node-chat-lines > * {
+.agent-thread .agent-chat-view-lines > * {
   white-space: normal;
 }
-.agent-thread .node-chat-line.human .node-chat-text {
+.agent-thread .agent-chat-view-line.human .agent-chat-view-text {
   white-space: pre-wrap;
 }
 .agent-thread .chat-answer-annotation-button:not(:focus-visible) {
@@ -478,10 +478,10 @@
   white-space: nowrap;
   width: 1px;
 }
-.agent-thread .node-chat-line.agent .chat-markdown p {
+.agent-thread .agent-chat-view-line.agent .chat-markdown p {
   margin: 0 0 10px;
 }
-.agent-thread .node-chat-line.agent .chat-markdown p:last-child {
+.agent-thread .agent-chat-view-line.agent .chat-markdown p:last-child {
   margin-bottom: 0;
 }
 
@@ -545,7 +545,7 @@
   padding: 4px 8px;
 }
 /* A schedule's wake line holds only its chip, which then leads the answer below. */
-.agent-thread .node-chat-line.schedule-wake {
+.agent-thread .agent-chat-view-line.schedule-wake {
   display: flex;
   margin-bottom: 0;
 }
@@ -1217,7 +1217,7 @@
     flex-wrap: nowrap;
     padding: 6px 10px;
   }
-  .agent-thread .node-chat-lines {
+  .agent-thread .agent-chat-view-lines {
     padding: 18px 16px 12px;
   }
   .agent-thread .chat-composer {
@@ -1299,7 +1299,7 @@
   max-width: 820px;
   text-align: center;
 }
-.node-chat-line:has(> .chat-line-time) {
+.agent-chat-view-line:has(> .chat-line-time) {
   position: relative;
 }
 .chat-line-time {
@@ -1316,18 +1316,18 @@
   transition: opacity 0.16s ease;
   user-select: none;
 }
-.node-chat-line.human > .chat-line-time {
+.agent-chat-view-line.human > .chat-line-time {
   left: auto;
   right: 4px;
 }
 @media (hover: hover) {
-  .node-chat-line:hover > .chat-line-time,
-  .node-chat-line:focus-within > .chat-line-time {
+  .agent-chat-view-line:hover > .chat-line-time,
+  .agent-chat-view-line:focus-within > .chat-line-time {
     opacity: 1;
   }
 }
 @media (hover: none) {
-  .node-chat-line[data-time-shown] > .chat-line-time {
+  .agent-chat-view-line[data-time-shown] > .chat-line-time {
     opacity: 1;
   }
 }

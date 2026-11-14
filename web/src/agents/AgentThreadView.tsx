@@ -150,7 +150,7 @@ const TURN_DETAIL_MARGIN = "600px 0px";
 function topRow(root: HTMLElement | null): { row: HTMLElement; top: number } | null {
   if (!root) return null;
   const edge = root.getBoundingClientRect().top;
-  for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line")) {
+  for (const row of root.querySelectorAll<HTMLElement>(".agent-chat-view-line")) {
     const box = row.getBoundingClientRect();
     if (box.bottom > edge) return { row, top: box.top };
   }
@@ -1015,7 +1015,7 @@ export function AgentThreadView({
         }),
       { root, rootMargin: TURN_DETAIL_MARGIN },
     );
-    for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line[data-task-id]"))
+    for (const row of root.querySelectorAll<HTMLElement>(".agent-chat-view-line[data-task-id]"))
       observer.observe(row);
     return () => observer.disconnect();
   }, [lines.transcript]);
@@ -1476,12 +1476,12 @@ export function AgentThreadView({
         scroll={scroll}
       >
         {messages === null && !shownLoadError && (
-          <div className="node-chat-line meta" role="status">
+          <div className="agent-chat-view-line meta" role="status">
             <LoaderCircle className="spin" size={14} />
           </div>
         )}
         {shownLoadError && (
-          <div className="node-chat-line error" role="alert">
+          <div className="agent-chat-view-line error" role="alert">
             {shownLoadError}
             <button
               type="button"
@@ -1598,7 +1598,7 @@ export function AgentThreadView({
             .map(renderQuestion)}
         />
         {latest?.active && (
-          <div className="node-chat-line agent">
+          <div className="agent-chat-view-line agent">
             <TurnProgress task={latest} />
             <span className="agent-turn-live" role="status">
               <LoaderCircle className="spin" size={12} aria-hidden="true" />
@@ -1637,7 +1637,7 @@ export function AgentThreadView({
           </div>
         )}
         {shownNotice && (
-          <div className="node-chat-line error" role="alert">
+          <div className="agent-chat-view-line error" role="alert">
             {shownNotice}
           </div>
         )}

@@ -7,10 +7,10 @@
 .paper-coach .chat-composer-tools {
   flex-wrap: nowrap;
 }
-.paper-coach .node-chat-line {
+.paper-coach .agent-chat-view-line {
   position: relative;
 }
-.paper-coach .node-chat-line.agent:empty {
+.paper-coach .agent-chat-view-line.agent:empty {
   display: none;
 }
 .paper-agent-popover,

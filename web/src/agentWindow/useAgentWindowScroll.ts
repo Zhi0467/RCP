@@ -1,5 +1,5 @@
-import { useEffect, useRef, type RefObject } from "react";
-import { chatFollowsBottom, chatReaderMovedUp } from "../chat/chatLayout";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { chatFarFromBottom, chatFollowsBottom, chatReaderMovedUp } from "../chat/chatLayout";
 import { CHAT_SCROLL_BOTTOM_TOLERANCE_PX } from "../core/uiConstants";
 // Where the reader left each chat in this session, kept only while they had
 // scrolled up; a chat without an entry opens at its bottom.
@@ -28,6 +28,7 @@ export function useAgentWindowScroll(
   // moved up, and only the reader's own return to the bottom re-sticks.
   const lastScrollTopRef = useRef(0);
   const lastChatIdRef = useRef(scrollKey);
+  const [farFromBottom, setFarFromBottom] = useState(false);
   useEffect(() => {
     if (lastChatIdRef.current !== scrollKey) {
       lastChatIdRef.current = scrollKey;
@@ -36,19 +37,23 @@ export function useAgentWindowScroll(
     }
     const element = chatLinesRef.current;
     if (!element) return;
+    const settle = () => setFarFromBottom(chatFarFromBottom(chatScrollObservation(element, 0)));
     if (restoreTopRef.current !== null) {
       element.scrollTop = restoreTopRef.current;
       lastScrollTopRef.current = element.scrollTop;
       if (Math.abs(element.scrollTop - restoreTopRef.current) < 1) restoreTopRef.current = null;
+      settle();
       return;
     }
     // A refresh can render between the reader's scroll and its scroll event; their
     // position wins over a follow decided before they moved.
     if (chatReaderMovedUp(chatScrollObservation(element, lastScrollTopRef.current)))
       shouldStickToBottomRef.current = false;
-    if (!shouldStickToBottomRef.current) return;
-    element.scrollTop = element.scrollHeight;
-    lastScrollTopRef.current = element.scrollTop;
+    if (shouldStickToBottomRef.current) {
+      element.scrollTop = element.scrollHeight;
+      lastScrollTopRef.current = element.scrollTop;
+    }
+    settle();
     // Question cards load after the transcript and end it, so they move the bottom too.
   }, [scrollKey, chatLinesRef, transcript, questions]);
   const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
@@ -63,6 +68,7 @@ export function useAgentWindowScroll(
       CHAT_SCROLL_BOTTOM_TOLERANCE_PX,
     );
     lastScrollTopRef.current = element.scrollTop;
+    setFarFromBottom(chatFarFromBottom(chatScrollObservation(element, 0)));
     if (shouldStickToBottomRef.current) chatScrollPositions.delete(scrollKey);
     else chatScrollPositions.set(scrollKey, element.scrollTop);
   };
@@ -72,7 +78,21 @@ export function useAgentWindowScroll(
     restoreTopRef.current = null;
   };
 
-  return { shouldStickToBottomRef, restoreTopRef, handleChatScroll, follow };
+  const jumpToLatest = () => {
+    const element = chatLinesRef.current;
+    if (!element) return;
+    const instant = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    element.scrollTo({ top: element.scrollHeight, behavior: instant ? "auto" : "smooth" });
+  };
+
+  return {
+    shouldStickToBottomRef,
+    restoreTopRef,
+    handleChatScroll,
+    follow,
+    farFromBottom,
+    jumpToLatest,
+  };
 }
 
 export type AgentWindowScroll = ReturnType<typeof useAgentWindowScroll>;
