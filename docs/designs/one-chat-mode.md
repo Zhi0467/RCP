@@ -178,7 +178,10 @@ them to an ordinary send.
 | Area | Change |
 | --- | --- |
 | `api/tasks.py` chat admission | Work-only for `node_chat` and `project_chat`; 422 for `discuss` |
-| `agents/prompts.py` | New masters are Work-only; Discuss contract kept for the closed runner; `turn_mode="paper"` unchanged |
+| `agents/prompts.py` | Master unchanged; the `edit_now` prompt line is deleted |
+| `background.py`, `runs/provider_login.py` | Owed retries honour `transport_auto_retry_superseded` |
+| `api/tasks.py` retry route | 409 for a Discuss chat task; chat admission accepts `supersedes` |
+| `service_connections.py` `VoiceActionReceipt` | `mode` optional |
 | `artifact_edit_admission.py`, `api/artifacts.py` | Ordinary-chat Edit now uses the Send route; refused chats keep the scratch kind |
 | `config.py`, `setup.py`, `server_ops/provider_readiness.py` | Work table, legacy load rule, `work_auto` mapping |
 | `chat/QuestionCard.tsx` | Old Discuss origins keep their label; new questions are Work |
