@@ -1,83 +1,81 @@
 # Antigravity CLI (`agy`) as an RCP provider
 
-Status: design, not built. Probed against `agy` 1.5.1 on macOS (arm64) on
-2026-11-13. Every prompt-running probe ran in a throwaway folder under `/tmp`,
-with no dangerous-permissions flag and none of the user's own grants.
+Status: design, not built. Probed against `agy` 1.5.1 on macOS (arm64) and
+1.5.8 on a Linux GPU host on 2026-11-13. Every prompt-running probe ran in a
+throwaway folder, with no dangerous-permissions flag and none of the user's own
+grants.
 
-This document extends the three-provider registry
-(`src/rcp/providers/__init__.py`) to a fourth profile, `agy`. Its rules move into
-[providers-and-containment](../specs/providers-and-containment.md) before merge.
-Then this file is deleted.
+This design extends the three-provider registry
+(`src/rcp/providers/__init__.py`) to a fourth profile, `agy`. Before merge its
+rules move into [providers-and-containment](../specs/providers-and-containment.md),
+and this file is deleted.
 
 ## Summary
 
-`agy` fits RCP's profile shape well. It has a JSONL stream, multi-turn stdin,
+`agy` fits RCP's profile shape. It has a JSONL stream, multi-turn stdin,
 per-launch settings, deny-beats-allow file rules, a model catalog, a skill
-inventory, and a zero-token authenticated quota call. Its containment story is
-close to Claude's: the file tools are bounded and the Work shell is not.
+inventory, and an authenticated quota call that costs zero tokens. Its
+containment is close to Claude's: file tools are bounded, and the Work shell is
+not.
 
-Three facts make it different from every existing provider. The first is
-handled by a shell-less tool list (D1). The second was accepted as D2. The
-third is handled in code (see [Open decisions](#open-decisions)):
+Three facts set it apart from every existing provider:
 
 1. **An unapproved action ends the turn.** In headless mode, a tool call that
-   no rule allows is "soft-denied". The run stops at once with an empty reply
-   and a `denied_actions` list. An explicit `deny` rule behaves differently: the
-   tool fails and the turn goes on.
-2. **Hooks cannot be turned off.** `hooks.json` files in the global config, in
-   plugins, in the working directory, *and in every `--add-dir` repository* run
-   their commands outside all permission rules. No flag or setting disables
-   them.
-3. **The user's global settings leak in.** A persisted `agentMode: "auto"`
-   silently approves commands in headless runs. RCP must override it on every
-   launch. `--settings` *replaces* the permission lists, so the user's own allow
-   rules cannot widen RCP's.
+   no rule allows is soft-denied: the run stops with an empty reply and a
+   `denied_actions` list. An explicit `deny` rule is different: the tool fails
+   and the turn goes on. Handled by tool lists ([D1](#d1-a-denied-action-ends-the-turn-settled)).
+2. **Hooks cannot be turned off.** `hooks.json` in the global config, plugins,
+   the working directory and every `--add-dir` repository runs outside every
+   permission rule. Accepted ([D2](#d2-hooks-cannot-be-disabled-settled)).
+3. **The user's global settings leak in.** A saved `agentMode: "auto"` silently
+   approves commands. RCP overrides it on every launch. `--settings` replaces
+   whole permission lists, so the user's own rules can neither widen nor narrow
+   RCP's.
 
-There is no native fork, no shell-timeout control, and no way to route shell
-commands through RCP's hidden-read wrapper.
-
-Sign-in is settled (see [Sign-in contract](#sign-in-contract)). The whole login
-is one token file under `HOME`. A per-login home that overlays the machine home
-with only that file swapped lets agy join both sign-in pools, as Codex does.
+agy has no native fork, no shell-timeout control, and no way to route shell
+commands through RCP's hidden-read wrapper. The whole login is one token file
+under `HOME`, which lets agy join both sign-in pools through per-login overlay
+homes ([Sign-in contract](#sign-in-contract)).
 
 ## Probe evidence
 
-Each line is something observed with 1.5.1, not read from docs. Paths are
-placeholders.
+Each row was observed, not read from docs. Rows P1–P21 ran on macOS only;
+[Gates before build](#gates-before-build) lists the ones that must be repeated
+on Linux. Paths are placeholders.
 
 | # | Probe | Observed |
 | --- | --- | --- |
-| P1 | `agy -p "…" --output-format stream-json --mode plan --sandbox --model gemini-3.8-flash-low` | Exit 0. Lines: `{"event":"init",…}`, `step_update`s, then one `{"event":"result",…}`. `conversation_id` appears on every line. |
+| P1 | `agy -p "…" --output-format stream-json --mode plan --sandbox --model gemini-3.8-flash-low` | Exit 0. An `init` line, `step_update`s, then one `result`. `conversation_id` is on every line. |
 | P2 | Same, with `--conversation <id>` | Resumed the same id. The model saw the prior turn. |
-| P2b | `--mode plan` | Sends the prompt as `/plan <prompt>`. The model wrote a plan file into `~/.gemini/antigravity-cli/brain/<id>/` (outside the workspace, no approval needed). Plan mode is a planning workflow, not a read-only mode. |
-| P3 | `--settings '{"permissions":{"deny":["read_file(<ws>/secret.txt)"]}}'` | `view_file` failed with "Matches user-configured deny rule". The turn continued. |
-| P4 | `--sandbox`, no allow rule, run `wc` | Ran unprompted. Sandboxed commands run without approval. |
-| P5 | No sandbox, allow only `command(wc)`, run `cat` | **Ran.** The cause was the user's global `agentMode: "auto"`. |
-| P6 | `--settings '{"agentMode":"default"}'` | Exit 1: `unrecognized value "default"`. The default mode is spelled `""`. |
-| P6b | `agentMode:""`, allow `command(wc)`, run `wc` then `cat` | `wc` ran. `cat` was soft-denied: "permission check failed for unsandboxed …". **The run ended there**, with `response: ""`, `denied_actions:[{"action":"command"}]`, exit 0, and a `jetski: no output produced …` line on stderr. |
-| P7 | Same, run `head` (allowed in the user's global list) | Soft-denied. `--settings` `permissions.allow` replaced the global list. |
-| P8 | `--mode accept-edits`, `allowNonWorkspaceAccess:false`, allow `write_file(<extra>)`, deny `write_file(<ws>/protected)`; four `write_file` calls | Workspace file written. Protected: tool error, turn continued. Extra root: written. Outside: soft-denied, turn ended. |
-| P9 | `.agents/agents/rcp-probe.md` in cwd with `tools: [view_file, list_dir, grep_search]`, `--agent rcp-probe` | The agent loaded from an untrusted `/tmp` folder. The model reported only two tools. Input tokens fell from ~11k to ~5.6k. `init.tools` still lists the full static set, so it is not evidence. |
-| P10 | `PreInvocation` hooks in `<cwd>/.agents/hooks.json` and `<repo>/.agents/hooks.json`, `--add-dir <repo>` | **Both ran** (marker files created). |
-| P11 | `SHELL=<logging wrapper>` | Never invoked. `run_command` does not use `$SHELL`. |
-| P12 | `grep_search`, `list_dir` by name | "not available in the current environment" despite `init.tools`. The model reaches for shell `grep` instead, which a policy without `command(*)` soft-denies. |
-| P13 | `agy -p /usage --output-format json` | Zero tokens, `conversation_id:""`, per-bucket `remaining_fraction`. Signed out: exit 1, `"error":"authentication failed or timed out"`, and an OAuth URL on stderr. |
+| P2b | `--mode plan` | Sends `/plan <prompt>`. The model wrote a plan into `~/.gemini/antigravity-cli/brain/<id>/` without approval. Plan mode is a workflow, not a read-only mode. |
+| P3 | `--settings` deny `read_file(<ws>/secret.txt)` | `view_file` failed with "Matches user-configured deny rule". The turn continued. Literal path only. |
+| P4 | `--sandbox`, no allow rule, run `wc` | Ran unprompted. Sandboxed commands need no approval. |
+| P5 | No sandbox, allow only `command(wc)`, run `cat` | **Ran**, because of the user's global `agentMode: "auto"`. |
+| P6 | `--settings '{"agentMode":"default"}'` | Exit 1. The default mode is spelled `""`. |
+| P6b | `agentMode:""`, allow `command(wc)`, run `wc` then `cat` | `wc` ran. `cat` was soft-denied and **the run ended**: `response: ""`, `denied_actions:[{"action":"command"}]`, exit 0. |
+| P7 | Same, run `head` (allowed in the user's global list) | Soft-denied. `--settings` replaced the global allow list. |
+| P8 | `--mode accept-edits`, `allowNonWorkspaceAccess:false`, allow `write_file(<extra>)`, deny `write_file(<ws>/protected)` | Workspace file written. Protected: tool error, turn continued. Extra root: written. Outside: soft-denied, turn ended. |
+| P9 | `.agents/agents/rcp-probe.md` in cwd with `tools: [view_file, list_dir, grep_search]`, `--agent rcp-probe` | Loaded from an untrusted folder. The model had only the listed tools; input tokens halved. `init.tools` still lists the full static set. |
+| P10 | `PreInvocation` hooks in `<cwd>/.agents/hooks.json` and `<repo>/.agents/hooks.json`, `--add-dir <repo>` | **Both ran.** |
+| P11 | `SHELL=<logging wrapper>` | Never invoked. `run_command` ignores `$SHELL`. |
+| P12 | Ask for `grep_search`, `list_dir` | Unavailable despite `init.tools`. The model reaches for shell `grep`. |
+| P13 | `agy -p /usage --output-format json` | Zero tokens, per-bucket `remaining_fraction`. Signed out: exit 1, an OAuth URL on stderr. |
 | P14 | `agy -p /skills --output-format json` | `command.data.skills[]` with `name`, `description`, `path`, `builtin`, `model_invocable`. |
-| P15 | `agy models` | Tab-separated `slug<TAB>label`. The effort is part of the slug (`gemini-3.8-flash-low/-medium/-high`). Signed out: exit 1, "Please sign in". |
-| P16 | `--model bogus` | Exit 1. A `result` line with `status:"ERROR"` and the error text on stderr, listing the valid models. |
-| P17 | `--input-format stream-json`, two `{"event":"user",…}` lines 2 s apart, `queuedMessages:"queue"` | Two turns, one `result` each, in FIFO order, in one process and conversation. Inputs carry no ids, and results name none. |
-| P18 | Usage | Each `agent_response` step with `state:"DONE"` carries `usage` for that model call. `input_tokens` excludes `cache_read_tokens`. `result.usage` is cumulative over the **whole conversation**: on resume it included the previous process's turn. |
-| P19 | `HOME=<empty dir>` | Signed out. The login is found through `HOME` (`~/.gemini/antigravity-cli/`). Side effect: `agy -p` started an OAuth sign-in in the browser. Never repeat this probe on a human's desktop. `agy models` reports signed-out without opening a browser. |
-| P20 | `ANTIGRAVITY_GEMINI_DIR=<dir>` or `ANTIGRAVITY_APP_DATA_DIR=<dir>` with the real `HOME` | Still signed in. Neither variable relocates the CLI login. Only `HOME` does. `--gemini-dir` and `--app-data-dir` exist only on `agy acp`. |
-| P21 | Binary strings | The CLI saves its login through a file token store (`cliFileTokenStorage`, `auth.CLITokenFilePath`). The keychain-backed store belongs to the language-server path. `AGY_ACCOUNT` selects plugin accounts, not the main login. |
-| P22 | `HOME=<throwaway> agy acp --login`, with `open`/`xdg-open` shimmed to fail and log. The human signed in once each on macOS (1.5.1) and the Linux GPU host (1.5.8) | No browser opened: the CLI printed the URL and read the pasted code on stdin. The home gained one file, `.gemini/antigravity-cli/antigravity-oauth-token` (mode 600, about 560 bytes), plus a summaries database. Linux has no Secret Service on the user bus, and the login saved anyway. |
-| P23 | In that home: fresh process `agy models`; `env -i HOME=<home> PATH=… agy -p /usage`; a real model turn under `env -i`; Linux with and without the user's D-Bus address | All succeeded on both systems. No inherited environment, keychain or D-Bus is needed. |
-| P24 | Move only the token file aside, run `agy models`, then put it back | Signed out without it, signed in with it, on both systems. That one file is the entire login. |
-| P25 | `agy -p /logout` | Refused: "not available in print mode (it clears stored credentials…)". Sign-out is interactive only. |
-| P26 | An ordinary run in the user's real home on the GPU host | The real token file was rewritten in the same second the run started. The CLI refreshes and saves its token in place on use, so a login home must stay writable. |
-| P27 | An overlay home: every entry of the real home symlinked, except `.gemini/antigravity-cli/antigravity-oauth-token` | `git config --global`, `ssh -G`, a real `ssh` to the GPU host, `uv`, and `~` expansion all resolve through the overlay. |
+| P15 | `agy models` | `slug<TAB>label` rows; the effort is in the slug. Signed out: exit 1, no browser. |
+| P16 | `--model bogus` | Exit 1, a `result` with `status:"ERROR"`, valid models on stderr. |
+| P17 | `--input-format stream-json`, two `{"event":"user"}` lines 2 s apart, `queuedMessages:"queue"` | Two turns, one `result` each, FIFO, one process. Inputs carry no ids. |
+| P18 | Usage | Each `agent_response` step with `state:"DONE"` carries that call's `usage`. `result.usage` is cumulative over the **whole conversation**, across processes. |
+| P19 | `HOME=<empty dir> agy -p …` | Signed out, and **opened a browser sign-in**. Any `-p` or turn on a signed-out home can do this. |
+| P20 | `ANTIGRAVITY_GEMINI_DIR`, `ANTIGRAVITY_APP_DATA_DIR` | Do not relocate the CLI login. Only `HOME` does. |
+| P21 | Binary strings | The CLI login uses a file token store, not the keychain. |
+| P22 | `HOME=<throwaway> agy acp --login`, `open`/`xdg-open`/`BROWSER` shimmed to fail; macOS 1.5.1 and Linux 1.5.8 | No browser. The CLI printed one URL and read the pasted code on stdin. The home gained `.gemini/antigravity-cli/antigravity-oauth-token` (mode 600). Linux saved it with no Secret Service. |
+| P23 | That home under `env -i`, fresh processes, with and without D-Bus | Signed in on both systems. |
+| P24 | Move only the token file aside | Signed out without it, signed in with it. That file is the whole login. |
+| P25 | `agy -p /logout` | Refused in print mode. Sign-out is interactive only. |
+| P26 | An ordinary run in a real home | The token file was rewritten as the run started: the CLI refreshes in place, so the home must stay writable. |
+| P27 | Overlay home: every entry symlinked except the token file | `git config --global`, `ssh -G`, a real `ssh`, `uv` and `~` resolve through the overlay. Reads only; writes were not tested. |
 
-Docs used: [headless mode](https://antigravity.google/docs/cli/headless.md),
+Docs: [headless mode](https://antigravity.google/docs/cli/headless.md),
 [permissions](https://antigravity.google/docs/permissions.md),
 [terminal sandbox](https://antigravity.google/docs/sandbox.md),
 [settings](https://antigravity.google/docs/settings.md),
@@ -87,120 +85,100 @@ Docs used: [headless mode](https://antigravity.google/docs/cli/headless.md),
 
 ## Contract checklist
 
-Each row is one thing a profile must do, where RCP owns it today, and how
-`agy` does it. **Native** means agy does it as RCP needs. **Adapter** means the
-profile translates. **Missing** names the consequence.
+**Native**: agy does it as RCP needs. **Adapter**: the profile translates.
+**Missing**: the row names the consequence.
 
 ### Identity, install, version
 
-| Contract | Owner | Existing providers | agy | Status |
-| --- | --- | --- | --- | --- |
-| `id`, `label` | `base.py:398` | `codex`, `claude`, `opencode` | `agy`, "Antigravity" | Native |
-| Executable location | `install_paths`, `base.py:418`; `launcher.py` | `.opencode/bin/opencode`, … | `~/.local/bin/agy` (a single Go binary of 200 MB) | Native |
-| Native update | `native_update`, `base.py:367` | `self_update_args` | `agy update` | Native |
-| Version | readiness `--version` | all | `agy --version` prints `1.5.1` | Native |
-| Version floor | `work_like_minimum_version`, `validate_readiness_version` `base.py:478` | Claude 2.1.233; OpenCode 1.18.30 on every capability | 1.5.1 on **every** capability: `--settings` replacing lists, `agentMode:""`, and deny semantics were probed only there | Native |
-| Dependency registry | `src/rcp/dependencies.py` (AGENTS.md) | each CLI declared | Declare `agy`: purpose, roles, platforms (macOS, Linux), tier optional | Adapter |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| `id`, `label` | `base.py:398` | `agy`, "Antigravity" | Native |
+| Executable | `install_paths` `base.py:418` | `~/.local/bin/agy` (one Go binary) | Native |
+| Native update | `ProviderNativeUpdate` `base.py:368` | `agy update` | Native |
+| Version floor | `validate_readiness_version` `base.py:478` | 1.5.1 on **every** capability, overridden as OpenCode does (`opencode/profile.py:174`): every kind relies on the probed rule semantics | Adapter |
+| Dependency registry | `src/rcp/dependencies.py` | Declare `agy`: purpose, roles, macOS and Linux, optional tier | Adapter |
 
 ### Launch and wire protocol
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Runtime ids and choices | `legacy_runtime_id`, `default_runtime`, `runtime_aliases`, `runtime_choices` | Claude `stream-json`, OpenCode `run-json`, Codex `app-server`/`exec` | One runtime, `agy.stream-json.v1`, public name `stream-json` | Native |
-| argv, prompt on stdin | `ProviderProfile.command` `base.py:588`; `ProviderTurn.initial_input` | Claude writes a stream-json user line | `agy --input-format stream-json --output-format stream-json` plus flags. The prompt is `{"event":"user","message":{"content":…}}`. stdin stays open | Native |
-| Per-launch policy | `ProviderTurn.command` / `environment` | Claude `--settings`; OpenCode `OPENCODE_CONFIG_CONTENT` | `--settings '<json>'`: session-only, never saved, rejects bad values with exit 1 | Native |
-| Stream decode | `decode_event` | profile-owned | `step_update` with `step_type: agent_response` is message text (`text_delta`). `result.response` is the **answer**. `result.status != SUCCESS` or a `result.error` is an **error**. The first line's `conversation_id` is the **session** | Adapter |
-| Turn end (local) | `ProviderTurn.receive_line` | Claude `result`; OpenCode wrapper line | One `{"event":"result"}` per user line sent. Complete when results seen = inputs sent, or at the first non-`SUCCESS` result | Adapter |
-| Turn end (remote fence) | `remote.py` `TurnFence`, `turn_fence.py:19` | per provider | `AgyStreamTurnFence`: count `{"event":"user"}` inputs and `{"event":"result"}` outputs. Ship it in `providers/agy/remote.py`, stdlib only | Adapter |
-| Errors on stderr | `probe_failure_evidence`, `credential_failure` | per provider | An `AGY_ERROR: {json}` line with canonical status, HTTP/gRPC code and retryability, exit 3. `error:` lines, exit 1 for usage errors | Adapter |
-| Partial cut-off | — | — | `result.finished_reason` is `print_timeout`, `interrupted` or `error` | Adapter: map to error text |
-| Launch degradation | `launch_degradation` `base.py:617` | Claude effort warning | Bad `--model` or `--effort` fails outright (P16), so there is nothing to add | Native |
-| Oversized events | launcher per-event ceiling | stdin-open providers fail the pass | Same as Claude: stdin stays open, so an oversized event fails the pass | Native |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Runtime | `legacy_runtime_id`, `runtime_aliases`, `runtime_choices` | One runtime `agy.stream-json.v1`; alias `stream-json`; choice label "Antigravity stream JSON" | Native |
+| argv and prompt | `ProviderProfile.command` `base.py:588` | See [Launch command](#launch-command). The prompt is one `{"event":"user","message":{"content":…}}` line; stdin stays open | Native |
+| Per-launch policy | `ProviderTurn.command` | `--settings '<json>'`: session-only, bad values exit 1 | Native |
+| Stream decode | `decode_event` | See [Decoder](#decoder) | Adapter |
+| Turn end and fence | `ProviderTurn.receive_line`; `TurnFence` `turn_fence.py:19` | Count `user` inputs against `result` outputs; the first non-`SUCCESS` result is terminal. `AgyStreamTurnFence` in `providers/agy/remote.py`, stdlib only | Adapter |
+| Errors | `probe_failure_evidence`, `credential_failure` `base.py:635` | `AGY_ERROR: {json}` on stderr with exit 3; `error:` lines with exit 1 for usage errors; `result.finished_reason` (`print_timeout`, `interrupted`, `error`) | Adapter |
+| Launch degradation | `launch_degradation` `base.py:617` | Bad `--model` fails outright (P16) | Native |
 
 ### Sessions
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Resume | `command(session_id=…)` | `--resume`, `--session`, `thread/resume` | `--conversation <id>`. The id is kept (P2) | Native |
-| Fork (branch a chat) | `fork_session_id`; `SessionFormat.prepare_session_fork` | Claude `--fork-session` after a transcript copy; OpenCode `--fork`; Codex `thread/fork` | No flag. Conversations are per-id SQLite files in `~/.gemini/antigravity-cli/conversations/<id>.db` (tables `steps`, `trajectory_meta`, …), and copying one is unsupported | **Missing**: [decision D4](#d4-branching-a-chat-from-an-agy-session) |
-| Session indexing | `session_format`, `*_session_roots_field`, `config.py:224` | Claude and Codex JSONL; OpenCode none | SQLite, not JSONL | **Missing** by choice: no session format, as with OpenCode. RCP does not index agy history |
-| Stale session | `classify_terminal_error` `__init__.py:136` | Codex "no thread with id" | Not observed. Leave as `provider_error` until a real missing-conversation message is captured | Missing, safe default |
-| Native memory off | spec "Native provider memory is off" | `--disable memories`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY` | agy has "knowledge" (`delete_knowledge` tool) and a per-conversation `brain/` folder. No exposed switch was found. A staged agent's `tools` list can leave out the knowledge tools | Adapter (tools list), unverified that knowledge is never injected |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Resume | `command(session_id=…)` | `--conversation <id>` (P2) | Native |
+| Fork | `fork_session_id`; `SessionFormat.prepare_session_fork` | No flag. Conversations are SQLite files | **Missing**: [D4](#d4-branching-a-chat-from-an-agy-session) |
+| Session indexing | `session_format` | SQLite, not JSONL | Missing by choice, as OpenCode |
+| Stale session | `classify_terminal_error` `__init__.py:133` | Not observed; stays `provider_error` | Missing, safe default |
+| Native memory | spec "Native provider memory is off" | No switch. The staged tool list leaves out the knowledge tools | Adapter, injection unverified |
 
 ### Capability and containment
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Capability modes | `command` per `AgentCapability` `base.py:29` | Claude modes per capability | `--mode accept-edits` for writers. `agentMode:""` (default) for the shell-less kinds and readers. Never `auto` (a model reviewer approves commands) or `--dangerously-skip-permissions` | Adapter |
-| Override user mode | — | Claude `--setting-sources`; OpenCode agent precedence | `--settings` sets `agentMode` (P5, P6b). The `--mode` flag also works for `accept-edits` and `plan` | Adapter, **required** |
-| Tool set per capability | Claude `_CLAUDE_TOOLS` | Claude `--tools`; OpenCode deny-first rules | A staged agent `.agents/agents/rcp-<digest>.md` in the stage cwd with `tools: […]`, selected by `--agent rcp-<digest>` (P9). Named by a digest of its content, so no user agent can collide | Adapter |
-| Work write roots | `ProviderWriteScope`; `_require_project_write_scope` `base.py:702` | Claude `Edit(…)` allows; OpenCode edit rules | Workspace = cwd + `--add-dir` roots (edits auto-approved in `accept-edits`). `write_file(<root>)` allows for other writable roots. `write_file(<protected>)` denies. `allowNonWorkspaceAccess:false` | Native (P8) |
-| Protected path inside a root | spec "Machine writable paths" | Claude: deny beats allow, so a protected parent of the own stage is left undenied | Same: deny beats ask beats allow | Native, same exception as Claude |
-| Work shell | `canonical_state_boundary` `base.py:613` | Claude and OpenCode `file_tools_only` | `command(*)` allow, no `--sandbox`. The agy sandbox cuts networking on Linux (namespaces) and filters sockets on macOS, so compute would break, as with Claude's sandbox | Adapter; boundary `file_tools_only` |
-| Read context for scratch kinds | spec "Claude" section | Claude per-dir `Read/Glob/Grep` allows, never `--add-dir` | `read_file(<dir>)` allows, never `--add-dir`: `--add-dir` makes a folder an auto-editable workspace in `accept-edits`, and it also loads that folder's hooks (P10) | Adapter |
-| Shell for `discuss` and `scratch_patch` | invocation gate client; browser grant | Claude `Bash(<client>:*)`; OpenCode deny-first | No `run_command` in the staged tool list unless the launch carries a client. Then only `command(<exact client argv>)` is allowed. Any other command is soft-denied, **which ends the turn** | Adapter + [D1](#d1-a-denied-action-ends-the-turn-settled) |
-| Paper coach | `_paper_write_roots` `base.py:688` | changes folder + attached artifacts | The workspace (cwd) gets no write grant, as for the other providers. `write_file(<root>)` allows the changes folder and each attached artifact folder. `command(*)` is allowed, as for Work | Adapter |
-| Session summary | `session_summary` capability | Codex read-only; Claude no tools; OpenCode refuses | Staged agent with an empty tool list, plus `agentMode:""`. Unproven: the docs give `tools` a default of `[]`, so empty may mean "default set". Refuse until probed | Missing until probed |
-| Hooks | — | Claude `disableAllHooks`; OpenCode `--pure` | **No switch.** Global `~/.gemini/config/hooks.json`, plugin hooks, `<cwd>/.agents/hooks.json` and every `--add-dir` root's `.agents/hooks.json` run (P10) | **Missing**, accepted: [D2](#d2-hooks-cannot-be-disabled-settled-accepted) |
-| MCP servers | Claude strict empty MCP; OpenCode deny-first | — | `mcp(*)` defaults to ask, so a call is soft-denied. The staged tools list can leave out `call_mcp_tool` | Adapter |
-| Plugins, skills, rules | skill probe flags | per provider | Load from `~/.gemini/config/` and every `.agents/` between cwd and the project root. No `--pure` equivalent | Accepted. Same as Claude's user setting source |
-| Native browser | browser grant | Playwright CLI only, no MCP | agy has its own `browser_*` tools and `execute_url` rules. Leave them out of the staged tool list, so RCP's Playwright grant stays the one browser path | Adapter |
-| Scheduling and messaging tools | Claude `--tools` reasoning | — | `schedule`, `send_message`, `manage_inbox`, `run_workflow`, `search_marketplace`, `generate_image`, `define_subagent` exist. Leave them out of the staged tool list | Adapter |
-| Provider runtime storage | spec "Provider auth/session/cache exceptions" | `~/.claude`, `~/.codex` | Always writable without approval: `~/.gemini/antigravity-cli/brain/<conversation>/` (P2b) | Native exception |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Mode per capability | `AgentCapability` `base.py:29` | `--mode accept-edits` for every kind that writes, which is all but `session_summary`; `agentMode:""` always in `--settings`. Never `auto`, `plan` or skip-permissions | Adapter |
+| Tool set | Claude `_CLAUDE_TOOLS` | Staged agent `<cwd>/.agents/agents/rcp-<digest>.md`, `--agent rcp-<digest>` (P9) | Adapter |
+| Write roots | `ProviderWriteScope`; `_require_project_write_scope` `base.py:702` | Workspace = cwd plus `--add-dir` roots; `write_file(<root>)` allows other roots; `write_file(<protected>)` denies (P8) | Native |
+| Work shell | `canonical_state_boundary` `base.py:613` | `command(*)`, no `--sandbox` (it cuts network and devices) | Adapter; `file_tools_only` |
+| Read context for scratch kinds | spec "Claude" section | `read_file(<dir>)` allows, never `--add-dir`, which would make the folder editable and load its hooks (P10) | Adapter |
+| Shell for scratch kinds | invocation-gate client | `run_command` only when the launch carries a client, and only `command(<exact client argv>)` | Adapter, [D1](#d1-a-denied-action-ends-the-turn-settled) |
+| Paper coach | `_paper_write_roots` `base.py:688` | `write_file` allows for the coach roots; `command(*)` as Work | Adapter |
+| Session summary | `agent_threads.py:540` | Refused by the existing rule: a summary needs an enforced hidden-read scope, and agy launches are always `unhidden` | No change |
+| Hooks | — | No switch (P10) | Accepted, D2 |
+| MCP, native browser, scheduling, messaging, image, marketplace tools | Claude `--tools` reasoning | Left out of the staged tool list. RCP's Playwright grant stays the one browser path | Adapter |
+| Provider runtime storage | spec "Provider auth/session/cache exceptions" | `~/.gemini/antigravity-cli/brain/<conversation>/` is always writable (P2b) | Native exception |
 
 ### Hidden reads and credentials
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Native read denies | `HiddenReadScope` rendering | Claude `Read(…)` denies; OpenCode `read` denies | `read_file(<path>)` denies (P3). "Deny read implies deny write" | Native for file tools |
-| Shell wrapper | `CLAUDE_CODE_SHELL_PREFIX`; OpenCode `SHELL` | wrapper per launch | `$SHELL` is ignored (P11). No prefix lever was found | **Missing**: every agy launch reports `unhidden` with `provider_native_tools_uncovered` |
-| Login file hidden from other providers | `staged_hidden_read.py:86`, `space_machines.py:273` (hard-coded per id) | three files | `~/.gemini/antigravity-cli/antigravity-oauth-token`, plus each added home's copy (see [Sign-in contract](#sign-in-contract)) | Adapter: move the list into a profile attribute |
-| Credential failure | `credential_failure` `base.py:635` | Claude 401 | `AGY_ERROR` JSON carries a canonical status. Only a really revoked login should be matched, so return False until one is observed | Missing, safe default |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Native read denies | `HiddenReadScope` | `read_file(<path>)` denies (P3). Glob patterns and symlinked spellings are unprobed; see gates | Native for literal paths |
+| Shell wrapper | Claude `CLAUDE_CODE_SHELL_PREFIX`; OpenCode `SHELL` | None (P11). Every agy launch reports `unhidden` with `provider_native_tools_uncovered` | **Missing** |
+| Login credential attributes | `base.py:423-429`; `provider_cleanup.py:93` | `login_credential_files`, `login_home_credentials`, `remote_login_credential_files`, all set to the token path | Adapter |
+| Machine login file | `staged_hidden_read.py:86` (stdlib, runs on the host) | `<home>/.gemini/antigravity-cli/antigravity-oauth-token` added to the host list; agy has no override variable besides `HOME` | Adapter |
+| Credential failure | `credential_failure` | False until a revoked-login `AGY_ERROR` is captured | Missing, safe default |
 
 ### Login and readiness
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Presence check | `auth_command`, `is_authenticated` | `claude auth status`, `opencode providers list` | No `auth` subcommand. `agy models` exits 1 when signed out (P15) and lists models when signed in | Adapter |
-| Liveness check | `login_probe_command` `base.py:495` | Claude one haiku turn | `agy -p /usage --output-format json`: an authenticated server call that spends zero model tokens (P13). It is the best liveness check of the four providers | Native |
-| Interactive login | `login_command` | `claude auth login` | `agy acp --login`: prints a URL, reads the pasted code on stdin, exits (P22) | Native |
-| RCP-managed sign-in (both pools) | `auth.py`, `provider_auth`, credential store | Codex per-login `CODEX_HOME`; Claude per-login token | Per-login overlay `HOME` holding only the token file (P22–P24, P27). See [Sign-in contract](#sign-in-contract) | Adapter |
-| Sign-out | `ProviderAuthentication.sign_out` | `codex logout`; Claude deletes its token | `/logout` is interactive only (P25). RCP deletes the login home's token file | Adapter |
-| Work startup probe | `work_like_probe_command` | Claude | A `--settings` render plus `--mode accept-edits` with stdin closed and no prompt. Untested: it may exit without validating settings. Leave it None until probed | Missing until probed |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Presence | `auth_command`, `is_authenticated` | `agy models`; exit 0 means signed in (P15) | Adapter |
+| Liveness | `login_probe_command` `base.py:495` | `agy -p /usage --output-format json`, zero tokens (P13) | Native |
+| Sign-in | `provider_auth`, `provider_sign_in.py` | `agy acp --login` per login home: URL out, pasted code in (P22) | Adapter, new `paste_code` method |
+| Sign-out | `ProviderAuthentication.sign_out` | Delete the login home's token file (P25) | Adapter |
+| Work startup probe | `work_like_probe_command` | None until probed | Missing until probed |
 
 ### Models, usage, status, steering, skills
 
-| Contract | Owner | Existing | agy | Status |
-| --- | --- | --- | --- | --- |
-| Catalog | `catalog_command`, `parse_catalog` | Codex and OpenCode probed; Claude declared | `agy models`: one `ModelChoice` per slug, empty `reasoning`, so no separate effort picker. The effort lives in the slug (P15) | Native |
-| Effort | `--effort` | per model | `--effort` exists, but the slugs already fix the level, and passing both is untested. Never pass `--effort` | Native via slug |
-| Usage | `decode_usage`, `usage_profile` | per provider | `agy.step.v1`: one `ProviderUsage` per `agent_response` step with `state:"DONE"`. processed = `input_tokens + cache_read_tokens`, generated = `output_tokens`. **Never `result.usage`**: it is cumulative over the conversation (P18) | Adapter |
-| Context tokens | `AgentStatusDelta.context_tokens` | Claude per message | `input_tokens + cache_read_tokens` of the latest main-agent step | Adapter |
-| Context window | `context_window` | Claude result | Not reported | Missing: the panel shows no window |
-| Compaction | `compacting`, `compaction` | Claude, Codex app-server | A `step_type:"checkpoint"` is documented but its fields were not observed | Missing until observed |
-| Subagents | `AgentSubagent` | Claude, Codex | `step_update.subagent_info[]`: `type_name`, `role`, `conversation_id` | Adapter, unprobed |
-| Steering | `ProviderRuntime.steering_behavior` `base.py:275` | Claude `queue`, Codex `inject` | `queue`. A second user line runs as the next turn (P17). With no input ids, RCP attributes results by FIFO count. Always set `queuedMessages:"queue"` in `--settings`, since the user may have `send-immediately`, which interrupts the turn | Adapter |
-| Skills inventory | `skill_probe`, `parse_skills` | per provider | `agy -p /skills --output-format json` → `command.data.skills[]` (P14), `protocol: "jsonl"` with one line | Native |
-| Skill token | `native_skill_token` | `/name` | `/name`: print mode expands slash skills | Native |
-| Autocompact | `autocompact_hint`, `canonical_autocompact` | Claude only | `AGY_CLI_AUTO_COMPACT_OVERRIDE` exists in the binary, but its meaning is undocumented | Missing: `autocompact_hint = None` |
-| Shell timeout | `shell_timeout_default_seconds`, `canonical_shell_timeout` `base.py:435` | Claude and OpenCode env vars | No lever. Long commands become background tasks (`WaitMsBeforeAsync`, `command_status`), and headless runs wait for them | **Missing**: needs a profile flag, see [Generic changes](#generic-changes-outside-the-package) |
+| Contract | Owner | agy | Status |
+| --- | --- | --- | --- |
+| Catalog | `catalog_command`, `parse_catalog` | `agy models`; one `ModelChoice(id=slug, label=label, reasoning=())` per row. Never pass `--effort`: the slug fixes it | Native |
+| Usage | `decode_usage`, `usage_profile` | `agy.step.v1`: per `DONE` step, processed = `input_tokens + cache_read_tokens`, generated = `output_tokens`. Never `result.usage` (P18) | Adapter |
+| Context tokens / window | `AgentStatusDelta` | Tokens from the latest main-agent step; no window reported | Adapter / Missing |
+| Compaction, subagents | `compacting`, `AgentSubagent` | Not observed; decoded as raw trace until captured | Missing until observed |
+| Steering | `steering_behavior` `base.py:265` | `queue`; see [Steering and replay](#steering-and-replay) | Adapter |
+| Skills | `skill_probe`, `parse_skills`, `native_skill_token` | `agy -p /skills --output-format json` → `command.data.skills[]`, one JSONL line; token `/name` | Native |
+| Auto-compact | `autocompact_hint` | None | Missing |
+| Shell timeout | `shell_timeout_default_seconds` `base.py:435` | No lever. The attribute becomes `int \| None`; None means unsupported, as `autocompact_hint` does | Missing |
 
 ## The profile
 
-One package, `src/rcp/providers/agy/`, holds everything RCP knows about `agy`:
+One package, `src/rcp/providers/agy/`:
 
-- `profile.py`: `AgyProfile(ProviderProfile)` with the attributes above, the
-  argv, the `--settings` policy, the staged agent file, the decoder, usage, and
-  status.
+- `profile.py`: `AgyProfile`, argv, the `--settings` policy, the staged agent,
+  decoder, usage and status.
 - `remote.py`: `AgyStreamTurnFence`, stdlib only, shipped by `remote_bundle`.
-  No session format.
-- `auth.py`: `AgyAuthentication`, the device-style sign-in driver, and the
-  per-login home environment. See [Sign-in contract](#sign-in-contract).
-- `homes.py`: overlay-home preparation, stdlib only, run unchanged locally and
-  over SSH, as `providers/codex/homes.py` is.
+- `auth.py`: `AgyAuthentication` and its `paste_code` sign-in driver.
 
-Registration is the one line in `PROVIDERS`. Every imperative piece lives
-inside the profile:
+Registration is one entry in `PROVIDERS`.
 
 ```text
 AgyProfile
@@ -208,44 +186,49 @@ AgyProfile
   install_paths = (".local/bin/agy",)
   native_update = ProviderNativeUpdate(self_update_args=("update",))
   legacy_runtime_id = "agy.stream-json.v1"; default_runtime = "stream-json"
+  runtime_aliases = {"stream-json": ..., "agy.stream-json.v1": ...}
+  runtime_choices = (ProviderRuntimeChoice(id="stream-json", label="Antigravity stream JSON"),)
   turn_fences = {"agy.stream-json.v1": AgyStreamTurnFence}
   usage_profile = "agy.step.v1"
-  work_like_minimum_version = (1, 5, 1)       # floor for every capability
-  session_format = None
-  autocompact_hint = None
-  shell_timeout_supported = False             # new base attribute
-  native_tools_hide_reads = False             # new base attribute (see below)
-  login_files = (".gemini/antigravity-cli/antigravity-oauth-token",)  # new base attribute
-  supports_session_summary = False            # new base attribute
-  auth_command          -> [agy, "models"]
-  login_probe_command   -> [agy, "-p", "/usage", "--output-format", "json"]
-  login_command         -> [agy, "acp", "--login"]
-  authentication        -> AgyAuthentication()   # methods = ("device_code",)
-  catalog_command       -> [agy, "models"]
-  skill_probe           -> [agy, "-p", "/skills", "--output-format", "json"]
-  project_write_enforcement_mode -> "agy.permission-rules.v1"
-  canonical_state_boundary       -> "file_tools_only"
-  runtime(...)          -> _AgyStreamRuntime (steering_behavior = "queue")
+  work_like_minimum_version = (1, 5, 1)
+  validate_readiness_version -> floor on every capability
+  session_format = None; autocompact_hint = None
+  shell_timeout_default_seconds = None
+  hidden_read_gaps = ("shell_wrapper",)          # new base attribute
+  login_credential_files = (<token path in the login's local directory, as Codex's>,)
+  login_home_credentials = (".gemini/antigravity-cli/antigravity-oauth-token",)
+  remote_login_credential_files = (".rcp/provider-homes/agy/{login_id}/.gemini/antigravity-cli/antigravity-oauth-token",)
+  auth_command / is_authenticated -> [agy, "models"], exit 0
+  login_probe_command  -> [agy, "-p", "/usage", "--output-format", "json"]
+  login_command        -> [agy, "acp", "--login"]
+  authentication       -> AgyAuthentication()     # methods = ("paste_code",)
+  catalog_command / parse_catalog -> [agy, "models"], tab-separated rows
+  skill_probe / parse_skills      -> [agy, "-p", "/skills", "--output-format", "json"]
+  project_write_enforcement_mode  -> "agy.permission-rules.v1"
+  canonical_state_boundary        -> "file_tools_only"
+  runtime(...)         -> _AgyStreamRuntime (steering_behavior = "queue")
 ```
 
 ### Launch command
-
-Every launch, any capability:
 
 ```text
 agy --input-format stream-json --output-format stream-json
     --model <slug>                       # when chosen
     --agent rcp-<digest>                 # staged in <cwd>/.agents/agents/
     --settings <policy json>
-    [--mode accept-edits]                # writers only
+    --mode accept-edits                  # every kind but session_summary
     [--conversation <id>]                # resume
-    [--add-dir <root> ...]               # Work-like only: admitted repo + memory roots
+    [--add-dir <root> ...]               # Work-like kinds only
 ```
 
-Never `-p`. Print mode cannot take stdin turns, and `-p` with stream input is an
-error. Never `--sandbox`, `--mode auto`, `--mode plan`, `--remote-agent`,
-`--remote-control`, or `--dangerously-skip-permissions`. A unit test asserts
-these flags never appear in any rendered argv.
+Never `-p`, `--sandbox`, `--mode auto`, `--mode plan`, `--remote-agent`,
+`--remote-control` or `--dangerously-skip-permissions`. A unit test asserts that
+no rendered argv contains them.
+
+**Every agy process** RCP starts gets the browser shims: `PATH` shims that
+make `open` and `xdg-open` fail, and `BROWSER` set to a failing shim. That
+covers turns, probes, `/usage` and sign-in, so a signed-out home never opens a
+browser on any desktop (P19).
 
 ### Policy JSON
 
@@ -265,308 +248,255 @@ these flags never appear in any rendered argv.
 }
 ```
 
-`--settings` replaces each permission list it names (P7), so all three are
-always written, even when empty. The user's global allow rules then cannot widen
-a launch, and their deny rules cannot narrow one. That is stricter than Claude,
-whose user denies still narrow.
+All three permission lists are always written, because `--settings` replaces
+each list it names (P7). `queuedMessages` and `artifactReviewPolicy` are set
+explicitly so the user's saved values cannot interrupt or stall a headless turn.
 
-`artifactReviewPolicy: always-proceed` keeps an implementation-plan review from
-stalling a headless turn. The changelog says headless already proceeds through
-plan review. Setting it explicitly removes the dependency on the user's value.
-
-Allow rules per capability:
-
-| Capability | allow | Tools in the staged agent |
+| Capability | allow | Staged tools |
 | --- | --- | --- |
-| Work, orchestrate | `command(*)`, `read_file(*)`, `write_file(<root>)` per writable root outside the workspace, `read_url(*)` | file read/write/edit, `run_command`, `command_status`, `send_command_input`, `search_web`, `read_url_content`, subagent tools |
-| `discuss` (the scratch artifact edit only) | `read_file(<dir>)` per read dir, `read_url(*)` | file read/write/edit (writes reach only the stage, which is the workspace), `search_web`, `read_url_content`. No `run_command` |
-| `scratch_patch` (Seed, Refresh, scratch Patch) | as `discuss`, plus `command(<client argv>)` when the launch carries a client | as `discuss`, plus `run_command` only with a client |
-| Paper coach | `command(*)`, `read_file(*)`, `write_file(<root>)` per coach root | as Work |
-| Session summary | none | refused until probed |
+| `work_auto`, `orchestrate` | `command(*)`, `read_file(*)`, `write_file(<root>)` per writable root outside the workspace, `read_url(*)` | file tools, `run_command`, `command_status`, `send_command_input`, `search_web`, `read_url_content`, subagent tools |
+| `paper_suggest` | `command(*)`, `read_file(*)`, `write_file(<root>)` per coach root | as Work |
+| `scratch_patch` (Seed, Refresh, scratch Patch) | `read_file(<dir>)` per read dir, `read_url(*)`, plus `command(<client argv>)` with a client | file tools, `search_web`, `read_url_content`, plus `run_command` with a client |
+| `discuss` (the scratch artifact edit only) | `read_file(<dir>)` per read dir, `read_url(*)` | file tools, `search_web`, `read_url_content`. No shell tools |
+| `session_summary` | refused by the existing rule | — |
 
-Read-only grants for the scratch kinds use `read_file`, never `--add-dir`. A Work turn's
-`--add-dir` gives the repository edits and also loads its hooks. See D2.
+Denies on every capability:
 
-Hidden reads render as `read_file(<path>)` denies on every capability. The
-staged agent folder (`<cwd>/.agents/`) and the client folder get
-`write_file` denies, just as Claude denies edits of the client directory.
+- each hidden read path as `read_file(<path>)`, written in both its canonical
+  spelling and its spelling under the launch's `HOME`, so a symlinked overlay
+  path cannot bypass it;
+- `write_file(<cwd>/.agents)` and the client folder. A write to
+  `.agents/hooks.json` would run commands on the next resume, so the deny must
+  cover the whole folder (gate G3).
 
 ### Decoder
 
 ```text
 init                         -> session(conversation_id)
-step_update agent_response   -> message(text_delta) [+ usage when DONE, + status]
-step_update tool             -> raw trace
-step_update subagent_info    -> status(subagent)
+step_update agent_response   -> message(text_delta) [+ usage when DONE]
+step_update other            -> raw trace
 result status=SUCCESS        -> answer(response)
 result status!=SUCCESS       -> error(error or finished_reason)
-result denied_actions        -> error naming the refused action (D1)
+result with denied_actions   -> error naming the refused action
 non-JSON line                -> raw
 ```
 
-`init` is the first line of each process, and its `conversation_id` is the
-session. A `result` with `status: SUCCESS` and an empty `response` that carries
-`denied_actions` is an error, not an empty answer.
+A `SUCCESS` result with an empty `response` and `denied_actions` is an error,
+never an empty answer.
 
-## Containment story
+### Steering and replay
+
+- `close_input_after_initial = False`; `requires_protocol_completion = True`.
+- `render_steer` writes one `{"event":"user","message":{"content":…}}` line.
+  agy echoes nothing back, so a steer counts as delivered when its bytes are
+  written, and its result is the next unclaimed `result` in FIFO order.
+- The turn completes when results seen equal inputs sent, then RCP closes stdin.
+- `adopt_recorded_inputs` takes the recorded message ids in order, so a
+  replayed journal knows how many inputs the pass sent and matches results to
+  them by position.
+- A test replays a recorded pass with one steer and checks attribution.
+
+## Containment
 
 Capability is fixed in code (invariant 4). Each capability renders one policy
-object. Both the argv and the prompt's write-boundary text derive from that
-object.
+object, and both the argv and the prompt's write-boundary text come from it.
+File tools are bounded by workspace, allows and denies (P8). The Work shell is
+unbounded, as with Claude and OpenCode. Graph authority stays with the stage
+(invariant 4b). agy adds three gaps: hooks run outside every rule, shell reads
+are never hidden, and user plugins and skills load on every launch.
 
-- **File tools are bounded.** The workspace is the stage cwd plus admitted
-  roots. Other roots get `write_file` allows, protected paths get denies, and
-  anything else is soft-denied. All of this was probed (P8).
-- **The Work shell is unbounded**, as with Claude and OpenCode.
-  `canonical_state_boundary` is `file_tools_only`. The agy sandbox is off for
-  Work, because it would cut the network and devices that real compute needs.
-  This is the same reasoning as Claude's.
-- **The scratch kinds have no general shell.** The artifact edit has no shell
-  tool at all. A scratch Patch with a client may run only that client.
-- **Graph authority stays with the stage** (invariant 4b). Nothing is parsed
-  from answers.
-- **Gaps that agy adds:**
-  - hooks run outside every rule (D2);
-  - shell reads are never hidden (P11), so every launch reports `unhidden`;
-  - user plugins and skills load on every launch.
-
-## Session and stage handling
-
-- The stage cwd is outside Git, as for every provider. agy's path rules are
-  absolute, so unlike OpenCode no Git guard is needed.
-- The staged agent file is written into `<stage>/.agents/agents/` before each
-  launch, including on resume. Its name is a digest of its content.
-- Resume passes `--conversation <checkpoint>`. A fresh start passes nothing and
-  records the `init` `conversation_id`. Invariant 10g holds: there is no silent
-  fallback.
-- Fork is refused (D4).
-- Turn end: the local turn and the remote fence both count results against
-  inputs. A non-`SUCCESS` result is terminal. Process exit after stdin closes
-  is the backstop. Exit 3 with `AGY_ERROR` is a provider error.
-- Steering uses the `queue` behavior. A follow-up is delivered when written, and
-  its result is the next `result` in order. RCP closes stdin when the results
-  catch up with the inputs.
-
-## Failure and auth liveness
-
-- **Readiness:** `agy --version`, then `agy models`. Exit 0 with rows means
-  worth launching. It is a presence check only.
-- **Liveness:** `agy -p /usage --output-format json`. A `status: SUCCESS`
-  proves the token works against the server, at zero model cost. This is what
-  "verify sign-in" runs. A failure shows "Sign in with `agy`" on the card.
-- **Turn errors:** an `AGY_ERROR` line is classified by its status field. Quota
-  wording reaches `classify_terminal_error`'s existing markers. Revoked-login
-  matching stays False until a real revoked login is captured.
-- **Login persistence is proven.** The login is one file. It is reused by
-  fresh processes and clean environments, with no keychain or Secret Service,
-  on macOS and Linux (P22–P24). Nothing about it depends on a desktop session,
-  so it survives reboots and logouts by construction.
+The stage cwd is outside Git. agy's rules are absolute paths, so no Git guard is
+needed. The staged agent file is rewritten before every launch, resume
+included. Invariant 10g holds: a fresh start passes no `--conversation` and
+records the `init` id, and there is no silent fallback.
 
 ## Sign-in contract
 
-agy joins RCP's two sign-in pools exactly like Codex: the machine sign-in, plus
-added logins (each member's own login and shared logins) per machine.
+agy joins RCP's two sign-in pools: the machine sign-in, plus added logins (each
+member's own and shared ones) per machine.
 
 **The credential.** `<HOME>/.gemini/antigravity-cli/antigravity-oauth-token`
-is the whole login: a mode-600 file of about 560 bytes (P24). The CLI finds it
-only through `HOME` (P20). It refreshes and rewrites the file in place on use
-(P26).
+is the whole login (P24). The CLI finds it only through `HOME` (P20) and
+rewrites it on refresh (P26).
 
-**Machine sign-in** (`login_id = ""`). The execution account's own `~`, as
-Codex and OpenCode use today. RCP never moves or copies that file.
+**Machine sign-in** (`login_id = ""`). The execution account's own `~`. RCP
+never moves or copies that file. The card tells the member to run
+`agy acp --login` on the host.
 
-**Added logins.** Each one gets an overlay home:
+**Added logins: overlay homes.** Codex relocates one folder (`CODEX_HOME`).
+agy can only relocate all of `HOME`, and `HOME` is also the home of every shell
+command the agent runs. So each added login gets an overlay of the machine home
+with one independent file, the token.
 
 | | Local | Remote |
 | --- | --- | --- |
 | Home | `<data dir>/provider-homes/agy/<login_id>` | `~/.rcp/provider-homes/agy/<login_id>` |
-| Launch | `HOME=<home>` in the process environment | `export HOME="$HOME"/.rcp/provider-homes/agy/<login_id>` as the remote prefix |
 
-`providers/agy/homes.py` prepares the overlay, mode 0700:
+The overlay reuses Codex's home mechanics instead of a copy. `prepare_home`,
+the home lease, the `--run` exec wrapper and private-file migration move from
+`providers/codex/homes.py` into a shared stdlib module. Each provider passes
+its machine home and its independent paths: Codex passes `CODEX_HOME` and
+`auth.json`, and agy passes `HOME` and the token path. Rules:
 
-- every entry of the machine home is a symlink to the original, except `.gemini`;
-- `.gemini` is a real folder whose entries are symlinks, except `antigravity-cli`;
-- `antigravity-cli` is a real folder whose entries are symlinks, except
-  `antigravity-oauth-token`, the one independent file.
+- **One independent path.** Every entry is a symlink into the machine home,
+  except the folders on the way to the token, which are real folders of links.
+- **No loops.** Every ancestor of the overlay itself (`.rcp`, and the data
+  directory's ancestors such as `Library` on macOS) is a real folder of links
+  with the branch leading back to the overlay left out.
+- **`HOME` reaches only agy.** The launch runs `homes.py --run <home> -- agy …`,
+  which sets `HOME` on the agy process alone. RCP's own launch prefix (git
+  identity, `PATH`, pid file) resolves against the real home first.
+- **Writes land in the machine home.** Shared folders the CLI would create
+  (`conversations`, `brain`, config) are created in the machine home and linked
+  before the first launch. A name that appears in the overlay anyway, such as a
+  new top-level dotfile or a symlink replaced by an atomic rename, is migrated
+  into the machine home on the next preparation with no active turn, as Codex
+  migrates today.
 
-Names that appear later in the machine home are linked on the next preparation,
-as with Codex. Because conversations, skills, plugins, config and `~/.ssh`
-resolve to the machine home, a login switch keeps `--conversation` resume and
-the agent's shell environment intact (P27). Backups and transfers exclude
-`provider-homes`, as they already do.
+So `--conversation` resume, skills, plugins, git identity, SSH keys and tool
+caches stay shared across a login switch (P27).
 
-The overlay is needed because `HOME` is also `HOME` for every shell command
-the agent runs. A bare per-login home would hide git identity, SSH keys,
-scheduler config and tool caches from Work.
+**Sign-in (`paste_code`).** A new method kind beside `device_code` and
+`token_entry`:
 
-**Sign-in.** `agy acp --login` runs with the login's `HOME`, `PATH` shims that
-make `open` and `xdg-open` fail, and `BROWSER` pointed at a failing shim, so the
-backend never opens a browser on any desktop (P22). The CLI prints one
-`https://accounts.google.com/…` URL, then reads the authorization code on
-stdin. This reverses Codex's device flow: RCP shows the URL, the member pastes
-the code from Google's page into the Sign-ins card, and RCP writes it to the
-process's stdin. The code travels like Claude's setup-token: stdin only, never
-argv, events, responses, receipts, logs or backups. The URL is read as a URL
-token, not by interpreting prose. Exit 0 then means the CLI accepted the code.
-The sign-in counts only after verification passes. `ProviderAuthentication`
-needs one new method kind, `paste_code`, carrying `verification_url` out and a
-code in.
+- `DeviceLogin` gains `accepts_code = False` and
+  `code_input(code: str) -> bytes`. agy's driver sets `accepts_code = True` and
+  returns `code + "\n"`.
+- `agy acp --login` runs under the login's home with the browser shims. The
+  driver reads the one `https://accounts.google.com/…` URL as a URL token and
+  returns it as `verification_url`. `ProviderSignInStatus` gains
+  `awaiting_code: bool`.
+- `POST /api/providers/{provider}/logins/sign-in/{attempt_id}/code` with
+  `{"code": …}` writes `code_input` to the process stdin once. The code never
+  reaches argv, events, responses, receipts, logs or backups, as Claude's
+  setup-token never does.
+- `PROVIDER_SIGN_IN_TIMEOUT_SECONDS` and the existing cancel route apply
+  unchanged.
+- The routing checks in `api/provider_login.py:436` and
+  `runs/provider_sign_in.py:275,336` treat `paste_code` like `device_code`.
+- Exit 0 means the CLI accepted the code. The sign-in counts only after
+  verification passes.
 
-**Presence.** `agy models` with the login's `HOME`: exit 0 means the file is
-there (P15).
+**Presence, verification, sign-out.** Presence is `agy models`. Verification
+is `/usage`, a real authenticated call. Sign-out deletes the home's token file
+under the login gate through the existing cleanup attributes.
 
-**Verification and liveness.** `agy -p /usage --output-format json` with the
-login's `HOME`. `status: SUCCESS` is a real authenticated server call at zero
-model tokens (P13, P23). A fresh login and every Verify run this.
+**Concurrency.** Refresh rewrites the token, so turns and probes on one login
+share the existing startup gate per `(provider, machine_id, login_id)`, as
+Codex's rotating token does.
 
-**Sign-out.** The CLI's `/logout` is interactive only (P25). RCP deletes that
-home's token file under the login gate. The rest of the overlay stays, as for
-Codex. For the machine sign-in, RCP shows `agy` as the command to run on the
-host.
-
-**Concurrency.** Refresh rewrites the token file (P26), and the binary has a
-"skipping refreshed token save because another process is the active…" path.
-Turns and probes on one login therefore share the existing startup gate per
-`(provider, machine_id, login_id)`, exactly like Codex's rotating token.
-
-**Hidden reads.** Every agy token file is a login file. The machine one is
-`~/.gemini/antigravity-cli/antigravity-oauth-token`. Each added home's token is
-hidden from other providers' runs whole. agy's own runs hide only other homes'
-token files (a glob over login ids, as Codex does for `auth.json`), because an
-agy run must read its own.
-
-**Still to drive at build time** (verification, not design unknowns): a full
-sign-in through `homes.py`'s real overlay, an agy turn and resume across a
-login switch, and an access-token refresh observed after its expiry inside an
-overlay home.
-
-## Picker behavior
-
-The registry lists `agy` everywhere, and readiness only annotates it
-(memory: pickers list every supported provider). Model choices come from
-`agy models`. With an unreadable catalog the list is empty and a saved model is
-still offered as typed. There is no effort control, because `reasoning` is
-empty for every slug. The machine card hides the shell-timeout and auto-compact
-fields for agy, driven by profile attributes, never an id check. The logo needs
-an entry in `web/src/projects/ProviderMark.tsx` plus an SVG. Without one, the
-label shows as text.
+**Hidden reads.** Every agy token file is hidden from every run's native tools,
+agy's own included, through the existing `login_home_credentials` glob, as
+Codex's `auth.json` is. The CLI process reads its token directly.
 
 ## Generic changes outside the package
 
-Adding agy would add a fourth set of id branches. Each one moves into a profile
-attribute in the same PR:
+Only what agy needs to avoid new id branches:
 
 | Today | Change |
 | --- | --- |
-| `agents/provider_environment.py:374`, `agents/hidden_read.py:504`: `if provider == "opencode"` | `profile.native_tools_hide_reads` (OpenCode False, agy False) |
-| `agents/staged_hidden_read.py:86`, `api/space_machines.py:273`: three login files | `profile.login_files`, rendered on the host |
-| `runs/agent_threads.py:537`: OpenCode has no session summary | `profile.supports_session_summary` |
-| Shell timeout assumed by every profile (`base.py:435`, `space_machines.py`) | `profile.shell_timeout_supported`; the card omits the field when it is False |
-| `runs/space_chat.py:134`: `provider or "codex"` | `DEFAULT_PROVIDER` |
-| `tests/test_providers.py:394`, `tests/test_hidden_read_capability_invariant.py:111`: exact id lists | iterate `PROVIDER_IDS` |
-| `web/src/projects/ProviderMark.tsx:4` | add `agy` logo |
-
-Codex-only receipts (`codex_resume`, `codex_fresh_session_retry`) and the
-`*_roots` config fields stay as they are, because agy has no session format.
+| `base.py:435` shell timeout assumed for every profile | `shell_timeout_default_seconds: int \| None`; the machine card omits the field for None |
+| No profile way to say "no shell wrapper" | `hidden_read_gaps` attribute; agy reports `provider_native_tools_uncovered` from it. OpenCode's existing branches stay as they are |
+| `staged_hidden_read.py:86` host list of machine login files | add agy's path |
+| `providers/codex/homes.py` | move the generic overlay into a shared module, parameterised by machine home and independent paths |
+| `provider_auth.py`, `provider_sign_in.py`, `provider_login.py` | the `paste_code` method |
+| `tests/test_hidden_read_capability_invariant.py:37-108` | an agy branch that reads `--settings` and the staged agent file |
+| `web/src/projects/ProviderMark.tsx:4` | agy logo; without it the label shows as text |
 
 ## Tests and verification
 
 Test-first, scoped to the change:
 
-1. **Decoder unit tests** from recorded probe lines (fixtures under
-   `tests/fixtures/agy/`, scrubbed): session, answer, error, `denied_actions`,
-   per-step usage, cumulative `result.usage` ignored, and an `init` that names
-   no tools.
-2. **Argv and policy tests per capability:**
-   - forbidden flags never appear;
-   - all three permission lists are always present;
-   - `discuss` and `scratch_patch` never get `--add-dir`;
-   - `run_command` is in the staged tool list only for Work-like kinds and a
-     client-carrying `scratch_patch`;
-   - Work's `write_file` allows equal `scope.writable_roots` minus the workspace;
-   - protected and hidden denies are present;
-   - the agent digest is stable.
-3. **Fence tests:** shared vectors run through the local turn and the remote
-   fence, including two queued inputs and an error result.
-4. **Registry tests** iterate `PROVIDER_IDS` with agy included: remote bundle,
-   catalog fallback, readiness version floor.
-5. **Real-turn checks** (live, not in CI) on throwaway data, as in the live
-   agent turn recipe, with real `agy` 1.5.1, local and on one SSH Linux host:
-   - Artifact edit in a running orchestrator's chat: the edit lands in the
-     stage. A file write outside is soft-denied, and RCP shows a clear error.
-   - Work: writes a repo root. A protected path fails. The shell can reach the
-     network.
-   - Resume keeps the conversation.
-   - A steer queues a second turn.
-   - Skills menu.
-   - Model picker.
-   - Sign-ins card with `/usage` verify.
-   - A PATH shim counts the real `agy` invocations.
-6. **Probes still owed before build:**
-   - session summary with an empty tool list (D5);
-   - `work_like_probe_command`;
-   - the Linux behavior of every row above;
-   - `checkpoint` step fields;
-   - a captured revoked-login `AGY_ERROR`;
-   - whether `--effort` with an effort slug errors.
+1. **Decoder**, from scrubbed recorded lines in `tests/fixtures/agy/`: session,
+   answer, error, `denied_actions`, per-step usage, cumulative `result.usage`
+   ignored.
+2. **Argv and policy per capability:** forbidden flags absent; all three lists
+   present; scratch kinds never get `--add-dir`; shell tools only for Work-like
+   kinds and client-carrying `scratch_patch`; `accept-edits` on every writing
+   kind; Work's `write_file` allows equal writable roots minus the workspace;
+   both spellings of each hidden deny; the `.agents` deny; stable digest.
+3. **Fence and replay:** shared vectors through the local turn and the remote
+   fence, including two queued inputs, an error result, and a replay with one
+   steer.
+4. **Overlay homes:** no loop from any ancestor; `HOME` set only on the agy
+   process; a new top-level file and an atomically renamed file migrate to the
+   machine home; the lease blocks migration during a turn.
+5. **Sign-in:** a fake `agy acp --login` that prints a URL and reads a code;
+   the code reaches stdin once and appears in no stored record.
+6. **Registry:** iterate `PROVIDER_IDS`: remote bundle, catalog fallback,
+   version floor.
+7. **Real drive** on throwaway data with real `agy`, local and on one SSH Linux
+   host: an artifact edit in a running orchestrator's chat lands in the stage,
+   and a write outside shows a clear error; a Work turn writes a repo root, a
+   protected path fails, and the shell reaches the network; resume; a steer; the
+   skills menu; the model picker; a full added-login sign-in with `/usage`
+   verify, a turn, and a resume across a login switch; a PATH shim counting real
+   `agy` invocations.
 
-## Open decisions
+## Gates before build
+
+Each is a probe. A failure changes the design before code starts.
+
+- **G1. Linux semantics.** Repeat P3, P6b, P8 and P10 on the Linux host.
+- **G2. Deny matching.** Whether `read_file` and `write_file` denies match a
+  glob pattern, and whether they match the resolved path or the path as typed.
+  If globs fail, the matching hidden reads report uncovered through
+  `hidden_read_gaps`.
+- **G3. Folder deny.** `write_file(<cwd>/.agents)` refuses a write to
+  `<cwd>/.agents/hooks.json`.
+- **G4. Agent switch on resume.** `--conversation` with a different `--agent`
+  and `--settings` than the conversation started with. If agy refuses, agy
+  artifact edits are admitted with `fresh_session = True` from the start, a
+  recorded fresh start. The refused-resume rebuild is keyed to a Codex receipt
+  and does not apply.
+- **G5. Work startup probe.** Whether `--settings` with stdin closed validates
+  the policy and exits.
+
+## Decisions
 
 ### D1. A denied action ends the turn (settled)
 
-In headless mode an action no rule allows stops the run with an empty reply.
-Models reach for `grep` and `cat` by habit (P12).
-
 Since one chat mode, every human chat turn is Work, which allows `command(*)`.
 agy never runs a historical Discuss task, because none can be admitted for a
-new provider. The `discuss` capability reaches agy only as the scratch artifact
-edit (`launch_kind="revoking"`): a comment on an artifact in a chat that refuses
-human turns, a running orchestrator or a read-only child.
+new provider. `discuss` reaches agy only as the scratch artifact edit
+(`launch_kind="revoking"`): a comment on an artifact in a chat that refuses
+human turns.
 
-The rule:
+- The artifact edit's staged agent has no shell tools, so the model cannot call
+  a command.
+- A `scratch_patch` launch gets `run_command` only with a client, and only that
+  client is allowed.
+- A refusal still decodes to a visible error naming the refused action, never
+  an empty answer.
 
-- **The artifact edit has no shell tool.** Its staged agent leaves out
-  `run_command`, `command_status` and `send_command_input`, so the model cannot
-  call a command. It reads and edits with the file tools.
-- **A `scratch_patch` launch gets `run_command` only when it carries a client**,
-  and then only `command(<exact client argv>)` is allowed.
-- **A refusal still ends the turn visibly.** A `result` with `denied_actions`
-  decodes to an error naming the refused action, for example "Antigravity
-  stopped: it tried to run a command this edit does not allow." Never an empty
-  answer.
+Rejected: a machine-built RE2 complement deny (no lookahead, fragile), and the
+agy sandbox with `command(*)` (a different contract from every other provider's
+scratch kinds).
 
-Rejected: a machine-built RE2 deny rule that matches every other command (RE2
-has no lookahead, so the regex is fragile), and the agy sandbox with
-`command(*)` (a different contract from every other provider's scratch kinds).
+### D2. Hooks cannot be disabled (settled)
 
-The artifact edit resumes the master's agy conversation with a different staged
-agent and policy. agy accepting that switch on `--conversation` is unprobed. If
-it refuses, the existing refused-resume path rebuilds the edit as a recorded
-fresh session (`refused_artifact_edit_request`). This is a build-time probe, not
-a decision.
-
-### D2. Hooks cannot be disabled (settled: accepted)
-
-Global, plugin, cwd and `--add-dir` `.agents/hooks.json` commands run on every
-launch, outside every rule. The human accepted this gap. The containment spec
-documents it beside the unbounded Work shell. The scratch kinds never use
-`--add-dir`, so only the member's own global and plugin hooks reach them.
+Global, plugin, cwd and `--add-dir` hooks run outside every rule. The human
+accepted this. The containment spec documents it beside the unbounded Work
+shell. The scratch kinds never use `--add-dir`, and the `.agents` deny keeps an
+agent from planting a cwd hook.
 
 ### D3. Sign-in (settled)
 
-Not a design choice. agy joins both sign-in pools through per-login overlay
-homes. See [Sign-in contract](#sign-in-contract).
+Both pools, through overlay homes. See [Sign-in contract](#sign-in-contract).
 
 ### D4. Branching a chat from an agy session
 
 agy has no fork.
 
-- **(Recommended) A branch of an agy chat starts a fresh agy session, with the
-  existing tail-transcript fallback, and records the fresh start visibly.**
+- **(Recommended) Start a fresh agy session with the existing tail-transcript
+  fallback, and record the fresh start visibly.**
 - Refuse "Branch this chat" for agy sources.
 
-### D5. Session summary
+### D5. Added logins in the first PR
 
-Until an empty agent tool list is proven to mean "no tools", agy refuses
-`session_summary`, as OpenCode does. The provider-switch tail fallback covers
-it.
+Machine sign-in alone makes agy usable. Added logins need the shared overlay
+module, `paste_code`, and the overlay tests, roughly half the build.
+
+- **(Recommended) One PR with both pools**, as the human asked for parity with
+  Claude and Codex, and as AGENTS.md ships design, code and docs together.
+- Ship machine sign-in first, and added logins in a second PR.
