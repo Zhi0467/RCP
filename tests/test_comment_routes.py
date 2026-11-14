@@ -60,16 +60,8 @@ def test_comment_routes_lifecycle_and_mentions(comments_app):
     reply = client.post(path + "/posts", json={"text": "Reply"})
     assert reply.status_code == 200, reply.text
     assert client.get(path).json()["thread"]["state"] == "open"
-    post = thread["posts"][0]["post_id"]
-    assert (
-        client.patch(base + "/comment-posts/" + post, json={"text": "No mention"}).status_code
-        == 200
-    )
-    assert client.get(base + "/comment-mentions").json()["mentions"] == []
     assert client.post(path + "/resolve", json={}).status_code == 200
     assert client.post(path + "/reopen", json={}).json()["thread"]["state"] == "open"
-    assert client.delete(base + "/comment-posts/" + post).status_code == 200
-    assert client.get(path).status_code == 404
 
 
 def test_comment_post_budget_and_agent_tokens(comments_app):
@@ -125,7 +117,10 @@ def test_comment_target_not_readable_is_404(comments_app, kind):
         ).status_code
         == 404
     )
-    assert client.get(path).status_code == 404
+    missing = client.get(path)
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "comment_target_not_found"
+    assert missing.json()["detail"]["message"]
     assert (
         client.post(
             base + "/comment-threads",
@@ -140,9 +135,6 @@ def test_comment_target_not_readable_is_404(comments_app, kind):
     assert client.post(path + "/posts", json={"text": "no"}).status_code == 404
     assert client.post(path + "/resolve", json={}).status_code == 404
     assert client.post(path + "/reopen", json={}).status_code == 404
-    post_path = base + "/comment-posts/" + thread["posts"][0]["post_id"]
-    assert client.patch(post_path, json={"text": "no"}).status_code == 404
-    assert client.delete(post_path).status_code == 404
 
 
 def test_read_only_project_keeps_reads_and_refuses_comment_writes(comments_app, monkeypatch):
@@ -166,9 +158,6 @@ def test_read_only_project_keeps_reads_and_refuses_comment_writes(comments_app, 
     assert client.post(path + "/posts", json={"text": "no"}).status_code == 409
     assert client.post(path + "/resolve", json={}).status_code == 409
     assert client.post(path + "/reopen", json={}).status_code == 409
-    post_path = base + "/comment-posts/" + thread["posts"][0]["post_id"]
-    assert client.patch(post_path, json={"text": "no"}).status_code == 409
-    assert client.delete(post_path).status_code == 409
 
 
 def test_artifact_anchor_must_match_media_type(comments_app):
@@ -182,17 +171,6 @@ def test_artifact_anchor_must_match_media_type(comments_app):
         },
     )
     assert response.status_code == 422, response.text
-
-
-def test_comment_posts_are_author_only(comments_app):
-    _, client, store, project, artifact = comments_app
-    thread = _create(client, project, artifact).json()["thread"]
-    post_id = thread["posts"][0]["post_id"]
-    with store.connection() as connection:
-        connection.execute("UPDATE comment_posts SET author_id='other' WHERE post_id=?", (post_id,))
-    path = f"/api/projects/{project}/comment-posts/{post_id}"
-    assert client.patch(path, json={"text": "not mine"}).status_code == 403
-    assert client.delete(path).status_code == 403
 
 
 @pytest.mark.parametrize("report", [False, True])

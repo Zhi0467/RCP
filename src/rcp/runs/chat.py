@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TypeGuard
 
 from pydantic import BaseModel, ConfigDict
 
@@ -52,6 +52,7 @@ from rcp.artifacts import (
     read_local_regular_file,
 )
 from rcp.background import AgentTaskExecution
+from rcp.comments.models import ArtifactBoxSelection
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import validate_worktree_binding
 from rcp.core.models import ConversationWorktreeBinding
@@ -89,7 +90,7 @@ from rcp.runs.shared import (
     _task_token,
     _touch_local_stage,
 )
-from rcp.service import GraphUpdateResult, ProjectService, RunRequest
+from rcp.service import ArtifactSelection, GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
     AgentTaskKind,
     AgentTaskReceiptRecord,
@@ -1079,17 +1080,13 @@ def stage_artifact_context(
         if content is not None
         and descriptor.media_type in CROPPABLE_MEDIA_TYPES
         and any(
-            selection.kind == "box"
-            and (selection.elements is not None or selection.drawn_version is not None)
-            and (selection.drawn_version or current_version) == version
+            _crops(selection) and (selection.drawn_version or current_version) == version
             for selection in context.selections
         )
     }
     crops: dict[int, tuple[bytes, bool]] = {}
     for index, selection in enumerate(context.selections, 1):
-        if selection.kind != "box" or (
-            selection.elements is None and selection.drawn_version is None
-        ):
+        if not _crops(selection):
             continue
         frame, animated = frames.get(selection.drawn_version or current_version, (None, False))
         if frame is not None:
@@ -1178,6 +1175,13 @@ def stage_artifact_context(
 
 
 _SELECTION_CROPS = "selections"
+
+
+def _crops(selection: ArtifactSelection) -> TypeGuard[ArtifactBoxSelection]:
+    """A box drawn in a viewer that knew its target: current element boxes or a drawn version."""
+    return selection.kind == "box" and (
+        selection.elements is not None or selection.drawn_version is not None
+    )
 
 
 def _write_artifact_context(

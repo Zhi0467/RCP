@@ -56,6 +56,7 @@ from rcp.artifacts import (
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.comments.models import COMMENT_MEDIA_TYPES
+from rcp.comments.send import CommentSend, chat_turn_send, thread_send_text
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -82,7 +83,6 @@ from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
-    ArtifactContextRequest,
     ChatMessage,
     CoachRequest,
     ProjectService,
@@ -97,7 +97,6 @@ from rcp.storage import (
     AppStore,
 )
 from rcp.storage.client_requests import ClientRequestConflict
-from rcp.storage.comments import CommentError
 from rcp.transport import StateUnavailable
 from rcp.watchers import WatcherDelivery
 
@@ -208,7 +207,7 @@ def _agent_artifact_response(
         available=available,
         unavailable_reason=unavailable_reason,
         view=artifact_view(descriptor.media_type),
-        can_open=available and artifact_view(descriptor.media_type) not in {"pdf", "file"},
+        can_open=available and artifact_view(descriptor.media_type) != "file",
         can_download=available,
         can_keep=available and not kept and not record.history_only and record.kind != "space_chat",
         can_discuss=can_discuss,
@@ -585,107 +584,6 @@ def _require_superseded_discuss_turn(
         raise ValueError("Only a settled Discuss turn of this chat can be sent again.")
 
 
-def require_comment_send_replay(
-    record: AgentTaskRecord, message: str, context: ArtifactContextRequest | None
-) -> None:
-    from rcp.runs.artifact_edit_admission import artifact_comment_message
-
-    expected = artifact_comment_message(message, context) if context is not None else message
-    same_context = True
-    if context is not None:
-        stored = record.request.get("artifact_context")
-        incoming = context.model_dump(mode="json")
-        same_context = isinstance(stored, dict) and all(
-            stored.get(field) == incoming[field]
-            for field in ("artifact_id", "operation_id", "selections")
-        )
-    if record.request.get("message") != expected or not same_context:
-        raise HTTPException(status_code=409, detail="Request key belongs to another comment send.")
-
-
-def prepare_comment_send(
-    store: AppStore,
-    project_id: str,
-    user_id: str,
-    thread_ids: list[str],
-    key: str,
-    *,
-    chat_id: str | None,
-    paper: bool = False,
-    message: str = "",
-    artifact_id: str | None = None,
-    selections: bool = True,
-) -> tuple[str, ArtifactContextRequest | None]:
-    if not key or len(thread_ids) > ARTIFACT_CONTEXT_MAX_SELECTIONS:
-        raise HTTPException(
-            status_code=422, detail="Thread sends require a key and a bounded list."
-        )
-    if not paper and artifact_id is None and not chat_id:
-        raise HTTPException(status_code=422, detail="Thread sends to a chat require its chat id.")
-    try:
-        routed = store.sendable_threads(project_id, user_id, thread_ids, key)
-    except CommentError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
-    artifact_ids: set[str] = set()
-    for thread, route in routed:
-        target_kind, target_id = thread["target_kind"], thread["target_id"]
-        if artifact_id is not None and (target_kind != "artifact" or target_id != artifact_id):
-            raise HTTPException(status_code=409, detail="The thread belongs to another artifact.")
-        if target_kind == "paper":
-            if not paper:
-                raise HTTPException(
-                    status_code=409, detail="Paper comments require the Paper coach."
-                )
-            continue
-        if target_kind == "artifact":
-            artifact_ids.add(target_id)
-        if route.chat_owner not in {None, user_id}:
-            raise HTTPException(status_code=404, detail="Comment target not found")
-        if not route.chat_id or paper or (artifact_id is None and route.chat_id != chat_id):
-            raise HTTPException(status_code=409, detail="The thread belongs to another chat.")
-    if len(artifact_ids) > 1:
-        raise HTTPException(status_code=409, detail="Send comments on one artifact at a time.")
-    threads = [thread for thread, _ in routed]
-    rendered = [thread["rendered"] for thread in threads]
-    combined = "\n\n".join(part for part in [message, *rendered] if part)
-    if len(combined) > STEERING_MESSAGE_MAX_CHARS:
-        raise HTTPException(status_code=422, detail="The comment send is too long.")
-    if not selections or not artifact_ids:
-        return combined, None
-    artifact = store.artifact(next(iter(artifact_ids)))
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    context = ArtifactContextRequest.model_validate(
-        {
-            "source": "task",
-            "operation_id": artifact.origin_operation_id,
-            "artifact_id": artifact.artifact_id,
-            "selections": [
-                {
-                    **thread["anchor"],
-                    "comment": thread["rendered_posts"],
-                    "drawn_version": thread["drawn_version"],
-                }
-                for thread in threads
-                if thread["target_kind"] == "artifact"
-            ],
-        }
-    )
-    text = "\n\n".join(
-        part
-        for part in [
-            message,
-            *(
-                text
-                for thread, text in zip(threads, rendered, strict=True)
-                if thread["target_kind"] != "artifact"
-            ),
-        ]
-        if part
-    )
-    return text, context
-
-
 @router.post(
     "/api/projects/{project_id}/tasks/{kind}",
     status_code=202,
@@ -737,25 +635,36 @@ def start_agent_task(
     authorized_by = identity_access.require_patch_capable_identity(http_request)
     if idempotency_key is not None:
         project_id = catalog.resolve_project_id(project_id)
-    prepared_send: tuple[str, ArtifactContextRequest | None] | None = None
+    sent: CommentSend | None = None
     if thread_ids:
         message = body.get("message", "")
         if not isinstance(message, str):
             raise HTTPException(status_code=422, detail="Invalid message.")
-        prepared_send = prepare_comment_send(
-            store,
-            project_id,
-            authorized_by.user_id,
-            thread_ids,
-            str(idempotency_key) if idempotency_key is not None else "",
-            chat_id=str(body.get("chat_id") or ""),
-            paper=kind == "paper_coach",
-            message=message,
+        key = str(idempotency_key) if idempotency_key is not None else ""
+        sent = (
+            thread_send_text(
+                store,
+                project_id,
+                authorized_by.user_id,
+                thread_ids,
+                key,
+                message=message,
+                chat_id=None,
+            )
+            if kind == "paper_coach"
+            else chat_turn_send(
+                store,
+                project_id,
+                authorized_by.user_id,
+                thread_ids,
+                key,
+                message=message,
+                chat_id=str(body.get("chat_id") or ""),
+            )
         )
-        message, context = prepared_send
-        body["message"] = message
-        if context is not None:
-            body["artifact_context"] = context.model_dump(mode="json")
+        body["message"] = sent.text
+        if sent.context is not None:
+            body["artifact_context"] = sent.context.model_dump(mode="json")
     try:
         with store.client_request_admission(
             project_id,
@@ -767,10 +676,13 @@ def start_agent_task(
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
-                if prepared_send is not None:
-                    require_comment_send_replay(record, *prepared_send)
+                if sent is not None:
+                    sent.require_replay_of(record)
                     store.mark_threads_sent(
-                        thread_ids, record.operation_id, str(idempotency_key), authorized_by.user_id
+                        sent.rendered_through,
+                        record.operation_id,
+                        str(idempotency_key),
+                        authorized_by.user_id,
                     )
                 return _agent_task_response(store, record, background_tasks)
             record = start_ordinary_task(
@@ -784,9 +696,12 @@ def start_agent_task(
                 authorized_by=authorized_by,
                 branch_id=branch_id,
             )
-            if thread_ids:
+            if sent is not None:
                 store.mark_threads_sent(
-                    thread_ids, record.operation_id, str(idempotency_key), authorized_by.user_id
+                    sent.rendered_through,
+                    record.operation_id,
+                    str(idempotency_key),
+                    authorized_by.user_id,
                 )
             # A task admitted a moment ago has not run, so it can carry no note yet.
             return _agent_task_response(store, record, background_tasks)
@@ -926,19 +841,21 @@ def steer_agent_task(
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
-    text = body.message
-    if body.comment_thread_ids:
-        text, _ = prepare_comment_send(
+    sent = (
+        thread_send_text(
             store,
             project_id,
             author.user_id,
             body.comment_thread_ids,
             str(body.message_id),
-            chat_id=str(record.request.get("chat_id") or ""),
-            paper=record.kind == "paper_coach",
-            message=text,
-            selections=False,
+            message=body.message,
+            chat_id=None
+            if record.kind == "paper_coach"
+            else str(record.request.get("chat_id") or ""),
         )
+        if body.comment_thread_ids
+        else None
+    )
     service = cast(ProjectService, task_owner(store, record, catalog=catalog))
     try:
         with project_write_admission(project_id, http_request):
@@ -949,16 +866,16 @@ def steer_agent_task(
                 message_id=str(body.message_id),
                 attempt=body.attempt,
                 expected_turn_id=body.expected_turn_id,
-                text=text,
+                text=sent.text if sent is not None else body.message,
             )
         message = finish_chat_steer(service, background_tasks, record, delivery)
         if (
-            body.comment_thread_ids
+            sent is not None
             and message.steering is not None
             and message.steering.status != "refused"
         ):
             store.mark_threads_sent(
-                body.comment_thread_ids, operation_id, str(body.message_id), author.user_id
+                sent.rendered_through, operation_id, str(body.message_id), author.user_id
             )
         return message
     except ValueError as exc:
@@ -1656,7 +1573,7 @@ def _read_agent_artifact_bytes(
         "download": projected.can_download,
         "keep": projected.can_keep,
     }[action]
-    if action == "open" and projected.view in {"pdf", "file"}:
+    if action == "open" and projected.view == "file":
         raise HTTPException(status_code=404, detail="Artifact has no viewer")
     if not allowed:
         raise HTTPException(

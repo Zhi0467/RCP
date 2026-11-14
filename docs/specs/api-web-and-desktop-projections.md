@@ -2244,8 +2244,8 @@ admitted nonterminal edit supplies `editing_operation_id`.
 The comment offer and fresh-session requirement reuse comments admission and
 the session reservation check without launching. The reply link follows the
 artifact's own chat, Experiment node chat, or Runs orchestrator thread. Viewer
-URLs target stored artifacts, including reports; PDF and download-only artifacts
-have no viewer URL. Download and retention information are independent offers.
+URLs target stored artifacts, including reports and PDFs; download-only
+artifacts have no viewer URL. Download and retention information are independent offers.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
@@ -2332,11 +2332,12 @@ lists a target's threads. `GET comment-threads?target_kind=reply&chat_id=` lists
 every reply thread in one chat, so a chat reads its threads in one request.
 `GET comment-threads/{thread_id}` reads one for a link; both need project read. `POST comment-threads` starts a thread, `POST
 comment-threads/{thread_id}/posts` replies, and `POST .../resolve` and `POST
-.../reopen` change its state; these need project write. `PATCH` and `DELETE
-comment-posts/{post_id}` are author-only. `GET comment-mentions` lists the
-caller's mentions. Every route also checks that the caller can read the target
-and answers 404 otherwise, because the private-path check never sees thread or
-post ids. Each listed thread carries `can_send` for the caller.
+.../reopen` change its state; these need project write. Posts are never edited
+or deleted. `GET comment-mentions` lists the caller's mentions. Every route also
+checks that the caller can read the target and answers 404 otherwise, because
+the private-path check never sees thread ids. Refusals, including thread sends,
+answer `detail: {code, message}`, where `message` is short text a person can
+read. Each listed thread carries `can_send` for the caller.
 [Comment models](../../src/rcp/comments/models.py) own the bodies.
 
 The viewer's Send is `POST artifacts/{artifact_id}/comments` with thread ids and
