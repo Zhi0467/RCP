@@ -963,9 +963,13 @@ test("a loaded index stays on screen while a quick return refreshes it", async (
   state.projectGate.resolve();
 });
 
-for (const width of [600, 768, 900, 1280]) {
+for (const width of [561, 600, 700, 768, 900, 1280]) {
   test(`the desktop header stays one row with many projects open at ${width}px`, async (t) => {
-    const { page, errors } = await openedShell(t, { viewport: { width, height: 700 } });
+    const longBranch = "a-very-long-experiment-branch-name";
+    const { page, errors } = await openedShell(t, {
+      viewport: { width, height: 700 },
+      graphRefs: [mainRef(), branchRef(longBranch)],
+    });
     for (const id of ["second", "third", "fourth", "fifth", "sixth"]) {
       await page.evaluate((next) => (window.location.hash = `/projects/${next}`), id);
       await page
@@ -973,6 +977,11 @@ for (const width of [600, 768, 900, 1280]) {
         .filter({ hasText: `(${id})` })
         .waitFor();
     }
+    await page.evaluate(
+      (branch) => (window.location.hash = `/projects/sixth?branch_id=${branch}`),
+      longBranch,
+    );
+    await page.getByRole("button", { name: `Branch: ${longBranch}` }).waitFor();
     const layout = await page.locator(".project-header").evaluate((header) => {
       const box = (selector) => header.querySelector(selector).getBoundingClientRect();
       const active = box(".project-dock-tab.active");

@@ -24,9 +24,16 @@ export function ProjectDock({
 }: Props) {
   const strip = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    strip.current
-      ?.querySelector(".project-dock-tab.active")
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const element = strip.current;
+    if (!element) return;
+    const showActive = () =>
+      element
+        .querySelector(".project-dock-tab.active")
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    showActive();
+    const resize = new ResizeObserver(showActive);
+    resize.observe(element);
+    return () => resize.disconnect();
   }, [activeProjectId, tabs.length]);
   if (tabs.length === 0) return null;
   return (

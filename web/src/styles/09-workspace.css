@@ -304,7 +304,7 @@
   display: flex;
   flex: 1 1 auto;
   gap: 6px;
-  min-width: 0;
+  min-width: min-content;
 }
 .project-header-navigation > .project-back {
   flex: none;
@@ -314,13 +314,29 @@
   display: flex;
   flex: 0 1 620px;
   max-width: 620px;
-  min-width: 112px;
+  min-width: 136px;
 }
 .project-header-actions {
   align-items: center;
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
   gap: 14px;
+  min-width: 0;
+}
+.project-header-actions > :not(.project-ref-group) {
+  flex: none;
+}
+.project-ref-group,
+.project-ref-group .branch-picker,
+.project-ref-group .branch-picker-trigger {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.project-ref-group .branch-picker-trigger > span:first-of-type {
+  min-width: 0;
+}
+.project-ref-group .branch-picker-trigger > svg {
+  flex: none;
 }
 .project-ref-group {
   gap: 2px;
@@ -344,14 +360,14 @@
 
 /* Browser tabs: the active one joins the page below, the rest recede. */
 .project-header .project-dock-scroll {
-  flex: 0 1 auto;
+  flex: 0 1 max-content;
   gap: 2px;
   min-width: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
   padding: 0 4px;
   scrollbar-width: none;
-  width: auto;
+  width: 0;
 }
 .project-header .project-dock-scroll::-webkit-scrollbar {
   display: none;
