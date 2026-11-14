@@ -305,3 +305,13 @@
     animation: none;
   }
 }
+
+:root[data-theme="snowbound"] .agent-card-avatar[data-working]::after {
+  animation: agent-state-pulse 1.4s ease-in-out infinite;
+  border: 2px solid var(--agent-working);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="snowbound"] .agent-card-avatar[data-working]::after {
+    animation: none;
+  }
+}
