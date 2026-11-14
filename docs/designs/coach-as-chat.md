@@ -53,7 +53,10 @@ For a team project both are the team server, together with the backend and its
 SQLite, so the mirror below is all local. The one split case is a personal
 project whose state root is an SSH host: the agent and the folder are on that
 host while SQLite is in the desktop backend. There the folder is read back at
-the end of each Coach turn instead of watched (decided with the human).
+the end of each Coach turn instead of watched (decided with the human). The
+local mirror that `_pull_remote_tree` keeps of the remote root is a read-only
+cache; scans and writes go to the remote folder through a shipped remote script
+that does the same per-file exchange.
 
 A Paper-focused chat always runs on the machine that holds the state root.
 Asking it to run elsewhere is refused with the reason. Other chats that run on
@@ -62,48 +65,84 @@ today.
 
 ## The live Paper folder
 
-`.research/paper` becomes the Paper's file view. SQLite stays the truth for
-history, co-editing, GitHub sync, and backup. The folder is kept equal to it in
-both directions. This extends two existing pieces instead of adding new ones:
-the Paper publisher (`LivePaper._publish` and the `paper_publication` table)
-and Paper Git's merge (`paper/git_merge.py` `merge_trees` with the apply loop in
-`PaperGit._merge`).
+The Paper's file view moves out of `.research` to `<state root>/paper/`, so a
+write grant on it never touches graph or chat state (invariants 1 and 4b). The
+old `.research/paper` is removed on upgrade after the first full write.
+
+SQLite stays the truth for history, co-editing, GitHub sync, and backup. The
+folder is kept equal to it in both directions. This extends two existing pieces
+instead of adding new ones: the Paper publisher (`LivePaper._publish` and the
+`paper_publication` table) and Paper Git's merge (`paper/git_merge.py`
+`merge_trees` with the apply loop in `PaperGit._merge`).
+
+**One owner.** The watcher, merge, bases, and folder writer live in one module
+behind `StateWorkspace`, with a local and a remote implementation, as publish is
+today. Nothing else reads or writes the folder's bookkeeping.
+
+**Safety.** Every entry is checked with `lstat`. Symlinks, hard links
+(`st_nlink > 1`), and special files are refused and reported, never followed or
+imported. RCP writes through directory file descriptors with `O_NOFOLLOW` at
+every level and refuses to start when the folder root is not a plain directory.
+The write root is the resolved canonical path, compared by filesystem identity.
+
+**Ignored names.** A code-defined list (editor swap files, `.DS_Store`,
+`__pycache__`, LaTeX and Typst build outputs) is never imported. The Coach's
+prompt says to build in its artifact folder. A refused or ignored file is
+reported once per turn and left alone.
 
 **What RCP last wrote.** A new table `paper_folder_files(project_id, path,
 sha256, revision)` records, per file, the bytes RCP last wrote to the folder.
-It is the merge base for folder edits and survives restarts.
+It is the merge base for folder edits and survives restarts. A folder file equal
+to the live Paper file is a no-op; there is no separate echo rule.
 
-**Paper → folder.** The publisher stops swapping whole trees. After each
-committed revision it writes only the changed paths, per file, through a
-sibling temp file and a rename, then records the file in `paper_folder_files`.
-Writes are coalesced per file for 300 ms so typing does not rewrite a file per
-keystroke. `hold`, failure backoff, and `pending_since` keep their meaning;
-`published_revision` becomes "every changed file written".
-`publish_paper_tree` and `_select_paper_tree` are deleted, and the remote state
-transport gains a per-file write with the same temp-and-rename.
+**Paper → folder.** The publisher stops swapping whole trees. It writes only
+changed paths, per file:
+1. Write the new bytes to a sibling temp file.
+2. Exchange it with the target atomically (`renameat2(RENAME_EXCHANGE)` on
+   Linux, `renamex_np(RENAME_SWAP)` on macOS, as `_select_paper_tree` does).
+3. Compare the swapped-out bytes with `paper_folder_files`. If they differ, a
+   folder edit landed after the last read: merge it in as a folder edit before
+   recording the new base. RCP never overwrites an unread edit.
 
-**Folder first.** Before RCP overwrites a file, it compares the file's bytes
-with `paper_folder_files`. If they differ, someone (the Coach, or a person in
-an editor) changed the file since RCP wrote it, so that change is read into
-Paper first, under the same per-project lock. RCP never overwrites an unread
-edit.
+Writes are coalesced per file and flushed every 2 seconds, immediately before a
+Coach turn starts, and before its final scan. The `paper_publication` row keeps
+its role: `published_revision` becomes the folder revision (every file written
+up to it). `hold`, failure backoff, `pending_since`, the editor badge, timing
+pruning, backup's republish marker, and import publication keep working on it.
+A full reconcile from SQLite runs at startup, after restore and import, on
+unpause, and on SSH reconnect, so a crash between commit and write is repaired.
+`publish_paper_tree` and `_select_paper_tree` are replaced by the per-file
+writer; the `.publish` exclusions in backup and transfer go with them.
+
+**One writing turn.** At most one Paper-writing turn runs per project. Another
+Coach turn queues behind it, as a busy chat does. Every folder edit during the
+turn is credited to it.
 
 **Folder → Paper.** On local state roots the owner watches the folder with
-`watchfiles` (declared as a direct dependency) for as long as the project is
-open, not only during Coach turns, so any edit to the folder reaches Paper. On
-SSH state roots RCP scans at the end of each Coach turn, at the folder-first
-check, and at backend start.
+`watchfiles` (declared as a direct dependency) while the project is open, so
+any edit reaches Paper. On SSH state roots RCP scans by content hash at the end
+of each Coach turn and at the reconcile points above.
 - A changed path becomes one call to `merge_trees(base, theirs, ours)`: base =
   the bytes in `paper_folder_files`, theirs = the folder, ours = live Paper.
 - Clean results apply through Paper Git's apply loop as a Paper revision whose
-  actor is `coach:<operation id>` while a Coach turn runs, else `folder`.
-- An overlap keeps the live text (decision 6). The folder's side is held with
-  Paper Git's held-file mechanism under the task id of the turn. That held side
-  is the red row.
+  actor is `coach:<operation id>` during a Coach turn, else `folder`.
+- **Renames.** A delete plus a create with the same content in one scan is a
+  rename and keeps the Paper file id. A rename with edits is a delete plus a
+  create. A write to a path a member renamed during the turn is a clash.
+- **Mass deletes.** A scan that would delete more than 20 files, or more than a
+  quarter of the Paper, applies none of those deletes and shows one red row
+  asking the member to confirm.
+- **Clashes.** An overlap keeps the live text (decision 6). The folder's side
+  is held with Paper Git's held-file mechanism under the turn's task id. That
+  held side is the red row.
 - Refused paths and limits are skipped with Paper Git's reasons and show as red
   rows.
-- **Startup.** Before the first write, a full scan reads any changed files into
-  Paper. A restart never loses folder edits.
+
+**Builds.** Compile and preview already read SQLite snapshots
+(`paper/compile.py` `materialize`), never the folder.
+
+**GitHub.** A Paper Git pull is an ordinary Paper revision, so it reaches the
+folder like any other edit. The folder never talks to GitHub.
 
 ## The Coach chat
 
@@ -115,14 +154,8 @@ check, and at backend start.
   the Work task contract bumps.
 - **Write scope.** `ProjectWriteScope` gains `paper_root`, set only for
   `focus = "paper"`. It is part of the scope fingerprint. Old scopes have none
-  and stay valid. `protected_repository_paths` keeps denying `.research` and
-  lists its children except `paper/`, so the grant never opens graph or chat
-  state. Per provider:
-  - **Claude:** deny each `.research` child except `paper/`, and allow
-    `paper/`; deny still beats allow.
-  - **Codex:** `paper/` joins the writable roots and the other `.research`
-    children stay `read`. A profile test pins that precedence.
-  - **OpenCode:** a granted root inside a deny is already re-allowed.
+  and stay valid. `protected_repository_paths` keeps denying all of `.research`. The Paper folder sits outside `.research`, so `.research` stays fully
+  denied and the grant is an ordinary write root for every provider.
 - **Prompt.** The writing guidance from `paper_coach_task_contract` moves into
   the Work contract when `focus` is `paper`, rendered from the same resolved
   scope object.
@@ -144,12 +177,14 @@ check, and at backend start.
 ## A turn's change list
 
 - **Receipts.** Each folder → Paper apply during a turn writes a receipt keyed
-  by `(operation_id, revision)` with the paths, the inverse operations, and
-  guards (the text each region must still hold). Receipts pin their before and
+  by `(operation_id, revision)` with the paths, that revision's own delta, the
+  inverse operations, and guards (the text each region must still hold). The
+  guarded inverse and its apply stay in `paper/changes.py`; the card collection
+  around them is deleted. Receipts pin their before and
   after saved snapshots, so pruning keeps them while the chat exists.
-- **List.** The change list is built from the turn's receipts: per path, the
-  text before the turn's first receipt and after its last. Other members' edits
-  are not receipts, so they never show as the Coach's.
+- **List.** The change list composes each path's receipt deltas in order. Other
+  members' edits are not receipts, so they never show as the Coach's. This
+  composition is new code with its own tests.
 - **Rows.** "N files changed", with +/− totals. Red rows sort first: held
   clashes (actions: Take the Coach's / Keep mine, through Paper Git's
   `resolve`) and skipped paths.
@@ -172,10 +207,8 @@ renders inside the chat's turn, and the diff opens beside the chat.
 
 ## Other agents
 
-- Prompts for Work, Experiment, and Auto-research name `.research/paper` as the
-  live Paper, read-only. Auto-research gains the line it lacks today.
-- The folder is current within a second, so "not authoritative" is dropped from
-  the prompt.
+- Prompts for Work, Experiment, and Auto-research name `<state root>/paper/`
+  as the Paper, read-only. Auto-research gains the line it lacks today.
 
 ## Save to Paper
 
@@ -195,12 +228,17 @@ human action; agents already write files directly.
 
 ## Checks
 
+- Concurrency and safety: a Coach write racing an RCP write (exchange check);
+  symlinks, hard links, special files; two Coach turns (the second queues);
+  out-of-turn folder edits; ignored names; mass-delete guard; renames.
+- Publication: startup, restore, import, and unpause reconcile; the badge;
+  backup republish.
 - Store and owner tests: Paper → folder in place; folder → Paper merge with
   base, overlap keeps live text, binary, create, delete, rename, refused path;
   RCP's own writes ignored; turn change list excludes other members' edits;
   Undo turn.
 - Launch tests: `focus: "paper"` adds exactly the Paper write root; other
-  launches stay read-only on `.research/paper`; prompts per launch kind.
+  launches stay read-only on the Paper folder; prompts per launch kind.
 - Old `paper_coach` rows replay; pending Coach cards migrate.
 - Served drive: a real Coach turn edits several Paper files while a member types
   in one of them; the chat shows the folded list with one red row; a diff
