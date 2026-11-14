@@ -43,6 +43,9 @@ export function useInlineArtifactPins(
   }, []);
   const position = (thread: CommentThread) => current()?.position(thread.thread_id) ?? null;
   return {
+    revision,
+    position,
+    locate: (thread: CommentThread) => current()?.locate(thread),
     onLoad: () => {
       const api = current();
       api?.track(open);

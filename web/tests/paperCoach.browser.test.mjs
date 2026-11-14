@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -937,6 +938,104 @@ for (const width of [1280, 390])
     await fits(page);
     assert.deepEqual(errors, []);
   });
+
+test("threads drawn in an HTML preview pin and locate inside its page", async (t) => {
+  const rendered = JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "python",
+        "-c",
+        `import json
+from rcp.artifact_comments import selection_frame_addon
+from rcp.artifact_views import artifact_content, inline_viewer_document
+source = b'<body style="margin:0"><div style="height:900px"></div><div id="plot" style="width:120px;height:80px;background:teal"></div><div style="height:900px"></div></body>'
+shell, shell_csp = inline_viewer_document('page.html', 'html', content_url='/html-preview-content', live=None, selectable=True)
+content, _, content_csp = artifact_content('page.html', 'text/html', source, frame_addon=selection_frame_addon())
+print(json.dumps([shell, shell_csp, content, content_csp]))`,
+      ],
+      { cwd: new URL("../..", import.meta.url), encoding: "utf8", maxBuffer: 20 * 1024 * 1024 },
+    ),
+  );
+  const { page, context, errors } = await open(t, {
+    width: 1280,
+    configure: ({ tree, threads }) => {
+      tree.files.push({ file_id: "f3", path: "page.html", kind: "text", format: "html", size: 5 });
+      threads.push({
+        thread_id: "h1",
+        project_id: "p",
+        target_kind: "paper",
+        target_id: "f3",
+        graph_target: "main",
+        drawn_version: null,
+        anchor: {
+          kind: "element",
+          path: "#plot",
+          label: "Plot",
+          text: "",
+          comment: "",
+          where: "page.html (preview)",
+        },
+        state: "open",
+        created_by: "member",
+        created_at: new Date().toISOString(),
+        closed_by: null,
+        closed_at: null,
+        sent_operation_id: null,
+        can_send: true,
+        posts: [],
+      });
+    },
+  });
+  await context.route("**/files/f3/preview/state", (route) =>
+    route.fulfill({ json: { revision: 1, key: "page-1" } }),
+  );
+  await context.route("**/files/f3/preview?*", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: rendered[0],
+      headers: { "Content-Security-Policy": rendered[1] },
+    }),
+  );
+  await context.route("**/html-preview-content*", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: rendered[2],
+      headers: { "Content-Security-Policy": rendered[3] },
+    }),
+  );
+  await page.locator(".paper-file", { hasText: "page.html" }).click();
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
+  const pin = page.getByRole("button", { name: "Comment 1", exact: true });
+  const content = () =>
+    page
+      .frame({ url: /\/files\/f3\/preview\?revision=1$/ })
+      .childFrames()[0]
+      .childFrames()[0];
+  await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+  await content()
+    .locator("#plot")
+    .evaluate((plot) => plot.scrollIntoView({ block: "center" }));
+  await pin.waitFor();
+  const plot = await content().locator("#plot").boundingBox();
+  const placed = await pin.evaluate((element) => ({
+    x: parseFloat(element.style.left),
+    y: parseFloat(element.style.top),
+  }));
+  assert.ok(Math.abs(placed.y - (plot.y + plot.height)) < 2, JSON.stringify({ placed, plot }));
+  await content().evaluate(() => scrollTo(0, 0));
+  await pin.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Comments", exact: true }).first().click();
+  await page.locator('[data-thread-id="h1"] .rcp-comment-quote').click();
+  await content().locator('[data-rcp-selection="locate"]').waitFor({ state: "attached" });
+  await pin.waitFor();
+  await fits(page);
+  assert.deepEqual(
+    errors.filter((error) => !error.includes("'navigate-to'")),
+    [],
+  );
+});
 
 const running = {
   ...turn,
