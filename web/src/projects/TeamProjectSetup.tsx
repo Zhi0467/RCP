@@ -50,6 +50,7 @@ import {
   formatCommandArgv,
   githubRepositoryName,
   invalidProjectProvisioningHash,
+  listedSetupRequests,
   machineCardName,
   projectProvisioningHash,
   projectProvisioningRequestId,
@@ -153,6 +154,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   const [providers, setProviders] = useState<ProviderReadiness[]>([]);
   const [request, setRequest] = useState<ProjectProvisioningResponse | null>(null);
   const [savedRequests, setSavedRequests] = useState<ProjectProvisioningResponse[]>([]);
+  const listedRequests = listedSetupRequests(savedRequests);
   const [connection, setConnection] = useState<TeamConnectionMetadata | null>(null);
   const [operatorTarget, setOperatorTarget] = useState("");
   const [probe, setProbe] = useState<ServerOperatorProbe | null>(null);
@@ -685,10 +687,10 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               New repositories start on main with an empty “Start RCP project” commit by RCP. For an
               empty GitHub repository, setup pushes it after you add the deploy key.
             </p>
-            {savedRequests.length > 0 && (
+            {listedRequests.length > 0 && (
               <div className="provisioning-resume-list">
                 <strong>Existing setup requests</strong>
-                {savedRequests.map((saved) => (
+                {listedRequests.map((saved) => (
                   <button
                     type="button"
                     key={saved.request_id}
@@ -1441,6 +1443,17 @@ export function ProvisioningStatus({
               <span>{gitWriteFact(repository.write_verified)}</span>
             )}
             <code>{repository.resolved_path ?? repository.intended_path ?? "Path pending"}</code>
+            {request.cancelled_at !== null &&
+              request.cancellation_disposition === "prepared_state_preserved" &&
+              repository.deploy_key_label &&
+              repository.settings_url && (
+                <span>
+                  <a href={repository.settings_url} target="_blank" rel="noreferrer">
+                    Remove deploy key
+                  </a>{" "}
+                  <code>{repository.deploy_key_label}</code>
+                </span>
+              )}
             {repository.diagnostic && <p>{repository.diagnostic}</p>}
           </article>
         ))}

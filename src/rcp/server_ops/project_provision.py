@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import os
 import socket
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
 
+from rcp.limits import PROJECT_PROVISION_CANCEL_WAIT_SECONDS
 from rcp.machine_cards import card
 from rcp.server_ops._local_primitives import canonical_json_bytes
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -49,6 +51,7 @@ from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.storage import (
     AppStore,
+    ProjectProvisioningCancellationDisposition,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineRecord,
     ProjectProvisioningProviderCheckRecord,
@@ -214,6 +217,8 @@ class ProjectProvisionCoordinator:
             credential_manager=self.credential_manager,
         )
         self.local_host = local_host or socket.gethostname()
+        self._locks_guard = threading.Lock()
+        self._request_locks: dict[str, threading.Lock] = {}
 
     def plan(self, request_id: str) -> ServerControlProjectPlanResult:
         boundary = self._resolve(request_id)
@@ -233,6 +238,163 @@ class ProjectProvisionCoordinator:
         return self.plan(request_id)
 
     def advance(
+        self,
+        request_id: str,
+        *,
+        boundary_sha256: str,
+        target_id: str,
+    ) -> ServerControlProjectStepResult:
+        with self._request_lock(request_id):
+            return self._advance_locked(
+                request_id,
+                boundary_sha256=boundary_sha256,
+                target_id=target_id,
+            )
+
+    def cancel(self, request_id: str) -> ProjectProvisioningRequestRecord:
+        """Remove request-owned machine state, then record the one cancelled transition."""
+
+        lock = self._request_lock(request_id)
+        if not lock.acquire(timeout=PROJECT_PROVISION_CANCEL_WAIT_SECONDS):
+            raise ProjectProvisionRefused("A setup step is running. Try again when it finishes.")
+        try:
+            request = self.store.project_provisioning_request(request_id)
+            if request is None or request.target_space_id != self.store.space_id:
+                raise ProjectProvisionRefused("The selected provisioning request does not exist.")
+            if request.status == "cancelled":
+                return request
+            if request.status == "completed" or request.kind == "incoming_transfer":
+                raise ProjectProvisionRefused("This provisioning request cannot be cancelled.")
+            disposition: ProjectProvisioningCancellationDisposition = "nothing_to_remove"
+            if request.status != "waiting_for_server_setup":
+                if request.cancellation_disposition is None:
+                    request = self._fence_cancellation(request)
+                disposition = self._remove_request_state(request)
+            return self.store.transition_project_provisioning_request(
+                request_id,
+                receipt_id=f"member-cancel-{request.revision}",
+                phase="member_cancel",
+                expected_revision=request.revision,
+                expected_status=request.status,
+                to_status="cancelled",
+                machines=request.machines,
+                repositories=request.repositories,
+                provider_checks=request.provider_checks,
+                cancellation_disposition=disposition,
+            )
+        finally:
+            lock.release()
+
+    def _fence_cancellation(
+        self,
+        request: ProjectProvisioningRequestRecord,
+    ) -> ProjectProvisioningRequestRecord:
+        """Enter cancellation handling, which `_resolve` refuses, before any removal.
+
+        A cleanup that stops partway must not leave a resumable request whose
+        records still claim a removed checkout or key.
+        """
+
+        message = "Cancellation did not finish. Press Cancel request again."
+        step = self._machine_step(
+            1,
+            title="Finish cancelling this request",
+            purpose="Remove the request's deploy keys and the checkouts it created.",
+            phase="member_cancel",
+            expected="The request is cancelled.",
+            message=message,
+            performed_by="human",
+        ).model_copy(
+            update={
+                "state": "operator_action_needed",
+                "actions": (ExternalAction(instruction=message),),
+                "resume_argv": self._resume_argv(request.request_id),
+                "resume_execution": OPERATOR_SHELL,
+            }
+        )
+        return self.store.transition_project_provisioning_request(
+            request.request_id,
+            receipt_id=f"member-cancel-fence-{request.revision}",
+            phase="member_cancel_fence",
+            expected_revision=request.revision,
+            expected_status=request.status,
+            to_status="operator_action_needed",
+            machines=request.machines,
+            repositories=request.repositories,
+            provider_checks=request.provider_checks,
+            retryable_diagnostic=message,
+            operator_action=step,
+            cancellation_disposition="prepared_state_preserved",
+        )
+
+    def _request_lock(self, request_id: str) -> threading.Lock:
+        with self._locks_guard:
+            return self._request_locks.setdefault(request_id, threading.Lock())
+
+    def _remove_request_state(
+        self,
+        request: ProjectProvisioningRequestRecord,
+    ) -> ProjectProvisioningCancellationDisposition:
+        created = [
+            repository
+            for repository in request.repositories
+            if repository.checkout_disposition == "request_created"
+            and repository.resolved_path is not None
+        ]
+        for repository in created:
+            assert repository.resolved_path is not None
+            machine = self._machine(request, repository.machine_id)
+            try:
+                self.checkout_manager.remove_request_checkout(
+                    machine,
+                    self.checkout_manager.checkout_account(machine),
+                    request.proposed_project_id,
+                    repository.alias,
+                )
+            except ProjectCheckoutRefused as exc:
+                raise self._cleanup_refused(machine, repository.resolved_path, exc) from exc
+        key_existed = False
+        for repository in request.repositories:
+            if repository.repository is None:
+                continue
+            machine = self._machine(request, repository.machine_id)
+            label = (
+                f"rcp:{request.target_space_id}:{request.proposed_project_id}:{repository.alias}"
+            )
+            try:
+                material = self.credential_manager.existing_key(
+                    machine,
+                    repository.repository,
+                    space_id=request.target_space_id,
+                    project_id=request.proposed_project_id,
+                    repository_alias=repository.alias,
+                )
+                if material is not None:
+                    self.credential_manager.remove_key(machine, material)
+            except GitCredentialRefused as exc:
+                raise self._cleanup_refused(machine, f"the deploy key {label}", exc) from exc
+            key_existed = (
+                key_existed
+                or material is not None
+                or repository.git_check.deploy_key_label is not None
+            )
+        if key_existed:
+            return "prepared_state_preserved"
+        return "request_owned_state_removed" if created else "nothing_to_remove"
+
+    def _cleanup_refused(
+        self,
+        machine: MachineRoute,
+        target: str,
+        cause: Exception,
+    ) -> ProjectProvisionRefused:
+        return ProjectProvisionRefused(
+            f"RCP could not remove {target} as {machine.os_account} on "
+            f"{machine.host or self.local_host}: {cause} The request is unchanged; "
+            "press Cancel again to retry."
+        )
+
+    def _advance_locked(
         self,
         request_id: str,
         *,

@@ -1183,10 +1183,16 @@ races remain possible; verified sign-in is the recovery.
 
 The account lifecycle owner serializes sign-in, verify and sign-out under the
 gate through durable publication, keyed by `(provider, machine_id, login_id)`. A second
-device sign-in on that login returns 409 and names the starter. The per-attempt
-status and cancel routes answer only the starter (404 for anyone else).
+device sign-in on that login returns 409 and names the starter. So does device
+sign-in on a verified signed-in login; sign out first to replace it. The status
+route answers only the starter (404 for anyone else), because the code is theirs.
+Any member who may change the login may cancel its pending sign-in, so an
+abandoned attempt never holds a shared login until it times out. Verify, token
+save and sign-out wait at most `PROVIDER_LOGIN_GATE_WAIT_SECONDS` for the gate and
+then answer 409 busy.
 Replacement first publishes a signed-out fence, so interruption cannot admit an
-unverified credential. A minimal real request must succeed before sign-in counts;
+unverified credential. A restart settles a device-sign-in fence and a token-save
+fence as interrupted, each with its own next step. A minimal real request must succeed before sign-in counts;
 provider status only proves credential presence. Successful verification
 invalidates readiness and releases parked work through existing owners, once.
 Completion and restart reconciliation belong to the service, not HTTP polling.

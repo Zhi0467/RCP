@@ -3,6 +3,7 @@ import type {
   ProjectCreationControl,
   ProjectCreationIntent,
   ProjectProvisioningCreateRequest,
+  ProjectProvisioningResponse,
 } from "../core/types";
 
 const UUID4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -355,4 +356,16 @@ export function machineCardName(
   machineId: string,
 ): string {
   return machines.find((machine) => machine.machine_id === machineId)?.name ?? machineId;
+}
+
+/** Open requests, plus cancelled ones whose GitHub deploy keys still need removing. */
+export function listedSetupRequests(
+  requests: ProjectProvisioningResponse[],
+): ProjectProvisioningResponse[] {
+  return requests.filter(
+    (request) =>
+      request.completed_at === null &&
+      (request.cancelled_at === null ||
+        request.cancellation_disposition === "prepared_state_preserved"),
+  );
 }

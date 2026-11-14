@@ -13,6 +13,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import sys
 import uuid
@@ -270,6 +271,57 @@ def _prepare(
         "disposition": "request_created" if created else "reused_existing",
         "empty": empty,
     }
+
+
+def _remove_checkout(
+    expected_account: str,
+    expected_home: str,
+    location: str,
+    configured_root: str,
+    project_id: str,
+    alias: str,
+) -> dict[str, object]:
+    """Remove one request-made checkout at the path `_prepare` derives, never another."""
+
+    _uuid4(project_id, "project id")
+    if ALIAS.fullmatch(alias) is None:
+        raise ValueError("repository alias is invalid")
+    account, home = _account(expected_account, expected_home)
+    if location not in {"local", "ssh"}:
+        raise ValueError("checkout location is invalid")
+    if location == "ssh" and configured_root == "-":
+        root = _default_remote_root(home)
+    elif configured_root == "-":
+        raise ValueError("server-local central checkout root cannot be defaulted")
+    else:
+        root = _absolute_path(configured_root, "central checkout root")
+    checkout = root / project_id / "repositories" / alias
+    absent = {"repository_path": str(checkout), "removed": False}
+    try:
+        opened_root = _opened_absolute_directory(root, uid=account.pw_uid, require_owner=True)
+    except FileNotFoundError:
+        return absent
+    descriptors = [opened_root.descriptor]
+    try:
+        for name in (project_id, "repositories", alias):
+            try:
+                descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=descriptors[-1])
+            except FileNotFoundError:
+                return absent
+            descriptors.append(descriptor)
+            _require_directory_descriptor(
+                descriptor,
+                uid=account.pw_uid,
+                require_owner=True,
+                label="request checkout directory",
+            )
+        os.fchdir(descriptors[-2])
+        shutil.rmtree(alias)
+        os.fsync(descriptors[-2])
+    finally:
+        for descriptor in descriptors:
+            os.close(descriptor)
+    return {"repository_path": str(checkout), "removed": True}
 
 
 def _patch_names(patches_descriptor: int) -> list[str]:
@@ -724,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"account": account.pw_name, "home": account.pw_dir}
         elif operation == "prepare" and len(arguments) == 6:
             payload = _prepare(*arguments)
+        elif operation == "remove-checkout" and len(arguments) == 6:
+            payload = _remove_checkout(*arguments)
         elif operation == "seal-git-directory" and len(arguments) == 3:
             payload = _seal_git_directory(*arguments)
         elif operation == "git-directory" and len(arguments) == 3:

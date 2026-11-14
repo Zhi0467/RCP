@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
@@ -16,11 +18,13 @@ import rcp.storage.provisioning as storage_provisioning
 from rcp.__main__ import build_parser
 from rcp.agents.launcher import ProviderExecutionAccount, ProviderReadiness
 from rcp.api import create_app
+from rcp.api.project_provisioning import _project_provisioning_response
 from rcp.config import AGENT_EXECUTION_PROFILES, load_manifest, permissions_for
 from rcp.core.models import AuthorizedHuman
 from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import ModelChoice, configured_runtime_id
+from rcp.server_ops import project_provision
 from rcp.server_ops.cli import (
     SERVER_CLI_EXIT_OPERATOR_ACTION,
     CallerIdentity,
@@ -35,6 +39,7 @@ from rcp.server_ops.git_credentials import (
 from rcp.server_ops.github import parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.project_checkout import (
+    CheckoutAccount,
     ProjectCheckoutRefused,
     ProjectCheckoutResult,
     RetainedResearchState,
@@ -945,6 +950,193 @@ def test_changed_request_refuses_stale_plan_before_machine_effect(tmp_path: Path
         )
 
     assert first.request_status == "setup_in_progress"
+    assert credentials.prepare_calls == 0
+
+
+class _CleanupCredentials(_Credentials):
+    def __init__(self, *, keys_on_disk: bool = True) -> None:
+        super().__init__()
+        self.keys_on_disk = keys_on_disk
+        self.unreachable = False
+        self.removed_keys: list[str] = []
+
+    def existing_key(self, machine, repository, *, space_id, project_id, repository_alias):
+        if not self.keys_on_disk or repository_alias in self.removed_keys:
+            return None
+        return self.prepare_key(
+            machine,
+            repository,
+            space_id=space_id,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        )
+
+    def remove_key(self, _machine, material) -> bool:
+        if self.unreachable:
+            raise GitCredentialRefused("SSH is unreachable.")
+        self.removed_keys.append(material.repository_alias)
+        return True
+
+
+class _CleanupCheckouts(_InitialCheckouts):
+    def __init__(self, store, request_id, *, reused: tuple[str, ...] = ()) -> None:
+        super().__init__(store, request_id)
+        self.fail_push = False
+        self.reused = reused
+        self.removed_checkouts: list[str] = []
+
+    def prepare(self, machine, material, **kwargs) -> ProjectCheckoutResult:
+        result = super().prepare(machine, material, **kwargs)
+        if result.repository_alias in self.reused:
+            return replace(result, checkout_disposition="reused_existing")
+        return result
+
+    def checkout_account(self, machine) -> CheckoutAccount:
+        return CheckoutAccount(
+            str(DEFAULT_SERVER_LAYOUT.service_home),
+            machine.os_account,
+            machine.central_root or str(DEFAULT_SERVER_LAYOUT.projects_root),
+        )
+
+    def remove_request_checkout(self, machine, account, project_id, repository_alias) -> bool:
+        assert account.os_account == machine.os_account
+        self.removed_checkouts.append(repository_alias)
+        return True
+
+
+def _advance_first(coordinator, request_id: str, count: int) -> None:
+    plan = coordinator.plan(request_id)
+    boundary = plan.boundary_sha256
+    for target in plan.targets[:count]:
+        boundary = coordinator.advance(
+            request_id, boundary_sha256=boundary, target_id=target.target_id
+        ).next_boundary_sha256
+
+
+@pytest.mark.parametrize("status", ["setup_in_progress", "ready_for_review"])
+def test_cancel_removes_request_state_and_keeps_reused_checkouts(
+    tmp_path: Path, status: str
+) -> None:
+    store, request = _store_and_request(tmp_path, repository_aliases=("paper", "code"))
+    checkouts = _CleanupCheckouts(store, request.request_id, reused=("code",))
+    credentials = _CleanupCredentials()
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials, checkouts=checkouts)
+    if status == "ready_for_review":
+        _advance_all(coordinator, request.request_id)
+    else:
+        _advance_first(coordinator, request.request_id, 7)
+    assert store.project_provisioning_request(request.request_id).status == status
+
+    cancelled = coordinator.cancel(request.request_id)
+
+    assert cancelled.status == "cancelled"
+    assert cancelled.cancellation_disposition == "prepared_state_preserved"
+    assert checkouts.removed_checkouts == ["paper"]
+    assert sorted(credentials.removed_keys) == ["code", "paper"]
+    assert coordinator.cancel(request.request_id) == cancelled
+    with pytest.raises(ProjectProvisionRefused):
+        coordinator.plan(request.request_id)
+
+
+def test_cancel_removes_a_key_written_before_its_label_was_saved(tmp_path: Path) -> None:
+    store, request = _store_and_request(tmp_path)
+    credentials = _CleanupCredentials()
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials)
+    _advance_first(coordinator, request.request_id, 1)
+    assert store.project_provisioning_request(request.request_id).repositories[0].git_check == (
+        request.repositories[0].git_check
+    )
+
+    cancelled = coordinator.cancel(request.request_id)
+
+    assert credentials.removed_keys == ["paper"]
+    assert cancelled.cancellation_disposition == "prepared_state_preserved"
+
+
+def test_cancel_cleanup_failure_fences_the_request_until_cancel_retries(tmp_path: Path) -> None:
+    store, request = _store_and_request(tmp_path)
+    checkouts = _CleanupCheckouts(store, request.request_id)
+    credentials = _CleanupCredentials()
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials, checkouts=checkouts)
+    _advance_all(coordinator, request.request_id)
+    before = store.project_provisioning_request(request.request_id)
+    credentials.unreachable = True
+
+    with pytest.raises(ProjectProvisionRefused) as refused:
+        coordinator.cancel(request.request_id)
+
+    assert before.repositories[0].git_check.deploy_key_label in str(refused.value)
+    fenced = store.project_provisioning_request(request.request_id)
+    assert fenced.repositories == before.repositories
+    assert fenced.cancellation_disposition is not None
+    projection = _project_provisioning_response(fenced, viewer_user_id=fenced.authorized_by.user_id)
+    assert projection.can_cancel and not projection.can_run_setup
+    with pytest.raises(ProjectProvisionRefused):
+        coordinator.plan(request.request_id)
+    credentials.unreachable = False
+    cancelled = coordinator.cancel(request.request_id)
+    assert cancelled.cancellation_disposition == "prepared_state_preserved"
+    assert checkouts.removed_checkouts == ["paper", "paper"]
+
+
+def test_cancel_waits_only_briefly_for_a_running_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, request = _store_and_request(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+
+    class _BlockingCredentials(_CleanupCredentials):
+        def prepare_key(self, *args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return super().prepare_key(*args, **kwargs)
+
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=_BlockingCredentials())
+    _advance_first(coordinator, request.request_id, 1)
+    monkeypatch.setattr(project_provision, "PROJECT_PROVISION_CANCEL_WAIT_SECONDS", 0.05)
+    plan = coordinator.plan(request.request_id)
+    step = threading.Thread(
+        target=coordinator.advance,
+        args=(request.request_id,),
+        kwargs={"boundary_sha256": plan.boundary_sha256, "target_id": plan.targets[1].target_id},
+    )
+    step.start()
+    assert entered.wait(10)
+    try:
+        with pytest.raises(ProjectProvisionRefused, match="setup step is running"):
+            coordinator.cancel(request.request_id)
+    finally:
+        release.set()
+        step.join(10)
+    assert coordinator.cancel(request.request_id).status == "cancelled"
+
+
+def test_cancel_refuses_a_plan_taken_before_it(tmp_path: Path) -> None:
+    store, request = _store_and_request(tmp_path)
+    coordinator, credentials, _ = _coordinator(store, tmp_path)
+    plan = coordinator.plan(request.request_id)
+
+    assert coordinator.cancel(request.request_id).cancellation_disposition == "nothing_to_remove"
+    with pytest.raises(ProjectProvisionRefused):
+        coordinator.advance(
+            request.request_id,
+            boundary_sha256=plan.boundary_sha256,
+            target_id=plan.targets[0].target_id,
+        )
+    assert credentials.prepare_calls == 0
+
+
+def test_server_only_cancel_removes_the_checkout_without_key_cleanup(tmp_path: Path) -> None:
+    store, request = _store_and_request(tmp_path, server_only=True)
+    checkouts = _CleanupCheckouts(store, request.request_id)
+    credentials = _CleanupCredentials()
+    coordinator, _, _ = _coordinator(store, tmp_path, credentials=credentials, checkouts=checkouts)
+    _advance_all(coordinator, request.request_id)
+
+    cancelled = coordinator.cancel(request.request_id)
+
+    assert cancelled.cancellation_disposition == "request_owned_state_removed"
+    assert checkouts.removed_checkouts == ["paper"]
     assert credentials.prepare_calls == 0
 
 

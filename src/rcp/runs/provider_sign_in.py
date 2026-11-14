@@ -7,18 +7,20 @@ import logging
 import subprocess
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.credential_gate import ProviderCredentialBusy
 from rcp.agents.provider_accounts import (
     ProviderAccounts,
 )
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import (
+    PROVIDER_LOGIN_GATE_WAIT_SECONDS,
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
     PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS,
     PROVIDER_SIGN_IN_TIMEOUT_SECONDS,
@@ -42,9 +44,15 @@ SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to
 #: account upgraded mid-attempt still carries it, and would otherwise keep
 #: describing a sign-in that no process is running.
 LEGACY_SIGN_IN_IN_PROGRESS_DETAIL = "A replacement login is awaiting verification."
-INTERRUPTED_SIGN_IN_MARKERS = frozenset(
-    {SIGN_IN_IN_PROGRESS_DETAIL, LEGACY_SIGN_IN_IN_PROGRESS_DETAIL}
-)
+TOKEN_SAVE_IN_PROGRESS_DETAIL = "A replacement credential is awaiting verification."
+TOKEN_SAVE_INTERRUPTED_DETAIL = "Saving the token was interrupted. Paste it again."
+INTERRUPTED_SIGN_IN_DETAILS = {
+    SIGN_IN_IN_PROGRESS_DETAIL: SIGN_IN_INTERRUPTED_DETAIL,
+    LEGACY_SIGN_IN_IN_PROGRESS_DETAIL: SIGN_IN_INTERRUPTED_DETAIL,
+    TOKEN_SAVE_IN_PROGRESS_DETAIL: TOKEN_SAVE_INTERRUPTED_DETAIL,
+}
+LOGIN_BUSY_DETAIL = "This login is busy. Try again shortly."
+SIGNED_IN_REPLACE_DETAIL = "This login is already signed in. Sign out first to replace it."
 
 
 class ProviderLoginRefused(ValueError):
@@ -240,7 +248,7 @@ class ProviderSignInRunner:
     def verify(self, login: LoginKey, *, member_id: str) -> ProviderLoginStateRecord:
         self.require_login(login, member_id=member_id)
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             try:
                 state = self._verify_locked(login, binary, binaries, member_id)
             finally:
@@ -331,8 +339,23 @@ class ProviderSignInRunner:
         for binary in binaries:
             self.launcher.invalidate_readiness(login, binary=binary)
 
+    @contextlib.contextmanager
+    def _member_hold(self, login: LoginKey) -> Iterator[None]:
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    self.launcher.credential_gate.hold_blocking(
+                        login, wait_seconds=PROVIDER_LOGIN_GATE_WAIT_SECONDS
+                    )
+                )
+            except ProviderCredentialBusy as exc:
+                raise ProviderLoginRefused(LOGIN_BUSY_DETAIL) from exc
+            yield
+
     def start_sign_in(self, login: LoginKey, *, member_id: str) -> ProviderSignInStatus:
-        self.require_login(login, member_id=member_id)
+        current = self.require_login(login, member_id=member_id)
+        if current.state == "signed_in" and current.source == "verify":
+            raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
         if "device_code" not in profile_for(login.provider).authentication.methods:
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
@@ -376,13 +399,13 @@ class ProviderSignInRunner:
 
         settled = []
         for state in self.store.provider_login_states():
-            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
+            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_DETAILS:
                 settled.append(
                     self.store.mark_provider_login_signed_out(
                         LoginKey(state.provider, state.machine_id, state.login_id),
                         member_id=None,
                         source="restore",
-                        detail=SIGN_IN_INTERRUPTED_DETAIL,
+                        detail=INTERRUPTED_SIGN_IN_DETAILS[state.detail],
                     )
                 )
         return settled
@@ -626,7 +649,7 @@ class ProviderSignInRunner:
                 "Token entry is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             self.require_login(login, member_id=member_id)
             try:
                 token = auth.validate_token(token)
@@ -638,7 +661,7 @@ class ProviderSignInRunner:
                 login,
                 member_id=member_id,
                 source="sign_out",
-                detail="A replacement credential is awaiting verification.",
+                detail=TOKEN_SAVE_IN_PROGRESS_DETAIL,
             )
             self._forget_readiness(login, binaries)
             try:
@@ -677,7 +700,7 @@ class ProviderSignInRunner:
                 "Sign-out is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             self.require_login(login, member_id=member_id)
             detail = "Signed out by a member."
             state = self.store.mark_provider_login_signed_out(

@@ -647,6 +647,24 @@ export function SignInCard({
     state !== "signing_in" &&
     (items.length > 0 || removable);
 
+  const cancelSignIn = signIn && (
+    <button
+      className="icon-button compact"
+      type="button"
+      data-sign-in-action="cancel"
+      aria-label="Cancel sign-in"
+      title="Cancel sign-in"
+      disabled={disabled}
+      onClick={() =>
+        void run("cancel", async () =>
+          setSignIn(await cancelProviderSignIn(provider, signIn.attempt_id)),
+        )
+      }
+    >
+      {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
+    </button>
+  );
+
   let body: ReactNode;
   if (state === "draining") {
     body = (
@@ -661,28 +679,17 @@ export function SignInCard({
           {signIn.verification_url}
         </a>
         <code>{signIn.user_code}</code>
-        <button
-          className="icon-button compact"
-          type="button"
-          data-sign-in-action="cancel"
-          aria-label="Cancel sign-in"
-          title="Cancel sign-in"
-          disabled={disabled}
-          onClick={() =>
-            void run("cancel", async () =>
-              setSignIn(await cancelProviderSignIn(provider, signIn.attempt_id)),
-            )
-          }
-        >
-          {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
-        </button>
+        {cancelSignIn}
       </span>
     ) : starter ? (
       <LoaderCircle size={14} className="spin sign-in-state" aria-label="Signing in" />
     ) : (
-      <span className="sign-in-state">
-        {signIn.started_by_display_name ?? "A member"} is signing in
-      </span>
+      <>
+        <span className="sign-in-state">
+          {signIn.started_by_display_name ?? "A member"} is signing in
+        </span>
+        {actions && cancelSignIn}
+      </>
     );
   } else if (state === "signed_out") {
     body =

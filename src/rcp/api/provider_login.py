@@ -269,10 +269,17 @@ def cancel_provider_sign_in(
 ) -> ProviderSignInStatus:
     member = get_identity_access(request).acting_user(request)
     status = sign_ins.sign_in_status(attempt_id)
-    if status is None or status.provider != provider or status.started_by != member.user_id:
+    if status is None or status.provider != provider:
         raise HTTPException(status_code=404, detail="Unknown sign-in.")
     try:
-        return sign_ins.cancel_sign_in(attempt_id, member_id=member.user_id)
+        sign_ins.require_login(
+            LoginKey(status.provider, status.machine_id, status.login_id),
+            member_id=member.user_id,
+        )
+        cancelled = sign_ins.cancel_sign_in(attempt_id, member_id=member.user_id)
+        if cancelled.started_by == member.user_id:
+            return cancelled
+        return cancelled.model_copy(update={"detail": None})
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
 

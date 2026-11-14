@@ -133,6 +133,10 @@ class CredentialStartupHold:
             lock.release()
 
 
+class ProviderCredentialBusy(TimeoutError):
+    """A bounded blocking hold found the credential still held when its wait ended."""
+
+
 class ProviderCredentialGate:
     """Admit one provider startup at a time per credential."""
 
@@ -170,7 +174,7 @@ class ProviderCredentialGate:
                 return CredentialStartupHold(claim.lock, across_processes=claim.descriptor)
 
     @contextmanager
-    def hold_blocking(self, key: LoginKey) -> Iterator[None]:
+    def hold_blocking(self, key: LoginKey, *, wait_seconds: float | None = None) -> Iterator[None]:
         """Hold the credential across a synchronous provider probe.
 
         Readiness and skill inventory run provider executables on worker
@@ -178,11 +182,17 @@ class ProviderCredentialGate:
         and runs to completion, so it holds for its whole duration rather than
         until a first line, and needs no minimum: a turn's first line can
         precede its authentication, while an exited probe cannot.
+
+        A member's request passes `wait_seconds`, because a device sign-in can
+        hold the login for many minutes; it then raises
+        `ProviderCredentialBusy` instead of waiting that long.
         """
 
         claim = _Claim(self._lock_for(key), self._account_lock_path(key))
+        deadline = None if wait_seconds is None else time.monotonic() + wait_seconds
         while not claim.try_acquire():
-            pass
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ProviderCredentialBusy
         try:
             yield
         finally:

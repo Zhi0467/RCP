@@ -40,6 +40,10 @@ from rcp.provisioning_repositories import effective_repositories
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import ServerStep
+from rcp.server_ops.project_provision import (
+    ProjectProvisionCoordinator,
+    ProjectProvisionRefused,
+)
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import (
@@ -1415,13 +1419,24 @@ def cancel_project_provisioning_request(
         )
     if record.status == "cancelled":
         return _project_provisioning_response(record, viewer_user_id=viewer.user_id)
+    coordinator: ProjectProvisionCoordinator | None = (
+        request.app.state.project_provision_coordinator
+    )
+    if coordinator is not None:
+        try:
+            cancelled = coordinator.cancel(request_id)
+        except ProjectProvisionRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The provisioning request changed; reload it before cancelling.",
+            ) from exc
+        return _project_provisioning_response(cancelled, viewer_user_id=viewer.user_id)
     if record.status != "waiting_for_server_setup":
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Server preparation has started. Its machine-owned setup flow must first "
-                "record the exact cleanup or reuse disposition."
-            ),
+            detail="Server setup has started, and this backend cannot run its cleanup.",
         )
     try:
         cancelled = store.transition_project_provisioning_request(
@@ -1870,7 +1885,8 @@ def _project_provisioning_response(
         status=record.status,
         status_label=_STATUS_LABELS[record.status],
         next_action=_next_action(record),
-        can_run_setup=record.status
+        can_run_setup=record.cancellation_disposition is None
+        and record.status
         in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"},
         can_review=record.status == "ready_for_review"
         and (
@@ -1879,7 +1895,7 @@ def _project_provisioning_response(
         ),
         can_cancel=(
             record.kind != "incoming_transfer"
-            and record.status == "waiting_for_server_setup"
+            and record.status not in {"completed", "cancelled"}
             and provisioning_policy.is_requester(record, viewer_user_id)
         ),
         target_space_id=record.target_space_id,
@@ -1940,6 +1956,8 @@ def _next_action(record: ProjectProvisioningRequestRecord) -> str | None:
         return record.operator_action.message
     if record.status == "ready_for_review":
         return "Review the prepared project."
+    if record.cancellation_disposition == "prepared_state_preserved":
+        return "Remove the listed deploy keys on GitHub."
     return None
 
 
