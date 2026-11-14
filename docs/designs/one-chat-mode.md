@@ -6,6 +6,24 @@ toggle goes away. Historical Discuss tasks keep their records, recovery and
 display through a closed Discuss runner that admits nothing new. A later
 release deletes that runner once no store holds an unsettled Discuss task.
 
+## Goals and non-goals
+
+- Goal: one kind of human chat turn, with no mode for the member to choose.
+- Goal: old Discuss records keep decoding, displaying and settling.
+- Non-goal: changing Work's capability, the merge fence, or provider
+  containment for Work.
+- Non-goal: removing the scratch-only `artifact_edit` kind used where a chat
+  refuses human turns.
+
+## Alternatives considered
+
+- **Keep Discuss, fix agy alone.** Leaves the toggle and its second contract.
+- **Keep the toggle as a prompt hint only** (Work capability, "answer only"
+  wording). Keeps a control whose effect the member cannot verify.
+- **Delete Discuss outright now.** Strands remote passes, owed retries and
+  pending questions recorded as Discuss. Rejected for a one-release closed
+  runner.
+
 ## Why
 
 - Private project and Space threads and the viewer's Send are already
@@ -30,8 +48,8 @@ release deletes that runner once no store holds an unsettled Discuss task.
 - **Chat while a provider fails the Work probe or is below the Work floor.** The
   picker shows the provider as unavailable, as it already does for Work. There
   is no Discuss fallback.
-- **Chat on a branch that is the target of a running merge.** Work admission is
-  refused with 409 while the merge fence holds (`api/graph_changes.py:183`,
+- **Chat on a branch that is the source of a running merge.** Work admission
+  on the branch being merged is refused with 409 while the merge fence holds (`api/graph_changes.py:183`,
   `storage/agent_tasks.py:1487`), and a live chat turn blocks a merge from
   starting (`merge_source_has_live_writer`). Accepted (D1).
 
@@ -49,20 +67,30 @@ release deletes that runner once no store holds an unsettled Discuss task.
 4. The composer has no mode toggle. The stored `rcp:chat-mode:*` preference is
    ignored.
 5. Artifact comments:
-   - In a chat that accepts human turns, Edit now becomes the viewer's existing
-     Send route (`artifact_send_chat_turn`, `api/artifacts.py:291-323`): a Work
-     turn in that chat carrying the comments. No new dispatcher. The chat-master
-     `launch_kind="discuss"` edit is no longer admitted.
+   - In a chat that accepts human turns (Experiment chats included), Edit now
+     becomes the existing Send route (`artifact_send_chat_turn`,
+     `runs/artifact_edit_admission.py:291`), which already carries `edit_now`:
+     a Work turn in that chat, on its session, queued or steered exactly as
+     Send is. Edit now is available exactly when Send is; `can_edit_now` and
+     `fresh_session_required` apply only to refused chats. The viewer shows one
+     "Send to agent" action. No new dispatcher.
+   - No new task is admitted with `launch_kind="discuss"`. Refused chats always
+     use `launch_kind="revoking"` (`_launch_kind_for_master_owner` and
+     `artifact_edit_admission.py:342` change to match).
    - In a chat that refuses human turns (a running orchestrator or Auto-research
      child, `storage/agent_tasks.py:1039`), the scratch-only `artifact_edit`
      kind (today's `launch_kind="revoking"`) handles comments unchanged. It
-     keeps `mode: "discuss"` and capability `discuss` internally. Rule 1 does
-     not reach it, because it is admitted by `admit_artifact_edit`, not the chat
-     route.
+     keeps `mode: "discuss"` and capability `discuss` internally, set by
+     `admit_artifact_edit`. A comment typed in a refused chat's composer arrives
+     at the chat route as `work`; `admit_chat_artifact_comment` drops its
+     "only in Discuss" refusal (`artifact_edit_admission.py:275-276`) and hands
+     it to `admit_artifact_edit` whatever the mode.
    - Episode-report replies follow the same split.
 6. The Work chat master is the only master for new turns.
    `CHAT_MASTER_CONTEXT_VERSION` bumps, so a resumed session gets the Work-only
-   master through the existing master-replacement rule.
+   master through the existing master-replacement rule. The closed runner
+   renders the Discuss master it renders today; the bump changes only new
+   admissions, and the Discuss contract code stays with the runner.
 
 ## Historical Discuss tasks
 
@@ -76,12 +104,19 @@ already recorded as Discuss:
   restart (`background.py:3121,3194`, `runs/provider_login.py:243`);
 - Pause and Resume of a running Discuss task;
 - answers to a pending question whose origin is Discuss, which keep Discuss
-  authority as today (`storage/agent_tasks.py:349,397`);
+  authority as today (`storage/agent_tasks.py:349,397`). This is the one new
+  Discuss task the runner admits;
 - legacy private-edit stage proofs (`discuss.py:609-768`).
 
-A human Retry of a settled Discuss turn is not a recovery: the button reads
-"Retry" and admits a fresh Work turn with the same message through the chat
-route. The old turn keeps its record. Display keeps the "Discuss" label on old
+A human Retry of a settled Discuss turn is not a recovery: it admits a fresh
+Work turn with the same message through the chat route, recorded as the failed
+task's continuation child, so any owed automatic retry stands down
+(`background.py:3205-3226`). The old turn keeps its record.
+
+The runner can be deleted when a store has no non-terminal Discuss task, no
+owed Discuss retry and no pending Discuss question. The later release checks
+this at startup and expires any leftover Discuss question with a visible note
+before it removes the runner. Display keeps the "Discuss" label on old
 turns and on their question cards.
 
 ## Config and readiness
@@ -93,7 +128,9 @@ turns and on their question cards.
 
 ## Voice and WebMCP
 
-Today the send tool asks for confirmation only for Work, and only voice reads
+The WebMCP send tool drops its `mode` input; a call that still passes it is
+refused by the tool schema. Voice receipts stop recording a mode. Today the
+send tool asks for confirmation only for Work, and only voice reads
 that (`webmcp/shared.ts:28-46` strips it before host registration). Since every
 send is Work, the send tool's `confirm` becomes always true. Voice keeps
 honouring the member's `tap` or `none` setting. WebMCP stays unguarded, as
@@ -102,7 +139,7 @@ them to an ordinary send.
 
 ## Decisions
 
-- **D1 (decided): chat on the target branch of a running merge is refused.**
+- **D1 (decided): chat on the source branch of a running merge is refused.**
   Merges take seconds to minutes. The composer shows the existing merge-fence
   message and the member sends again when the merge ends. No new mechanism.
 
@@ -158,9 +195,12 @@ question binding.
 ## Delivery
 
 One PR in slices, each green on its own:
-1. Route admission, config, readiness, old-writer regression.
-2. Artifact-comment routing.
-3. Web: toggle, voice and WebMCP, Paper styling, question card.
+1. Route admission together with the web composer, voice and WebMCP sends,
+   so no slice sends `discuss` to a route that refuses it. Config, readiness,
+   old-writer regression.
+2. Artifact-comment routing (Send for ordinary and Experiment chats, the
+   revoking kind for refused chats).
+3. Web cleanup: Paper styling props, question card label.
 4. Specs and AGENTS.md.
 
 This design file is deleted before merge once its rules live in the specs.
