@@ -240,10 +240,13 @@ def test_granted_temp_root_needs_no_deny_and_is_no_gap(tmp_path, monkeypatch, ca
     temp = tmp_path / "temp"
     temp.mkdir()
     monkeypatch.setenv("TMPDIR", str(temp))
-    monkeypatch.chdir(tmp_path)
-    policy = {"permissions": {"allow": [f"write_file({temp})"], "ask": [], "deny": []}}
+    policy = {
+        "permissions": {"allow": ["write_file(/tmp)", f"write_file({temp})"], "ask": [], "deny": []}
+    }
     command = ["agy", "--agent", "rcp-x", "--settings", json.dumps(policy)]
-    _agy_host_policy(command, (), probe=False)
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "cwd", classmethod(lambda cls: Path("/work")))
+        _agy_host_policy(command, (), probe=False)
     rendered = json.loads(command[command.index("--settings") + 1])
     assert f"write_file({temp.resolve()})" not in rendered["permissions"]["deny"]
     assert capsys.readouterr().err == ""
