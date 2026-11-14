@@ -16,7 +16,9 @@ from rcp.api.dependencies import (
 )
 from rcp.comments.models import COMMENT_MEDIA_TYPES, CommentPostBody, CreateCommentThread
 from rcp.history import ReplayHalted
-from rcp.storage import AppStore
+from rcp.runs.artifact_edit_admission import _artifact_chat_id, artifact_reply_origin
+from rcp.storage import AgentTaskAdmissionConflict, AppStore
+from rcp.storage.chat_names import chat_title
 from rcp.storage.comments import CommentError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -65,6 +67,24 @@ def _write(request: Request, project: str) -> Iterator[str]:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+def _chat_id(store: AppStore, thread: dict[str, Any]) -> str | None:
+    if thread["target_kind"] == "paper":
+        return None
+    if thread["target_kind"] == "artifact":
+        artifact = store.artifact(thread["target_id"])
+        if artifact is None:
+            return None
+        try:
+            origin, episode_id = artifact_reply_origin(store, artifact)
+        except AgentTaskAdmissionConflict:
+            return None
+        chat_id = _artifact_chat_id(origin, episode_id)
+    else:
+        task = store.agent_task(thread["target_id"])
+        chat_id = task.request.get("chat_id") if task else None
+    return chat_id if isinstance(chat_id, str) else None
+
+
 def _can_send(store: AppStore, request: Request, project: str, thread: dict[str, Any]) -> bool:
     try:
         user = get_identity_access(request).require_patch_capable_identity(request)
@@ -74,15 +94,7 @@ def _can_send(store: AppStore, request: Request, project: str, thread: dict[str,
         return False
     if thread["target_kind"] == "paper":
         return True
-    if thread["target_kind"] == "artifact":
-        artifact = store.artifact(thread["target_id"])
-        task = store.agent_task(artifact.origin_operation_id or "") if artifact else None
-        chat_id = artifact.chat_id if artifact else None
-    else:
-        task = store.agent_task(thread["target_id"])
-        chat_id = None
-    if task is not None:
-        chat_id = task.request.get("chat_id") or chat_id
+    chat_id = _chat_id(store, thread)
     return (
         isinstance(chat_id, str)
         and bool(chat_id)
@@ -93,7 +105,11 @@ def _can_send(store: AppStore, request: Request, project: str, thread: dict[str,
 def _response(
     store: AppStore, request: Request, project: str, thread: dict[str, Any]
 ) -> dict[str, Any]:
-    return {**thread, "can_send": _can_send(store, request, project, thread)}
+    return {
+        **thread,
+        "chat_id": _chat_id(store, thread),
+        "can_send": _can_send(store, request, project, thread),
+    }
 
 
 @router.get("/api/projects/{project_id}/comment-threads")
@@ -251,4 +267,26 @@ def mentions(
     store: StoreDependency,
 ) -> dict[str, object]:
     user_id = get_identity_access(request).acting_user(request).user_id
-    return {"mentions": store.open_comment_mentions(project, user_id)}
+    rows = store.open_comment_mentions(project, user_id)
+    with store.connection() as connection:
+        for row in rows:
+            thread = row["thread"]
+            thread["chat_id"] = _chat_id(store, thread)
+            if row["target_kind"] == "artifact":
+                artifact = store.artifact(row["target_id"])
+                row["target_name"] = artifact.source_name if artifact else None
+            elif row["target_kind"] == "paper":
+                file = connection.execute(
+                    "SELECT path FROM paper_files WHERE project_id=? AND file_id=?",
+                    (project, row["target_id"]),
+                ).fetchone()
+                row["target_name"] = file["path"] if file else None
+            else:
+                row["target_name"] = chat_title(connection, project, thread["chat_id"] or "")
+            row["members"] = [
+                {"user_id": member["id"], "display_name": member["display_name"]}
+                for member in {
+                    member["id"]: member for post in thread["posts"] for member in post["mentions"]
+                }.values()
+            ]
+    return {"mentions": rows}

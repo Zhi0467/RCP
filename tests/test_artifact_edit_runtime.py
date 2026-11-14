@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import uuid
 from pathlib import Path
 
 import pytest
@@ -542,7 +543,20 @@ def test_comment_route_refuses_busy_session_but_undo_remains_available(
     )
     client = signed_in_client(app)
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
-    refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
+    created = client.post(
+        f"/api/projects/{app.state.default_project_id}/comment-threads",
+        json={
+            "target": {"kind": "artifact", "id": source.artifact_id},
+            "anchor": {"kind": "whole"},
+            "text": "Change this chart",
+        },
+    )
+    assert created.status_code == 200, created.text
+    refused = client.post(
+        path + "/comments",
+        json={"thread_ids": [created.json()["thread"]["thread_id"]]},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
     assert refused.status_code == 409
     undone = client.post(path + "/undo", json={})
     assert undone.status_code == 200

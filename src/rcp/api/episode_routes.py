@@ -43,6 +43,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
+from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history.queries import parse_head
@@ -1304,6 +1305,7 @@ def _episode_report_viewer_response(
         content_url=content_url,
         state="report",
         panel=panel,
+        selectable=descriptor.media_type in COMMENT_MEDIA_TYPES["whole"],
     )
     return Response(
         b"" if head else document,
