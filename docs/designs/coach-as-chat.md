@@ -142,8 +142,10 @@ reports the files written; a rerun is idempotent. The client drops `expect`.
 ## The Coach chat
 
 - **Focus.** A chat has `focus`, `null` or `"paper"`, fixed when it is created.
-  It is stored as `agent_threads.focus TEXT CHECK (focus IS NULL OR focus =
-  'paper')`. The request that creates a chat gets a `focus` field.
+  It is stored as a new column `chat_display.focus TEXT CHECK (focus IS NULL OR
+  focus = 'paper')`, one row per chat. A chat starts with its first turn, so
+  `AgentTaskRequest.focus` sets it on that turn; later turns that name a
+  different focus are refused with 409.
   `RunRequest.focus` and `AgentDispatchScope.focus` default to `None` for old
   rows, so recovery keeps it. The Coach pane lists the member's
   `focus = "paper"` chats.
