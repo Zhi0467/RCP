@@ -61,14 +61,14 @@ test("the phone project chrome keeps one bar on top and the panels at the bottom
         /Project history/,
       );
       // Research's view picker, hidden with the tab strip, is reachable here.
-      await page.locator("#phone-project-menu").getByRole("button", { name: "Everything" }).click();
-      assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
+      await page.locator("#project-menu").getByRole("button", { name: "Everything" }).click();
+      assert.equal(await page.locator("#project-menu").isHidden(), true);
       await more.click();
       await history.click();
-      assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
+      assert.equal(await page.locator("#project-menu").isHidden(), true);
       await more.click();
       await page.keyboard.press("Escape");
-      assert.equal(await page.locator("#phone-project-menu").isHidden(), true);
+      assert.equal(await page.locator("#project-menu").isHidden(), true);
 
       // A panel in More is one tap away, and More reads as active while it is open.
       const moreTab = tabs.getByRole("button", { name: "More" });

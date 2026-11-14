@@ -1,7 +1,7 @@
 {
   "src/App.tsx": {
     "rcp/no-comments": {
-      "count": 164
+      "count": 162
     }
   },
   "src/agentWindow/AgentWindowTranscript.tsx": {
@@ -654,11 +654,6 @@
       "count": 1
     }
   },
-  "src/projects/PhoneProjectChrome.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "src/projects/ProjectConsolidation.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -781,7 +776,7 @@
   },
   "src/projects/useProjectTabs.ts": {
     "rcp/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/terminals/TerminalPane.tsx": {
@@ -1209,11 +1204,6 @@
       "count": 1
     }
   },
-  "tests/fixtures/projectTabStrip.tsx": {
-    "rcp/no-comments": {
-      "count": 2
-    }
-  },
   "tests/fixtures/providerLogin.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -1417,11 +1407,6 @@
   "tests/projectSetup.test.mjs": {
     "rcp/no-comments": {
       "count": 9
-    }
-  },
-  "tests/projectTabStrip.browser.test.mjs": {
-    "rcp/no-comments": {
-      "count": 2
     }
   },
   "tests/projectTransfer.browser.test.mjs": {

@@ -98,17 +98,31 @@ RCP windows. Verify at 390px.
 
 ## Project shell
 
+The desktop project header is one row. From the left: Back, the panel picker,
+the open project tabs, and + to open another project. On the right: View, the
+branch picker, Sync, Auto-research, then History, Refresh, Space settings, and
+the identity menu.
+The panel picker names the current panel. Hovering, clicking, or Enter drops
+one column of every panel with its icon and badge, the current one highlighted;
+choosing one or Escape closes it. Inbox's count always shows on the picker.
+Project tabs look like browser tabs: the active one joins the page below and
+the others recede. Each has a close control. Tabs shrink to a readable minimum,
+then the strip scrolls sideways without a scrollbar, and the active tab scrolls
+into view. At widths <=920px the header keeps Back, the panel picker, tabs, the
+branch picker, and Sync, and moves View, Auto-research, and the utilities into
+the same labelled-row ⋯ menu phones use. That menu stays mounted while closed,
+so a control's own popover survives it closing, and the account panel opens in
+the menu's flow rather than floating off its scroll box. When the row is still short, the
+branch name truncates before the tab strip narrows below one tab and +.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
-One View picker at the end of the tab strip switches between the drill-down and
-the DAG. It also sets which records show. On phones, it sits in the ⋯ menu.
+View switches between the drill-down and the DAG and sets which records show.
+On phones, it sits in the ⋯ menu.
 The DAG toolbar's type and layer filter is its Lens menu.
-View and the branch picker stay pinned to the strip's right edge.
-Tabs that overflow scroll under them.
-Files and Paper are separate top tabs, with routes `artifacts` and `paper`;
+Files and Paper are separate panels, with routes `artifacts` and `paper`;
 Paper carries the unsynced badge. Paper gets no second row, so the editor keeps
 the full height. The member's pinned pages are tabs on the Files page after its
 Files tab, and that row exists only while a pin does. On phones, the pin row

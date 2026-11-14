@@ -194,18 +194,24 @@
 
 /* Hard shadows where Aqua writes blurred ones inline. */
 :root[data-theme="snowbound"]
-  :is(
-    .project-header,
-    .project-tabs,
-    .node-window-dock,
-    .detail-drawer > header,
-    .chat-dock > header,
-    .paper-toolbar
-  ) {
+  :is(.node-window-dock, .detail-drawer > header, .chat-dock > header, .paper-toolbar) {
   box-shadow: 0 2px 0 var(--px-frame);
 }
 
-:root[data-theme="snowbound"] .project-tabs > button .inbox-count {
+:root[data-theme="snowbound"] .project-header {
+  box-shadow: inset 0 -2px 0 var(--px-frame);
+}
+
+:root[data-theme="snowbound"] .project-header .project-dock-tab.active {
+  border: 2px solid var(--px-frame);
+  border-bottom: 0;
+}
+
+:root[data-theme="snowbound"] .panel-picker-menu {
+  box-shadow: var(--px-notch), var(--shadow);
+}
+
+:root[data-theme="snowbound"] .panel-picker .inbox-count {
   background: var(--walnut);
   box-shadow: var(--px-notch);
   color: var(--px-select);

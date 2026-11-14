@@ -1020,7 +1020,8 @@ safe commands/actions, values, success check, and resume command shared with CLI
 
 ## Project tabs
 
-The project shell keeps a session-scoped dock beside the index control. Opening
+The project shell keeps a session-scoped dock between the panel picker and its
++ control, which returns to the index. Opening
 a project appends and activates one tab; reopening activates without duplicating
 or reordering. Inactive tabs shrink within the capped dock while the active one
 retains more width. Tabs cannot be reordered.

@@ -454,9 +454,10 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         await page.route("**/api/projects/demo/chat-display", (route) =>
           route.fulfill({ json: { archived: [], titles: {}, pinned: [] } }),
         );
+        await page.locator(".panel-picker-trigger").hover();
         await page
+          .locator(".panel-picker-menu")
           .getByRole("button", { name: /^Agents/ })
-          .first()
           .click();
         await page.getByRole("region", { name: "Moss", exact: true }).waitFor();
         await page

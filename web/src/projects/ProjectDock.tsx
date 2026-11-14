@@ -1,5 +1,6 @@
 import type { ProjectSyncHealth } from "../core/refreshScheduler";
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { ProjectTab } from "./projectTabs";
 
 interface Props {
@@ -7,6 +8,7 @@ interface Props {
   activeProjectId: string | null;
   onActivate: (projectId: string) => void;
   onClose: (projectId: string) => void;
+  onNew?: () => void;
   className?: string;
   sync?: ReadonlyMap<string, ProjectSyncHealth>;
 }
@@ -16,13 +18,27 @@ export function ProjectDock({
   activeProjectId,
   onActivate,
   onClose,
+  onNew,
   className = "",
   sync,
 }: Props) {
+  const strip = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = strip.current;
+    if (!element) return;
+    const showActive = () =>
+      element
+        .querySelector(".project-dock-tab.active")
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    showActive();
+    const resize = new ResizeObserver(showActive);
+    resize.observe(element);
+    return () => resize.disconnect();
+  }, [activeProjectId, tabs.length]);
   if (tabs.length === 0) return null;
   return (
     <nav className={`project-dock ${className}`.trim()} aria-label="Open projects">
-      <div className="project-dock-scroll">
+      <div className="project-dock-scroll" ref={strip}>
         {tabs.map((tab) => {
           const active = tab.id === activeProjectId;
           const health = sync?.get(tab.id);
@@ -64,6 +80,17 @@ export function ProjectDock({
           );
         })}
       </div>
+      {onNew && (
+        <button
+          className="project-dock-new"
+          type="button"
+          aria-label="Open a project"
+          title="Open a project"
+          onClick={onNew}
+        >
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      )}
     </nav>
   );
 }
