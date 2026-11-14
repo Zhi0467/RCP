@@ -37,6 +37,7 @@ def provider_login_row(
         status = status.model_copy(
             update={
                 "user_code": None,
+                "awaiting_code": False,
                 "verification_url": None,
                 "detail": None,
             }

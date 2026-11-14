@@ -4211,17 +4211,23 @@ button.agent-provider-label {
   align-items: center;
   display: flex;
   flex: 1 1 220px;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 8px;
   min-width: 0;
 }
 .sign-in-device > .icon-button {
+  flex: none;
+}
+.sign-in-device > .icon-button:first-of-type {
   margin-left: auto;
 }
 .sign-in-device a {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sign-in-device code {
+  flex: none;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   font: var(--type-xs) var(--mono);

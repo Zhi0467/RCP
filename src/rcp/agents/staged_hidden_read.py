@@ -84,6 +84,7 @@ def host_facts(paths=()):
         "paths": {path: os.path.realpath(os.path.expanduser(path)) for path in paths},
         "absent": absent_paths(paths),
         "provider_login_files": [
+            os.path.realpath(home + "/.gemini/antigravity-cli/antigravity-oauth-token"),
             os.path.realpath(
                 os.path.join(os.environ.get("CODEX_HOME", home + "/.codex"), "auth.json")
             ),

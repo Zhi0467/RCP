@@ -391,7 +391,7 @@ def test_authentication_is_read_the_way_each_cli_reports_it() -> None:
 
 
 def test_the_registry_is_the_only_list_of_providers() -> None:
-    assert PROVIDER_IDS == ("codex", "claude", "opencode")
+    assert PROVIDER_IDS == ("codex", "claude", "opencode", "agy")
     for provider in PROVIDER_IDS:
         assert profile_for(provider).id == provider
         assert profile_for(provider).label
@@ -814,6 +814,7 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
     ("provider", "runtime_id", "behavior"),
     [
         ("claude", "claude.stream-json.v1", "queue"),
+        ("agy", "agy.stream-json.v1", "queue"),
         ("codex", "codex.app-server-stdio.v1", "inject"),
         ("codex", "codex.exec-json.v1", "unsupported"),
     ],
@@ -1144,3 +1145,10 @@ def test_codex_hidden_read_scope_covers_every_capability(
             )
         )
         assert "sandboxPolicy" not in json.loads(started.outgoing[0])["params"]
+
+
+@pytest.mark.parametrize("provider", PROVIDER_IDS)
+@pytest.mark.parametrize("catalog", [None, _result("", returncode=1), _result("not a catalog")])
+def test_every_provider_has_a_safe_catalog_fallback(provider, catalog):
+    profile = profile_for(provider)
+    assert profile.models(catalog) == list(profile.declared)

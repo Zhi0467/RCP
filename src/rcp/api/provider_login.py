@@ -81,6 +81,11 @@ class ProviderTokenRequest(BaseModel):
     token: str = Field(min_length=1, max_length=PROVIDER_TOKEN_MAX_CHARS)
 
 
+class ProviderCodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    code: str = Field(min_length=1, max_length=PROVIDER_TOKEN_MAX_CHARS)
+
+
 class ProviderCredentialSummary(BaseModel):
     """What the UI may know about a stored setup token: never the token."""
 
@@ -277,6 +282,24 @@ def cancel_provider_sign_in(
         raise _refused(exc) from exc
 
 
+@router.post("/api/providers/{provider}/logins/sign-in/{attempt_id}/code")
+def submit_provider_sign_in_code(
+    provider: ProviderId,
+    attempt_id: str,
+    body: ProviderCodeRequest,
+    request: Request,
+    sign_ins: SignInsDependency,
+) -> ProviderSignInStatus:
+    member = get_identity_access(request).acting_user(request)
+    status = sign_ins.sign_in_status(attempt_id)
+    if status is None or status.provider != provider or status.started_by != member.user_id:
+        raise HTTPException(status_code=404, detail="Unknown sign-in.")
+    try:
+        return sign_ins.submit_code(attempt_id, body.code, member_id=member.user_id)
+    except ProviderLoginRefused as exc:
+        raise _refused(exc) from exc
+
+
 @router.post("/api/providers/{provider}/logins/token")
 def save_provider_token(
     provider: ProviderId,
@@ -433,7 +456,7 @@ def add_provider_login(
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     status = None
-    if "device_code" in profile_for(provider).authentication.methods:
+    if {"device_code", "paste_code"}.intersection(profile_for(provider).authentication.methods):
         try:
             status = sign_ins.start_sign_in(
                 LoginKey(provider, body.machine_id, state.login_id), member_id=member.user_id

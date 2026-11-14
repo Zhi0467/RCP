@@ -21,10 +21,11 @@ if TYPE_CHECKING:
 
 
 def remove_remote_credential(login_id: str, relative_paths: tuple[str, ...]) -> None:
-    """Delete one added login's credential on the execution account."""
-    parsed = UUID(login_id)
-    if parsed.version != 4 or str(parsed) != login_id:
-        raise ValueError("Login id must be UUID4 text.")
+    """Delete the named login credential on the execution account."""
+    if login_id:
+        parsed = UUID(login_id)
+        if parsed.version != 4 or str(parsed) != login_id:
+            raise ValueError("Login id must be UUID4 text.")
     for relative in relative_paths:
         path = Path.home() / relative.format(login_id=login_id)
         path.unlink(missing_ok=True)
