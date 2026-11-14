@@ -397,16 +397,16 @@ def test_work_like_profile_check_refuses_a_host_that_cannot_sandbox(tmp_path: Pa
     assert checked.step.state == "operator_action_needed"
     assert "bubblewrap" in checked.step.message
 
-    chat = _request(store, authorizer, profile="project_chat")
-    plan = coordinator.plan("request", chat.request_id)
-    checked = coordinator.check(
-        "request",
-        chat.request_id,
-        boundary_sha256=plan.boundary_sha256,
-        target_id=plan.targets[0].target_id,
-    )
-    assert checked.step.state != "operator_action_needed"
-    assert "bubblewrap" not in (checked.step.message or "")
+    for profile, held in (("project_chat", True), ("node_chat", True), ("seed", False)):
+        selected = _request(store, authorizer, profile=profile)
+        plan = coordinator.plan("request", selected.request_id)
+        checked = coordinator.check(
+            "request",
+            selected.request_id,
+            boundary_sha256=plan.boundary_sha256,
+            target_id=plan.targets[0].target_id,
+        )
+        assert (checked.step.state == "operator_action_needed") is held
 
 
 def test_unexpected_launcher_failure_is_not_misreported_as_missing_install(

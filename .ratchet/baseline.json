@@ -92,7 +92,7 @@
   "src/rcp/compute_jobs/jobs.py": {"comment": 10},
   "src/rcp/compute_jobs/probe.py": {"comment": 4},
   "src/rcp/compute_jobs/scheduler_readiness.py": {"comment": 4},
-  "src/rcp/config.py": {"comment": 12},
+  "src/rcp/config.py": {"comment": 10},
   "src/rcp/consolidation.py": {"comment": 16},
   "src/rcp/control.py": {"comment": 15},
   "src/rcp/conversation_worktrees.py": {"comment": 10},
