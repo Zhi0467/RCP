@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import socket
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
@@ -254,10 +256,7 @@ class ProjectProvisionCoordinator:
     def cancel(self, request_id: str) -> ProjectProvisioningRequestRecord:
         """Remove request-owned machine state, then record the one cancelled transition."""
 
-        lock = self._request_lock(request_id)
-        if not lock.acquire(timeout=PROJECT_PROVISION_CANCEL_WAIT_SECONDS):
-            raise ProjectProvisionRefused("A setup step is running. Try again when it finishes.")
-        try:
+        with self.member_hold(request_id):
             request = self.store.project_provisioning_request(request_id)
             if request is None or request.target_space_id != self.store.space_id:
                 raise ProjectProvisionRefused("The selected provisioning request does not exist.")
@@ -282,6 +281,16 @@ class ProjectProvisionCoordinator:
                 provider_checks=request.provider_checks,
                 cancellation_disposition=disposition,
             )
+
+    @contextlib.contextmanager
+    def member_hold(self, request_id: str) -> Iterator[None]:
+        """Serialize a member's cancel or completion with setup steps on one request."""
+
+        lock = self._request_lock(request_id)
+        if not lock.acquire(timeout=PROJECT_PROVISION_CANCEL_WAIT_SECONDS):
+            raise ProjectProvisionRefused("A setup step is running. Try again when it finishes.")
+        try:
+            yield
         finally:
             lock.release()
 

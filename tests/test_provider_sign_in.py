@@ -1423,3 +1423,20 @@ def test_a_token_save_interrupted_by_a_restart_asks_for_the_token_again(
         runner.store.provider_login_state(key).detail
         == provider_sign_in.TOKEN_SAVE_INTERRUPTED_DETAIL
     )
+
+
+def test_a_sign_in_queued_behind_a_verify_does_not_replace_the_verified_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+
+    with runner.launcher.credential_gate.hold_blocking(key):
+        started = runner.start_sign_in(key, member_id="member")
+        runner.store.mark_provider_login_verified(key, member_id="other", detail="ok")
+
+    ended = _status_when(runner, started.attempt_id, lambda status: status.state != "pending")
+    assert ended.state == "failed"
+    assert ended.detail == provider_sign_in.SIGNED_IN_REPLACE_DETAIL
+    assert runner.store.provider_login_state(key).state == "signed_in"
+    assert not (tmp_path / "argv.jsonl").exists()

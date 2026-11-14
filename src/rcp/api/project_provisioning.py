@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -1478,6 +1479,31 @@ def complete_project_provisioning_request(
 
     identity_access.require_team_space()
     reviewer = identity_access.require_patch_capable_identity(request)
+    coordinator: ProjectProvisionCoordinator | None = (
+        request.app.state.project_provision_coordinator
+    )
+    try:
+        with (
+            coordinator.member_hold(request_id)
+            if coordinator is not None
+            else contextlib.nullcontext()
+        ):
+            return _complete_project_provisioning_request(
+                request_id, body, reviewer, setup, store, catalog, operation_lock
+            )
+    except ProjectProvisionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _complete_project_provisioning_request(
+    request_id: str,
+    body: ProjectProvisioningCompleteRequest,
+    reviewer: AuthorizedHuman,
+    setup: ProjectSetupManager,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    operation_lock: KeyedLocks,
+) -> ProjectProvisioningResponse:
     record = _request_or_404(store, request_id)
     if record.kind in {"add_repository", "connect_repository"}:
         with operation_lock(record.proposed_project_id):

@@ -339,6 +339,11 @@ class ProviderSignInRunner:
         for binary in binaries:
             self.launcher.invalidate_readiness(login, binary=binary)
 
+    def _require_replaceable(self, login: LoginKey, *, member_id: str) -> None:
+        current = self.require_login(login, member_id=member_id)
+        if current.state == "signed_in" and current.source == "verify":
+            raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
+
     @contextlib.contextmanager
     def _member_hold(self, login: LoginKey) -> Iterator[None]:
         with contextlib.ExitStack() as stack:
@@ -353,9 +358,7 @@ class ProviderSignInRunner:
             yield
 
     def start_sign_in(self, login: LoginKey, *, member_id: str) -> ProviderSignInStatus:
-        current = self.require_login(login, member_id=member_id)
-        if current.state == "signed_in" and current.source == "verify":
-            raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
+        self._require_replaceable(login, member_id=member_id)
         if "device_code" not in profile_for(login.provider).authentication.methods:
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
@@ -575,7 +578,7 @@ class ProviderSignInRunner:
                 canceled = self._take_cancellation(status.attempt_id)
                 if canceled:
                     raise canceled
-                self.require_login(login, member_id=status.started_by)
+                self._require_replaceable(login, member_id=status.started_by)
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(

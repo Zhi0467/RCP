@@ -626,7 +626,8 @@ preparation completed. Members may inspect requests. The authorizer of a
 create, add or connect request can cancel it in any open status. Incoming
 transfers cannot be cancelled this way. The team service runs the cleanup in
 `ProjectProvisionCoordinator.cancel`, the same process that advances setup. One
-lock per request serializes cancel with a whole setup step. Cancel waits
+lock per request serializes cancel and completion with a whole setup step and
+with each other. Cancel waits
 `PROJECT_PROVISION_CANCEL_WAIT_SECONDS` for a running step and then refuses.
 Before removing anything, cancel moves the request into cancellation handling
 (`operator_action_needed` with a disposition), which setup refuses to resume. A

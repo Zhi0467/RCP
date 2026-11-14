@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -406,6 +407,12 @@ class _CancelCoordinator:
         self.store = store
         self.refusal: str | None = None
 
+    @contextlib.contextmanager
+    def member_hold(self, _request_id: str):
+        if self.refusal is not None:
+            raise ProjectProvisionRefused(self.refusal)
+        yield
+
     def cancel(self, request_id: str):
         if self.refusal is not None:
             raise ProjectProvisionRefused(self.refusal)
@@ -459,6 +466,26 @@ def test_started_request_cancels_through_the_setup_coordinator(tmp_path) -> None
     assert cancelled.json()["cancellation_disposition"] == "prepared_state_preserved"
     assert cancelled.json()["next_action"]
     assert cancelled.json()["can_cancel"] is False
+
+
+def test_completion_waits_for_the_same_request_hold_as_cancel(tmp_path) -> None:
+    _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
+    with signed_in_client(app) as client:
+        created = client.post("/api/project-provisioning/requests", json=_payload()).json()
+        store = app.state.background_tasks.store
+        coordinator = _CancelCoordinator(store)
+        coordinator.refusal = "A setup step is running. Try again when it finishes."
+        app.state.project_provision_coordinator = coordinator
+        busy = client.post(
+            f"/api/project-provisioning/requests/{created['request_id']}/complete",
+            json={"final_review_digest": "0" * 64},
+        )
+
+    assert busy.status_code == 409
+    assert busy.json()["detail"] == coordinator.refusal
+    assert store.project_provisioning_request(created["request_id"]).status == (
+        "waiting_for_server_setup"
+    )
 
 
 def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> None:
