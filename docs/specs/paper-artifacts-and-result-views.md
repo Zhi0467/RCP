@@ -13,24 +13,86 @@ owns viewer and run payloads. Models live in [paper](../../src/rcp/paper/models.
 Paper is a member-authored file tree containing Markdown, LaTeX, Typst,
 bibliographies, figures, and other files. It is non-authoritative and separate
 from graph and research inputs. Paper text never becomes graph state. There is
-no main file. Preview begins with the file being read. Each text file is a shared
-live document. Concurrent edits merge without personal drafts or concurrency
-refusals. The owning RCP process holds the live documents, including those for
-personal projects with SSH state roots.
+no main file. Preview begins with the file being read. A paper may link one
+GitHub repository ([GitHub sync](#github-sync)).
 
-Saving and publishing are separate operations. An edit, its paper revision, and
-its publication intent commit in SQLite before broadcast or acknowledgment.
-Only acknowledgment means an edit is saved. Disconnected browser edits wait.
-Publication replaces `paper/` as one staged tree after idle editing and
-periodically during continuous editing. Renames and edits therefore never appear
-apart. Failed or unreachable publication backs off while saving continues.
-The published tree is never committed to the state repository's history. A
-paper may link one GitHub repository ([GitHub sync](#github-sync)). Workers reconstruct documents and perform SQLite
-work under the project lock. After commit, the owner installs and broadcasts the
-result even if callers cancel. The paper badge means that saved revisions still
-await publication.
-**Why:** acknowledged keystrokes must survive crashes. Multi-file builds must
-never see half a published tree.
+### The folder is the Paper
+
+The Paper is a folder of plain files on the project's base. Members and
+[Paper chats](#coach) edit the same files. There is no published copy, staging
+area, or change card. The local folder is `<data_dir>/paper/<project_id>/`; an
+SSH base holds it at `~/.rcp/paper/<project_id>/`. Both sit inside
+`rcp_owned_paths`, outside every repository and `.research`, like
+[project memory](graph-consolidation-and-lessons.md#memory). Project identity
+changes move the folder and project deletion removes it, as they do memory.
+**Why:** one copy cannot drift, and agents read and write what members see.
+
+[`folder_io`](../../src/rcp/paper/folder_io.py) owns file access. It is
+stdlib-only, runs in-process locally, and ships over SSH. A scan reads stat data
+only and skips a code-defined ignore list: editor swap files, `.DS_Store`,
+`__pycache__`, and LaTeX and Typst outputs. A symlink, hard link, or special
+file is skipped and reported; the tree shows it as unsupported. Writing an
+existing file swaps a temp file in atomically. When the swapped-out file changes
+after the swap, its bytes merge as a foreign write. A new file is created
+without replacing anything.
+
+SQLite keeps identity, caches, and history. Losing them loses no content.
+
+- `paper_files` maps each stable `file_id` to its path and kind. Comments and
+  editor documents target the `file_id`. Scans rebuild it, and the disk wins.
+- `paper_doc_states` is the editor's buffer cache, with the hash of the disk
+  text it equals, so browser caches still match after a restart.
+- History versions and their blobs are snapshots of the folder. Restore writes
+  files.
+- `paper_state.revision` is the per-project counter. Every save and every scan
+  that finds a change bumps it. A past state is addressed by `version_id`. Raw,
+  preview, and compile requests without one read the current folder.
+- `paper_turn_files` holds a Paper turn's changed files
+  ([change list](#a-turns-change-list)).
+
+### Editing
+
+Each text file is a shared live document. Concurrent edits merge without personal
+drafts or concurrency refusals. The owning RCP process holds the live documents,
+including those for SSH bases. One loop per project in
+[`PaperLive`](../../src/rcp/paper/live.py) loads, saves, and reloads them.
+
+- **Load.** When the cache's hash matches the disk text, the editor uses the
+  cache. Otherwise it replaces the cached text with the disk text, so the disk
+  wins.
+- **Save.** About a second after typing stops, when a file's last viewer
+  leaves, and before a History version, the loop writes the file, then the
+  cache, then acknowledges. Only acknowledgement means an edit is saved, and it
+  means on disk. Disconnected browser edits wait.
+- **Reload.** While a file has viewers or a Paper turn runs, a poll scans the
+  folder. It hashes only paths whose stat changed and reads a file once its stat
+  stays stable for one interval. `PAPER_POLL_*` in `limits.py` set the local and
+  SSH intervals and the per-poll file and byte caps.
+- **Merge.** A disk hash that differs from the last known text is a foreign
+  write. An open file merges three ways: the base, the buffer, and the disk. The
+  buffer wins overlaps, so the human's text wins. Viewers receive the result as
+  an ordinary live update. Any change bumps the `paper` watermark.
+- **Merge base.** During a Paper turn, the base for a path is the agent's
+  previous write in that turn, else the turn-start version. Human edits the
+  agent never saw always count as the buffer's side. For a binary file the
+  agent's bytes win, unless a member uploaded that path during the turn; then
+  the member wins and the turn lists a clash.
+- **Delete and rename.** A foreign delete or rename of an open file whose buffer
+  changed since its base is a clash. The file is recreated. Otherwise the change
+  is accepted. A vanished path and a new path with the same hash in one scan are
+  a rename and keep the `file_id`.
+- **Outside a turn.** A foreign write still merges with the human winning. The
+  next Paper turn lists it as outside a turn.
+
+**Multi-file writes** are tree actions, upload, rename, History restore, and
+Paper Git apply. They write through the save in path order, so only agents make
+foreign writes. Each file merges three ways: the base is what the operation read,
+theirs is its result, and ours is the disk or buffer now. Overlaps go to the
+operation for member actions and to GitHub for Paper Git. Other keystrokes
+survive. An I/O failure stops and reports the files written; a rerun is
+idempotent.
+**Why:** acknowledged keystrokes must survive crashes, and a slow agent must
+never overwrite typing.
 
 The editor locally refuses edits that exceed the advertised per-document limit.
 It flashes red and stays editable. A server refusal ends that connection and
@@ -38,16 +100,15 @@ shows a red edge with Retry. A refusal caused only by rate limits retries
 automatically. Deletion, maintenance, and transfer pause live Paper.
 [Socket admission](../../src/rcp/api/paper_live.py) owns retryable and permanent
 close codes. It accepts the connection before closing so browsers see those codes.
-A failed stop or ended maintenance resumes live Paper. Backup marks saved Paper
-as unpublished. Restore republishes SQLite text instead of trusting copied folders.
-Import publishes after activation without requiring a visit.
+A failed stop or ended maintenance resumes live Paper. Restore and import write
+the folder; the editor loads it on the next visit.
 
 Stable file ids survive renames. File, folder, and root menus offer the applicable
 Create, Upload, Rename, Download, and Delete actions. Folders exist through file
 paths, so empty folders are browser-local. Folders start folded. Each browser
 remembers which folders it opened, per project, and opening a file opens the
-folders above it. Renaming or deleting a folder creates
-one revision. Downloading a folder produces one zip. Desktop uses native save
+folders above it. Renaming or deleting a folder is one multi-file write.
+Downloading a folder produces one zip. Desktop uses native save
 dialogs. New and uploaded files open immediately. Typing focus waits for the
 selected file's editor; an older editor cannot consume that request. Choosing
 Preview or Coach cancels pending editor focus. Replacement uploads require
@@ -68,21 +129,23 @@ and nothing else. Text HTML previews inside the agent
 artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
-A database without Paper adopts the existing published tree. Local revisions
-continue after its marker. SSH mirrors omit that marker, so publication waits
-until new revisions pass it. Paper from before the file tree becomes
-`introduction.md`. Both divergent old drafts and saved text are retained. The draft
-becomes live, and publication waits for a member to choose. The unchosen text
-remains in History.
+An older database migrates at startup, once per project with Paper data. It
+writes the saved snapshot into a sibling temp folder and renames it into place,
+folds unsaved editor updates into the cache, and keeps the old `file_id`s. It
+clears legacy draft holds, whose text is already in History. It settles queued
+or running old Coach turns as interrupted and rejects pending change cards, each
+with a notice. Old Coach turns show as static transcript text. It then removes
+`.research/paper` and records `paper_migrations`. A crash resumes at the first
+unfinished step. Paper from before the file tree becomes `introduction.md`.
 
 History checkpoints editing bursts and explicit requests. Before deletion,
-folder rename, replacement upload, or restore, it also checkpoints current revisions that are
+folder rename, replacement upload, or restore, it also checkpoints a folder state
 not yet covered. Restore and text upload change only the differing span to
 preserve peer positions. Identical text is a no-op. Per-file restore is a new
 live edit. Automatic versions form a bounded ring. Named versions have count and
 byte quotas. They refuse new names instead of evicting old versions or blocking
 edits. Members may delete named versions. Deleting automatic versions is refused.
-Timing rows prune only after publication and retained History both cover them.
+Pruning keeps every version a `paper_turn` receipt of an existing chat names.
 
 ### Preview
 
@@ -190,9 +253,9 @@ area adds its place as percentages across and down: of the PDF page or image, or
 of the visible part of an HTML page, which is approximate. A long location drops
 whole trailing parts, the approximate source line first. A location carries no
 revision, so after later edits or a rename it can point at the wrong place with no
-signal; the quote is what names the text. Recording a revision was rejected: a
-Coach turn reads only the latest saved snapshot, so it could flag drift but not
-find the old place.
+signal; the quote is what names the text. Recording a revision was rejected:
+the Coach reads only the current folder, so it could flag drift but not find the
+old place.
 
 A PDF area quotes the text-layer text inside it. An HTML area quotes the text, or
 else the label, of up to eight elements mostly inside it, or of the element that
@@ -202,7 +265,7 @@ only its page and place. The HTML frame bounds each text and element itself, by
 bytes and without a marker. A joined area quote still longer than a quote allows
 is cut, ending in "…"; a longer native selection is refused.
 [Comment models](../../src/rcp/comments/models.py) own these bounds. Areas never
-send pixels: the Coach reads the source files from its snapshot, so text and
+send pixels: the Coach reads the source files from the folder, so text and
 place are enough, and a crop would add an upload to every comment.
 
 Cancelling the selection inside the HTML frame, including Escape there, leaving
@@ -223,8 +286,8 @@ itself.
 ### GitHub sync
 
 A paper may link one GitHub repository and branch. The link belongs to the
-project, and any member may push. SQLite stays the only truth for Paper. The
-repository is a transport copy, like the published `paper/` tree. It lets a
+project, and any member may push. The Paper folder stays the truth. The
+repository is a transport copy. It lets a
 co-author work from a clone, or from an Overleaf project linked to the same
 repository. [`PaperGit`](../../src/rcp/paper/git_sync.py) owns the mechanism,
 [`PaperGitLink`](../../src/rcp/storage/paper_git_links.py) the record, and
@@ -269,18 +332,17 @@ Fetch is shallow and takes the one branch. A repository over its disk limit
 stops syncing with a stated error.
 
 The link is machine-local, like the key. Backup and transfer never carry the
-directory. Transfer carries no link and drops Git cards on import. A backup's
-database keeps the link row and Git cards, and the missing-key check below
-removes them after a restore. A restored or transferred project arrives
-unlinked. Project deletion removes both. A link
-whose key file is missing at backend start is removed with its Git cards, and
-the backend logs it. A paper directory without a link is removed at backend
+directory. Transfer carries no link. A backup's database keeps the link row,
+and the missing-key check below removes it after a restore. A restored or
+transferred project arrives unlinked. Project deletion removes both. A link
+whose key file is missing at backend start is removed, and the backend logs
+it. A paper directory without a link is removed at backend
 start. An older database opens as not linked.
 
 **Pull is automatic.** The backend checks each linked paper that has a live
 editor, on a fixed interval, and once when a member opens the workspace. A
 paper nobody has open is not fetched, so remote edits never apply unwatched. A
-check that finds the same remote head changes nothing, so cards keep their ids.
+check that finds the same remote head changes nothing.
 A pull that fails before the merge applies changes nothing. One that fails
 after its clean edits applied keeps them and does not advance the synced
 commit. Either way it records the error on the link and waits before that
@@ -303,39 +365,19 @@ Bytes pass through unchanged. A remote rename is a delete plus a create.
 | same as remote | any | Nothing. |
 | same | changed or added | Take the remote file. |
 | same | deleted | Delete. |
-| changed or added | changed or added, both text | Three-way text merge. |
-| changed or added | changed or added, binary or kinds differ | File conflict. |
-| changed | deleted | File conflict. |
-| deleted | changed | File conflict. |
+| changed or added | changed or added, both text | Three-way text merge; GitHub wins overlaps. |
+| changed or added | changed or added, binary or kinds differ | Take the remote file. |
+| changed | deleted | Delete. |
+| deleted | changed | Take the remote file. |
 
-Clean results apply as one Paper revision by the actor `github`, after an
-automatic History version that serves as the undo point. Text edits apply as
-minimal replacements, so co-editors keep their cursors. A pull that loses a
-race with live typing recomputes from a fresh snapshot a bounded number of
-times, then fails.
-
-**Conflicts.** A text merge with overlaps applies every non-overlapping remote
-edit and keeps the Paper side of each overlap. The remote side becomes
-[change cards](#writing-coach) under the fixed task id `paper-git`. Members
-accept or reject them through the Git decision route, which serializes with
-sync. The Coach change routes refuse them, and the Coach pane leaves them out.
-Git cards have no Undo. History restore is the undo. A merged or proposed text
-over the document limit becomes a file conflict.
-
-Binary, kind-change, and delete-against-edit conflicts have no line view. The
-member picks **Take theirs** or **Keep mine** for the whole file. Keep mine
-changes nothing in Paper.
-
-A file with an undecided conflict is held. It keeps its own base until every
-conflict in it is decided.
-**Why:** if the base moved to the new remote head, the co-author's side would
-live only in a card. A later pull or an outdated card would lose it, and the
-next push would overwrite their text on GitHub.
-
-A pull that fetched a new head, and an explicit Refresh, rebuild every held
-file's cards from its held base, the remote head, and the live text. A rejected
-card stays rejected while neither side of that region changes. That is the
-change store's rule for a decided proposal, so sync keeps no rejection memory.
+**GitHub wins overlaps.** Results apply as one
+[multi-file write](#editing) by the actor `github`, after an automatic History
+version that serves as the undo point. Text edits apply as minimal
+replacements, so co-editors keep their cursors and keystrokes outside an
+overlap survive. A merged text over the document limit is skipped with a
+reason, like an entry Paper cannot hold.
+**Why:** the co-author already pushed; History keeps the Paper side, and a
+second review queue would duplicate the turn change list.
 
 **Entries Paper cannot hold.** Every pull judges the whole remote tree. It
 skips, with a reason, an entry whose path Paper refuses, a symlink or submodule,
@@ -348,7 +390,7 @@ arrives as an ordinary remote file.
 reasons.
 
 **Push is manual.** A linked paper's file sidebar has Files and Changes tabs.
-Changes lists held conflicts, Git cards, and the changed files, and ends with
+Changes lists the changed files and ends with
 the commit message and Commit & push. Commit and push are one step, because Paper
 keeps no local commits. Clicking a changed file shows its line diff against the
 synced commit in the editor pane, bounded in `limits.py`; a binary file shows
@@ -365,9 +407,8 @@ It then refuses with:
 
 | Reason | Meaning |
 | --- | --- |
-| `conflicts` | A file is held. |
 | `collision` | A Paper path equals, contains, or sits under a skipped entry's path. |
-| `retry` | The merge before the push failed, as when it lost a race with live editing. |
+| `retry` | The merge before the push failed. |
 | The real cause | The fetch failed, or GitHub rejected the push twice. |
 
 A rejected push refetches, merges, and tries once more before it reports
@@ -381,9 +422,9 @@ The Git pill shows only the branch, so unpushed edits never read as an alarm.
 Switching moves the project's link to that branch and runs an ordinary pull
 against it, keeping the old synced commit as the base. Files Paper left
 unchanged take the branch's version, files only on the old branch go, and
-unpushed edits carry over through the three-way merge, with overlaps as cards.
-The switch changes the branch for every member. A switch is refused while a
-file is held, and to a branch GitHub does not have.
+unpushed edits carry over through the three-way merge, with GitHub winning
+overlaps. The switch changes the branch for every member. A switch to a branch
+GitHub does not have is refused.
 **Why:** the merge already treats a different remote version like a
 force-push, so a switch needs no second merge path.
 
@@ -391,10 +432,10 @@ A new branch starts at the synced commit and becomes the link's branch. Paper
 does not change, and the next push goes there. A name GitHub already has is
 refused.
 
-**Unlink** deletes the link, the directory, and all Git cards. Paper files stay.
+**Unlink** deletes the link and the directory. Paper files stay.
 
-Anyone who can write to the linked repository can put text into Paper, where a
-Coach turn reads it. Linking gives repository writers the trust of a member
+Anyone who can write to the linked repository can put text into Paper, where
+every agent reads it. Linking gives repository writers the trust of a member
 typing in Paper.
 
 ### References
@@ -414,8 +455,8 @@ Clicking a cite key opens that reference. The Reference tab shows one reference
 as a page, with its abstract and its DOI, URL, and eprint links when present.
 It names the `.bib` file and opens it at the entry.
 
-Adding, fixing, deleting, and checking references is [Coach](#writing-coach)
-work. The edits return as ordinary change cards.
+Adding, fixing, deleting, and checking references is [Coach](#coach) work.
+The edits show in the turn's [change list](#a-turns-change-list).
 **Why:** verifying an entry against its source needs the network, and every
 `.bib` edit stays reviewable like any other file change.
 
@@ -438,74 +479,45 @@ Export refuses with `not_root` when the file is not a LaTeX root, `unavailable`
 when the LaTeX engine is missing, and `failed` with the log tail when the
 compile fails. For a non-LaTeX file the control is disabled.
 
-## Writing coach
+## Coach
 
-The coach reads saved paper, the graph, research, and context to question claims
-or propose file edits, creation, renames, and deletion. Each turn reads an immutable
-saved snapshot. It proposes complete Paper files under `changes/files/` and records
-moves and deletions in `changes/moves.json`. Temporary scripts and working files
-may remain elsewhere in the changes folder; they are not Paper deliverables and
-do not block collection, since collection opens only `files/` and `moves.json`. Scripts intended for the Paper belong under `files/`
-like any other deliverable. RCP validates the bounded tree's paths and regular
-files, and validates the declared Paper output together or rejects it all. It then
-diffs the output against the snapshot to create cards. A rename and its dependent edits form one group. The
-coach writes no diffs or line numbers. Like a chat turn, each coach turn also has
-its own artifact folder: a preview, diagram, or draft figure it writes there is
-published with the reply and embeds in it, following
-[Artifacts inside a reply](#artifacts-inside-a-reply).
+The Coach is an ordinary project chat whose focus is `paper`
+([Paper chats](conversations-episodes-and-watchers.md#paper-chats)). Every turn
+is Work with the Paper folder as one more write root
+([containment](providers-and-containment.md#paper-write-root)). It edits the
+Paper's files as a coding agent edits a repository, in place, while members
+type. It shares chat's composer, transcript, attachments, steering, agent
+picker, Resume, Retry, recovery, and per-turn artifact folder. The Coach pane
+lists the member's Paper chats. History and New chat sit at the end of Paper's
+view-switch row without adding a phone row. Its composer sends ticked Paper
+comment threads with the next message ([sending](#sending-threads-to-an-agent)).
 
-Execution follows [Local and SSH execution](providers-and-containment.md#local-and-ssh-execution).
-Remote snapshots are fixed stage inputs, never the live publication directory.
-The changes folder, the turn's artifact folder, and attached saved-artifact folders are writable under the
-[containment contract](providers-and-containment.md#provider-enforcement).
-Bounded read-back refuses symlinks and hardlinks and
-uses the same card collection. Shared supervised passes, process receipts, and
-quiescence prevent overlapping providers. Collection stores the task and round
-receipt with the cards. Replay therefore duplicates neither cards nor refreshes.
-Detached turns retain history mailboxes and their captured read scope through
-restart until settlement. Checkpointed recovery keeps stages. Completed stages
-survive for continuations until the sweeper removes them. Saved off-base sessions
-reopen fresh on base. Their visible history remains, but their native memory is
-lost. Model and effort changes retain the native session. Provider changes reopen
-it under ordinary profile compatibility.
+A Paper chat's Work contract names the folder and says files change under the
+agent: re-read before each edit, and keep a person's revert and mention it. It
+says the Paper preview builds no sites, so the agent builds in the turn's
+artifact folder and makes a self-contained HTML page or an artifact when
+something does not render. Every other launch names the folder as the Paper,
+read-only. There is no Undo on a turn; History restore is the undo.
 
-Uploads and references use ordinary attachment admission and a per-draft
-`attachment_scope_id`. They are staged as immutable readable inputs locally or
-remotely. The shared renderer separates uploads from references. It includes the
-ordinary graph read scope and named branches in the master and continuation deltas.
+### A turn's change list
 
-Cards apply only against their source text. Settlement checks the live anchors.
-Changed text gets up to two refresh turns in the same session. After that, the
-card becomes outdated and offers Refresh or Reject. Refresh preserves the master,
-sends changed paths as a delta, and saves an immutable prompt for each round.
-Default mode waits for the member to Accept or Reject. Apply-directly mode applies
-each fresh card at turn end. Failures remain reviewable without blocking other cards.
+- **Start.** The editor flushes and History saves a version.
+- **During.** Each foreign write adds a `paper_turn_files` row: path, base
+  hash, the agent's hash, clash, and kind (`write`, `delete`, `rename`,
+  `outside_turn`, `unsupported`). Bytes go into the History blobs, so a restart
+  mid-turn keeps them.
+- **End.** After the provider process tree exits or recovery settles, the
+  editor flushes, the loop scans, and History saves the after version. A
+  changed file nobody had open joins the list. One `paper_turn` receipt records
+  both versions and the files.
 
-Apply rechecks the source text and runs once per card. Its durable receipt holds
-the prepared operation, inverse, and committed result. The receipt replays before
-precondition checks. A refused Accept or Undo drops preparation so retry prepares
-again against live text. Guarded Undo requires the changed regions to still hold
-the coach's text but tolerates edits elsewhere. Undo all reverses a turn's applied
-cards. Undoing deletion retains CRDT identity so cached editors do not duplicate
-restored text. Pending cards and active turns retain base revisions. Pending and
-outdated binary cards retain both blobs through backup and restore. Card batches
-read live paper only to check pending anchors.
-[Change models](../../src/rcp/paper/changes.py) own anchor and receipt shapes.
-
-The saved mode normalizes the request's apply-directly choice. Rewrite Compare
-fetches the full proposed text through the member-only plain-text attachment
-route with `nosniff`. From RCP attaches all saved paper or files selected by stable
-id. The coach shares chat's composer, transcript, attachments, and editable
-agent picker. Its composer sends ticked Paper comment threads with the next
-message ([sending](#sending-threads-to-an-agent)). It renders through the same
-agent window as chat, so it keeps the reader's position, shows live progress, and offers Resume and Retry as
-chat does; only its change cards are its own. Provider changes announce a fresh
-session, and the conversation stays one, as chat's does, after a reload too.
-History and New chat sit at the end of Paper's view-switch row without adding a
-phone row.
-The coach has no direct paper, Patch, approval, or graph-promotion authority.
-[Containment](providers-and-containment.md) remains fixed regardless of transcripts
-or skills.
+The turn shows "N files changed" with line totals, folded. A row opens the diff
+of the before version against the agent's version beside the chat. A clash row
+is red, sorts first, and shows the agent's version beside the current file,
+where the human's text won. A diff line takes a shared comment on the reply,
+anchored to the file and line; Send returns it to the agent. Other members'
+saves never appear in a turn's list. `GET …/paper/turns/{op}` and
+`GET …/paper/turns/{op}/files/{path}` serve the list and one file.
 
 ## Answer and artifacts are independent
 
@@ -915,7 +927,7 @@ path their target already uses:
 sends that thread.
 
 Each thread must be open and belong to the sending chat: its replies, its
-artifacts, or Paper for a Coach chat. Otherwise the send answers 409. A composer send carries threads of
+artifacts, or Paper for a Paper chat. Otherwise the send answers 409. A composer send carries threads of
 at most one artifact, which must belong to this chat. A send carries at most
 `ARTIFACT_CONTEXT_MAX_SELECTIONS` threads. The typed text plus every rendered
 thread must fit `STEERING_MESSAGE_MAX_CHARS`; otherwise the send answers 422.
@@ -955,6 +967,11 @@ removing inline HTML. Keep, publication, and Undo create no graph authority,
 Proposal, or revision.
 **Why:** shared RCP storage supplies version history without managed files beside
 human code. Artifacts intentionally do not travel with repository clones.
+
+### Save to Paper
+
+The viewer's **Save to Paper** picks a Paper folder and uploads the artifact's
+current version through the ordinary Paper upload.
 
 ### Deleting an artifact
 

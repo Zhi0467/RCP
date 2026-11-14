@@ -28,8 +28,9 @@ ones, as that member's Runs controls would.
 An Experiment that ended to wait for its human may also resume from the chat it
 runs in, under the [Work control contract](specs/conversations-episodes-and-watchers.md).
 
-The paper workspace is human-controlled. Coach changes are reviewed or applied
-under the chat's human-authorized mode. Artifacts, reports, comments, and versions
+The paper workspace is a shared folder. The Coach is a project chat that edits
+it in place; members review its changes in the chat, and their own text wins a
+clash. Artifacts, reports, comments, and versions
 are reading and collaboration tools. They do not establish graph truth.
 Their authority and lifetime belong to [paper and artifacts](specs/paper-artifacts-and-result-views.md).
 
@@ -107,7 +108,7 @@ home for repository-wide invariants and their stable identifiers.
   mutation envelopes, current application surfaces, revision reconciliation,
   tabs, and shell lifecycle.
 - [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) covers
-  human paper authorship, reviewed coaching, previews, reports, unified
+  the Paper folder, the Coach, previews, reports, unified
   artifact interaction, and repository-file reading.
 - [Interface and visual design](specs/interface-and-visual-design.md) covers the
   visual grammar, project shell, Research and Runs projections, node detail, DAG

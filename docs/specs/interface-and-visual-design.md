@@ -122,8 +122,8 @@ The DAG is under Research. Research has no page heading.
 View switches between the drill-down and the DAG and sets which records show.
 On phones, it sits in the ⋯ menu.
 The DAG toolbar's type and layer filter is its Lens menu.
-Files and Paper are separate panels, with routes `artifacts` and `paper`;
-Paper carries the unsynced badge. Paper gets no second row, so the editor keeps
+Files and Paper are separate panels, with routes `artifacts` and `paper`.
+Paper gets no second row, so the editor keeps
 the full height. The member's pinned pages are tabs on the Files page after its
 Files tab, and that row exists only while a pin does. On phones, the pin row
 scrolls within its own width and pin titles truncate.
@@ -623,8 +623,7 @@ The file tree folds beside a live editor and a pane for Preview, Coach, or
 Reference, chosen by a segmented control. The three are floating rounded panels
 on a darker ground.
 Files retain their identity across renames. Copy links open that file.
-The editor shows durable save coverage separately from publication. Markdown
-previews use the
+The editor shows durable save coverage. Markdown previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
 HTML previews put the zoom percentage, its hover slider, and Comment in the
 panel header. Their loading and error states occupy that same preview surface.

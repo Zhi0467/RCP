@@ -661,7 +661,7 @@ fields, format versions and exclusions. Every project-linked table is
 classified.
 
 The archive carries canonical histories and heads, branch and merge metadata,
-typed chats, saved Paper and facts, finished operational history, referenced
+typed chats, the Paper folder, Paper History and facts, finished operational history, referenced
 artifacts and matched native transcripts. Membership, credentials, caches,
 resumable sessions and stages and executable bindings never travel. Imported
 tasks remain history-only. Chat ids, answers and receipts stay readable. Future
@@ -744,16 +744,19 @@ Restore verifies the archive's recorded SQLite schema against supported fresh
 and in-place migration fingerprints before opening a copy.
 
 One immutable online SQLite snapshot determines referenced durable bytes:
-canonical main and branch history, typed chats, saved and published Paper,
-facts, artifacts and sealed imported histories. Saved unpublished Paper comes
-from that snapshot. Artifact capture holds its pruning lock. Live credentials
+canonical main and branch history, typed chats, Paper identity and History,
+facts, artifacts and sealed imported histories. Artifact capture holds its
+pruning lock. Live credentials
 and provider homes, source Git, caches, temporary stages and materialized
 outputs are excluded. Space transcripts at
 `<data_dir>/agent-threads/<user_id>/<thread_id>.jsonl` are captured through their
 last complete line; sibling thread stages stay excluded. Local memory notes
 under `<data_dir>/memory/<project_id>` are captured with their SQLite migration
 receipts; pending memory deletions are discarded on restore. Member memory under
-`<data_dir>/memory/members/<user_id>` is captured the same way. Restoring with a
+`<data_dir>/memory/members/<user_id>` is captured the same way. `paper` is an
+app-data root too: each project's
+[Paper folder](paper-artifacts-and-result-views.md#the-folder-is-the-paper),
+on the backend or an SSH base, is captured and restore writes it back. Restoring with a
 stale member's removal omits that member's transcripts and memory. Remote-base memory
 stays out of scope. Project transfer still excludes both roots. Archives predating
 these captures restore without Space transcripts or local memory. Private project

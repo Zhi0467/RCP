@@ -410,6 +410,25 @@ the owner's card by its current route and refuses when that route now resolves
 elsewhere, so an edited card or repointed SSH alias cannot clean up the old
 host through its new target.
 
+### Paper chats
+
+A chat has a `focus`: none, or `paper`. The chat's first turn fixes it through
+`RunRequest.focus`, stored in `chat_display.focus`; a later turn that
+names another focus is refused with 409. Requests and dispatch scopes from
+before focus load with none, so recovery keeps it. A Paper chat is the
+[Coach](paper-artifacts-and-result-views.md#coach). Its turns are always Work
+and add the [Paper write root](providers-and-containment.md#paper-write-root).
+
+[Paper turns](../../src/rcp/runs/paper_turns.py) run one at a time per project.
+A Paper turn launches only while it is the project's oldest queued, running, or
+pausing Paper turn. A later one stays queued with "Waiting for another Paper
+turn", and the member can cancel it. When the holder settles, whether
+completed, interrupted, failed, or recovered, the oldest waiting turn launches.
+A Paper turn ends only after its provider process tree exits or recovery
+settles it.
+**Why:** two agents editing the same files at once would each merge against
+the other's half-written text.
+
 ### Historical Discuss turns
 
 Older releases recorded Discuss turns, which reason and answer with no
@@ -697,9 +716,7 @@ The ordinary composer addresses the watched attempt while it can receive input.
 The backend supplies capability, button label and disabled reason from its actual
 runtime. No hint line or separate steering control is shown. Episode workers use
 orchestrator mail instead. Steers persist as human messages with delivered,
-refused or unknown receipts. The Paper coach steers the same way; with no
-transcript, its steers live in `paper_coach_steers` and reach the web on its
-task rows. Reload never infers acknowledgement from reply text
+refused or unknown receipts. Reload never infers acknowledgement from reply text
 or resends input. [Provider steering](providers-and-containment.md#live-human-steering)
 owns transport races and placement.
 
@@ -709,7 +726,7 @@ captured target/settings; a changed target or setting keeps the draft instead.
 RCP stores no audio. SpeechAnalyzer is local; the older Apple recognizer or a
 chosen network service may send audio externally. Audio attachments are refused.
 
-One nonblank chat or Paper coach message atomically claims bounded
+One nonblank chat message atomically claims bounded
 temporary attachments. They stage immutably on the execution host and recovery
 reuses the exact batch;
 partial transfer fails rather than dropping files. The claimed batch expires
@@ -720,7 +737,7 @@ bytes/hashes/paths. Attachments are untrusted context, not sole durable Evidence
 provenance.
 
 Project references may name stored artifacts/reports, graph nodes on their source
-target, or the saved Paper: the whole tree or one file, each file its own
+target, or the Paper: the whole tree or one file, each file its own
 attachment within the attachment count and size limits. Drag, pasted reference links and the
 project picker create read-only copies through each source owner at admission.
 Missing sources reject the turn; later edits/deletion cannot change staged bytes.
@@ -732,7 +749,7 @@ turn end, so Undo restores it; when a newer version arrived meanwhile, the chang
 becomes a separate artifact instead. Only a change settles an outcome; an
 untouched one stays as it was. Prompts list editable artifacts
 separately from read-only references and uploads. Ordinary node/project
-chat turns and Paper coach admit them; steering and other run kinds refuse them,
+chat turns admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.

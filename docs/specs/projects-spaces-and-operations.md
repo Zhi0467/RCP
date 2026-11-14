@@ -215,7 +215,7 @@ A graph branch that Merge cleanup archived travels as its owner's
 and the source's worktree binding and merge state stay behind.
 Operational records are version 8, which names machines by card id; readers
 and writers accept no other version, so both ends of a transfer run a release
-with card ids. A saved Paper travels with the transfer. The required
+with card ids. The Paper folder and its History travel with the transfer. The required
 `record_schema_version` source-configuration field
 makes older strict clients and targets refuse preparation before the source is
 released. Release rechecks the required version under the storage write lock,
@@ -405,7 +405,7 @@ the ref. RCP stamps the run's resolved read scope on the collected Patch
 outside it is rejected. A Patch may cite any project repository as
 `source_refs`.
 
-Every graph-capable run, the Paper coach and group-context siblings receive
+Every graph-capable run and group-context siblings receive
 pointers to every project repository. Work-like write containment separately
 permits exactly the admitted writable repositories on the execution machine,
 checked again at launch against the graph's current truth scope; context and
@@ -481,8 +481,8 @@ machine in client string branches.
 `AgentTaskRecord`, before any recovery/Retry/watcher/mail policy parses it.
 Only the explicit per-kind retirement allowlist removes fields (currently legacy
 `auto_research.ending`, and the per-turn compute selection that every
-RunRequest kind froze through 0.4.29). Mappings assembled outside row decoding use the same helper. `RunRequest` and
-`CoachRequest` drop unknown fields when parsed, so the roundtrip rule below is
+RunRequest kind froze through 0.4.29). Mappings assembled outside row decoding use the same helper. `RunRequest` drops
+unknown fields when parsed, so the roundtrip rule below is
 what refuses a stored row that carries one; other live request models are
 `extra="forbid"`. Retire only shipped fields whose removal preserves meaning.
 Every launch and finalization check uses the one roundtrip rule in the same

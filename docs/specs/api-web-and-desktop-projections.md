@@ -754,9 +754,9 @@ with an accessible stale marker; remote-sync health has its own marker.
 All open tabs watch project-wide task status; only the active tab watches progress
 and displayed task details. Other resources have their own tokens/profiles. Task
 completion does not trigger a reload bundle. Paper is an ordinary profile reading
-the live tree and writing sessions. The project snapshot carries only its
-publication badge; source text and durable acknowledgements belong to the
-[live editor](paper-artifacts-and-result-views.md#shared-paper). Paper links use
+the live tree and the member's Paper chats. Source text and durable
+acknowledgements belong to the
+[live editor](paper-artifacts-and-result-views.md#editing). Paper links use
 `paper_file=<stable file id>` to select a file, including in an already-open editor.
 
 Commands fence affected reads and install operation-id pending overlays;
@@ -1663,11 +1663,7 @@ up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
 stays visible however many newer tasks exist; a failure followed by a later turn
 in the same chat does not count. Such a latest turn also stays listed for
 `AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client sees the
-terminal record. With `paper_session`, the route instead returns every coach turn
-of that coach conversation: the writing session and the sessions it continued
-across provider or machine switches, which each switch turn records as
-`previous_session_id`. A busy project therefore cannot push the coach's running
-turn or its history out of the Paper panel.
+terminal record.
 
 Chat task responses include `current_chat_session_id`, resolved from server task
 metadata independently of the displayed historical task. AgentChatView and WebMCP
@@ -1675,11 +1671,6 @@ use that projection, never a search through task or transcript native-session
 ids. Admission re-resolves and binds atomically; a client hint cannot pin a new
 ordinary turn to a superseded session. Artifact comments keep their artifact's
 ownership checks while following the chat's current session profile.
-
-Paper coach task responses include `steers`, the turn's steered messages in the
-`ChatMessage` shape a chat transcript gives them, oldest first. The coach has no
-transcript, so `paper_coach_steers` holds them; a project transfer leaves them
-behind with its source turns.
 
 Read state is stored per user on the server, so it survives a reload, a closed
 app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
@@ -1694,8 +1685,8 @@ moves forward. Markers are not moved with a transferred project.
 
 ### Paper, Settings, and History
 
-Paper owns the co-edited file tree, its previews, and coach change
-cards ([Paper](paper-artifacts-and-result-views.md)). Settings has two
+Paper owns the co-edited file tree, its previews, and the Coach's Paper chats
+([Paper](paper-artifacts-and-result-views.md)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
 display preferences in its Appearance pane
 ([grammar](interface-and-visual-design.md#visual-grammar)), the server status
@@ -2137,8 +2128,8 @@ update script for a source build.
 ## Frontend trust boundary
 
 Provider naming is a backend answer. Readiness exports each provider's runtime
-choices and its default, and a task and a Paper writing session each export the
-label for the runtime they ran on, so no surface maps a durable runtime id or
+choices and its default, and a task exports the label for the runtime it ran
+on, so no surface maps a durable runtime id or
 picks a default itself.
 
 The browser may stage human drafts and render backend projections; it is not the

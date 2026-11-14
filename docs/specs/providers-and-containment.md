@@ -20,7 +20,7 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Admitted only for a chat that refuses human turns; elsewhere a viewer or composer comment is an ordinary Work turn in that chat. |
-| Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, its turn's artifact folder, and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
+| Paper chat | Work, plus the project's Paper folder as one more write root ([Paper write root](#paper-write-root)). Every other run reads the Paper folder and never writes it. |
 
 Manifest settings and skills select execution details and methods, not capability.
 Every new human chat turn is Work
@@ -38,7 +38,7 @@ with a default of 2 minutes for Claude, OpenCode and Codex. A Discuss, Work, or
 Experiment turn resolves its configured shell timeout once at staging and carries
 that value through every launch, including Patch corrections. Unset remains
 unset even if the card changes later. Every other launch, Seed/Refresh, branch
-merge, orchestrator, child Work, and coach corrections included, resolves it at
+merge, orchestrator, and child Work included, resolves it at
 that launch.
 
 Claude renders configured `BASH_DEFAULT_TIMEOUT_MS` and `BASH_MAX_TIMEOUT_MS`
@@ -132,17 +132,15 @@ records the accepted coupling.
 
 ## Provider runtime selection
 
-Chat and Paper coach pickers keep the member's next-turn selection, then use
-the newest admitted turn's provider, model and effort before retained conversation
-or writing-session defaults and Settings. Admission stays visible while the
-native-session checkpoint and writing-session profile catch up. Reopening an
+Chat pickers, the Coach's included, keep the member's next-turn selection, then
+use the newest admitted turn's provider, model and effort before retained
+conversation defaults and Settings. Admission stays visible while the
+native-session checkpoint catches up. Reopening an
 existing session includes its admitted continuation or provider switch. An
 explicit empty effort stays empty. A model left empty for an unknown catalog
 remains explicit on the admitted request, so repeated resolution cannot replace
 it with a named Settings model. Omitted fields inherit prior or configured values.
-Session-scoped coach task reads include both directions of the project's recorded
-switch lineage and admitted switches without a native checkpoint, independently
-of the recent task list. Until that checkpoint, a switched turn retains its
+Until that checkpoint, a switched turn retains its
 previous held session for continuation.
 
 Each project profile selects a provider-owned runtime. Defaults are Codex
@@ -153,7 +151,7 @@ profiles always resolve a runtime, and task requests cannot override it. One
 profile's runtime covers all its capabilities, including Discuss and Work.
 
 The current profile preference applies on every invocation, even when resuming
-a native session. Tasks and Paper writing sessions record the actual runtime.
+a native session. Tasks record the actual runtime.
 Codex app-server uses one fresh stdio process per turn, with shared local/SSH
 launching, permissions, process control, usage and cleanup. Its persisted
 threads may appear in Codex Desktop; RCP does not coordinate Desktop tasks.
@@ -343,13 +341,23 @@ and consolidation. It is distinct from repository and machine-grant roots.
 Both local and remote memory bases are inside `rcp_owned_paths`, so a machine
 grant cannot admit them. The provider receives the same resolved root that the
 prompt names. Discuss gains no repository-write or graph authority.
-Seed, Refresh, branch merge, Paper coach and artifact edit have no memory root.
+Seed, Refresh, branch merge and artifact edit have no memory root.
 A member's Space thread and backend-run private project threads also get that
 member's private memory folder as a memory root. The prompt labels it apart from
 project memory. Hidden-read hides every other member's folder, and the whole
 member memory root from runs that are not a member's thread.
 The [memory owner](graph-consolidation-and-lessons.md#memory) defines layout,
 index bounds, migration, and the add-only prompt rule for autonomous runs.
+
+### Paper write root
+
+A Paper chat's Work turn carries `ProjectWriteScope.paper_root`, the project's
+[Paper folder](paper-artifacts-and-result-views.md#the-folder-is-the-paper). No
+other launch carries it. It is handled like a memory root: added to the writable
+roots, part of the scope fingerprint when set, and carved out of the RCP-owned
+deny list the same way for each provider. Both local and remote Paper folders
+are inside `rcp_owned_paths`, so a machine grant cannot admit them. Every other
+launch reads the folder, and its prompt names it as the Paper, read-only.
 
 ### Machine writable paths
 
@@ -464,19 +472,12 @@ Home-relative paths resolve on the execution host. Discuss uses a named native
 permission profile so the same denial applies in exec and app-server; the
 app-server checks the activated profile before starting a turn.
 
-Paper coach uses the `rcp_paper` permission profile in exec and app-server,
-for fresh and resumed sessions. Its shell runs any command, such as a figure
-converter. Its writable roots are the turn's changes folder and the temporary
-directories, plus the folder of each saved artifact attached to the message;
-the workspace receives no write grant.
-App-server verifies that this profile is active before delivering the turn.
-
 ### Browser grants
 
 Browser is a per-chat human grant, off by default for ordinary chats and on when
 a member's agent thread is created, resolved immutably at admission
-and passed through launch construction. Work, orchestration, Discuss and the
-Paper coach may use it; ingestion, scratch correction and recorded replay may not. Prompts
+and passed through launch construction. Work, orchestration and Discuss
+may use it; ingestion, scratch correction and recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.
 `open`, `close`, `close-all` and `kill-all` end that session for the turn;
 `delete-data` also removes logins. Continuations send explicit off/unavailable.
@@ -526,8 +527,8 @@ admitted through `--add-dir` for historical Discuss chat turns.
 
 Every Claude launch names its tools with `--tools`, from one code-defined set
 per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
-`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`; so does the
-Paper coach. Session summaries get
+`Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Session
+summaries get
 none. `--tools` decides which tools exist; the permission rules above decide
 which run unprompted. The local process also drops a hosting Claude Code
 session's identity and channel variables, named in `ClaudeAuthentication`.
@@ -535,14 +536,6 @@ session's identity and channel variables, named in `ClaudeAuthentication`.
 work outside the turn, message other local sessions, switch worktrees, or
 publish to outside services. A desktop session's environment would add its own
 system prompt and Artifact tools to a turn started from inside it.
-
-Paper coach uses `dontAsk` with empty setting sources and disabled hooks. Its
-native `Read`, `Glob`, and `Grep` tools may read outside the changes folder;
-`Edit` rules confine all file-writing tools, including `Write`, to that folder and
-the folder of each attached saved artifact.
-`Bash` is allowed, as for Work, and as for Work the `Edit` rules do not bound it.
-WebSearch and WebFetch remain available, subject to the resolved hidden-read
-policy.
 
 **Why:** Claude's OS sandbox is off because its Linux backend always unshares the network
 namespace and remounts a minimal `/dev`, and no setting relaxes either, so a
@@ -593,14 +586,11 @@ their own commands on edited files outside any tool rule.
 Edit rules deny everything, then allow the exact workspace and admitted roots,
 then deny protected paths, then allow again each root inside a protected path,
 such as a stage inside RCP storage; OpenCode applies the last rule that matches.
-The paper coach and every other capability may read outside their folder. OpenCode
+Every capability may read outside its folders. OpenCode
 matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
 path rules therefore refuses to start inside a Git work tree, rather than let
-the rules name the wrong paths. Task stages, including the paper coach's, are
-outside Git. The coach's native read tools remain available, its edit rules
-allow only its task's changes folder and attached saved artifact folders, and its
-shell is allowed, as Work's is.
+the rules name the wrong paths. Task stages are outside Git.
 Discuss and ingestion may edit only their workspace and their own
 write folders. Discuss and ingestion deny general shell commands, allowing only
 `python3 -I -S <staged-client-path> *` when their broker gate names that client.
@@ -759,8 +749,8 @@ can ask RCP how the graph changed, through two read-only command verbs:
 `graph_log <id> [--at <head>]`. Heads use the target-qualified grammar in
 [Graph, history, and transitions](graph-history-and-transitions.md#history-reads).
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
-its children, branch merge, Seed and Refresh, the paper
-coach, and nightly consolidation. A run may read main and every branch of its
+its children, branch merge, Seed and Refresh, and nightly
+consolidation. A run may read main and every branch of its
 project, except that a run on a fork reads only its
 [ancestry](auto-research-and-branch-merge.md#forks). The runs that
 [group read scope](#group-read-scope) names also read every project in their
@@ -802,8 +792,8 @@ head.
 When a run's project belongs to a [project group](projects-spaces-and-operations.md#project-groups),
 every project in the group shares one read scope. Discuss, Work, Experiment
 loops, and the Auto-research orchestrator and its children receive it. Seed and
-Refresh, the paper coach, branch merge, reports, consolidation, and artifact
-edits keep their own project only. The scope names the run's own project, which
+Refresh, branch merge, reports, consolidation, and artifact edits keep their
+own project only. The scope names the run's own project, which
 unqualified heads still resolve to, and the readable group projects; `graph_diff`
 and `graph_log` take an optional project id and read any target of a project in
 that set.
@@ -914,8 +904,8 @@ scheduler route are owned by [machines and compute](machines-and-compute.md).
 The standalone broker bounds its stdin wait so Stop signals are handled even
 when a serving thread receives the signal and its parent keeps input open.
 
-Remote Discuss, Work, Experiment, child Work, Seed/Refresh, branch-merge and
-paper-coach mailboxes retain one thread owner through settlement. Disconnected accepted turns transfer it to reconciliation.
+Remote Discuss, Work, Experiment, child Work, Seed/Refresh and branch-merge
+mailboxes retain one thread owner through settlement. Disconnected accepted turns transfer it to reconciliation.
 Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
 reservations and results before liveness checks. Restoration requires both a
@@ -1024,8 +1014,8 @@ state workspace.
 
 ### Live human steering
 
-Steering addresses RCP's live process for one exact ordinary chat,
-Space-thread, or Paper coach attempt. Space-thread turns steer through
+Steering addresses RCP's live process for one exact ordinary chat or
+Space-thread attempt. Space-thread turns steer through
 `POST /api/agent-threads/{thread_id}/tasks/{operation_id}/steer`.
 It cannot select a newer attempt, start work or target an episode worker. Agent
 mail uses its own channel. Input retains the attempt's mode, scope, target and
@@ -1065,16 +1055,11 @@ processes do not recover in-flight steering.
 
 Every agent runs on the project's **base**: the machine that holds the
 canonical state repository. Chat, Seed, Refresh, Experiments, Auto-research,
-watchers and the Paper coach alike; no profile, request or recovery picks
+and watchers alike; no profile, request or recovery picks
 another machine, and project Settings tags the base's machine card. A manifest
-whose coach names another machine loads with that choice dropped. A fresh Paper
-turn or standalone retry without a native session ignores a stale request's
-machine choice. Continuing, refreshing cards from, or resuming a Paper session
-recorded on another machine starts a fresh native session on the base. Visible
-chat history remains; native session memory is lost. Sessions already on the
-base retain their native session and stage.
-The coach stages its fixed paper snapshot and reads changes back over the same
-remote-stage transport as other agents; see [Writing coach](paper-artifacts-and-result-views.md#writing-coach).
+whose coach names another machine loads with that choice dropped. Paper chats
+edit the [Paper folder](paper-artifacts-and-result-views.md#the-folder-is-the-paper)
+on the base, where the agent runs.
 
 **Why:** graph-writing agents already had to run beside `.research/`, and a
 per-launch machine made "where does the agent's SSH start" depend on the chat.
@@ -1114,9 +1099,8 @@ failed. Giving every agent every machine keeps one source of truth.
 Chat turns, Seed and Refresh, Experiment Runs and continuations,
 Auto-research orchestrators and their children (each from the base),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
-Paper coach and the branch-merge agent receive no compute-machine context;
-they retain their protected graph-history client. The coach's provider-specific
-shell and file rules are described above. The first master/task context lists
+The branch-merge agent receives no compute-machine context; it retains its
+protected graph-history client. The first master/task context lists
 each machine's card name, route, job manager and hint; data fields carry the
 card id. A resumed native session receives a concise delta for added or changed
 machines, with the rules of any manager they name, and only the name of a
@@ -1258,8 +1242,7 @@ personal one. The upgrade wrote `*` = `own_then_shared` for every team member
 not being removed, so their work kept using the shared logins. There is no team or
 owner default: a new team member must add their own login or turn Shared on.
 
-The member is the task's authorizer: the sender for chats, Work, Discuss and the
-paper coach; the episode's `authorized_by` for Auto-research, Experiment turns
+The member is the task's authorizer: the sender for chats, Work and Discuss; the episode's `authorized_by` for Auto-research, Experiment turns
 and reports; the origin task's member for watcher wakes; the schedule's for
 consolidation; the presser for a human Resume or Retry, except episode tasks;
 the original task's member for transport reattempts and automatic recovery.
@@ -1476,7 +1459,7 @@ owns remote state locking.
 
 Every remote launch is supervised; owners do not opt in. Ordinary Work,
 Discuss, Experiment-loop, Auto-research actors and child Work, graph Seed and
-Refresh, episode reports, artifact edits, branch merges and the paper coach
+Refresh, episode reports, artifact edits and branch merges
 register typed, durable finalizers. Routing uses the retained contract, never chat kind.
 Zero or multiple contracts leave the task visibly waiting. Local turns register
 no remote finalizer.
@@ -1484,8 +1467,7 @@ no remote finalizer.
 Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
 and session binding; the child's parent-authorized result; Experiment's joint
 Patch/watch admission and wake binding; an Auto-research actor's Patch and
-reply; graph Seed/Refresh's Patch; a report's stage file; a merge's answers; the paper coach's recorded changes
-folder for its round. Experiment records its baseline, control
+reply; graph Seed/Refresh's Patch; a report's stage file; and a merge's answers. Experiment records its baseline, control
 snapshot and committed wake session before launch. Recovery creates no second
 child or invocation and retains the original authority, target and accounting.
 
