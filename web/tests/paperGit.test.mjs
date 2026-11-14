@@ -22,23 +22,10 @@ const status = {
   checked_at: "2026-11-09T10:00:00Z",
 };
 
-test("the pill marks unpushed edits and counts conflicts only for a linked paper", () => {
-  assert.deepEqual(gitPill(status), {
-    branch: "main",
-    unpushed: true,
-    conflicts: 2,
-    failed: false,
-    hover: status.checked_at,
-  });
-  const pending = gitPill({ ...status, state: "pending" });
-  assert.deepEqual([pending.branch, pending.unpushed, pending.conflicts], ["", false, 0]);
-  assert.deepEqual(gitPill(null), {
-    branch: "",
-    unpushed: false,
-    conflicts: 0,
-    failed: false,
-    hover: "",
-  });
+test("the pill names the branch only for a linked paper", () => {
+  assert.deepEqual(gitPill(status), { branch: "main", failed: false, hover: status.checked_at });
+  assert.equal(gitPill({ ...status, state: "pending" }).branch, "");
+  assert.deepEqual(gitPill(null), { branch: "", failed: false, hover: "" });
 });
 test("the pill hover prefers the last failure over the sync time", () => {
   const pill = gitPill({ ...status, last_error: "Permission denied" });

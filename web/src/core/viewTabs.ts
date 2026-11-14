@@ -2,7 +2,7 @@ import { readPref, writePref } from "./prefStorage.ts";
 import type { AppView } from "./types";
 
 /** Sub-views that open inside another top tab; every other view is its own tab. */
-const PARENT_TAB: Partial<Record<AppView, AppView>> = { dag: "scientific", paper: "artifacts" };
+const PARENT_TAB: Partial<Record<AppView, AppView>> = { dag: "scientific" };
 
 export const topTab = (view: AppView): AppView => PARENT_TAB[view] ?? view;
 const TABS_WITH_SUBVIEWS = new Set(Object.values(PARENT_TAB));
