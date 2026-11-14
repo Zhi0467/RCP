@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -54,10 +56,20 @@ class PaperSnapshot(BaseModel):
         )
 
 
+class PaperWriteFailed(PaperConflict):
+    """A multi-file write stopped on an I/O failure; a rerun finishes it."""
+
+    def __init__(self, written: list[str], path: str):
+        self.written = written
+        self.path = path
+        done = ", ".join(written) if written else "nothing"
+        super().__init__(f"Paper write stopped at {path}; written: {done}")
+
+
 class PaperTreeFile(BaseModel):
     file_id: str
     path: str
-    kind: Literal["text", "binary"]
+    kind: Literal["text", "binary", "unsupported"]
     format: str
     size: int
     sha256: str
@@ -66,32 +78,47 @@ class PaperTreeFile(BaseModel):
 class PaperTree(BaseModel):
     max_doc_bytes: int = Field(default_factory=lambda: limits.PAPER_MAX_DOC_BYTES)
     revision: int
-    saved_revision: int
-    published_revision: int
-    publish_state: Literal["published", "pending", "failed"]
-    hold: str | None
     files: list[PaperTreeFile]
 
 
 class PaperOp(BaseModel):
-    """Offsets are Python Unicode character offsets in the CURRENT saved text."""
+    """One step of a multi-file write.
+
+    `write` puts `data` at `path`; `base` is the file the operation read (None:
+    none). Keystrokes since that read survive outside the overlap. `exclusive`
+    refuses an occupied path.
+    """
 
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["replace", "create", "rename", "delete", "binary"]
+    kind: Literal["write", "rename", "delete"]
     file_id: str | None = None
     path: str | None = None
-    text: str = ""
-    start: int | None = None
-    end: int | None = None
     data: bytes | None = None
-    blob_sha256: str | None = None
-    file_kind: Literal["text", "binary"] = "text"
+    base: bytes | None = None
+    exclusive: bool = False
 
 
 class Receipt(BaseModel):
     revision: int
-    receipt_key: str | None = None
     file_ids: list[str] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PaperEntry:
+    file_id: str
+    path: str
+    kind: Literal["text", "binary"]
+    sha256: str
+    size: int
+
+
+@dataclass(frozen=True)
+class PaperSource:
+    """Entries of one Paper state, with bodies read only on demand."""
+
+    revision: int
+    entries: list[PaperEntry]
+    read: Callable[[PaperEntry], bytes]
 
 
 def paper_path(value: str) -> str:

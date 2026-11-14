@@ -73,10 +73,10 @@ def test_two_websocket_clients_converge_and_ack_is_committed(manifest, tmp_path)
             assert saved.text == str(left["text"])
             with app.state.services.store.connection() as connection:
                 row = connection.execute(
-                    "SELECT saved_revision FROM paper_publication WHERE project_id = ?",
+                    "SELECT revision FROM paper_state WHERE project_id = ?",
                     (app.state.default_project_id,),
                 ).fetchone()
-                assert row[0] >= 3
+                assert row[0] >= 2
 
 
 def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
@@ -231,7 +231,7 @@ def test_presence_replays_to_joining_clients_and_clears_on_disconnect(manifest, 
                 assert doc.client_id not in observer.states
 
 
-def test_served_live_edit_publish_rename_and_shutdown(manifest, tmp_path, monkeypatch, caplog):
+def test_served_live_edit_rename_and_shutdown(manifest, tmp_path, monkeypatch, caplog):
     import logging
     import socket
     import threading
@@ -245,7 +245,7 @@ def test_served_live_edit_publish_rename_and_shutdown(manifest, tmp_path, monkey
     from tests.helpers import TASK_SETTLE_TIMEOUT, wait_until
 
     monkeypatch.setattr(limits, "PAPER_TIMER_SECONDS", 0.05)
-    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
+    monkeypatch.setattr(limits, "PAPER_SAVE_IDLE_SECONDS", 0)
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.services.store
     with socket.socket() as listener:
@@ -296,12 +296,9 @@ def test_served_live_edit_publish_rename_and_shutdown(manifest, tmp_path, monkey
                     ).status_code
                     == 200
                 )
-                wait_until(
-                    lambda: client.get(prefix + "/tree").json()["publish_state"] == "published",
-                    timeout=TASK_SETTLE_TIMEOUT,
-                )
-                assert (manifest.research_dir / "paper/renamed.md").read_text() == str(left["text"])
-                assert not (manifest.research_dir / "paper/chapter.md").exists()
+                folder = tmp_path / "data/paper" / app.state.default_project_id
+                assert (folder / "renamed.md").read_text() == str(left["text"])
+                assert not (folder / "chapter.md").exists()
         finally:
             server.should_exit = True
             worker.join(timeout=TASK_SETTLE_TIMEOUT)

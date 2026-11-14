@@ -11,7 +11,7 @@ import pytest
 from rcp.paper import PaperSnapshot
 from rcp.paper.compile import PaperCompiler, root_candidates
 from rcp.paper.engines import EngineStore
-from rcp.paper.models import PaperFile
+from rcp.paper.models import PaperFile, PaperTree
 from rcp.paper.synctex import synctex_map
 from tests.helpers import async_wait_until
 
@@ -74,9 +74,12 @@ class Live:
     def __init__(self):
         self.revision = 1
 
-    async def snapshot(self, project_id, revision=None):
+    async def tree(self, project_id):
+        return PaperTree(revision=self.revision, files=[])
+
+    async def snapshot(self, project_id, version_id=None):
         return PaperSnapshot(
-            revision=revision or self.revision,
+            revision=self.revision,
             files=[
                 PaperFile(
                     file_id="file",
@@ -111,7 +114,7 @@ def fake_compiler(tmp_path, body):
 
 
 class SubfileLive(Live):
-    async def snapshot(self, project_id, revision=None):
+    async def snapshot(self, project_id, version_id=None):
         texts = {
             "main.tex": "\\documentclass{article}\\begin{document}\\subfile{section}\\end{document}",
             "section.tex": "\\documentclass[main]{subfiles}\\begin{document}S\\end{document}",
@@ -187,7 +190,8 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
     first = asyncio.create_task(compiler.compile("project", "file"))
     await async_wait_until(lambda: ready.exists() and "," in ready.read_text())
     leader, _child = map(int, ready.read_text().split(","))
-    second = await compiler.compile("project", "file", revision=2)
+    compiler.live.revision = 2
+    second = await compiler.compile("project", "file")
     assert (await first).status == "superseded"
     assert second.status == "ok"
     assert compiler.pdf("project", second.compile_id).startswith(b"%PDF-")
@@ -217,9 +221,9 @@ out = pathlib.Path(sys.argv[sys.argv.index("--outdir") + 1])
 """,
     )
     compiler = PaperCompiler(Live(), engines, tmp_path)
-    first = asyncio.create_task(compiler.compile("project", "file", revision=1))
+    first = asyncio.create_task(compiler.compile("project", "file"))
     await async_wait_until(runs.exists)
-    second = asyncio.create_task(compiler.compile("project", "file", revision=1))
+    second = asyncio.create_task(compiler.compile("project", "file"))
     await asyncio.sleep(0)
     go.touch()
     results = await asyncio.gather(first, second)

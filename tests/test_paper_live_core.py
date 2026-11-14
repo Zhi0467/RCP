@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-from contextlib import contextmanager
+import os
+from pathlib import Path
 
 import pytest
-from pycrdt import Doc, Text, create_update_message
+from pycrdt import Doc, Text, create_update_message, handle_sync_message
 
-from rcp import limits
-from rcp.paper import PaperConflict, PaperLimit, PaperLive, PaperOp
-from rcp.transport import StateUnavailable
-from tests.helpers import async_wait_until
+from rcp.paper import PaperOp
+from rcp.paper.folder_io import write as folder_write
+from rcp.paper.models import PaperWriteFailed, digest
 from tests.paper_live_fixtures import paper_fixture  # noqa: F401
 
 
@@ -18,562 +17,358 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def test_apply_guards_atomicity_unicode_and_receipts(paper):
-    live, store, _ = paper
+def foreign(root: Path, path: str, text: str | bytes) -> None:
+    """An agent's tool writing the folder, a little later than the editor's last look."""
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(text.encode() if isinstance(text, str) else text)
+    info = target.stat()
+    os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns + 5_000_000))
+
+
+async def create(live, path: str, text: str = "", project: str = "p") -> str:
+    receipt = await live.apply(
+        project, [PaperOp(kind="write", path=path, data=text.encode(), exclusive=True)], "h"
+    )
+    return receipt.file_ids[0]
+
+
+class Client:
+    """A browser tab: its own Yjs doc, synced to a room."""
+
+    def __init__(self, live, file_id: str, project: str = "p"):
+        self.live, self.file_id, self.project = live, file_id, project
+        self.queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self.doc = Doc({"text": Text()})
+
+    async def join(self):
+        room = await self.live.connect(self.project, self.file_id, self.queue)
+        self.doc.apply_update(room.doc.get_update())
+        return room
+
+    def drain(self) -> list[bytes]:
+        messages = []
+        while not self.queue.empty():
+            message = self.queue.get_nowait()
+            messages.append(message)
+            if message[:2] == b"\x00\x02":
+                handle_sync_message(message[1:], self.doc)
+        return messages
+
+    async def type(self, index: int, text: str) -> list[bytes]:
+        before = self.doc.get_state()
+        self.doc["text"].insert(index, text)
+        update = self.doc.get_update(before)
+        return await self.live.receive(
+            self.project, self.file_id, create_update_message(update), "h", self.queue
+        )
+
+    @property
+    def text(self) -> str:
+        return str(self.doc["text"])
+
+
+def test_ack_only_after_the_buffer_is_on_disk(paper):
+    live, _, root = paper
 
     async def scenario():
-        receipt = await live.apply("p", [PaperOp(kind="create", path="a.md", text="a🙂b")], "human")
-        file_id = receipt.file_ids[0]
-        ops = [PaperOp(kind="replace", file_id=file_id, start=1, end=2, text="é")]
-        expect = {
-            "receipt_key": "card-1",
-            "checks": [{"file_id": file_id, "start": 1, "end": 2, "text": "🙂"}],
-        }
-        accepted = await live.apply("p", ops, "human", expect)
-        assert await live.apply("p", ops, "human", expect) == accepted
-        assert await live.text_at("p", file_id, accepted.revision) == "aéb"
-        assert await live.text_at("p", file_id, receipt.revision) == "a🙂b"
-        with pytest.raises(PaperConflict):
-            await live.apply(
-                "p",
-                [
-                    PaperOp(kind="delete", file_id=file_id),
-                    PaperOp(kind="create", path="same"),
-                    PaperOp(kind="create", path="same"),
-                ],
-                "human",
-            )
-        assert (await live.tree("p")).revision == accepted.revision
-        with pytest.raises(PaperConflict):
-            await live.apply("p", ops, "human", {"checks": [{"file_id": file_id, "text": "stale"}]})
-        assert (await live.snapshot("p")).files[0].text == "aéb"
+        file_id = await create(live, "a.md", "hello")
+        client = Client(live, file_id)
+        room = await client.join()
+        replies = await client.type(5, " world")
+        assert replies == []
+        assert (root / "p/a.md").read_text() == "hello"
+        assert not any(message[:1] == b"\x64" for message in client.drain())
+        await live.flush("p")
+        assert (root / "p/a.md").read_text() == "hello world"
+        acks = [message for message in client.drain() if message[:1] == b"\x64"]
+        assert acks == [bytes([100]) + room.doc.get_state()]
+        await live.close()
+
+    run(scenario())
+
+
+def test_a_room_loads_its_cache_when_disk_matches_and_disk_when_it_changed(paper):
+    live, store, root = paper
+    vectors: list[bytes] = []
+
+    async def first():
+        file_id = await create(live, "a.md", "one")
+        client = Client(live, file_id)
+        room = await client.join()
+        await client.type(3, " two")
+        await live.flush("p")
+        vectors.append(room.doc.get_state())
+        await live.close()
+
+    async def reopen(expected: str) -> bytes:
+        from rcp.paper import PaperLive
+        from rcp.paper.folder import LocalPaperFolder
+
+        again = PaperLive(store, lambda project: LocalPaperFolder(root / project))
+        room = await Client(again, file_id_of(store)).join()
+        assert room.text == expected
         with store.connection() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM paper_change_receipts").fetchone()[0] == 1
-        await live.close()
+            sha = conn.execute("SELECT text_sha256 FROM paper_doc_states").fetchone()[0]
+        assert sha == digest(expected.encode())
+        await again.close()
+        return room.doc.get_state()
 
-    run(scenario())
-
-
-def test_commit_failure_never_mutates_or_broadcasts_or_acks(paper, monkeypatch):
-    live, store, _ = paper
-
-    async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a")], "h")).file_ids[0]
-        room = await live.connect("p", file_id)
-        queue = asyncio.Queue()
-        room.subscribers.add(queue)
-        client = Doc({"text": Text()})
-        client.apply_update(room.doc.get_update())
-        client["text"].insert(0, "unsaved")
-        old = store.connection
-
-        @contextmanager
-        def fails_commit():
-            with old() as conn:
-                yield conn
-                if conn.in_transaction:
-                    raise OSError("disk failure")
-
-        monkeypatch.setattr(store, "connection", fails_commit)
-        with pytest.raises(OSError):
-            await live.receive("p", file_id, create_update_message(client.get_update()), "h")
-        monkeypatch.setattr(store, "connection", old)
-        assert str(room.doc["text"]) == ""
-        assert queue.empty()
-        assert (await live.snapshot("p")).files[0].text == ""
-        assert (await live.tree("p")).revision == 1
-        await live.close()
-
-    run(scenario())
+    run(first())
+    assert run(reopen("one two")) == vectors[0]
+    (root / "p/a.md").write_text("one two three")
+    assert run(reopen("one two three")) != vectors[0]
 
 
-def test_restart_recovers_tail_and_publication_and_compaction_cutoff(paper, monkeypatch):
-    live, store, workspace = paper
-    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 2)
-
-    async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
-        room = await live.connect("p", file_id)
-        client = Doc({"text": Text()})
-        client.apply_update(room.doc.get_update())
-        client["text"].insert(0, "one")
-        ack = await live.receive("p", file_id, create_update_message(client.get_update()), "h")
-        assert ack[0][0] == 100
-        state = client.get_state()
-        client["text"].insert(3, " two")
-        await live.receive("p", file_id, create_update_message(client.get_update(state)), "h")
-        await live.drain("p")
-        with store.connection() as conn:
-            assert conn.execute("SELECT through_seq FROM paper_doc_states").fetchone()[0] == 2
-            assert [row[0] for row in conn.execute("SELECT seq FROM paper_updates")] == [3]
-        await live.close()
-        restarted = PaperLive(store, lambda _: workspace)
-        recovered = await restarted.connect("p", file_id)
-        assert str(recovered.doc["text"]) == "one two"
-        assert (await restarted.tree("p")).publish_state == "pending"
-        monkeypatch.setattr(limits, "PAPER_TIMER_SECONDS", 0.01)
-        monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
-        await restarted.start()
-
-        def published():
-            with store.connection() as conn:
-                row = conn.execute(
-                    "SELECT saved_revision,published_revision FROM paper_publication WHERE project_id='p'"
-                ).fetchone()
-                return row[0] == row[1]
-
-        await async_wait_until(published)
-        assert (workspace.root / "paper/a.md").read_text() == "one two"
-        assert (await restarted.tree("p")).publish_state == "published"
-        await restarted.close()
-
-    run(scenario())
-
-
-@pytest.mark.parametrize(
-    "canonical,draft,base,held",
-    [
-        ("same", "same", "same", False),
-        ("base", "draft", "base", False),
-        ("incoming", "draft", "ancestor", True),
-    ],
-)
-def test_legacy_migration_is_idempotent_and_holds_divergence(paper, canonical, draft, base, held):
-    live, store, workspace = paper
-    (workspace.root / "paper").mkdir()
-    (workspace.root / "paper/introduction.md").write_text(canonical)
+def file_id_of(store, path: str = "a.md") -> str:
     with store.connection() as conn:
-        conn.execute(
-            "INSERT INTO paper_drafts(project_id,content,base_hash,ancestor_content,updated_at) "
-            "VALUES(?,?,?,?,?)",
-            ("p", draft, hashlib.sha256(base.encode()).hexdigest(), base, store.now()),
-        )
+        return conn.execute(
+            "SELECT file_id FROM paper_files WHERE path=? AND deleted_at IS NULL", (path,)
+        ).fetchone()[0]
+
+
+def test_saves_and_changed_scans_bump_the_revision(paper):
+    live, _, root = paper
 
     async def scenario():
-        first = await live.snapshot("p")
-        assert first.files[0].text == draft
-        tree = await live.tree("p")
-        assert bool(tree.hold) is held
-        if held:
-            await live.publish("p")
-            assert (workspace.root / "paper/introduction.md").read_text() == canonical
-            history = await live.history("p")
-            assert len(history) == 2
-            await live.resolve_hold("p", "canonical", "h")
-            assert (await live.snapshot("p")).files[0].text == canonical
-            assert (await live.tree("p")).hold is None
+        await create(live, "a.md", "x")
+        first = (await live.tree("p")).revision
+        assert not await live.poll("p", full=True)
+        assert (await live.tree("p")).revision == first
+        foreign(root / "p", "b.md", "agent")
+        assert await live.poll("p", full=True)
+        second = (await live.tree("p")).revision
+        assert second == first + 1
+        file_id = file_id_of(live.store)
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(1, "y")
+        await live.flush("p")
+        assert (await live.tree("p")).revision == second + 1
         await live.close()
-        restarted = PaperLive(store, lambda _: workspace)
-        assert (await restarted.snapshot("p")).files[0].file_id == first.files[0].file_id
-        await restarted.close()
 
     run(scenario())
 
 
-def test_server_history_timer_ring_named_quota_and_dedup(paper, monkeypatch):
-    live, store, _ = paper
-    monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
-    monkeypatch.setattr(limits, "PAPER_HISTORY_AUTO_LIMIT", 2)
-    monkeypatch.setattr(limits, "PAPER_HISTORY_NAMED_LIMIT", 1)
+def test_a_foreign_write_merges_into_an_open_buffer_and_the_human_wins_overlaps(paper):
+    live, _, root = paper
 
     async def scenario():
-        file_id = (
-            await live.apply("p", [PaperOp(kind="create", path="a", text="0")], "h")
-        ).file_ids[0]
-        for index in range(1, 5):
-            await live.apply(
-                "p",
-                [PaperOp(kind="replace", file_id=file_id, start=0, end=1, text=str(index))],
-                "h",
-                {"checks": [{"file_id": file_id, "text": str(index - 1)}]},
-            )
-            await live.tick()
-        named = await live.create_version("p", "Milestone", "h")
-        with pytest.raises(PaperLimit):
-            await live.create_version("p", "Too many", "h")
-        assert len(await live.history("p")) == 3
-        assert (await live.version_snapshot("p", named["version_id"])).files[0].text == "4"
+        file_id = await create(live, "a.md", "alpha\nbeta\ngamma\n")
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(0, "HUMAN ")
+        foreign(root / "p", "a.md", "alpha\nbeta\ngamma\nagent line\n")
+        assert await live.poll("p", full=True)
+        client.drain()
+        assert client.text == "HUMAN alpha\nbeta\ngamma\nagent line\n"
+        assert (root / "p/a.md").read_text() == client.text
+        foreign(root / "p", "a.md", "AGENT alpha\nbeta\ngamma\nagent line\n")
+        await client.type(0, "x")
+        await live.poll("p", full=True)
+        client.drain()
+        assert client.text.startswith("xHUMAN alpha")
+        await live.close()
+
+    run(scenario())
+
+
+def test_a_slow_agent_write_merges_against_its_previous_write_in_the_turn(paper):
+    live, store, root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "one\ntwo\nthree\nfour\n")
+        await live.begin_turn("p", "op-1")
+        foreign(root / "p", "a.md", "one\ntwo\nthree\nfour\nAGENT1\n")
+        await live.poll("p", full=True)
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(0, "HUMAN ")
+        foreign(root / "p", "a.md", "ONE\ntwo\nthree\nfour\nAGENT1\n")
+        await live.poll("p", full=True)
+        client.drain()
+        assert client.text == "HUMAN one\ntwo\nthree\nfour\nAGENT1\n"
+        foreign(root / "p", "a.md", "one\ntwo\nthree\nFOUR\nAGENT1\n")
+        await live.poll("p", full=True)
+        client.drain()
+        assert client.text == "HUMAN one\ntwo\nthree\nFOUR\nAGENT1\n"
+        turn = await live.end_turn("p", "op-1")
+        (row,) = turn["files"]
+        assert row["path"] == "a.md" and row["clash"] is True
+        assert turn["before_version_id"] != turn["after_version_id"]
         with store.connection() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM paper_version_texts").fetchone()[0] == 5
+            assert conn.execute("SELECT turn_operation_id FROM paper_state").fetchone()[0] is None
         await live.close()
 
     run(scenario())
 
 
-def test_offline_publication_never_blocks_saving_and_retries(paper, monkeypatch):
-    live, _, workspace = paper
-    publish = workspace.publish_paper_tree
-
-    def offline(*_):
-        raise StateUnavailable("unreachable")
-
-    monkeypatch.setattr(workspace, "publish_paper_tree", offline)
+def test_a_rename_keeps_the_file_id(paper):
+    live, _, root = paper
 
     async def scenario():
-        await live.apply("p", [PaperOp(kind="create", path="a", text="saved")], "h")
-        await live.publish("p")
-        assert (await live.tree("p")).publish_state == "failed"
-        await live.apply("p", [PaperOp(kind="create", path="b")], "h")
-        monkeypatch.setattr(workspace, "publish_paper_tree", publish)
-        await live.publish("p")
-        assert (await live.tree("p")).published_revision == 2
+        file_id = await create(live, "a.md", "content")
+        os.rename(root / "p/a.md", root / "p/b.md")
+        await live.poll("p", full=True)
+        (file,) = (await live.tree("p")).files
+        assert (file.path, file.file_id) == ("b.md", file_id)
         await live.close()
 
     run(scenario())
 
 
-def test_worker_loop_marshals_and_pause_fences_new_edits(paper):
-    live, _, _ = paper
+def test_a_foreign_delete_of_an_edited_open_file_recreates_it_as_a_clash(paper):
+    live, _, root = paper
 
     async def scenario():
-        await live.start()
-        result = await asyncio.to_thread(
-            lambda: asyncio.run(
-                live.apply("p", [PaperOp(kind="create", path="worker.md")], "worker")
-            )
-        )
-        assert result.revision == 1
-        await live.pause("p")
-        with pytest.raises(PaperConflict):
-            await live.apply("p", [PaperOp(kind="create", path="blocked")], "h")
-        await live.drain("p")
-        await live.dispose("p")
+        file_id = await create(live, "a.md", "base")
+        await live.begin_turn("p", "op-1")
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(4, " typed")
+        (root / "p/a.md").unlink()
+        await live.poll("p", full=True)
+        assert (root / "p/a.md").read_text() == "base typed"
+        turn = await live.end_turn("p", "op-1")
+        assert turn["files"] == [
+            {
+                "path": "a.md",
+                "kind": "delete",
+                "clash": True,
+                "base_sha": digest(b"base"),
+                "coach_sha": None,
+            }
+        ]
         await live.close()
 
     run(scenario())
 
 
-def test_captured_binary_snapshot_survives_retention(paper, tmp_path, monkeypatch):
-    live, store, _ = paper
-    monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
+def test_a_foreign_delete_of_an_unedited_file_is_accepted_and_listed_next_turn(paper):
+    live, _, root = paper
 
     async def scenario():
-        file_id = (
-            await live.apply(
-                "p",
-                [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"old")],
-                "h",
-            )
-        ).file_ids[0]
-        snapshot = await live.snapshot("p")
-        await live.apply("p", [PaperOp(kind="binary", file_id=file_id, data=b"new")], "h")
-        await asyncio.to_thread(live._collect_bodies)
-        with store.connection() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM paper_blobs").fetchone()[0] == 1
-        await asyncio.to_thread(live.materialize, snapshot, tmp_path / "captured")
-        assert (tmp_path / "captured/figure.png").read_bytes() == b"old"
+        await create(live, "a.md", "base")
+        (root / "p/a.md").unlink()
+        await live.poll("p", full=True)
+        assert (await live.tree("p")).files == []
+        await live.begin_turn("p", "op-1")
+        turn = await live.end_turn("p", "op-1")
+        assert [(row["path"], row["kind"]) for row in turn["files"]] == [("a.md", "outside_turn")]
         await live.close()
 
     run(scenario())
 
 
-def test_connect_reserves_room_before_socket_acceptance(paper, monkeypatch):
-    live, _, _ = paper
-    monkeypatch.setattr(limits, "PAPER_MAX_ROOMS_PER_PROJECT", 1)
+def test_a_binary_upload_during_the_turn_beats_the_agents_bytes(paper):
+    live, _, root = paper
 
     async def scenario():
-        ids = (
-            await live.apply(
-                "p", [PaperOp(kind="create", path="a"), PaperOp(kind="create", path="b")], "h"
-            )
-        ).file_ids
-        queue = asyncio.Queue()
-        room = await live.connect("p", ids[0], queue)
-        with pytest.raises(PaperLimit):
-            await live.connect("p", ids[1], asyncio.Queue())
-        assert live.rooms[("p", ids[0])] is room
-        room.subscribers.discard(queue)
-        assert await live.connect("p", ids[1]) is not room
+        await create(live, "a.png", "")
+        await live.begin_turn("p", "op-1")
+        await live.apply("p", [PaperOp(kind="write", path="a.png", data=b"\x89human")], "h")
+        foreign(root / "p", "a.png", b"\x89agent")
+        await live.poll("p", full=True)
+        assert (root / "p/a.png").read_bytes() == b"\x89human"
+        turn = await live.end_turn("p", "op-1")
+        assert turn["files"][0]["clash"] is True
         await live.close()
 
     run(scenario())
 
 
-def test_causal_update_gap_survives_compaction_and_restart(paper, monkeypatch):
-    live, store, workspace = paper
-    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 2)
+def test_a_multi_file_write_runs_in_path_order_reports_a_failure_and_reruns(paper, monkeypatch):
+    live, _, root = paper
+    order: list[str] = []
+    real_write = folder_write
+
+    def write(folder_root, path, data, expect_sha, **settle):
+        order.append(path)
+        if path == "b.md" and fail[0]:
+            raise OSError("disk full")
+        return real_write(folder_root, path, data, expect_sha, **settle)
+
+    fail = [True]
+    monkeypatch.setattr("rcp.paper.folder_io.write", write)
+    ops = [
+        PaperOp(kind="write", path=name, data=name.encode()) for name in ("c.md", "a.md", "b.md")
+    ]
 
     async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a")], "h")).file_ids[0]
-        client = Doc({"text": Text()})
-        client["text"].insert(0, "a")
-        first, state = client.get_update(), client.get_state()
-        client["text"].insert(1, "b")
-        second = client.get_update(state)
-        await live.receive("p", file_id, create_update_message(second), "h")
-        await live.drain("p")
-        assert (await live.snapshot("p")).files[0].text == ""
-        await live.close()
-        restarted = PaperLive(store, lambda _: workspace)
-        await restarted.receive("p", file_id, create_update_message(first), "h")
-        assert (await restarted.snapshot("p")).files[0].text == "ab"
-        assert str((await restarted.connect("p", file_id)).doc["text"]) == "ab"
-        await restarted.close()
-
-    run(scenario())
-
-
-def test_repeated_megabyte_deletions_reclaim_crdt_budget(paper, monkeypatch):
-    live, store, workspace = paper
-    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 2)
-
-    async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
-        client = Doc({"text": Text()})
-        for _ in range(6):
-            state = client.get_state()
-            client["text"].insert(0, "x" * 1024 * 1024)
-            await live.receive("p", file_id, create_update_message(client.get_update(state)), "h")
-            state = client.get_state()
-            del client["text"][:]
-            await live.receive("p", file_id, create_update_message(client.get_update(state)), "h")
-        room = await live.connect("p", file_id)
-        assert str(room.doc["text"]) == ""
-        assert len(room.encoded) < 1024
-        await live.close()
-        restarted = PaperLive(store, lambda _: workspace)
-        room = await restarted.connect("p", file_id)
-        assert str(room.doc["text"]) == ""
-        assert len(room.encoded) < 1024
-        await restarted.close()
-
-    run(scenario())
-
-
-def test_raw_and_metadata_do_not_read_unrelated_bodies(paper):
-    live, store, _ = paper
-
-    async def scenario():
-        receipt = await live.apply(
-            "p",
-            [
-                PaperOp(kind="create", path="a.md", text="hello"),
-                PaperOp(kind="create", path="b.md", text="unrelated"),
-                PaperOp(kind="create", path="image.png", file_kind="binary", data=b"image"),
-            ],
-            "h",
-        )
-        with store.connection() as conn:
-            conn.execute(
-                "UPDATE paper_version_texts SET zbody=x'00' WHERE sha256=?",
-                (hashlib.sha256(b"unrelated").hexdigest(),),
-            )
-            conn.execute("UPDATE paper_blobs SET bytes=x'00'")
-        tree = await live.tree("p")
-        assert [file.size for file in tree.files] == [5, 9, 5]
-        for revision in (None, receipt.revision):
-            file, data = await live.raw_file("p", receipt.file_ids[0], revision)
-            assert file.path == "a.md" and data == b"hello"
+        with pytest.raises(PaperWriteFailed) as failure:
+            await live.apply("p", ops, "h")
+        assert failure.value.written == ["a.md"]
+        assert order == ["a.md", "b.md"]
+        assert not (root / "p/c.md").exists()
+        fail[0] = False
+        await live.apply("p", ops, "h")
+        await live.apply("p", ops, "h")
+        assert {path.name: path.read_text() for path in (root / "p").iterdir()} == {
+            "a.md": "a.md",
+            "b.md": "b.md",
+            "c.md": "c.md",
+        }
         await live.close()
 
     run(scenario())
 
 
-def test_runtime_sqlite_and_crdt_rebuilds_run_on_workers(paper, monkeypatch):
-    import threading
-
-    import rcp.paper.live as module
-
-    live, store, _ = paper
-    owner = threading.get_ident()
-    connection, compact = store.connection, module._compact_state
-
-    @contextmanager
-    def worker_connection():
-        assert threading.get_ident() != owner
-        with connection() as conn:
-            yield conn
-
-    def worker_compact(encoded):
-        assert threading.get_ident() != owner
-        return compact(encoded)
+def test_an_operation_wins_overlaps_but_keystrokes_after_its_read_survive(paper):
+    live, _, root = paper
 
     async def scenario():
-        monkeypatch.setattr(store, "connection", worker_connection)
-        monkeypatch.setattr(module, "_compact_state", worker_compact)
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
-        room = await live.connect("p", file_id)
-        client = Doc({"text": Text()})
-        client.apply_update(room.encoded)
-        client["text"].insert(0, "worker")
-        await live.receive("p", file_id, create_update_message(client.get_update()), "h")
-        version = await live.create_version("p", "saved", "h")
-        await live.publish("p")
-        await live.delete_version("p", version["version_id"])
-        assert (await live.tree("p")).publish_state == "published"
-        monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
-        live._last_collection -= limits.PAPER_HISTORY_MAX_SECONDS
-        await live.tick()
-        assert await live.history("p")
-        await live.close()
-
-    run(scenario())
-
-
-@pytest.mark.parametrize("operation", ["apply", "receive"])
-def test_cancelled_commit_settles_before_install_and_unlock(paper, monkeypatch, operation):
-    import threading
-
-    live, store, _ = paper
-
-    async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")).file_ids[0]
-        room = await live.connect("p", file_id)
-        queue = asyncio.Queue()
-        room.subscribers.add(queue)
-        entered, release = threading.Event(), threading.Event()
-        connection = store.connection
-
-        @contextmanager
-        def blocked_commit():
-            with connection() as conn:
-                yield conn
-                if conn.in_transaction:
-                    entered.set()
-                    assert release.wait(5)
-
-        monkeypatch.setattr(store, "connection", blocked_commit)
-        if operation == "apply":
-            action = live.apply(
-                "p",
-                [PaperOp(kind="replace", file_id=file_id, start=0, end=0, text="saved")],
-                "h",
-                {"checks": [{"file_id": file_id, "text": ""}]},
-            )
-        else:
-            client = Doc({"text": Text()})
-            client["text"].insert(0, "saved")
-            action = live.receive("p", file_id, create_update_message(client.get_update()), "h")
-        task = asyncio.create_task(action)
-        try:
-            assert await asyncio.to_thread(entered.wait, 2)
-            task.cancel()
-            await asyncio.sleep(0)
-            assert live._lock("p").locked() and not task.done()
-            assert str(room.doc["text"]) == "" and queue.empty()
-        finally:
-            release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        monkeypatch.setattr(store, "connection", connection)
-        assert str(room.doc["text"]) == "saved" and not queue.empty()
-        assert (await live.snapshot("p")).files[0].text == "saved"
-        await live.close()
-
-    run(scenario())
-
-
-def test_failed_publication_waits_for_backoff(paper, monkeypatch):
-    live, _, workspace = paper
-    attempts = []
-
-    def fail(*args):
-        attempts.append(True)
-        raise StateUnavailable("offline")
-
-    monkeypatch.setattr(workspace, "publish_paper_tree", fail)
-    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
-
-    async def scenario():
-        await live.apply("p", [PaperOp(kind="create", path="a.md")], "h")
-        await live.publish("p")
-        await live.apply("p", [PaperOp(kind="create", path="b.md")], "h")
-        await live.tick()
-        await live.drain("p")
-        assert len(attempts) == 1
-        live._publish_failed_at["p"] -= limits.PAPER_PUBLISH_RETRY_SECONDS
-        await live.tick()
-        await live.drain("p")
-        assert len(attempts) == 2
-        await live.close()
-
-    run(scenario())
-
-
-def test_members_receive_an_ack_covering_a_peer_update_and_the_sender_one_ack(paper):
-    live, _, _ = paper
-
-    async def scenario():
-        file_id = (await live.apply("p", [PaperOp(kind="create", path="a")], "h")).file_ids[0]
-        queue, sender = asyncio.Queue(), asyncio.Queue()
-        room = await live.connect("p", file_id, queue)
-        await live.connect("p", file_id, sender)
-        peer = Doc({"text": Text()})
-        peer.apply_update(room.doc.get_update())
-        peer["text"].insert(0, "peer")
-        message = create_update_message(peer.get_update())
-        replies = await live.receive("p", file_id, message, "h", sender)
-        ack = bytes([100]) + room.doc.get_state()
-        messages = [queue.get_nowait() for _ in range(queue.qsize())]
-        assert messages == [message, ack]
-        assert replies == [ack] and sender.empty()
-        await live.close()
-
-    run(scenario())
-
-
-def test_restore_preserves_peer_position_outside_changed_span(paper):
-    live, _, _ = paper
-
-    async def scenario():
-        file_id = (
-            await live.apply(
-                "p", [PaperOp(kind="create", path="a.md", text="prefix old suffix")], "h"
-            )
-        ).file_ids[0]
-        version = await live.create_version("p", "original", "h")
+        file_id = await create(live, "a.md", "one\ntwo\nthree\n")
+        client = Client(live, file_id)
+        await client.join()
+        read = b"one\ntwo\nthree\n"
+        await client.type(len("one\ntwo\nthree\n"), "typed\n")
         await live.apply(
-            "p",
-            [PaperOp(kind="replace", file_id=file_id, start=7, end=10, text="new")],
-            "h",
-            {"checks": [{"file_id": file_id, "text": "prefix old suffix"}]},
+            "p", [PaperOp(kind="write", path="a.md", base=read, data=b"ONE\ntwo\nthree\n")], "h"
         )
-        queue = asyncio.Queue()
-        room = await live.connect("p", file_id, queue)
-        peer = Doc({"text": Text()})
-        peer.apply_update(room.encoded)
-        position = peer["text"].sticky_index(3)
-        receipt = await live.restore("p", version["version_id"], [file_id], "h")
-        from pycrdt import handle_sync_message
-
-        handle_sync_message((await queue.get())[1:], peer)
-        assert str(peer["text"]) == "prefix old suffix"
-        assert position.get_index() == 3
-        unchanged = await live.restore("p", version["version_id"], [file_id], "h")
-        assert unchanged.revision == receipt.revision
+        client.drain()
+        assert client.text == "ONE\ntwo\nthree\ntyped\n"
+        assert (root / "p/a.md").read_text() == client.text
         await live.close()
 
     run(scenario())
 
 
-def test_a_failed_compaction_does_not_stop_drain_of_the_other_rooms(paper, monkeypatch):
-    import time
-
-    live, _, _ = paper
-    monkeypatch.setattr(limits, "PAPER_COMPACT_UPDATES", 1)
-    compact, compacted = live._compact_bytes, []
-
-    def fail_first(project, file_id, cutoff, revision):
-        if not compacted:
-            compacted.append(None)
-            time.sleep(0.2)
-            raise OSError("disk failure")
-        time.sleep(0.4)
-        compact(project, file_id, cutoff, revision)
-        compacted.append(file_id)
-
-    monkeypatch.setattr(live, "_compact_bytes", fail_first)
+def test_restore_writes_files_and_keeps_peer_positions_outside_the_change(paper):
+    live, _, root = paper
 
     async def scenario():
-        for path in ("a.md", "b.md"):
-            file_id = (await live.apply("p", [PaperOp(kind="create", path=path)], "h")).file_ids[0]
-            room = await live.connect("p", file_id)
-            client = Doc({"text": Text()})
-            client.apply_update(room.encoded)
-            client["text"].insert(0, path)
-            await live.receive("p", file_id, create_update_message(client.get_update()), "h")
-        await live.drain("p")
-        assert compacted == [None, file_id]
+        file_id = await create(live, "a.md", "prefix old suffix")
+        version = await live.create_version("p", "original", "h")
+        foreign(root / "p", "a.md", "prefix new suffix")
+        await live.poll("p", full=True)
+        client = Client(live, file_id)
+        await client.join()
+        position = client.doc["text"].sticky_index(3)
+        await live.restore("p", version["version_id"], [file_id], "h")
+        client.drain()
+        assert client.text == "prefix old suffix"
+        assert (root / "p/a.md").read_text() == "prefix old suffix"
+        assert position.get_index() == 3
+        await live.close()
+
+    run(scenario())
+
+
+def test_a_poll_waits_for_a_stable_stat_and_reports_unsupported_entries(paper):
+    live, _, root = paper
+
+    async def scenario():
+        await create(live, "a.md", "x")
+        foreign(root / "p", "b.md", "agent")
+        (root / "p/link.md").symlink_to(root / "p/a.md")
+        assert await live.poll("p")
+        tree = await live.tree("p")
+        assert {file.path: file.kind for file in tree.files} == {
+            "a.md": "text",
+            "link.md": "unsupported",
+        }
+        await live.poll("p")
+        assert "b.md" in {file.path for file in (await live.tree("p")).files}
         await live.close()
 
     run(scenario())

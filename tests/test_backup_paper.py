@@ -50,7 +50,9 @@ def _saved_paper(connection, monkeypatch, project_id="p"):
         "INSERT INTO paper_updates VALUES ('p', 'text', 2, ?, 4, 'human', 'now')", (b"crdt-tail",)
     )
     connection.execute(
-        "INSERT INTO paper_doc_states VALUES ('p', 'text', ?, 1, 3)", (b"crdt-prefix",)
+        "INSERT INTO paper_doc_states (project_id,file_id,state,through_seq,through_revision) "
+        "VALUES ('p', 'text', ?, 1, 3)",
+        (b"crdt-prefix",),
     )
     connection.execute("INSERT INTO paper_revisions VALUES ('p', 4, 'now', 'human', 'rename')")
     connection.execute(

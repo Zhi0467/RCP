@@ -925,8 +925,6 @@ def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> Non
     assert materializations == 1
     payload = response.json()
     assert payload["graph"]["revision"] == payload["revision"]
-    tree = client.get(f"/api/projects/{project_id}/paper/tree").json()
-    assert payload["paper"] == (tree["publish_state"] != "published")
     assert payload["provider_readiness"] == {}
     assert payload["providers"] == {}
 

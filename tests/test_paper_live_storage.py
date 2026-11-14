@@ -33,9 +33,11 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
             ("legacy", "draft text", "base-hash", store.now(), "ancestor text"),
         )
         if upgrade:
-            for table in PAPER_TABLES:
+            for table in (*PAPER_TABLES, "paper_state", "paper_turn_files"):
                 connection.execute(f'DROP TABLE "{table}"')
-            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=63")
+            connection.execute(
+                "DELETE FROM storage_schema_migrations WHERE migration_version IN (63, 84)"
+            )
     store.close()
 
     for _ in range(2):
@@ -92,40 +94,51 @@ def test_paper_path_limits_each_utf8_component(component):
     assert paper_path("a" * 255 + "/file.md").endswith("/file.md")
 
 
-@pytest.mark.parametrize("published,newest", [(2, 4), (4, 2), (4, None)])
-def test_revision_pruning_requires_publication_and_retained_version(tmp_path, published, newest):
-    from rcp.paper.persistence import prune
+def test_folder_migration_seeds_the_revision_from_the_saved_one(tmp_path):
+    from rcp.storage.paper_folder import migrate_paper_folder
 
     store = AppStore(tmp_path / "app.sqlite3")
     try:
         with store.connection() as connection:
+            for statement in (
+                "DROP TABLE paper_state",
+                "DROP TABLE paper_turn_files",
+                "ALTER TABLE paper_doc_states DROP COLUMN text_sha256",
+            ):
+                connection.execute(statement)
             connection.execute(
                 "INSERT INTO paper_publication(project_id,saved_revision,published_revision) "
-                "VALUES ('p',5,?)",
-                (published,),
+                "VALUES ('p',7,5)"
             )
+            migrate_paper_folder(connection)
+            assert connection.execute("SELECT project_id, revision FROM paper_state").fetchall()[0][
+                :
+            ] == ("p", 7)
+    finally:
+        store.close()
+
+
+def test_pruning_keeps_the_running_turns_before_version(tmp_path, monkeypatch):
+    from rcp import limits
+    from rcp.paper.persistence import prune
+
+    monkeypatch.setattr(limits, "PAPER_HISTORY_AUTO_LIMIT", 1)
+    store = AppStore(tmp_path / "app.sqlite3")
+    try:
+        with store.connection() as connection:
             connection.executemany(
-                "INSERT INTO paper_revisions VALUES (?,?, 'now','human','edit')",
-                [(project, revision) for project in ("p", "other") for revision in range(1, 6)],
+                "INSERT INTO paper_versions VALUES ('p',?,?,'auto',NULL,'automatic',?,'[]')",
+                [(f"v{index}", index, f"2026-01-0{index}") for index in (1, 2, 3)],
             )
-            if newest is not None:
-                connection.executemany(
-                    "INSERT INTO paper_versions VALUES ('p',?,?,'named',?,'human','now','[]')",
-                    [(str(revision), revision, str(revision)) for revision in (1, newest)],
-                )
+            connection.execute(
+                "INSERT INTO paper_state VALUES ('p', 3, 'op', 'v1')",
+            )
             prune(connection, "p")
-            boundary = min(published, newest) if newest is not None else 0
             assert [
                 row[0]
                 for row in connection.execute(
-                    "SELECT revision FROM paper_revisions WHERE project_id='p' ORDER BY revision"
+                    "SELECT version_id FROM paper_versions ORDER BY version_id"
                 )
-            ] == list(range(boundary + 1, 6))
-            assert (
-                connection.execute(
-                    "SELECT COUNT(*) FROM paper_revisions WHERE project_id='other'"
-                ).fetchone()[0]
-                == 5
-            )
+            ] == ["v1", "v3"]
     finally:
         store.close()

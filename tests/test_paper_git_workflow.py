@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 
 from rcp.paper import PaperLive, git_sync
+from rcp.paper.folder import LocalPaperFolder
 from rcp.paper.git_sync import GitEntry, PaperGit, _git, build_commit, read_tree
 from rcp.storage import AppStore
-from rcp.transport import LocalStateWorkspace
 from tests.paper_helpers import human_edit, saved, start_paper
 
 
@@ -17,10 +17,10 @@ def sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     remote = tmp_path / "remote"
     _git(remote, ["init", "--bare", "--template=", str(remote / "repo.git")])
     monkeypatch.setattr("rcp.paper.git_sync.remote_url", lambda _: str(remote / "repo.git"))
-    root = tmp_path / "state"
+    root = tmp_path / "paper"
     root.mkdir()
     store = AppStore(tmp_path / "state.sqlite")
-    live = start_paper(PaperLive(store, lambda _: LocalStateWorkspace(root, str(root))))
+    live = start_paper(PaperLive(store, lambda _: LocalPaperFolder(root)))
     manager = PaperGit(store, live, tmp_path, lambda _: nullcontext())
     return manager, live, remote
 
@@ -31,7 +31,7 @@ def commit_remote(remote: Path, tree: dict[str, GitEntry], parent: str = "") -> 
     return commit
 
 
-def test_pull_keeps_undecided_conflict_across_new_head(sync):
+def test_a_pull_merges_clean_edits_and_github_wins_an_overlap(sync):
     manager, live, remote = sync
     base = "".join(f"line {i}\n" for i in range(50))
     first = commit_remote(remote, {"paper.md": GitEntry(base.encode())})
@@ -42,112 +42,19 @@ def test_pull_keeps_undecided_conflict_across_new_head(sync):
     second = commit_remote(remote, {"paper.md": GitEntry(clean.encode())}, first)
     manager.pull("p")
     assert saved(live).files[0].text == clean
-    human_edit(live, file.file_id, clean.replace("line 10\n", "local\n"))
-    overlap = clean.replace("line 10\n", "remote\n")
-    third = commit_remote(remote, {"paper.md": GitEntry(overlap.encode())}, second)
-    manager.pull("p")
-    assert manager.status("p")["conflicts"] == 1
-    groups = manager.changes.groups("p", "paper-git")
-    manager.pull("p")
-    assert [g.group_id for g in manager.changes.groups("p", "paper-git")] == [
-        g.group_id for g in groups
-    ]
-    commit_remote(
-        remote, {"paper.md": GitEntry(overlap.encode()), "new.md": GitEntry(b"new")}, third
-    )
-    manager.pull("p")
-    assert manager.status("p")["conflicts"] == 1
-    assert any(
-        change.after == "remote\n"
-        for group in manager.changes.groups("p", "paper-git")
-        for change in group.changes
-    )
-    assert read_tree(remote, third)["paper.md"].data == overlap.encode()
-
-
-class Crash(BaseException):
-    pass
-
-
-@pytest.mark.parametrize("step", ["apply", "collect", "row"])
-@pytest.mark.parametrize("overlap", [False, True])
-def test_pull_crash_rerun_converges(
-    sync, monkeypatch: pytest.MonkeyPatch, step: str, overlap: bool
-):
-    manager, live, remote = sync
-    base = b"a\n1\n2\n3\nc\n"
-    first = commit_remote(remote, {"paper.md": GitEntry(base)})
-    manager.key("p", "owner/repo", "main", "member")
-    manager.link("p")
-    if overlap:
-        human_edit(live, saved(live).files[0].file_id, "local\n1\n2\n3\nc\n")
-    second = commit_remote(remote, {"paper.md": GitEntry(b"A\n1\n2\n3\nC\n")}, first)
-    if step == "apply":
-        original_apply = live.apply
-
-        async def fail_apply(*args, **kwargs):
-            await original_apply(*args, **kwargs)
-            monkeypatch.setattr(live, "apply", original_apply)
-            raise Crash()
-
-        monkeypatch.setattr(live, "apply", fail_apply)
-    else:
-        owner = manager.changes if step == "collect" else manager.store
-        name = "collect" if step == "collect" else "save_paper_git_link"
-        original = getattr(owner, name)
-
-        def fail(*args, **kwargs):
-            original(*args, **kwargs)
-            monkeypatch.setattr(owner, name, original)
-            raise Crash()
-
-        monkeypatch.setattr(owner, name, fail)
-    with pytest.raises(Crash):
-        manager.pull("p")
-    manager.pull("p")
-    assert saved(live).files[0].text == ("local\n1\n2\n3\nC\n" if overlap else "A\n1\n2\n3\nC\n")
-    assert manager.store.paper_git_link("p").synced_commit == second
-    assert manager.status("p")["conflicts"] == int(overlap)
-    if overlap:
-        assert any(group.state == "pending" for group in manager.changes.groups("p", "paper-git"))
-
-
-def test_rejected_region_unchanged_on_refresh_is_not_offered(sync):
-    manager, live, remote = sync
-    base = "".join(f"line {i}\n" for i in range(50))
-    first = commit_remote(remote, {"paper.md": GitEntry(base.encode())})
-    manager.key("p", "owner/repo", "main", "member")
-    manager.link("p")
     human_edit(
-        live,
-        saved(live).files[0].file_id,
-        base.replace("line 10\n", "local 10\n").replace("line 40\n", "local 40\n"),
+        live, file.file_id, clean.replace("line 10\n", "local\n").replace("line 2\n", "mine\n")
     )
-    theirs = base.replace("line 10\n", "remote 10\n").replace("line 40\n", "remote 40\n")
-    commit_remote(remote, {"paper.md": GitEntry(theirs.encode())}, first)
+    overlap = clean.replace("line 10\n", "remote\n")
+    commit_remote(remote, {"paper.md": GitEntry(overlap.encode())}, second)
     manager.pull("p")
-    groups = manager.changes.groups("p", "paper-git")
-    rejected = next(g for g in groups if g.changes[0].after == "remote 10\n")
-    manager.changes.reject("p", rejected.group_id, "member")
-    manager.pull("p", refresh=True)
-    pending = [
-        c.after
-        for g in manager.changes.groups("p", "paper-git")
-        if g.state == "pending"
-        for c in g.changes
-    ]
-    assert pending == ["remote 40\n"]
+    assert saved(live).files[0].text == overlap.replace("line 2\n", "mine\n")
+    assert "conflicts" not in manager.status("p")
 
 
-def test_accept_then_push_reads_member_commit_from_remote(sync):
+def test_push_after_an_overlap_reads_member_commit_from_remote(sync):
     manager, live, remote = sync
-    test_pull_keeps_undecided_conflict_across_new_head(sync)
-    from rcp.paper.git_sync import GitError
-
-    with pytest.raises(GitError):
-        manager.push("p", "message", "Member", "member")
-    group = next(g for g in manager.changes.groups("p", "paper-git") if g.state == "pending")
-    manager.decide("p", group.group_id, "accept", "member")
+    test_a_pull_merges_clean_edits_and_github_wins_an_overlap(sync)
     commit = manager.push("p", "message", "Member", "member")
     assert read_tree(remote, commit)["paper.md"].data == saved(live).file_bytes(
         next(file for file in saved(live).files if file.path == "paper.md")
@@ -194,35 +101,14 @@ def test_skipped_entries_survive_two_pulls_and_push(sync):
     assert actual["paper.md"].data == b"local"
 
 
-def test_file_conflict_kind_change_resolution(sync):
-    from rcp.paper import PaperOp
-    from tests.paper_helpers import apply
-
-    manager, live, remote = sync
-    first = commit_remote(remote, {"paper.md": GitEntry(b"base")})
-    manager.key("p", "owner/repo", "main", "member")
-    manager.link("p")
-    human_edit(live, saved(live).files[0].file_id, "local")
-    commit_remote(remote, {"paper.md": GitEntry(b"remote\0")}, first)
-    manager.pull("p")
-    assert manager.conflicts("p")[0]["kind"] == "file"
-    manager.resolve("p", "paper.md", "theirs", "member")
-    snapshot = saved(live)
-    assert snapshot.files[0].kind == "binary"
-    assert snapshot.file_bytes(snapshot.files[0]) == b"remote\0"
-    apply(live, [PaperOp(kind="create", path="extra.md", text="extra")])
-    assert manager.status("p")["conflicts"] == 0
-
-
-def test_missing_key_reconciliation_removes_link_and_cards_only(sync):
+def test_missing_key_reconciliation_removes_only_the_link(sync):
     manager, live, _remote = sync
-    test_pull_keeps_undecided_conflict_across_new_head(sync)
+    test_a_pull_merges_clean_edits_and_github_wins_an_overlap(sync)
     before = saved(live)
     (manager.directory("p") / "id_ed25519").unlink()
     manager.reconcile()
     assert manager.store.paper_git_link("p") is None
-    assert manager.changes.groups("p", "paper-git") == []
-    assert saved(live) == before
+    assert saved(live).files == before.files
     assert not manager.directory("p").exists()
 
 
@@ -265,7 +151,7 @@ def test_push_refuses_collision_with_skipped_remote_path(sync):
     commit_remote(remote, {"link": GitEntry(b"target", "120000")})
     manager.key("p", "owner/repo", "main", "member")
     manager.link("p")
-    apply(live, [PaperOp(kind="create", path="link/file.md", text="local")])
+    apply(live, [PaperOp(kind="write", path="link/file.md", data=b"local")])
     with pytest.raises(GitError) as error:
         manager.push("p", "message", "Member", "member")
     assert str(error.value) == "collision"
@@ -301,9 +187,7 @@ def test_missing_key_generator_refuses_setup(sync, monkeypatch: pytest.MonkeyPat
     assert manager.store.paper_git_link("p") is None
 
 
-def test_typing_during_conflict_merge_is_not_proposed_for_removal(
-    sync, monkeypatch: pytest.MonkeyPatch
-):
+def test_typing_during_a_pull_survives_outside_the_overlap(sync, monkeypatch: pytest.MonkeyPatch):
     from rcp.paper import git_merge
 
     manager, live, remote = sync
@@ -327,65 +211,8 @@ def test_typing_during_conflict_merge_is_not_proposed_for_removal(
 
     monkeypatch.setattr(git_merge, "merge_trees", type_during_merge)
     manager.pull("p")
-    pending = [
-        change
-        for group in manager.changes.groups("p", "paper-git")
-        if group.state == "pending"
-        for change in group.changes
-    ]
-    assert len(pending) == 1
-    assert pending[0].after == "remote\n"
     text = saved(live).files[0].text
-    assert text is not None and "typed\n" in text
-
-
-def test_collection_tree_limit_race_retries(sync, monkeypatch: pytest.MonkeyPatch):
-    from rcp.paper.changes import InvalidChanges
-    from rcp.paper.models import PaperLimit
-
-    manager, _live, remote = sync
-    first = commit_remote(remote, {"paper.md": GitEntry(b"base")})
-    manager.key("p", "owner/repo", "main", "member")
-    manager.link("p")
-    head = commit_remote(remote, {"paper.md": GitEntry(b"remote")}, first)
-    original = manager.changes.collect
-
-    def race(*args, **kwargs):
-        monkeypatch.setattr(manager.changes, "collect", original)
-        try:
-            raise PaperLimit("concurrent upload")
-        except PaperLimit as exc:
-            raise InvalidChanges([str(exc)]) from exc
-
-    monkeypatch.setattr(manager.changes, "collect", race)
-    manager.pull("p")
-    assert manager.store.paper_git_link("p").synced_commit == head
-
-
-def test_crash_while_advancing_refs_keeps_new_held_base(sync, monkeypatch: pytest.MonkeyPatch):
-    from rcp.paper import git_sync
-
-    manager, live, remote = sync
-    first = commit_remote(remote, {"paper.md": GitEntry(b"base\n")})
-    manager.key("p", "owner/repo", "main", "member")
-    manager.link("p")
-    human_edit(live, saved(live).files[0].file_id, "local\n")
-    commit_remote(remote, {"paper.md": GitEntry(b"remote\n")}, first)
-    original = git_sync._git
-
-    def crash_after_synced(project, argv, **kwargs):
-        result = original(project, argv, **kwargs)
-        if argv[:2] == ["update-ref", "refs/rcp/synced"]:
-            monkeypatch.setattr(git_sync, "_git", original)
-            raise Crash()
-        return result
-
-    monkeypatch.setattr(git_sync, "_git", crash_after_synced)
-    with pytest.raises(Crash):
-        manager.pull("p")
-    _git(manager.directory("p"), ["gc", "--prune=now"])
-    manager.pull("p", refresh=True)
-    assert manager.status("p")["conflicts"] == 1
+    assert text == base.replace("line 10\n", "remote\n").replace("line 40\n", "typed\n")
 
 
 def test_typing_elsewhere_during_pull_stays_unpushed(sync, monkeypatch: pytest.MonkeyPatch):
@@ -661,7 +488,7 @@ def test_empty_repository_links_main_and_the_first_push_creates_it(sync):
     from rcp.paper import PaperOp
     from tests.paper_helpers import apply
 
-    apply(live, [PaperOp(kind="create", path="paper.md", text="first")])
+    apply(live, [PaperOp(kind="write", path="paper.md", data=b"first")])
     commit = manager.push("p", "first", "Member", "member")
     assert _git(remote, ["rev-parse", "refs/heads/main"]).decode().strip() == commit
 

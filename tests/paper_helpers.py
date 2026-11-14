@@ -50,28 +50,17 @@ def apply(live: PaperLive, ops: list[PaperOp], project: str = "p"):
     return live.run_sync(live.apply(project, ops, "human"))
 
 
+def create(live: PaperLive, path: str, text: str = "", project: str = "p") -> str:
+    op = PaperOp(kind="write", path=path, data=text.encode(), exclusive=True)
+    return apply(live, [op], project).file_ids[0]
+
+
 def human_edit(live: PaperLive, file_id: str, text: str, project: str = "p"):
-    old = next(file.text or "" for file in saved(live, project).files if file.file_id == file_id)
-    return live.run_sync(
-        live.apply(
-            project,
-            [PaperOp(kind="replace", file_id=file_id, start=0, end=len(old), text=text)],
-            "human",
-            {"checks": [{"file_id": file_id, "text": old}]},
-        )
+    file = next(file for file in saved(live, project).files if file.file_id == file_id)
+    old = (file.text or "").encode()
+    return apply(
+        live, [PaperOp(kind="write", path=file.path, base=old, data=text.encode())], project
     )
-
-
-def receipts(live: PaperLive):
-    import json
-
-    with live.store.connection() as connection:
-        return [
-            json.loads(row[0])
-            for row in connection.execute(
-                "SELECT payload FROM paper_change_receipts WHERE json_extract(payload,'$.receipt') IS NOT NULL"
-            )
-        ]
 
 
 def wire_saved_paper(service):
@@ -80,11 +69,7 @@ def wire_saved_paper(service):
     snapshot = saved(live, project)
     if snapshot.files:
         apply(live, [PaperOp(kind="delete", file_id=f.file_id) for f in snapshot.files], project)
-    apply(
-        live,
-        [PaperOp(kind="create", file_id="paper-file", path="paper.md", text="Saved paper text.\n")],
-        project,
-    )
+    create(live, "paper.md", "Saved paper text.\n", project)
     return live
 
 
