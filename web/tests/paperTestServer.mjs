@@ -118,10 +118,6 @@ export class PaperTestRoom {
 export const paperTestTree = {
   max_doc_bytes: 4 * 1024 * 1024,
   revision: 1,
-  saved_revision: 1,
-  published_revision: 1,
-  publish_state: "published",
-  hold: null,
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
 export const paperTestCard = {
@@ -165,7 +161,6 @@ export function createPaperFixture({
       content.insert(0, text);
     });
     tree.revision += 1;
-    tree.saved_revision = tree.revision;
     room.ack();
   }
   return {
@@ -244,7 +239,6 @@ export function createPaperFixture({
         });
         rooms.set(file_id, new PaperTestRoom(text));
         tree.revision += 1;
-        tree.saved_revision = tree.revision;
         return { json: { revision: tree.revision, file_ids: [file_id] } };
       }
       if (method === "POST" && /\/folders\/(rename|delete)$/.test(path)) {
@@ -253,7 +247,6 @@ export function createPaperFixture({
           tree.files = tree.files.filter((file) => !under.includes(file));
         else for (const file of under) file.path = body.to + file.path.slice(body.path.length);
         tree.revision += 1;
-        tree.saved_revision = tree.revision;
         return { json: { revision: tree.revision, file_ids: under.map((file) => file.file_id) } };
       }
       if (path.endsWith("/folders/archive")) return { body: "zip", contentType: "application/zip" };
@@ -273,10 +266,6 @@ export function createPaperFixture({
       if (/\/history\/[^/]+$/.test(path)) {
         const index = versions.findIndex((version) => path.endsWith(`/${version.version_id}`));
         if (method === "DELETE") return { json: versions.splice(index, 1)[0] };
-      }
-      if (path.endsWith("/hold/resolve")) {
-        tree.hold = null;
-        return { json: {} };
       }
       return { status: 404, json: { detail: `Unmocked fixture route: ${method} ${path}` } };
     },

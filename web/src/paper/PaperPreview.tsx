@@ -75,7 +75,7 @@ const zoomPercent = (stop: number) =>
 
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
 function assetUrl(projectId: string, file: PaperFile) {
-  return `${paperRawUrl(projectId, file.file_id)}?sha256=${file.sha256}`;
+  return paperRawUrl(projectId, file.file_id, file.sha256);
 }
 
 type MarkdownContext = {
@@ -196,7 +196,7 @@ function useHtmlPreviewState(source: string, revision: number, hash: string, act
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    void api<{ revision: number; key: string }>(`${source}/state`, {
+    void api<{ key: string }>(`${source}/state`, {
       signal: controller.signal,
     })
       .then((state) => {
@@ -204,7 +204,7 @@ function useHtmlPreviewState(source: string, revision: number, hash: string, act
         setPreview((previous) =>
           previous?.key === state.key
             ? previous
-            : { key: state.key, source: `${source}?revision=${state.revision}` },
+            : { key: state.key, source: `${source}?key=${state.key}` },
         );
         setError(null);
         setEntryReady(true);
@@ -232,7 +232,6 @@ function HtmlPreview({
   projectId,
   file,
   text,
-  saved,
   savedRevision,
   active,
   toolbar,
@@ -244,8 +243,6 @@ function HtmlPreview({
   projectId: string;
   file: PaperFile;
   text: string;
-  /** The editor holds what the frame shows, so a word's count matches the source. */
-  saved: boolean;
   savedRevision: number;
   active: boolean;
   toolbar: HTMLElement | null;
@@ -270,7 +267,6 @@ function HtmlPreview({
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onSourceWord: (word, occurrence) => {
-      if (!saved) return;
       const spot = htmlSourceSpot(file.path, text, word, occurrence);
       if (spot) onSourceSpot?.(spot);
     },
@@ -494,7 +490,7 @@ export function PaperPreview({
     setLoading(false);
     if (!engine || engines?.[engine] !== "ready" || !active) return;
     // Showing the preview again compiles only when its input changed meanwhile.
-    const key = JSON.stringify([file.file_id, tree.saved_revision, typstText, selectedRoot, retry]);
+    const key = JSON.stringify([file.file_id, tree.revision, typstText, selectedRoot, retry]);
     if (key === compiled.current) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -507,7 +503,6 @@ export function PaperPreview({
             method: "POST",
             body: JSON.stringify({
               file_id: file.file_id,
-              revision: tree.saved_revision,
               root_path: selectedRoot || null,
             }),
             signal: controller.signal,
@@ -534,7 +529,6 @@ export function PaperPreview({
           const sources = await readTypstTree(
             projectId,
             files,
-            tree.saved_revision,
             openFile,
             typstText,
             controller.signal,
@@ -588,7 +582,7 @@ export function PaperPreview({
     file.file_id,
     file.path,
     projectId,
-    tree.saved_revision,
+    tree.revision,
     typstText,
     selectedRoot,
     retry,
@@ -631,8 +625,7 @@ export function PaperPreview({
         projectId={projectId}
         file={file}
         text={text}
-        saved={tree.revision === tree.saved_revision}
-        savedRevision={tree.saved_revision}
+        savedRevision={tree.revision}
         active={active}
         toolbar={toolbar}
         onDirectComment={onDirectComment}

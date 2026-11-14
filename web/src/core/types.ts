@@ -3148,7 +3148,7 @@ export interface ProviderReadiness {
 export interface PaperFile {
   file_id: string;
   path: string;
-  kind: "text" | "binary";
+  kind: "text" | "binary" | "unsupported";
   format: string;
   size: number;
   sha256: string;
@@ -3157,10 +3157,6 @@ export interface PaperFile {
 export interface PaperTree {
   max_doc_bytes: number;
   revision: number;
-  saved_revision: number;
-  published_revision: number;
-  publish_state: "published" | "pending" | "failed";
-  hold: string | null;
   files: PaperFile[];
 }
 

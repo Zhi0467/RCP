@@ -9,8 +9,6 @@ export function paperFileRequest(hash: string) {
 
 export interface PaperResource {
   tree: PaperTree;
-  /** Whether saved changes still need publication. */
-  paper: boolean;
 }
 export function paperProfile(projectId: string): ResourceProfile<PaperResource> {
   return {
@@ -20,10 +18,7 @@ export function paperProfile(projectId: string): ResourceProfile<PaperResource> 
         `/api/projects/${encodeURIComponent(projectId)}/paper/tree`,
         { signal },
       );
-      return {
-        tree,
-        paper: tree.publish_state !== "published",
-      };
+      return { tree };
     },
   };
 }
