@@ -84,6 +84,7 @@ from rcp.api.paper_compile import assets_router as paper_assets_router
 from rcp.api.paper_compile import router as paper_compile_router
 from rcp.api.paper_git import router as paper_git_router
 from rcp.api.paper_live import router as paper_live_router
+from rcp.api.paper_turns import router as paper_turns_router
 from rcp.api.project_groups import router as project_groups_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -2850,6 +2851,7 @@ def create_app(
     app.include_router(paper_router)
     app.include_router(paper_git_router)
     app.include_router(paper_live_router)
+    app.include_router(paper_turns_router)
     app.include_router(paper_changes_router)
     app.include_router(paper_compile_router)
     app.include_router(paper_assets_router)
