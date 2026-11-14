@@ -3,6 +3,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import os
+import subprocess
+import sys
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -38,6 +40,28 @@ def _render(provider, request):
         index = command.index("--settings") + 1
         result["settings"] = json.loads(command[index])
         command[index] = "<settings>"
+    elif provider == "agy":
+        prefix = profile.authentication.unmanaged_environment("").command_prefix
+        started = subprocess.run(
+            [*prefix, *command],
+            cwd=request.cwd,
+            env={**os.environ, "HOME": str(request.cwd)},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        command = json.loads(started.stdout)
+        result["command"] = command
+        index = command.index("--settings") + 1
+        result["settings"] = json.loads(command[index])
+        command[index] = "<settings>"
+        agent_name = command[command.index("--agent") + 1]
+        result["agent"] = (
+            (request.cwd / ".agents" / "agents" / f"{agent_name}.md")
+            .read_text()
+            .replace(agent_name, "<agent>")
+        )
+        command[command.index("--agent") + 1] = "<agent>"
     elif provider == "opencode":
         settings = json.loads(environment.pop("OPENCODE_CONFIG_CONTENT"))
         agent_name = command[command.index("--agent") + 1]
@@ -88,6 +112,11 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
         for path in paths:
             suffix = "/**" if path in populated.hidden_directories else ""
             denials.remove(f"Read(/{path}{suffix})")
+    elif provider == "agy":
+        denials = rendered["settings"]["permissions"]["deny"]
+        for path in (*populated.hidden_directories, *populated.hidden_files):
+            denials.remove(f"read_file({path})")
+        assert all(f"read_file({path})" not in denials for path in populated.hidden_globs)
     elif provider == "opencode":
         read = rendered["settings"]["agent"]["<agent>"]["permission"]["read"]
         for path in (*paths, *(path + "/**" for path in populated.hidden_directories)):
@@ -108,7 +137,7 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
             policy["exclude"] = list(empty.env_deny_list)
 
 
-@pytest.mark.parametrize("provider", ("claude", "codex", "codex_app_server", "opencode"))
+@pytest.mark.parametrize("provider", ("claude", "codex", "codex_app_server", "opencode", "agy"))
 @pytest.mark.parametrize("capability", get_args(AgentCapability))
 @pytest.mark.parametrize("browser_enabled", (False, True))
 def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp_path):
@@ -169,9 +198,17 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
             env={"PLAYWRIGHT_CLI_SESSION": "browser-session"} if browser_enabled else {},
         )
     )
+    binary = provider.split("_")[0]
+    if provider == "agy":
+        executable = tmp_path / "fake-agy"
+        executable.write_text(
+            f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv))\n"
+        )
+        executable.chmod(0o755)
+        binary = str(executable)
     request = ProviderTurnRequest(
         prompt="task",
-        binary=provider.split("_")[0],
+        binary=binary,
         cwd=tmp_path,
         model=None,
         reasoning=None,
@@ -186,12 +223,14 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         ),
         write_scope=write_scope,
         capability=capability,
-        provider_version={"claude": "2.1.288", "opencode": "1.18.30"}.get(provider, "0.160.0"),
+        provider_version={"claude": "2.1.288", "opencode": "1.18.30", "agy": "1.5.8"}.get(
+            provider, "0.160.0"
+        ),
         browser_grant=grant,
         hidden_read_scope=empty,
     )
     hidden_request = replace(request, hidden_read_scope=populated)
-    if capability == "session_summary" and provider == "opencode":
+    if capability == "session_summary" and provider in {"opencode", "agy"}:
         for summary_request in (request, hidden_request):
             with pytest.raises(ValueError, match="session summaries"):
                 _render(provider, summary_request)
