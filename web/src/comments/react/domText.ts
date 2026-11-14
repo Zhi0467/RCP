@@ -1,5 +1,6 @@
 import type { Point } from "../box.ts";
-import type { CommentRect } from "../types.ts";
+import type { CommentAnchor, CommentRect } from "../types.ts";
+import { MAX_QUOTE_CHARS, surroundingText } from "./threadModel.ts";
 
 /** The range over characters `start`–`end` of `root`'s text, counted as `textContent` counts. */
 export function textRange(root: Node, start: number, end: number): Range | null {
@@ -29,6 +30,25 @@ export function textOffset(root: Node, node: Node, offset: number): number {
   before.setStart(root, 0);
   before.setEnd(node, offset);
   return before.toString().length;
+}
+
+export function textAnchor(
+  root: Node,
+  range: Range,
+): Extract<CommentAnchor, { kind: "text" }> | null {
+  const quote = range.toString().trim().slice(0, MAX_QUOTE_CHARS);
+  if (!quote) return null;
+  const text = root.textContent ?? "";
+  const at = text.indexOf(
+    quote,
+    Math.max(0, textOffset(root, range.startContainer, range.startOffset) - 1),
+  );
+  return {
+    kind: "text",
+    text: quote,
+    surrounding_text: at < 0 ? quote : surroundingText(text, at, at + quote.length),
+    comment: "",
+  };
 }
 
 export function toRect(

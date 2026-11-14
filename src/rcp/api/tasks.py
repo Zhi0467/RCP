@@ -616,18 +616,18 @@ def prepare_comment_send(
     artifact_id: str | None = None,
     selections: bool = True,
 ) -> tuple[str, ArtifactContextRequest | None]:
-    from rcp.runs.artifact_edit_admission import _artifact_chat_id, artifact_reply_origin
-
     if not key or len(thread_ids) > ARTIFACT_CONTEXT_MAX_SELECTIONS:
         raise HTTPException(
             status_code=422, detail="Thread sends require a key and a bounded list."
         )
+    if not paper and artifact_id is None and not chat_id:
+        raise HTTPException(status_code=422, detail="Thread sends to a chat require its chat id.")
     try:
-        threads = store.sendable_threads(project_id, user_id, thread_ids, key)
+        routed = store.sendable_threads(project_id, user_id, thread_ids, key)
     except CommentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
-    artifacts = {}
-    for thread in threads:
+    artifact_ids: set[str] = set()
+    for thread, route in routed:
         target_kind, target_id = thread["target_kind"], thread["target_id"]
         if artifact_id is not None and (target_kind != "artifact" or target_id != artifact_id):
             raise HTTPException(status_code=409, detail="The thread belongs to another artifact.")
@@ -638,33 +638,23 @@ def prepare_comment_send(
                 )
             continue
         if target_kind == "artifact":
-            artifact = store.artifact(target_id)
-            assert artifact is not None
-            try:
-                origin, episode_id = artifact_reply_origin(store, artifact)
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            target_chat = _artifact_chat_id(origin, episode_id)
-            artifacts[target_id] = artifact
-        else:
-            origin = store.agent_task(target_id)
-            target_chat = origin.request.get("chat_id") if origin else None
-        if isinstance(target_chat, str) and store.private_chat_owner(target_chat) not in {
-            None,
-            user_id,
-        }:
+            artifact_ids.add(target_id)
+        if route.chat_owner not in {None, user_id}:
             raise HTTPException(status_code=404, detail="Comment target not found")
-        if not target_chat or paper or (artifact_id is None and target_chat != chat_id):
+        if not route.chat_id or paper or (artifact_id is None and route.chat_id != chat_id):
             raise HTTPException(status_code=409, detail="The thread belongs to another chat.")
-    if len(artifacts) > 1:
+    if len(artifact_ids) > 1:
         raise HTTPException(status_code=409, detail="Send comments on one artifact at a time.")
+    threads = [thread for thread, _ in routed]
     rendered = [thread["rendered"] for thread in threads]
     combined = "\n\n".join(part for part in [message, *rendered] if part)
     if len(combined) > STEERING_MESSAGE_MAX_CHARS:
         raise HTTPException(status_code=422, detail="The comment send is too long.")
-    if not selections or not artifacts:
+    if not selections or not artifact_ids:
         return combined, None
-    artifact = next(iter(artifacts.values()))
+    artifact = store.artifact(next(iter(artifact_ids)))
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
     context = ArtifactContextRequest.model_validate(
         {
             "source": "task",
@@ -754,7 +744,7 @@ def start_agent_task(
             authorized_by.user_id,
             thread_ids,
             str(idempotency_key) if idempotency_key is not None else "",
-            chat_id=str(body.get("chat_id", "")),
+            chat_id=str(body.get("chat_id") or ""),
             paper=kind == "paper_coach",
             message=message,
         )

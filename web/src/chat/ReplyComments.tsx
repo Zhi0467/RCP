@@ -12,14 +12,13 @@ import { CommentPins } from "../comments/react/CommentPins";
 import { CommentList } from "../comments/react/CommentRail";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
 import {
-  textOffset,
+  textAnchor,
   flashRect,
   insideElement,
   rangeEnd,
   textRange,
   toRect,
 } from "../comments/react/domText.ts";
-import { MAX_QUOTE_CHARS, surroundingText } from "../comments/react/threadModel.ts";
 import { useComments, type SendThreads } from "../comments/react/useComments";
 import {
   SelectionCommentButton,
@@ -108,13 +107,8 @@ export function useReplyComments({
     const operationId = answer?.closest<HTMLElement>(".agent-chat-view-line[data-task-id]")?.dataset
       .taskId;
     if (!range || !answer || !operationId || !replyIds.includes(operationId)) return null;
-    const quote = range.toString().trim().slice(0, MAX_QUOTE_CHARS);
-    if (!quote) return null;
-    const text = answer.textContent ?? "";
-    const at = text.indexOf(
-      quote,
-      Math.max(0, textOffset(answer, range.startContainer, range.startOffset) - 1),
-    );
+    const anchor = textAnchor(answer, range);
+    if (!anchor) return null;
     const rect = range.getBoundingClientRect();
     return {
       rect,
@@ -122,12 +116,7 @@ export function useReplyComments({
       open: () =>
         setOffer({
           target: { kind: "reply", id: operationId },
-          anchor: {
-            kind: "text",
-            text: quote,
-            surrounding_text: at < 0 ? quote : surroundingText(text, at, at + quote.length),
-            comment: "",
-          },
+          anchor,
           drawnVersion: null,
           point: { x: rect.left, y: rect.bottom },
         }),

@@ -12,7 +12,6 @@ import { ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
-import { memberDraftKey } from "../core/draftStorage";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
@@ -55,9 +54,9 @@ import {
   type StartConversationTask,
 } from "./chatWorkspace";
 import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
-import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import { AnswerCommentLayers, useAnswerComments } from "./answerComments";
+import { replaceTextSpan } from "./chatInput";
 import { useReplyComments } from "./ReplyComments";
+import { useInlineArtifactComments } from "./inlineArtifactComments";
 import type { SendThreads } from "../comments/react/useComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
@@ -357,24 +356,12 @@ export function AgentChatView({
     graphTarget,
   );
   const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
-  const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
   const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const comments = useAnswerComments({
-    storageKey: annotationsKey,
-    enabled: !readOnly,
-    busy: submitting,
-    sources: [],
-    message: textareaRef,
-    onError: setSubmitError,
-  });
-  const { annotations } = comments;
-  const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
-  const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
-  const commentOnly = readOnly && Boolean(artifactContext);
+  const canSendThreads = !readOnly || allowArtifactComments;
   const [supersedes, setSupersedes] = useState<{ chatId: string; operationId: string } | null>(
     null,
   );
@@ -417,7 +404,7 @@ export function AgentChatView({
       },
     },
     filesDisabled: readOnly,
-    referencesDisabled: submitting || commentOnly,
+    referencesDisabled: submitting,
     onError: setSubmitError,
   });
   const readyAttachments = composer.ready;
@@ -477,13 +464,10 @@ export function AgentChatView({
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
-  const annotationsComplete = comments.complete;
   const dictating = dictationState !== "idle" && dictationState !== "error";
   const kept = useKeptSpeech(draftKey);
   // The chat re-renders when the draft becomes sendable or empty, not per keystroke.
-  const draftSendable = useComposerDraft(draft, (text) =>
-    Boolean(assembleChatTurn(text, annotations)),
-  );
+  const draftSendable = useComposerDraft(draft, (text) => Boolean(text.trim()));
   // macOS: the ring drains over the whole cap; the last 10 s also show the seconds.
   const dictationMsLeft =
     dictationState === "recording" && dictationDeadline !== null
@@ -972,18 +956,9 @@ export function AgentChatView({
     threads: { ids: readonly string[]; key: string } | null = null,
   ): Promise<boolean> => {
     const draftMessage = draft.get();
-    const draftAnnotations = annotations;
-    const text = assembleChatTurn(draftMessage, annotations);
-    if (!comments.requireComplete()) return false;
-    // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (
-      !(text || threads) ||
-      composer.staged ||
-      artifactContext ||
-      submitting ||
-      !task.steer_turn_id
-    )
-      return false;
+    const text = draftMessage.trim();
+    // Files are staged for a new turn; a steer carries text only.
+    if (!(text || threads) || composer.staged || submitting || !task.steer_turn_id) return false;
     if (dictating) stopDictation(true);
     scroll.current?.follow();
     const request: SteerRequest = {
@@ -1009,10 +984,8 @@ export function AgentChatView({
             },
       );
       // Typing and skill selection are fenced while the receipt is awaited, so
-      // the delivered draft is exactly what is consumed. Artifact comments can
-      // still arrive from another view meanwhile, and they survive.
+      // the delivered draft is exactly what is consumed.
       draft.set((current) => (current === draftMessage ? "" : current));
-      comments.clear(draftAnnotations);
       skills.reset();
       return true;
     } catch (error) {
@@ -1030,22 +1003,27 @@ export function AgentChatView({
     JSON.stringify([
       config,
       worktreeRepository,
-      artifactContext,
       composer.turnFields(),
       skills.selection,
       worktree.chosen,
     ]);
 
-  const send = async () => {
-    if (!canCompose) return;
+  /** Sends the composer's text, with any comment threads under their send key: a steer
+   *  while the turn takes one, else a new turn. Resolves whether it was sent. */
+  const send = async (
+    threads: { ids: readonly string[]; key: string } | null = null,
+  ): Promise<boolean> => {
+    if (threads ? !canSendThreads : readOnly) return false;
     if (dictating) {
+      if (threads) return false;
       setSendAfterDictation({ target: sendTarget(steeringTask, launchSettings(), relatedActive) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
-      return;
+      return false;
     }
-    if (steeringTask) {
-      await steer(steeringTask);
-      return;
+    if (steeringTask) return steer(steeringTask, threads);
+    if (relatedActive || submitting || repairingTaskId || reviewPending) {
+      if (threads) setSubmitError("Wait for the running turn to finish.");
+      return false;
     }
     if (worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
@@ -1053,29 +1031,23 @@ export function AgentChatView({
           worktree.state?.unavailable_reason ??
           "Worktree eligibility has not been confirmed.",
       );
-      return;
+      return false;
     }
-    const draftMessage = draft.get();
-    const text = assembleChatTurn(draftMessage, annotations);
-    if (!comments.requireComplete()) return;
+    const draftMessage = readOnly ? "" : draft.get();
+    const text = draftMessage.trim();
     if (
-      !(text || artifactContext) ||
+      !(text || threads) ||
       attachmentsUnready ||
-      relatedActive ||
-      submitting ||
-      repairingTaskId ||
-      reviewPending ||
       // Enter reaches here without the button, so a new turn checks readiness itself.
       !providerReady
     )
-      return;
-    if (!confirmDiscardKeptSpeech("send")) return;
-    if (dictating) stopDictation(true);
+      return false;
+    if (!confirmDiscardKeptSpeech("send")) return false;
     // A new send is a new request; only Resend reuses a failed turn's key.
-    const requestId = crypto.randomUUID();
+    const requestId = threads?.key ?? crypto.randomUUID();
     draft.set("");
     composer.closeMenu();
-    await submitTurn({
+    return submitTurn({
       clientId: `pending-${requestId}`,
       requestId,
       text,
@@ -1091,12 +1063,12 @@ export function AgentChatView({
         chatId,
         sessionId,
         supersedes: supersededId,
-        artifactContext,
         attachments: composer.turnFields(),
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
         worktree: worktree.chosen,
         worktreeRepository,
+        ...(threads ? { commentThreadIds: threads.ids } : {}),
       },
       submittedOverride: configOverride,
     });
@@ -1105,7 +1077,7 @@ export function AgentChatView({
   /** Start a turn, or start it again after a failed send under the same key.
    *  Resolves whether it was admitted. */
   const submitTurn = async (turn: PendingChatTurn): Promise<boolean> => {
-    if (!canCompose) return false;
+    if (turn.submission.commentThreadIds ? !canSendThreads : readOnly) return false;
     const pending = { ...turn, error: undefined };
     scroll.current?.follow();
     setPendingTurn(pending);
@@ -1121,7 +1093,6 @@ export function AgentChatView({
       draft.set((current) => (current === turn.draft ? "" : current));
       skills.reset();
       composer.clear();
-      comments.clear();
       if (turn.submission.supersedes)
         setSupersedes((current) =>
           current?.operationId === turn.submission.supersedes ? null : current,
@@ -1161,50 +1132,8 @@ export function AgentChatView({
     }
   };
 
-  /** Comment threads ride this composer's own send: a steer while the turn takes one,
-   *  else a new turn with the typed text, under the threads' send key. A refusal shows
-   *  in the chat, as any send's does. */
   const sendThreads: SendThreads = async (threadIds, key) => {
-    const notSent = new Error("Not sent; the chat shows why.");
-    if (steeringTask) {
-      if (!(await steer(steeringTask, { ids: threadIds, key }))) throw notSent;
-      return;
-    }
-    if (dictating || !comments.requireComplete()) throw notSent;
-    if (relatedActive || submitting || repairingTaskId || reviewPending)
-      throw new Error("Wait for the running turn to finish.");
-    if (attachmentsUnready || !providerReady) throw notSent;
-    const draftMessage = draft.get();
-    const text = assembleChatTurn(draftMessage, annotations);
-    draft.set("");
-    composer.closeMenu();
-    const admitted = await submitTurn({
-      clientId: `pending-${key}`,
-      requestId: key,
-      text,
-      draft: draftMessage,
-      timestamp: new Date().toISOString(),
-      mode: "work",
-      attachments: readyAttachments,
-      submission: {
-        kind: surface,
-        config,
-        nodeId: node?.id ?? null,
-        message: text,
-        chatId,
-        sessionId,
-        supersedes: supersededId,
-        artifactContext,
-        attachments: composer.turnFields(),
-        skills: skills.selection,
-        providerSkillNames: skills.providerSkillNames,
-        worktree: worktree.chosen,
-        worktreeRepository,
-        commentThreadIds: threadIds,
-      },
-      submittedOverride: configOverride,
-    });
-    if (!admitted) throw notSent;
+    if (!(await send({ ids: threadIds, key }))) throw new Error("Not sent; the chat shows why.");
   };
   const replyIds = useMemo(
     () => [
@@ -1223,6 +1152,11 @@ export function AgentChatView({
     linesRef: chatLinesRef,
     canPost: !readOnly,
     send: readOnly ? null : sendThreads,
+  });
+  const inlineArtifactComments = useInlineArtifactComments({
+    projectId: project.id,
+    canPost: canSendThreads,
+    send: canSendThreads ? sendThreads : null,
   });
 
   const integrateWorktree = async (option: WorktreeIntegrationOption) => {
@@ -1275,9 +1209,8 @@ export function AgentChatView({
     chatId,
     relatedTasks,
     transcript,
-    comments,
+    inlineComments: inlineArtifactComments.handlers,
     onRefreshTask,
-    setSubmitError,
     readOnly,
     allowArtifactComments,
     repositories: project.repositories,
@@ -1417,8 +1350,6 @@ export function AgentChatView({
           questions={questionState.questions}
           endpoints={endpoints}
           artifacts={artifacts}
-          comments={comments}
-          answerComments={false}
           compactionByLine={compactionByLine}
           continuedTaskIds={continuedTaskIds}
           latestGraphReceiptLineIds={latestGraphReceiptLineIds}
@@ -1478,9 +1409,9 @@ export function AgentChatView({
           </button>
         </div>
       ) : (
-        !canCompose && readOnlyNotice
+        readOnly && readOnlyNotice
       )}
-      {canCompose && (
+      {!readOnly && (
         <ChatComposer
           hint={
             <ProviderSwitchHint
@@ -1491,7 +1422,6 @@ export function AgentChatView({
             />
           }
           composer={composer}
-          comments={comments}
           skills={skills.props}
           addDisabled={attachDisabled}
           field={
@@ -1518,24 +1448,18 @@ export function AgentChatView({
           }
           tools={
             <>
-              {!commentOnly && (
-                <WorktreeControls
-                  key={`${project.id}:${chatId}`}
-                  state={worktree.state}
-                  error={worktree.error}
-                  disabled={Boolean(
-                    relatedActive ||
-                    pausedAttempt ||
-                    submitting ||
-                    reviewPending ||
-                    repairingTaskId,
-                  )}
-                  onIntegrate={integrateWorktree}
-                  onRemove={worktree.remove}
-                  onPreviewRemove={worktree.previewRemoval}
-                  onRefresh={worktree.refresh}
-                />
-              )}
+              <WorktreeControls
+                key={`${project.id}:${chatId}`}
+                state={worktree.state}
+                error={worktree.error}
+                disabled={Boolean(
+                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+                )}
+                onIntegrate={integrateWorktree}
+                onRemove={worktree.remove}
+                onPreviewRemove={worktree.previewRemoval}
+                onRefresh={worktree.refresh}
+              />
               <div className="chat-compute-picker chat-options-picker" ref={optionsRef}>
                 <button
                   className="chat-compute-trigger"
@@ -1563,23 +1487,21 @@ export function AgentChatView({
                     disabled={readOnly}
                     onRequestedChange={setBrowserOn}
                   />
-                  {!commentOnly && (
-                    <WorktreeChooser
-                      state={worktree.state}
-                      chosen={worktree.chosen}
-                      disabled={Boolean(
-                        relatedActive ||
-                        pausedAttempt ||
-                        submitting ||
-                        reviewPending ||
-                        repairingTaskId,
-                      )}
-                      onChoose={worktree.choose}
-                      repositories={worktreeRepositories}
-                      repository={worktreeRepository}
-                      onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
-                    />
-                  )}
+                  <WorktreeChooser
+                    state={worktree.state}
+                    chosen={worktree.chosen}
+                    disabled={Boolean(
+                      relatedActive ||
+                      pausedAttempt ||
+                      submitting ||
+                      reviewPending ||
+                      repairingTaskId,
+                    )}
+                    onChoose={worktree.choose}
+                    repositories={worktreeRepositories}
+                    repository={worktreeRepository}
+                    onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
+                  />
                 </fieldset>
               </div>
             </>
@@ -1629,11 +1551,10 @@ export function AgentChatView({
                 className="icon-button primary chat-send-button"
                 disabled={
                   // While dictating, Send finishes the dictation and sends its transcript.
-                  !(draftSendable || artifactContext || dictating) ||
-                  !annotationsComplete ||
+                  !(draftSendable || dictating) ||
                   submitting ||
                   (steeringTask
-                    ? composer.staged || artifactContext !== null
+                    ? composer.staged
                     : attachmentsUnready ||
                       relatedActive ||
                       Boolean(repairingTaskId) ||
@@ -1703,8 +1624,8 @@ export function AgentChatView({
           }
         />
       )}
-      <AnswerCommentLayers comments={comments} />
       {replyComments.layers}
+      {inlineArtifactComments.layer}
     </div>
   );
 }
@@ -1765,17 +1686,6 @@ function removeStorage(key: string | null): void {
   try {
     localStorage.removeItem(key);
   } catch {}
-}
-
-function chatAnnotationsStorageKey(
-  actorId: string | null,
-  projectId: string,
-  chatId: string,
-): string | null {
-  return memberDraftKey(
-    actorId,
-    `chat-annotations:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`,
-  );
 }
 
 function withMapValue(map: Map<string, string>, key: string, value: string): Map<string, string> {

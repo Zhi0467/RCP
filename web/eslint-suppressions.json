@@ -141,7 +141,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 65
+      "count": 64
     }
   },
   "src/chat/AgentRename.tsx": {
@@ -1311,7 +1311,7 @@
   },
   "tests/paperCoach.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 16
+      "count": 11
     }
   },
   "tests/paperDialogs.browser.test.mjs": {

@@ -8,8 +8,8 @@ import {
   plainTextWhere,
   previewWhere,
 } from "../comments/where.ts";
-import { surroundingText, MAX_QUOTE_CHARS } from "../comments/react/threadModel.ts";
-import { textOffset } from "../comments/react/domText.ts";
+import { MAX_QUOTE_CHARS } from "../comments/react/threadModel.ts";
+import { textAnchor } from "../comments/react/domText.ts";
 import { pdfSourceNear } from "./previewComments";
 
 const PAGE = ".paper-pdf-page[data-page]";
@@ -109,23 +109,12 @@ export function previewSelectionAnchor(
       rect,
     };
   }
-  const quote = range.toString().trim().slice(0, MAX_QUOTE_CHARS);
-  if (!quote) return null;
-  const text = host.textContent ?? "";
-  const at = text.indexOf(
-    quote,
-    Math.max(0, textOffset(host, range.startContainer, range.startOffset) - 1),
-  );
+  const anchor = textAnchor(host, range);
+  if (!anchor) return null;
   const where =
     host.tagName === "PRE" ? plainTextWhere(host, range) : markdownWhere(host, start, end);
   return {
-    anchor: {
-      kind: "text",
-      text: quote,
-      surrounding_text: at < 0 ? quote : surroundingText(text, at, at + quote.length),
-      comment: "",
-      where: previewWhere(where),
-    },
+    anchor: { ...anchor, where: previewWhere(where) },
     rect,
   };
 }

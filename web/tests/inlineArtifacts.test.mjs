@@ -326,32 +326,3 @@ test("a whole-artifact inline draft keeps its target and sends only on turn asse
     selections: [],
   });
 });
-
-test("project inline comments open the viewer while Space keeps its selection toggle", async () => {
-  const { InlineArtifact } = await server.ssrLoadModule("/src/artifacts/InlineArtifact.tsx");
-  const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
-  const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
-  const render = (projectId) =>
-    renderToStaticMarkup(
-      createElement(
-        RefreshRuntimeContext.Provider,
-        { value: { store: new ResourceStore(), scheduler: {} } },
-        createElement(InlineArtifact, {
-          projectId,
-          stateProfile: null,
-          artifact: artifact("page.html", "html"),
-          title: "Page",
-          canComment: true,
-          keeping: false,
-          onExpand() {},
-          onKeep: null,
-          download: null,
-          onSelection() {},
-          onSelectionCancel() {},
-          onVersionChange() {},
-        }),
-      ),
-    );
-  assert.doesNotMatch(render("project"), /aria-pressed=/);
-  assert.match(render(null), /aria-pressed="true"/);
-});

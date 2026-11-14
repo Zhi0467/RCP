@@ -554,6 +554,7 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # fresh and upgraded in place.
         "4421379d13a17708e5594bb1377b14711cf12332d9746e29f6eb2901bf60d4fd",
         "473f00f8f63af906b60c8b95b2a9e0317bf2f449dbda47deee487ce4d0e851a9",
+        "bc0cf686ead0179e945fbefad48f7272fa036acf20864747356bf49df2364ed8",
     }
 )
 

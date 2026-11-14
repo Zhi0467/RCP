@@ -317,12 +317,6 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     }
     // A refresh reprojects the existing rows after entering the desktop runtime.
     await artifactsChanged(page, "desktop");
-    await page.getByRole("link", { name: "Open pdf.dat", exact: true }).click();
-    await page
-      .locator('.artifact-viewer iframe[src="/api/projects/project/artifacts/pdf/viewer"]')
-      .waitFor();
-    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
-    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     // Every action sits at the row's right end, whatever the title length.
     const plot = page.locator(".artifact-entry").filter({ hasText: "Saved plot" });
     const [download, openBox, rowBox] = await Promise.all([
@@ -361,6 +355,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     refreshResponse.resolve();
     await page.getByRole("link", { name: "Open Saved plot" }).waitFor();
     assert.equal(await page.locator('.artifacts-view[aria-busy="true"]').count(), 0);
+    await page.getByRole("link", { name: "Open pdf.dat", exact: true }).click();
+    await page
+      .locator('.artifact-viewer iframe[src="/api/projects/project/artifacts/pdf/viewer"]')
+      .waitFor();
+    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
@@ -789,7 +789,7 @@ test("desktop reports download and run PDFs open by stored identity without a pr
   }
 });
 
-test("inline comments and page errors expand the viewer and clear with its version", async () => {
+test("inline comments save shared threads, page errors expand the viewer, and both clear with its version", async () => {
   const { execFileSync } = await import("node:child_process");
   const rendered = JSON.parse(
     execFileSync(
@@ -801,10 +801,11 @@ test("inline comments and page errors expand the viewer and clear with its versi
         `import json
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.artifact_views import artifact_content, artifact_viewer_document
+from rcp.artifact_comments import selection_frame_addon
 artifact = AgentArtifactDescriptor(artifact_id="a"*24, name="page.html", media_type="text/html", size_bytes=1)
 shell, _ = artifact_viewer_document(artifact, content_url="/error-content", state="temporary", presentation="inline", selectable=True)
 broken, _, _ = artifact_content("page.html", "text/html", b'<p id="drawn">1</p><script>throw new Error("inline-failure")</script>')
-fixed, _, _ = artifact_content("page.html", "text/html", b'<p id="drawn">2</p>')
+fixed, _, _ = artifact_content("page.html", "text/html", b'<p id="drawn">2</p>', frame_addon=selection_frame_addon())
 print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       ],
       { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
@@ -931,8 +932,9 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
                     },
                   }
                 : { result: { artifacts: id === "answer-task" ? [artifact] : [] } },
-            onStartTask: async () => {
-              window.errorTestSent = true;
+            onStartTask: async (kind, request) => {
+              window.errorTestSent = { kind, request };
+              return { operation_id: "comment-turn" };
             },
             onInspectTask() {},
             onOpenInbox() {},
@@ -954,11 +956,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.ok((await notice.getAttribute("title")).includes("inline-failure"));
     assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
     assert.ok(await embed.locator("[download]").count());
-    assert.doesNotMatch(await embed.getAttribute("class"), /\bcommenting\b/);
-    await embed.getByRole("button", { name: "Comment", exact: true }).click();
-    await page.locator(".artifact-viewer iframe").waitFor();
-    assert.equal(await page.locator(".chat-annotation-composer").count(), 0);
-    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
+    assert.match(await embed.getAttribute("class"), /\bcommenting\b/);
     await embed.locator("[data-artifact-action=fix]").click();
     await page.locator(".artifact-viewer iframe").waitFor();
     assert.equal(await page.locator(".chat-annotation-composer").count(), 0);
@@ -977,9 +975,58 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       ),
     );
     await notice.waitFor({ state: "detached" });
-    await page.locator(".chat-annotation-composer textarea").waitFor({ state: "detached" });
     await embed.getByRole("button", { name: "Expand", exact: true }).click();
     await page.locator(".artifact-viewer iframe").waitFor();
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
+    const created = [];
+    await page.route("**/api/projects/project/comment-threads", (route) => {
+      const body = route.request().postDataJSON();
+      created.push(body);
+      return route.fulfill({
+        json: {
+          thread: {
+            thread_id: "inline-thread",
+            project_id: "project",
+            target_kind: "artifact",
+            target_id: "plot",
+            graph_target: "main",
+            drawn_version: body.drawn_version,
+            anchor: body.anchor,
+            state: "open",
+            created_by: "member",
+            created_at: "2026-09-02T12:02:00Z",
+            closed_by: null,
+            closed_at: null,
+            sent_operation_id: null,
+            can_send: true,
+            posts: [],
+          },
+        },
+      });
+    });
+    const live = () =>
+      page.frames().find((frame) => !frame.isDetached() && frame.url().includes("error-content"));
+    while (!live()?.childFrames().length) await page.waitForTimeout(50);
+    const author = live().childFrames()[0];
+    await author.locator("#drawn").dblclick();
+    const composer = page.getByRole("dialog", { name: "Comment" });
+    await composer.getByRole("textbox", { name: "Comment" }).fill("Make it bigger");
+    await composer.getByRole("button", { name: "Send to agent" }).click();
+    await page.waitForFunction(() => window.errorTestSent);
+    assert.deepEqual(created, [
+      {
+        target: { kind: "artifact", id: "plot" },
+        anchor: { kind: "text", text: "2", surrounding_text: "2", comment: "" },
+        drawn_version: state.current_version,
+        text: "Make it bigger",
+      },
+    ]);
+    const sent = await page.evaluate(() => window.errorTestSent);
+    assert.equal(sent.kind, "project_chat");
+    assert.deepEqual(sent.request.comment_thread_ids, ["inline-thread"]);
+    assert.equal(sent.request.chat_id, "error-chat");
+    assert.equal(sent.request.artifact_context, undefined);
+    await composer.waitFor({ state: "detached" });
     assert.ok(
       errors.every((error) => error === "inline-failure"),
       JSON.stringify(errors),

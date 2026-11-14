@@ -26,7 +26,7 @@ def test_lifecycle_and_send_replay(store):
     store.mark_threads_sent([tid], "op", "key", actor)
     with store.connection() as connection:
         connection.execute("UPDATE comment_posts SET created_at='9999' WHERE text='second'")
-    sent = store.sendable_threads("project", actor, [tid], "key")[0]
+    sent, _route = store.sendable_threads("project", actor, [tid], "key")[0]
     assert sent["sent_operation_id"] == "op"
     assert "note" in sent["rendered"] and "second" not in sent["rendered"]
     with pytest.raises(CommentError):

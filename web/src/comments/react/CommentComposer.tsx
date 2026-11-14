@@ -93,6 +93,8 @@ export function CommentComposer({
   onClose: () => void;
   onCreated?: (thread: CommentThread) => void;
 }) {
+  const { clearError } = comments;
+  useEffect(() => clearError(), [offer, clearError]);
   return (
     <CommentPopover point={offer.point} label="Comment" onClose={onClose}>
       <blockquote>{anchorQuote(offer.anchor)}</blockquote>

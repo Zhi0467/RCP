@@ -56,7 +56,7 @@ import { PaperHistory } from "./PaperHistory";
 import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
 import { previewSourceSpot, type PreviewSourceSpot } from "./previewComments";
-import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
+import { AnswerCommentLayers, useAnswerComments } from "../chat/answerComments";
 import { usePaperComments } from "./PaperComments";
 import type { SendThreads } from "../comments/react/useComments";
 
@@ -174,7 +174,7 @@ export function PaperWorkspace({
     ),
     enabled: true,
     busy: coachSubmitting,
-    sources: [transcriptSource(coachTranscript)],
+    sources: [],
     message: coachMessage,
     onError: setCoachError,
   });

@@ -9,7 +9,6 @@ import type {
   AgentTaskRequest,
   AgentTaskStatus,
   Episode,
-  ArtifactContextRequest,
   ChatAgentSetup,
   ChatMessage,
   ChatOrigin,
@@ -169,7 +168,6 @@ export interface ConversationTurnSubmission {
   chatId: string;
   sessionId: string | null;
   supersedes?: string | null;
-  artifactContext?: ArtifactContextRequest | null;
   /** The composer's staged files and references, as `turnFields()` gives them. */
   attachments?: ComposerTurnFields;
   skills?: SkillDefaults;
@@ -184,12 +182,8 @@ export interface ConversationTurnSubmission {
 
 export function conversationTurnRequest(submission: ConversationTurnSubmission): AgentTaskRequest {
   const message = submission.message.trim();
-  // An artifact comment turn may carry only its comments; the server writes their text.
-  if (
-    !message &&
-    !submission.artifactContext?.selections.length &&
-    !submission.commentThreadIds?.length
-  )
+  // A thread send may carry only its threads; the server writes their text.
+  if (!message && !submission.commentThreadIds?.length)
     throw new Error("A conversation turn requires a non-blank message.");
   return {
     ...submission.config,
@@ -212,7 +206,6 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
       ? { worktree_integration: submission.worktreeIntegration }
       : {}),
     ...submission.attachments,
-    ...(submission.artifactContext ? { artifact_context: submission.artifactContext } : {}),
     ...(submission.commentThreadIds?.length
       ? { comment_thread_ids: [...submission.commentThreadIds] }
       : {}),

@@ -229,6 +229,8 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
         drag.started = true;
         anchor = null;
         mark?.remove();
+        hover?.remove();
+        hover = null;
         doc.getSelection()?.removeAllRanges();
         publish(null);
         mark = doc.createElement("div");

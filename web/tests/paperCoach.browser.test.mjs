@@ -640,7 +640,7 @@ test("an evicted coach cohort keeps its held session through a failed second pro
   assert.deepEqual(errors, []);
 });
 
-test("the coach stages answer comments and files as chat does and sends them with its turn", async (t) => {
+test("the coach stages files as chat does and sends them with its turn, and its answers take no composer comments", async (t) => {
   const uploads = [];
   const { page } = await open(t, {
     width: 1280,
@@ -667,36 +667,13 @@ test("the coach stages answer comments and files as chat does and sends them wit
     },
   });
   await coach(page);
-  const segment = page.locator(".paper-desktop-segments button", { hasText: "Coach" });
-  const width = (await segment.boundingBox()).width;
   // The picker stays editable inside an existing coach session.
   assert.equal(
     await page.locator(".paper-coach .chat-composer-tools .agent-config-chip").isDisabled(),
     false,
   );
 
-  await page.getByRole("button", { name: "Comment on this answer" }).click();
-  const source = page.getByRole("textbox", { name: "Select answer text" });
-  await source.waitFor();
-  // The keyboard way in: the answer opens as selectable text.
-  await source.press("ControlOrMeta+A");
-  await page.getByRole("button", { name: "Comment on selection" }).click();
-  await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Name the claim.");
-  await page.getByRole("button", { name: "Add comment" }).click();
-  await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
-  // The Coach segment counts the waiting comment, so it shows while the preview is open.
-  const waiting = page.locator(".paper-desktop-segments .paper-comment-count");
-  assert.equal(await waiting.textContent(), "1");
-  // The count rides on the segment's corner without resizing it, and is read out.
-  assert.equal((await segment.boundingBox()).width, width);
-  assert.match(await segment.evaluate((el) => el.textContent), /1 waiting/);
-  // A reload keeps the waiting comment in this tab. It names the segment
-  // "Coach 1 waiting", so the click finds the segment, not the bare name.
-  await page.reload();
-  await waiting.waitFor();
-  await segment.click();
-  await page.locator(".paper-coach .chat-composer .chat-annotation-count").waitFor();
-  assert.equal(await waiting.textContent(), "1");
+  assert.equal(await page.getByRole("button", { name: "Comment on this answer" }).count(), 0);
 
   await page
     .locator(".paper-coach .chat-composer .chat-add-picker input[type=file]")
@@ -709,18 +686,14 @@ test("the coach stages answer comments and files as chat does and sends them wit
   assert.equal(started.kind, "paper_coach");
   const { request } = started;
   assert.equal(request.session_id, "s1");
-  assert.ok(request.message.startsWith("Tighten it."));
-  assert.ok(request.message.includes("The introduction needs a clearer claim."));
-  assert.ok(request.message.includes("Name the claim."));
+  assert.equal(request.message, "Tighten it.");
   assert.equal(request.attachment_set_id, "set-1");
   assert.equal(typeof request.attachment_client_id, "string");
   assert.equal(request.attachment_scope_id, uploads[0]);
-  // The admitted turn owns its comments and files; the next draft starts empty.
+  // The admitted turn owns its files; the next draft starts empty.
   await page
-    .locator(".paper-coach .chat-composer .chat-annotation-count")
+    .locator(".paper-coach .chat-composer .chat-attachment-chip")
     .waitFor({ state: "detached" });
-  assert.equal(await page.locator(".paper-coach .chat-composer .chat-attachment-chip").count(), 0);
-  assert.equal(await waiting.count(), 0);
 });
 
 test("a sent coach turn shows its files and the session's context", async (t) => {

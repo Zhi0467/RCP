@@ -150,12 +150,10 @@ export function InlineArtifact({
   const selectable =
     canComment &&
     (profile === null || Boolean(state?.can_comment)) &&
-    (projectId !== null
-      ? artifact?.view !== "file"
-      : artifact?.view === "html" || artifact?.view === "image");
+    (artifact?.view === "html" || artifact?.view === "image");
   // Derived, so a refresh that withdraws commenting (another edit reserving the
   // artifact) also ends comment mode, with no Done left to press.
-  const commentMode = projectId === null && selectable && (commentChoice ?? true);
+  const commentMode = selectable && (commentChoice ?? true);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: onSelectionCancel,
@@ -240,18 +238,14 @@ export function InlineArtifact({
           <button
             type="button"
             className="chat-inline-artifact-comment"
-            aria-pressed={projectId === null ? commentMode : undefined}
+            aria-pressed={commentMode}
             title={
-              projectId !== null
-                ? "Open comments in the viewer"
-                : commentMode
-                  ? "Stop commenting and use the artifact"
-                  : "Select a part of this artifact to comment on it"
+              commentMode
+                ? "Stop commenting and use the artifact"
+                : "Select a part of this artifact to comment on it"
             }
-            aria-label={
-              projectId !== null ? "Comment" : commentMode ? "Done commenting" : "Comment on a part"
-            }
-            onClick={() => (projectId !== null ? onExpand() : setCommentChoice(!commentMode))}
+            aria-label={commentMode ? "Done commenting" : "Comment on a part"}
+            onClick={() => setCommentChoice(!commentMode)}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>

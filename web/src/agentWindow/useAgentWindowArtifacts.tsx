@@ -25,71 +25,21 @@ import type { AnswerComments } from "../chat/answerComments";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
 import { ReferenceEmbed, resolveReference } from "./ReferenceEmbed";
 
-const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
-const NO_REPOSITORIES: ProjectSnapshot["repositories"] = [];
-export function useAgentWindowArtifacts({
-  endpoints,
-  chatId,
-  relatedTasks,
-  transcript,
-  comments,
-  onRefreshTask,
-  setSubmitError,
-  readOnly = false,
-  allowArtifactComments = false,
-  repositories = NO_REPOSITORIES,
-}: {
-  endpoints: AgentWindowEndpoints;
-  chatId: string;
-  relatedTasks: AgentTask[];
-  transcript: TaskTranscriptLine[];
-  comments: AnswerComments;
-  onRefreshTask: (taskId: string) => Promise<AgentTask>;
-  setSubmitError: (error: string | null) => void;
-  readOnly?: boolean;
-  allowArtifactComments?: boolean;
-  repositories?: ProjectSnapshot["repositories"];
-}) {
+export interface InlineComments {
+  open(
+    taskId: string,
+    artifact: AgentArtifactDescriptor,
+    event: InlineArtifactSelectionEvent,
+  ): void;
+  cancel(clear: () => void): void;
+  versionChanged(artifact: AgentArtifactDescriptor): void;
+}
+
+export function stagedInlineComments(
+  comments: AnswerComments,
+  setSubmitError: (error: string | null) => void,
+): InlineComments {
   const { annotations } = comments;
-  const taskById = useMemo(
-    () => new Map(relatedTasks.map((task) => [task.operation_id, task])),
-    [relatedTasks],
-  );
-  const ownerRef = useRef({ key: endpoints.scopeKey });
-  if (ownerRef.current.key !== endpoints.scopeKey) ownerRef.current = { key: endpoints.scopeKey };
-  const owner = ownerRef.current;
-  const isCurrent = () => ownerRef.current === owner;
-  useEffect(() => {
-    ownerRef.current = owner;
-    return () => {
-      if (ownerRef.current === owner) ownerRef.current = { key: "" };
-    };
-  }, [owner]);
-
-  const desktop = isDesktopRuntime() && endpoints.downloadArtifact !== null;
-  // Embedded turns that aged out of the recent task list, fetched once on demand.
-  // Kept here because a later bounded task-list refresh drops such tasks again.
-  const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
-    ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
-  >(() => new Map());
-  const [failedArtifactPreviews, setFailedArtifactPreviews] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
-  const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
-  const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
-    () => new Map(),
-  );
-
-  useEffect(() => {
-    setAgedInlineArtifacts(new Map());
-    setRepositoryFileErrors(new Map());
-    setArtifactShellErrors(new Map());
-    setFailedArtifactPreviews(new Set());
-    setKeepingArtifacts(new Set());
-  }, [endpoints.scopeKey]);
   // A part of an artifact shown inside a reply, selected in its comment mode, is
   // staged like answer text; the turn carries it as that artifact's selection.
   const openInlineArtifactComment = (
@@ -154,7 +104,75 @@ export function useAgentWindowArtifacts({
       `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
     );
   };
+  return {
+    open: openInlineArtifactComment,
+    cancel: comments.cancelExternal,
+    versionChanged: dropStaleArtifactComments,
+  };
+}
 
+const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+const NO_REPOSITORIES: ProjectSnapshot["repositories"] = [];
+export function useAgentWindowArtifacts({
+  endpoints,
+  chatId,
+  relatedTasks,
+  transcript,
+  inlineComments = null,
+  onRefreshTask,
+  readOnly = false,
+  allowArtifactComments = false,
+  repositories = NO_REPOSITORIES,
+}: {
+  endpoints: AgentWindowEndpoints;
+  chatId: string;
+  relatedTasks: AgentTask[];
+  transcript: TaskTranscriptLine[];
+  inlineComments?: InlineComments | null;
+  onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  readOnly?: boolean;
+  allowArtifactComments?: boolean;
+  repositories?: ProjectSnapshot["repositories"];
+}) {
+  const taskById = useMemo(
+    () => new Map(relatedTasks.map((task) => [task.operation_id, task])),
+    [relatedTasks],
+  );
+  const ownerRef = useRef({ key: endpoints.scopeKey });
+  if (ownerRef.current.key !== endpoints.scopeKey) ownerRef.current = { key: endpoints.scopeKey };
+  const owner = ownerRef.current;
+  const isCurrent = () => ownerRef.current === owner;
+  useEffect(() => {
+    ownerRef.current = owner;
+    return () => {
+      if (ownerRef.current === owner) ownerRef.current = { key: "" };
+    };
+  }, [owner]);
+
+  const desktop = isDesktopRuntime() && endpoints.downloadArtifact !== null;
+  // Embedded turns that aged out of the recent task list, fetched once on demand.
+  // Kept here because a later bounded task-list refresh drops such tasks again.
+  const [agedInlineArtifacts, setAgedInlineArtifacts] = useState<
+    ReadonlyMap<string, AgentArtifactDescriptor[] | "loading">
+  >(() => new Map());
+  const [failedArtifactPreviews, setFailedArtifactPreviews] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
+  const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+
+  useEffect(() => {
+    setAgedInlineArtifacts(new Map());
+    setRepositoryFileErrors(new Map());
+    setArtifactShellErrors(new Map());
+    setFailedArtifactPreviews(new Set());
+    setKeepingArtifacts(new Set());
+  }, [endpoints.scopeKey]);
   const markArtifactPreviewFailed = (taskId: string, artifactId: string) => {
     setFailedArtifactPreviews((current) => {
       const next = new Set(current);
@@ -436,7 +454,11 @@ export function useAgentWindowArtifacts({
         }
         artifact={artifact}
         title={title}
-        canComment={endpoints.canCommentArtifacts && (!readOnly || allowArtifactComments)}
+        canComment={
+          inlineComments !== null &&
+          endpoints.canCommentArtifacts &&
+          (!readOnly || allowArtifactComments)
+        }
         keeping={keepingArtifacts.has(key)}
         actionError={artifactShellErrors.get(key)}
         onLoadTask={onLoadTask}
@@ -445,9 +467,9 @@ export function useAgentWindowArtifacts({
           endpoints.canKeep && artifact?.can_keep ? () => void keepArtifact(taskId, artifact) : null
         }
         download={artifact && artifactDownloadControl(taskId, artifact)}
-        onSelection={(event) => artifact && openInlineArtifactComment(taskId, artifact, event)}
-        onSelectionCancel={comments.cancelExternal}
-        onVersionChange={() => artifact && dropStaleArtifactComments(artifact)}
+        onSelection={(event) => artifact && inlineComments?.open(taskId, artifact, event)}
+        onSelectionCancel={(clear) => inlineComments?.cancel(clear)}
+        onVersionChange={() => artifact && inlineComments?.versionChanged(artifact)}
       />
     );
   };

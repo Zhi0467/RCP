@@ -424,9 +424,7 @@ export function PaperCoach({
     chatId: endpoints.scopeKey,
     relatedTasks: sessionTasks,
     transcript,
-    comments,
     onRefreshTask: endpoints.loadTask,
-    setSubmitError: setError,
   });
   return (
     <div className="chat-dock paper-coach">
@@ -497,7 +495,6 @@ export function PaperCoach({
           questions={NO_QUESTIONS}
           endpoints={endpoints}
           artifacts={artifacts}
-          comments={comments}
           compactionByLine={lines.compactionByLine}
           continuedTaskIds={lines.continuedTaskIds}
           latestGraphReceiptLineIds={lines.latestGraphReceiptLineIds}

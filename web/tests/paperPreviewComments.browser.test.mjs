@@ -202,6 +202,7 @@ for (const width of [1280, 390])
     assert.equal(await artifact().locator("#counter").innerText(), "1");
     await zoom(75);
     assert.equal(await reset.innerText(), "75%");
+    await artifact().evaluate(() => delete document.documentElement.dataset.selectionReady);
     await page.getByRole("button", { name: "Comment on the page" }).click();
     await artifact().waitForFunction(
       () => document.documentElement.dataset.selectionReady === "true",
@@ -222,10 +223,7 @@ for (const width of [1280, 390])
       assert.ok(Math.abs(box.anchor.left - start.x) < 2);
       assert.ok(Math.abs(box.anchor.right - end.x) < 2);
       assert.ok(Math.abs(box.anchor.top - start.y) < 2);
-      assert.equal(
-        await artifact().locator('[data-rcp-selection]:not([data-rcp-selection="hover"])').count(),
-        1,
-      );
+      assert.equal(await artifact().locator("[data-rcp-selection]").count(), 1);
       const cancelled = await page.evaluate(() => window.cancelled.length);
       await zoom(scale * 100 + 5);
       await page.waitForFunction((count) => window.cancelled.length > count, cancelled);

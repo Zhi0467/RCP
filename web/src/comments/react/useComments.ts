@@ -57,6 +57,7 @@ export interface CommentsController {
   members: CommentMember[];
   busy: boolean;
   error: string | null;
+  clearError(): void;
   canPost: boolean;
   /** A sender exists here; each thread's `can_send` still decides. */
   canSend: boolean;
@@ -145,6 +146,7 @@ export function useComments({
     [reload],
   );
   const fail = useCallback((cause: unknown) => setError(errorText(cause)), []);
+  const clearError = useCallback(() => setError(null), []);
   const sendNow = useCallback(async (threadIds: string[]) => {
     const sender = sendRef.current;
     if (!sender || !threadIds.length) return;
@@ -158,6 +160,7 @@ export function useComments({
     members,
     busy,
     error,
+    clearError,
     canPost,
     canSend: Boolean(send),
     create: (target, anchor, text, drawnVersion, toAgent) =>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -12,11 +13,12 @@ from rcp.comments.models import COMMENT_MEDIA_TYPES, COMMENT_TARGET_ANCHOR_KINDS
 from rcp.comments.render import render_thread, thread_budget_chars
 from rcp.limits import COMMENT_POST_MAX_CHARS, COMMENT_THREAD_MAX_CHARS
 from rcp.storage.agent_threads import private_artifact_owner
+from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.artifacts import readable_artifact_in
 from rcp.storage.bulletin import parse_member_mentions
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
-from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord
+from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord, EpisodeRecord
 from rcp.storage.resource_versions import install_comment_resource_versions
 
 if TYPE_CHECKING:
@@ -48,30 +50,37 @@ class CommentTargetRoute:
 
 def migrate_comments(connection: sqlite3.Connection) -> None:
     connection.execute(
-        "CREATE TABLE comment_threads (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+        "CREATE TABLE IF NOT EXISTS comment_threads (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
         "target_kind TEXT NOT NULL CHECK(target_kind IN ('artifact','paper','reply')), "
         "target_id TEXT NOT NULL, graph_target TEXT NOT NULL, drawn_version TEXT, anchor_json TEXT NOT NULL, "
         "state TEXT NOT NULL CHECK(state IN ('open','resolved')), created_by TEXT NOT NULL, "
         "created_at TEXT NOT NULL, closed_by TEXT, closed_at TEXT, sent_operation_id TEXT, send_key TEXT)"
     )
     connection.execute(
-        "CREATE INDEX comment_thread_target ON comment_threads(project_id,target_kind,target_id,state)"
+        "CREATE INDEX IF NOT EXISTS comment_thread_target "
+        "ON comment_threads(project_id,target_kind,target_id,state)"
     )
     connection.execute(
-        "CREATE TABLE comment_posts (post_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+        "CREATE TABLE IF NOT EXISTS comment_posts (post_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
         "thread_id TEXT NOT NULL REFERENCES comment_threads(thread_id) ON DELETE CASCADE, "
         "author_id TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, edited_at TEXT)"
     )
-    connection.execute("CREATE INDEX comment_post_thread ON comment_posts(thread_id,created_at)")
     connection.execute(
-        "CREATE TABLE comment_mentions (project_id TEXT NOT NULL, "
+        "CREATE INDEX IF NOT EXISTS comment_post_thread ON comment_posts(thread_id,created_at)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS comment_mentions (project_id TEXT NOT NULL, "
         "post_id TEXT NOT NULL REFERENCES comment_posts(post_id) ON DELETE CASCADE, "
         "thread_id TEXT NOT NULL REFERENCES comment_threads(thread_id) ON DELETE CASCADE, "
         "user_id TEXT NOT NULL, created_at TEXT NOT NULL, observed_at TEXT, PRIMARY KEY(post_id,user_id))"
     )
     connection.execute(
-        "CREATE INDEX comment_mention_member ON comment_mentions(project_id,user_id)"
+        "CREATE INDEX IF NOT EXISTS comment_mention_member ON comment_mentions(project_id,user_id)"
     )
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'resource_comment_*'"
+    ).fetchall():
+        connection.execute(f'DROP TRIGGER "{name}"')
     install_comment_resource_versions(connection)
 
 
@@ -95,16 +104,43 @@ def _graph_target(task: AgentTaskRecord | None) -> str:
     return task.graph_target.key if task is not None else "main"
 
 
+@dataclass(frozen=True)
+class _ConnectionReader:
+    store: AppStore
+    connection: sqlite3.Connection
+
+    def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+        ).fetchone()
+        return self.store._agent_task_record(row) if row is not None else None
+
+    def episode(self, episode_id: str) -> EpisodeRecord | None:
+        row = self.connection.execute(
+            "SELECT * FROM episodes WHERE episode_id=?", (episode_id,)
+        ).fetchone()
+        return self.store._episode_record(row) if row is not None else None
+
+    def episode_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
+        return [
+            self.store._agent_task_record(row)
+            for row in self.connection.execute(
+                "SELECT * FROM graph_runs WHERE episode_id=? AND visible=1 "
+                "ORDER BY created_at, operation_id",
+                (episode_id,),
+            )
+        ]
+
+
 def _artifact_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
 ) -> CommentTargetRoute | None:
-    from rcp.runs.artifact_edit_admission import _artifact_chat_id, artifact_reply_origin
-
     artifact = readable_artifact_in(connection, project_id, target_id, now=store.now())
     if artifact is None:
         return None
+    reader = _ConnectionReader(store, connection)
     try:
-        chat_id = _artifact_chat_id(*artifact_reply_origin(store, artifact))
+        chat_id = artifact_chat_id(*artifact_reply_origin(reader, artifact))
     except AgentTaskAdmissionConflict:
         chat_id = None
     chat_id = chat_id if isinstance(chat_id, str) and chat_id else None
@@ -113,7 +149,7 @@ def _artifact_route(
         owner=private_artifact_owner(connection, artifact),
         chat_id=chat_id,
         chat_owner=_chat_owner(connection, chat_id),
-        graph_target=_graph_target(store.agent_task(artifact.origin_operation_id or "")),
+        graph_target=_graph_target(reader.agent_task(artifact.origin_operation_id or "")),
         media_type=artifact.media_type,
     )
 
@@ -121,7 +157,7 @@ def _artifact_route(
 def _reply_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
 ) -> CommentTargetRoute | None:
-    task = store.agent_task(target_id)
+    task = _ConnectionReader(store, connection).agent_task(target_id)
     if task is None or task.project_id != project_id:
         return None
     chat_id = task.request.get("chat_id")
@@ -170,6 +206,21 @@ def readable_comment_target(
 ) -> CommentTargetRoute | None:
     route = _target_route(store, connection, project_id, kind, target_id)
     return route if route is not None and route.readable_by(connection, user_id) else None
+
+
+def _readable_routes(
+    store: AppStore, connection: sqlite3.Connection, user_id: str, project_id: str
+) -> Callable[[str, str], CommentTargetRoute | None]:
+    routes: dict[tuple[str, str], CommentTargetRoute | None] = {}
+
+    def route(kind: str, target_id: str) -> CommentTargetRoute | None:
+        if (kind, target_id) not in routes:
+            routes[kind, target_id] = readable_comment_target(
+                store, connection, user_id, project_id, kind, target_id
+            )
+        return routes[kind, target_id]
+
+    return route
 
 
 def _require_readable(
@@ -388,6 +439,7 @@ class CommentStoreMixin(StoreMixinBase):
                 connection, chat_id
             ) not in {None, user_id}:
                 return None
+            route_of = _readable_routes(store, connection, user_id, project_id)
             listed: list[tuple[dict[str, Any], CommentTargetRoute]] = []
             for row in connection.execute(
                 "SELECT thread.thread_id, thread.target_id FROM comment_threads AS thread "
@@ -397,9 +449,7 @@ class CommentStoreMixin(StoreMixinBase):
                 "ORDER BY thread.created_at,thread.rowid",
                 (project_id, project_id, chat_id),
             ).fetchall():
-                route = readable_comment_target(
-                    store, connection, user_id, project_id, "reply", row[1]
-                )
+                route = route_of("reply", row[1])
                 if route is not None:
                     listed.append((_thread(connection, project_id, row[0]), route))
             return listed
@@ -463,17 +513,20 @@ class CommentStoreMixin(StoreMixinBase):
 
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[tuple[dict[str, Any], CommentTargetRoute]]:
         store = cast("AppStore", self)
         with self.connection() as connection:
+            route_of = _readable_routes(store, connection, user_id, project_id)
             items = []
             for thread_id in dict.fromkeys(ids):
                 item = _thread(connection, project_id, thread_id)
-                _require_readable(store, connection, user_id, item)
+                route = route_of(item["target_kind"], item["target_id"])
+                if route is None:
+                    raise CommentError("comment_target_not_found", 404)
                 if item["state"] != "open" and item["send_key"] != key:
                     raise CommentError("comment_thread_not_sendable", 409)
                 until = item["closed_at"] if item["send_key"] == key else None
-                items.append({**item, "rendered": render_thread(item, until=until)})
+                items.append(({**item, "rendered": render_thread(item, until=until)}, route))
             return items
 
     def open_comment_mentions(self, project_id: str, user_id: str) -> list[dict[str, Any]]:
@@ -486,15 +539,10 @@ class CommentStoreMixin(StoreMixinBase):
                 "ORDER BY m.created_at,m.rowid",
                 (project_id, user_id),
             ).fetchall()
-            routes: dict[tuple[str, str], CommentTargetRoute | None] = {}
+            route_of = _readable_routes(store, connection, user_id, project_id)
             mentions = []
             for row in rows:
-                target = (row["target_kind"], row["target_id"])
-                if target not in routes:
-                    routes[target] = readable_comment_target(
-                        store, connection, user_id, project_id, *target
-                    )
-                route = routes[target]
+                route = route_of(row["target_kind"], row["target_id"])
                 if route is None:
                     continue
                 thread = _thread(connection, project_id, row["thread_id"])
