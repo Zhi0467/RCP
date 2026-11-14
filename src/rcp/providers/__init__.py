@@ -71,6 +71,7 @@ for _profile in PROVIDERS.values():
 
 #: Shipped ahead of every provider's `remote.py`, in this order.
 _REMOTE_BASE_MODULES = (
+    "rcp.providers.login_homes",
     "rcp.providers.session_format",
     "rcp.providers.turn_fence",
     "rcp.sources.record_parsing",

@@ -86,6 +86,7 @@ test("API sends login ids, add and remove bodies, and the setting through their 
     await api.startProviderSignIn("codex", MACHINE, "ana");
     await api.providerSignInStatus("codex", "attempt-1");
     await api.cancelProviderSignIn("codex", "attempt-1");
+    await api.submitProviderSignInCode("agy", "attempt/2", "private-code");
     await api.saveProviderToken("claude", MACHINE, "own-me", "private-value");
     await api.verifyProviderLogin("claude", MACHINE, "");
     await api.signOutProvider("claude", MACHINE, "own-me");
@@ -102,6 +103,7 @@ test("API sends login ids, add and remove bodies, and the setting through their 
       ["/api/providers/codex/logins/sign-in", "POST", { machine_id: MACHINE, login_id: "ana" }],
       ["/api/providers/codex/logins/sign-in/attempt-1", "GET", null],
       ["/api/providers/codex/logins/sign-in/attempt-1/cancel", "POST", null],
+      ["/api/providers/agy/logins/sign-in/attempt%2F2/code", "POST", { code: "private-code" }],
       [
         "/api/providers/claude/logins/token",
         "POST",
@@ -322,3 +324,56 @@ test("a dismissed sign-in notice stays hidden until that login signs out again",
     delete globalThis.localStorage;
   }
 });
+
+test("paste-code input belongs only to the starter while a URL is awaiting a code", () => {
+  const pending = {
+    state: "pending",
+    started_by: "u-me",
+    awaiting_code: true,
+    verification_url: "https://accounts.google.com/o/oauth2/auth?state=example",
+  };
+  assert.equal(model.showsPasteCode(pending, "u-me"), true);
+  assert.equal(model.showsPasteCode(pending, "u-other"), false);
+  assert.equal(model.showsPasteCode(pending, null), false);
+  assert.equal(model.showsPasteCode(null, "u-me"), false);
+  assert.equal(model.showsPasteCode({ ...pending, awaiting_code: false }, "u-me"), false);
+  assert.equal(model.showsPasteCode({ ...pending, verification_url: null }, "u-me"), false);
+  assert.equal(model.showsPasteCode({ ...pending, state: "failed" }, "u-me"), false);
+});
+
+test("paste-code form shows Google's link, protected input and cancel only to its starter", () =>
+  ssr(({ React, render, SignInCard }) => {
+    const url = "https://accounts.google.com/o/oauth2/auth?state=example";
+    const row = loginRow({
+      provider: "agy",
+      label: "Antigravity",
+      sign_in_methods: ["paste_code"],
+      state: "signed_out",
+      sign_in: {
+        attempt_id: "agy-attempt",
+        state: "pending",
+        started_by: "u-me",
+        awaiting_code: true,
+        verification_url: url,
+      },
+    });
+    const draw = (viewerUserId) =>
+      render(
+        React.createElement(SignInCard, {
+          row,
+          viewerUserId,
+          writesDisabled: false,
+          entering: false,
+          onEntering() {},
+          async onChanged() {},
+        }),
+      );
+    const mine = draw("u-me");
+    assert.match(mine, /<form class="sign-in-token sign-in-device"/);
+    assert.match(mine, /title="https:\/\/accounts.google.com\/o\/oauth2\/auth\?state=example"/);
+    assert.match(mine, />Open Google sign-in<\/a>/);
+    assert.match(mine, /type="password"[^>]*aria-label="Antigravity code"/);
+    assert.match(mine, /title="Submit code"/);
+    assert.equal(count(mine, /data-sign-in-action="cancel"/g), 1);
+    assert.doesNotMatch(draw("u-other"), /accounts.google.com|<form|type="password"/);
+  }));

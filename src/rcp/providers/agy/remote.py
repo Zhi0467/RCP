@@ -7,11 +7,26 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING or "TurnFence" not in globals():
     from rcp.providers.turn_fence import TurnFence
+
+
+if TYPE_CHECKING or "HomeLayout" not in globals():
+    from rcp.providers.login_homes import HomeLayout, run_home
+
+
+AGY_HOME_LAYOUT = HomeLayout(
+    independent_paths=(".gemini/antigravity-cli/antigravity-oauth-token",),
+    shared_directories=(
+        ".gemini/antigravity-cli/conversations",
+        ".gemini/antigravity-cli/brain",
+        ".gemini/config",
+    ),
+)
 
 
 class AgyStreamTurnFence(TurnFence):
@@ -128,14 +143,22 @@ def _agy_host_policy(
     command[command.index("--agent") + 1] = agy_agent_name(policy, tools)
 
 
-def _agy_arguments(arguments: list[str]) -> tuple[list[str], tuple[str, ...], bool, Path | None]:
+def _agy_arguments(
+    arguments: list[str],
+) -> tuple[list[str], tuple[str, ...], bool, Path | None, Path | None]:
     boundary = arguments.index("--")
     options = arguments[:boundary]
     data_dir = None
-    if options:
-        if len(options) != 2 or options[0] != "--data-dir":
+    home = None
+    if len(options) % 2:
+        raise ValueError("Invalid Antigravity wrapper options")
+    for key, value in zip(options[::2], options[1::2]):
+        if key == "--data-dir":
+            data_dir = Path(value)
+        elif key == "--home":
+            home = Path(value).expanduser().absolute()
+        else:
             raise ValueError("Invalid Antigravity wrapper options")
-        data_dir = Path(options[1])
     command = list(arguments[boundary + 1 :])
     tools: tuple[str, ...] = ()
     if "--rcp-agy-tools" in command:
@@ -150,12 +173,12 @@ def _agy_arguments(arguments: list[str]) -> tuple[list[str], tuple[str, ...], bo
         command.remove("--rcp-agy-probe")
     if not command:
         raise ValueError("Missing Antigravity executable")
-    return command, tools, probe, data_dir
+    return command, tools, probe, data_dir, home
 
 
 def agy_run(arguments: list[str]) -> None:
     """Stage host-owned policy and replace this process with the provider."""
-    command, tools, probe, data_dir = _agy_arguments(arguments)
+    command, tools, probe, data_dir, home = _agy_arguments(arguments)
     environment = dict(os.environ)
     environment.update(agy_browser_environment(Path.home() / ".rcp" / "agy-browser-shims"))
     if probe:
@@ -163,7 +186,10 @@ def agy_run(arguments: list[str]) -> None:
     if tools:
         _agy_host_policy(command, tools, probe=probe, data_dir=data_dir)
         _agy_stage_agent(command, list(tools))
-    os.execvpe(command[0], command, environment)
+    with run_home(home, Path.home(), AGY_HOME_LAYOUT) if home is not None else nullcontext():
+        if home is not None:
+            environment["HOME"] = str(home)
+        os.execvpe(command[0], command, environment)
 
 
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--agy-run":

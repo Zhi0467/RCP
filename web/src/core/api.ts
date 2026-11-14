@@ -1007,6 +1007,17 @@ export function providerSignInStatus(
   return api(providerLoginsPath(provider, `sign-in/${encodeURIComponent(attemptId)}`));
 }
 
+export function submitProviderSignInCode(
+  provider: string,
+  attemptId: string,
+  code: string,
+): Promise<ProviderSignInStatus> {
+  return api(providerLoginsPath(provider, `sign-in/${encodeURIComponent(attemptId)}/code`), {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+}
+
 export function cancelProviderSignIn(
   provider: string,
   attemptId: string,

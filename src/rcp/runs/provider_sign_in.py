@@ -69,6 +69,7 @@ class ProviderSignInStatus(BaseModel):
     provider: str
     machine_id: str
     state: Literal["pending", "succeeded", "failed"]
+    awaiting_code: bool = False
     user_code: str | None = None
     verification_url: str | None = None
     detail: str | None = None
@@ -272,7 +273,9 @@ class ProviderSignInRunner:
         auth = profile.authentication
         # Device verification must probe even a signed-out row: a newly accepted
         # device credential has not yet earned signed_in in durable storage.
-        if "device_code" not in auth.methods and not auth.credential_available(
+        if not {"device_code", "paste_code"}.intersection(
+            auth.methods
+        ) and not auth.credential_available(
             self.credentials, login.machine_id, login.login_id, login_state=current
         ):
             self.store.mark_provider_login_signed_out(
@@ -333,7 +336,9 @@ class ProviderSignInRunner:
 
     def start_sign_in(self, login: LoginKey, *, member_id: str) -> ProviderSignInStatus:
         self.require_login(login, member_id=member_id)
-        if "device_code" not in profile_for(login.provider).authentication.methods:
+        if not {"device_code", "paste_code"}.intersection(
+            profile_for(login.provider).authentication.methods
+        ):
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
             )
@@ -419,7 +424,9 @@ class ProviderSignInRunner:
             self._canceled[attempt_id] = member_id
             # The code dies with the process; showing it would invite a sign-in
             # that can never be saved.
-            status = status.model_copy(update={"user_code": None, "verification_url": None})
+            status = status.model_copy(
+                update={"user_code": None, "verification_url": None, "awaiting_code": False}
+            )
             self._sign_ins[attempt_id] = status
         if entry is not None:
             process, login = entry
@@ -428,6 +435,28 @@ class ProviderSignInRunner:
             grace.daemon = True
             grace.start()
         return status
+
+    def submit_code(self, attempt_id: str, code: str, *, member_id: str) -> ProviderSignInStatus:
+        with self._lock:
+            status = self._sign_ins.get(attempt_id)
+            if status is None or status.started_by != member_id:
+                raise ProviderLoginRefused("Unknown sign-in.", status_code=404)
+            entry = self._logins.get(attempt_id)
+            if (
+                status.state != "pending"
+                or not status.awaiting_code
+                or entry is None
+                or not entry[1].accepts_code
+                or attempt_id in self._canceled
+            ):
+                raise ProviderLoginRefused("This sign-in is not awaiting a code.")
+            if not code.strip() or "\n" in code or "\r" in code:
+                raise ProviderLoginRefused("Invalid sign-in code.", status_code=422)
+            process, login = entry
+            status = status.model_copy(update={"awaiting_code": False})
+            self._sign_ins[attempt_id] = status
+            _write(process, login.code_input(code))
+            return status
 
     def cancel_login_sign_in(self, key: LoginKey) -> None:
         """Finish a pending attempt's credential work before removal takes its gate."""
@@ -472,7 +501,7 @@ class ProviderSignInRunner:
             arguments,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if login.accepts_code else subprocess.DEVNULL,
             text=True,
             env=environment.local_env if not host else None,
         )
@@ -496,21 +525,33 @@ class ProviderSignInRunner:
         watchdog.start()
         failure: str | None = None
         finished = False
+        paste_url_seen = False
         try:
             _write(process, login.initial_input())
             assert process.stdout is not None
             for line in process.stdout:
-                step = login.receive_line(line)
-                if step.fields:
-                    self._update(status.attempt_id, **step.fields)
+                with self._lock:
+                    current = self._sign_ins[status.attempt_id]
+                    if login.accepts_code and (
+                        paste_url_seen or status.attempt_id in self._canceled
+                    ):
+                        continue
+                    step = login.receive_line(line)
+                    if step.fields:
+                        changes: dict[str, object] = dict(step.fields)
+                        if login.accepts_code and step.fields.get("verification_url"):
+                            paste_url_seen = True
+                            changes["awaiting_code"] = True
+                        self._sign_ins[status.attempt_id] = current.model_copy(update=changes)
                 if step.send:
                     _write(process, step.send)
                 if step.finished:
                     failure, finished = step.failure, True
                     break
+            if login.accepts_code and not finished:
+                finished = process.wait() == 0
         finally:
             watchdog.cancel()
-            # The protocol is over; never leave the provider process behind.
             _kill(process)
             returncode = process.wait()
             with self._lock:
@@ -519,6 +560,9 @@ class ProviderSignInRunner:
                 # landed between them would otherwise be acknowledged to the
                 # member and then contradicted by a successful sign-in.
                 self._logins.pop(status.attempt_id, None)
+                self._sign_ins[status.attempt_id] = self._sign_ins[status.attempt_id].model_copy(
+                    update={"awaiting_code": False}
+                )
                 canceled = (
                     SignInCanceled(self._canceled.pop(status.attempt_id))
                     if status.attempt_id in self._canceled

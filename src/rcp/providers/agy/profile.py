@@ -248,6 +248,10 @@ class AgyProfile(ProviderProfile):
     shell_timeout_default_seconds = None
     hidden_read_gaps = ("shell_wrapper", "glob_rules")
     resume_keeps_tools = True
+    login_credential_files = ("agy-home/.gemini/antigravity-cli/antigravity-oauth-token",)
+    remote_login_credential_files = (
+        ".rcp/provider-homes/agy/{login_id}/.gemini/antigravity-cli/antigravity-oauth-token",
+    )
     login_home_credentials = (".gemini/antigravity-cli/antigravity-oauth-token",)
 
     @property

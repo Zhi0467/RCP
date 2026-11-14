@@ -111,7 +111,7 @@ def test_catalog_skills_and_auth():
     assert AGY.parse_catalog((FIXTURES / "models.txt").read_text())
     assert len(AGY.parse_skills((FIXTURES / "skills.json").read_text())) == 2
     auth = AGY.authentication
-    assert auth.methods == ()
+    assert auth.methods == ("paste_code",)
     result = subprocess.CompletedProcess([], 0, (FIXTURES / "usage.json").read_text(), "")
     assert auth.verification_succeeded(result)
     assert not auth.verification_succeeded(

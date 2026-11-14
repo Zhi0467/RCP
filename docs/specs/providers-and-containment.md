@@ -34,7 +34,8 @@ other table is refused.
 The launcher reads each execution machine card's `provider_autocompact` at
 launch using provider-owned validation and CLI rendering; unset values preserve
 CLI defaults. `provider_shell_timeout` accepts whole minutes from 2 through 120,
-with a default of 2 minutes for Claude, OpenCode and Codex. A Discuss, Work, or
+with a default of 2 minutes for Claude, OpenCode and Codex. Antigravity has no
+shell-timeout lever, so its card omits the field. A Discuss, Work, or
 Experiment turn resolves its configured shell timeout once at staging and carries
 that value through every launch, including Patch corrections. Unset remains
 unset even if the card changes later. Every other launch, Seed/Refresh, branch
@@ -260,7 +261,9 @@ directory is never a write root. Where a provider cannot hide reads, the
 launch's `unhidden` status covers it. The key writes to one paper repository
 and nothing else. Added-login provider homes, under
 `<data dir>/provider-homes` and `~/.rcp/provider-homes`, are hidden whole from
-Claude and OpenCode runs. Codex runs hide only each home's `auth.json`, through a
+Claude, OpenCode and Antigravity runs. An Antigravity run still reads its own
+token, because the CLI reads it directly and its overlay's links resolve into
+the machine home. Codex runs hide only each home's `auth.json`, through a
 glob over login IDs, so a sign-in added later is covered too. A launch that
 resolved before `provider-homes/codex` existed covers it from the next turn on.
 **Why:** Codex starts its sandbox helper from inside its own home. A denied
@@ -569,8 +572,8 @@ The internal `session_summary` capability forks or resumes a native session for 
 summary answer. It accepts no write roots, command gate, browser grant, or graph
 output collection. Codex uses a read-only permission profile with hidden-read
 denies and disables shell, subagents, and web search. Claude disables tools,
-hooks, external settings sources, and MCP servers. OpenCode refuses this
-capability. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
+hooks, external settings sources, and MCP servers. OpenCode and Antigravity
+refuse this capability. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
 owner records the tail fallback when the old provider cannot summarize safely.
 
 ### OpenCode
@@ -624,6 +627,64 @@ OpenCode prints no event when a turn ends, and a step that stops can be followed
 by another. The launch wrapper therefore prints one `rcp.provider_exit` line
 after the process exits; that line ends the turn locally and in the remote
 fence. Every text part is part of the reply, as Codex's agent messages are.
+
+### Antigravity
+
+RCP runs the Antigravity CLI (`agy`, floor 1.5.8 on every capability) with
+stream-JSON input and output and stdin left open, so a follow-up is a queued
+user line. agy answers each user line with one `result`, and results carry no
+input ids, so the local turn and the remote fence count results against inputs
+in order. A follow-up counts as delivered once written. The first non-`SUCCESS`
+result ends the turn.
+
+Each launch passes `--settings` with `agentMode: ""`, `request-review`,
+`allowNonWorkspaceAccess: false`, the terminal sandbox off, queued messages,
+and all three permission lists, because `--settings` replaces each list it
+names. So the member's saved `auto` mode and their own allow and deny rules
+never reach an RCP launch. Every capability but session summaries runs with
+`--mode accept-edits`; RCP never passes `-p`, `--sandbox`, `--mode auto`,
+`--mode plan`, `--effort` or the skip-permissions flag.
+
+The tool set is a staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by
+a digest of its tools and policy and selected with `--agent`. Work, orchestrate
+and the paper coach get file, web, shell and subagent tools with `command(*)`.
+Seed, Refresh and scratch Patches get file and web tools, plus the shell only
+with a broker client, which is then the one allowed command. The artifact edit
+gets no shell tools. agy ends a headless turn when it meets an action no rule
+allows; RCP shows that as an error naming the refused action. An explicit deny
+instead fails the tool and the turn goes on.
+
+Work's writable roots outside the stage are `write_file` allows, and admitted
+roots are also `--add-dir`; read context is never `--add-dir`, which would make
+it editable. Denies, matched against resolved paths: protected write paths, the
+staged `.agents` folder, the client folder, each literal hidden read path, the
+`provider-homes` folders whole, and the system temp folders, which agy's file
+tools otherwise write on Linux under every preset. A launch whose stage or
+writable root is inside a temp folder omits that deny and reports the gap. agy
+rules cannot express wildcards, and agy's shell ignores RCP's hidden-read
+wrapper, so every agy launch reports `unhidden` through the profile's
+`hidden_read_gaps`. The Work shell is unbounded, as Claude's and OpenCode's.
+
+Hooks in the global config, plugins, the stage and every `--add-dir` root run
+outside every rule, and agy has no switch to turn them off. The member's
+plugins and skills load too. This gap is accepted beside the unbounded Work
+shell; the `.agents` deny keeps an agent from planting a stage hook.
+
+Every agy process RCP starts runs through one host wrapper, shipped from
+`providers/agy/remote.py`: it puts failing `open`, `xdg-open` and
+`sensible-browser` shims first on `PATH` and in `BROWSER`, writes the staged
+agent and the host's temp denies, then execs agy. A signed-out agy never opens
+a browser on any desktop.
+
+An agy conversation keeps the tools it started with when resumed under another
+agent, so artifact edits on agy (`resume_keeps_tools`) always start a recorded
+fresh session instead of resuming the master. agy has no fork; branching an agy
+chat starts a fresh session with the tail-transcript fallback. agy history is
+SQLite, so RCP indexes no agy sessions, and session summaries refuse because
+agy launches are never `enforced`. agy has no shell-timeout or auto-compact
+lever, so the machine card shows neither field for it. Usage is read from each
+completed `agent_response` step, never from `result.usage`, which is cumulative
+over the whole conversation.
 
 ### Version failure
 
@@ -1169,7 +1230,14 @@ Codex device sign-in uses app-server `account/login/start` with
 `account/login/cancel`. It parses no console prose; missing completion records
 failure. Codex also owns logout and verification. Claude validates/stores a
 setup-token, estimates lifetime, injects `CLAUDE_CODE_OAUTH_TOKEN` into every
-process and removes conflicting inherited credentials. Tokens travel through
+process and removes conflicting inherited credentials. Antigravity signs in with
+the `paste_code` method: `agy acp --login` runs under the login's home with the
+browser shims, prints one Google URL, and reads the authorization code on stdin.
+RCP shows the URL to the member who started the attempt, and
+`POST /api/providers/{provider}/logins/sign-in/{attempt_id}/code` writes their
+code to the process once. Exit 0 means the CLI took the code; the sign-in counts
+after `agy -p /usage` succeeds. Sign-out deletes the home's token file, since
+agy's own logout is interactive only. Tokens travel through
 stdin/private environment, never argv, events, responses, receipts, logs or
 backups. The `providers` store is backup-excluded. Required missing credentials
 refuse admission even without a login row.
@@ -1308,6 +1376,7 @@ cannot know when a vendor limit lifts; its lapse,
 | --- | --- | --- | --- |
 | Claude | `<account dir>/setup-token`; remote `~/.config/rcp/claude-setup-token` | `<account dir>/logins/<login_id>/setup-token` | `~/.config/rcp/logins/<login_id>/claude-setup-token` |
 | Codex | Inherited `CODEX_HOME`, else `~/.codex` | `CODEX_HOME=<data dir>/provider-homes/codex/<login_id>` | `CODEX_HOME=~/.rcp/provider-homes/codex/<login_id>` |
+| Antigravity | `~/.gemini/antigravity-cli/antigravity-oauth-token` | `HOME=<data dir>/provider-homes/agy/<login_id>` | `HOME=~/.rcp/provider-homes/agy/<login_id>` |
 
 A local added Codex home lives outside the hidden `providers/` namespace; see
 [selected-secret hiding](#cooperative-project-write-containment). Preparation
@@ -1317,10 +1386,20 @@ still use moves on a later preparation. The earlier path then links to the home,
 for every added login, so a rolled-back release uses the same home and
 credential. Backups and transfers exclude `provider-homes`, like `providers`.
 
+An added Antigravity home overlays the account's whole home, because agy finds
+its login only through `HOME`, and `HOME` is also every agent command's home.
+Every entry links to the machine home except the folders on the way to the
+token, which are real folders of links, and the token itself. Ancestors of the
+overlay inside the machine home are real folders of links that leave out the
+branch back to the overlay, so nothing loops. agy's conversations, brain and
+config folders are created in the machine home and linked, so resume, skills,
+git identity and SSH keys survive a login switch. The host wrapper sets `HOME`
+only in the environment it execs agy with.
+
 An added Codex home keeps only `auth.json` independent. Every other existing
 entry links to the machine Codex home, including configuration, skills, sessions,
-indexes, SQLite databases and caches. `providers/codex/homes.py` prepares the same
-layout locally and over SSH, with mode 0700. Known Codex stores are linked before
+indexes, SQLite databases and caches. `providers/codex/homes.py`, through the shared `providers/login_homes.py` that
+also prepares Antigravity homes, prepares the same layout locally and over SSH, with mode 0700. Known Codex stores are linked before
 first use. Later names are discovered on preparation. Startup prepares recorded
 added homes, including signed-out and removed logins, before recovery chooses a
 usable sign-in. Missing local homes are skipped. Unreachable remote homes are
