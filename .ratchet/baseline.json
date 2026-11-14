@@ -74,7 +74,7 @@
   "src/rcp/api/voice.py": {"comment": 5},
   "src/rcp/api/watchers.py": {"comment": 13},
   "src/rcp/approval_actions.py": {"comment": 1},
-  "src/rcp/artifact_comments.py": {"comment": 5},
+  "src/rcp/artifact_comments.py": {"comment": 3},
   "src/rcp/artifact_import.py": {"comment": 3},
   "src/rcp/artifact_preview.py": {"comment": 13},
   "src/rcp/artifact_theme.py": {"comment": 3},

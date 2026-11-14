@@ -9,6 +9,9 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
   let mark = null;
   let anchor = null;
   let areaGesture = false;
+  let hover = null;
+  let holdTimer = null;
+  let touchArmed = false;
   const utf8 = new TextEncoder();
   function bounded(value, limit) {
     let result = "";
@@ -126,12 +129,16 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
   }
 
   function endDrag() {
+    clearTimeout(holdTimer);
+    touchArmed = false;
     const id = drag?.id;
     drag = null;
     if (id !== undefined && capture.hasPointerCapture(id)) capture.releasePointerCapture(id);
   }
 
   function clear() {
+    hover?.remove();
+    hover = null;
     mark?.remove();
     mark = null;
     anchor = null;
@@ -176,24 +183,17 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
     surface,
     "pointerdown",
     (event) => {
-      if (
-        !event.isTrusted ||
-        !isActive() ||
-        event.button !== 0 ||
-        !event.isPrimary ||
-        event.pointerType === "touch"
-      )
-        return;
+      if (!event.isTrusted || !isActive() || event.button !== 0 || !event.isPrimary) return;
       endDrag();
       areaGesture = false;
       if (
         event.target.closest(
           'a,button,input,textarea,select,summary,[contenteditable],[draggable="true"]',
         ) ||
-        textAtPoint(event)
+        (event.pointerType !== "touch" && textAtPoint(event))
       )
         return;
-      event.preventDefault();
+      if (event.pointerType !== "touch") event.preventDefault();
       // Preventing native selection also prevents focus entering an iframe.
       // Keep Escape with the active drag instead of racing a parent clear message.
       if (surface === doc) view.focus();
@@ -204,7 +204,12 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
         y: event.clientY,
         started: false,
         element: event.target,
+        touch: event.pointerType === "touch",
       };
+      if (drag.touch)
+        holdTimer = setTimeout(() => {
+          touchArmed = true;
+        }, 450);
       capture.setPointerCapture(event.pointerId);
     },
     true,
@@ -215,6 +220,10 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
     "pointermove",
     (event) => {
       if (!event.isTrusted || !drag || event.pointerId !== drag.id) return;
+      if (drag.touch && !touchArmed) {
+        if (Math.hypot(event.clientX - drag.x, event.clientY - drag.y) > 8) endDrag();
+        return;
+      }
       const width = Math.abs(event.clientX - drag.x),
         height = Math.abs(event.clientY - drag.y);
       if (!drag.started && Math.min(width, height) < 4) return;
@@ -260,9 +269,9 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       const drawn = drag.started;
       const element = drag.element;
       endDrag();
-      // A plain click elsewhere dismisses whatever selection the viewer is offering.
       if (!drawn) {
-        dismiss();
+        if (surface === doc) pickElement(element);
+        else dismiss();
         return;
       }
       if (right - left < 4 || bottom - top < 4) {
@@ -302,8 +311,7 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       const selection = doc.getSelection();
       const text = bounded(selection?.toString(), 4096);
       if (!text || !selection?.rangeCount) {
-        clear();
-        publish(null);
+        pickElement(event.target);
         return;
       }
       clear();
@@ -314,6 +322,52 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
           : range.commonAncestorContainer.parentElement;
       publish({ kind: "text", text, surrounding_text: bounded(container?.textContent, 6144) });
     });
+  function pickElement(element) {
+    if (!(element instanceof Element) || element.closest("[data-rcp-selection]")) return;
+    clear();
+    publish({ kind: "element", ...describeElement(element) });
+  }
+  if (surface === doc)
+    listen(surface, "pointermove", (event) => {
+      if (!event.isTrusted || !isActive() || drag || event.pointerType === "touch") return;
+      const element = event.target;
+      if (!(element instanceof Element) || element.closest("[data-rcp-selection]")) return;
+      hover?.remove();
+      hover = doc.createElement("div");
+      hover.dataset.rcpSelection = "hover";
+      const rect = element.getBoundingClientRect();
+      Object.assign(hover.style, {
+        position: "fixed",
+        pointerEvents: "none",
+        zIndex: "2147483646",
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+        border: "1px solid #bd5b36",
+      });
+      const chip = doc.createElement("span");
+      chip.textContent = ownLabel(element) || element.tagName.toLowerCase();
+      Object.assign(chip.style, {
+        position: "absolute",
+        left: "0",
+        top: "0",
+        background: "#bd5b36",
+        color: "white",
+        font: "12px sans-serif",
+        padding: "2px 4px",
+      });
+      hover.appendChild(chip);
+      doc.documentElement.appendChild(hover);
+    });
+  listen(
+    surface,
+    "touchmove",
+    (event) => {
+      if (touchArmed) event.preventDefault();
+    },
+    { passive: false },
+  );
   function abortDrag(event) {
     if (!drag || (event?.pointerId !== undefined && event.pointerId !== drag.id)) return;
     if (drag.started) {
@@ -382,6 +436,8 @@ function installSelectionConfirmation(container, confirm, clearSelection) {
 function describeSelection(selection) {
   if (selection.kind === "whole") return "Whole artifact";
   if (selection.kind === "text") return `"${selection.text}"`;
+  if (selection.kind === "element") return selection.label || selection.text || selection.path;
+  if (selection.kind === "pdf") return `Page ${selection.page}: ${selection.text || ""}`;
   const elements = selection.elements;
   if (!elements) return selection.labels || "Boxed area";
   const [first, ...rest] = elements;

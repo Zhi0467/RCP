@@ -164,7 +164,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
             ).json()
             assert state["viewer_url"].endswith("/viewer")
             assert content.status_code == viewer.status_code == 200
-            assert ('id="composer"' in viewer.text) is commentable
+            assert ('id="comments-root"' in viewer.text) is commentable
             if projected["view"] == "video":
                 assert content.content == data
                 assert content.headers["content-type"] == descriptor.media_type
@@ -229,7 +229,7 @@ def test_viewer_without_chat_uses_stored_artifact_admission(tmp_path, manifest):
     _, _, _, base = _seed(app, tmp_path, "view.html", b"<p>view</p>", chat=False)
     with signed_in_client(app) as client:
         viewer = client.get(base + "/viewer")
-        assert viewer.status_code == 200 and 'id="message"' in viewer.text
+        assert viewer.status_code == 200 and 'id="comments-root"' in viewer.text
         content = client.get(base + "/content")
         assert content.status_code == 200
         assert "installArtifactSelection" in content.text
