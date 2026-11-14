@@ -55,3 +55,8 @@ export function chatFollowsBottom(observation: ChatScrollObservation, tolerance:
   if (chatReaderMovedUp(observation)) return false;
   return observation.scrollHeight - observation.top - observation.clientHeight <= tolerance;
 }
+
+export function chatFarFromBottom(observation: ChatScrollObservation): boolean {
+  const distance = observation.scrollHeight - observation.top - observation.clientHeight;
+  return distance > observation.clientHeight;
+}

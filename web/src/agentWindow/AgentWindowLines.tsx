@@ -1,3 +1,4 @@
+import { ArrowDown } from "lucide-react";
 import { useImperativeHandle, type ReactNode, type Ref, type RefObject } from "react";
 import { useAgentWindowScroll, type AgentWindowScroll } from "./useAgentWindowScroll";
 
@@ -30,6 +31,17 @@ export function AgentWindowLines({
       ref={linesRef}
     >
       {children}
+      <div className="agent-chat-view-jump" data-shown={handle.farFromBottom || undefined}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Jump to latest"
+          title="Jump to latest"
+          onClick={handle.jumpToLatest}
+        >
+          <ArrowDown size={16} />
+        </button>
+      </div>
     </div>
   );
 }

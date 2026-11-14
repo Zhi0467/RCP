@@ -70,6 +70,39 @@ test("a failed send stays in place and Resend reuses its request id", async () =
   }
 });
 
+test("Jump to latest returns a reader far up the transcript to the bottom", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html`);
+    const lines = page.locator(".agent-chat-view-lines");
+    const jump = page.getByRole("button", { name: "Jump to latest", exact: true });
+    await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    assert.equal(await jump.isVisible(), false);
+
+    await lines.evaluate((element) => (element.scrollTop = 0));
+    await jump.waitFor({ state: "visible" });
+    await jump.click();
+    await page.waitForFunction(() => {
+      const element = document.querySelector(".agent-chat-view-lines");
+      return element.scrollHeight - element.scrollTop - element.clientHeight < 2;
+    });
+    await jump.waitFor({ state: "hidden" });
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 test("a never-run chat keeps fast typing and shows one line per send", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,

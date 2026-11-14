@@ -418,6 +418,53 @@
      scrolls into empty space below the composer. */
   position: relative;
 }
+.agent-chat-view-jump {
+  --jump-size: 34px;
+  bottom: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: sticky;
+  transform: translateY(6px);
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease,
+    visibility 0s linear 150ms;
+  visibility: hidden;
+  z-index: 3;
+}
+.agent-chat-view-jump[data-shown] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+  visibility: visible;
+}
+.agent-chat-view-lines > .agent-chat-view-jump > button.icon-button {
+  border-radius: 50%;
+  bottom: 12px;
+  height: var(--jump-size);
+  left: 50%;
+  margin-left: calc(var(--jump-size) / -2);
+  min-height: var(--jump-size);
+  padding: 0;
+  pointer-events: auto;
+  position: absolute;
+  width: var(--jump-size);
+}
+@media (max-width: 700px), (pointer: coarse) {
+  .agent-chat-view-jump {
+    --jump-size: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-chat-view-jump,
+  .agent-chat-view-jump[data-shown] {
+    transform: none;
+    transition: none;
+  }
+}
 .agent-chat-view-line {
   border-radius: 0;
   font-size: var(--type-md);
