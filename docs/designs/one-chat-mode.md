@@ -76,8 +76,10 @@ release deletes that runner once no store holds an unsettled Discuss task.
      "Send to agent" action. No new dispatcher.
    - Viewer buttons (`src/rcp/artifact_comment_panel.js`): today's "Edit now",
      "Edit now in a new session", "Send to original chat" and "Send in a new
-     session" become one "Send to agent". In an ordinary chat it posts Send
-     with `edit_now: true`. In a refused chat it posts the scratch edit, and
+     session" become one "Send to agent". In an ordinary chat it posts the
+     queued comments through Send with `edit_now: false`, so the agent decides
+     from each comment whether to edit; the `edit_now` bypass in
+     `api/artifacts.py` (the viewer's Edit now handler) routes to Send. In a refused chat it posts the scratch edit, and
      reads "Send to agent in a new session" when `fresh_session_required`
      holds. The shared artifact comment design owns the panel's look; this
      design owns only the routing.
@@ -99,7 +101,11 @@ release deletes that runner once no store holds an unsettled Discuss task.
    one master today, so the closed runner gets a frozen copy: today's master
    renderer and version move beside the runner as
    `LEGACY_DISCUSS_MASTER_VERSION`, and the runner renders only that. The
-   global bump then changes only new Work turns.
+   session master key helpers (`chat_master_contract_key` and its callers in
+   `runs/chat.py` and `discuss.py`) take the version as an argument, so a
+   session the closed runner touched records the legacy version and the next
+   Work turn on it replaces the master. The global bump then changes only new
+   Work turns.
 
 ## Historical Discuss tasks
 
@@ -117,13 +123,14 @@ already recorded as Discuss:
   Discuss task the runner admits;
 - legacy private-edit stage proofs (`discuss.py:609-768`).
 
-A human Retry of a settled Discuss chat turn is not a recovery. The Retry
-route (not `BackgroundAgentTasks.retry`, which automatic and provider-login
-retries share) admits a new, unlinked Work turn with the same message through
-the chat route, and records `transport_auto_retry_superseded` on the old
-Discuss task so its owed automatic retry stands down (the eligibility check in
-`BackgroundAgentTasks`). The old turn keeps its record. The Discuss-to-Work
-continuation guard in the store is unchanged.
+A human Retry of a settled Discuss chat turn is not a recovery. Its Retry
+button puts the turn's message back into the composer; the member sends it as
+an ordinary Work turn, so the request, attachments and references follow the
+normal send path. Pressing it also records `transport_auto_retry_superseded`
+on the old Discuss task, and both the in-process retry timer
+(`_transport_retry_superseded`) and the provider-login retry honour that
+receipt, so an owed automatic retry stands down. The old turn keeps its record.
+The Discuss-to-Work continuation guard in the store is unchanged.
 
 Recorded `artifact_edit` tasks are not chat turns: their Resume and Retry keep
 `launch_kind="discuss"` or `"revoking"` through the closed runner and the
@@ -219,7 +226,8 @@ One PR in slices, each green on its own:
    `api/tasks.py`) together with the web composer, voice and WebMCP sends, and
    the removal of the refused-chat Work refusal in
    `admit_chat_artifact_comment`, so no slice sends a mode a route refuses.
-   Config, readiness, old-writer regression, Retry-as-Work.
+   Config, readiness, old-writer regression, Retry-to-composer with the
+   superseded receipt, and the frozen legacy master version.
 2. Artifact-comment routing (Send for ordinary and Experiment chats, the
    revoking kind for refused chats) and the viewer's one button.
 3. Web cleanup: Paper styling props, question card label.
