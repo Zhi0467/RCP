@@ -580,7 +580,7 @@ def _require_superseded_discuss_turn(
         or old.project_id != project_id
         or not _discuss_chat_turn(old)
         or old.request.get("chat_id") != request.chat_id
-        or old.status in {"queued", "running", "pausing"}
+        or old.status in {"queued", "running", "pausing", "paused"}
     ):
         raise ValueError("Only a settled Discuss turn of this chat can be sent again.")
 

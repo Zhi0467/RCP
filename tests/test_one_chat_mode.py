@@ -235,3 +235,26 @@ def test_voice_receipts_decode_with_or_without_a_send_mode(mode):
         receipt["mode"] = mode
 
     assert VoiceActionReceipt.model_validate(receipt).mode == mode
+
+
+def test_a_paused_discuss_turn_is_resumed_not_sent_again(request_app):
+    import sqlite3
+
+    project_id = request_app.state.default_project_id
+    store = request_app.state.background_tasks.store
+    old_id, chat_id = _failed_turn(request_app, mode="discuss")
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("UPDATE graph_runs SET status='paused' WHERE operation_id=?", (old_id,))
+    with signed_in_client(request_app) as client:
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            json={
+                **chat_request(),
+                "chat_id": chat_id,
+                "chat_scope": "project",
+                "supersedes": old_id,
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert not store.agent_task_has_receipt(old_id, "transport_auto_retry_superseded")
