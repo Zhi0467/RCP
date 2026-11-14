@@ -570,8 +570,8 @@ for (const initialFreshness of ["stale", "fresh"]) {
         state.reconnectLoads > 0,
         "heartbeat must fetch a project snapshot at the unchanged revision",
       );
-      await page.getByRole("button", { name: "Runs", exact: true }).click();
-      await page.getByRole("button", { name: "Overview", exact: true }).click();
+      await (await panelTab(page, "Runs")).click();
+      await (await panelTab(page, "Overview")).click();
       assert.equal(await page.getByText("Legacy agent-authored coverage claim.").count(), 0);
       assert.deepEqual(errors, []);
     },
@@ -631,7 +631,7 @@ async function openedShell(t, options) {
   await (await opened.authoritativeLoaded).finished();
   await opened.page.evaluate(() => new Promise(requestAnimationFrame));
   const overview = await opened.page
-    .getByRole("button", { name: "Overview", exact: true })
+    .locator(".panel-picker-trigger, .phone-tab-bar")
     .elementHandle();
   await opened.page.evaluate((button) => {
     // React reuses a same-type root element, so mark a node deep in the project.
@@ -642,6 +642,12 @@ async function openedShell(t, options) {
     }).observe(document.body, { childList: true, subtree: true });
   }, overview);
   return opened;
+}
+
+/** Opens the panel picker and returns the named panel's entry. */
+async function panelTab(page, name) {
+  await page.locator(".panel-picker-trigger").hover();
+  return page.locator(".panel-picker-menu").getByRole("button", { name, exact: true });
 }
 
 const shellStillMounted = (page) => page.evaluate(() => window.__projectNode.isConnected);
@@ -655,8 +661,8 @@ test(
     const { page, errors, state } = await openedShell(t);
     // Healthy view navigation must never restart project opening.
     state.requests = [];
-    await page.getByRole("button", { name: "Agents", exact: true }).click();
-    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await (await panelTab(page, "Agents")).click();
+    await (await panelTab(page, "Overview")).click();
     assert.equal(await shellStillMounted(page), true);
     assert.equal(state.requests.filter((path) => path.endsWith("/cached")).length, 0);
     state.health = null;
@@ -722,7 +728,7 @@ test("a team sign-in keeps the pending project route", { timeout: 20000 }, async
   await page.locator(".team-login-switch").click();
   await page.locator("#team-login-token").fill("member-token");
   await page.locator("#team-login-token").press("Enter");
-  await page.getByRole("button", { name: "Overview", exact: true }).waitFor();
+  await page.locator(".panel-picker-trigger").waitFor();
   assert.match(await page.evaluate(() => window.location.hash), /^#\/projects\/demo/);
   assert.deepEqual(
     errors.filter((message) => !message.includes("Failed to load resource")),
@@ -741,14 +747,14 @@ test(
   { timeout: 20000 },
   async (t) => {
     const { page, state } = await openedShell(t);
-    const agents = page.getByRole("button", { name: "Agents", exact: true });
-    await agents.focus();
+    const panels = page.locator(".panel-picker-trigger");
+    await panels.focus();
     state.health = null;
     await reverify(page);
     const overlay = page.getByRole("alertdialog");
     await overlay.waitFor();
     assert.equal(
-      await agents.evaluate((button) => {
+      await panels.evaluate((button) => {
         button.focus();
         return document.activeElement === button;
       }),
@@ -757,7 +763,7 @@ test(
     await page.keyboard.press("Escape");
     assert.equal(await overlay.isVisible(), true);
     assert.equal(
-      await agents.click({ trial: true, timeout: 300 }).then(
+      await panels.click({ trial: true, timeout: 300 }).then(
         () => true,
         () => false,
       ),
@@ -766,7 +772,7 @@ test(
     state.health = HEALTH;
     await reverify(page);
     await overlay.waitFor({ state: "detached" });
-    await agents.click();
+    await panels.click();
     assert.equal(await shellStillMounted(page), true);
   },
 );
@@ -959,14 +965,13 @@ test("a loaded index stays on screen while a quick return refreshes it", async (
 
 test("switching project tabs returns to the panel each project was left on", async (t) => {
   const { page, errors } = await openedShell(t);
-  const current = (name) =>
-    page.getByRole("button", { name, exact: true }).getAttribute("aria-current");
+  const current = async (name) => (await panelTab(page, name)).getAttribute("aria-current");
   const activeTab = (id) =>
     page
       .locator(".project-dock-tab.active .project-dock-select")
       .filter({ hasText: `(${id})` })
       .waitFor();
-  await page.getByRole("button", { name: "Agents", exact: true }).click();
+  await (await panelTab(page, "Agents")).click();
   // A project opened without a remembered panel starts on Overview.
   await page.evaluate(() => {
     window.location.hash = "/projects/second";
@@ -990,14 +995,13 @@ test(
   { timeout: 20000 },
   async (t) => {
     const { page, state } = await openedShell(t);
-    const current = (name) =>
-      page.getByRole("button", { name, exact: true }).getAttribute("aria-current");
+    const current = async (name) => (await panelTab(page, name)).getAttribute("aria-current");
     const activeTab = (id) =>
       page
         .locator(".project-dock-tab.active .project-dock-select")
         .filter({ hasText: `(${id})` })
         .waitFor();
-    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await (await panelTab(page, "Agents")).click();
     await page.evaluate(() => {
       window.location.hash = "/projects/second";
     });
@@ -1128,19 +1132,19 @@ const chat = {
 
 test("the Agents tab reopens the chat it was left on", async (t) => {
   const { page, errors } = await openedShell(t, { chats: [chat] });
-  const agents = page.getByRole("button", { name: "Agents", exact: true });
+  const agents = async () => (await panelTab(page, "Agents")).click();
   const chatMenu = page.getByRole("button", { name: "Chat menu", exact: true });
   const routeChat = () =>
     page.evaluate(() => new URLSearchParams(location.hash.split("?")[1]).get("chat"));
   await page.evaluate(() => (location.hash = "#/projects/demo?view=chats&chat=held-chat"));
   await chatMenu.waitFor();
-  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await (await panelTab(page, "Overview")).click();
   await chatMenu.waitFor({ state: "detached" });
-  await agents.click();
+  await agents();
   await chatMenu.waitFor();
   assert.equal(await routeChat(), "held-chat");
   // Inside Agents the tab still opens the board.
-  await agents.click();
+  await agents();
   await page.locator("[data-board-column]").first().waitFor();
   assert.equal(await routeChat(), null);
   assert.deepEqual(
@@ -1226,7 +1230,7 @@ test(
       branchGate: gate,
       chats: [chat],
     });
-    await page.getByRole("button", { name: "Agents", exact: true }).click();
+    await (await panelTab(page, "Agents")).click();
     await page.getByRole("button", { name: "Open Loaded conversation", exact: true }).waitFor();
     await switchBranch(page, "b1");
     await page.locator('.project-panel[aria-busy="true"]').waitFor();
@@ -1240,10 +1244,7 @@ test(
       "b1",
     );
     assert.equal(await shellStillMounted(page), true);
-    assert.equal(
-      await page.getByRole("button", { name: "Agents", exact: true }).getAttribute("aria-current"),
-      "page",
-    );
+    assert.equal(await (await panelTab(page, "Agents")).getAttribute("aria-current"), "page");
     state.health = null;
     await reverify(page);
     await page.getByRole("alertdialog").waitFor();
@@ -1336,7 +1337,7 @@ test(
     await page.keyboard.press("Escape");
     assert.equal(await page.locator(".branch-picker-popover").count(), 0);
     await picker(page).click();
-    await page.locator(".project-tabs").click({ position: { x: 1, y: 1 } });
+    await page.locator(".project-header").click({ position: { x: 1, y: 1 } });
     assert.equal(await page.locator(".branch-picker-popover").count(), 0);
     assert.deepEqual(errors, []);
   },
@@ -2225,7 +2226,7 @@ test("App run-card merge uses the episode dispatcher and preserves explicit clea
     state.tasks = [task];
     await route.fulfill({ json: { ...episode, accepted_merge_task: task } });
   });
-  await page.getByRole("button", { name: "Runs", exact: true }).click();
+  await (await panelTab(page, "Runs")).click();
   const card = page.locator('.campaign-run[data-episode-id="chain-current"]');
   await card.waitFor();
   await card.locator(".campaign-run-toggle").click();

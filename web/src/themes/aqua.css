@@ -151,50 +151,46 @@
 
 /* Satin shell and inset selections: no imitation titlebar or window controls. */
 :root:is([data-theme="aqua"], [data-theme="snowbound"])
-  :is(
-    .project-header,
-    .project-tabs,
-    .node-window-dock,
-    .detail-drawer > header,
-    .chat-dock > header,
-    .paper-toolbar
-  ) {
+  :is(.node-window-dock, .detail-drawer > header, .chat-dock > header, .paper-toolbar) {
   background: var(--aqua-toolbar);
   box-shadow:
     inset 0 1px 0 var(--aqua-highlight),
     0 2px 5px rgb(var(--shadow-rgb) / 9%);
 }
 
-:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs {
-  gap: 5px;
-  padding-top: 6px;
-  padding-bottom: 6px;
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-header {
+  background: var(--aqua-toolbar);
+  box-shadow:
+    inset 0 1px 0 var(--aqua-highlight),
+    inset 0 -1px 0 var(--rule);
 }
 
-/* The pinned group spans the padded strip so its inherited gradient lines up. */
-:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs-trailing {
-  box-shadow: inset 0 1px 0 var(--aqua-highlight);
-  margin-block: -6px;
-  padding-block: 6px;
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-header .project-dock-tab.active {
+  background: var(--paper);
+  border-color: var(--rule);
+  border-radius: 9px 9px 0 0;
+  box-shadow: none;
 }
 
 :root:is([data-theme="aqua"], [data-theme="snowbound"])
-  .project-tabs
-  > button:not(.project-tabs-toggle, .project-tabs-back) {
+  :is(.panel-picker-trigger, .panel-picker.open .panel-picker-trigger) {
   background: var(--aqua-surface);
-  border: 1px solid var(--rule);
+  border-color: var(--rule);
   border-radius: 8px;
   box-shadow: var(--aqua-raised);
-  color: var(--ink);
-  margin-bottom: 0;
+}
+
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .panel-picker-menu {
+  background: var(--aqua-surface);
+  border-color: var(--rule);
+  border-radius: 10px;
+  box-shadow:
+    var(--aqua-raised),
+    0 10px 24px rgb(var(--shadow-rgb) / 18%);
 }
 
 :root:is([data-theme="aqua"], [data-theme="snowbound"])
-  :is(
-    .project-tabs > button.active,
-    .project-tabs > button:active,
-    .conversation-list [role="option"].active
-  ) {
+  :is(.panel-picker-menu > button.active, .conversation-list [role="option"].active) {
   background: var(--aqua-selected);
   border-color: var(--aqua-selected-border);
   box-shadow: var(--aqua-inset);
@@ -207,7 +203,7 @@
   box-shadow: var(--aqua-inset);
 }
 
-:root:is([data-theme="aqua"], [data-theme="snowbound"]) .project-tabs > button .inbox-count {
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .panel-picker .inbox-count {
   background: #f0d59a;
   color: #614711;
   box-shadow:

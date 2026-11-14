@@ -1,5 +1,5 @@
 import type { ProjectSyncHealth } from "../core/refreshScheduler";
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import type { ProjectTab } from "./projectTabs";
 
 interface Props {
@@ -7,6 +7,7 @@ interface Props {
   activeProjectId: string | null;
   onActivate: (projectId: string) => void;
   onClose: (projectId: string) => void;
+  onNew?: () => void;
   className?: string;
   sync?: ReadonlyMap<string, ProjectSyncHealth>;
 }
@@ -16,6 +17,7 @@ export function ProjectDock({
   activeProjectId,
   onActivate,
   onClose,
+  onNew,
   className = "",
   sync,
 }: Props) {
@@ -64,6 +66,17 @@ export function ProjectDock({
           );
         })}
       </div>
+      {onNew && (
+        <button
+          className="project-dock-new"
+          type="button"
+          aria-label="Open a project"
+          title="Open a project"
+          onClick={onNew}
+        >
+          <Plus size={14} aria-hidden="true" />
+        </button>
+      )}
     </nav>
   );
 }

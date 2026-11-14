@@ -2541,29 +2541,20 @@ button.agent-provider-label {
     position: static;
   }
   .project-header {
-    padding: 0 15px;
+    gap: 10px;
+    padding: 0 10px 0 14px;
   }
   .project-header-actions {
-    gap: 12px;
+    gap: 10px;
+  }
+  .project-header .auto-research-label {
+    display: none;
   }
   .project-header-group {
     gap: 5px;
   }
   .project-header-actions .button {
     padding: 0 10px;
-  }
-  .project-tabs {
-    padding: 0 5px;
-  }
-  .project-tabs > button {
-    padding: 0 10px;
-  }
-  .project-tabs > button svg {
-    display: none;
-  }
-  .project-tabs > button.project-tabs-toggle svg,
-  .project-tabs > button.project-tabs-back svg {
-    display: block;
   }
   .overview-page {
     padding: 38px 20px 70px;
@@ -2711,19 +2702,6 @@ button.agent-provider-label {
   .project-header-actions .button.secondary {
     font-size: var(--type-2xs);
     width: auto;
-  }
-  .project-tabs > button span {
-    font-size: var(--type-3xs);
-  }
-  .project-tabs > button {
-    padding: 0 7px;
-  }
-  .project-tabs > button.project-tabs-toggle {
-    padding: 0;
-  }
-  .project-tabs-toggle {
-    margin-left: -4px;
-    width: 25px;
   }
   .overview-heading h1 {
     font-size: var(--type-5xl);

@@ -98,16 +98,25 @@ RCP windows. Verify at 390px.
 
 ## Project shell
 
+The desktop project header is one row. From the left: Back, the panel picker,
+the open project tabs, and + to open another project. On the right: View, the
+branch picker, Sync, Auto-research, then History, Refresh, Space settings, and
+the identity menu.
+The panel picker names the current panel. Hovering, clicking, or Enter drops
+one column of every panel with its icon and badge, the current one highlighted;
+choosing one or Escape closes it. Inbox's count also shows on the picker
+while another panel is open.
+Project tabs look like browser tabs: the active one joins the page below and
+the others recede. Each has a close control. Tabs shrink before the right-side
+controls do, and below 920px Auto-research is icon-only.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
-One View picker at the end of the tab strip switches between the drill-down and
-the DAG. It also sets which records show. On phones, it sits in the ⋯ menu.
+View switches between the drill-down and the DAG and sets which records show.
+On phones, it sits in the ⋯ menu.
 The DAG toolbar's type and layer filter is its Lens menu.
-View and the branch picker stay pinned to the strip's right edge.
-Tabs that overflow scroll under them.
 Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
 unsynced badge on Artifacts. The member's pinned pages follow Paper in that switch.
 On phones, the switch scrolls within its own width and pin titles truncate.

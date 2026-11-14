@@ -163,12 +163,6 @@
   max-width: 120px;
 }
 @media (max-width: 560px) {
-  .project-tabs .branch-picker {
-    display: none;
-  }
-}
-
-@media (max-width: 560px) {
   .branch-picker-name,
   .branch-picker-name-input {
     font-size: 16px;
