@@ -16,8 +16,9 @@ per-launch settings, deny-beats-allow file rules, a model catalog, a skill
 inventory, and a zero-token authenticated quota call. Its containment story is
 close to Claude's: the file tools are bounded and the Work shell is not.
 
-Three facts make it different from every existing provider. Each one needs a
-decision (see [Open decisions](#open-decisions)):
+Three facts make it different from every existing provider. The first is open
+decision D1. The second was accepted as D2. The third is handled in code (see
+[Open decisions](#open-decisions)):
 
 1. **An unapproved action ends the turn.** In headless mode, a tool call that
    no rule allows is "soft-denied". The run stops at once with an empty reply
@@ -34,6 +35,10 @@ decision (see [Open decisions](#open-decisions)):
 
 There is no native fork, no shell-timeout control, and no way to route shell
 commands through RCP's hidden-read wrapper.
+
+Sign-in is settled (see [Sign-in contract](#sign-in-contract)). The whole login
+is one token file under `HOME`. A per-login home that overlays the machine home
+with only that file swapped lets agy join both sign-in pools, as Codex does.
 
 ## Probe evidence
 
@@ -62,7 +67,15 @@ placeholders.
 | P16 | `--model bogus` | Exit 1. A `result` line with `status:"ERROR"` and the error text on stderr, listing the valid models. |
 | P17 | `--input-format stream-json`, two `{"event":"user",…}` lines 2 s apart, `queuedMessages:"queue"` | Two turns, one `result` each, in FIFO order, in one process and conversation. Inputs carry no ids, and results name none. |
 | P18 | Usage | Each `agent_response` step with `state:"DONE"` carries `usage` for that model call. `input_tokens` excludes `cache_read_tokens`. `result.usage` is cumulative over the **whole conversation**: on resume it included the previous process's turn. |
-| P19 | `HOME=<empty dir>` | Signed out. The login is found through `HOME` (`~/.gemini/antigravity-cli/`). Side effect: `agy` started an OAuth sign-in in the browser. Never repeat this probe on a human's desktop. |
+| P19 | `HOME=<empty dir>` | Signed out. The login is found through `HOME` (`~/.gemini/antigravity-cli/`). Side effect: `agy -p` started an OAuth sign-in in the browser. Never repeat this probe on a human's desktop. `agy models` reports signed-out without opening a browser. |
+| P20 | `ANTIGRAVITY_GEMINI_DIR=<dir>` or `ANTIGRAVITY_APP_DATA_DIR=<dir>` with the real `HOME` | Still signed in. Neither variable relocates the CLI login. Only `HOME` does. `--gemini-dir` and `--app-data-dir` exist only on `agy acp`. |
+| P21 | Binary strings | The CLI saves its login through a file token store (`cliFileTokenStorage`, `auth.CLITokenFilePath`). The keychain-backed store belongs to the language-server path. `AGY_ACCOUNT` selects plugin accounts, not the main login. |
+| P22 | `HOME=<throwaway> agy acp --login`, with `open`/`xdg-open` shimmed to fail and log. The human signed in once each on macOS (1.5.1) and the Linux GPU host (1.5.8) | No browser opened: the CLI printed the URL and read the pasted code on stdin. The home gained one file, `.gemini/antigravity-cli/antigravity-oauth-token` (mode 600, about 560 bytes), plus a summaries database. Linux has no Secret Service on the user bus, and the login saved anyway. |
+| P23 | In that home: fresh process `agy models`; `env -i HOME=<home> PATH=… agy -p /usage`; a real model turn under `env -i`; Linux with and without the user's D-Bus address | All succeeded on both systems. No inherited environment, keychain or D-Bus is needed. |
+| P24 | Move only the token file aside, run `agy models`, then put it back | Signed out without it, signed in with it, on both systems. That one file is the entire login. |
+| P25 | `agy -p /logout` | Refused: "not available in print mode (it clears stored credentials…)". Sign-out is interactive only. |
+| P26 | An ordinary run in the user's real home on the GPU host | The real token file was rewritten in the same second the run started. The CLI refreshes and saves its token in place on use, so a login home must stay writable. |
+| P27 | An overlay home: every entry of the real home symlinked, except `.gemini/antigravity-cli/antigravity-oauth-token` | `git config --global`, `ssh -G`, a real `ssh` to the GPU host, `uv`, and `~` expansion all resolve through the overlay. |
 
 Docs used: [headless mode](https://antigravity.google/docs/cli/headless.md),
 [permissions](https://antigravity.google/docs/permissions.md),
@@ -128,7 +141,7 @@ profile translates. **Missing** names the consequence.
 | Discuss shell | broker client and browser grants | Claude `Bash(<client>:*)`; OpenCode deny-first | `command(<exact client argv>)`, `command(playwright-cli)`, `command(<preview>)` allows. Every other command is soft-denied, **which ends the turn** | Adapter + [decision D1](#d1-a-denied-action-ends-the-turn) |
 | Paper coach | `_paper_write_roots` `base.py:688` | changes folder + attached artifacts | The workspace (cwd) gets no write grant, as for the other providers. `write_file(<root>)` allows the changes folder and each attached artifact folder. `command(*)` is allowed, as for Work | Adapter |
 | Session summary | `session_summary` capability | Codex read-only; Claude no tools; OpenCode refuses | Staged agent with an empty tool list, plus `agentMode:""`. Unproven: the docs give `tools` a default of `[]`, so empty may mean "default set". Refuse until probed | Missing until probed |
-| Hooks | — | Claude `disableAllHooks`; OpenCode `--pure` | **No switch.** Global `~/.gemini/config/hooks.json`, plugin hooks, `<cwd>/.agents/hooks.json` and every `--add-dir` root's `.agents/hooks.json` run (P10) | **Missing**: [decision D2](#d2-hooks-cannot-be-disabled) |
+| Hooks | — | Claude `disableAllHooks`; OpenCode `--pure` | **No switch.** Global `~/.gemini/config/hooks.json`, plugin hooks, `<cwd>/.agents/hooks.json` and every `--add-dir` root's `.agents/hooks.json` run (P10) | **Missing**, accepted: [D2](#d2-hooks-cannot-be-disabled-settled-accepted) |
 | MCP servers | Claude strict empty MCP; OpenCode deny-first | — | `mcp(*)` defaults to ask, so a call is soft-denied. The staged tools list can leave out `call_mcp_tool` | Adapter |
 | Plugins, skills, rules | skill probe flags | per provider | Load from `~/.gemini/config/` and every `.agents/` between cwd and the project root. No `--pure` equivalent | Accepted. Same as Claude's user setting source |
 | Native browser | browser grant | Playwright CLI only, no MCP | agy has its own `browser_*` tools and `execute_url` rules. Leave them out of the staged tool list, so RCP's Playwright grant stays the one browser path | Adapter |
@@ -141,7 +154,7 @@ profile translates. **Missing** names the consequence.
 | --- | --- | --- | --- | --- |
 | Native read denies | `HiddenReadScope` rendering | Claude `Read(…)` denies; OpenCode `read` denies | `read_file(<path>)` denies (P3). "Deny read implies deny write" | Native for file tools |
 | Shell wrapper | `CLAUDE_CODE_SHELL_PREFIX`; OpenCode `SHELL` | wrapper per launch | `$SHELL` is ignored (P11). No prefix lever was found | **Missing**: every agy launch reports `unhidden` with `provider_native_tools_uncovered` |
-| Login file hidden from other providers | `staged_hidden_read.py:86`, `space_machines.py:273` (hard-coded per id) | three files | `~/.gemini/antigravity-cli/antigravity-oauth-token`, `~/.gemini/oauth_creds.json` | Adapter: move the list into a profile attribute |
+| Login file hidden from other providers | `staged_hidden_read.py:86`, `space_machines.py:273` (hard-coded per id) | three files | `~/.gemini/antigravity-cli/antigravity-oauth-token`, plus each added home's copy (see [Sign-in contract](#sign-in-contract)) | Adapter: move the list into a profile attribute |
 | Credential failure | `credential_failure` `base.py:635` | Claude 401 | `AGY_ERROR` JSON carries a canonical status. Only a really revoked login should be matched, so return False until one is observed | Missing, safe default |
 
 ### Login and readiness
@@ -150,8 +163,9 @@ profile translates. **Missing** names the consequence.
 | --- | --- | --- | --- | --- |
 | Presence check | `auth_command`, `is_authenticated` | `claude auth status`, `opencode providers list` | No `auth` subcommand. `agy models` exits 1 when signed out (P15) and lists models when signed in | Adapter |
 | Liveness check | `login_probe_command` `base.py:495` | Claude one haiku turn | `agy -p /usage --output-format json`: an authenticated server call that spends zero model tokens (P13). It is the best liveness check of the four providers | Native |
-| Interactive login | `login_command` | `claude auth login` | `agy` with no arguments (TUI sign-in), or `agy acp --login` for a terminal-only host | Native |
-| RCP-managed sign-in | `auth.py`, `provider_auth` | Claude and Codex | Not in v1: [decision D3](#d3-sign-in-and-its-persistence) | Missing by choice |
+| Interactive login | `login_command` | `claude auth login` | `agy acp --login`: prints a URL, reads the pasted code on stdin, exits (P22) | Native |
+| RCP-managed sign-in (both pools) | `auth.py`, `provider_auth`, credential store | Codex per-login `CODEX_HOME`; Claude per-login token | Per-login overlay `HOME` holding only the token file (P22–P24, P27). See [Sign-in contract](#sign-in-contract) | Adapter |
+| Sign-out | `ProviderAuthentication.sign_out` | `codex logout`; Claude deletes its token | `/logout` is interactive only (P25). RCP deletes the login home's token file | Adapter |
 | Work startup probe | `work_like_probe_command` | Claude | A `--settings` render plus `--mode accept-edits` with stdin closed and no prompt. Untested: it may exit without validating settings. Leave it None until probed | Missing until probed |
 
 ### Models, usage, status, steering, skills
@@ -180,7 +194,10 @@ One package, `src/rcp/providers/agy/`, holds everything RCP knows about `agy`:
   status.
 - `remote.py`: `AgyStreamTurnFence`, stdlib only, shipped by `remote_bundle`.
   No session format.
-- No `auth.py` in v1, so the Sign-ins fold shows the CLI's own login command.
+- `auth.py`: `AgyAuthentication`, the device-style sign-in driver, and the
+  per-login home environment. See [Sign-in contract](#sign-in-contract).
+- `homes.py`: overlay-home preparation, stdlib only, run unchanged locally and
+  over SSH, as `providers/codex/homes.py` is.
 
 Registration is the one line in `PROVIDERS`. Every imperative piece lives
 inside the profile:
@@ -198,12 +215,12 @@ AgyProfile
   autocompact_hint = None
   shell_timeout_supported = False             # new base attribute
   native_tools_hide_reads = False             # new base attribute (see below)
-  login_files = (".gemini/antigravity-cli/antigravity-oauth-token",
-                 ".gemini/oauth_creds.json")  # new base attribute
+  login_files = (".gemini/antigravity-cli/antigravity-oauth-token",)  # new base attribute
   supports_session_summary = False            # new base attribute
   auth_command          -> [agy, "models"]
   login_probe_command   -> [agy, "-p", "/usage", "--output-format", "json"]
-  login_command         -> [agy]
+  login_command         -> [agy, "acp", "--login"]
+  authentication        -> AgyAuthentication()   # methods = ("device_code",)
   catalog_command       -> [agy, "models"]
   skill_probe           -> [agy, "-p", "/skills", "--output-format", "json"]
   project_write_enforcement_mode -> "agy.permission-rules.v1"
@@ -339,12 +356,88 @@ object.
 - **Turn errors:** an `AGY_ERROR` line is classified by its status field. Quota
   wording reaches `classify_terminal_error`'s existing markers. Revoked-login
   matching stays False until a real revoked login is captured.
-- **Login persistence is unproven.** The login lives under
-  `~/.gemini/antigravity-cli/`, reached through `HOME` (P19). The changelog
-  says macOS sign-in also uses the system keychain, and oversized tokens fall
-  back to a private secrets file. Before v1 ships: confirm which store a
-  personal account uses, how long a token lives, and that a team server account
-  stays signed in across reboots and logouts. See D3.
+- **Login persistence is proven.** The login is one file. It is reused by
+  fresh processes and clean environments, with no keychain or Secret Service,
+  on macOS and Linux (P22–P24). Nothing about it depends on a desktop session,
+  so it survives reboots and logouts by construction.
+
+## Sign-in contract
+
+agy joins RCP's two sign-in pools exactly like Codex: the machine sign-in, plus
+added logins (each member's own login and shared logins) per machine.
+
+**The credential.** `<HOME>/.gemini/antigravity-cli/antigravity-oauth-token`
+is the whole login: a mode-600 file of about 560 bytes (P24). The CLI finds it
+only through `HOME` (P20). It refreshes and rewrites the file in place on use
+(P26).
+
+**Machine sign-in** (`login_id = ""`). The execution account's own `~`, as
+Codex and OpenCode use today. RCP never moves or copies that file.
+
+**Added logins.** Each one gets an overlay home:
+
+| | Local | Remote |
+| --- | --- | --- |
+| Home | `<data dir>/provider-homes/agy/<login_id>` | `~/.rcp/provider-homes/agy/<login_id>` |
+| Launch | `HOME=<home>` in the process environment | `export HOME="$HOME"/.rcp/provider-homes/agy/<login_id>` as the remote prefix |
+
+`providers/agy/homes.py` prepares the overlay, mode 0700:
+
+- every entry of the machine home is a symlink to the original, except `.gemini`;
+- `.gemini` is a real folder whose entries are symlinks, except `antigravity-cli`;
+- `antigravity-cli` is a real folder whose entries are symlinks, except
+  `antigravity-oauth-token`, the one independent file.
+
+Names that appear later in the machine home are linked on the next preparation,
+as with Codex. Because conversations, skills, plugins, config and `~/.ssh`
+resolve to the machine home, a login switch keeps `--conversation` resume and
+the agent's shell environment intact (P27). Backups and transfers exclude
+`provider-homes`, as they already do.
+
+The overlay is needed because `HOME` is also `HOME` for every shell command
+the agent runs. A bare per-login home would hide git identity, SSH keys,
+scheduler config and tool caches from Work.
+
+**Sign-in.** `agy acp --login` runs with the login's `HOME`, `PATH` shims that
+make `open` and `xdg-open` fail, and `BROWSER` pointed at a failing shim, so the
+backend never opens a browser on any desktop (P22). The CLI prints one
+`https://accounts.google.com/…` URL, then reads the authorization code on
+stdin. This reverses Codex's device flow: RCP shows the URL, the member pastes
+the code from Google's page into the Sign-ins card, and RCP writes it to the
+process's stdin. The code travels like Claude's setup-token: stdin only, never
+argv, events, responses, receipts, logs or backups. The URL is read as a URL
+token, not by interpreting prose. Exit 0 then means the CLI accepted the code.
+The sign-in counts only after verification passes. `ProviderAuthentication`
+needs one new method kind, `paste_code`, carrying `verification_url` out and a
+code in.
+
+**Presence.** `agy models` with the login's `HOME`: exit 0 means the file is
+there (P15).
+
+**Verification and liveness.** `agy -p /usage --output-format json` with the
+login's `HOME`. `status: SUCCESS` is a real authenticated server call at zero
+model tokens (P13, P23). A fresh login and every Verify run this.
+
+**Sign-out.** The CLI's `/logout` is interactive only (P25). RCP deletes that
+home's token file under the login gate. The rest of the overlay stays, as for
+Codex. For the machine sign-in, RCP shows `agy` as the command to run on the
+host.
+
+**Concurrency.** Refresh rewrites the token file (P26), and the binary has a
+"skipping refreshed token save because another process is the active…" path.
+Turns and probes on one login therefore share the existing startup gate per
+`(provider, machine_id, login_id)`, exactly like Codex's rotating token.
+
+**Hidden reads.** Every agy token file is a login file. The machine one is
+`~/.gemini/antigravity-cli/antigravity-oauth-token`. Each added home's token is
+hidden from other providers' runs whole. agy's own runs hide only other homes'
+token files (a glob over login ids, as Codex does for `auth.json`), because an
+agy run must read its own.
+
+**Still to drive at build time** (verification, not design unknowns): a full
+sign-in through `homes.py`'s real overlay, an agy turn and resume across a
+login switch, and an access-token refresh observed after its expiry inside an
+overlay home.
 
 ## Picker behavior
 
@@ -434,30 +527,17 @@ habit (P12). So Discuss turns would often end with nothing.
 - Give Discuss the agy sandbox with `command(*)`. Reads are then bounded by the
   sandbox, but it is no longer RCP's Discuss contract.
 
-### D2. Hooks cannot be disabled
+### D2. Hooks cannot be disabled (settled: accepted)
 
 Global, plugin, cwd and `--add-dir` `.agents/hooks.json` commands run on every
-launch, outside every rule. Claude and OpenCode both turn hooks off.
+launch, outside every rule. The human accepted this gap. The containment spec
+documents it beside the unbounded Work shell. Discuss never uses `--add-dir`,
+so only the member's own global and plugin hooks reach Discuss.
 
-- **(Recommended) Accept the gap, and document it beside the unbounded Work
-  shell.** Discuss never uses `--add-dir`, so only the member's own global and
-  plugin hooks reach Discuss. The provider readiness card notes it on hover.
-- Refuse to launch agy when any reachable `hooks.json` exists. Detection is
-  incomplete, because plugin hooks live in plugin folders.
-- Run agy with a private config home, which would drop hooks, plugins and skills
-  together. It needs a separate login per home (D3) and loses the member's own
-  skills.
+### D3. Sign-in (settled)
 
-### D3. Sign-in and its persistence
-
-The login is found through `HOME` and may also use the keychain. Redirecting
-`HOME` signs the CLI out (P19).
-
-- **(Recommended) v1 uses the CLI's own login only, like OpenCode.** RCP
-  verifies it with `/usage` and shows `agy` as the sign-in command. Before v1,
-  verify persistence across reboots on macOS and on a Linux team server.
-- Build an RCP-managed `auth.py` with per-login homes now. It is blocked on
-  learning whether a token in a redirected home survives without the keychain.
+Not a design choice. agy joins both sign-in pools through per-login overlay
+homes. See [Sign-in contract](#sign-in-contract).
 
 ### D4. Branching a chat from an agy session
 
