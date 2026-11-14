@@ -1,10 +1,11 @@
 # Paper, artifacts, and viewing
 
 This spec owns the shared paper, coaching, artifacts, report versions, interaction,
-storage, and repository previews. [Interface design](interface-and-visual-design.md#artifact-viewer)
+shared comments, storage, and repository previews. [Interface design](interface-and-visual-design.md#artifact-viewer)
 owns the panel layout. [API projections](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
 owns viewer and run payloads. Models live in [paper](../../src/rcp/paper/models.py),
-[artifacts](../../src/rcp/storage/artifact_models.py), and
+[artifacts](../../src/rcp/storage/artifact_models.py),
+[comments](../../src/rcp/comments/models.py), and
 [live artifacts](../../src/rcp/live_artifacts.py). Limits live in `limits.py`.
 
 ## Shared paper
@@ -50,8 +51,9 @@ one revision. Downloading a folder produces one zip. Desktop uses native save
 dialogs. New and uploaded files open immediately. Typing focus waits for the
 selected file's editor; an older editor cannot consume that request. Choosing
 Preview or Coach cancels pending editor focus. Replacement uploads require
-confirmation. Splits retain a usable width and the browser's preference. They
-support keyboard resizing and omit the divider when stacked.
+confirmation. The Files tree and the editor each have a split that retains a usable
+width and the browser's preference. They support keyboard resizing and omit the
+divider when stacked.
 
 Deleting a file with unsent peer text keeps that editor read-only with Recreate.
 Otherwise, deletion selects another file. Hidden deleted files with unsent text
@@ -130,7 +132,8 @@ A text `.html` or `.htm` file previews its saved page through the inline artifac
 shell and the same opaque sandbox and CSP as agent HTML
 ([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
 document. Relative PNG, JPEG, GIF, WebP and SVG images resolve against the HTML's
-Paper directory and are inlined from the same captured saved revision. Lookup
+Paper directory, and a site-root path such as `/images/a.svg` against the Paper
+root, as Jekyll writes them. They are inlined from the same captured saved revision. Lookup
 decodes the path once, ignores queries, retains SVG fragments and refuses paths
 outside the Paper tree. It never reads arbitrary server paths or fetches URLs.
 Admission checks metadata before reading bytes, deduplicates source reads and
@@ -138,7 +141,9 @@ counts every expanded reference against the limits in `limits.py`. Missing,
 unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
-A `#id` link scrolls the page to the element with that id or name.
+A `#id` link scrolls the page to the element with that id or name. A leading YAML
+front matter block, from a first `---` line to the next `---` or `...` line, is
+hidden in HTML and Markdown previews, which show only the body; the editor keeps it.
 
 On entry and when the saved Paper revision or HTML bytes change, the preview
 checks its member-only `/preview/state` route and hides the prior page behind
@@ -168,8 +173,8 @@ saves and its other previews need source links and tree images.
 
 ### Commenting on the preview
 
-A text selection in the preview offers the same Comment button and window as chat
-answers, placed at the selection; inside an HTML page the page reports the selected
+A text selection in the preview offers the shared Comment button and composer,
+placed at the selection; inside an HTML page the page reports the selected
 text and where it sits, so it needs no mode. A drawn area, or a selection made in
 an HTML page's comment mode, opens the window directly. While a comment window is
 open, a selection offers no Comment button. Text selects natively, also on touch,
@@ -180,7 +185,8 @@ shown, as the artifact viewer's does; turning it off hands drags back to the
 page's own scripts. The zoom slider runs on doublings, so 100% sits in its middle; it shows on
 hover or focus, and always at phone width.
 
-Each comment records where it came from: path and line for Markdown and plain
+Comments on a Paper file are [shared threads](#shared-comments). Each comment
+records its place as the anchor's `where`: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
 a source line from reverse SyncTeX when the compile has a map, which is
 approximate because the map keeps one mark per line; path for images and HTML. An
@@ -198,29 +204,25 @@ holds it, which can reach past the area. One with neither quotes "Selected area"
 so an area over a figure in a Typst PDF, or on a LaTeX page outside the map, names
 only its page and place. The HTML frame bounds each text and element itself, by
 bytes and without a marker. A joined area quote still longer than a quote allows
-is cut, ending in "…"; a longer native selection is refused. At most 50 comments
-wait at once. These are the chat composer's limits, kept and enforced in the
-browser (`web/src/chat/chatInput.ts`). Areas never send pixels: the Coach reads
-the source files from its snapshot, so text and place are enough, and a crop would
-add an upload to every comment.
+is cut, ending in "…"; a longer native selection is refused.
+[Comment models](../../src/rcp/comments/models.py) own these bounds. Areas never
+send pixels: the Coach reads the source files from its snapshot, so text and
+place are enough, and a crop would add an upload to every comment.
 
 Cancelling the selection inside the HTML frame, including Escape there, leaving
 comment mode, or showing another file closes the comment window opened from the
 preview and keeps its text for the next selection; a new area or HTML selection
 carries it over. Escape or Cancel in the window discards it. A reload of the HTML
 frame keeps an open comment window, since its quote and place are already taken.
-While a Coach turn sends, an area or HTML selection opens no comment. Comments
-wait in the Coach composer and, as chat comments do, survive a reload of the
-browser tab. The Coach button shows their count and any Coach error, which
-includes a refused comment's reason; opening a comment clears it. They travel as
-text with the next Coach message, never as artifact context.
+Comment saves the thread. Send to agent sends it through the member's open Coach
+chat as message text, never as artifact context
+([sending](#sending-threads-to-an-agent)).
 
-Unlike the Coach transcript, the preview has no keyboard Comment button, and touch
-readers cannot comment on images or HTML pages, because an area needs a precise
-pointer; the Coach has no whole-file comment, so such a reader names the place in
-a typed Coach message. An HTML page runs scripts written by any member or the
-Coach in each viewer's browser under the sandbox rules, and its quotes come from
-the page itself.
+The preview has no keyboard Comment button. Every Paper file takes whole-file
+comments. At phone width a tap picks an HTML element and a long-press drag draws
+an area. An HTML page runs scripts written by any member or the Coach in each
+viewer's browser under the sandbox rules, and its quotes come from the page
+itself.
 
 ### GitHub sync
 
@@ -233,15 +235,20 @@ repository. [`PaperGit`](../../src/rcp/paper/git_sync.py) owns the mechanism,
 [the routes](../../src/rcp/api/paper_git.py) the member actions. Limits live in
 `limits.py` as `PAPER_GIT_*`.
 
-**Linking.** The repository is `owner/name` and always resolves to GitHub over
-SSH. RCP generates one deploy key per paper and shows the public half. A member
+**Linking.** The repository is `owner/name`; a pasted GitHub URL, with or
+without `.git`, or an SSH address reduces to it. It always resolves to GitHub
+over SSH. RCP generates one deploy key per paper and shows the public half. A member
 adds it to the repository with write access and presses Link. The backend then
 proves the key can write with a dry-run push that creates nothing on GitHub,
-and runs the first pull. A failed probe returns Git's message and keeps the
-link pending. Asking again for the same pending repository and branch returns
-the same key. Changing them needs Unlink first. A relink always makes a new
-key, because GitHub refuses a deploy key already attached to another
-repository. Without `ssh-keygen`, linking is refused with the reason.
+and runs the first pull. The branch is optional. A blank branch becomes the
+repository's default branch at Link. An empty repository gets `main`, which the
+first push creates. A typed branch that GitHub lacks is refused when the
+repository has other branches; the error names up to five of them. A failed
+probe, refusal, or first pull returns its message and keeps the link pending.
+Asking again for the same pending repository and branch returns the same key.
+Changing them, or keying a linked paper, needs Unlink first. A relink always
+makes a new key, because GitHub refuses a deploy key already attached to
+another repository. Without `ssh-keygen`, linking is refused with the reason.
 
 When the repository is one of the team project's own repositories, ready,
 write-verified and checked out on the backend's machine, the paper borrows
@@ -270,8 +277,9 @@ directory. Transfer carries no link and drops Git cards on import. A backup's
 database keeps the link row and Git cards, and the missing-key check below
 removes them after a restore. A restored or transferred project arrives
 unlinked. Project deletion removes both. A link
-whose key file is missing at backend start is removed with its Git cards. An
-older database opens as not linked.
+whose key file is missing at backend start is removed with its Git cards, and
+the backend logs it. A paper directory without a link is removed at backend
+start. An older database opens as not linked.
 
 **Pull is automatic.** The backend checks each linked paper that has a live
 editor, on a fixed interval, and once when a member opens the workspace. A
@@ -282,9 +290,10 @@ after its clean edits applied keeps them and does not advance the synced
 commit. Either way it records the error on the link and waits before that
 paper is polled again. Network Git runs outside project admission, so a
 slow remote never blocks Paper work. The merge and the link writes of a successful sync take it.
-A missing branch or an empty repository counts as the empty tree, and the first
-push creates the branch. A branch that vanishes after a sync refuses the pull
-and keeps the Paper.
+An empty repository counts as the empty tree, and the first push creates the
+branch. Before the first sync, a branch missing from a repository that has other
+branches refuses the pull and names them; the branch menu switches to one. A
+branch that vanishes after a sync refuses the pull and keeps the Paper.
 **Why:** treating a vanished branch as empty would delete every synced file.
 
 **Merge.** The merge is path-wise over three versions of each file: the base
@@ -490,9 +499,10 @@ read live paper only to check pending anchors.
 The saved mode normalizes the request's apply-directly choice. Rewrite Compare
 fetches the full proposed text through the member-only plain-text attachment
 route with `nosniff`. From RCP attaches all saved paper or files selected by stable
-id. The coach shares chat's composer, transcript, attachments, comments, and
-editable agent picker. It renders through the same agent window as chat, so it
-keeps the reader's position, shows live progress, and offers Resume and Retry as
+id. The coach shares chat's composer, transcript, attachments, and editable
+agent picker. Its composer sends ticked Paper comment threads with the next
+message ([sending](#sending-threads-to-an-agent)). It renders through the same
+agent window as chat, so it keeps the reader's position, shows live progress, and offers Resume and Retry as
 chat does; only its change cards are its own. Provider changes announce a fresh
 session, and the conversation stays one, as chat's does, after a reload too.
 History and New chat sit at the end of Paper's view-switch row without adding a
@@ -707,12 +717,14 @@ Live relay is one-way.
 An inline artifact opens in comment mode, whose dashed outline is also its
 visible edge. Done hands the page back for clicks and drags until the reader
 turns comment mode on again. Readers can select with a
-mouse or pen. Touch readers use Expand for whole-artifact comments. Add stages
-one artifact and version in the composer. Admission refuses moved versions.
+mouse or pen; at phone width a tap picks an element and a long-press drag draws
+an area. Comment saves a [shared thread](#shared-comments) drawn on the shown
+version, and its pin shows inline and in the expanded viewer. The composer can
+send open threads of one artifact of this chat as artifact context.
 Cancel or Escape in the window discards its text. A cancel in the frame, a new
 selection, or leaving comment mode closes or replaces the window and keeps the
 text for the next selection. Version changes clear stale regions with a notice and
-keep the open window's text. Composer comments are
+keep the open window's text. Sent threads are
 ordinary Work turns with the chat's profile. They can combine attachments and
 references, including in Experiments. A read-only lineage child takes them only
 as scratch edits, without references. Both paths can publish tracked next versions. Keep follows viewer state.
@@ -720,37 +732,42 @@ as scratch edits, without references. Both paths can publish tracked next versio
 ### Selection and comments
 
 HTML, raster images, and SVG support gestures immediately in the panel and
-inline, where comment mode starts on until the reader presses Done. Other viewable types allow whole-file comments. PDFs and types
-available only for download refuse comments. Text selection highlights text.
-Dragging on figures or blank space selects a boxed region. Add saves a comment
-in the tray.
-Cancel or Escape discards the comment being written. Clicking elsewhere closes
-the window but retains the text for the next selection. The tray offers Remove,
-a whole-file comment, and one Send to agent. It files a typed comment first, then
-sends every filed comment; when the typed comment does not fit the tray, nothing
-is sent. These are prompt inputs, never graph annotations.
+inline, where comment mode starts on until the reader presses Done. Text
+selection highlights text. Dragging on figures or blank space selects a boxed
+region. In comment mode, hovering an HTML element outlines it with its name chip,
+and a click picks it. PDFs take page areas. Every viewable type takes whole-file
+comments; types available only for download take none. Comment saves a
+[shared thread](#shared-comments). Cancel or Escape discards the comment being
+written. Clicking elsewhere closes the window but retains the text for the next
+selection. The rail beside the artifact lists its threads, and Send N to agent
+sends the ticked open threads. Comments are never graph annotations.
 
-Browser-profile storage retains filed and unsent comments per artifact. Send
-retains refused comments with a reason. Success removes only sent comments and
-reports the operation. Send needs a readable, unexpired artifact context. Only a
+Viewer Send names thread ids, never client-built selections. A refused Send
+changes no thread. Success marks the threads sent and reports the operation.
+Send needs a readable, unexpired artifact context. Only a
 chat that refuses human turns can require a fresh session; the button then reads
 Send to agent in a new session. A later failure remains in `edit_failure` until replaced.
 The theme follows the app or the standalone preference.
 
 `ArtifactContextRequest` in [service models](../../src/rcp/service.py) owns bounded
-selection inputs. [Comment requests](../../src/rcp/api/artifacts.py) own sends.
+selection inputs; only sent threads produce selections.
+[Comment requests](../../src/rcp/api/artifacts.py) own viewer sends.
 HTML areas identify elements by CSS path, label, text, and relative position.
 Image areas use displayed fractions corrected for orientation. Raster crops
-decode once from the staged version and survive recovery. Animation uses the
-first frame and labels it. SVG and oversized images carry only positions. Legacy
+decode once from each thread's drawn version and survive recovery. A drawn
+version whose bytes are gone gets no crop, and the prompt says so and gives the
+place. PDF areas send the page, place, and text-layer quote, without pixels.
+Animation uses the first frame and labels it. SVG and oversized images carry only positions. Legacy
 viewer areas are never cropped. Both routes number human comments and regions
-identically. Human bubbles name the
-artifact and selected text, elements, or image area. Editable context provides a
+identically. The human message carries each thread's posts; its anchor, quote, and
+context appear once, in the artifact item. Human bubbles name the artifact and fold
+the sent threads under "Sent N comment threads", each under its selected text,
+elements, or image area. Editable context provides a
 URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions
 
-Admission freezes the version and route. Composer comments are ordinary Work
+Admission freezes the version and route. Sent threads are ordinary Work
 turns with that chat's profile, session, scope, graph, compute, and worktree.
 Viewer Send uses the same Work path with the latest profile when the chat accepts
 human turns, queued or steered as Send is. This includes ordinary chats,
@@ -820,6 +837,116 @@ RCP defines no chart vocabulary or data encoding. Agents draw bounded HTML.
 Specialist viewers retain domain computation graphs, spatial fields and meshes,
 traces, and other formats. See [current exclusions](../design.md).
 
+## Shared comments
+
+Artifacts, Paper files, and project chat replies share one comment module. A
+comment is a saved thread with an author. Every member who can read its target
+sees it. Members reply in one flat column. Comments are project data in SQLite,
+not graph data. They never touch Patch logs, authority, or Proposals.
+[Comment storage](../../src/rcp/storage/comments.py) owns threads, posts, and
+mentions. [Comment rendering](../../src/rcp/comments/render.py) is the only place
+a thread becomes agent text. The [Web module](../../web/src/comments/) owns the
+rail, pins, composer, picker, and box tool for every surface. The viewer shell
+inlines its built bundle, so author HTML stays in its opaque frame
+([invariant 10e](../../AGENTS.md#stable-invariants)). Space agent threads keep
+their own [answer comments](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
+
+| Target | Readable by | Its agent |
+| --- | --- | --- |
+| Artifact | members who can read the artifact; a private one only by its owner | the artifact's origin chat |
+| Paper file | project members, while the file exists | the sender's open Coach chat |
+| Chat reply | members who can read its chat; a private one only by its owner | that chat |
+
+`comment_target_readable` is the single readability check. Every comment route,
+the picker, mentions, the Inbox, and notification delivery use it. An unreadable
+target answers 404. A read-only member reads threads but cannot post, resolve,
+or send.
+
+### Thread states
+
+A thread is open or resolved. Resolve, or an admitted Send, resolves it. Reopen,
+or a reply, opens it again. A sent thread is a resolved thread that records the
+operation it went to, and the rail marks it Sent to agent. Reopening clears that
+mark. Only open threads show pins, can be ticked, and list or deliver mentions.
+The rail folds resolved threads under a count.
+
+Only its author edits or deletes a post. Deleting a post deletes its mentions.
+Deleting a thread's first post deletes the thread. Deleting or expiring an
+artifact deletes its threads ([Deleting an artifact](#deleting-an-artifact)).
+Paper threads outlive their file, because a Paper file keeps its id through
+delete and restore. While the file is missing, its threads are hidden and its
+mentions are neither listed nor delivered.
+
+Post and thread limits live in `limits.py`. Saving a post refuses with 422 when
+the rendered thread would pass the thread limit, so every saved thread can be
+sent.
+
+### Anchors
+
+An anchor is the thread's place on its target. Its kinds are whole, text, box,
+element, and pdf. [Comment models](../../src/rcp/comments/models.py) map each kind
+to the media types that admit it. Whole works on every viewable type. Text works
+on HTML, Markdown, plain text, Paper source and preview, and replies. Box works
+on HTML, raster images, and SVG. Element works on HTML. Pdf works on PDFs. Any
+kind may carry a short location string that the browser computes.
+
+The browser places a pin for each open thread when the target opens and when
+its version or text changes. Nothing re-finds on the server. A text anchor finds
+its quote inside its surrounding text, then alone. A pdf anchor keeps its page
+and place on the drawn version and re-finds its quote on that page in a newer
+one. An element anchor looks up its CSS path. An HTML box sits on its first
+element plus its region, so scrolling and resizing do not move it. An image box
+uses fractions of the image. An anchor that is not found leaves its thread in the
+rail without a pin, with the reason on hover. The prompt names the version a
+thread was drawn on, so the agent knows when the page has changed.
+
+A Paper thread pins in the source editor or the preview, wherever it was drawn.
+The rail lists the file's threads in both, and clicking one from the other view
+switches to it. Clicking a thread scrolls to its anchor and flashes it. Clicking a
+pin opens its thread. A notification or Inbox link runs the same path.
+
+### Sending threads to an agent
+
+Send to agent sends whole threads with their quote and place. They ride the send
+path their target already uses:
+
+| Target | Entry point | Threads arrive as |
+| --- | --- | --- |
+| Chat reply or Paper file | the composer's new turn | message text |
+| Any, while a turn runs | the composer's steer | message text, without crops |
+| One artifact of this chat | the composer's new turn | artifact context selections |
+| Artifact in the viewer | the viewer's Send | artifact context selections |
+
+`@` in a post also offers the target's agent. Picking it saves the post and
+sends that thread.
+
+Each thread must be open and belong to the sending chat: its replies, its
+artifacts, or Paper for a Coach chat. Otherwise the send answers 409. A composer send carries threads of
+at most one artifact, which must belong to this chat. A send carries at most
+`ARTIFACT_CONTEXT_MAX_SELECTIONS` threads. The typed text plus every rendered
+thread must fit `STEERING_MESSAGE_MAX_CHARS`; otherwise the send answers 422.
+The rail checks the same total. Any refusal changes no thread.
+
+After admission, RCP resolves the threads with the send mark. A thread someone
+closed meanwhile stays as they left it. If the process stops between admission
+and marking, the threads stay open and can be sent again; a duplicate repeats
+only a prompt. Every send carries a client key. A repeat with the same key
+renders the threads as they stood when sent and replays the original turn or
+steer.
+
+Sending needs project write access and a Patch-capable identity. Only the owner
+of a private chat sends to it. Other members see no agent row or Send and
+mention the owner instead. If an admitted turn later fails, its threads stay
+resolved with the mark; the failure shows in the chat, and Reopen returns them.
+
+### Comment mentions
+
+A post mentions a member as `<@member:ID>`. A mention of a member who cannot
+read the target stays plain text, and the picker lists only readers. Agent
+tokens are refused. An edit adds and removes mentions without notifying again.
+[Comment notifications and the Inbox](api-web-and-desktop-projections.md#comment-api)
+own delivery.
+
 ## Keeping an artifact
 
 Keep stops expiry without writing to the canonical repository. Inline embeds
@@ -839,7 +966,8 @@ human code. Artifacts intentionally do not travel with repository clones.
 
 Any member may Delete with second-click confirmation. Delete and expiry share
 removal under the artifact lock and capture guard. They clear all versions, pins,
-and kept chat bindings. They leave an import tombstone: `missing` for expiry or
+and kept chat bindings, and they delete the artifact's comment threads, posts,
+and mentions in the same transaction. They leave an import tombstone: `missing` for expiry or
 `deleted` for Delete. A deleted identity never recreates through import, discovery,
 replay, or fork. Repeated Delete succeeds. Queued, running, or pausing readers and
 editors refuse deletion. So do publishing episode reports, unreviewed consolidation

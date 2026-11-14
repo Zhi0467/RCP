@@ -61,7 +61,10 @@ import {
 } from "../agentWindow/useAgentWindowLines";
 import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
 import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
-import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
+import {
+  stagedInlineComments,
+  useAgentWindowArtifacts,
+} from "../agentWindow/useAgentWindowArtifacts";
 import {
   projectAgentWindowEndpoints,
   spaceAgentWindowEndpoints,
@@ -848,9 +851,8 @@ export function AgentThreadView({
     chatId: thread.thread_id,
     relatedTasks: tasks,
     transcript: lines.transcript,
-    comments,
+    inlineComments: stagedInlineComments(comments, setSubmitError),
     onRefreshTask: refreshTask,
-    setSubmitError,
     repositories: snapshot?.repositories ?? [],
   });
   const artifactContext = stagedArtifactContext(comments.annotations);

@@ -26,7 +26,7 @@ import {
   parseViewerPlacement,
   type ViewerPlacement,
 } from "./artifactViewerLayout";
-import { artifactPopupTarget } from "./artifactViewerRequests";
+import { artifactPopupTarget, storedArtifactViewerUrl } from "./artifactViewerRequests";
 import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
@@ -35,6 +35,7 @@ import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
+import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import "../styles/artifact-viewer.css";
@@ -65,6 +66,15 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
     target?.kind === "artifact" ? artifactStateProfile(target.projectId, target.artifactId) : null;
   const resource = useResource("artifact-viewer", profile);
   const state = target?.kind === "artifact" ? resource.value : null;
+  const threadRequest = useCommentThreadRequest();
+  const [linkedThread, setLinkedThread] = useState<{ artifactId: string; threadId: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (target?.kind !== "artifact" || threadRequest?.targetId !== target.artifactId) return;
+    const threadId = takeCommentThreadRequest(target.projectId, "artifact", target.artifactId);
+    if (threadId) setLinkedThread({ artifactId: target.artifactId, threadId });
+  }, [threadRequest, target]);
   const refs = useResource(
     "artifact-pin-refs",
     target?.kind === "artifact" ? refsProfile(target.projectId) : null,
@@ -193,7 +203,13 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
       ? repositoryFilePreviewUrl(target.projectId, { path: target.path, line: target.line ?? null })
       : target.kind === "space-artifact"
         ? target.viewerUrl
-        : state?.viewer_url;
+        : state?.media_type === "application/pdf"
+          ? storedArtifactViewerUrl(target.projectId, target.artifactId)
+          : state?.viewer_url;
+  const linked =
+    target.kind === "artifact" && linkedThread?.artifactId === target.artifactId
+      ? `#comment=${encodeURIComponent(linkedThread.threadId)}`
+      : "";
   const undo = async () => {
     if (target.kind !== "artifact" || undoing) return;
     const generation = requestGeneration.current;
@@ -363,7 +379,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
         {state?.can_keep && (
           <button
             disabled={keeping}
-            className={keepFailure ? "artifact-action-failed" : undefined}
+            className={`artifact-viewer-control${keepFailure ? " artifact-action-failed" : ""}`}
             title={keepFailure ?? undefined}
             onClick={() => void keep()}
           >
@@ -371,7 +387,11 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           </button>
         )}
         {state?.can_undo && (
-          <button disabled={undoing} onClick={() => void undo()}>
+          <button
+            className="artifact-viewer-control"
+            disabled={undoing}
+            onClick={() => void undo()}
+          >
             Undo
           </button>
         )}
@@ -409,7 +429,12 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
         </button>
       </header>
       {source ? (
-        <iframe ref={iframe} key={`${targetKey}:${reload}`} src={source} title={title} />
+        <iframe
+          ref={iframe}
+          key={`${targetKey}:${reload}`}
+          src={source && source + linked}
+          title={title}
+        />
       ) : target.kind === "artifact" && state ? (
         <StoredArtifactDownload
           key={state.artifact_id}

@@ -36,3 +36,7 @@ export function artifactPopupTarget(
   }
   return null;
 }
+
+export function storedArtifactViewerUrl(projectId: string, artifactId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/viewer`;
+}

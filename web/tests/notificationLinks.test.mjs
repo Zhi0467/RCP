@@ -11,6 +11,8 @@ const server = await createServer({
 });
 after(() => server.close());
 const {
+  buildNotificationLink,
+  commentThreadHash,
   episodeNotificationHash,
   graphNotificationHash,
   isNotificationLinkHash,
@@ -81,4 +83,39 @@ test("a notification link while a project is open is left to the resolver", () =
   for (const route of ["#/projects/p", "#/projects/p?view=chats&chat=b1&branch_id=b1"]) {
     assert.equal(isNotificationLinkHash(route), false, route);
   }
+});
+
+test("a comment link round-trips and opens its target's view", () => {
+  const link = {
+    projectId: "p 1",
+    target: "branch:b1",
+    kind: "comment",
+    itemId: "t1",
+  };
+  assert.deepEqual(parseNotificationLink(buildNotificationLink(link)), link);
+
+  const paper = commentThreadHash("p", {
+    target_kind: "paper",
+    target_id: "file/1",
+    graph_target: "main",
+  });
+  assert.equal(parseProjectHash(paper).view, "paper");
+  assert.equal(new URLSearchParams(paper.split("?")[1]).get("paper_file"), "file/1");
+
+  const reply = commentThreadHash("p", {
+    target_kind: "reply",
+    target_id: "op-1",
+    graph_target: "branch:b1",
+    chat_id: "c1",
+  });
+  assert.equal(parseProjectHash(reply).chatId, "c1");
+  assert.equal(new URLSearchParams(reply.split("?")[1]).get("branch_id"), "b1");
+
+  const artifact = commentThreadHash("p", {
+    target_kind: "artifact",
+    target_id: "a1",
+    graph_target: "main",
+  });
+  assert.equal(parseProjectHash(artifact).view, "artifacts");
+  assert.equal(isNotificationLinkHash(artifact), false);
 });

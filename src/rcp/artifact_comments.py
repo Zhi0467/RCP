@@ -4,12 +4,15 @@ import importlib.resources
 import io
 import json
 import math
+import re
 from urllib.parse import quote
 
 from PIL import Image, ImageOps
 
+from rcp.artifact_renderer import ArtifactRendererUnavailable
 from rcp.artifact_views import ViewerPanel
-from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
+from rcp.artifacts import FrameAddon
+from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.limits import (
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     ARTIFACT_CROP_MAX_PIXELS,
@@ -17,17 +20,13 @@ from rcp.limits import (
     ARTIFACT_VIEWER_STATE_REFRESH_MS,
     STEERING_MESSAGE_MAX_CHARS,
 )
+from rcp.web_assets import web_dist_path
 
-COMMENTABLE_MEDIA_TYPES = frozenset(
-    {"text/html", "image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
-)
+COMMENTABLE_MEDIA_TYPES = COMMENT_MEDIA_TYPES["box"]
 
 
 def supports_comments(media_type: str) -> bool:
-    return media_type in set(ARTIFACT_MEDIA_TYPES.values()) - {
-        "application/pdf",
-        "application/octet-stream",
-    }
+    return media_type in COMMENT_MEDIA_TYPES["whole"]
 
 
 # Raster artifacts a boxed selection is cropped from; SVG and HTML are read as source.
@@ -77,17 +76,31 @@ def _selection_script() -> str:
     return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
 
 
-def _comment_panel_script() -> str:
-    return importlib.resources.files("rcp").joinpath("artifact_comment_panel.js").read_text("utf-8")
+def _comment_panel_assets() -> tuple[str, str]:
+    root = web_dist_path()
+    try:
+        script = (root / "comments.js").read_text(encoding="utf-8")
+        style = (root / "comments.css").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactRendererUnavailable(
+            "The comment viewer is unavailable. Rebuild the Web assets."
+        ) from exc
+    if not script.strip() or not style.strip():
+        raise ArtifactRendererUnavailable("The comment viewer is empty. Rebuild the Web assets.")
+    return re.sub(
+        "</script", lambda match: "<\\/" + match.group(0)[2:], script, flags=re.IGNORECASE
+    ), style
 
 
 def selection_frame_addon() -> FrameAddon:
     return FrameAddon(
         frame_script=_selection_script()
         + """
+const locateArtifact=installArtifactLocator(document,send);
 let clearSelection=null;
 let selectionActive=false;
 listen(privatePort,'message',(event)=>{
+  if(event.data?.kind==='rcp-artifact-locate') locateArtifact(event.data);
   if(event.data?.kind==='rcp-artifact-selection-enable'){
     selectionActive=true;
     if(!clearSelection)
@@ -106,15 +119,29 @@ listen(privatePort,'message',(event)=>{
 });
 """,
         wrapper_script="""let selectionEnabled=false;
+const pendingLocations=new Map();
 channelListeners.push((value)=>{
+    if(value.kind==='rcp-artifact-position'){
+      parentPost({type:'rcp-artifact-position',version:1,id:value.id,rect:value.rect},'*');
+      return;
+    }
     if(value.kind==='rcp-artifact-selection' && 'selection' in value && window.parent!==window){
       parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
       return;
     }
 });
-channelReady.push(()=>{if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});});
+channelReady.push(()=>{
+  if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  for(const value of pendingLocations.values()) portPost(artifactPort,value);
+  pendingLocations.clear();
+});
 listen(window,'message',(event)=>{
   if(window.parent===window || event.source!==window.parent) return;
+  if(event.data?.type==='rcp-artifact-locate' && event.data.version===1 && typeof event.data.id==='string'){
+    const value={kind:'rcp-artifact-locate',id:event.data.id,anchor:event.data.anchor,scroll:event.data.scroll===true};
+    if(artifactPort) portPost(artifactPort,value);
+    else pendingLocations.set(value.id,value);
+  }
   if(event.data?.type==='rcp-artifact-selection-enable'){
     selectionEnabled=true;
     if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
@@ -140,33 +167,15 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
         "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
         "maxChars": STEERING_MESSAGE_MAX_CHARS,
         "stateRefreshMs": ARTIFACT_VIEWER_STATE_REFRESH_MS,
-        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES,
+        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES
+        or config.get("mediaType") == "application/pdf",
         "stateUrl": base_url + "/state",
         "commentsUrl": base_url + "/comments",
     }
-    hint_hidden = "" if config["selectionEnabled"] else " hidden"
     encoded = json.dumps(config, ensure_ascii=False).replace("<", "\\u003c")
-    # One floating window: the composer for the comment being written, and a folded
-    # tray of added comments. Every comment is the same object and one send route.
+    script, style = _comment_panel_assets()
     return ViewerPanel(
-        markup=f'<aside class="comment-float" aria-label="Comments"><section id="composer" class="composer" role="dialog" aria-label="Comment" hidden><div class="excerpt"></div><textarea id="message" maxlength="2048" placeholder="Comment" aria-label="Comment"></textarea><div class="actions"><button data-cancel type="button">Cancel</button><button data-confirm id="queue" type="button" disabled>Add comment</button></div></section><details id="tray" class="tray"><summary aria-label="Comments" title="Comments"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span id="count" class="badge" hidden>0</span></summary><div class="tray-panel"><p id="hint" class="empty"{hint_hidden}>Select text or drag an area to comment.</p><div id="items"></div><div class="actions"><button id="general" type="button">Comment on the whole artifact</button><button id="send" class="primary" type="button" disabled>Send to agent</button></div></div></details><div id="notice" class="notice" role="status"></div></aside>',
-        style="""main{grid-template-columns:minmax(0,1fr)}#boxLayer{position:absolute;cursor:crosshair}
-.comment-float{position:fixed;right:16px;bottom:16px;z-index:5;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-height:calc(100vh - 32px);pointer-events:none}
-.comment-float>*{pointer-events:auto}
-.composer,.tray-panel{width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);box-shadow:var(--shadow);padding:12px;overflow:auto}
-.tray{display:flex;flex-direction:column-reverse;align-items:flex-end;gap:8px}
-.tray-panel{display:flex;flex-direction:column;max-height:calc(100vh - 92px)}#items{flex:0 1 auto;min-height:0;overflow:auto}#hint,.tray-panel>.actions{flex:none}
-.tray summary{list-style:none;position:relative;display:grid;place-items:center;width:36px;height:36px;border-radius:50%;border:1px solid var(--rule);background:var(--panel);color:var(--ink);box-shadow:var(--raised),var(--shadow);cursor:pointer}
-.tray summary::-webkit-details-marker{display:none}.tray[open] summary{color:var(--accent)}
-.badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--accent);color:var(--accent-ink);font-size:11px;line-height:18px;text-align:center}
-.actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin-top:10px}
-.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}.primary:disabled{opacity:.5}
-.empty{margin:0 0 8px;color:var(--muted);font-size:13px}
-.selection{border-top:1px solid var(--rule);padding:8px 0}.selection b{display:block;margin-bottom:4px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
-.selection p{margin:4px 0 0;font-size:13px}.selection .remove{float:right;padding:2px 6px;font-size:11px}
-.excerpt{max-height:72px;overflow:auto;font-size:13px;color:var(--muted)}
-textarea{width:100%;min-height:72px;margin-top:8px;resize:vertical;border:1px solid var(--rule);border-radius:var(--radius);background:var(--field);padding:8px;color:var(--ink);font:13px/1.4 var(--ui);box-sizing:border-box}
-.notice{width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);box-shadow:var(--shadow);padding:8px 12px;color:var(--accent);font-size:12px}.notice:empty{display:none}
-""",
-        script=_selection_script() + "\nconst config=" + encoded + ";\n" + _comment_panel_script(),
+        markup='<aside id="comments-root" aria-label="Comments"></aside>',
+        style=style,
+        script=script + "\nRcpComments.mountViewer(" + encoded + ");",
     )

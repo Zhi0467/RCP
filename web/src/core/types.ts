@@ -2128,6 +2128,8 @@ export interface AgentTaskRequest {
   session_id?: string | null;
   mode?: ConversationMode;
   artifact_context?: ArtifactContextRequest | null;
+  /** Shared comment threads the turn carries; the server renders their text. */
+  comment_thread_ids?: string[];
   trigger?: TaskTrigger;
   patch_kind?: GraphPatchKind;
   control_node_id?: string | null;
@@ -3033,6 +3035,8 @@ export interface SteerRequest {
   attempt: number;
   expected_turn_id: string;
   message: string;
+  /** Shared comment threads the steer carries. */
+  comment_thread_ids?: string[];
 }
 
 /** What one numbered artifact comment was drawn on, in the order the message numbers them. */

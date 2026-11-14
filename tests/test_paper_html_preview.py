@@ -57,6 +57,26 @@ def test_relative_images_use_only_the_captured_saved_tree_and_preserve_svg_fragm
         assert inline_html_images(current, reader, "p").decode() != rendered
 
 
+def test_a_site_root_image_names_a_file_from_the_paper_root(paper):
+    image(paper)
+    human_edit(paper, "page", '<img alt="plot" src="/figures/plot.svg#mark">')
+    with preview(paper) as (prepared, reader):
+        assert prepared.warnings == []
+        rendered = inline_html_images(prepared, reader, "p").decode()
+        assert "data:image/svg+xml;base64," + base64.b64encode(SVG).decode() + "#mark" in rendered
+
+
+def test_front_matter_is_hidden_and_the_body_keeps_its_images(paper):
+    image(paper)
+    page = '---\nlayout: post\ntitle: "Plot"\n---\n<img alt="plot" src="../figures/plot.svg">'
+    human_edit(paper, "page", page)
+    with preview(paper) as (prepared, reader):
+        rendered = inline_html_images(prepared, reader, "p").decode()
+    assert "layout" not in rendered and "---" not in rendered
+    assert rendered.count("\n") == page.count("\n")
+    assert "data:image/svg+xml;base64," in rendered
+
+
 def test_state_tracks_only_referenced_asset_identity_path_and_bytes(paper):
     human_edit(paper, "page", '<img src="../figures/plot.svg">')
     with preview(paper) as (missing, _):
@@ -78,7 +98,8 @@ def test_state_tracks_only_referenced_asset_identity_path_and_bytes(paper):
     [
         "../../outside.svg",
         "%2e%2e/%2e%2e/outside.svg",
-        "/figures/plot.svg",
+        "/../outside.svg",
+        "/figures/missing.svg",
         "//example.invalid/plot.svg",
         "https://example.invalid/plot.svg",
         "file:///figures/plot.svg",

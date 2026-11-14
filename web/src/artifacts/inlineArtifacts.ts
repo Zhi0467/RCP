@@ -71,7 +71,7 @@ function embedSources(text: string): readonly string[] {
 
 /** Whether a turn's artifact can render in place: anything the viewer shows. */
 export function isInlineViewable(artifact: AgentArtifactDescriptor): boolean {
-  return artifact.view !== "pdf" && artifact.view !== "file";
+  return artifact.view !== "file";
 }
 
 /** A turn file a reply cites, resolved to the turn whose descriptors own it. */

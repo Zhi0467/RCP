@@ -15,7 +15,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -33,6 +33,7 @@ from rcp.agents.context import CoachContext
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
+from rcp.comments.models import CommentAnchor
 from rcp.compute import machine_compute_context
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
@@ -324,7 +325,7 @@ class ChatArtifactQuote(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["text", "box"]
+    kind: Literal["whole", "text", "box", "element", "pdf"]
     #: The selected text or the boxed elements' names; empty for an area of an image.
     quote: str
     comment: str
@@ -965,68 +966,7 @@ class GraphSyncRequest(BaseModel):
         return self
 
 
-class ArtifactSelectionRect(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    x: float = Field(ge=0, le=1)
-    y: float = Field(ge=0, le=1)
-    width: float = Field(gt=0, le=1)
-    height: float = Field(gt=0, le=1)
-
-    @model_validator(mode="after")
-    def stays_inside_viewport(self) -> ArtifactSelectionRect:
-        if self.x + self.width > 1 or self.y + self.height > 1:
-            raise ValueError("artifact selection rectangle must stay inside its viewport")
-        return self
-
-
-class ArtifactViewport(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    width: int = Field(ge=1, le=32768)
-    height: int = Field(ge=1, le=32768)
-
-
-class ArtifactTextSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    kind: Literal["text"]
-    text: str = Field(min_length=1, max_length=4096)
-    surrounding_text: str = Field(default="", max_length=6144)
-    comment: str = Field(default="", max_length=2048)
-
-
-class ArtifactBoxElement(BaseModel):
-    """One HTML element a box covers, named so the agent can find it in the source."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    path: str = Field(min_length=1, max_length=512)
-    label: str = Field(default="", max_length=256)
-    text: str = Field(default="", max_length=512)
-    # Where the box lies within this element, when the box sits inside it.
-    region: ArtifactSelectionRect | None = None
-
-
-class ArtifactBoxSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    kind: Literal["box"]
-    # A fraction of the image for an image artifact, of the visible frame for HTML.
-    rect: ArtifactSelectionRect
-    viewport: ArtifactViewport
-    # None marks a box from the viewer before elements were named. Its rect is a
-    # fraction of the viewer area, not of an image, so it is never cropped.
-    elements: list[ArtifactBoxElement] | None = Field(default=None, max_length=8)
-    # That older viewer's sampled nearby text, kept so its stored requests still render.
-    labels: str = Field(default="", max_length=4096)
-    comment: str = Field(default="", max_length=2048)
-
-
-ArtifactSelection = Annotated[
-    ArtifactTextSelection | ArtifactBoxSelection,
-    Field(discriminator="kind"),
-]
+ArtifactSelection = CommentAnchor
 
 
 class ArtifactContextRequest(BaseModel):

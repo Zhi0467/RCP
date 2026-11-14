@@ -6,9 +6,9 @@ import uuid
 from typing import Annotated, Literal
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import UUID4, BaseModel, Field
 
 from rcp.api.dependencies import (
     get_attachment_store,
@@ -24,13 +24,18 @@ from rcp.api.dependencies import (
 from rcp.api.episode_timeline import worker_label
 from rcp.api.episodes import child_experiment_on_owned_branch, episode_chain_records
 from rcp.api.identity import IdentityAccess
-from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
+from rcp.api.tasks import (
+    _agent_artifact_response,
+    prepare_comment_send,
+    require_comment_send_replay,
+    start_ordinary_task,
+)
 from rcp.artifact_comments import (
-    COMMENTABLE_MEDIA_TYPES,
     comment_panel,
     selection_frame_addon,
     supports_comments,
 )
+from rcp.artifact_renderer import ArtifactRendererUnavailable
 from rcp.artifact_theme import artifact_color_mode, artifact_theme
 from rcp.artifact_views import (
     InlineAppearance,
@@ -41,8 +46,9 @@ from rcp.artifact_views import (
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
+from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
+from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
     ArtifactEditAvailability,
@@ -52,7 +58,7 @@ from rcp.runs.artifact_edit_admission import (
     artifact_send_chat_turn,
     start_artifact_edit,
 )
-from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskAdmissionConflict,
     AgentTaskRecord,
@@ -64,6 +70,7 @@ from rcp.storage import (
 from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.chat_names import chat_titles
+from rcp.storage.client_requests import ClientRequestConflict
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -719,7 +726,7 @@ def stored_artifact_viewer(
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
             state="temporary" if _temporary(store, artifact) else "kept",
             presentation=presentation,
-            selectable=artifact.media_type in COMMENTABLE_MEDIA_TYPES,
+            selectable=artifact.media_type in COMMENT_MEDIA_TYPES["whole"],
             panel=comment_panel(
                 {
                     "projectId": project_id,
@@ -730,6 +737,8 @@ def stored_artifact_viewer(
             if supports_comments(artifact.media_type)
             else None,
         )
+    except ArtifactRendererUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Artifact has no viewer") from exc
     return Response(
@@ -847,21 +856,10 @@ def download_stored_artifact(
     )
 
 
-class ArtifactComment(BaseModel):
-    """One comment: its text, anchored to a selection or to the whole artifact."""
-
-    model_config = {"extra": "forbid"}
-
-    text: str = Field(min_length=1, max_length=2048)
-    selection: ArtifactSelection | None = None
-
-
 class ArtifactCommentBody(BaseModel):
     model_config = {"extra": "forbid"}
 
-    comments: list[ArtifactComment] = Field(
-        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
-    )
+    thread_ids: list[str] = Field(min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS)
     fresh_session: bool = False
 
 
@@ -881,55 +879,70 @@ def comment_artifact(
     identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
     background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
     attachment_store: Annotated[ChatAttachmentStore, Depends(get_attachment_store)],
+    idempotency_key: Annotated[UUID4, Header()],
 ):
-    artifact = store.artifact(artifact_id)
-    if artifact is None or artifact.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    if any(not comment.text.strip() for comment in body.comments):
-        raise HTTPException(status_code=422, detail="Every artifact comment needs text.")
-    general = "\n\n".join(c.text.strip() for c in body.comments if c.selection is None)
-    selections = [
-        c.selection.model_copy(update={"comment": c.text.strip()})
-        for c in body.comments
-        if c.selection is not None
-    ]
-    if len(general) + sum(len(s.comment) for s in selections) > STEERING_MESSAGE_MAX_CHARS:
-        raise HTTPException(status_code=422, detail="The artifact comments are too long.")
     author = identity_access.require_patch_capable_identity(request)
+    key = str(idempotency_key)
+    message, context = prepare_comment_send(
+        store,
+        project_id,
+        author.user_id,
+        body.thread_ids,
+        key,
+        chat_id=None,
+        artifact_id=artifact_id,
+    )
+    assert context is not None
+    context = context.model_copy(update={"fresh_session": body.fresh_session})
+    artifact = store.artifact(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
         raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
-    service = get_graph_service(catalog, project_id, origin.graph_target.branch_id, write=True)
-    context = ArtifactContextRequest(
-        operation_id=origin.operation_id,
-        artifact_id=artifact_id,
-        fresh_session=body.fresh_session,
-        selections=selections,
-    )
     try:
-        # Send continues the artifact's chat with a Work turn, exactly as its composer would.
-        turn = artifact_send_chat_turn(store, artifact, context, general)
-        if turn is not None:
-            return start_ordinary_task(
-                project_id,
-                turn[0],
-                turn[1],
-                catalog=catalog,
-                store=store,
-                attachment_store=attachment_store,
-                background_tasks=background_tasks,
-                authorized_by=author,
-                branch_id=origin.graph_target.branch_id,
-            ).model_dump(mode="json")
-        admitted = admit_artifact_edit(
-            store, service, project_id, RunRequest(message=general, artifact_context=context)
-        )
-        return start_artifact_edit(
-            background_tasks,
+        with store.client_request_admission(
             project_id,
-            admitted,
-            authorized_by=author,
-        ).model_dump(mode="json")
+            author.user_id,
+            key,
+            f"artifacts/{artifact_id}/comments",
+            result_kind="operation",
+        ) as existing:
+            if existing is not None:
+                record = store.agent_task(existing.operation_id or "")
+                assert record is not None
+                require_comment_send_replay(record, message, context)
+            else:
+                service = get_graph_service(
+                    catalog, project_id, origin.graph_target.branch_id, write=True
+                )
+                turn = artifact_send_chat_turn(store, artifact, context, message)
+                if turn is not None:
+                    record = start_ordinary_task(
+                        project_id,
+                        turn[0],
+                        turn[1],
+                        catalog=catalog,
+                        store=store,
+                        attachment_store=attachment_store,
+                        background_tasks=background_tasks,
+                        authorized_by=author,
+                        branch_id=origin.graph_target.branch_id,
+                    )
+                else:
+                    admitted = admit_artifact_edit(
+                        store,
+                        service,
+                        project_id,
+                        RunRequest(message=message, artifact_context=context),
+                    )
+                    record = start_artifact_edit(
+                        background_tasks, project_id, admitted, authorized_by=author
+                    )
+            store.mark_threads_sent(body.thread_ids, record.operation_id, key, author.user_id)
+            return record.model_dump(mode="json")
+    except ClientRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ArtifactFreshSessionRequired as exc:
         raise HTTPException(
             status_code=409,

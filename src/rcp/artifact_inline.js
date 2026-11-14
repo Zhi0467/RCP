@@ -1,6 +1,6 @@
 // The viewer shell inside a reply. `inlineConfig` is defined by the shell document.
 // The shell fills the fixed frame the chat gives it, and the content scrolls inside;
-// comment mode forwards selections to the chat, which stages them in its composer.
+// comment mode forwards selections to the chat, and the chat's pins are located in the content.
 const inlineRoot = document.documentElement;
 const inlineFrame = document.getElementById("preview");
 const inlineImage = document.getElementById("previewImage");
@@ -134,12 +134,62 @@ if (inlineImage && inlineConfig.selectable) {
     () => commentMode,
   );
 }
-if (inlineFrame) inlineFrame.addEventListener("load", () => commentMode && applyCommentMode());
+const locations = new Map();
+function locateInline(value) {
+  if (typeof value.id !== "string" || value.id.length > 128) return;
+  if (value.anchor) locations.set(value.id, value.anchor);
+  else locations.delete(value.id);
+  if (inlineFrame?.contentWindow) {
+    inlineFrame.contentWindow.postMessage(value, "*");
+    return;
+  }
+  const anchor = value.anchor;
+  if (!inlineImage || !anchor) return;
+  const image = inlineImage.getBoundingClientRect();
+  const box = anchor.kind === "box" ? anchor.rect : anchor.kind === "whole" ? { x: 0, y: 0, width: 1, height: 1 } : null;
+  toChat({
+    type: "rcp-artifact-position",
+    version: 1,
+    id: value.id,
+    rect:
+      box && ["x", "y", "width", "height"].every((key) => unit(box[key]))
+        ? {
+            x: image.x + box.x * image.width,
+            y: image.y + box.y * image.height,
+            width: box.width * image.width,
+            height: box.height * image.height,
+          }
+        : null,
+  });
+}
+if (inlineFrame)
+  inlineFrame.addEventListener("load", () => {
+    if (commentMode) applyCommentMode();
+    for (const [id, anchor] of locations)
+      inlineFrame.contentWindow?.postMessage(
+        { type: "rcp-artifact-locate", version: 1, id, anchor, scroll: false },
+        "*",
+      );
+  });
 
 window.addEventListener("message", (event) => {
   const value = event.data;
   if (!value || typeof value !== "object") return;
   if (inlineFrame && event.source === inlineFrame.contentWindow) {
+    if (value.type === "rcp-artifact-position" && value.version === 1) {
+      const frame = inlineFrame.getBoundingClientRect();
+      const rect = value.rect;
+      toChat({
+        type: "rcp-artifact-position",
+        version: 1,
+        id: value.id,
+        rect:
+          rect && ["x", "y", "width", "height"].every((key) => Number.isFinite(rect[key]))
+            ? { x: frame.x + rect.x, y: frame.y + rect.y, width: rect.width, height: rect.height }
+            : null,
+      });
+      return;
+    }
     if (
       value.type === "rcp-paper-source" &&
       value.version === 1 &&
@@ -185,7 +235,9 @@ window.addEventListener("message", (event) => {
     return;
   }
   if (event.source !== window.parent || event.origin !== inlineOrigin) return;
-  if (value.type === "rcp-inline-comment-mode" && value.version === 1) {
+  if (value.type === "rcp-artifact-locate" && value.version === 1) {
+    locateInline(value);
+  } else if (value.type === "rcp-inline-comment-mode" && value.version === 1) {
     commentMode = inlineConfig.selectable && value.enabled === true;
     applyCommentMode();
   } else if (value.type === "rcp-inline-selection-clear" && value.version === 1) {

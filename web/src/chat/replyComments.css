@@ -1,0 +1,31 @@
+/* The chat header's open-thread count, a sibling of the watcher count. */
+.chat-comment-count {
+  align-items: center;
+  background: color-mix(in srgb, var(--red) 10%, var(--sheet));
+  border: 1px solid color-mix(in srgb, var(--red) 30%, var(--line));
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  font: 700 var(--type-3xs) var(--mono);
+  gap: 4px;
+  padding: 4px 9px;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.chat-comment-count:hover,
+.chat-comment-count.is-open {
+  background: color-mix(in srgb, var(--red) 20%, var(--sheet));
+  border-color: var(--red);
+}
+.rcp-comment-composer.chat-comment-list {
+  padding: 0;
+  max-height: min(70dvh, 560px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-comment-count {
+    transition: none;
+  }
+}

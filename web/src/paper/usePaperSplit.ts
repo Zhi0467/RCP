@@ -49,3 +49,47 @@ export function usePaperSplit() {
       : null,
   };
 }
+
+const MIN_FILES = 150;
+const MAX_FILES = 420;
+
+/** The Files tree's width beside the editor: dragged by the viewer and kept per browser,
+ * like the editor's. The handle shows only while the tree sits in its own column. */
+export function usePaperFilesSplit(shown: boolean) {
+  const [files, setFiles] = useState<HTMLElement | null>(null);
+  const [beside, setBeside] = useState(false);
+  useEffect(() => {
+    if (!files || !shown) {
+      setBeside(false);
+      return;
+    }
+    const measure = () => setBeside(files.getBoundingClientRect().width > 0);
+    const observer = new ResizeObserver(measure);
+    observer.observe(files);
+    measure();
+    return () => observer.disconnect();
+  }, [files, shown]);
+  const split = useStoredSplit(
+    "rcp:paper-files-width",
+    { minimum: MIN_FILES, maximum: MAX_FILES },
+    220,
+  );
+  const sized = beside && split.chosen;
+  return {
+    files: setFiles,
+    sized,
+    style: (sized ? { "--paper-files-width": `${split.width}px` } : {}) as CSSProperties,
+    handle: beside
+      ? {
+          width: split.width,
+          minimum: MIN_FILES,
+          maximum: MAX_FILES,
+          widthAt: (clientX: number) => {
+            const left = files?.getBoundingClientRect().left;
+            return left === undefined ? null : clientX - left;
+          },
+          onResize: split.resize,
+        }
+      : null,
+  };
+}

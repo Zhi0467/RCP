@@ -8,10 +8,18 @@ import {
   experimentBoardRouteToken,
 } from "../experiments/experimentBoardModel";
 import { MAIN_GRAPH, projectViewHash } from "./graphTarget";
-import type { Episode, ExperimentLoopIndexEntry } from "./types";
+import type { Episode, ExperimentLoopIndexEntry, GraphTargetRef } from "./types";
 
 export type NotificationItemKind =
-  "proposal" | "decision" | "blocker" | "episode" | "artifact" | "node" | "paper" | "consolidation";
+  | "proposal"
+  | "decision"
+  | "blocker"
+  | "episode"
+  | "artifact"
+  | "node"
+  | "paper"
+  | "consolidation"
+  | "comment";
 
 export interface NotificationLink {
   projectId: string;
@@ -21,7 +29,7 @@ export interface NotificationLink {
 }
 
 const LINK_PATTERN =
-  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper|consolidation)\/([^/?#]+)$/;
+  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper|consolidation|comment)\/([^/?#]+)$/;
 
 export function buildNotificationLink(link: NotificationLink): string {
   const segment = (value: string) =>
@@ -79,6 +87,42 @@ export function episodeNotificationHash(
     });
   }
   return episodeRunHash(link.projectId, link.itemId, episode, experimentEntries);
+}
+
+/** The fields of `GET …/comment-threads/{t}` that place a thread. */
+export interface CommentThreadPlace {
+  target_kind: "artifact" | "paper" | "reply";
+  target_id: string;
+  /** `main` or `branch:{id}`. */
+  graph_target: string;
+  /** The reply's chat, on `reply` threads only. */
+  chat_id?: string | null;
+}
+
+export function commentThreadGraphTarget(thread: CommentThreadPlace): GraphTargetRef {
+  return thread.graph_target.startsWith("branch:")
+    ? { kind: "branch", branch_id: thread.graph_target.slice("branch:".length) }
+    : MAIN_GRAPH;
+}
+
+/**
+ * A comment opens the view that shows its target: Paper on its file, Chats on
+ * the reply's chat, or Artifacts, where App then opens the artifact itself.
+ */
+export function commentThreadHash(projectId: string, thread: CommentThreadPlace): string {
+  const target = commentThreadGraphTarget(thread);
+  if (thread.target_kind === "paper") {
+    return `${projectViewHash(projectId, target, "paper")}&paper_file=${encodeURIComponent(thread.target_id)}`;
+  }
+  if (thread.target_kind === "reply") {
+    return projectViewHash(
+      projectId,
+      target,
+      "chats",
+      thread.chat_id ? { chatId: thread.chat_id } : {},
+    );
+  }
+  return projectViewHash(projectId, target, "artifacts");
 }
 
 /** The exact run route for one episode id: an Auto-research route, or the Experiment's board entry. */
