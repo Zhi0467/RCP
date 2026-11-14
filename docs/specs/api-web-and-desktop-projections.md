@@ -2328,8 +2328,9 @@ the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 [Comment routes](../../src/rcp/api/comments.py) serve
 [shared comments](paper-artifacts-and-result-views.md#shared-comments) under
 `/api/projects/{project_id}`. `GET comment-threads?target_kind=&target_id=`
-lists a target's threads, and `GET comment-threads/{thread_id}` reads one for a
-link; both need project read. `POST comment-threads` starts a thread, `POST
+lists a target's threads. `GET comment-threads?target_kind=reply&chat_id=` lists
+every reply thread in one chat, so a chat reads its threads in one request.
+`GET comment-threads/{thread_id}` reads one for a link; both need project read. `POST comment-threads` starts a thread, `POST
 comment-threads/{thread_id}/posts` replies, and `POST .../resolve` and `POST
 .../reopen` change its state; these need project write. `PATCH` and `DELETE
 comment-posts/{post_id}` are author-only. `GET comment-mentions` lists the

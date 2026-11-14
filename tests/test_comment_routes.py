@@ -344,3 +344,44 @@ def test_anchor_kinds_follow_target_kind(comments_app, kind, anchor, status):
         json={"target": {"kind": kind, "id": "target"}, "anchor": anchor, "text": "note"},
     )
     assert response.status_code == status, response.text
+
+
+def test_chat_filter_lists_that_chats_reply_threads(comments_app):
+    from rcp.storage import AgentTaskRecord
+
+    _, client, store, project, _ = comments_app
+    private_chat = next(
+        chat
+        for chat in store.ensure_agent_threads("another-member", [project], default_names=("Pip",))
+        if chat.project_id == project
+    )
+    for operation_id, chat_id in (("one", "chat"), ("two", "chat"), ("other", "elsewhere")):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project,
+                kind="project_chat",
+                status="succeeded",
+                request={"chat_id": chat_id},
+                created_at=store.now(),
+                updated_at=store.now(),
+                status_message="completed",
+            )
+        )
+        response = client.post(
+            f"/api/projects/{project}/comment-threads",
+            json={
+                "target": {"kind": "reply", "id": operation_id},
+                "anchor": {"kind": "whole"},
+                "text": operation_id,
+            },
+        )
+        assert response.status_code == 200, response.text
+    base = f"/api/projects/{project}/comment-threads"
+    listed = client.get(base, params={"target_kind": "reply", "chat_id": "chat"}).json()["threads"]
+    assert [thread["target_id"] for thread in listed] == ["one", "two"]
+    assert {thread["chat_id"] for thread in listed} == {"chat"}
+    private = {"target_kind": "reply", "chat_id": private_chat.thread_id}
+    assert client.get(base, params=private).status_code == 404
+    assert client.get(base, params={"target_kind": "paper", "chat_id": "chat"}).status_code == 422
+    assert client.get(base, params={"target_kind": "reply"}).status_code == 422

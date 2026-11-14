@@ -377,6 +377,33 @@ class CommentStoreMixin(StoreMixinBase):
                 )
             ]
 
+    def list_chat_reply_threads(
+        self, project_id: str, chat_id: str, user_id: str
+    ) -> list[tuple[dict[str, Any], CommentTargetRoute]] | None:
+        """Every thread on a reply in `chat_id`, with its route; None when the
+        user cannot read the chat."""
+        store = cast("AppStore", self)
+        with self.connection() as connection:
+            if not live_project_member(connection, project_id, user_id) or _chat_owner(
+                connection, chat_id
+            ) not in {None, user_id}:
+                return None
+            listed: list[tuple[dict[str, Any], CommentTargetRoute]] = []
+            for row in connection.execute(
+                "SELECT thread.thread_id, thread.target_id FROM comment_threads AS thread "
+                "JOIN graph_runs AS run ON run.operation_id=thread.target_id "
+                "WHERE thread.project_id=? AND thread.target_kind='reply' AND run.project_id=? "
+                "AND json_extract(run.request_json, '$.chat_id')=? "
+                "ORDER BY thread.created_at,thread.rowid",
+                (project_id, project_id, chat_id),
+            ).fetchall():
+                route = readable_comment_target(
+                    store, connection, user_id, project_id, "reply", row[1]
+                )
+                if route is not None:
+                    listed.append((_thread(connection, project_id, row[0]), route))
+            return listed
+
     def add_comment_post(
         self, project_id: str, thread_id: str, *, user_id: str, text: str
     ) -> dict[str, Any]:

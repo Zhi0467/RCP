@@ -85,10 +85,20 @@ def list_threads(
     project: ProjectDependency,
     store: StoreDependency,
     target_kind: Literal["artifact", "paper", "reply"],
-    target_id: str,
+    target_id: str | None = None,
+    chat_id: str | None = None,
 ) -> dict[str, object]:
-    route = _route(store, request, project, target_kind, target_id)
+    """One target's threads, or with `chat_id` every reply thread in that chat."""
     sender = _sender(store, request, project)
+    if chat_id is not None and target_id is None and target_kind == "reply":
+        user_id = get_identity_access(request).acting_user(request).user_id
+        listed = store.list_chat_reply_threads(project, chat_id, user_id)
+        if listed is None:
+            raise HTTPException(status_code=404, detail="comment_target_not_found")
+        return {"threads": [_response(thread, route, sender) for thread, route in listed]}
+    if target_id is None or chat_id is not None:
+        raise HTTPException(status_code=422, detail="comment_list_needs_one_target")
+    route = _route(store, request, project, target_kind, target_id)
     return {
         "threads": [
             _response(thread, route, sender)
