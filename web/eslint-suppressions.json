@@ -1311,12 +1311,12 @@
   },
   "tests/paperCoach.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 16
+      "count": 6
     }
   },
   "tests/paperDialogs.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "tests/paperLifecycle.browser.test.mjs": {

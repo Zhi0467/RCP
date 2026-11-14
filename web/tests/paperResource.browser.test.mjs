@@ -4,7 +4,6 @@ import { chromium } from "playwright";
 
 import {
   PaperTestRoom as Room,
-  paperTestCard as card,
   createPaperFixture,
   createPaperTestServer,
   editorMatches,
@@ -137,7 +136,7 @@ test("Paper pending local edits survive reload before the server receives them",
 });
 
 test("Paper fits 390px in Write, Preview, Coach and the file panel", async (t) => {
-  const { page, errors } = await openPaper(t, { width: 390, cards: [{ ...card }] });
+  const { page, errors } = await openPaper(t, { width: 390 });
   for (const panel of ["Write", "Preview", "Coach"]) {
     await page.getByRole("button", { name: panel, exact: true }).first().click();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
@@ -169,27 +168,6 @@ test("Paper refuses editing when local persistence is unavailable and exposes re
   assert.equal(await page.locator(".cm-content").count(), 0);
 });
 
-test("rewrite comparison reads the complete proposed file", async (t) => {
-  const proposed = Array.from({ length: 100 }, (_, index) => `proposed line ${index}`).join("\n");
-  const { page, errors } = await openPaper(t, {
-    width: 390,
-    cards: [
-      {
-        ...card,
-        kind: "rewrite",
-        preview: { removed: ["draft"], added: ["preview only"], more: 99 },
-      },
-    ],
-    proposedTexts: { c1: proposed },
-  });
-  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
-  await page.getByRole("button", { name: "Compare", exact: true }).click();
-  const texts = page.getByRole("dialog", { name: "Compare change" }).locator("pre");
-  await texts.nth(1).waitFor();
-  assert.deepEqual(await texts.allTextContents(), ["draft", proposed]);
-  assert.deepEqual(errors, []);
-});
-
 test("cancelling failed delete and rename removes their retry authority", async (t) => {
   const { page } = await openPaper(t);
   const menu = async (action) => {
@@ -216,32 +194,6 @@ test("cancelling failed delete and rename removes their retry authority", async 
     assert.equal(await page.getByRole("button", { name: "Retry file operation" }).count(), 0);
     assert.equal(await page.locator(".paper-files.paper-failed").count(), 0);
   }
-});
-
-test("Locate waits for an unopened file's server text", async (t) => {
-  const { page, context } = await openPaper(t, {
-    cards: [
-      {
-        ...card,
-        file_id: "f2",
-        lines: { start: 3, end: 3 },
-        current: { start: 8, end: 13, revision: 1, text: "draft" },
-      },
-    ],
-    configure: ({ tree }) =>
-      tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" }),
-  });
-  const room = new Room();
-  room.doc.getText("text").insert(0, "one\ntwo\n");
-  room.hold = true;
-  await context.routeWebSocket(/\/files\/f2\/live$/, (socket) => room.connect(socket));
-  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
-  await page.getByRole("button", { name: "Locate change", exact: true }).click();
-  await page.waitForFunction(() => document.querySelector(".cm-content")?.textContent === "");
-  room.flush();
-  await page.waitForFunction(() =>
-    document.querySelector(".paper-position")?.textContent.includes("Ln 3,"),
-  );
 });
 
 test("superseded LaTeX compilation keeps the existing PDF and offers Retry", async (t) => {
@@ -282,36 +234,6 @@ test("superseded LaTeX compilation keeps the existing PDF and offers Retry", asy
   await page.getByRole("button", { name: "Retry preview" }).click();
   await page.locator(".paper-compiled-preview:not(.paper-failed)").waitFor();
   assert.match(await download.getAttribute("href"), /compile\/good3\/pdf$/);
-});
-
-test("insertion refreshes use current anchors without downloading base files", async (t) => {
-  const insertion = {
-    ...card,
-    current: { start: 5, end: 5, revision: 1, text: "" },
-    preview: { removed: [], added: ["suggested"], more: 0 },
-  };
-  let currentTree;
-  const { page, requests } = await openPaper(t, {
-    cards: [insertion],
-    configure: ({ tree }) => {
-      currentTree = tree;
-    },
-  });
-  await page.locator(".paper-inline-suggestion").waitFor();
-  await page.locator(".cm-content").click();
-  await page.keyboard.press("ControlOrMeta+Home");
-  const refreshed = page.waitForResponse((response) => response.url().endsWith("/paper/changes"));
-  await page.keyboard.insertText("prefix ");
-  insertion.current = { start: 12, end: 12, revision: 2, text: "" };
-  currentTree.revision = 2;
-  currentTree.saved_revision = 2;
-  await refreshed;
-  await page.locator(".paper-inline-suggestion").waitFor();
-  assert.equal(await page.locator(".paper-inline-suggestion").count(), 1);
-  assert.deepEqual(
-    requests.filter((url) => /\/raw\?revision=/.test(url)),
-    [],
-  );
 });
 
 test("folder uploads select the new file and require confirmation before replacing an existing path", async (t) => {
@@ -474,40 +396,6 @@ test("compile diagnostics open a readable phone dialog with retry", async (t) =>
   assert.ok(await opener.evaluate((element) => document.activeElement === element));
 });
 
-test("repeated same lines paint and locate the verified current range, then hide on local replacement", async (t) => {
-  const room = new Room();
-  room.doc.getText("text").delete(0, 5);
-  room.doc.getText("text").insert(0, "same\nsame\nsame");
-  const { page } = await openPaper(t, {
-    room,
-    initialText: "same\nsame\nsame",
-    cards: [
-      {
-        ...card,
-        lines: { start: 1, end: 1 },
-        current: { start: 5, end: 9, revision: 1, text: "same" },
-        preview: { removed: ["same"], added: ["new"], more: 0 },
-      },
-    ],
-  });
-  await page.locator(".paper-deletion").waitFor();
-  assert.deepEqual(
-    await page
-      .locator(".cm-line")
-      .evaluateAll((lines) => lines.map((line) => !!line.querySelector(".paper-deletion"))),
-    [false, true, false],
-  );
-  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
-  await page.getByRole("button", { name: "Locate change", exact: true }).click();
-  await page.waitForFunction(() =>
-    document.querySelector(".paper-position")?.textContent.includes("Ln 2,"),
-  );
-  await page.keyboard.press("Shift+End");
-  await page.keyboard.insertText("gone");
-  await page.waitForFunction(() => !document.querySelector(".paper-inline-suggestion"));
-  assert.equal(await page.locator(".paper-deletion").count(), 0);
-});
-
 const secondFile = ({ tree }) =>
   tree.files.push({ ...tree.files[0], file_id: "f2", path: "second.md" });
 
@@ -636,26 +524,6 @@ test("a deleted file can be recreated without losing its unsent text", async (t)
   const restored = fixture.tree.files.find((file) => file.path === "second.md");
   assert.notEqual(restored.file_id, "f2");
   assert.equal(fixture.rooms.get(restored.file_id).doc.getText("text").toString(), "draft unsent");
-});
-
-test("a refused card decision refreshes the cards and keeps their actions; only server failures retry", async (t) => {
-  const { page, context } = await openPaper(t, { width: 390, cards: [{ ...card }] });
-  let status = 409;
-  await context.route("**/changes/g1/accept", (route) =>
-    route.fulfill({ status, json: { detail: "Paper change is outdated" } }),
-  );
-  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
-  const change = page.locator('[data-change-id="c1"]');
-  const reloaded = page.waitForResponse((response) => response.url().endsWith("/paper/changes"));
-  await change.getByRole("button", { name: "Accept change" }).click();
-  await reloaded;
-  await page.locator('[data-change-id="c1"].paper-failure').waitFor();
-  assert.equal(await change.getByRole("button", { name: "Retry change" }).count(), 0);
-  status = 503;
-  await change.getByRole("button", { name: "Accept change" }).click();
-  await change.getByRole("button", { name: "Retry change" }).waitFor();
-  for (const name of ["Retry change", "Accept change", "Reject change"])
-    assert.ok(await insideViewport(change.getByRole("button", { name })));
 });
 
 test("a failed engine install shows as the compile error with its log and retry", async (t) => {

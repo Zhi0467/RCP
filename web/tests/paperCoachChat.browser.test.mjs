@@ -130,8 +130,5 @@ for (const width of [1280, 390])
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/coach-${width}.png` });
     await diff.getByRole("button", { name: "Close diff" }).click();
     await diff.waitFor({ state: "detached" });
-    assert.deepEqual(
-      errors.filter((message) => !message.startsWith("Failed to load resource")),
-      [],
-    );
+    assert.deepEqual(errors, []);
   });

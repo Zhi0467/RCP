@@ -120,24 +120,8 @@ export const paperTestTree = {
   revision: 1,
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
-export const paperTestCard = {
-  change_id: "c1",
-  group_id: "g1",
-  task_id: "t1",
-  kind: "edit",
-  file_id: "f1",
-  path: "intro.md",
-  lines: { start: 1, end: 1 },
-  preview: { removed: ["draft"], added: ["revised"], more: 0 },
-  state: "pending",
-};
-
 /** The REST contract behind each test page's routes. */
-export function createPaperFixture({
-  room = new PaperTestRoom(),
-  cards = [],
-  proposedTexts = {},
-} = {}) {
+export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
   const tree = structuredClone(paperTestTree);
   const posts = [];
   const threads = [];
@@ -171,7 +155,6 @@ export function createPaperFixture({
     room,
     rooms,
     tree,
-    cards,
     posts,
     threads,
     versions,
@@ -200,6 +183,8 @@ export function createPaperFixture({
       if (path.endsWith("/chat-reads"))
         return { json: { baseline: "", reads: {}, latest_finished: {}, archived: [] } };
       if (/\/chats\/[^/]+\/questions$/.test(path)) return { json: [] };
+      if (/\/chats\/[^/]+\/browser$/.test(path)) return { json: { browser_requested: false } };
+      if (path === "/api/service-connections") return { json: { dictation: "", connections: [] } };
       if (/\/chats\/[^/]+\/worktree$/.test(path))
         return {
           json: {
@@ -238,27 +223,6 @@ export function createPaperFixture({
         return {
           json: { latex: "ready", typst: "ready", errors: { latex: null, typst: null } },
         };
-      if (path.endsWith("/changes"))
-        return {
-          json: {
-            groups: cards.map((change) => ({
-              base_revision: 1,
-              group_id: change.group_id,
-              task_id: change.task_id,
-              changes: [change],
-            })),
-          },
-        };
-      const proposed = path.match(/\/changes\/([^/]+)\/proposed$/);
-      if (proposed && proposed[1] in proposedTexts)
-        return { body: proposedTexts[proposed[1]], contentType: "text/plain" };
-      if (/\/changes\/[^/]+\/accept$/.test(path)) return { json: {} };
-      const rejected = path.match(/\/changes\/([^/]+)\/reject$/);
-      if (rejected) {
-        for (const change of cards.filter((item) => item.group_id === rejected[1]))
-          change.state = "rejected";
-        return { json: {} };
-      }
       if (method === "POST" && (path.endsWith("/files") || path.endsWith("/uploads"))) {
         const file_id = `f${nextFile++}`;
         const text = body.text ?? "";
@@ -416,8 +380,6 @@ export async function openPaper(
     room = new PaperTestRoom(),
     width = 1280,
     height = 844,
-    cards = [],
-    proposedTexts = {},
     initialText = "draft",
     touch = false,
     configure = () => {},
@@ -438,7 +400,7 @@ export async function openPaper(
   const errors = [];
   const requests = [];
   page.on("request", (request) => requests.push(request.url()));
-  const fixture = createPaperFixture({ room, cards, proposedTexts });
+  const fixture = createPaperFixture({ room });
   configure(fixture);
   const posts = fixture.posts;
   page.on("pageerror", (error) => errors.push(error.message));

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright";
-import { createPaperTestServer, openPaper, paperTestCard } from "./paperTestServer.mjs";
+import { createPaperTestServer, openPaper } from "./paperTestServer.mjs";
 
 let server, browser;
 before(async () => {
@@ -18,14 +18,6 @@ async function open(t, width = 390, height = 600) {
     origin: server.origin,
     width,
     height,
-    cards: [
-      {
-        ...paperTestCard,
-        kind: "rewrite",
-        current: { start: 0, end: 5, revision: 1, text: "draft" },
-      },
-    ],
-    proposedTexts: { c1: "revised" },
   });
   return page;
 }
@@ -51,41 +43,10 @@ test("Paper dialog contains keyboard focus and restores the opener", async (t) =
   assert.ok(await opener.evaluate((element) => document.activeElement === element));
 });
 
-test("coach settings stay within a short phone pane and scroll to the last control", async (t) => {
-  const page = await open(t);
-  await page.getByRole("button", { name: "Coach", exact: true }).filter({ visible: true }).click();
-  await page.getByRole("textbox", { name: "Message", exact: true }).evaluate((textarea) => {
-    textarea.style.height = "180px";
-  });
-  const chip = page.getByRole("button", { name: /^Coach agent:/ });
-  await chip.click();
-  const popover = page.locator(".paper-agent-popover");
-  const pane = await page.locator(".paper-coach").boundingBox();
-  const bounds = await popover.boundingBox();
-  assert.ok(bounds.y >= pane.y && bounds.y + bounds.height <= pane.y + pane.height);
-  // The panel never covers the chip that opened it.
-  assert.ok(bounds.y + bounds.height <= (await chip.boundingBox()).y);
-  assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);
-  for (const field of await popover
-    .locator("button:visible, input:visible, select:visible")
-    .all()) {
-    await field.scrollIntoViewIfNeeded();
-    const control = await field.boundingBox();
-    assert.ok(control.y >= bounds.y && control.y + control.height <= bounds.y + bounds.height + 1);
-  }
-  await page.keyboard.press("Escape");
-  await popover.waitFor({ state: "detached" });
-  await chip.click();
-  await popover.waitFor();
-  await chip.click();
-  await popover.waitFor({ state: "detached" });
-});
-
 test("Paper phone icon actions retain 44px touch targets", async (t) => {
   const page = await open(t);
   for (const panel of ["Write", "Coach"]) {
     await page.getByRole("button", { name: panel, exact: true }).first().click();
-    if (panel === "Write") await page.getByRole("button", { name: "Next suggestion" }).waitFor();
     const sizes = await page
       .locator(".paper-live-workspace .icon-button:visible")
       .evaluateAll((buttons) =>
