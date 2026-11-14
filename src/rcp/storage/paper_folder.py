@@ -1,4 +1,5 @@
-"""SQLite caches beside the Paper folder: revision counter, buffer hashes, turn writes."""
+"""SQLite caches beside the Paper folder: revision counter, buffer hashes, turn writes,
+and the marker of each project whose SQLite-held Paper moved into its folder."""
 
 from __future__ import annotations
 
@@ -36,5 +37,8 @@ def migrate_paper_folder(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         "CREATE INDEX paper_turn_files_operation ON paper_turn_files(project_id, operation_id)"
+    )
+    connection.execute(
+        "CREATE TABLE paper_migrations (project_id TEXT PRIMARY KEY, migrated_at TEXT NOT NULL)"
     )
     install_paper_state_versions(connection)

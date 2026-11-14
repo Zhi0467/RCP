@@ -18,6 +18,7 @@ from rcp.core.models import HiddenReadScope
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
 from rcp.machine_cards import host_of
+from rcp.paper.folder import change_project_paper
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, ProjectRecord
@@ -64,7 +65,7 @@ def acquire_turn_browser(
 ) -> BrowserGrant:
     if not requested:
         return BrowserGrant()
-    if capability not in {"work_auto", "orchestrate", "discuss", "paper_suggest"}:
+    if capability not in {"work_auto", "orchestrate", "discuss"}:
         return BrowserGrant(requested=True, status="unavailable", reason_code="capability_denied")
     if store is None or project_id is None:
         return BrowserGrant(requested=True, status="unavailable", reason_code="owner_unavailable")
@@ -172,6 +173,7 @@ def _retry_memory_cleanup(store: AppStore) -> None:
         for pending in pending_memory:
             try:
                 project = ProjectRecord.model_validate_json(pending["project_json"])
+                change_project_paper(store, project, None)
                 change_project_memory(store, project, None)
                 with store.connection() as connection:
                     connection.execute(
@@ -327,11 +329,11 @@ async def browser_turn(
 ) -> AsyncIterator[BrowserGrant]:
     """Resolve before rendering; release even if rendering or staging fails."""
     from rcp.runs.auto_research import AutoResearchRunRequest
-    from rcp.service import CoachRequest, RunRequest
+    from rcp.service import RunRequest
 
     requested = (
         request.browser_requested
-        if isinstance(request, (RunRequest, AutoResearchRunRequest, CoachRequest))
+        if isinstance(request, (RunRequest, AutoResearchRunRequest))
         else False
     )
     chat_id = request.chat_id if isinstance(request, RunRequest) else None

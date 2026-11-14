@@ -615,6 +615,7 @@ class ProjectStoreMixin(StoreMixinBase):
                     "paper_git_links",
                     "paper_state",
                     "paper_turn_files",
+                    "paper_migrations",
                     *reversed(PAPER_PROJECT_TABLES),
                 ):
                     if table in existing_tables:

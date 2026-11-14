@@ -35,8 +35,7 @@ export type SteerReceiptStatus = {
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
-export type AgentCapability =
-  "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";
+export type AgentCapability = "discuss" | "work_auto" | "orchestrate" | "scratch_patch";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -2300,6 +2299,8 @@ export interface AgentTaskResult {
   artifact_edit_outcomes?: ArtifactEditOutcome[];
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
+  /** A retired Paper coach turn, rendered as text when its Paper migrated. */
+  transcript?: string;
   [key: string]: unknown;
 }
 
@@ -3232,7 +3233,6 @@ export interface ProjectSnapshot {
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
   graph: GraphState;
-  paper: boolean;
   paper_coach: {
     default_provider: ProviderId;
     default_model: string;

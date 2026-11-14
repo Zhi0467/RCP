@@ -18,7 +18,7 @@ from rcp.providers import profile_for
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import SpaceMachineRecord
 
-CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch", "paper_suggest")
+CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch")
 
 
 def _scope(home: str = "/home/research") -> HiddenReadScope:
@@ -60,7 +60,7 @@ def test_claude_all_capabilities_render_scope(capability, tmp_path):
         session_id=None,
         read_dirs=[],
         capability=capability,
-        write_dirs=[tmp_path / "changes"] if capability == "paper_suggest" else [],
+        write_dirs=[],
         hidden_read_scope=scope,
         provider_version="2.1.288",
         write_scope=_write_scope(tmp_path, capability),

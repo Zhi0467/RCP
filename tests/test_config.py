@@ -68,7 +68,7 @@ def test_capability_permissions_are_fixed_and_narrow() -> None:
     discuss = permissions_for("discuss")
     work = permissions_for("work_auto")
     scratch = permissions_for("scratch_patch")
-    paper = permissions_for("paper_suggest")
+    paper = permissions_for("paper_coach")
 
     assert discuss.write_graph_patch is False
     assert discuss.write_project_files is False
@@ -76,8 +76,9 @@ def test_capability_permissions_are_fixed_and_narrow() -> None:
     assert work.write_project_files is True
     assert scratch.write_graph_patch is True
     assert scratch.write_project_files is False
-    assert paper.write_graph_patch is False
-    assert paper.write_project_files is False
+    assert paper.write_project_files is True
+    assert paper.write_paper is True
+    assert work.write_paper is False
 
 
 def test_orchestrate_is_a_distinct_capability_with_work_permissions() -> None:
@@ -345,9 +346,27 @@ def test_exact_legacy_chat_permissions_load_as_work(manifest, legacy, surface) -
     assert migrated.agent_profile(surface).permissions == permissions_for("work_auto")
 
 
+def test_retired_coach_permissions_load_as_the_paper_chat_table(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["agent"]["paper_coach"]["permissions"] = {
+        "read_graph": True,
+        "read_research_md": True,
+        "read_introduction": True,
+        "read_repositories": "project_scope",
+        "read_conversations": "none",
+        "write_graph_patch": False,
+        "write_project_files": False,
+        "write_paper": False,
+    }
+
+    migrated = Manifest.model_validate(payload)
+
+    assert migrated.agent_profile("paper_coach").permissions == permissions_for("paper_coach")
+
+
 def test_other_chat_permissions_are_still_refused(manifest) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["agent"]["node_chat"]["permissions"] = permissions_for("paper_suggest").model_dump(
+    payload["agent"]["node_chat"]["permissions"] = permissions_for("paper_coach").model_dump(
         mode="python"
     )
 

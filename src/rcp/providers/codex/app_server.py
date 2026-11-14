@@ -16,7 +16,6 @@ from rcp.providers.base import (
     ProviderTurn,
     ProviderTurnRequest,
     ProviderUsage,
-    _paper_write_roots,
     _require_project_write_scope,
     _require_provider_version,
 )
@@ -25,7 +24,6 @@ from rcp.providers.codex.profile import (
     _codex_autocompact_config,
     _codex_discuss_permission_profile,
     _codex_environment_config,
-    _codex_paper_permission_profile,
     _codex_permission_profile,
     _codex_shell_environment_policy,
     _codex_stage_permission_profile,
@@ -115,22 +113,6 @@ class _CodexAppServerTurn(ProviderTurn):
             )
         elif request.capability == "session_summary":
             command.extend(_codex_summary_config(request.hidden_read_scope))
-        elif request.capability == "paper_suggest":
-            if request.write_scope is not None:
-                raise ValueError("paper_suggest cannot carry a project write scope")
-            command.extend(["--enable", "shell_tool"])
-            command.extend(
-                [
-                    "--config",
-                    'approval_policy="never"',
-                    "--config",
-                    'default_permissions="rcp_paper"',
-                    "--config",
-                    _codex_paper_permission_profile(
-                        _paper_write_roots(request.write_dirs), request.hidden_read_scope
-                    ),
-                ]
-            )
         elif request.capability == "discuss":
             if request.write_scope is not None:
                 raise ValueError("Discuss cannot carry a project write scope")
@@ -364,9 +346,7 @@ class _CodexAppServerTurn(ProviderTurn):
         return ProviderRuntimeStep()
 
     def _thread_params(self, config: dict[str, object]) -> dict[str, object]:
-        if self._request.capability == "paper_suggest":
-            config = {**config, "features": {"shell_tool": True}}
-        elif self._request.capability == "session_summary":
+        if self._request.capability == "session_summary":
             config = {
                 **config,
                 "agents": {"enabled": False},
@@ -396,8 +376,6 @@ class _CodexAppServerTurn(ProviderTurn):
             params["permissions"] = "rcp_project"
         elif self._request.capability == "session_summary":
             params["permissions"] = "rcp_summary"
-        elif self._request.capability == "paper_suggest":
-            params["permissions"] = "rcp_paper"
         elif self._request.capability == "discuss":
             params["permissions"] = "rcp_discuss"
         elif self._request.hidden_read_scope is not None:
@@ -417,7 +395,7 @@ class _CodexAppServerTurn(ProviderTurn):
         }
         if (
             not self._work_like
-            and self._request.capability not in {"discuss", "paper_suggest", "session_summary"}
+            and self._request.capability not in {"discuss", "session_summary"}
             and self._request.hidden_read_scope is None
         ):
             params["sandboxPolicy"] = _sandbox_policy(
@@ -430,7 +408,7 @@ class _CodexAppServerTurn(ProviderTurn):
             return "Codex app-server did not apply RCP's noninteractive approval policy."
         if (
             self._work_like
-            or self._request.capability in {"discuss", "paper_suggest", "session_summary"}
+            or self._request.capability in {"discuss", "session_summary"}
             or self._request.hidden_read_scope is not None
         ):
             expected = (
@@ -438,8 +416,6 @@ class _CodexAppServerTurn(ProviderTurn):
                 if self._work_like
                 else "rcp_summary"
                 if self._request.capability == "session_summary"
-                else "rcp_paper"
-                if self._request.capability == "paper_suggest"
                 else "rcp_discuss"
                 if self._request.capability == "discuss"
                 else "rcp_stage"

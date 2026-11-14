@@ -79,7 +79,6 @@ from rcp.api.notifications import router as notifications_router
 from rcp.api.owner import router as owner_router
 from rcp.api.paper import PaperUploadBodyLimit, is_paper_upload
 from rcp.api.paper import router as paper_router
-from rcp.api.paper_changes import router as paper_changes_router
 from rcp.api.paper_compile import assets_router as paper_assets_router
 from rcp.api.paper_compile import router as paper_compile_router
 from rcp.api.paper_git import router as paper_git_router
@@ -203,7 +202,6 @@ from rcp.runs.tasks.auto_research_stream import (
     stream_auto_research_worker_run,
 )
 from rcp.runs.tasks.branch_merge import stream_branch_merge_task
-from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
@@ -251,7 +249,6 @@ from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
-    CoachRequest,
     ProjectService,
     RunRequest,
 )
@@ -860,7 +857,6 @@ def create_app(
             store.require_project_accepts_new_work(project_id)
             yield
 
-    catalog.paper_admission = paper_admission
     paper_git = PaperGit(
         store,
         paper_live,
@@ -1079,21 +1075,6 @@ def create_app(
                     app_data,
                     episode=episode,
                     task=task,
-                    execution=execution,
-                )
-            ) as stream:
-                async for frame in stream:
-                    yield frame
-            return
-        if kind == "paper_coach":
-            assert isinstance(request, CoachRequest)
-            async with aclosing(
-                stream_coach(
-                    service,
-                    launcher,
-                    service.paper,
-                    request,
-                    app_data,
                     execution=execution,
                 )
             ) as stream:
@@ -2120,6 +2101,7 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                await asyncio.to_thread(catalog.migrate_papers)
                 await paper_live.start()
                 register_paper_live(store, paper_live)
                 await asyncio.to_thread(paper_git.reconcile)
@@ -2852,7 +2834,6 @@ def create_app(
     app.include_router(paper_git_router)
     app.include_router(paper_live_router)
     app.include_router(paper_turns_router)
-    app.include_router(paper_changes_router)
     app.include_router(paper_compile_router)
     app.include_router(paper_assets_router)
     app.include_router(result_views_router)
@@ -2950,10 +2931,8 @@ def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRe
 
 
 def _experiment_control_node_id(
-    request: RunRequest | CoachRequest | dict[str, object],
+    request: RunRequest | dict[str, object],
 ) -> str | None:
-    if isinstance(request, CoachRequest):
-        return None
     if isinstance(request, RunRequest):
         patch_kind = request.patch_kind
         node_id = request.control_node_id

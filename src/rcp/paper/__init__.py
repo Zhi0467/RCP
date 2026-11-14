@@ -6,7 +6,7 @@ from rcp.paper.models import (
     PaperOp,
     PaperSnapshot,
 )
-from rcp.paper.service import PaperService, WritingSession
+from rcp.paper.service import PaperService
 
 __all__ = [
     "PaperConflict",
@@ -16,5 +16,4 @@ __all__ = [
     "PaperOp",
     "PaperService",
     "PaperSnapshot",
-    "WritingSession",
 ]

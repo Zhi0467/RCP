@@ -1050,25 +1050,6 @@ def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scrat
     assert not any("/project/repo-" in argument for argument in command)
 
 
-def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
-    research_dir = Path("/project/.research")
-    command = _command(
-        "codex",
-        "review the paper introduction",
-        cwd=research_dir,
-        read_dirs=[Path("/project/repo-a")],
-        capability="paper_suggest",
-        write_dirs=[Path("/stage/changes")],
-        provider_version="2.200.0",
-    )
-
-    assert 'default_permissions="rcp_paper"' in command
-    assert command[command.index("--cd") + 1] == str(research_dir)
-    assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" not in command
-    assert 'approval_policy="never"' in command
-
-
 @pytest.mark.parametrize(
     ("session_id", "read_dirs", "write_dirs"),
     [
@@ -1317,27 +1298,6 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
         )
 
 
-def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
-    session_id = "019f0000-0000-7000-8000-000000000001"
-    command = _command(
-        "codex",
-        "continue reviewing the introduction",
-        cwd=Path("/project/.research"),
-        session_id=session_id,
-        capability="paper_suggest",
-        write_dirs=[Path("/stage/changes")],
-        provider_version="2.200.0",
-    )
-
-    assert command[:4] == ["codex", "exec", "resume", "--json"]
-    assert "--sandbox" not in command
-    assert "--cd" not in command
-    assert 'default_permissions="rcp_paper"' in command
-    assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" not in command
-    assert command[-2:] == [session_id, "-"]
-
-
 def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
     """Read context is read-only rules, one set per distinct directory, never --add-dir."""
     command = _command(
@@ -1370,25 +1330,6 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
         for directory in ("project/repo-a", "sessions")
         for tool in ("Read", "Glob", "Grep")
     ]
-
-
-def test_claude_coach_command_scopes_edits() -> None:
-    command = _command(
-        "claude",
-        "review the paper introduction",
-        cwd=Path("/project/.research"),
-        session_id="paper-session",
-        read_dirs=[Path("/project/.research")],
-        capability="paper_suggest",
-        write_dirs=[Path("/stage/changes")],
-        provider_version="2.200.0",
-    )
-
-    assert command[command.index("--permission-mode") + 1] == "dontAsk"
-    assert "acceptEdits" not in command
-    assert "Edit(//stage/changes/**)" in command
-    assert "Bash" in command[command.index("--tools") + 1].split(",")
-    assert command[command.index("--resume") + 1] == "paper-session"
 
 
 @pytest.mark.parametrize(

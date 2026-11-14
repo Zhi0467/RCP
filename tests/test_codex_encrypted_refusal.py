@@ -58,7 +58,7 @@ def test_app_server_preserves_encrypted_refusal(
             read_dirs=[],
             write_dirs=[tmp_path],
             write_scope=None,
-            capability="paper_suggest",
+            capability="discuss",
             provider_version="0.165.0",
         )
     )
@@ -77,7 +77,7 @@ def test_app_server_preserves_encrypted_refusal(
                         "thread": {"id": thread_id},
                         "approvalPolicy": "never",
                         "sandbox": {"type": "readOnly"},
-                        "activePermissionProfile": {"id": "rcp_paper"},
+                        "activePermissionProfile": {"id": "rcp_discuss"},
                     },
                 }
             )

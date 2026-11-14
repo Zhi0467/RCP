@@ -14,12 +14,10 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.background import AgentTaskExecution
 from rcp.runs.chat import _local_chat_artifact_directory, chat_continuation_master
-from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 from tests.helpers import signed_in_client
-from tests.paper_helpers import start_paper
 
 from .helpers import (
     agent_patch_json,
@@ -662,69 +660,6 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
     assert "handoff artifact" in retained.read_text(encoding="utf-8")
 
 
-def test_same_provider_paper_coach_retry_receives_exact_failure(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    """The Retry is inline with current diagnostics and request, the master a pointer opened now or
-    held already.
-    """
-    from rcp.agents import hidden_read
-
-    host_facts = hidden_read.host_facts
-    monkeypatch.setattr(
-        hidden_read,
-        "host_facts",
-        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
-    )
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    start_paper(app.state.paper_live)
-    service = app.state.service
-    failure = "Paper coach provider failed while examining the introduction."
-    objective = "Review the introduction's causal argument."
-    launcher = _FailThenSucceedLauncher(failure)
-
-    async def stream(_project_id, kind, request, execution):
-        assert kind == "paper_coach"
-        async for frame in stream_coach(
-            service,
-            launcher,
-            service.paper,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    _, retried = _retry_task(
-        client,
-        project_id,
-        "paper_coach",
-        {"message": objective},
-    )
-
-    assert launcher.sessions == [None, launcher.native_session_id]
-    assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
-    prompt = launcher.prompts[1]
-    token = retried["operation_id"]
-    store = app.state.background_tasks.store
-    assert store.agent_task_contract(str(token), "paper_coach_retry") == prompt
-    diagnostics = launcher.input_snapshots[1][f"task-{token}-retry-diagnostics.json"]
-    assert json.loads(diagnostics) == {
-        "diagnostics": [f"Attempt 1 (failed) failed with: {failure}"]
-    }
-    master = _master_path(prompt)
-    assert master is not None and master.read_text(encoding="utf-8") not in prompt
-    bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
-    sent = prompt + (master.read_text(encoding="utf-8") if bootstrap else "")
-    assert f"task-{token}-retry-diagnostics.json" in sent
-    assert f"task-{token}-human-request.txt" in sent
-    assert graph_rules(edits=False, ontology_extensions=False) not in prompt
-    _assert_retry_receipt(app, str(retried["operation_id"]))
-
-
 @pytest.mark.parametrize("kind", ["node_chat"])
 @pytest.mark.parametrize("recovery", ["resume", "retry"])
 def test_recovery_delivers_current_guidance_in_the_retained_session(
@@ -749,14 +684,8 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
 
     async def stream(_project_id, task_kind, request, execution):
         assert task_kind == kind
-        frames = (
-            stream_coach(
-                service, launcher, service.paper, request, tmp_path / "data", execution=execution
-            )
-            if kind == "paper_coach"
-            else stream_discuss_run(
-                service, launcher, request, tmp_path / "data", execution=execution
-            )
+        frames = stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
         )
         async for frame in frames:
             yield frame
@@ -781,9 +710,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
             response.json()["operation_id"],
             expect="paused" if recovery == "resume" else "failed",
         )
-        factory_name = (
-            "paper_coach_task_contract" if kind == "paper_coach" else "discuss_task_contract"
-        )
+        factory_name = "discuss_task_contract"
         original_factory = getattr(PromptFactory, factory_name)
         updated_guidance = "Current guidance: preserve uncertainty in the explanation."
 

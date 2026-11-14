@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.context import CoachContext
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
@@ -46,7 +45,7 @@ from rcp.providers import (
 from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
-from rcp.service import CoachRequest, ProjectService, RunRequest
+from rcp.service import ProjectService, RunRequest
 from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES, MACHINE_LOGIN_ID
 from rcp.transport import RemoteRunStage, StateUnavailable, StateUnreachable
 from rcp.transport.remote_stage_root import READ_CONTEXT_INPUT, prepare_read_context_input
@@ -712,7 +711,7 @@ def note_link_lost_before_provider(
 
 def _record_agent_launch_receipt(
     execution: AgentTaskExecution | None,
-    request: RunRequest | CoachRequest,
+    request: RunRequest,
     *,
     prompt: str,
     contract_path: str,
@@ -802,7 +801,7 @@ class _ProviderOutcome:
 
 async def _prepare_hidden_read_scope(
     service: ProjectService,
-    request: RunRequest | CoachRequest,
+    request: RunRequest,
     *,
     workspace: Path,
     remote_stage: RemoteRunStage | None,
@@ -879,7 +878,7 @@ async def _prepare_hidden_read_scope(
 
 async def _stream_agent_events(
     launcher: AgentLauncher,
-    request: RunRequest | CoachRequest,
+    request: RunRequest,
     prompt: str,
     *,
     workspace: Path,
@@ -1405,7 +1404,7 @@ def stage_branch_read_context(
 
 
 def _stage_context_paths(
-    context: RunContext | ChatContext | CoachContext,
+    context: RunContext | ChatContext,
     service: ProjectService,
     stage: RemoteRunStage,
     machine_id: str,

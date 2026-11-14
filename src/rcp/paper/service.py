@@ -3,19 +3,9 @@ from __future__ import annotations
 import codecs
 import os
 import stat
-from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, model_validator
-
 from rcp.config import Manifest
-from rcp.providers import (
-    ProviderId,
-    legacy_runtime_id,
-    profile_for,
-    require_runtime_id,
-    runtime_label,
-)
 from rcp.storage import AppStore
 from rcp.transport import LocalStateWorkspace, StateWorkspace
 
@@ -40,35 +30,6 @@ def validate_canonical_introduction_backup(path: Path) -> None:
         raise ValueError("The copied Paper introduction is not UTF-8 Markdown.") from exc
     finally:
         os.close(descriptor)
-
-
-class WritingSession(BaseModel):
-    provider: ProviderId
-    runtime_id: str = ""
-    #: The human-facing name for `runtime_id`, filled from the provider registry.
-    runtime_label: str = ""
-    #: The umbrella provider name the session list shows.
-    provider_label: str = ""
-    native_session_id: str
-    machine_id: str
-    project_id: str
-    title: str | None = None
-    model: str
-    reasoning: str | None = None
-    created_at: datetime
-    last_resumed_at: datetime
-    introduction_hash_examined: str
-    graph_revision_examined: int
-    research_md_hash_examined: str
-
-    @model_validator(mode="after")
-    def validate_runtime(self) -> WritingSession:
-        if not self.runtime_id:
-            self.runtime_id = legacy_runtime_id(self.provider)
-        require_runtime_id(self.provider, self.runtime_id)
-        self.runtime_label = runtime_label(self.provider, self.runtime_id)
-        self.provider_label = profile_for(self.provider).label
-        return self
 
 
 class PaperService:
@@ -104,40 +65,3 @@ class PaperService:
             expected_sha256=expected_sha256,
             expected_size=expected_size,
         )
-
-    def sessions(self) -> list[WritingSession]:
-        with self.store.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM writing_sessions WHERE project_id = ? ORDER BY last_resumed_at DESC",
-                (self.project_id,),
-            ).fetchall()
-        return [WritingSession.model_validate(dict(row)) for row in rows]
-
-    def record_session(self, session: WritingSession) -> None:
-        data = session.model_dump(mode="json")
-        with self.store.connection() as connection:
-            connection.execute(
-                """
-                INSERT INTO writing_sessions (
-                    native_session_id, provider, runtime_id, machine_id, project_id,
-                    title, model, reasoning, created_at, last_resumed_at,
-                    introduction_hash_examined, graph_revision_examined,
-                    research_md_hash_examined
-                ) VALUES (
-                    :native_session_id, :provider, :runtime_id, :machine_id, :project_id,
-                    :title, :model, :reasoning, :created_at, :last_resumed_at,
-                    :introduction_hash_examined, :graph_revision_examined,
-                    :research_md_hash_examined
-                )
-                ON CONFLICT(native_session_id) DO UPDATE SET
-                    runtime_id = excluded.runtime_id,
-                    model = excluded.model,
-                    reasoning = excluded.reasoning,
-                    title = excluded.title,
-                    last_resumed_at = excluded.last_resumed_at,
-                    introduction_hash_examined = excluded.introduction_hash_examined,
-                    graph_revision_examined = excluded.graph_revision_examined,
-                    research_md_hash_examined = excluded.research_md_hash_examined
-                """,
-                data,
-            )

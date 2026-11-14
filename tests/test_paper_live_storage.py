@@ -33,7 +33,7 @@ def test_paper_schema_fresh_and_upgrade_preserve_legacy_rows(tmp_path, upgrade):
             ("legacy", "draft text", "base-hash", store.now(), "ancestor text"),
         )
         if upgrade:
-            for table in (*PAPER_TABLES, "paper_state", "paper_turn_files"):
+            for table in (*PAPER_TABLES, "paper_state", "paper_turn_files", "paper_migrations"):
                 connection.execute(f'DROP TABLE "{table}"')
             connection.execute(
                 "DELETE FROM storage_schema_migrations WHERE migration_version IN (63, 85)"
@@ -103,6 +103,7 @@ def test_folder_migration_seeds_the_revision_from_the_saved_one(tmp_path):
             for statement in (
                 "DROP TABLE paper_state",
                 "DROP TABLE paper_turn_files",
+                "DROP TABLE paper_migrations",
                 "ALTER TABLE paper_doc_states DROP COLUMN text_sha256",
             ):
                 connection.execute(statement)

@@ -42,7 +42,6 @@ def test_owner_is_stable_namespaced_and_frozen():
         ("work_auto", True, "unavailable"),
         ("orchestrate", True, "unavailable"),
         ("discuss", True, "unavailable"),
-        ("paper_suggest", True, "unavailable"),
         ("scratch_patch", True, "unavailable"),
         ("discuss", False, "not_requested"),
     ],
@@ -73,9 +72,7 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
         chat_id="chat",
     )
     assert grant.status == status
-    assert len(calls) == int(
-        requested and capability in {"work_auto", "orchestrate", "discuss", "paper_suggest"}
-    )
+    assert len(calls) == int(requested and capability in {"work_auto", "orchestrate", "discuss"})
     if calls:
         assert grant.reason_code == "runtime_checked"
         assert calls[0].stage_name == "chat"

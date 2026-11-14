@@ -150,25 +150,6 @@ def test_replay_marks_threads_left_open_after_admission(send_app):
     )
 
 
-def test_paper_thread_send_uses_coach_message(send_app):
-    _, client, store, task = send_app
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO paper_files VALUES (?, 'paper-file', 'draft.md', 'text', ?, NULL, NULL)",
-            (task.project_id, store.now()),
-        )
-    thread = _thread(store, task, kind="paper", target="paper-file")
-    response = client.post(
-        f"/api/projects/{task.project_id}/tasks/paper_coach",
-        headers={"Idempotency-Key": str(uuid.uuid4())},
-        json={"comment_thread_ids": [thread["thread_id"]]},
-    )
-    assert response.status_code == 202, response.text
-    saved = store.agent_task(response.json()["operation_id"])
-    assert "Please revise" in saved.request["message"]
-    assert "comment_thread_ids" not in saved.request
-
-
 def test_a_paper_chat_takes_paper_threads_and_a_plain_chat_refuses_them(send_app):
     _, client, store, task = send_app
     with store.connection() as connection:

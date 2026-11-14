@@ -623,7 +623,6 @@ class HistoryManager:
         for path in (
             self.patches_dir,
             self.root / "chat",
-            self.root / "paper",
             self.root / "facts",
         ):
             path.mkdir(parents=True, exist_ok=True)

@@ -5,17 +5,34 @@ import json
 import os
 import pwd
 import sqlite3
+import subprocess
+import sys
 import zlib
 
 import pytest
 
+from rcp.paper.folder import LocalPaperFolder, RemotePaperFolder, read_paper_folder
+from rcp.paper.folder_io import paper_root
 from rcp.server_ops import backup_paper
 from rcp.server_ops.backup_paper import (
     PaperSection,
     capture_paper_section,
-    paper_projection_sources,
     restore_paper_section,
+    section_files,
 )
+from rcp.transport.run_stage import RemoteRunStage
+
+FIGURE = b"\x89PNG\r\n\x1a\nfigure"
+OLD_FIGURE = b"\x89PNG\r\n\x1a\nolder figure"
+FOLDER = {
+    "sections/renamed.tex": b"saved text",
+    "figures/result.png": FIGURE,
+    "notes/new.md": b"written by an agent while nobody watched",
+}
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _database() -> sqlite3.Connection:
@@ -28,181 +45,164 @@ def _database() -> sqlite3.Connection:
     )
     connection.execute("CREATE TABLE graph_runs(dispatch_authority_json TEXT)")
     AppStoreBase._migrate_paper_live(connection)
+    connection.execute(
+        "CREATE TABLE paper_state (project_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, "
+        "turn_operation_id TEXT, turn_version_id TEXT)"
+    )
     return connection
 
 
-def _saved_paper(connection, monkeypatch, project_id="p"):
-    """Shared content owned only by another project must not leak into export."""
-    text = "saved unpublished text"
+def _folder_paper(connection, project_id="p"):
+    """Identity and History beside a folder; an unrelated body must not leak."""
     previous = b"named ancestor"
-    figure = b"\x89PNG\r\n\x1a\nfigure"
-    digest = hashlib.sha256(figure).hexdigest()
-    text_digest = hashlib.sha256(previous).hexdigest()
-    files = [
-        {"file_id": "text", "path": "sections/renamed.tex", "kind": "text", "text": text},
-        {"file_id": "image", "path": "figures/result.png", "kind": "binary", "blob_sha256": digest},
+    rows = [
+        ("text", "sections/renamed.tex", "text", None),
+        ("image", "figures/result.png", "binary", None),
+        ("gone", "old.md", "text", "deleted"),
     ]
     connection.executemany(
-        "INSERT INTO paper_files (project_id,file_id,path,kind,created_at,deleted_at) VALUES ('p', ?, ?, ?, 'now', NULL)",
-        [(f["file_id"], f["path"], f["kind"]) for f in files],
-    )
-    connection.execute(
-        "INSERT INTO paper_updates VALUES ('p', 'text', 2, ?, 4, 'human', 'now')", (b"crdt-tail",)
-    )
-    connection.execute(
-        "INSERT INTO paper_doc_states (project_id,file_id,state,through_seq,through_revision) "
-        "VALUES ('p', 'text', ?, 1, 3)",
-        (b"crdt-prefix",),
-    )
-    connection.execute("INSERT INTO paper_revisions VALUES ('p', 4, 'now', 'human', 'rename')")
-    connection.execute(
-        "INSERT INTO paper_publication VALUES ('p', 4, 2, 'now', NULL, 'legacy-divergence', 'now')"
+        "INSERT INTO paper_files (project_id,file_id,path,kind,created_at,deleted_at) "
+        "VALUES (?, ?, ?, ?, 'now', ?)",
+        [(project_id, *row) for row in rows],
     )
     manifest = [
-        {"file_id": "text", "path": "old.tex", "kind": "text", "text_sha256": text_digest},
-        {"file_id": "image", "path": "figures/result.png", "kind": "binary", "blob_sha256": digest},
+        {"file_id": "text", "path": "old.tex", "kind": "text", "text_sha256": _sha(previous)},
+        {
+            "file_id": "image",
+            "path": "figures/result.png",
+            "kind": "binary",
+            "blob_sha256": _sha(OLD_FIGURE),
+        },
     ]
     connection.execute(
-        "INSERT INTO paper_versions VALUES ('p', 'version', 2, 'named', 'Milestone', 'human', 'now', ?)",
-        (json.dumps(manifest),),
+        "INSERT INTO paper_versions VALUES (?, 'version', 2, 'named', 'Milestone', 'human', "
+        "'now', ?)",
+        (project_id, json.dumps(manifest)),
     )
-    connection.execute("INSERT INTO paper_blobs VALUES (?, ?, ?)", (digest, figure, len(figure)))
     connection.execute(
-        "INSERT INTO paper_version_texts VALUES (?, ?)", (text_digest, zlib.compress(previous))
+        "INSERT INTO paper_blobs VALUES (?, ?, ?)", (_sha(OLD_FIGURE), OLD_FIGURE, len(OLD_FIGURE))
     )
     connection.execute("INSERT INTO paper_blobs VALUES ('unrelated', x'00', 1)")
-
-    saved_hash = hashlib.sha256(text.encode()).hexdigest()
     connection.execute(
-        "INSERT INTO paper_version_texts VALUES (?, ?)", (saved_hash, zlib.compress(text.encode()))
+        "INSERT INTO paper_version_texts VALUES (?, ?)", (_sha(previous), zlib.compress(previous))
     )
-    saved_manifest = [dict(file) for file in files]
-    saved_manifest[0].pop("text")
-    saved_manifest[0]["text_sha256"] = saved_hash
+    connection.execute("INSERT INTO paper_state VALUES (?, 7, NULL, NULL)", (project_id,))
     connection.execute(
-        "INSERT INTO paper_saved_snapshots VALUES ('p', 4, ?)", (json.dumps(saved_manifest),)
+        "INSERT INTO paper_doc_states (project_id,file_id,state,through_seq) "
+        "VALUES (?, 'text', x'00', 0)",
+        (project_id,),
     )
-    connection.execute("UPDATE paper_files SET blob_sha256=? WHERE file_id='image'", (digest,))
-    connection.execute(
-        "INSERT INTO paper_change_groups VALUES ('p','group','task',4,'review','accepted','human','now','now')"
-    )
-    connection.execute("INSERT INTO paper_changes VALUES ('p','change','group','{}')")
-    connection.execute(
-        "INSERT INTO paper_change_receipts VALUES ('p','accept','group','accept',?, 'now')",
-        (json.dumps({"fingerprint": "hash", "receipt": {}}),),
-    )
-    for table in backup_paper.PAPER_PROJECT_TABLES:
-        connection.execute(f'UPDATE "{table}" SET project_id=?', (project_id,))
-
-    return figure
 
 
-def test_saved_section_roundtrips_one_revision_and_all_recovery_state(monkeypatch):
-    from rcp.paper.persistence import PaperSnapshotReader
-
-    def no_disk(*args):
-        pytest.fail("backup must capture saved bodies without materializing files")
-
-    monkeypatch.setattr(PaperSnapshotReader, "materialize", no_disk)
-    source = _database()
-    target = _database()
+def test_section_carries_the_folder_with_identity_and_history_only():
+    source, target = _database(), _database()
     try:
-        figure = _saved_paper(source, monkeypatch)
-        section = capture_paper_section(source, "p")
+        _folder_paper(source)
+        section = capture_paper_section(source, "p", FOLDER)
         assert section is not None
         section = PaperSection.model_validate_json(section.model_dump_json())
+        assert set(section.tables) == {
+            "paper_files",
+            "paper_versions",
+            "paper_blobs",
+            "paper_version_texts",
+        }
+        assert {file.path: file.file_id for file in section.files}["figures/result.png"] == "image"
+        assert section.revision == 7
         with target:
             restore_paper_section(target, section)
-        assert target.execute("SELECT bytes FROM paper_blobs").fetchall() == [(figure,)]
-        assert target.execute(
-            "SELECT saved_revision, published_revision, hold FROM paper_publication"
-        ).fetchone() == (4, 2, "legacy-divergence")
-        assert target.execute('SELECT "update" FROM paper_updates').fetchone() == (b"crdt-tail",)
-        assert target.execute("SELECT state FROM paper_doc_states").fetchone() == (b"crdt-prefix",)
-        for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
-            assert len(section.tables[table]) == 1
-        assert capture_paper_section(target, "p") == section
+        assert section_files(section) == FOLDER
+        assert {row[0] for row in target.execute("SELECT sha256 FROM paper_blobs")} == {
+            _sha(FIGURE),
+            _sha(OLD_FIGURE),
+        }
+        assert target.execute("SELECT revision FROM paper_state").fetchone() == (7,)
+        assert capture_paper_section(target, "p", FOLDER) == section
     finally:
         source.close()
         target.close()
 
 
-def test_saved_section_refuses_missing_snapshot_or_corrupt_content(monkeypatch):
+def test_section_refuses_corrupt_history_and_is_absent_without_paper():
     connection = _database()
     try:
-        _saved_paper(connection, monkeypatch)
+        _folder_paper(connection)
         connection.execute("UPDATE paper_blobs SET bytes=x'00' WHERE sha256 != 'unrelated'")
         with pytest.raises(ValueError):
-            capture_paper_section(connection, "p")
-        connection.execute("DELETE FROM paper_saved_snapshots")
-        with pytest.raises(KeyError):
-            capture_paper_section(connection, "p")
-        assert capture_paper_section(connection, "legacy") is None
+            capture_paper_section(connection, "p", FOLDER)
+        assert capture_paper_section(connection, "other", {}) is None
+        assert capture_paper_section(connection, "other", {"a.md": b"a"}) is not None
     finally:
         connection.close()
 
 
-def test_document_text_that_looks_like_metadata_is_not_a_reference(monkeypatch):
-    connection = _database()
-    try:
-        _saved_paper(connection, monkeypatch)
-        text = json.dumps({"blob_sha256": "0" * 64, "text_sha256": "1" * 64})
-        connection.execute(
-            "UPDATE paper_change_receipts SET payload=?",
-            (json.dumps({"ops": [{"kind": "replace", "file_id": "text", "text": text}]}),),
+def _fake_ssh(home):
+    stage = RemoteRunStage("example.invalid")
+
+    def remote(arguments, *, input_data=None, **kwargs):
+        return subprocess.run(
+            [sys.executable, "-I", *arguments[1:]],
+            input=input_data,
+            capture_output=True,
+            env={"HOME": str(home)},
         )
-        assert capture_paper_section(connection, "p") is not None
-    finally:
-        connection.close()
+
+    home.mkdir(parents=True)
+    stage._ssh_bytes = remote
+    return stage
 
 
-def test_projection_is_recursive_binary_safe_and_rejects_links(tmp_path):
-    paper = tmp_path / "paper"
-    (paper / "sections").mkdir(parents=True)
-    (paper / "sections/one.tex").write_text("published")
-    (paper / "figure.png").write_bytes(b"\x00\xff")
-    assert {path.relative_to(paper).as_posix() for path in paper_projection_sources(tmp_path)} == {
-        "sections/one.tex",
-        "figure.png",
-    }
-    (paper / "escape").symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(ValueError):
-        paper_projection_sources(tmp_path)
+@pytest.mark.parametrize("remote", [False, True])
+def test_paper_folder_backup_round_trips_local_and_ssh(tmp_path, remote):
+    from rcp.server_ops.backup_project_files import capture_paper_folder
+    from rcp.server_ops.restore import _restore_paper_folder
+
+    def folder(name):
+        if remote:
+            return RemotePaperFolder(_fake_ssh(tmp_path / name), "p")
+        return LocalPaperFolder(paper_root(tmp_path / name, "p"))
+
+    source = folder("source")
+    for path, data in FOLDER.items():
+        source.write(path, data, None)
+    payload = tmp_path / "archive"
+    (payload / "projects/p").mkdir(parents=True)
+    entries = capture_paper_folder(source, payload / "projects/p", "p")
+    assert {entry.group for entry in entries} == {"paper_folder"}
+
+    target = folder("target")
+    _restore_paper_folder(target, entries, payload)
+    assert read_paper_folder(target) == FOLDER
+    target.write("notes/new.md", b"kept newer text", None)
+    _restore_paper_folder(target, entries, payload)
+    assert read_paper_folder(target)["notes/new.md"] == b"kept newer text"
 
 
-def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, monkeypatch):
-    """Publication and live rows may advance after SQLite capture."""
+def test_backup_captures_a_migrated_old_writer_paper_folder(tmp_path):
+    """The old writer's Paper reaches the backup through the migration and the folder."""
     import uuid
 
+    from rcp.paper.migration import migrate_paper
     from rcp.server_ops.backup_capture import (
         BackupCaptureCoordinator,
         write_immutable_backup_receipt,
     )
     from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
     from rcp.storage import AppStore
+    from tests.paper_legacy_seed import legacy_tree, seed_legacy_paper
     from tests.test_backup_capture import _inventory_for_space, _metadata, _project_inventory
 
     project_id = str(uuid.uuid4())
     inventory, repository = _project_inventory(
         tmp_path, project_id=project_id, task_id=str(uuid.uuid4()), with_files=False
     )
-    paper = repository / ".research/paper"
-    paper.mkdir(exist_ok=True)
-    (paper / "published.md").write_text("older published tree")
     data_dir = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Paper backup")
     store.ensure_space_machines([("", pwd.getpwuid(os.geteuid()).pw_name, "Backend")])
-    seed = _database()
     try:
-        figure = _saved_paper(seed, monkeypatch, project_id=project_id)
-        with store.connection() as connection:
-            for statement in seed.iterdump():
-                if statement.startswith("INSERT INTO"):
-                    connection.execute(statement)
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE paper_publication SET published_revision=4,pending_since=NULL,hold=NULL"
-            )
+        seed_legacy_paper(store, project_id, repository / ".research")
+        folder = LocalPaperFolder(paper_root(data_dir, project_id))
+        assert migrate_paper(store, project_id, folder, lambda: None)
         publication = BackupCaptureCoordinator(
             store, data_dir, _metadata(data_dir)
         ).capture_sqlite()
@@ -211,89 +211,19 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
         publication.receipt_path.chmod(0o600)
         publication.receipt_path.unlink()
         digest = write_immutable_backup_receipt(publication.receipt_path, receipt)
-        (paper / "published.md").write_text("newer published tree")
-        with store.connection() as connection:
-            assert (
-                connection.execute("SELECT published_revision FROM paper_publication").fetchone()[0]
-                == 4
-            )
-            connection.execute("UPDATE paper_publication SET saved_revision=5,published_revision=5")
-            connection.execute("DELETE FROM paper_blobs")
         captured = BackupProjectFileCaptureCoordinator(data_dir).capture(
             publication.receipt_path, expected_sha256=digest
         )
         assert captured.receipt.status == "complete"
-        project = captured.receipt.projects[0]
-        with sqlite3.connect(publication.receipt_path.parent / "rcp.sqlite3") as archived:
-            assert archived.execute(
-                "SELECT saved_revision,published_revision FROM paper_publication"
-            ).fetchone() == (4, -1)
-            assert (
-                archived.execute("SELECT pending_since FROM paper_publication").fetchone()[0]
-                is not None
-            )
-            assert archived.execute(
-                "SELECT bytes FROM paper_blobs WHERE sha256 != 'unrelated'"
-            ).fetchone() == (figure,)
-        assert all(entry.source_relative_path != "paper/saved.json" for entry in project.files)
-        projection = [entry for entry in project.files if entry.group == "paper_projection"]
-        assert [entry.source_relative_path for entry in projection] == [
-            ".research/paper/published.md"
-        ]
-    finally:
-        seed.close()
-        store.close()
-
-
-@pytest.mark.parametrize("coached", [False, True])
-def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch, coached):
-    import asyncio
-    from contextlib import nullcontext
-
-    from rcp import limits
-    from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges, read_paper_changes
-    from rcp.storage import AppStore
-    from rcp.transport import LocalStateWorkspace
-
-    monkeypatch.setattr(limits, "PAPER_SAVED_REVISION_LIMIT", 1)
-    store = AppStore(tmp_path / "live.sqlite3")
-    root = tmp_path / "state"
-    root.mkdir()
-    live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
-
-    async def scenario():
-        """An accepted card no longer pins the old snapshot, but Undo still needs bytes."""
-        created = await live.apply(
-            "p", [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"image")], "h"
-        )
-        changes = PaperChanges(store, live, lambda _: nullcontext())
-        if coached:
-            output = tmp_path / "changes"
-            (output / "files").mkdir(parents=True)
-            (output / "moves.json").write_text('{"delete":["figure.png"]}')
-            groups = await asyncio.to_thread(
-                changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
-            )
-            await asyncio.to_thread(changes.accept, "p", groups[0].group_id, "h")
-            await live.apply("p", [PaperOp(kind="create", path="later.md")], "h")
-        else:
-            await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
-        await asyncio.to_thread(live._collect_bodies)
-        with store.connection() as connection:
-            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == int(
-                coached
-            )
-            section = capture_paper_section(connection, "p")
-        assert section is not None and all(file.kind == "text" for file in section.files)
-        if coached:
-            await asyncio.to_thread(changes.undo, "p", groups[0].group_id, "h")
-            restored = await live.snapshot("p")
-            assert any(file.file_id == created.file_ids[0] for file in restored.files)
-        await live.close()
-
-    try:
-        asyncio.run(scenario())
+        [project] = captured.receipt.projects
+        paper = {
+            entry.source_relative_path: entry
+            for entry in project.files
+            if entry.group == "paper_folder"
+        }
+        assert set(paper) == {f"paper/{path}" for path in legacy_tree()}
+        assert all(entry.sha256 == _sha(legacy_tree()[path[6:]]) for path, entry in paper.items())
+        assert not any(entry.group == "paper_projection" for entry in project.files)
     finally:
         store.close()
 
@@ -319,6 +249,13 @@ def test_backup_and_live_share_path_validation(path):
             sha256="a" * 64,
             size_bytes=0,
         ),
+        lambda: BackupFileEntry(
+            archive_path=f"project/paper/{path}",
+            source_relative_path=f"paper/{path}",
+            group="paper_folder",
+            sha256="a" * 64,
+            size_bytes=0,
+        ),
         lambda: TransferArchiveEntry(
             archive_path=f"paper/projection/{path}",
             group="paper_projection",
@@ -334,68 +271,3 @@ def test_backup_and_live_share_path_validation(path):
         else:
             assert paper_path(path) == path
             entry()
-
-
-def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
-    import asyncio
-    from contextlib import nullcontext
-
-    from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges, read_paper_changes
-    from rcp.paper.persistence import collect_bodies
-    from rcp.storage import AppStore
-    from rcp.transport import LocalStateWorkspace
-
-    source = AppStore(tmp_path / "source.sqlite3")
-    target = AppStore(tmp_path / "target.sqlite3")
-    owners = []
-    for name, store in (("source", source), ("target", target)):
-        root = tmp_path / name
-        root.mkdir()
-        owners.append(PaperLive(store, lambda _, root=root: LocalStateWorkspace(root, str(root))))
-    live, restored = owners
-
-    async def scenario():
-        """A rejected card's proposed body is collected because backup no longer needs it."""
-        created = await live.apply(
-            "p",
-            [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"before")],
-            "h",
-        )
-        output = tmp_path / "changes"
-        (output / "files").mkdir(parents=True)
-        (output / "files/figure.png").write_bytes(b"after")
-        changes = PaperChanges(source, live, lambda _: nullcontext())
-        groups = await asyncio.to_thread(
-            changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
-        )
-        with source.connection() as connection:
-            section = capture_paper_section(connection, "p")
-        assert section is not None
-        section = PaperSection.model_validate_json(section.model_dump_json())
-        with target.connection() as connection:
-            restore_paper_section(connection, section)
-        await restored.snapshot("p")
-        recovered = PaperChanges(target, restored, lambda _: nullcontext())
-        await asyncio.to_thread(recovered.accept, "p", groups[0].group_id, "h")
-        snapshot = await restored.snapshot("p")
-        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
-        assert restored.blob(figure.blob_sha256) == b"after"
-        await asyncio.to_thread(recovered.undo, "p", groups[0].group_id, "h")
-        snapshot = await restored.snapshot("p")
-        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
-        assert restored.blob(figure.blob_sha256) == b"before"
-        await asyncio.to_thread(changes.reject, "p", groups[0].group_id, "h")
-        with source.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            collect_bodies(connection)
-        with source.connection() as connection:
-            assert capture_paper_section(connection, "p") is not None
-        for owner in owners:
-            await owner.close()
-
-    try:
-        asyncio.run(scenario())
-    finally:
-        source.close()
-        target.close()

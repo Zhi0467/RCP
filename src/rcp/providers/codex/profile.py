@@ -24,7 +24,6 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderRuntime,
     _optional_usage_int,
-    _paper_write_roots,
     _require_project_write_scope,
     _usage_dedupe_key,
     _usage_int,
@@ -351,23 +350,6 @@ class CodexProfile(ProviderProfile):
             if write_scope is not None or write_dirs:
                 raise ValueError("Session summaries cannot carry write grants")
             command.extend(_codex_summary_config(hidden_read_scope))
-        elif capability == "paper_suggest":
-            if write_scope is not None:
-                raise ValueError("paper_suggest cannot carry a project write scope")
-            self.validate_readiness_version(provider_version, capability=capability)
-            command.extend(["--enable", "shell_tool"])
-            command.extend(
-                [
-                    "--config",
-                    'approval_policy="never"',
-                    "--config",
-                    'default_permissions="rcp_paper"',
-                    "--config",
-                    _codex_paper_permission_profile(
-                        _paper_write_roots(write_dirs), hidden_read_scope
-                    ),
-                ]
-            )
         else:
             if write_scope is not None:
                 raise ValueError(f"capability {capability!r} cannot carry a project write scope")
@@ -582,19 +564,6 @@ def _codex_stage_permission_profile(cwd: Path, hidden_read_scope: HiddenReadScop
         + json.dumps(str(cwd))
         + "=true},filesystem={"
         + filesystem
-        + "},network={enabled=true}}}"
-    )
-
-
-def _codex_paper_permission_profile(
-    roots: list[Path], hidden_read_scope: HiddenReadScope | None = None
-) -> str:
-    denials = _codex_read_denials(hidden_read_scope)
-    return (
-        'permissions={rcp_paper={filesystem={":root"="read",'
-        + "".join(f'{json.dumps(str(root))}="write",' for root in roots)
-        + '":tmpdir"="write",":slash_tmp"="write"'
-        + ("," + denials if denials else "")
         + "},network={enabled=true}}}"
     )
 

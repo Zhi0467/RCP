@@ -95,7 +95,6 @@ from rcp.runs.work_episode_controls import WorkEpisodeControls
 from rcp.runs.work_experiment_commands import start_scheduled_experiment_resumes
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
-    CoachRequest,
     GraphUpdateResult,
     ProjectService,
     RunRequest,
@@ -3631,8 +3630,9 @@ class BackgroundAgentTasks:
 
     @staticmethod
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:
+        if record.kind == "paper_coach":
+            raise ValueError("A retired Paper coach turn cannot run again.")
         model: type[AgentTaskRequest] = {
-            "paper_coach": CoachRequest,
             "auto_research": AutoResearchRunRequest,
             "branch_merge": BranchMergeRunRequest,
             "episode_report": EpisodeReportRunRequest,
@@ -3641,8 +3641,6 @@ class BackgroundAgentTasks:
 
     @staticmethod
     def _validate_request_type(kind: AgentTaskKind, request: AgentTaskRequest) -> None:
-        if kind == "paper_coach" and not isinstance(request, CoachRequest):
-            raise TypeError("paper_coach requires a CoachRequest")
         if kind == "auto_research" and not isinstance(request, AutoResearchRunRequest):
             raise TypeError("auto_research requires an AutoResearchRunRequest")
         if kind == "branch_merge" and not isinstance(request, BranchMergeRunRequest):
@@ -3650,7 +3648,6 @@ class BackgroundAgentTasks:
         if kind == "episode_report" and not isinstance(request, EpisodeReportRunRequest):
             raise TypeError("episode_report requires an EpisodeReportRunRequest")
         if kind not in {
-            "paper_coach",
             "auto_research",
             "branch_merge",
             "episode_report",

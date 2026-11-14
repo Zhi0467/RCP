@@ -32,7 +32,7 @@ TRANSFER_ARCHIVE_GIT_CODEC = "rcp-transfer-v2"
 # These are transfer-specific classifications, not a generic file-root registry.
 # Their tests compare them with the concrete backup/root owners so a new durable
 # root cannot silently enter or disappear from transfer policy.
-TRANSFER_APP_DATA_TYPED_ROOTS = frozenset({"rcp.sqlite3"})
+TRANSFER_APP_DATA_TYPED_ROOTS = frozenset({"rcp.sqlite3", "paper"})
 TRANSFER_APP_DATA_PROJECT_SOURCE_ROOTS = frozenset({"project-sources", "artifacts"})
 TRANSFER_APP_DATA_CONTROL_ROOTS = frozenset({"transfer-exports", "transfer-inbox"})
 TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
