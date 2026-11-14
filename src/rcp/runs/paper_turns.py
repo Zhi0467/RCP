@@ -9,7 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.agents.memory_file_io import ensure_directory, safe_component
+from rcp.agents.memory_file_io import safe_component
+from rcp.paper.folder_io import paper_root
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -19,25 +20,12 @@ if TYPE_CHECKING:
 
 PAPER_TURN_WAIT_MESSAGE = "Waiting for another Paper turn."
 
-_REMOTE_PAPER_ROOT = (
-    "import os,sys\n"
-    "root=os.path.join(os.path.expanduser('~'),'.rcp','paper',sys.argv[1])\n"
-    "os.makedirs(root,mode=0o700,exist_ok=True)\n"
-    "print(root)\n"
-)
-
 
 def paper_root_for(store: AppStore, project_id: str, remote_stage: RemoteRunStage | None) -> str:
     """Create the project's Paper folder on the machine the turn runs on and return it."""
-    safe_component(project_id)
     if remote_stage is not None:
-        result = remote_stage._ssh(["python3", "-c", _REMOTE_PAPER_ROOT, project_id])
-        if result.returncode:
-            raise ValueError(result.stderr.strip() or "could not prepare the remote Paper folder")
-        return result.stdout.strip()
-    root = store.path.parent.expanduser().resolve() / "paper" / project_id
-    ensure_directory(root)
-    return str(root)
+        return remote_stage.paper_folder({"op": "root", "project_id": project_id})["root"]
+    return str(paper_root(store.path.parent.expanduser().resolve(), project_id))
 
 
 def paper_folder_path(store: AppStore, project_id: str, *, remote: bool) -> str:
