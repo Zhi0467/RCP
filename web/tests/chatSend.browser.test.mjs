@@ -244,3 +244,39 @@ test("Retry of a Discuss turn refills the composer and the next send supersedes 
     await server.close();
   }
 });
+
+test("Retry of a Discuss turn from outside the chat refills its composer", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html?retry`);
+    const composer = page.getByRole("textbox", { name: "Message", exact: true });
+    await composer.waitFor();
+    await page.evaluate(() => window.retryFromInspector());
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("textarea")].some((field) => field.value === "Ask it again"),
+    );
+    assert.equal(await composer.inputValue(), "Ask it again");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => window.startCalls.length === 1);
+    const [call] = await page.evaluate(() => window.startCalls);
+    assert.equal(call.message, "Ask it again");
+    assert.equal(call.supersedes, "old-discuss");
+    assert.deepEqual(await page.evaluate(() => window.retryCalls), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

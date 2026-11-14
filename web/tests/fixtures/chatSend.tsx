@@ -86,15 +86,18 @@ function Fixture() {
   const [archived, setArchived] = useState(Boolean(surface));
   const [tasks, setTasks] = useState<object[]>(retry ? [failedDiscuss] : []);
   const [failNext, setFailNext] = useState(!retry);
+  const [composerRetry, setComposerRetry] = useState<object | null>(null);
   const fixture = window as unknown as {
     startCalls: StartCall[];
     retryCalls: string[];
+    retryFromInspector: () => void;
     refreshChatFixture: () => void;
     failHeldStart: () => void;
   };
   fixture.startCalls ??= [];
   fixture.retryCalls ??= [];
   // A poll that returns the same tasks still hands the chat a new list.
+  fixture.retryFromInspector = () => setComposerRetry(failedDiscuss);
   fixture.refreshChatFixture = () => setTasks((current) => current.map((task) => ({ ...task })));
   return (
     <main style={{ height: "100vh", padding: 24 }}>
@@ -166,6 +169,8 @@ function Fixture() {
         onClose={() => undefined}
         onResumeTask={() => undefined}
         onRetryTask={(task) => fixture.retryCalls.push(task.operation_id)}
+        composerRetry={composerRetry as never}
+        onComposerRetryTaken={() => setComposerRetry(null)}
         onRefreshTask={async () => tasks[0] as never}
       />
     </main>

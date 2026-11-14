@@ -31,7 +31,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   loadServiceConnections,
@@ -46,6 +46,7 @@ import {
 } from "../agents/agentTasks";
 import {
   chatDraftStorageKey,
+  chatIdForTask,
   latestPersistedChatConfig,
   originRunConfig,
   retryRefillsComposer,
@@ -163,6 +164,8 @@ interface Props {
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  composerRetry?: AgentTask | null;
+  onComposerRetryTaken?: () => void;
 }
 
 export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
@@ -244,6 +247,8 @@ export function AgentChatView({
   onResumeTask,
   onRetryTask,
   onRefreshTask,
+  composerRetry = null,
+  onComposerRetryTaken,
 }: Props) {
   const readOnly = archived || requestedReadOnly;
   const allowArtifactComments = !archived && requestedArtifactComments;
@@ -656,6 +661,14 @@ export function AgentChatView({
     setSupersedes({ chatId, operationId: task.operation_id });
     textareaRef.current?.focus();
   };
+
+  const takeComposerRetry = useEffectEvent((task: AgentTask) => {
+    onComposerRetryTaken?.();
+    retryTask(task);
+  });
+  useEffect(() => {
+    if (composerRetry && chatIdForTask(composerRetry) === chatId) takeComposerRetry(composerRetry);
+  }, [composerRetry, chatId]);
 
   const releaseMicrophone = (sessionId?: string) => {
     const held = microphoneRef.current;
@@ -1231,7 +1244,6 @@ export function AgentChatView({
   return (
     <div
       className={`chat-dock ${presentation}`}
-      data-mode="work"
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={node || conversationTitle ? `Chat about ${chatTitle}` : "Project chat"}
@@ -1388,7 +1400,6 @@ export function AgentChatView({
               sessionId={sessionId}
             />
           }
-          mode="work"
           composer={composer}
           comments={comments}
           skills={skills.props}
@@ -1602,7 +1613,7 @@ export function AgentChatView({
           }
         />
       )}
-      <AnswerCommentLayers comments={comments} mode="work" />
+      <AnswerCommentLayers comments={comments} />
     </div>
   );
 }

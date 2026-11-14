@@ -837,11 +837,10 @@ export function StagedAnswerComments({ comments }: { comments: AnswerComments })
 /** The floating Comment offer over a selection, and the comment composer it opens. */
 export function AnswerCommentLayers({
   comments,
-  mode,
+  className,
 }: {
   comments: AnswerComments;
-  /** The conversation mode whose colours the layers take. */
-  mode: string;
+  className?: string;
 }) {
   const { composer } = comments;
   const { offer, viewport, busy, refs } = comments.ui;
@@ -857,8 +856,9 @@ export function AnswerCommentLayers({
             <button
               ref={refs.offer}
               type="button"
-              className="chat-selection-comment"
-              data-mode={mode}
+              className={
+                className ? `chat-selection-comment ${className}` : "chat-selection-comment"
+              }
               style={{ left: offer.position.left, top: offer.position.top }}
               disabled={busy}
               // Keep the selection while pressing, so the staged text is what was shown.
@@ -879,8 +879,9 @@ export function AnswerCommentLayers({
         ? createPortal(
             <form
               ref={refs.composer}
-              className="chat-annotation-composer"
-              data-mode={mode}
+              className={
+                className ? `chat-annotation-composer ${className}` : "chat-annotation-composer"
+              }
               aria-label={composer.step === "select" ? "Select answer text" : "Add annotation"}
               style={
                 {

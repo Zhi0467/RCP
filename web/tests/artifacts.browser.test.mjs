@@ -924,8 +924,12 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       await page.locator(".chat-annotation-composer textarea").inputValue(),
       "This page hit an error: inline-failure",
     );
-    // The popover is portaled out of the dock and carries the chat's mode itself.
-    assert.equal(await page.locator(".chat-annotation-composer").getAttribute("data-mode"), "work");
+    const accent = (selector) =>
+      page
+        .locator(selector)
+        .first()
+        .evaluate((node) => getComputedStyle(node).getPropertyValue("--chat-accent"));
+    assert.equal(await accent(".chat-annotation-composer"), await accent(".chat-dock"));
     await page.getByRole("button", { name: "Add comment", exact: true }).click();
     await page.getByRole("button", { name: "Send", exact: true }).waitFor();
     // A comment is an ordinary turn, so a pasted project reference joins it.

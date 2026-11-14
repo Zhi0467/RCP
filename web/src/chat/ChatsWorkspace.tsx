@@ -110,6 +110,8 @@ interface Props {
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  composerRetry: AgentTask | null;
+  onComposerRetryTaken: () => void;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onOpenNode?: (nodeId: string) => void;
@@ -357,6 +359,8 @@ export function ChatsWorkspace({
   onResumeTask,
   onRetryTask,
   onRefreshTask,
+  composerRetry,
+  onComposerRetryTaken,
   onInspectTask,
   onOpenInbox,
   onOpenNode,
@@ -1278,6 +1282,8 @@ export function ChatsWorkspace({
             }
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
+            composerRetry={composerRetry}
+            onComposerRetryTaken={onComposerRetryTaken}
             onRefreshTask={onRefreshTask}
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
@@ -1328,6 +1334,8 @@ export function ChatsWorkspace({
             onStartTask={onStartTask}
             onResumeTask={onResumeTask}
             onRetryTask={onRetryTask}
+            composerRetry={composerRetry}
+            onComposerRetryTaken={onComposerRetryTaken}
             onRefreshTask={onRefreshTask}
             onInspectTask={onInspectTask}
             onOpenInbox={onOpenInbox}
