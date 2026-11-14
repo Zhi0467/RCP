@@ -948,14 +948,16 @@ const nested = ({ tree }) =>
   );
 const fileNames = (page) => page.locator(".paper-file span").allTextContents();
 
-test("folders fold, and the shared row menu renames and deletes a whole folder", async (t) => {
+test("folders start folded, remember opening, and the row menu renames and deletes a folder", async (t) => {
   const { page, posts, errors } = await openPaper(t, { configure: nested });
   const draft = page.locator(".paper-folder", { hasText: "draft" });
-  assert.deepEqual(await fileNames(page), ["two.md", "one.md", "intro.md"]);
-  await draft.click();
   assert.equal(await draft.getAttribute("aria-expanded"), "false");
   assert.deepEqual(await fileNames(page), ["intro.md"]);
   await draft.click();
+  await page.locator(".paper-folder", { hasText: "deep" }).click();
+  assert.deepEqual(await fileNames(page), ["two.md", "one.md", "intro.md"]);
+  await page.reload();
+  await draft.waitFor();
   assert.deepEqual(await fileNames(page), ["two.md", "one.md", "intro.md"]);
 
   const folderMenu = async (folder, action) => {
@@ -996,6 +998,8 @@ test("Download asks the desktop where to save and is a plain download in a brows
       };
     },
   });
+  await page.locator(".paper-folder", { hasText: "draft" }).click();
+  await page.locator(".paper-folder", { hasText: "deep" }).click();
   for (const item of ["draft/deep/two.md", "draft/"]) {
     await page.getByRole("button", { name: `Actions for ${item}`, exact: true }).click();
     await page.getByRole("menuitem", { name: "Download" }).click();

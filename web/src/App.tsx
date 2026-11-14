@@ -474,8 +474,8 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
-  // Paper is a sub-panel of Artifacts; its route stays `paper`.
-  { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
+  { view: "artifacts", label: "Files", icon: <Files size={14} /> },
+  { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <SquareTerminal size={14} /> },
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings size={14} /> },
@@ -485,7 +485,6 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
 const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
   ...navItems.map((item) => item.view),
   "dag",
-  "paper",
 ]);
 
 /** A tab stays highlighted while one of its sub-views is open. */
@@ -493,44 +492,28 @@ function navItemActive(item: AppView, view: AppView): boolean {
   return topTab(view) === item;
 }
 
-function ArtifactsSubnav({
-  view,
-  filesActive = true,
-  paperUnsynced,
-  failed = false,
-  onChange,
+/** The Files page's own tabs: its file list, then each pinned view. Absent without pins. */
+function PinnedViewTabs({
+  filesActive,
+  failed,
+  onFiles,
   children,
 }: {
-  view: AppView;
-  filesActive?: boolean;
-  paperUnsynced: boolean;
-  failed?: boolean;
-  onChange: (view: AppView) => void;
-  children?: React.ReactNode;
+  filesActive: boolean;
+  failed: boolean;
+  onFiles: () => void;
+  children: React.ReactNode;
 }) {
   return (
     <div
       className={`artifacts-subnav${failed ? " failed" : ""}`}
       role="group"
-      aria-label="Artifacts sections"
+      aria-label="Pinned views"
     >
-      {(
-        [
-          ["artifacts", "Files"],
-          ["paper", "Paper"],
-        ] as const
-      ).map(([target, label]) => (
-        <button
-          key={target}
-          type="button"
-          aria-pressed={view === target && (target !== "artifacts" || filesActive)}
-          onClick={() => onChange(target)}
-        >
-          {target === "paper" ? <FileText size={14} /> : <Files size={14} />}
-          {label}
-          {target === "paper" && paperUnsynced && <small>1</small>}
-        </button>
-      ))}
+      <button type="button" aria-pressed={filesActive} onClick={onFiles}>
+        <Files size={14} />
+        Files
+      </button>
       {children}
     </div>
   );
@@ -4964,7 +4947,7 @@ function MemberApp({
         {item.view === "attention" && attentionCount > 0 && (
           <small className="inbox-count">{attentionCount}</small>
         )}
-        {item.view === "artifacts" && paper && <small>1</small>}
+        {item.view === "paper" && paper && <small>1</small>}
         {item.view === "chats" && chatsIndicator && (
           <small
             className={`chats-indicator ${chatsIndicator}`}
@@ -5053,7 +5036,7 @@ function MemberApp({
   );
   const currentNavItem = navItems.find((item) => navItemActive(item.view, view)) ?? navItems[0];
 
-  // Pinned pages follow Files | Paper in both Artifacts sections.
+  // Pinned pages follow the Files tab on the Files page.
   const pinTabs = (
     <>
       {pins.map((pin) => (
@@ -5477,19 +5460,18 @@ function MemberApp({
               )}
               {view === "artifacts" && (
                 <div className="artifacts-shell">
-                  <ArtifactsSubnav
-                    view={view}
-                    filesActive={!activePin}
-                    paperUnsynced={paper}
-                    failed={Boolean(pinsResource.error)}
-                    onChange={(next) => {
-                      setPinSelection(null);
-                      setRequestedPin(null);
-                      changeView(next);
-                    }}
-                  >
-                    {pinTabs}
-                  </ArtifactsSubnav>
+                  {(pins.length > 0 || Boolean(pinsResource.error)) && (
+                    <PinnedViewTabs
+                      filesActive={!activePin}
+                      failed={Boolean(pinsResource.error)}
+                      onFiles={() => {
+                        setPinSelection(null);
+                        setRequestedPin(null);
+                      }}
+                    >
+                      {pinTabs}
+                    </PinnedViewTabs>
+                  )}
                   {activePin ? (
                     <PinnedView
                       key={`${pinScope}:${activePin.artifact_id}`}
@@ -5610,14 +5592,6 @@ function MemberApp({
               )}
               {view === "paper" && (
                 <div className="artifacts-shell">
-                  <ArtifactsSubnav
-                    view={view}
-                    paperUnsynced={paper}
-                    failed={Boolean(pinsResource.error)}
-                    onChange={changeView}
-                  >
-                    {pinTabs}
-                  </ArtifactsSubnav>
                   <PaperWorkspace
                     key={project.id}
                     apiBase={apiBase}

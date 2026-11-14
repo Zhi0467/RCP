@@ -121,8 +121,9 @@ test("a held legacy paper keeps its version choice modal until one is chosen", a
   });
 });
 
-test("a changed file in the Git panel unfolds into its own diff", async (t) => {
+test("the Changes tab opens a file's diff in the editor and the pill switches branch", async (t) => {
   const diffs = [];
+  const switches = [];
   const { page, errors } = await openPaper(t, {
     browser,
     origin: server.origin,
@@ -136,7 +137,7 @@ test("a changed file in the Git panel unfolds into its own diff", async (t) => {
             json: {
               state: "linked",
               repository: "owner/repo",
-              branch: "main",
+              branch: switches.at(-1)?.branch ?? "main",
               public_key: "",
               head: { commit: "abc", author: "Member" },
               unpushed: true,
@@ -147,6 +148,11 @@ test("a changed file in the Git panel unfolds into its own diff", async (t) => {
             },
           };
         if (path.endsWith("/paper/git/fetch")) return { json: {} };
+        if (path.endsWith("/paper/git/branches")) return { json: ["main", "review"] };
+        if (path.endsWith("/paper/git/branch")) {
+          switches.push(body);
+          return { json: {} };
+        }
         if (path.endsWith("/paper/git/changes"))
           return {
             json: [
@@ -164,11 +170,10 @@ test("a changed file in the Git panel unfolds into its own diff", async (t) => {
       };
     },
   });
-  await page.getByRole("button", { name: "Paper Git" }).click();
-  const row = page.getByRole("button", { name: /README\.md/ });
-  assert.equal(await row.getAttribute("aria-expanded"), "false");
-  await row.click();
-  const diff = page.locator(".paper-git-changed .paper-change-diff");
+  await page.getByRole("button", { name: "Show files" }).click();
+  await page.getByRole("button", { name: /Changes/ }).click();
+  await page.getByRole("button", { name: /README\.md/ }).click();
+  const diff = page.locator(".paper-git-diff-view .paper-change-diff");
   await diff.waitFor();
   assert.equal(await diff.locator(".removed").textContent(), "old");
   assert.equal(await diff.locator(".added").textContent(), "new");
@@ -177,7 +182,14 @@ test("a changed file in the Git panel unfolds into its own diff", async (t) => {
     await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
   );
-  await row.click();
+  await page.getByRole("button", { name: "Close diff" }).click();
   assert.equal(await diff.count(), 0);
+  await page.getByRole("button", { name: "Paper Git" }).click();
+  const menu = page.getByRole("dialog", { name: "Branches" });
+  const box = await menu.boundingBox();
+  assert.ok(box && box.x >= 0 && box.x + box.width <= 390);
+  await menu.getByRole("button", { name: "review", exact: true }).click();
+  await menu.waitFor({ state: "detached" });
+  assert.deepEqual(switches, [{ branch: "review", create: false }]);
   assert.deepEqual(errors, []);
 });

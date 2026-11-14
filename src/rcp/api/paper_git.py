@@ -37,6 +37,11 @@ class PushRequest(BaseModel):
     message: str
 
 
+class SwitchRequest(BaseModel):
+    branch: str
+    create: bool = False
+
+
 def _call(project_id: str, request: Request, action):
     canonical = get_catalog(request).resolve_project_id(project_id)
     manager: PaperGit = request.app.state.paper_git
@@ -141,4 +146,19 @@ def push(project_id: str, body: PushRequest, request: Request):
         lambda manager, project: {
             "commit": manager.push(project, body.message, member.display_name, member.user_id)
         },
+    )
+
+
+@router.get("/branches")
+def branches(project_id: str, request: Request):
+    return _call(project_id, request, lambda manager, project: manager.branches(project))
+
+
+@router.post("/branch")
+def switch(project_id: str, body: SwitchRequest, request: Request):
+    _member(request)
+    return _call(
+        project_id,
+        request,
+        lambda manager, project: manager.switch(project, body.branch, create=body.create),
     )

@@ -341,6 +341,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/paper/git/conflicts"),
     (("POST",), "/api/projects/{project_id}/paper/git/conflicts/resolve"),
     (("POST",), "/api/projects/{project_id}/paper/git/conflicts/decide"),
+    (("GET",), "/api/projects/{project_id}/paper/git/branches"),
+    (("POST",), "/api/projects/{project_id}/paper/git/branch"),
     (("POST",), "/api/projects/{project_id}/paper/git/conflicts/refresh"),
     (("POST",), "/api/projects/{project_id}/paper/git/push"),
     (("GET",), "/api/projects/{project_id}/paper/export/arxiv"),
@@ -407,8 +409,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 339
+    assert len(_FROZEN_ROUTE_INVENTORY) == 341
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 335
+    assert sum(isinstance(route, APIRoute) for route in routes) == 337
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

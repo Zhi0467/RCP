@@ -182,30 +182,31 @@ for (const width of [1280, 390])
     const shell = () => page.frame({ url: /\/files\/html\/preview\?revision=/ });
     const artifact = () => shell()?.childFrames()[0]?.childFrames()[0];
     await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+    const commenting = page.getByRole("button", { name: "Comment on the page" });
+    assert.equal(await commenting.getAttribute("aria-pressed"), "true");
+    await commenting.click();
     await artifact().locator("#counter").click();
     const initial = await frame.boundingBox();
-    const plus = page.getByRole("button", { name: "Zoom in", exact: true });
-    const minus = page.getByRole("button", { name: "Zoom out", exact: true });
+    const slider = page.getByRole("slider", { name: "Preview zoom" });
+    const zoom = async (percent) => {
+      await page.locator(".paper-html-zoom").hover();
+      await slider.fill(String(Number(Math.log2(percent / 100).toFixed(2))));
+    };
     const reset = page.getByRole("button", { name: "Reset preview zoom", exact: true });
-    await plus.click();
+    await zoom(125);
     assert.equal(await reset.innerText(), "125%");
     const physical = await frame.boundingBox();
     assert.ok(Math.abs(physical.width - initial.width) < 1);
     assert.ok(Math.abs(physical.height - initial.height) < 1);
     assert.equal(await artifact().locator("#counter").innerText(), "1");
-    await minus.click();
-    await minus.click();
+    await zoom(75);
     assert.equal(await reset.innerText(), "75%");
     await page.getByRole("button", { name: "Comment on the page" }).click();
     await artifact().waitForFunction(
       () => document.documentElement.dataset.selectionReady === "true",
     );
     for (const scale of [0.75, 1.5]) {
-      if (scale === 1.5) {
-        await reset.click();
-        await plus.click();
-        await plus.click();
-      }
+      if (scale === 1.5) await zoom(150);
       const before = await page.evaluate(() => window.comments.length);
       const plot = await artifact().locator("#plot").boundingBox();
       const start = { x: plot.x + 4, y: plot.y + 4 };
@@ -222,7 +223,7 @@ for (const width of [1280, 390])
       assert.ok(Math.abs(box.anchor.top - start.y) < 2);
       assert.equal(await artifact().locator("[data-rcp-selection]").count(), 1);
       const cancelled = await page.evaluate(() => window.cancelled.length);
-      await plus.click();
+      await zoom(scale * 100 + 5);
       await page.waitForFunction((count) => window.cancelled.length > count, cancelled);
       await artifact().locator("[data-rcp-selection]").waitFor({ state: "detached" });
       const textBefore = await page.evaluate(() => window.comments.length);
@@ -230,15 +231,15 @@ for (const width of [1280, 390])
       await page.waitForFunction((count) => window.comments.length > count, textBefore);
       assert.match(await page.evaluate(() => window.comments.at(-1).quote), /Select/);
     }
+    await zoom(50);
+    assert.equal(await reset.innerText(), "50%");
+    await zoom(200);
+    assert.equal(await reset.innerText(), "200%");
     await reset.click();
-    for (let i = 0; i < 2; i++) await minus.click();
-    assert.equal(await minus.isDisabled(), true);
-    for (let i = 0; i < 5; i++) await plus.click();
-    assert.equal(await plus.isDisabled(), true);
-    await reset.click();
+    assert.equal(await reset.innerText(), "100%");
     await artifact().evaluate(() => window.scrollTo(0, 300));
     assert.ok(await artifact().evaluate(() => window.scrollY > 0));
-    await plus.click();
+    await zoom(125);
     const count = states.length;
     fixture.hold();
     fixture.update({ revision: 2, key: "html-and-image-1" });
@@ -306,7 +307,9 @@ test("HTML preview rechecks hidden entry, aborts old reads, and retries a visibl
   const frame = page.locator(".paper-html-preview iframe");
   await frame.waitFor();
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
-  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await page
+    .getByRole("slider", { name: "Preview zoom" })
+    .fill(String(Number(Math.log2(1.25).toFixed(2))));
   const count = states.length;
   await page.evaluate(() => window.show(2, false));
   await frame.waitFor({ state: "hidden" });
@@ -572,8 +575,6 @@ test("preview selections name their source, and boxes on PDF pages open comments
     await frame.getAttribute("src"),
     /\/api\/projects\/p\/paper\/files\/html\/preview\?revision=7$/,
   );
-  const toggle = page.locator('header button[aria-pressed="false"]');
-  await toggle.click();
   await page.locator('header button[aria-pressed="true"]').waitFor();
   // A box keeps its area, so two boxes on one labelled image differ for the coach.
   const shell = page.frame({ url: /\/preview\?revision=7$/ });
@@ -740,6 +741,7 @@ test("text selected in an HTML preview offers Comment beside it, with no comment
   const { page, errors, release } = await openHtmlPreview(t, 1280);
   release();
   await page.evaluate(() => window.show());
+  await page.getByRole("button", { name: "Comment on the page", pressed: true }).click();
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
   const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
   const word = shell.childFrames()[0].childFrames()[0].locator("#word");

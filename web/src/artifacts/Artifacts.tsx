@@ -207,12 +207,12 @@ export function Artifacts({
   return (
     <section
       className="view-panel artifacts-view"
-      aria-label="Artifacts"
+      aria-label="Files"
       aria-busy={entries === null && loading ? true : undefined}
       style={error ? { border: "1px solid var(--danger, #b42318)" } : undefined}
     >
       <div className="view-heading artifacts-heading">
-        <h2>Artifacts</h2>
+        <h2>Files</h2>
         <button
           className="button compact secondary"
           disabled={loading && !error}

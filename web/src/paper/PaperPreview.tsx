@@ -16,9 +16,7 @@ import {
   FileWarning,
   LoaderCircle,
   MessageSquarePlus,
-  Minus,
   PackagePlus,
-  Plus,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -70,7 +68,10 @@ interface CompileResult {
 }
 
 const PAPER_IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
-const HTML_ZOOM = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const HTML_ZOOM = { min: 50, max: 200, step: 5 };
+const zoomStop = (percent: number) => Math.log2(percent / 100);
+const zoomPercent = (stop: number) =>
+  Math.round((100 * 2 ** stop) / HTML_ZOOM.step) * HTML_ZOOM.step;
 
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
 function assetUrl(projectId: string, file: PaperFile) {
@@ -254,9 +255,9 @@ function HtmlPreview({
   onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
-  const [commentMode, setCommentMode] = useState(false);
+  const [commentMode, setCommentMode] = useState(true);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
-  const [zoom, setZoom] = useState(2);
+  const [zoom, setZoom] = useState(100);
   const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
     file.file_id,
   )}/preview`;
@@ -298,9 +299,9 @@ function HtmlPreview({
   });
   const zoomTo = (next: number) => {
     shell.clear();
-    setZoom(Math.max(0, Math.min(HTML_ZOOM.length - 1, next)));
+    setZoom(Math.max(HTML_ZOOM.min, Math.min(HTML_ZOOM.max, next)));
   };
-  const scale = HTML_ZOOM[zoom];
+  const scale = zoom / 100;
   const error = stateError || pageError?.message;
   return (
     <div
@@ -329,33 +330,28 @@ function HtmlPreview({
               <FileWarning size={16} />
             </span>
           ) : null}
-          <button
-            className="icon-button"
-            aria-label="Zoom out"
-            title="Zoom out"
-            disabled={!preview || zoom === 0}
-            onClick={() => zoomTo(zoom - 1)}
-          >
-            <Minus size={16} />
-          </button>
-          <button
-            className="icon-button paper-html-zoom"
-            aria-label="Reset preview zoom"
-            title="Reset preview zoom"
-            disabled={!preview}
-            onClick={() => zoomTo(2)}
-          >
-            {Math.round(scale * 100)}%
-          </button>
-          <button
-            className="icon-button"
-            aria-label="Zoom in"
-            title="Zoom in"
-            disabled={!preview || zoom === HTML_ZOOM.length - 1}
-            onClick={() => zoomTo(zoom + 1)}
-          >
-            <Plus size={16} />
-          </button>
+          <span className="paper-html-zoom">
+            <input
+              type="range"
+              aria-label="Preview zoom"
+              min={zoomStop(HTML_ZOOM.min)}
+              max={zoomStop(HTML_ZOOM.max)}
+              step="0.01"
+              value={zoomStop(zoom)}
+              aria-valuetext={`${zoom}%`}
+              disabled={!preview}
+              onChange={(event) => zoomTo(zoomPercent(Number(event.target.value)))}
+            />
+            <button
+              type="button"
+              aria-label="Reset preview zoom"
+              title="Reset preview zoom"
+              disabled={!preview || zoom === 100}
+              onClick={() => zoomTo(100)}
+            >
+              {zoom}%
+            </button>
+          </span>
           {onDirectComment && (
             <button
               className="icon-button"

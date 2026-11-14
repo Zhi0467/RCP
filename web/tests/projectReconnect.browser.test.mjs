@@ -1771,7 +1771,7 @@ test("returning Agents admits the current transcript before its first frame at 3
   );
 });
 
-test("returning Artifacts withholds its retained rows until current admission at 390px", async (t) => {
+test("returning Files withholds its retained rows until current admission at 390px", async (t) => {
   const { page, errors, state } = await openedShell(t, { viewport: { width: 390, height: 844 } });
   const artifact = (name) => ({
     id: name,
@@ -1786,7 +1786,7 @@ test("returning Artifacts withholds its retained rows until current admission at
   await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
   await page
     .locator(".phone-tab-bar")
-    .getByRole("button", { name: /^Artifacts/ })
+    .getByRole("button", { name: /^Files/ })
     .click();
   await page.getByRole("heading", { name: "Retained artifact" }).waitFor();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
@@ -1799,7 +1799,7 @@ test("returning Artifacts withholds its retained rows until current admission at
   await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
   await page
     .locator(".phone-tab-bar")
-    .getByRole("button", { name: /^Artifacts/ })
+    .getByRole("button", { name: /^Files/ })
     .click();
   assert.deepEqual(await sampleEntryFrames(page), []);
   const artifactsRequested = page.waitForRequest(

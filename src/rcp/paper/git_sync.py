@@ -418,6 +418,64 @@ class PaperGit:
                 raise
             return self.status(project_id)
 
+    def _linked(self, project_id: str):
+        link = self._record(project_id)
+        if link.state != "linked":
+            raise GitError("Paper link is pending")
+        return link
+
+    def branches(self, project_id: str) -> list[str]:
+        with self.lock(project_id):
+            link = self._linked(project_id)
+            output = _git(
+                self.directory(project_id),
+                ["ls-remote", "--heads", remote_url(link.repository)],
+            )
+        return sorted(
+            line.split(b"\trefs/heads/", 1)[1].decode(errors="replace")
+            for line in output.splitlines()
+            if b"\trefs/heads/" in line
+        )
+
+    def switch(self, project_id: str, branch: str, *, create: bool):
+        with self.lock(project_id):
+            link = self._linked(project_id)
+            directory = self.directory(project_id)
+            _git(directory, ["check-ref-format", "refs/heads/" + branch])
+            if branch == link.branch and not create:
+                return self.status(project_id)
+            if self._active_held(link):
+                raise GitError("conflicts")
+            link.branch = branch
+            head = self._head(link)
+            if create:
+                if head:
+                    raise GitError("That branch already exists on GitHub")
+                if link.synced_commit:
+                    _git(
+                        directory,
+                        [
+                            "push",
+                            f"--force-with-lease=refs/heads/{branch}:",
+                            remote_url(link.repository),
+                            link.synced_commit + ":refs/heads/" + branch,
+                        ],
+                    )
+                with self.admission(project_id):
+                    self._checked(link)
+                return self.status(project_id)
+            if not head:
+                raise GitError("Paper Git branch is missing from the remote")
+            head = self._fetch(link)
+            with self.admission(project_id):
+                self.store.save_paper_git_link(link)
+                try:
+                    self._merge(link, head)
+                except Exception as exc:
+                    self._error(project_id, exc)
+                    raise
+            return self.status(project_id)
+
     def _error(self, project_id: str, error: Exception) -> None:
         link = self._record(project_id)
         link.last_error = str(error)
@@ -425,9 +483,7 @@ class PaperGit:
 
     def pull(self, project_id: str, *, refresh: bool = False):
         with self.lock(project_id):
-            link = self._record(project_id)
-            if link.state != "linked":
-                raise GitError("Paper link is pending")
+            link = self._linked(project_id)
             try:
                 head = self._fetch(link)
                 with self.admission(project_id):

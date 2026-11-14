@@ -388,7 +388,7 @@ its outcome as a notice. An episode opens its exact run when it is still
 listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
-opens on its source target, and the paper opens under Artifacts. Copy reference
+opens on its source target, and the paper opens in Paper. Copy reference
 writes the full URL. The chat composer turns a same-project reference link into
 a reference chip.
 
@@ -1030,7 +1030,7 @@ exact Runs-route state. Every project view writes its route, and leaving a tab
 remembers the exact route it left, so returning lands on that page even when the
 tab's snapshot is gone (for example after a backend restart). Within a project,
 each view tab reopens the sub-view the viewer last had open there (Research its
-graph, Artifacts its Paper, Agents the chat it was left on while that chat still
+graph, Agents the chat it was left on while that chat still
 exists, else the member's own project thread), remembered per project in browser storage. Activating a tab is
 cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
