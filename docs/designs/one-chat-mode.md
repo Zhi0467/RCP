@@ -33,7 +33,7 @@ release deletes that runner once no store holds an unsettled Discuss task.
 - **Chat on a branch that is the target of a running merge.** Work admission is
   refused with 409 while the merge fence holds (`api/graph_changes.py:183`,
   `storage/agent_tasks.py:1487`), and a live chat turn blocks a merge from
-  starting (`merge_source_has_live_writer`). See D1.
+  starting (`merge_source_has_live_writer`). Accepted (D1).
 
 ## The rule
 
@@ -102,13 +102,9 @@ them to an ordinary send.
 
 ## Decisions
 
-### D1. Chat on the target branch of a running merge
-
-- **(Recommended) Accept the refusal.** Merges take seconds to minutes. The
-  composer shows the existing merge-fence message and the send waits for the
-  human.
-- Admit the Work turn and hold its Patch at Apply until the merge ends. Chat
-  never waits, but the fence gains a second shape.
+- **D1 (decided): chat on the target branch of a running merge is refused.**
+  Merges take seconds to minutes. The composer shows the existing merge-fence
+  message and the member sends again when the merge ends. No new mechanism.
 
 ## Code changed
 
