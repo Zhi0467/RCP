@@ -575,7 +575,7 @@ def test_switch_refusals_keep_the_current_branch(sync):
 def test_same_repository_reuses_the_project_key_and_links_at_once(tmp_path: Path, sync):
     manager, live, remote = sync
     commit_remote(remote, {"paper.md": GitEntry(b"from github\n")})
-    shared = tmp_path / "credentials" / "id_ed25519"
+    shared = tmp_path / "credentials" / "code" / "id_ed25519"
     git_sync.generate_key(shared.parent, "p")
     manager.shared_key = lambda project, repository: (
         ("code", shared) if (project, repository) == ("p", "Owner/Repo") else None

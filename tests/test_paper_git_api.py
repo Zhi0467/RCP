@@ -26,6 +26,7 @@ def test_git_routes_require_member_and_create_pending_link(manifest, tmp_path: P
             "repository",
             "branch",
             "public_key",
+            "key_source",
             "head",
             "unpushed",
             "conflicts",
