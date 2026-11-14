@@ -68,6 +68,12 @@ These were decided with the human in chat:
   - Python tests that open a viewer read the built bundle, as the Paper HTML
     preview tests read `artifact-renderer.js`. One test points
     `web_dist_path` at a missing folder to check the error.
+  - The bundle renders the same React rail, pins and composer, with React
+    inside it. The viewer passes the comment client a bare fetch; the app
+    passes its core request, which pins the instance and reports lost sessions.
+  - The same build emits `comment-text.js`, the quote locator from
+    `anchors.ts`. The artifact frame add-on runs it, so the frame, the rails,
+    and Paper re-find a quote the same way: each whitespace run matches any other.
   - The viewer, the inline frames, and Paper therefore run one module. Author
     HTML stays in its opaque nested frame (invariant 10e).
 
