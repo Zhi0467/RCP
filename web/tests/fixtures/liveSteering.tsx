@@ -2,7 +2,7 @@ import { ResourceRuntime, store } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import "../../src/styles.css";
 
 const profile = {
@@ -76,7 +76,7 @@ function Fixture() {
   });
   return (
     <main style={{ height: "100vh", padding: 24 }}>
-      <NodeChat
+      <AgentChatView
         graphTarget={{ kind: "main" }}
         key={generation}
         project={project as never}

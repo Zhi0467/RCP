@@ -478,7 +478,7 @@ export function PaperCoach({
               {sessionTasks
                 .filter((task) => !lastReplies.has(task.operation_id))
                 .map((task) => (
-                  <div key={task.operation_id} className="node-chat-line agent">
+                  <div key={task.operation_id} className="agent-chat-view-line agent">
                     {cards(task.operation_id)}
                   </div>
                 ))}

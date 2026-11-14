@@ -24,7 +24,7 @@ export function AgentWindowLines({
   useImperativeHandle(scroll, () => handle);
   return (
     <div
-      className="node-chat-lines"
+      className="agent-chat-view-lines"
       aria-live="polite"
       onScroll={handle.handleChatScroll}
       ref={linesRef}

@@ -21,7 +21,7 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await composer.waitFor();
 
     // A reader who moves up even slightly from the bottom keeps their position
@@ -44,7 +44,7 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     assert.equal(await lines.getByText("Lost on the way", { exact: true }).count(), 1);
     assert.equal(
       await lines
-        .locator(".node-chat-line.human")
+        .locator(".agent-chat-view-line.human")
         .last()
         .getByText("Lost on the way", { exact: true })
         .count(),
@@ -92,7 +92,7 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     });
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html?fresh`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await composer.waitFor();
 
     const text = "Every keystroke arrives in a chat that never ran";
@@ -103,11 +103,11 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     await lines.getByText(text, { exact: true }).waitFor();
     // The held start shows the message once, though both the store and the
     // chat hold it.
-    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
+    assert.equal(await lines.locator(".agent-chat-view-line.human").count(), 1);
     // A lost request keeps that one line, now with Resend.
     await page.evaluate(() => window.failHeldStart());
     await lines.getByRole("button", { name: "Resend", exact: true }).waitFor();
-    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
+    assert.equal(await lines.locator(".agent-chat-view-line.human").count(), 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
