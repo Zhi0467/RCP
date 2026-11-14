@@ -1,0 +1,58 @@
+/* Paper's comment rail floats over the workspace's right edge, beside the editor
+   and the preview; at phone width the shared stylesheet makes it a bottom sheet. */
+.paper-live-workspace {
+  position: relative;
+  --paper-comment-rail: 320px;
+  transition: padding-right 0.16s ease;
+}
+@media (min-width: 701px) {
+  .paper-live-workspace.comments-open {
+    padding-right: calc(28px + var(--paper-comment-rail));
+  }
+}
+.rcp-comments.paper-comment-rail {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  bottom: 14px;
+  width: var(--paper-comment-rail);
+  z-index: 20;
+  max-height: none;
+  box-shadow: var(--shadow);
+  animation: paper-comment-rail-in 0.16s ease-out;
+}
+@keyframes paper-comment-rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+.paper-comments-button {
+  position: relative;
+}
+@media (max-width: 390px) {
+  .rcp-comments.paper-comment-rail {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: 52dvh;
+    animation-name: paper-comment-sheet-in;
+  }
+}
+@keyframes paper-comment-sheet-in {
+  from {
+    transform: translateY(16px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rcp-comments.paper-comment-rail {
+    animation: none;
+  }
+  .paper-live-workspace {
+    transition: none;
+  }
+}

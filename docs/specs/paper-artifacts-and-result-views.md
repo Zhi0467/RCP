@@ -51,8 +51,9 @@ one revision. Downloading a folder produces one zip. Desktop uses native save
 dialogs. New and uploaded files open immediately. Typing focus waits for the
 selected file's editor; an older editor cannot consume that request. Choosing
 Preview or Coach cancels pending editor focus. Replacement uploads require
-confirmation. Splits retain a usable width and the browser's preference. They
-support keyboard resizing and omit the divider when stacked.
+confirmation. The Files tree and the editor each have a split that retains a usable
+width and the browser's preference. They support keyboard resizing and omit the
+divider when stacked.
 
 Deleting a file with unsent peer text keeps that editor read-only with Recreate.
 Otherwise, deletion selects another file. Hidden deleted files with unsent text
@@ -131,7 +132,8 @@ A text `.html` or `.htm` file previews its saved page through the inline artifac
 shell and the same opaque sandbox and CSP as agent HTML
 ([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
 document. Relative PNG, JPEG, GIF, WebP and SVG images resolve against the HTML's
-Paper directory and are inlined from the same captured saved revision. Lookup
+Paper directory, and a site-root path such as `/images/a.svg` against the Paper
+root, as Jekyll writes them. They are inlined from the same captured saved revision. Lookup
 decodes the path once, ignores queries, retains SVG fragments and refuses paths
 outside the Paper tree. It never reads arbitrary server paths or fetches URLs.
 Admission checks metadata before reading bytes, deduplicates source reads and
@@ -139,7 +141,9 @@ counts every expanded reference against the limits in `limits.py`. Missing,
 unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
-A `#id` link scrolls the page to the element with that id or name.
+A `#id` link scrolls the page to the element with that id or name. A leading YAML
+front matter block, from a first `---` line to the next `---` or `...` line, is
+hidden in HTML and Markdown previews, which show only the body; the editor keeps it.
 
 On entry and when the saved Paper revision or HTML bytes change, the preview
 checks its member-only `/preview/state` route and hides the prior page behind

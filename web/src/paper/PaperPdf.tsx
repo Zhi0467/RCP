@@ -5,8 +5,10 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { panelTools } from "./panelTools";
 import type { PdfSpot, SyncTexMap } from "./synctex";
-import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
 import { registerPdfSynctex } from "./previewComments";
+import { installBoxTool } from "../comments/box.ts";
+import type { CommentAnchor } from "../comments/types.ts";
+import { pdfBoxAnchor } from "./previewAnchors";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 type LoadedPdf = {
@@ -41,8 +43,8 @@ export default function PaperPdf({
   path?: string;
   /** The compile's SyncTeX map, so a selection names the source line near it. */
   synctex?: SyncTexMap;
-  /** A box drawn on a page; without it pages take no boxes. */
-  onBox?: (box: PaperBox) => void;
+  /** A box drawn on a page, as a pdf anchor; without it pages take no boxes. */
+  onBox?: (anchor: CommentAnchor, rect: DOMRect) => void;
 }) {
   const viewer = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
@@ -66,6 +68,24 @@ export default function PaperPdf({
     registerPdfSynctex(element, synctex);
     return () => registerPdfSynctex(element, undefined);
   }, [synctex]);
+  const boxed = useRef(onBox);
+  boxed.current = onBox;
+  const boxes = Boolean(onBox);
+  useEffect(() => {
+    const surface = pages.current;
+    if (!surface || !boxes) return;
+    return installBoxTool(
+      surface,
+      (box) => {
+        const drawn = pdfBoxAnchor(surface, box);
+        if (drawn) boxed.current?.(drawn.anchor, drawn.rect);
+      },
+      (event) => {
+        const text = (event.target as Element).closest(".textLayer span");
+        return !text || text.getAttribute("role") === "img";
+      },
+    );
+  }, [boxes]);
   useEffect(() => {
     const container = pages.current;
     if (!container) return;
@@ -312,9 +332,7 @@ export default function PaperPdf({
           </a>
         </>,
       )}
-      <PaperBoxSelect onBox={onBox}>
-        <div className="paper-pdf-pages" ref={pages} />
-      </PaperBoxSelect>
+      <div className={`paper-pdf-pages${onBox ? " boxes" : ""}`} ref={pages} />
     </div>
   );
 }

@@ -111,10 +111,8 @@
 .paper-pdf-page .textLayer.selecting .endOfContent {
   top: 0;
 }
-.paper-box-select {
-  display: contents;
-}
-.paper-box-select.enabled [data-box-target] {
+.paper-pdf-pages.boxes .paper-pdf-page,
+.paper-image-frame.boxes {
   cursor: crosshair;
 }
 .paper-image-frame {
@@ -125,20 +123,6 @@
 }
 .paper-image-frame img {
   display: block;
-}
-.paper-select-box {
-  position: absolute;
-  z-index: 2;
-  pointer-events: none;
-  border: 1.5px dashed var(--cobalt);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--cobalt) 10%, transparent);
-  animation: paper-select-box-in 120ms ease-out;
-}
-@keyframes paper-select-box-in {
-  from {
-    opacity: 0;
-  }
 }
 .paper-html-preview {
   position: relative;

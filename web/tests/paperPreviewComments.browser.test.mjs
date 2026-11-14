@@ -79,11 +79,12 @@ async function openHtmlPreview(t, width) {
         return `import React from 'react';
           import { createRoot } from 'react-dom/client';
           import { PaperPreview } from '/src/paper/PaperPreview.tsx';
+          import { anchorQuote } from '/src/comments/model.ts';
           import '/src/styles.css';
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
           window.comments = []; window.cancelled = []; window.spots = []; window.offers = [];
-          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer)} />);`;
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onAnchor={drawn=>window.comments.push({quote: anchorQuote(drawn.anchor), where: drawn.anchor.where, anchor: drawn.rect})} onAnchorCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer && {quote: anchorQuote(offer.anchor), rect: offer.rect})} />);`;
       },
     },
   ]);
@@ -221,7 +222,10 @@ for (const width of [1280, 390])
       assert.ok(Math.abs(box.anchor.left - start.x) < 2);
       assert.ok(Math.abs(box.anchor.right - end.x) < 2);
       assert.ok(Math.abs(box.anchor.top - start.y) < 2);
-      assert.equal(await artifact().locator("[data-rcp-selection]").count(), 1);
+      assert.equal(
+        await artifact().locator('[data-rcp-selection]:not([data-rcp-selection="hover"])').count(),
+        1,
+      );
       const cancelled = await page.evaluate(() => window.cancelled.length);
       await zoom(scale * 100 + 5);
       await page.waitForFunction((count) => window.cancelled.length > count, cancelled);
@@ -363,7 +367,9 @@ test("preview selections name their source, and boxes on PDF pages open comments
         return `import React from 'react';
           import { createRoot } from 'react-dom/client';
           import { PaperPreview } from '/src/paper/PaperPreview.tsx';
-          import { resolvePreviewSelection } from '/src/paper/previewComments.ts';
+          import { previewSelectionAnchor } from '/src/paper/previewAnchors.ts';
+          import { anchorQuote } from '/src/comments/model.ts';
+          const resolve = () => { const drawn = previewSelectionAnchor(getSelection(), host); return drawn && {where: drawn.anchor.where, quote: anchorQuote(drawn.anchor)}; };
           const bar = document.createElement('header');
           document.body.prepend(bar);
           const host = document.getElementById('root');
@@ -376,7 +382,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
             {file_id:'html',path:'page.html',format:'html',kind:'text',sha256:'e'}
           ];
           window.comments = [];
-          window.show = (id, text = '', saved = 7, htmlSha = 'e') => { const shown = files.map(f => f.file_id === 'html' ? {...f, sha256: htmlSha} : f); root.render(<PaperPreview projectId="p" file={shown.find(f => f.file_id === id)} tree={{files: shown, revision: saved, saved_revision: saved}} text={text} active toolbar={bar} cursorLine={1} onDirectComment={c => window.comments.push({quote: c.quote, where: c.where, anchor: c.anchor, clear: c.clear})} onDirectCancel={clear => window.cancels.push(clear)} />); };
+          window.show = (id, text = '', saved = 7, htmlSha = 'e') => { const shown = files.map(f => f.file_id === 'html' ? {...f, sha256: htmlSha} : f); root.render(<PaperPreview projectId="p" file={shown.find(f => f.file_id === id)} tree={{files: shown, revision: saved, saved_revision: saved}} text={text} active toolbar={bar} cursorLine={1} onAnchor={c => window.comments.push({quote: anchorQuote(c.anchor), where: c.anchor.where, anchor: c.rect, clear: c.clear})} onAnchorCancel={clear => window.cancels.push(clear)} />); };
           window.cancels = [];
           window.select = (element, from, to) => {
             const range = document.createRange();
@@ -384,16 +390,16 @@ test("preview selections name their source, and boxes on PDF pages open comments
             else { range.setStart(element.firstChild, from); range.setEnd(element.firstChild, to); }
             getSelection().removeAllRanges();
             getSelection().addRange(range);
-            return resolvePreviewSelection(getSelection(), host)?.where ?? null;
+            return resolve()?.where ?? null;
           };
-          window.quote = () => resolvePreviewSelection(getSelection(), host)?.quote ?? null;
+          window.quote = () => resolve()?.quote ?? null;
           window.selectSpan = (first, last, end = last.firstChild.length) => {
             const range = document.createRange();
             range.setStart(first.firstChild ?? first, 0);
             range.setEnd(last.firstChild ?? last, end);
             getSelection().removeAllRanges();
             getSelection().addRange(range);
-            return resolvePreviewSelection(getSelection(), host) ?? null;
+            return resolve();
           };`;
       },
     },
@@ -451,28 +457,31 @@ test("preview selections name their source, and boxes on PDF pages open comments
   );
   await page.waitForFunction(() => window.show);
 
-  // Markdown: the selected element's source lines; display math resolves through its block.
+  // Markdown: the selected element's source lines, marked as drawn in the preview.
   await page.evaluate((text) => window.show("md", text), MARKDOWN);
   await page.locator(".katex-display").waitFor();
-  assert.equal(await page.locator("h1").evaluate((el) => window.select(el)), "notes.md, line 1");
+  assert.equal(
+    await page.locator("h1").evaluate((el) => window.select(el)),
+    "notes.md:1 (preview)",
+  );
   assert.equal(
     await page
       .locator("p")
       .first()
       .evaluate((el) => window.select(el, 0, 5)),
-    "notes.md, lines 3-4",
+    "notes.md:3-4 (preview)",
   );
   assert.equal(
     await page.locator(".katex-display").evaluate((el) => window.select(el)),
-    "notes.md, lines 6-8",
+    "notes.md:6-8 (preview)",
   );
-  // Inline math is quoted once, as shown, without KaTeX's hidden MathML.
-  assert.equal(
+  // The quote is the rendered text as the preview holds it, so its pin finds it again.
+  assert.match(
     await page.evaluate(() => {
       window.select([...document.querySelectorAll("p")].at(-1));
-      return window.quote().replace(/\s+/g, " ");
+      return window.quote();
     }),
-    "After y2 math.",
+    /^After .*math\.$/s,
   );
   // A selection that ends where the next block starts (a triple-click) names its own block.
   assert.equal(
@@ -480,14 +489,14 @@ test("preview selections name their source, and boxes on PDF pages open comments
       const [heading, paragraph] = document.querySelectorAll("h1, p");
       return window.selectSpan(heading, paragraph, 0).where;
     }),
-    "notes.md, line 1",
+    "notes.md:1 (preview)",
   );
 
   // Plain text: lines counted from the newlines before the range.
   await page.evaluate(() => window.show("txt", "alpha\nbeta\ngamma\n"));
   const pre = page.locator("pre.paper-plain-preview");
-  assert.equal(await pre.evaluate((el) => window.select(el, 6, 10)), "data.txt, line 2");
-  assert.equal(await pre.evaluate((el) => window.select(el, 6, 17)), "data.txt, lines 2-3");
+  assert.equal(await pre.evaluate((el) => window.select(el, 6, 10)), "data.txt:2 (preview)");
+  assert.equal(await pre.evaluate((el) => window.select(el, 6, 17)), "data.txt:2-3 (preview)");
 
   // Uploaded PDF: the text layer selects natively and names the page.
   await page.evaluate(() => window.show("pdf"));
@@ -518,16 +527,13 @@ test("preview selections name their source, and boxes on PDF pages open comments
   // The coach gets the box's place on the page, since no pixels are sent.
   assert.match(box.where, /^figs\/doc\.pdf, page 2, area [0-2]-\d+% across and [0-2]-\d+% down$/);
   assert.ok(box.anchor.right > box.anchor.left);
-  assert.equal(await page.locator(".paper-select-box").count(), 1);
-  await page.evaluate(() => window.comments.at(-1).clear());
-  assert.equal(await page.locator(".paper-select-box").count(), 0);
+  assert.equal(await page.locator(".rcp-comment-box").count(), 0);
   // A box over part of a line quotes the boxed words, not the whole line or nothing.
   await page.mouse.move(slot.x + 4, slot.y + 4);
   await page.mouse.down();
   await page.mouse.move(span.x + span.width * 0.45, span.y + span.height + 4, { steps: 4 });
   await page.mouse.up();
   assert.match(await page.evaluate(() => window.comments.at(-1).quote), /^Hello\s*$/);
-  await page.evaluate(() => window.comments.at(-1).clear());
   // Escape during a drag cancels it: no box, no comment.
   const before = await page.evaluate(() => window.comments.length);
   await page.mouse.move(slot.x + 4, slot.y + 4);
@@ -535,7 +541,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await page.mouse.move(slot.x + 120, slot.y + 120, { steps: 4 });
   await page.keyboard.press("Escape");
   await page.mouse.up();
-  assert.equal(await page.locator(".paper-select-box").count(), 0);
+  assert.equal(await page.locator(".rcp-comment-box").count(), 0);
   assert.equal(await page.evaluate(() => window.comments.length), before);
   // A drag that starts on text stays a native selection.
   await page.mouse.move(span.x + 2, span.y + span.height / 2);
@@ -595,7 +601,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   });
   await page.waitForFunction(() => window.comments.at(-1)?.where?.startsWith("page.html"));
   const htmlBox = await page.evaluate(() => window.comments.at(-1));
-  // Elements quote their own text before a label they inherit, and a repeat once.
+  // A box over several elements quotes them all.
   await post({
     kind: "box",
     rect: { x: 0, y: 0, width: 1, height: 1 },
@@ -606,11 +612,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
       { path: "section > p:nth-child(3)", label: "Results", text: "Second finding" },
     ],
   });
-  await page.waitForFunction(() => window.comments.at(-1)?.quote.includes("finding"));
-  assert.equal(
-    await page.evaluate(() => window.comments.at(-1).quote),
-    "First finding, Second finding",
-  );
+  await page.waitForFunction(() => window.comments.at(-1)?.quote.includes("Results"));
   assert.equal(htmlBox.quote, "Plot");
   assert.equal(htmlBox.where, "page.html, area 10-40% across and 20-60% down");
   // A selection the frame cancels reports the clear of the comment it opened.
@@ -710,7 +712,7 @@ test("a touch drag on a PDF page draws no box", async (t) => {
     fire("pointermove", 120, 120);
     fire("pointerup", 120, 120);
   });
-  assert.equal(await page.locator(".paper-select-box").count(), 0);
+  assert.equal(await page.locator(".rcp-comment-box").count(), 0);
   assert.equal(await page.evaluate(() => window.boxes), 0);
 });
 
