@@ -46,82 +46,129 @@ Decided with the human in chat:
    self-contained HTML version or an artifact. A **Save to Paper** action on
    artifacts copies one into the Paper.
 
+## Where things run
+
+Agents run on the base machine, and the Paper folder lives in the state root.
+For a team project both are the team server, together with the backend and its
+SQLite, so the mirror below is all local. The one split case is a personal
+project whose state root is an SSH host: the agent and the folder are on that
+host while SQLite is in the desktop backend. There the folder is read back at
+the end of each Coach turn instead of watched (decided with the human).
+
+A Paper-focused chat always runs on the machine that holds the state root.
+Asking it to run elsewhere is refused with the reason. Other chats that run on
+another machine read the Paper only when that machine is the state host, as
+today.
+
 ## The live Paper folder
 
-`.research/paper` stops being a published output and becomes the Paper's file
-view. SQLite stays the truth for history, co-editing, GitHub sync, and backup.
-The folder is kept equal to it in both directions.
+`.research/paper` becomes the Paper's file view. SQLite stays the truth for
+history, co-editing, GitHub sync, and backup. The folder is kept equal to it in
+both directions. This extends two existing pieces instead of adding new ones:
+the Paper publisher (`LivePaper._publish` and the `paper_publication` table)
+and Paper Git's merge (`paper/git_merge.py` `merge_trees` with the apply loop in
+`PaperGit._merge`).
 
-**Paper → folder.** Every committed Paper revision writes its changed files into
-the folder in place, one file at a time: write to a sibling temp file, then
-rename. Deletes and renames apply as file operations. The whole-tree swap
-(`publish_paper_tree`, `_select_paper_tree`) is removed. Lag is the commit plus
-one write, well under a second.
+**What RCP last wrote.** A new table `paper_folder_files(project_id, path,
+sha256, revision)` records, per file, the bytes RCP last wrote to the folder.
+It is the merge base for folder edits and survives restarts.
 
-**Folder → Paper.** The owner watches the folder (`watchfiles`, already a
-dependency) while any Coach turn runs in the project, and at turn end runs one
-full scan.
-- For each changed path it reads the bytes and compares them with the Paper
-  file. A difference becomes a Paper revision by the actor `coach:<operation>`.
-- Text is merged three-way: base = the text RCP last wrote to that file,
-  theirs = the file now, ours = the live Paper text. Non-overlapping edits
-  merge. An overlap keeps the live text (decision 6) and records a clash for
-  the turn.
-- Binary files, creates, deletes, and renames apply whole. A delete or rename
-  that clashes with a live edit keeps the live file and records a clash.
-- Paths Paper refuses (its path rules and limits) are skipped and recorded as
-  failed rows.
-- Writes that RCP made itself (Paper → folder) are recognized by content and
-  ignored.
+**Paper → folder.** The publisher stops swapping whole trees. After each
+committed revision it writes only the changed paths, per file, through a
+sibling temp file and a rename, then records the file in `paper_folder_files`.
+Writes are coalesced per file for 300 ms so typing does not rewrite a file per
+keystroke. `hold`, failure backoff, and `pending_since` keep their meaning;
+`published_revision` becomes "every changed file written".
+`publish_paper_tree` and `_select_paper_tree` are deleted, and the remote state
+transport gains a per-file write with the same temp-and-rename.
 
-**Ownership.** Only the owning RCP process writes the folder. The Coach's file
-tools get `.research/paper` as an exact write root. Every other launch keeps it
-read-only (today's `.research` protection in `agents/write_scope.py`).
+**Folder first.** Before RCP overwrites a file, it compares the file's bytes
+with `paper_folder_files`. If they differ, someone (the Coach, or a person in
+an editor) changed the file since RCP wrote it, so that change is read into
+Paper first, under the same per-project lock. RCP never overwrites an unread
+edit.
 
-**Builds.** Compile and preview read from SQLite snapshots, never the folder, so
-a half-written folder never reaches a build. (Today's "never see half a
-published tree" guarantee moves to the compile path.)
-
-**SSH state roots.** A personal project whose state lives on an SSH host keeps
-its folder there. The owner applies Paper → folder over the existing state
-transport and watches by polling the remote folder's mtimes during a Coach turn.
-Open question for review: the cost of that poll versus restricting Coach Paper
-writes to local state roots in the first version.
+**Folder → Paper.** On local state roots the owner watches the folder with
+`watchfiles` (declared as a direct dependency) for as long as the project is
+open, not only during Coach turns, so any edit to the folder reaches Paper. On
+SSH state roots RCP scans at the end of each Coach turn, at the folder-first
+check, and at backend start.
+- A changed path becomes one call to `merge_trees(base, theirs, ours)`: base =
+  the bytes in `paper_folder_files`, theirs = the folder, ours = live Paper.
+- Clean results apply through Paper Git's apply loop as a Paper revision whose
+  actor is `coach:<operation id>` while a Coach turn runs, else `folder`.
+- An overlap keeps the live text (decision 6). The folder's side is held with
+  Paper Git's held-file mechanism under the task id of the turn. That held side
+  is the red row.
+- Refused paths and limits are skipped with Paper Git's reasons and show as red
+  rows.
+- **Startup.** Before the first write, a full scan reads any changed files into
+  Paper. A restart never loses folder edits.
 
 ## The Coach chat
 
-- **Where.** The Coach pane hosts one ordinary project chat per member, as the
-  Coach History and New chat do today. Its rows are `project_chat` tasks with
-  `focus: "paper"`.
-- **Capability.** `focus: "paper"` adds `.research/paper` to the turn's resolved
-  write roots in the one place write scope is resolved. Capability stays code,
-  not configuration (invariant 4).
+- **Mode.** A Coach chat is an ordinary Work chat; there is one chat mode.
+- **Focus.** A chat has `focus`, `null` or `"paper"`, fixed when the chat is
+  created and stored on the chat record. Requests carry it into `RunRequest`
+  and `AgentDispatchScope`, so recovery and frozen authority keep it. The Coach
+  pane lists the member's chats with `focus = "paper"`. The policy version of
+  the Work task contract bumps.
+- **Write scope.** `ProjectWriteScope` gains `paper_root`, set only for
+  `focus = "paper"`. It is part of the scope fingerprint. Old scopes have none
+  and stay valid. `protected_repository_paths` keeps denying `.research` and
+  lists its children except `paper/`, so the grant never opens graph or chat
+  state. Per provider:
+  - **Claude:** deny each `.research` child except `paper/`, and allow
+    `paper/`; deny still beats allow.
+  - **Codex:** `paper/` joins the writable roots and the other `.research`
+    children stay `read`. A profile test pins that precedence.
+  - **OpenCode:** a granted root inside a deny is already re-allowed.
 - **Prompt.** The writing guidance from `paper_coach_task_contract` moves into
-  the chat prompt when `focus` is `paper`, rendered from the same resolved scope
-  object. The policy version bumps.
-- **Deleted:** `paper_coach` task kind and its admission branches, `CoachRequest`,
-  `runs/tasks/coach.py`, the `paper_suggest` capability and provider profiles,
-  `WritingSession`, `paper_coach_steers`, refresh rounds, Review/Apply modes,
-  `paper/changes.py` card collection for Coach turns, Coach card routes, and the
-  Coach card UI. GitHub sync's `paper-git` cards are a separate design (the
-  remote-truth Paper Git PR) and are untouched here.
-- **Old rows.** Stored `paper_coach` tasks replay read-only as history.
-  Pending Coach cards are rejected by a one-time migration with a notice, since
-  their mode no longer exists.
+  the Work contract when `focus` is `paper`, rendered from the same resolved
+  scope object.
+- **Deleted:** `runs/tasks/coach.py`, the `paper_suggest` capability and
+  provider profiles, `WritingSession`, `paper_coach_steers`, refresh rounds,
+  Review/Apply modes, Coach card collection, the Coach card routes, and
+  `PaperCoach.tsx`'s card UI. Paper Git's own `paper-git` cards are unchanged.
+- **Upgrade.**
+  - `CoachRequest` and the `paper_coach` kind move to a frozen legacy module
+    that only parses stored rows for read-only replay.
+  - A queued or running `paper_coach` task at upgrade is settled as
+    interrupted with a notice.
+  - Pending Coach card groups are rejected by a migration with a notice. Paper
+    Git groups are untouched.
+  - Old Coach sessions show read-only in the Coach pane's history.
+  - The steers and writing-session tables stay readable for one release, then
+    a later migration drops them.
 
 ## A turn's change list
 
-- A turn's Paper revisions carry its operation id. The change list is the diff
-  of each touched file between the revision before the turn's first write and
-  after its last, restricted to the turn's own revisions. Edits other members
-  typed during the turn are not shown as the Coach's.
-- **Folded row:** "N files changed", with +/− totals. Red rows (clashes, skipped
-  paths) sort first. A row opens the file's diff beside the chat.
-- **Undo turn** reverts the turn's revisions with the existing guarded inverse
-  (live text must still hold the Coach's text in those regions).
-- **Comments.** A diff line takes a shared comment thread with a new `diff`
-  anchor (`path`, `side`, `line`, `text`, `turn`). Send goes to the same chat
-  through the composer path of the shared comments design.
+- **Receipts.** Each folder → Paper apply during a turn writes a receipt keyed
+  by `(operation_id, revision)` with the paths, the inverse operations, and
+  guards (the text each region must still hold). Receipts pin their before and
+  after saved snapshots, so pruning keeps them while the chat exists.
+- **List.** The change list is built from the turn's receipts: per path, the
+  text before the turn's first receipt and after its last. Other members' edits
+  are not receipts, so they never show as the Coach's.
+- **Rows.** "N files changed", with +/− totals. Red rows sort first: held
+  clashes (actions: Take the Coach's / Keep mine, through Paper Git's
+  `resolve`) and skipped paths.
+- **Undo turn** applies the receipts' inverses newest first. A guard that no
+  longer holds stops that file and shows it as a red row.
+- **Routes:** `GET …/paper/turns/{op}` (list), `GET …/paper/turns/{op}/files/{path}`
+  (diff), `POST …/paper/turns/{op}/undo`, `POST …/paper/turns/{op}/held/{path}`
+  with `{take: "coach"|"mine"}`.
+- **Comments.** A diff line takes a shared comment thread with target kind
+  `reply` and the turn's operation id, so readability follows the chat. A new
+  anchor kind `diff` holds `path`, `side`, `line`, and `text`; it joins
+  `CommentAnchor`, `render_anchor`, the web mirror, and the parity test. Send
+  uses the chat's composer path.
+
+## The Coach pane
+
+The pane embeds the ordinary chat view (`AgentChatView`) for the selected
+`focus = "paper"` chat, with History and New chat as today. The turn change list
+renders inside the chat's turn, and the diff opens beside the chat.
 
 ## Other agents
 
