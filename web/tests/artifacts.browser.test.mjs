@@ -110,9 +110,9 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
         operation_id: "task",
         artifact_id: view,
         available: true,
-        can_open: false,
+        can_open: view === "pdf",
         can_download: true,
-        viewer_url: null,
+        viewer_url: view === "pdf" ? "/api/projects/project/artifacts/pdf/viewer" : null,
         download_url: `/api/projects/project/tasks/task/artifacts/${view}/download`,
         graph_branch_name: "main",
       })),
@@ -270,7 +270,11 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
       return route.fulfill({
         json:
           artifactId === "pdf"
-            ? { ...viewerState(artifactId), media_type: "application/pdf", viewer_url: null }
+            ? {
+                ...viewerState(artifactId),
+                media_type: "application/pdf",
+                viewer_url: "/api/projects/project/artifacts/pdf/viewer",
+              }
             : viewerState(artifactId),
       });
     });
@@ -393,7 +397,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
           artifact_id: "pdf",
           name: "pdf.dat",
           media_type: "application/pdf",
-          viewer_url: null,
+          viewer_url: "/api/projects/project/artifacts/pdf/viewer",
           pinned_branch_ids: [],
           current_version: "v1",
           version_number: 1,
