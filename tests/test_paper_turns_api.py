@@ -50,3 +50,21 @@ def test_a_turn_lists_the_agents_files_clashes_first_and_serves_each_diff(manife
 
         assert client.get(prefix + "/turns/turn/files/c.md").status_code == 404
         assert client.get(prefix + "/turns/missing").status_code == 404
+
+
+def test_a_turn_that_never_held_the_paper_lists_no_files(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project = app.state.default_project_id
+    store = app.state.background_tasks.store
+    with signed_in_client(app) as client:
+        admitted_launch_task(
+            store,
+            operation_id="refused",
+            request=work_request("coach").model_copy(update={"focus": "paper"}),
+            record_updates={"project_id": project},
+        )
+        prefix = f"/api/projects/{project}/paper/turns/refused"
+        turn = client.get(prefix)
+        assert turn.status_code == 200, turn.text
+        assert turn.json()["files"] == []
+        assert client.get(prefix + "/files/a.md").status_code == 404

@@ -9,8 +9,8 @@ export interface PaperTurnRow {
 }
 
 export interface PaperTurn {
-  before_version_id: string;
-  after_version_id: string;
+  before_version_id: string | null;
+  after_version_id: string | null;
   files: PaperTurnRow[];
 }
 

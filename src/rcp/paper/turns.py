@@ -26,8 +26,8 @@ class PaperTurnRow(BaseModel):
 
 
 class PaperTurn(BaseModel):
-    before_version_id: str
-    after_version_id: str
+    before_version_id: str | None
+    after_version_id: str | None
     files: list[PaperTurnRow]
 
 
@@ -48,10 +48,10 @@ class PaperTurnFile(BaseModel):
     hunks: list[PaperTurnHunk]
 
 
-def turn_versions(store: AppStore, operation_id: str) -> tuple[str, str]:
+def turn_versions(store: AppStore, operation_id: str) -> tuple[str, str] | None:
     receipts = store.agent_task_receipts_by_category(operation_id, "paper_turn")
     if not receipts:
-        raise KeyError(operation_id)
+        return None
     payload = receipts[-1].payload
     return str(payload["before_version_id"]), str(payload["after_version_id"])
 
