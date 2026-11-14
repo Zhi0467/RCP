@@ -54,14 +54,21 @@ These were decided with the human in chat:
 | `src/rcp/comments/render.py` | `render_anchor(anchor) -> str` and `render_thread(thread) -> str`, the only place a thread becomes agent text |
 | `src/rcp/storage/comments.py` | `migrate_comments`, `CommentStoreMixin`, `comment_target_readable(user_id, kind, id)`, and `mark_threads_sent(ids, operation_id)` |
 | `src/rcp/api/comments.py` | the comment routes |
-| `web/src/comments/` | the rail, pins, composer, picker, shared box tool, `locateThread`, and the anchor type; built as a second Vite entry, `comments`, that the viewer shell loads |
+| `web/src/comments/` | the rail, pins, composer, picker, shared box tool, `locateThread`, and the anchor type |
 
 - The web anchor type is written by hand. A parity test checks it against
   `CommentAnchor.model_json_schema()`.
-- `artifact_comment_panel.js` is deleted. The same-origin viewer shell loads
-  the `comments` entry from `web/dist` instead, so the viewer, the inline
-  frames, and Paper run one module. Author HTML stays in its opaque nested frame
-  (invariant 10e).
+- `artifact_comment_panel.js` is deleted. The comment module also builds as a
+  self-contained bundle, `comments.js` and `comments.css`, through a plugin
+  that copies `web/build/artifactRenderer.mjs`.
+  - `artifact_comments.comment_panel` reads the bundle from `web_dist_path()`
+    and inlines it into the viewer shell, as `artifact_renderer.renderer_assets`
+    does. The shell's `script-src 'unsafe-inline'` CSP stays unchanged.
+  - A missing bundle raises the same "Rebuild the Web assets" error.
+  - Python tests that open a viewer use the repo's existing built-assets
+    fixture.
+  - The viewer, the inline frames, and Paper therefore run one module. Author
+    HTML stays in its opaque nested frame (invariant 10e).
 
 ## Data model
 
@@ -74,7 +81,7 @@ comment_threads(
   target_id, graph_target, drawn_version NULL, anchor_json,
   state ('open'|'resolved'),
   created_by, created_at, closed_by NULL, closed_at NULL,
-  sent_operation_id NULL)
+  sent_operation_id NULL, send_key NULL)
   INDEX (project_id, target_kind, target_id, state)
 comment_posts(
   post_id PK, project_id, thread_id, author_id, text, created_at, edited_at NULL)
@@ -226,7 +233,7 @@ open ──Resolve, or Send admitted──▶ resolved ──Reopen / reply─�
 - Only `open` threads show pins, can be ticked, and are listed or delivered as
   mentions.
 - The rail folds resolved threads under "Resolved · N".
-- Reopening clears `closed_*` and `sent_operation_id`.
+- Reopening clears `closed_*`, `sent_operation_id`, and `send_key`.
 
 ## Send to agent
 
@@ -243,33 +250,47 @@ added.
 **Wiring:**
 - `start_agent_task` pops `comment_thread_ids` from the body before
   `_validated_task_request`. It is never part of a stored request.
-- `SteerAgentTaskRequest` gains `comment_thread_ids`. The steer handler renders
-  the threads into the steer text. A steer carries text only, so artifact
+- `SteerAgentTaskRequest` gains `comment_thread_ids`. Its `message` may be empty
+  when threads are present. The steer handler renders the threads into the
+  steer text before `begin_chat_steer` builds the final text. A steer carries text only, so artifact
   threads steered into a running turn arrive as rendered text, without crops.
 - The clients' "no steer while artifact context is staged" checks stay. Sending
   threads never stages context on the client.
 
+**Repeats:** every thread send carries a client key:
+- a new turn uses the composer's existing `Idempotency-Key`, which thread sends
+  always include;
+- a steer uses its `message_id`;
+- the viewer route uses a new `Idempotency-Key`, read the same way.
+
+`mark_threads_sent` stores the key in `send_key`. A thread counts as sendable
+when it is `open`, or when it is resolved with `send_key` equal to this request's
+key. When the key matches, `render_thread` renders only the posts created at or
+before `closed_at`, so a repeat produces the same text even if someone replied
+meanwhile, and the existing replay paths match it:
+- the `existing is not None` branch of `client_request_admission` for turns;
+- `begin_chat_steer` with `_require_same_steer` for steers.
+
 **Steps:**
-1. **Replay first.** The existing idempotent replay lookup by `message_id` and
-   `attempt` runs first. On a replay, `mark_threads_sent` runs again with the
-   replayed operation id, and the original result returns.
-2. **Check.** Load the threads. Each must be `open`, pass
+1. **Check.** Load the threads. Each must be sendable, pass
    `comment_target_readable` for the sender, and belong to this chat or Paper.
    - A composer send may include threads on at most one artifact, and that
      artifact must belong to this chat, as `admit_chat_artifact_comment`
      requires.
    - Otherwise return 409.
    - The total must fit the 32,000-character cap (422).
-3. **Render.** Use `render_anchor` and `render_thread`.
+2. **Render.** Use `render_anchor` and `render_thread`.
    - Message text: the rendered threads follow the typed text.
    - Artifact selections: the server builds `ArtifactContextRequest` with
      `source="task"`, `operation_id` set to the artifact's origin operation,
      and no `base_version`, as the viewer route does now.
-4. **Admit.** Refusals keep each route's existing status codes and change no
-   thread.
-5. **Mark sent.** After `background_tasks.start` or the steer is accepted, call
-   `mark_threads_sent(ids, operation_id)`:
-   `UPDATE … SET state='resolved', sent_operation_id=?, closed_by=?, closed_at=? WHERE thread_id IN (…) AND state='open'`.
+3. **Admit.** Refusals keep each route's existing status codes and change no
+   thread. A steer receipt that `begin_chat_steer` returns refused also counts
+   as a refusal.
+4. **Mark sent.** After `background_tasks.start`, or after a steer receipt that
+   was accepted, and on the replay branches, call
+   `mark_threads_sent(ids, operation_id, key)`:
+   `UPDATE … SET state='resolved', sent_operation_id=?, send_key=?, closed_by=?, closed_at=? WHERE thread_id IN (…) AND state='open'`.
    - The operation id is the new task, or for a steer, the running task.
    - A thread someone closed in the meantime stays as that person left it.
    - If the process stops between admission and this update, the threads stay
