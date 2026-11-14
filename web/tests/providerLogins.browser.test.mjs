@@ -435,5 +435,6 @@ test("paste-code starts, fits a phone, submits once and clears the input", async
     ],
   );
   assert.doesNotMatch(await added.innerHTML(), /private-paste-code/);
+  await added.locator('[data-sign-in-action="cancel"]').waitFor();
   assert.deepEqual(errors, []);
 });

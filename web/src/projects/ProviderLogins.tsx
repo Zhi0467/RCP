@@ -740,7 +740,10 @@ export function SignInCard({
         {cancelSignIn}
       </span>
     ) : starter ? (
-      <LoaderCircle size={14} className="spin sign-in-state" aria-label="Signing in" />
+      <span className="sign-in-device" role="status">
+        <LoaderCircle size={14} className="spin sign-in-state" aria-label="Signing in" />
+        {cancelSignIn}
+      </span>
     ) : (
       <span className="sign-in-state">
         {signIn.started_by_display_name ?? "A member"} is signing in

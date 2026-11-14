@@ -225,7 +225,7 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
     assert.equal(count(team, /data-sign-in-action="cancel"/g), 1);
     const otherViewer = fold(everyState, settingsFor(), "u-eve");
     assert.equal(count(otherViewer, /ABCD-1234|example\.invalid/g), 0);
-    assert.equal(count(otherViewer, /data-sign-in-action="cancel"/g), 0);
+    assert.equal(count(otherViewer, /data-sign-in-action="cancel"/g), 1);
 
     // An unmanaged CLI: its machine card only, no switch, add or ⋯.
     assert.equal(count(opencode, /data-card-state=/g), 1);
