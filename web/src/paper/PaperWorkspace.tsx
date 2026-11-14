@@ -812,7 +812,7 @@ export function PaperWorkspace({
           />
         </div>
       </aside>
-      <AnswerCommentLayers comments={comments} mode="discuss" />
+      <AnswerCommentLayers comments={comments} className="paper-coach-comment" />
       {history && tree && (
         <PaperHistory
           apiBase={apiBase}

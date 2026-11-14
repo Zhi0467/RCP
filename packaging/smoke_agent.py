@@ -1,4 +1,4 @@
-"""A served-app remote Discuss journey against disposable transport/provider doubles.
+"""A served-app remote chat journey against disposable transport/provider doubles.
 
 The SSH double runs the backend's shipped source on a separate temporary HOME;
 only the network and model endpoints are replaced. No RCP module is imported by
@@ -178,7 +178,6 @@ def verify(base_url: str, root: Path) -> None:
         prefix + "/tasks/project_chat",
         {
             "chat_id": chat_id,
-            "mode": "discuss",
             "message": "Confirm the packaged agent works.",
             "run_truth_scope": ["smoke"],
         },

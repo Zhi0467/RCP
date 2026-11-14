@@ -223,7 +223,7 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
     import re
     import uuid
 
-    from .helpers import launch_contract_path, signed_in_client, wait_for_task
+    from .helpers import discuss_turn, launch_contract_path, signed_in_client, wait_for_task
     from .test_api import ScriptedLauncher
     from .test_branch_chats import _app_branch
 
@@ -233,15 +233,17 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
     client = signed_in_client(app)
     chat_id = str(uuid.uuid4())
     for mode in ("discuss", "work"):
-        response = client.post(
-            f"/api/projects/{app.state.default_project_id}/tasks/node_chat?branch_id={episode.graph_target.branch_id}",
-            json={
-                "chat_id": chat_id,
-                "node_id": "rq/learning-after-shift",
-                "message": "Inspect branch inputs.",
-                "mode": mode,
-                "run_truth_scope": ["repo-a"],
-            },
+        url = f"/api/projects/{app.state.default_project_id}/tasks/node_chat?branch_id={episode.graph_target.branch_id}"
+        body = {
+            "chat_id": chat_id,
+            "node_id": "rq/learning-after-shift",
+            "message": "Inspect branch inputs.",
+            "run_truth_scope": ["repo-a"],
+        }
+        response = (
+            discuss_turn(client, url, body)
+            if mode == "discuss"
+            else client.post(url, json=body | {"mode": mode})
         )
         assert response.status_code == 202, response.text
         task = wait_for_task(app.state.catalog.store, response.json()["operation_id"])

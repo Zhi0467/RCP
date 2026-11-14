@@ -141,7 +141,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 72
+      "count": 65
     }
   },
   "src/chat/AgentRename.tsx": {
@@ -886,7 +886,7 @@
   },
   "src/webmcp/conversations.ts": {
     "rcp/no-comments": {
-      "count": 8
+      "count": 7
     }
   },
   "src/webmcp/overview.ts": {
@@ -961,7 +961,7 @@
   },
   "tests/artifacts.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 31
+      "count": 28
     }
   },
   "tests/attentionRunsOntology.test.mjs": {
@@ -1281,7 +1281,7 @@
   },
   "tests/liveSteering.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 9
+      "count": 6
     }
   },
   "tests/machinePower.test.mjs": {
@@ -1581,7 +1581,7 @@
   },
   "tests/voice.test.mjs": {
     "rcp/no-comments": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/webmcp.test.mjs": {

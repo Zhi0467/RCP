@@ -98,7 +98,7 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
     const stagedComment = page.getByRole("textbox", { name: "Comment for annotation 1" });
     await stagedComment.waitFor({ state: "visible" });
     await page.getByRole("textbox", { name: "Message" }).fill("Send the staged annotation.");
-    await page.getByRole("button", { name: "Start Discuss turn" }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
 
     assert.equal(await comment.isDisabled(), true);
     assert.equal(await stagedComment.isDisabled(), true);

@@ -92,9 +92,9 @@ def test_unknown_agent_capability_is_rejected() -> None:
         permissions_for("unfamiliar")  # type: ignore[arg-type]
 
 
-def test_surface_permissions_default_conversations_to_discuss(manifest) -> None:
-    assert manifest.agent_profile("node_chat").permissions == permissions_for("discuss")
-    assert manifest.agent_profile("project_chat").permissions == permissions_for("discuss")
+def test_surface_permissions_default_conversations_to_work(manifest) -> None:
+    assert manifest.agent_profile("node_chat").permissions == permissions_for("work_auto")
+    assert manifest.agent_profile("project_chat").permissions == permissions_for("work_auto")
     assert manifest.agent_profile("seed").permissions == permissions_for("scratch_patch")
     assert manifest.agent_profile("refresh").permissions == permissions_for("scratch_patch")
     assert manifest.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
@@ -334,15 +334,25 @@ def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest)
     assert updated.agent_profile("node_chat") == loaded.agent_profile("node_chat")
 
 
-def test_exact_legacy_chat_permissions_normalize_without_widening(manifest) -> None:
+@pytest.mark.parametrize("legacy", ["scratch_patch", "discuss"])
+@pytest.mark.parametrize("surface", ["node_chat", "project_chat"])
+def test_exact_legacy_chat_permissions_load_as_work(manifest, legacy, surface) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["agent"]["node_chat"]["permissions"] = permissions_for("scratch_patch").model_dump(
-        mode="python"
-    )
+    payload["agent"][surface]["permissions"] = permissions_for(legacy).model_dump(mode="python")
 
     migrated = Manifest.model_validate(payload)
 
-    assert migrated.agent_profile("node_chat").permissions == permissions_for("discuss")
+    assert migrated.agent_profile(surface).permissions == permissions_for("work_auto")
+
+
+def test_other_chat_permissions_are_still_refused(manifest) -> None:
+    payload = manifest.model_dump(mode="python")
+    payload["agent"]["node_chat"]["permissions"] = permissions_for("paper_suggest").model_dump(
+        mode="python"
+    )
+
+    with pytest.raises(ValueError, match="safety contract"):
+        Manifest.model_validate(payload)
 
 
 @pytest.mark.parametrize(

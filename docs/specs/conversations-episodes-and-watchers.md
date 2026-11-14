@@ -52,8 +52,7 @@ captured Work turn on main, authorized by the owning member. A task counts as a
 thread's turn only when its chat, kind, scope and authorizing member all match
 the thread (`bound_thread` in `storage/agent_threads.py`); member memory, the
 `projects`, `schedule` and approval-card grants, Space controls and handoff
-claims all use it. Threads have no
-Discuss mode. Loss of membership closes that project thread; after rejoining,
+claims all use it. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view, a project's Agents view, or a voice session is active.
 Private threads cannot be archived. Ensuring the thread list clears legacy
@@ -242,9 +241,9 @@ visible to project members like any Experiment, while the thread stays private.
 
 Thread stages live under `<data_dir>/agent-threads/<user_id>/stages/<name>`
 locally and `~/.rcp/agent-threads/<user_id>/stages/rcp-run.<name>` remotely.
-Work, Discuss artifact edits and retained Work graph repair resolve that same
-owner namespace before validating the exact saved stage; changing turn mode
-does not move the native session or fall back to the public chat stage root.
+Work, recorded Discuss artifact edits and retained Work graph repair resolve that
+same owner namespace before validating the exact saved stage; none moves the
+native session or falls back to the public chat stage root.
 An older explicitly fresh private Discuss artifact edit may retain a local public-root
 checkpoint. Resume and Retry keep that exact checkpoint only when
 `_legacy_private_edit_source` proves the same owner, thread, project, graph target,
@@ -328,18 +327,23 @@ relays by the same function. Delivery is independent of episode health; a health
 caused by the question adds no second push. Dismissal, wakes and reauthorization
 do not recreate the event.
 
-## Discuss and Work turns
+## Chat turns
 
-Discuss and Work are explicit per-turn modes in one conversation. Submit time
-captures the mode; Pause, Resume, Retry, and correction preserve it. Changing the
-composer's mode or configuration affects only the next ordinary turn; while the
-running attempt can take input, the composer's message uses that attempt's
-runtime behavior instead, as described under conversation scratch and human
-input below.
+Every new human chat turn is a Work turn. The node and project chat routes admit
+only `mode: "work"`; an omitted mode becomes Work and `discuss` is refused with
+422. The composer has no mode control. Changing its configuration affects only
+the next ordinary turn; while the running attempt can take input, the composer's
+message uses that attempt's runtime behavior instead, as described under
+conversation scratch and human input below. Pause, Resume, Retry, and correction
+keep a turn's recorded mode, except a human Retry of a historical Discuss turn.
 
-- **Discuss** reasons and answers with no repository mutation or active Patch.
-- **Work** authorizes operational execution within its exact project write
-  scope and one optional semantic `patch.json`.
+**Work** authorizes operational execution within its exact project write scope
+and one optional semantic `patch.json`. The agent reads from the message whether
+the member wants an answer only.
+**Why:** a second mode cost a second prompt contract, launch profile and
+readiness path, and a toggle the member had to remember. The shell reach this
+adds to a question is an
+[accepted gap](providers-and-containment.md#claude).
 
 Work pursues the requested outcome through the investigation, execution,
 verification, and repair it needs. The agent inspects results and iterates while
@@ -362,8 +366,8 @@ Every turn settled by ordinary Work (human Work chat and nightly consolidation) 
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
 `could_not`; `reason` is optional for `done`, and required and non-blank otherwise.
 The reason is one line of at most 240 characters. The answer is never parsed for
-an outcome. Experiment loops, Auto-research, child Work, Discuss, and Seed/Refresh
-are outside this contract. New turns clear stale outcomes with the other handoffs.
+an outcome. Experiment loops, Auto-research, child Work, historical Discuss, and
+Seed/Refresh are outside this contract. New turns clear stale outcomes with the other handoffs.
 
 A missing or invalid outcome gets one same-session correction through the watcher
 handoff correction loop, without another invocation, budget, or repeated operational
@@ -380,8 +384,8 @@ plainly, rather than hedging every sentence.
 
 A Work turn may finish without a Patch; no net graph change spends no revision.
 The answer and graph outcome remain independently visible. A stray Patch left by
-Discuss is retained as a receipt and discarded; a file cannot grant its author a
-different mode.
+a Discuss run is retained as a receipt and discarded; a file cannot grant its
+author a different mode.
 
 Browser consent is an app-local per-chat preference, off by default except for agent threads. The browser
 preference API reads and sets it without rewriting transcripts. Admission of every
@@ -405,6 +409,25 @@ space, project, and the SSH-resolved hostname, user and port. Cleanup reaches
 the owner's card by its current route and refuses when that route now resolves
 elsewhere, so an edited card or repointed SSH alias cannot clean up the old
 host through its new target.
+
+### Historical Discuss turns
+
+Older releases recorded Discuss turns, which reason and answer with no
+repository mutation or active Patch. Stored requests with no mode still decode
+as Discuss. A closed Discuss runner settles them and admits no new Discuss chat
+turn, except the follow-up that answers a pending question whose origin is
+Discuss (see the question rules below). It keeps recorded remote results and
+live remote passes, automatic transport and provider-login retries owed across
+restart, Pause and Resume, and the legacy private-edit stage proofs.
+
+A human Retry of a settled Discuss chat turn is not a recovery.
+`POST /tasks/{id}/retry` refuses it with 409. The web Retry, in the transcript or
+the task inspector, puts the turn's message into that chat's composer instead;
+attachments and references are not restored. Sending it carries
+`supersedes: <old operation id>`. Admission accepts only a settled Discuss turn
+of the same chat and records `transport_auto_retry_superseded` on it in the same
+transaction, so an owed transport or provider-login retry stands down. The old
+turn keeps its record and its Discuss label.
 
 ## Conversation archive
 
@@ -532,8 +555,9 @@ prompt node. Experiment and child wakes keep their own policies. Shared master
 restoration, deltas and replacement are owned by
 [continuation prompts](providers-and-containment.md#continuation-prompts).
 The chat master supplies graph target/head, focus, every project repository with
-the turn's writable set, selected packages and non-secret compute metadata. Separate Discuss/Work contracts grant
-only the mode named on each turn. Resumes include the unchanged human message,
+the turn's writable set, selected packages and non-secret compute metadata. It
+keeps separate Discuss and Work contracts for historical turns and grants only
+the mode named on each turn. Resumes include the unchanged human message,
 logical turn id, artifact directory and changed values. Baselines commit only
 after mechanical success and bind provider, execution machine, session,
 project, target, conversation and focus. A legacy master without a durable
@@ -562,7 +586,7 @@ shared edits are excluded. Detached starting HEAD is refused. A deterministic
 sibling path and branch derive from the chat id. Episodes use the same worktree
 binding path with an episode owner. A path alone never establishes a binding.
 
-Every later Discuss or Work turn uses the bound repository pointer. Discuss
+Every later turn uses the bound repository pointer. A historical Discuss turn
 still has no repository write authority. Native continuation, Pause, Resume,
 Retry, and server restart retain this binding; missing or moved worktrees fail
 before launch without falling back to the shared checkout. A partially created
@@ -610,7 +634,7 @@ Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
 `patch.json` and `watch.json` fail-closed. Committed native context retains its
 stage and master even while idle.
 
-Human Discuss/Work chats and human Experiment invocations may `ask`; the question
+Human chat turns and human Experiment invocations may `ask`; the question
 card receives answers while the composer remains steering. Viewer edits,
 consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
@@ -652,7 +676,9 @@ claimed with task insertion. It keeps the asking turn's mode, native session,
 provider, execution machine, stage and target. Both live launch and recorded
 settlement verify the complete origin. Provider switches and clean handoffs
 cannot receive it; occupied/paused bindings defer, unusable bindings stay visible.
-Discuss has no Patch/write scope; Work runs with the scope its launch builds.
+A question whose origin is Discuss is answered by a Discuss follow-up, the one
+new Discuss chat turn RCP admits; it has no Patch/write scope. Work runs with the
+scope its launch builds.
 The [machine identity compatibility repair](projects-spaces-and-operations.md#machine-identity-upgrade)
 canonicalizes a saved local-null question origin only from its matching asking
 task during storage upgrade. Session and stage admission keep their exact
@@ -669,9 +695,7 @@ queries do not depend on the receipt display cap or displayed history.
 
 The ordinary composer addresses the watched attempt while it can receive input.
 The backend supplies capability, button label and disabled reason from its actual
-runtime. No hint line or separate steering control is shown. While steering,
-mode is locked to the running turn; the next-turn selection returns afterwards.
-Unsupported runtimes leave that next-turn toggle available. Episode workers use
+runtime. No hint line or separate steering control is shown. Episode workers use
 orchestrator mail instead. Steers persist as human messages with delivered,
 refused or unknown receipts. The Paper coach steers the same way; with no
 transcript, its steers live in `paper_coach_steers` and reach the web on its
@@ -685,7 +709,7 @@ captured target/settings; a changed target or setting keeps the draft instead.
 RCP stores no audio. SpeechAnalyzer is local; the older Apple recognizer or a
 chosen network service may send audio externally. Audio attachments are refused.
 
-One nonblank Discuss/Work or Paper coach message atomically claims bounded
+One nonblank chat or Paper coach message atomically claims bounded
 temporary attachments. They stage immutably on the execution host and recovery
 reuses the exact batch;
 partial transfer fails rather than dropping files. The claimed batch expires
@@ -708,7 +732,7 @@ turn end, so Undo restores it; when a newer version arrived meanwhile, the chang
 becomes a separate artifact instead. Only a change settles an outcome; an
 untouched one stays as it was. Prompts list editable artifacts
 separately from read-only references and uploads. Ordinary node/project
-Discuss/Work and Paper coach admit them; steering and other run kinds refuse them,
+chat turns and Paper coach admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
@@ -941,7 +965,7 @@ from Agents. It spends no episode budget and changes no Stop state. When another
 owner's master or a report/revoking edit displaced its contract, the next owner
 reopens its own master: chat for human fresh/recovery turns, episode lineage for
 Experiment turns and renderer-free repair. Revocation clears only after that
-owner succeeds. A chat-master Discuss edit revokes nothing.
+owner succeeds. A recorded chat-master Discuss edit revokes nothing.
 
 Chats, invocations, wakes, recovery, reports and artifact edits reserve the exact
 session/stage atomically. Busy artifact edit admission returns 409, with no
@@ -1183,7 +1207,7 @@ admission fence. They never cancel the observed jobs.
 
 An authorized node Work chat may maintain only its focused Experiment resource;
 authorized project Work may maintain live Experiment resources in that project
-and exact graph target. Discuss may inspect staged state but cannot mutate it.
+and exact graph target. A historical Discuss turn may inspect staged state but cannot mutate it.
 Origin chat, provider, path, or maintenance machine grants no authority.
 
 Maintenance uses its own Work task/session, spends no Experiment invocation,

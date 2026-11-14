@@ -297,7 +297,8 @@ class Manifest(BaseModel):
             assert profile is not None
             expected = permissions_for(surface)
             legacy_chat = surface in {"node_chat", "project_chat"} and (
-                profile.permissions == permissions_for("scratch_patch")
+                profile.permissions
+                in (permissions_for("scratch_patch"), permissions_for("discuss"))
             )
             if profile.permissions is None or legacy_chat:
                 profile.permissions = expected
@@ -360,9 +361,7 @@ AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
 )
 
 
-#: Surfaces whose turns can launch a Work-like capability. The map below gives a
-#: chat surface's *default* capability, `discuss`, but a Work turn on that same
-#: profile launches `work_auto`, so the default cannot answer this on its own.
+#: Surfaces whose turns can launch a Work-like capability.
 #: Only these profiles are subject to a Work-like launch precondition.
 _WORK_LIKE_SURFACES: frozenset[str] = frozenset({"node_chat", "project_chat", "orchestrator"})
 
@@ -380,7 +379,7 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
     if target in {"seed", "refresh"}:
         capability = "scratch_patch"
     elif target in {"node_chat", "project_chat"}:
-        capability = "discuss"
+        capability = "work_auto"
     elif target == "paper_coach":
         capability = "paper_suggest"
     elif target == "discuss":

@@ -166,7 +166,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     );
     await page
       .locator('[data-question-id="parked"]')
-      .getByRole("button", { name: "Answer and continue Work", exact: true })
+      .getByRole("button", { name: "Answer and continue", exact: true })
       .waitFor();
     questions.push({ ...questions[4], question_id: "discuss", capability: "discuss" });
     await page.evaluate(() => window.refreshQuestions("project", "v4"));

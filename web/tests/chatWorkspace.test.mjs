@@ -13,23 +13,19 @@ import {
   withEpisodeAttention,
   chatEntryConversationId,
   chatReadThrough,
-  chatModeStorageKey,
   conversationTurnRequest,
   conversationHasUnread,
   groupChatConversations,
   groupConversationAgents,
-  isConversationModeShortcut,
   latestConversation,
   pickOrCreateConversation,
   conversationAgentConfig,
   latestPersistedChatConfig,
-  latestPersistedConversationMode,
   newlyFinishedChatTaskIds,
   newlySteeredChatTaskIds,
-  parseConversationMode,
   providerSwitchStartsFreshSession,
+  retryRefillsComposer,
   startConversationTurn,
-  toggleConversationMode,
   mergeChatReads,
   unreadChatIdsFromReads,
   unsentConversation,
@@ -339,17 +335,6 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
   assert.equal(conversationHasUnread(conversations[0], new Set(["chat-b"])), true);
 });
 
-test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
-  assert.equal(chatModeStorageKey("project", "chat"), "rcp:chat-mode:project:chat");
-  assert.equal(toggleConversationMode("discuss"), "work");
-  assert.equal(toggleConversationMode("work"), "discuss");
-  assert.equal(isConversationModeShortcut("Tab", true), true);
-  assert.equal(isConversationModeShortcut("Tab", false), false);
-  assert.equal(isConversationModeShortcut("Enter", true), false);
-  assert.equal(parseConversationMode("work"), "work");
-  assert.equal(parseConversationMode("legacy"), null);
-});
-
 test("chat provider configuration follows the persisted conversation over the project fallback", () => {
   const fallback = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
   const claude = { provider: "claude", model: "opus", reasoning: "high", run_on: "local" };
@@ -476,21 +461,17 @@ test("continuing a chat translates the stored provider-default sentinel back to 
   );
 });
 
-test("the next turn derives from the latest explicit mode without relabelling legacy history", () => {
-  const messages = [
-    { mode: null, timestamp: "2026-07-28T00:00:00Z" },
-    { mode: "work", timestamp: "2026-07-28T00:01:00Z" },
-  ];
-  const laterDiscuss = task({
-    operation_id: "later",
-    created_at: "2026-07-28T00:02:00Z",
-    request: { chat_id: "chat", mode: "discuss" },
-  });
-  assert.equal(latestPersistedConversationMode(messages, [laterDiscuss]), "discuss");
+test("a Retry of a Discuss chat turn refills the composer; other retries take the route", () => {
+  const turn = (kind, request) => task({ operation_id: "t", kind, request });
+  assert.equal(retryRefillsComposer(turn("node_chat", { mode: "discuss" })), true);
+  assert.equal(retryRefillsComposer(turn("project_chat", {})), true);
+  assert.equal(retryRefillsComposer(turn("project_chat", { mode: "work" })), false);
   assert.equal(
-    latestPersistedConversationMode([{ mode: null, timestamp: "invalid" }], []),
-    "discuss",
+    retryRefillsComposer(turn("node_chat", { mode: "discuss", artifact_edit: { id: "e" } })),
+    false,
   );
+  assert.equal(retryRefillsComposer(turn("artifact_edit", { mode: "discuss" })), false);
+  assert.equal(retryRefillsComposer(turn("paper_coach", {})), false);
 });
 
 test("the shared conversation-turn owner preserves the visible composer's request contract", async () => {
@@ -501,7 +482,6 @@ test("the shared conversation-turn owner preserves the visible composer's reques
     message: "  Compare the held-out curves.  ",
     chatId: "chat-1",
     sessionId: "session-1",
-    mode: "work",
     skills: { workflow_ids: ["analyze"], skill_ids: ["plot"] },
     providerSkillNames: ["browser"],
   };
@@ -526,6 +506,10 @@ test("the shared conversation-turn owner preserves the visible composer's reques
   }, submission);
   assert.equal(result.operation_id, "task-1");
   assert.deepEqual(calls, [["node_chat", conversationTurnRequest(submission)]]);
+  assert.equal(
+    conversationTurnRequest({ ...submission, supersedes: "old-discuss" }).supersedes,
+    "old-discuss",
+  );
 });
 
 test("the shared conversation-turn owner rejects a blank message before dispatch", async () => {
@@ -536,7 +520,6 @@ test("the shared conversation-turn owner rejects a blank message before dispatch
     message: "  ",
     chatId: "chat-1",
     sessionId: null,
-    mode: "discuss",
   };
   let called = false;
   await assert.rejects(
@@ -556,7 +539,6 @@ test("worktree creation and integration preserve the ordinary conversation dispa
     message: "Worktree instruction",
     chatId: "chat-one",
     sessionId: "native-session",
-    mode: "work",
   };
   const calls = [];
   const start = async (kind, request) => {

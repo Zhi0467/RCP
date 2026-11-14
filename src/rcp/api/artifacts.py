@@ -478,8 +478,6 @@ class ArtifactViewerState(BaseModel):
     can_comment: bool
     comment_unavailable_reason: str | None
     fresh_session_required: bool
-    can_edit_now: bool
-    send_to_chat: bool
     thread_href: str | None
     viewer_url: str | None
     download_url: str
@@ -565,8 +563,6 @@ def stored_artifact_state(
         can_comment=availability.can_comment,
         comment_unavailable_reason=availability.comment_unavailable_reason,
         fresh_session_required=availability.fresh_session_required,
-        can_edit_now=availability.can_edit_now,
-        send_to_chat=availability.send_to_chat,
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
         viewer_url=f"{base}/viewer"
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
@@ -866,7 +862,6 @@ class ArtifactCommentBody(BaseModel):
     comments: list[ArtifactComment] = Field(
         min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )
-    edit_now: bool = False
     fresh_session: bool = False
 
 
@@ -909,12 +904,11 @@ def comment_artifact(
         operation_id=origin.operation_id,
         artifact_id=artifact_id,
         fresh_session=body.fresh_session,
-        edit_now=body.edit_now,
         selections=selections,
     )
     try:
         # Send continues the artifact's chat with a Work turn, exactly as its composer would.
-        turn = None if body.edit_now else artifact_send_chat_turn(store, artifact, context, general)
+        turn = artifact_send_chat_turn(store, artifact, context, general)
         if turn is not None:
             return start_ordinary_task(
                 project_id,

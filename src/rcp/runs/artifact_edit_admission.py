@@ -31,11 +31,8 @@ class ArtifactFreshSessionRequired(AgentTaskAdmissionConflict):
 class ArtifactEditAvailability:
     can_comment: bool
     comment_unavailable_reason: str | None = None
-    # Edit now, and Send where the chat takes no human turns, resume the origin's session.
+    # Send where the chat takes no human turns resumes the origin's session.
     fresh_session_required: bool = False
-    can_edit_now: bool = False
-    # Send is an ordinary turn of the artifact's chat.
-    send_to_chat: bool = False
 
 
 def artifact_edit_availability(
@@ -46,13 +43,29 @@ def artifact_edit_availability(
     A comment that is an ordinary chat turn needs only readable context and a chat
     that takes human turns; the origin's master and session gate only the origin edit.
     """
-    fresh = False
     try:
         origin, reply_episode_id = artifact_reply_origin(store, artifact)
         if not supports_comments(artifact.media_type):
             raise ValueError("The artifact type does not support editing.")
         if origin.graph_target != service.history.graph_target:
             raise ValueError("The artifact belongs to another graph target.")
+    except (KeyError, OSError, ValueError) as exc:
+        return ArtifactEditAvailability(False, str(exc))
+    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    if (
+        isinstance(chat_id, str)
+        and chat_id
+        and store.child_human_turn_refusal(artifact.project_id, chat_id) is None
+    ):
+        expired = (
+            artifact.expires_at is not None
+            and artifact.expires_at <= store.now()
+            and artifact.artifact_id not in store.protected_edit_artifact_ids()
+        )
+        reason = "The artifact has expired." if expired else None
+        return ArtifactEditAvailability(reason is None, reason)
+    fresh = False
+    try:
         try:
             _origin_master(store, artifact.project_id, origin, verify=False)
         except ArtifactFreshSessionRequired:
@@ -75,44 +88,18 @@ def artifact_edit_availability(
         )
     except (KeyError, OSError, ValueError) as exc:
         return ArtifactEditAvailability(False, str(exc), fresh)
-    chat_id = _artifact_chat_id(origin, reply_episode_id)
-    if (
-        not isinstance(chat_id, str)
-        or not chat_id
-        or store.child_human_turn_refusal(artifact.project_id, chat_id) is not None
-    ):
-        ok = edit_reason is None
-        return ArtifactEditAvailability(ok, edit_reason, fresh, can_edit_now=ok)
-    expired = (
-        artifact.expires_at is not None
-        and artifact.expires_at <= store.now()
-        and artifact.artifact_id not in store.protected_edit_artifact_ids()
-    )
-    reason = "The artifact has expired." if expired else None
-    return ArtifactEditAvailability(
-        reason is None,
-        reason,
-        fresh,
-        can_edit_now=reason is None and edit_reason is None,
-        send_to_chat=True,
-    )
+    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh)
 
 
-def _launch_kind_for_master_owner(
-    owner: AgentTaskRecord | None,
-) -> Literal["discuss", "revoking"]:
+def _require_master_owner(owner: AgentTaskRecord | None) -> None:
     """The task that recorded a session's master is that master's owner.
 
-    Its durable kind and patch kind say which contract the session holds; the
-    master's prose is never parsed for authority.
+    Only a chat or orchestrator master admits the revoking edit; the master's
+    prose is never parsed for authority.
     """
 
-    if owner is not None and owner.kind == "auto_research":
-        return "revoking"
-    if owner is not None and owner.kind in {"node_chat", "project_chat"}:
-        if owner.request.get("patch_kind") == "experiment_loop":
-            return "revoking"
-        return "discuss"
+    if owner is not None and owner.kind in {"auto_research", "node_chat", "project_chat"}:
+        return
     raise ArtifactFreshSessionRequired(
         "The artifact's session holds no master that can admit an edit. "
         "Edit in a new session explicitly."
@@ -143,7 +130,8 @@ def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *,
         )
     if verify and hashlib.sha256(content.encode()).hexdigest() != found[1]:
         raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
-    return found, content, _launch_kind_for_master_owner(store.agent_task(found[0]))
+    _require_master_owner(store.agent_task(found[0]))
+    return found, content
 
 
 def artifact_reply_origin(
@@ -269,11 +257,9 @@ def admit_chat_artifact_comment(
     if not request.chat_id or _artifact_chat_id(origin, reply_episode_id) != request.chat_id:
         raise ValueError("The artifact belongs to another chat.")
     # A read-only Auto-research child or running orchestrator chat composes only
-    # comments, which keep the origin-bound Discuss edit the viewer uses. Any
+    # comments, which keep the origin-bound scratch edit the viewer uses. Any
     # other chat, Experiment chats included, takes an ordinary human turn.
     if store.child_human_turn_refusal(project_id, request.chat_id) is not None:
-        if request.mode == "work":
-            raise ValueError("This artifact can only be edited in Discuss here.")
         if request.references:
             raise ValueError("Project references require an ordinary chat.")
         return admit_artifact_edit(store, service, project_id, request)
@@ -339,9 +325,8 @@ def admit_artifact_edit(
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
     fresh = context.fresh_session
     found, content = None, None
-    launch_kind: Literal["discuss", "revoking"] = "revoking" if reply_episode_id else "discuss"
     if not fresh:
-        found, content, launch_kind = _origin_master(store, project_id, origin, verify=True)
+        found, content = _origin_master(store, project_id, origin, verify=True)
     operation_id = str(uuid.uuid4())
     base_version = _edit_version(store, artifact, context)
     edit = ArtifactEditAdmission(
@@ -351,7 +336,7 @@ def admit_artifact_edit(
         media_type=artifact.media_type,
         operation_id=operation_id,
         origin_operation_id=origin.operation_id,
-        launch_kind=launch_kind,
+        launch_kind="revoking",
         master_operation_id=found[0] if found else None,
         master_sha256=found[1] if found else None,
         master_path=session_master_label("artifact-master", content) if content else None,

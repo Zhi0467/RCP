@@ -29,18 +29,9 @@ function shell(stored = new Map()) {
     },
   });
   const elements = Object.fromEntries(
-    [
-      "items",
-      "count",
-      "tray",
-      "queue",
-      "editNow",
-      "send",
-      "general",
-      "notice",
-      "message",
-      "composer",
-    ].map((id) => [id, element()]),
+    ["items", "count", "tray", "queue", "send", "general", "notice", "message", "composer"].map(
+      (id) => [id, element()],
+    ),
   );
   const listeners = {};
   const timers = new Map();
@@ -48,7 +39,6 @@ function shell(stored = new Map()) {
   const messages = [];
   const saved = stored;
   let canComment = true;
-  let canEditNow = true;
   let editFailure = null;
   let status = 200;
   let sendStatus = 409;
@@ -106,7 +96,6 @@ function shell(stored = new Map()) {
           url === "/state"
             ? {
                 can_comment: canComment,
-                can_edit_now: canComment && canEditNow,
                 fresh_session_required: false,
                 edit_failure: editFailure,
               }
@@ -124,9 +113,6 @@ function shell(stored = new Map()) {
     saved,
     setCanComment: (value) => {
       canComment = value;
-    },
-    setCanEditNow: (value) => {
-      canEditNow = value;
     },
     setEditFailure: (value) => {
       editFailure = value;
@@ -150,26 +136,31 @@ function shell(stored = new Map()) {
   };
 }
 
-test("Edit now and Send post one comment list, and resubmit only with fresh-session consent", async () => {
+test("Send to agent files the typed comment, posts the whole list, and resubmits only with fresh-session consent", async () => {
   const app = shell();
   await settle();
-  const { general, message, editNow, send } = app.elements;
-  assert.equal(editNow.disabled, true);
+  const { general, message, send } = app.elements;
   assert.equal(send.disabled, true);
+  message.value = "First queued";
+  app.addComment({ kind: "whole" });
   general.listeners.click();
   message.value = "Update the plot";
   message.listeners.input();
-  assert.equal(editNow.disabled, false);
-  editNow.listeners.click();
+  assert.equal(send.disabled, false);
+  send.listeners.click();
   await settle();
   const posts = () => app.requests.filter((request) => request.url === "/comments");
   assert.deepEqual(JSON.parse(posts()[0].options.body), {
-    comments: [{ text: "Update the plot", selection: null }],
-    edit_now: true,
+    comments: [
+      { text: "First queued", selection: null },
+      { text: "Update the plot", selection: null },
+    ],
     fresh_session: false,
   });
-  // The refused comment stays queued for the tray's one-off send.
+  assert.equal(message.value, "");
+  // The refused comments stay queued for another send.
   assert.equal(app.messages.length, 0);
+  assert.equal(JSON.parse([...app.saved.values()].at(-1)).comments.length, 2);
   assert.equal(send.disabled, false);
   app.setCanComment(false);
   await app.tick();
@@ -184,8 +175,7 @@ test("Edit now and Send post one comment list, and resubmit only with fresh-sess
   await settle();
   const second = JSON.parse(posts()[1].options.body);
   assert.equal(second.fresh_session, true);
-  assert.equal(second.edit_now, false);
-  assert.equal(second.comments.length, 1);
+  assert.equal(second.comments.length, 2);
   assert.equal(send.disabled, false);
   for (const { options } of posts()) {
     assert.equal(options.method, "POST");
@@ -211,47 +201,24 @@ test("Edit now and Send post one comment list, and resubmit only with fresh-sess
   ]);
 });
 
-test("Edit now posts only the comment being written and keeps the queued list", async () => {
+test("Send to agent sends nothing while the typed comment does not fit the tray", async () => {
   const app = shell();
   await settle();
-  const { general, message, editNow } = app.elements;
-  for (const text of ["First queued", "Second queued"]) {
-    message.value = text;
-    app.addComment({ kind: "whole" });
-  }
-  app.setSendStatus(200);
-  general.listeners.click();
-  message.value = "Edit this now";
-  message.listeners.input();
-  editNow.listeners.click();
-  await settle();
-  const [post] = app.requests.filter((request) => request.url === "/comments");
-  const body = JSON.parse(post.options.body);
-  assert.deepEqual(body.comments, [{ text: "Edit this now", selection: null }]);
-  assert.equal(body.edit_now, true);
-  assert.deepEqual(
-    JSON.parse([...app.saved.values()].at(-1)).comments.map((comment) => comment.text),
-    ["First queued", "Second queued"],
-  );
-});
-
-test("a refused Edit now returns to the comment box when the tray is full", async () => {
-  const app = shell();
-  await settle();
-  const { general, message, editNow } = app.elements;
+  const { general, message, send } = app.elements;
   for (let index = 0; index < 10; index += 1) {
     message.value = `Queued ${index}`;
     app.addComment({ kind: "whole" });
   }
-  app.setSendStatus(503);
+  app.setSendStatus(200);
   general.listeners.click();
-  message.value = "Edit this now";
+  message.value = "One more";
   message.listeners.input();
-  editNow.listeners.click();
+  send.listeners.click();
   await settle();
+  assert.equal(app.requests.filter((request) => request.url === "/comments").length, 0);
   const saved = JSON.parse([...app.saved.values()].at(-1));
   assert.equal(saved.comments.length, 10);
-  assert.equal(saved.draft.text, "Edit this now");
+  assert.equal(saved.draft.text, "One more");
 });
 
 test("shell stops permanent state failures until Retry and keeps polling transient failures", async () => {
@@ -307,18 +274,4 @@ test("the queue refuses a comment that the server's joined size would reject", a
   assert.equal(add("a".repeat(2047)), true);
   assert.equal(add("b".repeat(2047)), true);
   assert.equal(add("c"), false);
-});
-
-test("Send stays a chat turn while Edit now waits for the origin session", async () => {
-  const app = shell();
-  app.setCanEditNow(false);
-  await settle();
-  const { general, message, queue, editNow, send } = app.elements;
-  general.listeners.click();
-  message.value = "Relabel the axis";
-  message.listeners.input();
-  assert.equal(queue.disabled, false);
-  assert.equal(editNow.disabled, true);
-  app.addComment({ kind: "whole" });
-  assert.equal(send.disabled, false);
 });

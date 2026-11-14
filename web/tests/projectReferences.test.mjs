@@ -127,7 +127,6 @@ test("transcript sources preserve node branch and outgoing requests carry only s
     nodeId: null,
     chatId: "c",
     sessionId: null,
-    mode: "discuss",
     attachments: { references: [item.selector] },
   });
   assert.deepEqual(request.references, [item.selector]);

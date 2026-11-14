@@ -3040,6 +3040,28 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     assert retried == []
 
 
+def test_a_resent_discuss_turn_stands_down_its_owed_retries(tmp_path: Path) -> None:
+    from rcp.runs.provider_login import auth_retry_candidates
+
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    discuss = _work_request("resent").model_copy(update={"mode": "discuss"})
+    lost = _transport_failed_task(store, operation_id="lost", request=discuss)
+    parked = _transport_failed_task(
+        store, operation_id="parked", request=discuss, failure_kind="provider_auth"
+    )
+    assert not tasks._transport_retry_superseded(lost.operation_id)
+    assert auth_retry_candidates(store, operation_id=parked.operation_id)
+
+    for operation_id in (lost.operation_id, parked.operation_id):
+        store.record_agent_task_receipt(
+            operation_id, "transport_auto_retry_superseded", {}, tier="summary"
+        )
+
+    assert tasks._transport_retry_superseded(lost.operation_id)
+    assert auth_retry_candidates(store, operation_id=parked.operation_id) == []
+
+
 def test_a_turn_retried_before_its_worker_settled_promises_no_reattempt(
     tmp_path: Path, monkeypatch
 ) -> None:

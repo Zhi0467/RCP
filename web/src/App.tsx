@@ -134,7 +134,9 @@ import {
   unreadChatIdsFromReads,
   conversationHref,
   chatEntryConversationId,
+  chatIdForTask,
   groupChatConversations,
+  retryRefillsComposer,
   startConversationTurn,
   pickOrCreateConversation,
   type ChatKind,
@@ -683,6 +685,7 @@ function MemberApp({
   const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
     null,
   );
+  const [composerRetry, setComposerRetry] = useState<AgentTask | null>(null);
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
     projectId: initialRoute.project.projectId,
@@ -3887,6 +3890,14 @@ function MemberApp({
   );
 
   const requestRetry = (task: AgentTask) => {
+    if (retryRefillsComposer(task)) {
+      const chatId = chatIdForTask(task);
+      selectTaskInspector(null);
+      setComposerRetry(task);
+      if (chatId && chatId !== floatingChat?.chatId && chatId !== selectedExperimentChatId)
+        openChats(chatId);
+      return;
+    }
     if (task.kind === "seed" || task.kind === "refresh") {
       chooseRetryTask(task);
       return;
@@ -4697,6 +4708,8 @@ function MemberApp({
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
+          composerRetry={composerRetry}
+          onComposerRetryTaken={() => setComposerRetry(null)}
           onRefreshTask={refreshAgentTask}
           onInspectTask={selectTaskInspector}
           onOpenInbox={() => changeView("attention")}
@@ -5695,6 +5708,8 @@ function MemberApp({
                   onStartTask={startAgentTask}
                   onResumeTask={(task) => void operateTask(task, "resume")}
                   onRetryTask={requestRetry}
+                  composerRetry={composerRetry}
+                  onComposerRetryTaken={() => setComposerRetry(null)}
                   onRefreshTask={refreshAgentTask}
                   onInspectTask={selectTaskInspector}
                   onOpenInbox={() => changeView("attention")}
@@ -5929,6 +5944,8 @@ function MemberApp({
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              composerRetry={composerRetry}
+              onComposerRetryTaken={() => setComposerRetry(null)}
               onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => {

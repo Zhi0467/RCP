@@ -57,24 +57,47 @@ history.push({
   attachments: [],
 });
 
-type StartCall = { message: string; requestId: string | undefined };
+type StartCall = { message: string; requestId: string | undefined; supersedes?: unknown };
 
 // `?fresh`: a chat that has never run. Its start is held, and the app's store
 // shows the send as a task under the same pending id, as beginChatSend does.
 const fresh = new URLSearchParams(window.location.search).has("fresh");
+const retry = new URLSearchParams(window.location.search).has("retry");
+const failedDiscuss = {
+  operation_id: "old-discuss",
+  project_id: "project",
+  kind: "project_chat",
+  request: { chat_id: "send-chat", message: "Ask it again", mode: "discuss", trigger: "human" },
+  created_at: "2026-09-05T12:00:00Z",
+  updated_at: "2026-09-05T12:00:00Z",
+  finished_at: "2026-09-05T12:01:00Z",
+  status: "failed",
+  status_message: "Failed",
+  error: "Provider failed",
+  failed: true,
+  settled: true,
+  can_retry: true,
+  can_resume: false,
+  attempt: 1,
+};
 
 function Fixture() {
   const surface = new URLSearchParams(window.location.search).get("archived");
   const [archived, setArchived] = useState(Boolean(surface));
-  const [tasks, setTasks] = useState<object[]>([]);
-  const [failNext, setFailNext] = useState(true);
+  const [tasks, setTasks] = useState<object[]>(retry ? [failedDiscuss] : []);
+  const [failNext, setFailNext] = useState(!retry);
+  const [composerRetry, setComposerRetry] = useState<object | null>(null);
   const fixture = window as unknown as {
     startCalls: StartCall[];
+    retryCalls: string[];
+    retryFromInspector: () => void;
     refreshChatFixture: () => void;
     failHeldStart: () => void;
   };
   fixture.startCalls ??= [];
+  fixture.retryCalls ??= [];
   // A poll that returns the same tasks still hands the chat a new list.
+  fixture.retryFromInspector = () => setComposerRetry(failedDiscuss);
   fixture.refreshChatFixture = () => setTasks((current) => current.map((task) => ({ ...task })));
   return (
     <main style={{ height: "100vh", padding: 24 }}>
@@ -92,7 +115,11 @@ function Fixture() {
         allowArtifactComments={true}
         readOnlyNotice={<button>Orchestrator send</button>}
         onStartTask={async (_kind, request, requestId) => {
-          fixture.startCalls.push({ message: String(request.message), requestId });
+          fixture.startCalls.push({
+            message: String(request.message),
+            requestId,
+            supersedes: request.supersedes,
+          });
           if (fresh) {
             setTasks([
               {
@@ -141,7 +168,9 @@ function Fixture() {
         onNewSession={() => undefined}
         onClose={() => undefined}
         onResumeTask={() => undefined}
-        onRetryTask={() => undefined}
+        onRetryTask={(task) => fixture.retryCalls.push(task.operation_id)}
+        composerRetry={composerRetry as never}
+        onComposerRetryTaken={() => setComposerRetry(null)}
         onRefreshTask={async () => tasks[0] as never}
       />
     </main>

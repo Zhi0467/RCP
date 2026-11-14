@@ -24,6 +24,7 @@ from .helpers import (
     authorized_human,
     changed_values,
     create_named_app,
+    discuss_turn,
     launch_contract_path,
     refresh_patch,
     seed_patch,
@@ -181,7 +182,13 @@ def test_graph_reader_master_commands_and_committed_observation(
     if kind in {"discuss", "work"}:
         payload.update(chat_id=chat_id, mode=kind, message="Read the graph.")
     with signed_in_client(app) as client:
-        started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
+
+        def send(url: str):
+            if kind == "discuss":
+                return discuss_turn(client, url, payload)
+            return client.post(url, json=payload)
+
+        started = send(f"/api/projects/{project_id}/tasks/{task_kind}")
         assert started.status_code == 202, started.text
         task = wait_for_task_response(client, project_id, started.json()["operation_id"])
         assert len(branch_reads) == 1
@@ -198,7 +205,7 @@ def test_graph_reader_master_commands_and_committed_observation(
             assert task["status"] == "succeeded", task.get("error")
             append_fixture_patch(service, refresh_patch())
             payload["session_id"] = "reader-session"
-            started = client.post(f"/api/projects/{project_id}/tasks/{task_kind}", json=payload)
+            started = send(f"/api/projects/{project_id}/tasks/{task_kind}")
             assert started.status_code == 202, started.text
             task = wait_for_task_response(client, project_id, started.json()["operation_id"])
             assert (

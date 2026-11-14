@@ -31,7 +31,7 @@ import {
   SlidersHorizontal,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   loadServiceConnections,
@@ -46,14 +46,11 @@ import {
 } from "../agents/agentTasks";
 import {
   chatDraftStorageKey,
-  chatModeStorageKey,
-  isConversationModeShortcut,
+  chatIdForTask,
   latestPersistedChatConfig,
   originRunConfig,
-  latestPersistedConversationMode,
-  parseConversationMode,
+  retryRefillsComposer,
   startConversationTurn,
-  toggleConversationMode,
   type ConversationTurnSubmission,
   type StartConversationTask,
 } from "./chatWorkspace";
@@ -101,7 +98,6 @@ import type {
   AgentRunConfig,
   AgentTask,
   ChatMessage,
-  ConversationMode,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
@@ -168,6 +164,8 @@ interface Props {
   onResumeTask: (task: AgentTask) => void;
   onRetryTask: (task: AgentTask) => void;
   onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  composerRetry?: AgentTask | null;
+  onComposerRetryTaken?: () => void;
 }
 
 export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
@@ -249,6 +247,8 @@ export function AgentChatView({
   onResumeTask,
   onRetryTask,
   onRefreshTask,
+  composerRetry = null,
+  onComposerRetryTaken,
 }: Props) {
   const readOnly = archived || requestedReadOnly;
   const allowArtifactComments = !archived && requestedArtifactComments;
@@ -354,12 +354,7 @@ export function AgentChatView({
     graphTarget,
   );
   const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
-  const modeKey = chatModeStorageKey(project.id, chatId);
   const annotationsKey = chatAnnotationsStorageKey(actorId, project.id, chatId);
-  const derivedMode = useMemo(
-    () => latestPersistedConversationMode(historyMessages, relatedTasks),
-    [historyMessages, relatedTasks],
-  );
   const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -376,12 +371,11 @@ export function AgentChatView({
   const { annotations } = comments;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const canCompose = !readOnly || (allowArtifactComments && Boolean(artifactContext));
-  // A read-only chat composes only artifact comments, and those edit in Discuss.
   const commentOnly = readOnly && Boolean(artifactContext);
-  const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
-    const storedMode = parseConversationMode(readStorage(modeKey));
-    return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
-  });
+  const [supersedes, setSupersedes] = useState<{ chatId: string; operationId: string } | null>(
+    null,
+  );
+  const supersededId = supersedes?.chatId === chatId ? supersedes.operationId : null;
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [browserOn, setBrowserOn] = useState(false);
   const optionCount = Number(browserOn) + Number(worktree.chosen);
@@ -401,7 +395,6 @@ export function AgentChatView({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [optionsOpen]);
-  const modeRef = useRef(modeState.value);
   const referencesKey = referenceDraftKey(
     actorId,
     project.id,
@@ -477,12 +470,7 @@ export function AgentChatView({
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const sessionId = resolvedChatSessionId(relatedTasks);
-  // A follow-up joins the running turn, so the composer shows that turn's mode.
-  const steeringMode = steeringTask ? parseConversationMode(steeringTask.request.mode) : null;
-  const mode = commentOnly ? "discuss" : (steeringMode ?? modeState.value);
-  modeRef.current = mode;
-  // A Work turn also needs the provider's Work probe; Discuss does not.
-  const providerReady = launchProviderReady(project, config, mode === "work", Boolean(sessionId));
+  const providerReady = launchProviderReady(project, config, true, Boolean(sessionId));
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
@@ -516,14 +504,6 @@ export function AgentChatView({
           : dictationState === "recording" && dictationEngine === "apple_server"
             ? "Dictating with Apple's server recognizer"
             : null;
-  useEffect(() => {
-    setModeState((current) =>
-      current.pinned || current.value === derivedMode
-        ? current
-        : { ...current, value: derivedMode },
-    );
-  }, [derivedMode]);
-
   useEffect(() => {
     setOptionsOpen(false);
   }, [chatId, project.id]);
@@ -651,23 +631,6 @@ export function AgentChatView({
     };
   }, [desktop]);
 
-  const selectMode = useCallback(
-    (next: ConversationMode) => {
-      modeRef.current = next;
-      writeStorage(modeKey, next);
-      setModeState({ value: next, pinned: true });
-    },
-    [modeKey],
-  );
-
-  const toggleMode = useCallback(() => {
-    // A follow-up inherits the running turn's capability, so the toggle would
-    // describe something it cannot change. While a turn merely runs unsteerable,
-    // the choice still belongs to the next turn and stays available.
-    if (steeringTask || commentOnly) return;
-    selectMode(toggleConversationMode(modeRef.current));
-  }, [steeringTask, commentOnly, selectMode]);
-
   useEffect(() => {
     if (!sendAfterDictation || dictating) return;
     setSendAfterDictation(null);
@@ -683,29 +646,29 @@ export function AgentChatView({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on dictation end only
   }, [sendAfterDictation, dictating]);
 
-  useEffect(() => {
-    if (presentation !== "workspace" || readOnly) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat) return;
-      if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
-      event.preventDefault();
-      toggleMode();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, readOnly, toggleMode]);
-
   const updateMessage = (next: string) => {
     if (readOnly) return;
-    // Pin the next turn's pick, not a running turn's mode shown while steering.
-    if (next && !modeState.pinned && !commentOnly) {
-      writeStorage(modeKey, modeState.value);
-      setModeState({ value: modeState.value, pinned: true });
-    }
+    if (!next) setSupersedes(null);
     draft.set(next);
     skills.readMessage(next);
     setSubmitError(null);
   };
+
+  const retryTask = (task: AgentTask) => {
+    if (!retryRefillsComposer(task)) return onRetryTask(task);
+    if (dictating) stopDictation(true);
+    updateMessage(typeof task.request.message === "string" ? task.request.message : "");
+    setSupersedes({ chatId, operationId: task.operation_id });
+    textareaRef.current?.focus();
+  };
+
+  const takeComposerRetry = useEffectEvent((task: AgentTask) => {
+    onComposerRetryTaken?.();
+    retryTask(task);
+  });
+  useEffect(() => {
+    if (composerRetry && chatIdForTask(composerRetry) === chatId) takeComposerRetry(composerRetry);
+  }, [composerRetry, chatId]);
 
   const releaseMicrophone = (sessionId?: string) => {
     const held = microphoneRef.current;
@@ -965,10 +928,6 @@ export function AgentChatView({
     const start = textarea?.selectionStart ?? draft.get().length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
-    if (!commentOnly) {
-      writeStorage(modeKey, modeState.value);
-      setModeState({ value: modeState.value, pinned: true });
-    }
     setSubmitError(null);
     setDictationError(null);
     setDictationEngine(null);
@@ -1051,13 +1010,12 @@ export function AgentChatView({
   /** Everything a new turn launches with besides its text, for a dictated Send. */
   const launchSettings = () =>
     JSON.stringify([
-      mode,
       config,
       worktreeRepository,
       artifactContext,
       composer.turnFields(),
       skills.selection,
-      mode === "work" && worktree.chosen,
+      worktree.chosen,
     ]);
 
   const send = async () => {
@@ -1068,7 +1026,7 @@ export function AgentChatView({
       return;
     }
     if (steeringTask) return steer(steeringTask);
-    if (mode === "work" && worktree.chosen && !worktree.state?.can_choose) {
+    if (worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
         worktree.error ??
           worktree.state?.unavailable_reason ??
@@ -1102,7 +1060,7 @@ export function AgentChatView({
       text,
       draft: draftMessage,
       timestamp: new Date().toISOString(),
-      mode,
+      mode: "work",
       attachments: readyAttachments,
       submission: {
         kind: surface,
@@ -1111,12 +1069,12 @@ export function AgentChatView({
         message: text,
         chatId,
         sessionId,
-        mode,
+        supersedes: supersededId,
         artifactContext,
         attachments: composer.turnFields(),
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
-        worktree: mode === "work" && worktree.chosen,
+        worktree: worktree.chosen,
         worktreeRepository,
       },
       submittedOverride: configOverride,
@@ -1142,7 +1100,10 @@ export function AgentChatView({
       skills.reset();
       composer.clear();
       comments.clear();
-      if (!commentOnly) selectMode(turn.mode);
+      if (turn.submission.supersedes)
+        setSupersedes((current) =>
+          current?.operationId === turn.submission.supersedes ? null : current,
+        );
     } catch (error) {
       // A replaced backend admitted nothing and Reconnect is already offered, so
       // the text returns to the composer with no failed turn to resend. The
@@ -1196,10 +1157,8 @@ export function AgentChatView({
         message: option.label,
         chatId,
         sessionId,
-        mode: "work",
         worktreeIntegration: option.id,
       });
-      selectMode("work");
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1259,7 +1218,7 @@ export function AgentChatView({
       open={configOpen}
       disabled={readOnly || pendingFork}
       label="Chat agent"
-      workLike={mode === "work"}
+      workLike
       onToggle={() => setConfigOpen((open) => !open)}
     />
   );
@@ -1285,11 +1244,9 @@ export function AgentChatView({
   return (
     <div
       className={`chat-dock ${presentation}`}
-      data-mode={mode}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={node || conversationTitle ? `Chat about ${chatTitle}` : "Project chat"}
-      aria-keyshortcuts={presentation === "workspace" && !readOnly ? "Shift+Tab" : undefined}
     >
       {presentation === "floating" && (
         <header data-drag-handle="true">
@@ -1394,7 +1351,7 @@ export function AgentChatView({
           repairingTaskId={repairingTaskId}
           repairErrors={repairErrors}
           onResumeTask={onResumeTask}
-          onRetryTask={onRetryTask}
+          onRetryTask={retryTask}
           onInspectTask={onInspectTask}
           onOpenInbox={onOpenInbox}
           onRepairGraphUpdate={repairGraphUpdate}
@@ -1443,7 +1400,6 @@ export function AgentChatView({
               sessionId={sessionId}
             />
           }
-          mode={mode}
           composer={composer}
           comments={comments}
           skills={skills.props}
@@ -1453,7 +1409,6 @@ export function AgentChatView({
               draft={draft}
               ref={textareaRef}
               aria-label="Message"
-              aria-keyshortcuts="Shift+Tab"
               disabled={awaitingSteerReceipt}
               onChange={(event) => {
                 setSendAfterDictation(null);
@@ -1464,13 +1419,6 @@ export function AgentChatView({
               onKeyDown={(event) => {
                 if (skills.handleKeyDown(event)) return;
                 if (arrowScrollsTranscript(event, chatLinesRef.current)) return;
-                if (!commentOnly && isConversationModeShortcut(event.key, event.shiftKey)) {
-                  if (presentation !== "workspace") {
-                    event.preventDefault();
-                    toggleMode();
-                  }
-                  return;
-                }
                 if (returnSends(event)) {
                   event.preventDefault();
                   void send();
@@ -1481,43 +1429,22 @@ export function AgentChatView({
           tools={
             <>
               {!commentOnly && (
-                <>
-                  <div
-                    className="segmented chat-mode-toggle"
-                    role="group"
-                    aria-label="Conversation mode"
-                  >
-                    {(["discuss", "work"] as const).map((option) => (
-                      <button
-                        type="button"
-                        className={option}
-                        aria-pressed={mode === option}
-                        title={MODE_HINTS[option]}
-                        disabled={Boolean(steeringTask)}
-                        onClick={() => selectMode(option)}
-                        key={option}
-                      >
-                        {modeLabel(option)}
-                      </button>
-                    ))}
-                  </div>
-                  <WorktreeControls
-                    key={`${project.id}:${chatId}`}
-                    state={worktree.state}
-                    error={worktree.error}
-                    disabled={Boolean(
-                      relatedActive ||
-                      pausedAttempt ||
-                      submitting ||
-                      reviewPending ||
-                      repairingTaskId,
-                    )}
-                    onIntegrate={integrateWorktree}
-                    onRemove={worktree.remove}
-                    onPreviewRemove={worktree.previewRemoval}
-                    onRefresh={worktree.refresh}
-                  />
-                </>
+                <WorktreeControls
+                  key={`${project.id}:${chatId}`}
+                  state={worktree.state}
+                  error={worktree.error}
+                  disabled={Boolean(
+                    relatedActive ||
+                    pausedAttempt ||
+                    submitting ||
+                    reviewPending ||
+                    repairingTaskId,
+                  )}
+                  onIntegrate={integrateWorktree}
+                  onRemove={worktree.remove}
+                  onPreviewRemove={worktree.previewRemoval}
+                  onRefresh={worktree.refresh}
+                />
               )}
               <div className="chat-compute-picker chat-options-picker" ref={optionsRef}>
                 <button
@@ -1624,9 +1551,7 @@ export function AgentChatView({
                       !providerReady)
                 }
                 onClick={() => void send()}
-                aria-label={
-                  steeringTask ? steeringTask.steer_action_label : `Start ${modeLabel(mode)} turn`
-                }
+                aria-label={steeringTask ? steeringTask.steer_action_label : "Send"}
               >
                 <Send size={16} />
               </button>
@@ -1688,7 +1613,7 @@ export function AgentChatView({
           }
         />
       )}
-      <AnswerCommentLayers comments={comments} mode={mode} />
+      <AnswerCommentLayers comments={comments} />
     </div>
   );
 }
@@ -1701,21 +1626,6 @@ function ComposerTextarea({
   const value = useComposerDraft(draft);
   return <ComposerField {...props} value={value} />;
 }
-
-function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
-  return mode === "discuss" ? "Discuss" : "Work";
-}
-
-/** Say what each mode is allowed to do, where the human commits to one.
- *
- * Capability is fixed in code; this only describes it. Discuss holds no graph or
- * filesystem authority, so the difference is worth stating at the control rather
- * than leaving two bare verbs to be learned by consequence.
- */
-const MODE_HINTS: Record<ConversationMode, string> = {
-  discuss: "Discuss: reads and answers only. Nothing is written to the repository or the graph.",
-  work: "Work: may edit files in the run's write roots and propose a graph patch.",
-};
 
 function clearDictationTimer(ref: React.MutableRefObject<number | null>): void {
   // One ref holds the macOS stop timeout or the network piece interval.

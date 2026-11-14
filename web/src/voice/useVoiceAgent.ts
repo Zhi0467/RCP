@@ -183,7 +183,6 @@ async function buildVoicePin(
     return {
       ...base,
       arguments: { ...args },
-      mode: typeof args.mode === "string" ? args.mode : null,
       provider_profile: { ...target.config, conversation: target.surface },
       // The write roots a Work turn will get, so a scope change invalidates the card.
       truth_scope: project.project_truth_scope,

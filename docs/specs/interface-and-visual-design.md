@@ -319,8 +319,9 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 ## Conversation composer
 
-Discuss is plum. Work is forest. Shift+Tab toggles an idle focused composer.
-Each turn retains its mode. The Agents header has a title, a picker for provider,
+Chat is forest and the Paper coach is plum. The composer has no mode control.
+Each human turn keeps its recorded label; a historical Discuss turn reads Discuss
+in plum. The Agents header has a title, a picker for provider,
 model, and effort, a context ring, an active-watcher count toggle when watchers
 exist, and one menu. The menu holds Rename, Archive,
 New session, and Branch this chat. The worktree repository choice sits in Chat Options.
@@ -347,7 +348,7 @@ Assistant prose is unboxed. Progress folds behind Activity.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with
-its text. A second row holds the caller's own tools, such as Discuss/Work and
+its text. A second row holds the caller's own tools, such as
 Options, only when it has any.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.

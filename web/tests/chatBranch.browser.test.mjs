@@ -176,7 +176,7 @@ for (const width of [1000, 390]) {
     const message = page.getByRole("textbox", { name: "Message", exact: true });
     assert.equal(await message.inputValue(), "");
     await message.fill("Continue here");
-    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.getByRole("button", { name: "Resend", exact: true }).waitFor();
     const sent = requests.find((request) => request.path === "/api/start").body;
     assert.equal(sent.provider, "codex");

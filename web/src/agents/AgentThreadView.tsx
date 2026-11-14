@@ -1415,12 +1415,7 @@ export function AgentThreadView({
   ];
 
   return (
-    <div
-      className="chat-dock workspace agent-thread"
-      data-mode="work"
-      role="region"
-      aria-label={thread.agent_name}
-    >
+    <div className="chat-dock workspace agent-thread" role="region" aria-label={thread.agent_name}>
       <header className="conversation-header thread-header">
         {leading}
         <div className="conversation-heading">
@@ -1656,7 +1651,6 @@ export function AgentThreadView({
       )}
       <ThreadQueue key={thread.thread_id} items={queue} onRemove={removeQueued} />
       <ChatComposer
-        mode="work"
         composer={attachments}
         comments={comments}
         skills={skills.props}
@@ -1749,7 +1743,7 @@ export function AgentThreadView({
         }
         notice={composer.error && <span role="alert">{composer.error}</span>}
       />
-      <AnswerCommentLayers comments={comments} mode="work" />
+      <AnswerCommentLayers comments={comments} />
     </div>
   );
 }

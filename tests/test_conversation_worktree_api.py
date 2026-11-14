@@ -20,6 +20,7 @@ from .helpers import (
     TASK_SETTLE_TIMEOUT,
     append_fixture_patch,
     create_named_app,
+    discuss_turn,
     seed_patch,
     wait_for_task_response,
     write_turn_outcome,
@@ -101,16 +102,17 @@ class _Harness:
         )
 
     def send(self, chat_id: str, **body):
-        return self.client.post(
-            f"/api/projects/{self.project_id}/tasks/project_chat",
-            json={
-                "chat_id": chat_id,
-                "message": "answer",
-                "mode": "work",
-                "run_truth_scope": ["repo-a"],
-                **body,
-            },
-        )
+        url = f"/api/projects/{self.project_id}/tasks/project_chat"
+        payload = {
+            "chat_id": chat_id,
+            "message": "answer",
+            "mode": "work",
+            "run_truth_scope": ["repo-a"],
+            **body,
+        }
+        if payload["mode"] == "discuss":
+            return discuss_turn(self.client, url, payload)
+        return self.client.post(url, json=payload)
 
     def turn(self, chat_id: str, **body):
         response = self.send(chat_id, **body)
