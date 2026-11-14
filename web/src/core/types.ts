@@ -3714,6 +3714,7 @@ export interface ProviderSignInStatus {
   /** Present only for the member who started the attempt. */
   user_code: string | null;
   verification_url: string | null;
+  awaiting_code: boolean;
   detail: string | null;
   started_at: string;
   started_by: string;

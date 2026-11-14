@@ -296,3 +296,52 @@ def test_provider_update_proceeds_when_the_database_is_unreadable(
     exit_code, _calls = _update_opencode(tmp_path, monkeypatch, lambda _layout: None)
 
     assert exit_code == 0
+
+
+def test_agy_native_update_and_version_probes_suppress_browsers(tmp_path, monkeypatch):
+    import sys
+
+    layout = _layout(tmp_path)
+    account = _account(layout)
+    binary = tmp_path / "fake-agy"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import os, shutil, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "browser = Path(os.environ['BROWSER'])\n"
+        "for name in ('open', 'xdg-open', 'sensible-browser'):\n"
+        "    assert Path(shutil.which(name)).parent == browser.parent\n"
+        "    assert subprocess.run([name], capture_output=True).returncode == 1\n"
+        "assert subprocess.run([os.environ['BROWSER']], capture_output=True).returncode == 1\n"
+        "print('1.5.8')\n"
+    )
+    binary.chmod(0o700)
+    monkeypatch.setattr("rcp.server_ops.provider_update.pwd.getpwnam", lambda _: account)
+    monkeypatch.setattr("rcp.server_ops.provider_update._discover_provider", lambda *_: binary)
+    calls = []
+
+    def runner(_account, argv, timeout):
+        calls.append(argv)
+        return subprocess.run(
+            argv,
+            cwd=tmp_path,
+            env={**os.environ, "HOME": str(layout.service_home)},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    output = StringIO()
+    result = run_server_command(
+        _parse("agy"),
+        handler=lambda request, identity: prepare_provider_update_command(
+            request, identity, runner=runner, layout=layout
+        ),
+        identity=CallerIdentity(uid=0, username="root", host="lab"),
+        stream=output,
+    )
+    assert result == 0, output.getvalue()
+    assert [call[-1] for call in calls] == ["--version", "update", "--version"]
+    for call in calls:
+        assert call.count(str(binary)) == 1
+        assert sum(argument in {"_agy-run", "--agy-run"} for argument in call) == 1
