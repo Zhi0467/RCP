@@ -944,16 +944,6 @@
       "count": 4
     }
   },
-  "tests/artifactCommentPanel.test.mjs": {
-    "rcp/no-comments": {
-      "count": 5
-    }
-  },
-  "tests/artifactSelection.browser.test.mjs": {
-    "rcp/no-comments": {
-      "count": 9
-    }
-  },
   "tests/artifactViewer.browser.test.mjs": {
     "rcp/no-comments": {
       "count": 3

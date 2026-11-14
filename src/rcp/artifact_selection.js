@@ -401,36 +401,6 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
   return clear;
 }
 
-function installSelectionConfirmation(container, confirm, clearSelection) {
-  let pending = null;
-  const excerpt = container.querySelector(".excerpt");
-  const accept = container.querySelector("[data-confirm]");
-  const cancel = container.querySelector("[data-cancel]");
-  function offer(selection) {
-    pending = selection;
-    container.hidden = !selection;
-    excerpt.textContent = selection ? describeSelection(selection) : "";
-  }
-  accept.addEventListener("click", () => {
-    if (!pending) return;
-    const selection = pending;
-    clearSelection();
-    offer(null);
-    confirm(selection);
-  });
-  cancel.addEventListener("click", () => {
-    clearSelection();
-    offer(null);
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      clearSelection();
-      offer(null);
-    }
-  });
-  return offer;
-}
-
 // One short line for a selection, shared by the viewer's comments and the chat draft.
 function describeSelection(selection) {
   if (selection.kind === "whole") return "Whole artifact";
