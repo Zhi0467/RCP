@@ -383,7 +383,7 @@ import {
   parseNotificationLink,
   type NotificationLink,
 } from "./core/notificationLinks";
-import { requestCommentThread } from "./core/commentThreadRequest";
+import { requestCommentThread } from "./comments/commentThreadRequest";
 import { createCommentsClient } from "./comments/api";
 import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
 import {
@@ -2196,7 +2196,7 @@ function MemberApp({
         ]);
         next = episodeNotificationHash(link, episodes[0] ?? null, entries);
       } else if (link.kind === "comment") {
-        const thread = await createCommentsClient(link.projectId)
+        const thread = await createCommentsClient(link.projectId, api)
           .get(link.itemId)
           .catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
         if (current !== generation) return;

@@ -10,19 +10,41 @@ export interface AnchorContext {
   whole?: CommentRect;
 }
 
+/** `value` with each whitespace run read as one space, and where each kept character was. */
+function collapse(value: string): { text: string; at: number[] } {
+  let text = "";
+  const at: number[] = [];
+  for (let index = 0; index < value.length; index++) {
+    const space = /\s/.test(value[index]);
+    if (space && text.endsWith(" ")) continue;
+    text += space ? " " : value[index];
+    at.push(index);
+  }
+  return { text, at };
+}
+
+let collapsed: { source: string; value: ReturnType<typeof collapse> } | null = null;
+
+/** Where `quote` is in `text`, preferring the copy inside `surrounding`. Whitespace
+ *  runs match each other, so a quote survives reflowed or re-indented text. The
+ *  artifact frame runs this same function from the bundle build. */
 export function findText(
   text: string,
   quote: string,
   surrounding = "",
 ): { start: number; end: number } | null {
-  if (!quote) return null;
-  const contextAt = surrounding ? text.indexOf(surrounding) : -1;
-  const quoteAt = surrounding.indexOf(quote);
-  const start = contextAt >= 0 && quoteAt >= 0 ? contextAt + quoteAt : text.indexOf(quote);
-  return start < 0 ? null : { start, end: start + quote.length };
+  const wanted = collapse(quote).text.trim();
+  if (!wanted) return null;
+  const around = collapse(surrounding).text.trim();
+  if (collapsed?.source !== text) collapsed = { source: text, value: collapse(text) };
+  const { text: haystack, at } = collapsed.value;
+  const contextAt = around ? haystack.indexOf(around) : -1;
+  const quoteAt = around.indexOf(wanted);
+  const start = contextAt >= 0 && quoteAt >= 0 ? contextAt + quoteAt : haystack.indexOf(wanted);
+  return start < 0 ? null : { start: at[start], end: at[start + wanted.length - 1] + 1 };
 }
 
-export function fractionRect(bounds: CommentRect, region: CommentRect): CommentRect {
+function fractionRect(bounds: CommentRect, region: CommentRect): CommentRect {
   return {
     x: bounds.x + region.x * bounds.width,
     y: bounds.y + region.y * bounds.height,

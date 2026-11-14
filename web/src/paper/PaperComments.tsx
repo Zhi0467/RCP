@@ -22,7 +22,10 @@ import {
   useSelectionComment,
   type SelectionCommentOffer,
 } from "../comments/react/useSelectionComment";
-import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
+import {
+  takeCommentThreadRequest,
+  useCommentThreadRequest,
+} from "../comments/commentThreadRequest";
 import type { PaperFile } from "../core/types";
 import { previewSelectionAnchor } from "./previewAnchors";
 import type { PreviewAnchor } from "./PaperPreview";

@@ -4,7 +4,7 @@ import { commentMentionCandidates, decodeCommentMentions } from "../mentions.ts"
 import { anchorQuote } from "../model.ts";
 import type { CommentMember, CommentPost, CommentThread } from "../types.ts";
 import { CommentEditor } from "./CommentEditor";
-import type { CommentsController } from "./useComments";
+import type { CommentsController } from "./useCommentActions";
 
 function PostRow({ post, members }: { post: CommentPost; members: readonly CommentMember[] }) {
   const author = post.author.display_name || post.author.user_id || "Member";

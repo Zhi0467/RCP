@@ -481,18 +481,14 @@ function installArtifactLocator(doc, publish) {
         offsets.push({ node, offset: i });
       }
     }
-    const normalize = (value) =>
-      String(value || "")
-        .replace(/\s+/g, " ")
-        .trim();
-    const quote = normalize(anchor.text);
-    const surrounding = normalize(anchor.surrounding_text);
-    const contextAt = surrounding ? text.indexOf(surrounding) : -1;
-    const quoteAt = surrounding.indexOf(quote);
-    const start = contextAt >= 0 && quoteAt >= 0 ? contextAt + quoteAt : text.indexOf(quote);
-    if (start < 0) return null;
-    const first = offsets[start];
-    const last = offsets[start + quote.length - 1];
+    const match = RcpCommentText.findText(
+      text,
+      anchor.text,
+      typeof anchor.surrounding_text === "string" ? anchor.surrounding_text : "",
+    );
+    if (!match) return null;
+    const first = offsets[match.start];
+    const last = offsets[match.end - 1];
     if (!first || !last) return null;
     const range = doc.createRange();
     range.setStart(first.node, first.offset);

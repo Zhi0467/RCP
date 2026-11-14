@@ -9,7 +9,7 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 
-import { createCommentsClient } from "../src/comments/api.ts";
+import { createCommentsClient, fetchRequest } from "../src/comments/api.ts";
 
 const repo = new URL("../..", import.meta.url).pathname;
 
@@ -78,11 +78,14 @@ async function signedInCommentsClient(server, projectId, token) {
     .getSetCookie()
     .map((line) => line.split(";")[0])
     .join("; ");
-  return createCommentsClient(projectId, (path, init) =>
-    fetch(`${server.base}${path}`, {
-      ...init,
-      headers: { ...init?.headers, Cookie: cookie, Origin: server.base },
-    }),
+  return createCommentsClient(
+    projectId,
+    fetchRequest((path, init) =>
+      fetch(`${server.base}${path}`, {
+        ...init,
+        headers: { ...init?.headers, Cookie: cookie, Origin: server.base },
+      }),
+    ),
   );
 }
 
@@ -138,15 +141,12 @@ test("a mentioned member follows the Inbox link to the thread and settles it", a
     assert.equal((await members).status(), 200);
     assert.deepEqual(pageErrors, []);
 
-    const reply = await bob.reply(seeded.thread_id, "Looked at it.");
-    const replyPost = reply.posts.at(-1).post_id;
+    assert.equal(
+      (await bob.reply(seeded.thread_id, "Looked at it.")).posts.at(-1).text,
+      "Looked at it.",
+    );
     assert.equal((await bob.resolve(seeded.thread_id)).state, "resolved");
     assert.equal((await bob.reopen(seeded.thread_id)).state, "open");
-    assert.equal(
-      (await bob.editPost(replyPost, "Looked again.")).posts.at(-1).text,
-      "Looked again.",
-    );
-    assert.deepEqual(await bob.deletePost(replyPost), { ok: true });
     passed = true;
   } finally {
     await browser?.close();

@@ -35,7 +35,10 @@ import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { artifactStateProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
-import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
+import {
+  takeCommentThreadRequest,
+  useCommentThreadRequest,
+} from "../comments/commentThreadRequest";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import "../styles/artifact-viewer.css";

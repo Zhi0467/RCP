@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import { chromium } from "playwright";
 
@@ -61,7 +61,7 @@ test("PDF viewer renders selectable text and page-relative area anchors", async 
     build: {
       write: false,
       lib: {
-        entry: resolve("web/src/comments/pdf.ts"),
+        entry: fileURLToPath(new URL("../src/comments/pdf.ts", import.meta.url)),
         name: "PdfViewer",
         cssFileName: "pdf",
         formats: ["iife"],

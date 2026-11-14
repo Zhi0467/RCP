@@ -1,12 +1,50 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { build } from "vite";
+import { textLocatorCases } from "./fixtures/textLocatorCases.mjs";
 
-const script = await readFile(
+const built = await build({
+  configFile: false,
+  logLevel: "silent",
+  build: {
+    write: false,
+    lib: {
+      entry: fileURLToPath(new URL("../src/comments/anchors.ts", import.meta.url)),
+      name: "RcpCommentText",
+      formats: ["iife"],
+    },
+  },
+});
+const locator = (Array.isArray(built) ? built[0] : built).output[0].code;
+const script = `${locator}\n${await readFile(
   new URL("../../src/rcp/artifact_selection.js", import.meta.url),
   "utf8",
-);
+)}`;
+
+test("the frame's text locator is the rails' one, case for case", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.addScriptTag({ content: script });
+    const found = await page.evaluate(
+      (cases) =>
+        cases.map(({ text, quote, surrounding }) => {
+          const match = RcpCommentText.findText(text, quote, surrounding);
+          return match && [match.start, match.end];
+        }),
+      textLocatorCases,
+    );
+    assert.deepEqual(
+      found,
+      textLocatorCases.map((item) => item.found),
+    );
+  } finally {
+    await browser.close();
+  }
+});
 
 test("HTML comment mode picks elements and preserves text selection", async () => {
   const browser = await chromium.launch();

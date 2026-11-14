@@ -13,6 +13,7 @@ export function CommentEditor({
   canSend,
   agentLabel,
   busy,
+  initialText = "",
   autoFocus = false,
   onSubmit,
 }: {
@@ -21,11 +22,12 @@ export function CommentEditor({
   canSend: boolean;
   agentLabel: string;
   busy: boolean;
+  initialText?: string;
   autoFocus?: boolean;
   /** Resolves true once saved, which clears the field. */
   onSubmit: (text: string, send: boolean) => Promise<boolean>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [query, setQuery] = useState<{ at: number; text: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {

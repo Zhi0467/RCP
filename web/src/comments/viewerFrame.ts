@@ -63,8 +63,9 @@ export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void
       const rect = positions.get(id);
       if (!rect) return null;
       const bounds = frame.getBoundingClientRect();
-      const x = rect.x + rect.width;
-      const y = rect.y + rect.height;
+      const scale = frame.offsetWidth ? bounds.width / frame.offsetWidth : 1;
+      const x = (rect.x + rect.width) * scale;
+      const y = (rect.y + rect.height) * scale;
       if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return null;
       return { x: bounds.x + Math.min(x, bounds.width - PIN_ROOM), y: bounds.y + y };
     },

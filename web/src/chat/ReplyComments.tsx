@@ -30,7 +30,10 @@ import {
   firstLine,
   type SelectionCommentOffer,
 } from "../comments/react/useSelectionComment";
-import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
+import {
+  takeCommentThreadRequest,
+  useCommentThreadRequest,
+} from "../comments/commentThreadRequest";
 import { annotatableAnswerSelectionRange } from "./chatInput";
 import "./replyComments.css";
 

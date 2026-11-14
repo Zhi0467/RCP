@@ -1,3 +1,4 @@
+import { api } from "../core/api";
 import { buildNotificationLink } from "../core/notificationLinks";
 import type { ResourceProfile } from "../core/resourceStore";
 import { bulletinDecodeMentions, bulletinMentionCandidates } from "../chat/bulletinModel";
@@ -21,9 +22,7 @@ export function commentMentionsProfile(projectId: string): ResourceProfile<Comme
   return {
     key: projectResourceKey(projectId, "comments", { query: path }),
     fetch: (signal) =>
-      createCommentsClient(projectId, (input, init) =>
-        fetch(input, { ...init, signal }),
-      ).mentions(),
+      createCommentsClient(projectId, (path, init) => api(path, { ...init, signal })).mentions(),
   };
 }
 

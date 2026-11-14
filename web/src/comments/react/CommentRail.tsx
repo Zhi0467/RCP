@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { railState } from "../model.ts";
+import { MAX_SEND_CHARS, railState } from "../model.ts";
 import type { CommentThread } from "../types.ts";
 import { CommentThreadCard } from "./CommentThreadCard";
-import type { CommentsController } from "./useComments";
+import type { CommentsController } from "./useCommentActions";
 import "../comments.css";
 import "./rail.css";
 
@@ -15,6 +15,7 @@ export interface CommentListProps {
   onLocate: (thread: CommentThread) => void;
   /** Why a thread has no pin here, shown on hover; undefined when it has one. */
   note?: (thread: CommentThread) => string | undefined;
+  maxSelections?: number;
 }
 
 /** The open threads, the Resolved fold, and Send N; the rail and the chat list share it. */
@@ -25,6 +26,7 @@ export function CommentList({
   selected,
   onLocate,
   note,
+  maxSelections,
 }: CommentListProps) {
   const [ticks, setTicks] = useState<ReadonlySet<string>>(() => new Set());
   const [foldOpen, setFoldOpen] = useState(false);
@@ -34,8 +36,8 @@ export function CommentList({
     resolved,
     selected: chosen,
     canSend,
-    sendLength,
-  } = railState(comments.threads, ticks);
+    tooLong,
+  } = railState(comments.threads, ticks, "", maxSelections);
   const selectedResolved = resolved.some((thread) => thread.thread_id === selected);
   useEffect(() => {
     if (selectedResolved) setFoldOpen(true);
@@ -89,7 +91,11 @@ export function CommentList({
             type="button"
             className="rcp-comment-primary"
             disabled={comments.busy || !canSend}
-            title={sendLength > 32000 ? "The selected threads exceed 32,000 characters" : undefined}
+            title={
+              tooLong
+                ? `The selected threads exceed ${MAX_SEND_CHARS.toLocaleString("en-US")} characters`
+                : undefined
+            }
             onClick={async () => {
               if (await comments.send(chosen.map((thread) => thread.thread_id)))
                 setTicks(new Set());
@@ -117,7 +123,7 @@ export function CommentRail({
 }: CommentListProps & {
   className?: string;
   onWhole?: () => void;
-  onClose: () => void;
+  onClose?: () => void;
   children?: ReactNode;
 }) {
   return (
@@ -130,14 +136,16 @@ export function CommentRail({
               Comment
             </button>
           )}
-          <button
-            type="button"
-            className="rcp-comments-close"
-            aria-label="Close comments"
-            onClick={onClose}
-          >
-            <X size={14} />
-          </button>
+          {onClose && (
+            <button
+              type="button"
+              className="rcp-comments-close"
+              aria-label="Close comments"
+              onClick={onClose}
+            >
+              <X size={14} />
+            </button>
+          )}
         </span>
       </header>
       {children}

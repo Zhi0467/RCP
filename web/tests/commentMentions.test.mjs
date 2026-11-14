@@ -15,7 +15,7 @@ const { commentMentionRows, relativeTime } = await server.ssrLoadModule(
 );
 const { parseNotificationLink } = await server.ssrLoadModule("/src/core/notificationLinks.ts");
 const { requestCommentThread, takeCommentThreadRequest } = await server.ssrLoadModule(
-  "/src/core/commentThreadRequest.ts",
+  "/src/comments/commentThreadRequest.ts",
 );
 
 const ada = { user_id: "u-ada", display_name: "Ada" };

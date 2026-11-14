@@ -73,7 +73,18 @@ def crop_region(frame: Image.Image, *, x: float, y: float, width: float, height:
 
 
 def _selection_script() -> str:
-    return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
+    """The frame add-on, after the Web build's text locator that the rails also use."""
+    try:
+        locator = (web_dist_path() / "comment-text.js").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactRendererUnavailable(
+            "The comment locator is unavailable. Rebuild the Web assets."
+        ) from exc
+    return (
+        locator
+        + "\n"
+        + importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
+    )
 
 
 def _comment_panel_assets() -> tuple[str, str]:
