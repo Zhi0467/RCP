@@ -24,6 +24,9 @@ whether sync health reports an error, because the graph payload carries
 canonical reachability. While a task runs, `tasks.progress` and task details
 take a clock tick, because elapsed time and progress are computed from the clock.
 Entity counters are project-scoped; chat read/pin counters are member-scoped.
+The project `comments` counter moves on every comment thread, post, and mention
+change. An open comment rail re-reads only its own target's threads, and Inbox
+re-reads mentions.
 Only Bulletin, digest, task inventory and task detail tokens include the Space's
 `chats` counter: these reads render Space-thread names. Project `chats` tokens
 remain project-scoped.
@@ -346,7 +349,8 @@ Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
 Chat questions link to their chat (`?view=chats&chat=`), agent-thread items to
 `#/agent/{thread_id}`, and Bulletin mentions use the channel query link
-described in [Bulletin channels](#bulletin-channels).
+described in [Bulletin channels](#bulletin-channels). Comment mentions use the
+kind `comment` with the thread id ([Comment API](#comment-api)).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
 Graph item age starts at its accepted Patch, and terminal episode age starts
@@ -376,7 +380,7 @@ every item it covers, and a rejected one leaves them for retry.
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's toggles: `proposal`, `decision`, `blocker`,
 `episode_needs_action`, `episode_finished`, `consolidation`,
-`bulletin_mention`, and `agent_thread`. All default on except
+`bulletin_mention`, `comment_mention`, and `agent_thread`. All default on except
 `episode_finished`. These routes require project membership. Project Settings
 shows every toggle in a **Notifications** card after Machines.
 
@@ -388,9 +392,10 @@ its outcome as a notice. An episode opens its exact run when it is still
 listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
-opens on its source target, and the paper opens in Paper. Copy reference
-writes the full URL. The chat composer turns a same-project reference link into
-a reference chip.
+opens on its source target, and the paper opens in Paper. A comment link reads
+its thread, opens the artifact, Paper file, or chat reply it sits on, and
+scrolls to its anchor. Copy reference writes the full URL. The chat composer
+turns a same-project reference link into a reference chip.
 
 ## Phone push delivery
 
@@ -1341,7 +1346,9 @@ truthful operation fallbacks without inventing causality.
 ### Inbox
 
 Inbox contains pending protected-belief Proposals, Decisions in `ready` or
-`revisit`, and asserted open Blockers. A Proposal keeps inline judgment because
+`revisit`, and asserted open Blockers. A Mentions section above Proposals lists
+the caller's comment mentions whose thread is open and readable; each row opens
+the thread's comment link. A Proposal keeps inline judgment because
 it is not a node. Its proposed action links each existing node the Proposal
 changes, both ends of a relation included. A stale Proposal card has a red edge and replaces Approve with
 one icon-only Refresh, which then opens the refresh chat; a failed Refresh turns
@@ -2315,6 +2322,34 @@ observations across restarts. Deleting a post before reconciliation suppresses
 its notification; editing away a mention preserves the accepted event. Links open
 the channel in the Agents view, `#/projects/{project_id}?view=chats`, with
 `branch_id` for a branch channel. Agent mentions never wake or launch work.
+
+## Comment API
+
+[Comment routes](../../src/rcp/api/comments.py) serve
+[shared comments](paper-artifacts-and-result-views.md#shared-comments) under
+`/api/projects/{project_id}`. `GET comment-threads?target_kind=&target_id=`
+lists a target's threads, and `GET comment-threads/{thread_id}` reads one for a
+link; both need project read. `POST comment-threads` starts a thread, `POST
+comment-threads/{thread_id}/posts` replies, and `POST .../resolve` and `POST
+.../reopen` change its state; these need project write. `PATCH` and `DELETE
+comment-posts/{post_id}` are author-only. `GET comment-mentions` lists the
+caller's mentions. Every route also checks that the caller can read the target
+and answers 404 otherwise, because the private-path check never sees thread or
+post ids. Each listed thread carries `can_send` for the caller.
+[Comment models](../../src/rcp/comments/models.py) own the bodies.
+
+The viewer's Send is `POST artifacts/{artifact_id}/comments` with thread ids and
+the fresh-session flag. New turns and steers take `comment_thread_ids` beside
+their message, which may be empty when threads are present. `/tasks` refuses a
+client-built artifact context that carries selections. A new turn and the
+viewer route key repeats on `Idempotency-Key`, and a steer on its `message_id`.
+
+Saving a post records one mention row per readable member it names. A
+`comment_mention` notification goes at most once per thread and mentioned
+member. Delivery keeps it only while the mention row exists, the thread is
+open, and the device's member can read the target. Its link is
+`#/projects/{project_id}/targets/{target}/comment/{thread_id}`, with the
+target's branch key.
 
 ## Agent thread API
 
