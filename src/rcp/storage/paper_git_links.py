@@ -52,7 +52,11 @@ def migrate_paper_git_links(connection: sqlite3.Connection) -> None:
 
 
 def migrate_paper_git_link_key_source(connection: sqlite3.Connection) -> None:
-    connection.execute("ALTER TABLE paper_git_links ADD COLUMN key_source TEXT NOT NULL DEFAULT ''")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(paper_git_links)")}
+    if "key_source" not in columns:
+        connection.execute(
+            "ALTER TABLE paper_git_links ADD COLUMN key_source TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def _link(row: sqlite3.Row) -> PaperGitLink:
