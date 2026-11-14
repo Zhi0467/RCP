@@ -484,10 +484,11 @@ def start_ordinary_task(
             assert request.chat_id is not None
             chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
             request = chat_admission_lock.__enter__()
-            if supersedes is not None:
-                _require_superseded_discuss_turn(
-                    store, catalog.resolve_project_id(project_id), request, supersedes
-                )
+        if supersedes is not None:
+            assert isinstance(request, RunRequest)
+            _require_superseded_discuss_turn(
+                store, catalog.resolve_project_id(project_id), request, supersedes
+            )
         operation_id = (
             request.artifact_edit.operation_id
             if isinstance(request, RunRequest) and request.artifact_edit is not None
