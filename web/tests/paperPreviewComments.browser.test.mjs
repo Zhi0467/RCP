@@ -384,7 +384,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
             {file_id:'html',path:'page.html',format:'html',kind:'text',sha256:'e'}
           ];
           window.comments = [];
-          window.show = (id, text = '', saved = 7, htmlSha = 'e') => { const shown = files.map(f => f.file_id === 'html' ? {...f, sha256: htmlSha} : f); root.render(<PaperPreview projectId="p" file={shown.find(f => f.file_id === id)} tree={{files: shown, revision: saved, saved_revision: saved}} text={text} active toolbar={bar} cursorLine={1} onAnchor={c => window.comments.push({quote: anchorQuote(c.anchor), where: c.anchor.where, anchor: c.rect, clear: c.clear})} onAnchorCancel={clear => window.cancels.push(clear)} />); };
+          window.show = (id, text = '', saved = 7, htmlSha = 'e') => { const shown = files.map(f => f.file_id === 'html' ? {...f, sha256: htmlSha} : f); root.render(<PaperPreview projectId="p" file={shown.find(f => f.file_id === id)} tree={{files: shown, revision: saved}} text={text} active toolbar={bar} cursorLine={1} onAnchor={c => window.comments.push({quote: anchorQuote(c.anchor), where: c.anchor.where, anchor: c.rect, clear: c.clear})} onAnchorCancel={clear => window.cancels.push(clear)} />); };
           window.cancels = [];
           window.select = (element, from, to) => {
             const range = document.createRange();

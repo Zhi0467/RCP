@@ -60,28 +60,6 @@ test("Paper phone icon actions retain 44px touch targets", async (t) => {
   }
 });
 
-test("a held legacy paper keeps its version choice modal until one is chosen", async (t) => {
-  const { page, posts } = await openPaper(t, {
-    browser,
-    origin: server.origin,
-    width: 390,
-    configure: ({ tree }) => {
-      tree.hold = "legacy";
-    },
-  });
-  const dialog = page.getByRole("alertdialog", { name: "Choose Paper version" });
-  assert.ok(await dialog.evaluate((element) => element.matches("dialog:modal")));
-  await page.keyboard.press("Escape");
-  await page.mouse.click(2, 2);
-  assert.ok(await dialog.isVisible());
-  await dialog.getByRole("button", { name: "Keep draft" }).click();
-  await dialog.waitFor({ state: "detached" });
-  assert.deepEqual(posts.at(-1), {
-    path: "/api/projects/p/paper/hold/resolve",
-    body: { keep: "draft" },
-  });
-});
-
 test("the Changes tab opens a file's diff in the editor and the pill switches branch", async (t) => {
   const diffs = [];
   const switches = [];

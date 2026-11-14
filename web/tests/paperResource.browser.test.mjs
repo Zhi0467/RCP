@@ -218,7 +218,7 @@ test("superseded LaTeX compilation keeps the existing PDF and offers Retry", asy
   const next = page.waitForResponse(
     (reply) => reply.url().endsWith("/paper/compile") && compiled === 2,
   );
-  currentTree.saved_revision += 1;
+  currentTree.revision += 1;
   await append(page, " changed");
   room.ack();
   const response = await next;
@@ -483,7 +483,7 @@ test("a hidden phone preview keeps its PDF and reading position and compiles onl
   await page.waitForTimeout(1000);
   assert.equal(compiles, 1);
   await write.click();
-  currentTree.saved_revision += 1;
+  currentTree.revision += 1;
   const treeRead = page.waitForResponse((response) => response.url().endsWith("/paper/tree"));
   await append(page, " hidden");
   await treeRead;

@@ -284,7 +284,7 @@ for (const width of [1280, 390])
     await fits(page);
     await page.screenshot({ path: join(tmpdir(), `paper-html-controls-${width}.png`) });
     await page.locator(".paper-html-preview iframe").waitFor();
-    const shell = page.frame({ url: /\/files\/f3\/preview\?revision=1$/ });
+    const shell = page.frame({ url: /\/files\/f3\/preview\?key=page-1$/ });
     const post = (text) =>
       shell.evaluate(
         (text) =>
