@@ -657,7 +657,12 @@ export function SignInCard({
   } else if (state === "signing_in" && signIn) {
     body = showsDeviceCode(signIn, viewerUserId) ? (
       <span className="sign-in-device" role="status">
-        <a href={signIn.verification_url!} target="_blank" rel="noreferrer">
+        <a
+          href={signIn.verification_url!}
+          target="_blank"
+          rel="noreferrer"
+          title={signIn.verification_url!}
+        >
           {signIn.verification_url}
         </a>
         <code>{signIn.user_code}</code>
