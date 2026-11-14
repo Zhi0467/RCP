@@ -456,6 +456,7 @@ class PaperGit:
                         directory,
                         [
                             "push",
+                            f"--force-with-lease=refs/heads/{branch}:",
                             remote_url(link.repository),
                             link.synced_commit + ":refs/heads/" + branch,
                         ],
