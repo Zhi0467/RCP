@@ -63,7 +63,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
 def _canonical_turn(tmp_path, runtime_id: str):
     from rcp.providers import ProviderTurnRequest, profile_for
 
-    provider = "claude" if runtime_id.startswith("claude") else "codex"
+    provider = runtime_id.split(".")[0]
     return (
         profile_for(provider)
         .runtime(runtime_id)
@@ -97,6 +97,12 @@ def _started_decoder_pair(tmp_path, runtime_id: str, opener: str = "thread/resum
         return turn, fence
     turn = _canonical_turn(tmp_path, runtime_id)
     fence = turn_fence(runtime_id)
+    if runtime_id.startswith("agy"):
+        start = {"event": "init", "conversation_id": "corpus-thread"}
+        fence.input(json.loads(turn.initial_input()))
+        turn.receive_line(json.dumps(start))
+        fence.output(start)
+        return turn, fence
     start = (
         {"type": "system", "subtype": "init", "session_id": "corpus-thread"}
         if runtime_id.startswith("claude")
@@ -110,6 +116,16 @@ def _started_decoder_pair(tmp_path, runtime_id: str, opener: str = "thread/resum
 _COMPLETION_CORPUS = tuple(
     (runtime_id, message)
     for runtime_id, messages in (
+        (
+            "agy.stream-json.v1",
+            (
+                {"event": "init", "conversation_id": "corpus-thread"},
+                {"event": "step_update", "step_update": {"step_type": "agent_response"}},
+                {"event": "result", "result": {"status": "SUCCESS", "response": "answer"}},
+                {"event": "result", "result": {"status": "ERROR", "error": "refused"}},
+                {"event": "unrecognized"},
+            ),
+        ),
         (
             "codex.exec-json.v1",
             (
@@ -323,3 +339,20 @@ def test_codex_exec_retry_errors_remain_traces_until_turn_failed(tmp_path):
     assert turn.receive_line(json.dumps(failure)).complete
     fence.output(failure)
     assert fence.terminal
+
+
+@pytest.mark.parametrize("status", ["SUCCESS", "ERROR"])
+def test_agy_two_queued_inputs_share_local_and_remote_boundaries(tmp_path, status):
+    turn, fence = _started_decoder_pair(tmp_path, "agy.stream-json.v1")
+    state = turn.steering_state()
+    assert state.can_steer
+    fence.input(json.loads(turn.render_steer(state.turn_id, "steer", "follow up")))
+    first = {"event": "result", "result": {"status": status, "response": "first"}}
+    step = turn.receive_line(json.dumps(first))
+    fence.output(first)
+    assert step.explicit_terminal == fence.terminal == (status != "SUCCESS")
+    if status == "SUCCESS":
+        second = {"event": "result", "result": {"status": "SUCCESS", "response": "second"}}
+        step = turn.receive_line(json.dumps(second))
+        fence.output(second)
+        assert step.explicit_terminal == fence.terminal is True

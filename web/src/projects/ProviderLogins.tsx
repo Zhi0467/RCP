@@ -21,6 +21,7 @@ import {
   saveProviderToken,
   signOutProvider,
   startProviderSignIn,
+  submitProviderSignInCode,
   verifyProviderLogin,
 } from "../core/api";
 import { errorMessage } from "../core/errors";
@@ -30,6 +31,7 @@ import {
   loginKey,
   membersSignedIn,
   showsDeviceCode,
+  showsPasteCode,
   signInsForMachine,
   switchedSetting,
   trayLayout,
@@ -600,7 +602,7 @@ export function SignInCard({
   }
   const { provider, machine_id: machineId, login_id: loginId } = row;
   const startSignIn = () => {
-    if (row.sign_in_methods.includes("device_code")) {
+    if (row.sign_in_methods.some((method) => method === "device_code" || method === "paste_code")) {
       void run("sign-in", async () =>
         setSignIn(await startProviderSignIn(provider, machineId, loginId)),
       );
@@ -608,6 +610,21 @@ export function SignInCard({
       onEntering(true);
     }
   };
+
+  async function submitCode() {
+    const code = token.trim();
+    if (!code || !signIn || busy !== null) return;
+    setToken("");
+    setBusy("code");
+    setFailure(null);
+    try {
+      setSignIn(await submitProviderSignInCode(provider, signIn.attempt_id, code));
+    } catch (cause) {
+      setFailure({ message: errorMessage(cause), retry: () => setFailure(null) });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   const shown = { ...row, sign_in: signIn };
   const state = cardState(shown);
@@ -647,6 +664,24 @@ export function SignInCard({
     state !== "signing_in" &&
     (items.length > 0 || removable);
 
+  const cancelSignIn = signIn ? (
+    <button
+      className="icon-button compact"
+      type="button"
+      data-sign-in-action="cancel"
+      aria-label="Cancel sign-in"
+      title="Cancel sign-in"
+      disabled={disabled}
+      onClick={() =>
+        void run("cancel", async () =>
+          setSignIn(await cancelProviderSignIn(provider, signIn.attempt_id)),
+        )
+      }
+    >
+      {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
+    </button>
+  ) : null;
+
   let body: ReactNode;
   if (state === "draining") {
     body = (
@@ -655,30 +690,60 @@ export function SignInCard({
       </span>
     );
   } else if (state === "signing_in" && signIn) {
-    body = showsDeviceCode(signIn, viewerUserId) ? (
+    body = showsPasteCode(signIn, viewerUserId) ? (
+      <form
+        className="sign-in-token sign-in-device"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitCode();
+        }}
+      >
+        <a
+          href={signIn.verification_url!}
+          target="_blank"
+          rel="noreferrer"
+          title={signIn.verification_url!}
+        >
+          Open Google sign-in
+        </a>
+        <input
+          type="password"
+          autoComplete="off"
+          autoFocus
+          aria-label={`${row.label} code`}
+          value={token}
+          disabled={disabled}
+          onChange={(event) => setToken(event.target.value)}
+        />
+        <button
+          className="icon-button compact"
+          type="submit"
+          aria-label="Submit code"
+          title="Submit code"
+          disabled={disabled || !token.trim()}
+        >
+          {busy === "code" ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}
+        </button>
+        {cancelSignIn}
+      </form>
+    ) : showsDeviceCode(signIn, viewerUserId) ? (
       <span className="sign-in-device" role="status">
-        <a href={signIn.verification_url!} target="_blank" rel="noreferrer">
+        <a
+          href={signIn.verification_url!}
+          target="_blank"
+          rel="noreferrer"
+          title={signIn.verification_url!}
+        >
           {signIn.verification_url}
         </a>
         <code>{signIn.user_code}</code>
-        <button
-          className="icon-button compact"
-          type="button"
-          data-sign-in-action="cancel"
-          aria-label="Cancel sign-in"
-          title="Cancel sign-in"
-          disabled={disabled}
-          onClick={() =>
-            void run("cancel", async () =>
-              setSignIn(await cancelProviderSignIn(provider, signIn.attempt_id)),
-            )
-          }
-        >
-          {busy === "cancel" ? <LoaderCircle size={14} className="spin" /> : <X size={14} />}
-        </button>
+        {cancelSignIn}
       </span>
     ) : starter ? (
-      <LoaderCircle size={14} className="spin sign-in-state" aria-label="Signing in" />
+      <span className="sign-in-device" role="status">
+        <LoaderCircle size={14} className="spin sign-in-state" aria-label="Signing in" />
+        {cancelSignIn}
+      </span>
     ) : (
       <span className="sign-in-state">
         {signIn.started_by_display_name ?? "A member"} is signing in

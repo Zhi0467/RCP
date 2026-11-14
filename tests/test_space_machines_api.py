@@ -374,6 +374,7 @@ def test_machine_shell_timeout_round_trip_and_refusal(app) -> None:
         {"codex": "121"},
         {"opencode": "2.5"},
         {"claude": "auto"},
+        {"agy": "30"},
         {"unknown": "30"},
         {"unknown": ""},
     ):
@@ -961,3 +962,11 @@ def test_provider_resolve_records_the_discovered_executable_on_the_card(app) -> 
     assert calls == [None, "/opt/new-agent/codex"]
     assert response.json()["provider_paths"] == {"codex": "/opt/new-agent/codex"}
     assert _store(app).provider_binary("codex", BACKEND_MACHINE_ID) == "/opt/new-agent/codex"
+
+
+def test_machine_omits_unsupported_shell_timeout(app, monkeypatch):
+    from rcp.providers import profile_for
+
+    monkeypatch.setattr(type(profile_for("opencode")), "shell_timeout_default_seconds", None)
+    machine = _backend(signed_in_client(app))
+    assert "opencode" not in {item["provider"] for item in machine["shell_timeout_providers"]}

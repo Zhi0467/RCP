@@ -83,6 +83,8 @@ class LiveProviderSteering:
                 # write is already uncertain and must never be retried.
                 stream.write(outgoing)
                 await asyncio.wait_for(stream.drain(), PROVIDER_STEER_WRITE_TIMEOUT_SECONDS)
+                if self._turn.steer_delivered_on_write and not pending.done():
+                    pending.set_result(ProviderSteerReceipt("delivered"))
             except (OSError, RuntimeError, TimeoutError):
                 if not pending.done():
                     pending.set_result(

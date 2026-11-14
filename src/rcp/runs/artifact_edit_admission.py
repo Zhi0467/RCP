@@ -10,6 +10,7 @@ from typing import Literal
 
 from rcp.artifact_comments import supports_comments
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+from rcp.providers import profile_for
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
 from rcp.service import (
@@ -64,12 +65,14 @@ def artifact_edit_availability(
         )
         reason = "The artifact has expired." if expired else None
         return ArtifactEditAvailability(reason is None, reason)
+    provider_fresh = _origin_keeps_tools(origin)
     fresh = False
     try:
-        try:
-            _origin_master(store, artifact.project_id, origin, verify=False)
-        except ArtifactFreshSessionRequired:
-            fresh = True
+        if not provider_fresh:
+            try:
+                _origin_master(store, artifact.project_id, origin, verify=False)
+            except ArtifactFreshSessionRequired:
+                fresh = True
         now = store.now()
         edit_reason = store.session_launch_unavailable_reason(
             AgentTaskRecord(
@@ -81,14 +84,19 @@ def artifact_edit_availability(
                 created_at=now,
                 updated_at=now,
                 request={"provider": origin.request.get("provider")},
-                native_session_id=None if fresh else origin.native_session_id,
-                stage_machine_id=None if fresh else origin.stage_machine_id,
-                stage_root=None if fresh else origin.stage_root,
+                native_session_id=None if fresh or provider_fresh else origin.native_session_id,
+                stage_machine_id=None if fresh or provider_fresh else origin.stage_machine_id,
+                stage_root=None if fresh or provider_fresh else origin.stage_root,
             )
         )
     except (KeyError, OSError, ValueError) as exc:
-        return ArtifactEditAvailability(False, str(exc), fresh)
-    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh)
+        return ArtifactEditAvailability(False, str(exc), fresh or provider_fresh)
+    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh or provider_fresh)
+
+
+def _origin_keeps_tools(origin: AgentTaskRecord) -> bool:
+    provider = origin.request.get("provider")
+    return isinstance(provider, str) and profile_for(provider).resume_keeps_tools
 
 
 def _require_master_owner(owner: AgentTaskRecord | None) -> None:
@@ -323,7 +331,8 @@ def admit_artifact_edit(
         except ArtifactFreshSessionRequired:
             pass
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
-    fresh = context.fresh_session
+    provider_fresh = _origin_keeps_tools(origin)
+    fresh = context.fresh_session or provider_fresh
     found, content = None, None
     if not fresh:
         found, content = _origin_master(store, project_id, origin, verify=True)
@@ -366,8 +375,12 @@ def admit_artifact_edit(
     }
     for key in ("provider", "model", "reasoning", "run_on"):
         updates[key] = origin.request.get(key)
+    if fresh:
+        updates.update(fork_session_id=None, fork_source_machine_id=None, fork_source_cwd=None)
     admitted = RunRequest.model_validate({**request.model_dump(mode="python"), **updates})
-    if fresh or not admitted.provider or not admitted.reasoning or not admitted.run_on:
+    if not provider_fresh and (
+        fresh or not admitted.provider or not admitted.reasoning or not admitted.run_on
+    ):
         if not fresh:
             raise AgentTaskAdmissionConflict("The artifact's execution profile is unavailable.")
         profile = service.resolve_agent_profile(
@@ -385,6 +398,8 @@ def admit_artifact_edit(
                 "run_on": service.manifest.base_machine,
             }
         )
+    if provider_fresh and not admitted.run_on:
+        admitted = admitted.model_copy(update={"run_on": service.manifest.base_machine})
     resolved = service.resolve_skill_request(admitted)
     assert isinstance(resolved, RunRequest)
     return resolved

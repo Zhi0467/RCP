@@ -85,6 +85,20 @@ export function showsDeviceCode(
   );
 }
 
+export function showsPasteCode(
+  signIn: ProviderLoginAccount["sign_in"],
+  viewerUserId: string | null,
+): boolean {
+  return Boolean(
+    signIn &&
+    viewerUserId &&
+    signIn.started_by === viewerUserId &&
+    signIn.state === "pending" &&
+    signIn.awaiting_code &&
+    signIn.verification_url,
+  );
+}
+
 /** One provider's logins on one machine, split the way the Sign-ins panel draws them. */
 export interface ProviderSignIns {
   provider: string;

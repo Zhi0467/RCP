@@ -198,7 +198,13 @@ class CodexAuthentication(ProviderAuthentication):
                 },
                 remote=False,
             )
-        source = importlib.resources.files("rcp.providers.codex").joinpath("homes.py").read_text()
+        shared = importlib.resources.files("rcp.providers").joinpath("login_homes.py").read_text()
+        policy = importlib.resources.files("rcp.providers.codex").joinpath("homes.py").read_text()
+        source = (
+            f"exec(compile({shared!r}, 'login_homes.py', 'exec'))\n"
+            "_prepare_home = prepare_home\n_home_lease = home_lease\n"
+            f"exec(compile({policy!r}, 'codex/homes.py', 'exec'))"
+        )
         home = f"~/.rcp/provider-homes/codex/{login_id}"
         command = shlex.join(["python3", "-c", source, home])
         result = subprocess.run(

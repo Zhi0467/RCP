@@ -131,10 +131,17 @@ def hidden_read_defaults(
     if app_data_dir:
         login_homes.append(app_data_dir + "/" + LOGIN_HOMES)
     if login_home_credentials:
+        owners = {pattern.split("/", 1)[0] for pattern in login_home_credentials}
         globs.extend(
             glob.escape(root) + "/" + pattern
             for root in login_homes
             for pattern in login_home_credentials
+        )
+        directories.extend(
+            root + "/" + provider
+            for root in login_homes
+            for provider in PROVIDER_IDS
+            if provider not in owners
         )
     else:
         directories.extend(login_homes)
@@ -385,7 +392,9 @@ def resolve_machine_hidden_read_scope(
         login_home_credentials=tuple(
             f"{provider}/**/{glob.escape(name)}"
             for name in profile_for(provider).login_home_credentials
-        ),
+        )
+        if "glob_rules" not in profile_for(provider).hidden_read_gaps
+        else (),
     )
     # Private history is display data. Fresh thread sessions receive an explicit
     # bounded prompt seed, so even their own transcript need not be tool-readable.
@@ -456,6 +465,8 @@ def resolve_machine_hidden_read_scope(
         [folder for folder in requested if not any(_overlap(folder, r) for r in protected)], ()
     )
     reasons = set()
+    if profile_for(provider).hidden_read_gaps:
+        reasons.add("provider_native_tools_uncovered")
     if len(folders) != len(requested):
         reasons.add("hidden_folder_conflict")
     readiness = resolved["readiness"]

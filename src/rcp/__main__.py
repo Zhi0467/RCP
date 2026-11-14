@@ -213,6 +213,11 @@ def reload_app() -> FastAPI:
 
 
 def main() -> None:
+    if len(sys.argv) >= 4 and sys.argv[1] == "_agy-run":
+        from rcp.providers.agy.remote import agy_run
+
+        agy_run(sys.argv[2:])
+        return
     if len(sys.argv) >= 4 and sys.argv[1] == "_codex-home-run":
         from rcp.providers.codex.homes import _run
 

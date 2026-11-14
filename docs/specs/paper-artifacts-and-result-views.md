@@ -758,6 +758,8 @@ Experiments, and ended orchestrators. The agent decides from each comment
 whether to edit. In a chat that refuses human turns, a running orchestrator or
 read-only child, a comment resumes the recorded master with a scratch-only edit
 that revokes graph, watcher, master, and repository rights.
+A provider whose resumed session keeps its first tools (Antigravity) starts
+that edit as a recorded fresh session instead.
 [Edit admission](../../src/rcp/runs/artifact_edit_admission.py) owns routing.
 **Why:** the recorded master defines session compatibility. After a revoking edit,
 the next operational turn must reopen its master. Versions need no Accept because

@@ -467,6 +467,15 @@
 }
 
 @media (max-width: 560px) {
+  form.sign-in-device {
+    flex-wrap: wrap;
+  }
+  form.sign-in-device > a {
+    flex-basis: 100%;
+  }
+}
+
+@media (max-width: 560px) {
   .dag-node .dag-connect-handle {
     transform: translateY(-50%) scale(calc(1 / var(--dag-canvas-zoom, 1)));
     transform-origin: center;

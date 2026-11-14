@@ -370,3 +370,71 @@ test("every card state fits a phone without sideways scrolling", async (t) => {
     assert.deepEqual(errors, []);
   }
 });
+
+test("paste-code starts, fits a phone, submits once and clears the input", async (t) => {
+  const attempt = signIn({
+    provider: "agy",
+    user_code: null,
+    awaiting_code: true,
+    verification_url: "https://accounts.google.com/o/oauth2/auth?state=example-long-state-value",
+  });
+  const row = loginRow({
+    provider: "agy",
+    label: "Antigravity",
+    login_id: "added",
+    sign_in_methods: ["paste_code"],
+    state: "signed_out",
+    sign_in: null,
+  });
+  const { page, calls, errors } = await openSignIns(t, {
+    viewport: { width: 390, height: 900 },
+    rows: [row],
+    settings: {
+      settings: [{ provider: "agy", machine_id: MACHINE, setting: "shared", stored: true }],
+      other_member_count: 0,
+    },
+    onAction: (call) => {
+      if (call.path.endsWith("/code")) return { json: { ...attempt, awaiting_code: false } };
+      return { json: attempt };
+    },
+  });
+  const added = card(page, "agy", "added");
+  await added.locator('[data-sign-in-action="sign-in"]').click();
+  const input = added.getByLabel("Antigravity code");
+  await input.waitFor();
+  const shots = process.env.RCP_SIGN_INS_SHOTS;
+  if (shots) await page.screenshot({ path: `${shots}/sign-ins-paste-phone.png`, fullPage: true });
+  assert.equal(await input.getAttribute("type"), "password");
+  assert.equal(
+    await added.getByRole("link", { name: "Open Google sign-in" }).getAttribute("title"),
+    attempt.verification_url,
+  );
+  const bounds = await added.locator("form > :not(a)").evaluateAll((elements) =>
+    elements.map((element) => {
+      const box = element.getBoundingClientRect();
+      return { top: box.top, bottom: box.bottom };
+    }),
+  );
+  assert.ok(
+    Math.max(...bounds.map((box) => box.top)) < Math.min(...bounds.map((box) => box.bottom)),
+  );
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+    true,
+  );
+  await input.fill("private-paste-code");
+  await added.getByRole("button", { name: "Submit code" }).click();
+  await input.waitFor({ state: "detached" });
+  assert.deepEqual(
+    calls.filter((call) => call.method === "POST").map((call) => [call.path, call.body]),
+    [
+      ["agy/logins/sign-in", { machine_id: MACHINE, login_id: "added" }],
+      ["agy/logins/sign-in/attempt-1/code", { code: "private-paste-code" }],
+    ],
+  );
+  assert.doesNotMatch(await added.innerHTML(), /private-paste-code/);
+  await added.locator('[data-sign-in-action="cancel"]').waitFor();
+  assert.deepEqual(errors, []);
+});

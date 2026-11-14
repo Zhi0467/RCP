@@ -271,9 +271,10 @@ def test_account_api_reports_missing_managed_credential_without_a_state_row(tmp_
         runner,
         set(),
     )
-    assert accounts[0].state == "signed_out"
-    assert accounts[0].sign_in_methods == ("token_entry",)
-    assert accounts[0].token is None
+    account = next(account for account in accounts if account.provider == "claude")
+    assert account.state == "signed_out"
+    assert account.sign_in_methods == ("token_entry",)
+    assert account.token is None
     assert store.provider_login_states() == []
 
 
