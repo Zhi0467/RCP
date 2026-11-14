@@ -91,6 +91,7 @@ from rcp.storage.branch_names import (
 )
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.chat_forks import ChatForkStoreMixin
+from rcp.storage.comments import CommentStoreMixin, _reopen, delete_comments_by_target
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
@@ -1049,6 +1050,31 @@ NOTIFICATION_DELIVERY = Entry(
     ),
 )
 
+COMMENT_THREAD = Entry(
+    name="comment thread",
+    status="state",
+    tables=frozenset({"comment_threads"}),
+    writers=(
+        CommentStoreMixin.create_comment_thread,
+        CommentStoreMixin.resolve_comment_thread,
+        CommentStoreMixin.mark_threads_sent,
+        _reopen,
+        delete_comments_by_target,
+    ),
+    rules=(
+        Rule(
+            "reply_reopens",
+            "A reply or Reopen returns a thread to open and clears its send mark.",
+            "comments design: Thread states",
+        ),
+        Rule(
+            "send_resolves_what_it_rendered",
+            "An admitted send resolves only open threads with no post newer than it rendered.",
+            "code guard at mark_threads_sent",
+        ),
+    ),
+)
+
 ENTRIES = (
     PROJECT_PROVISIONING,
     PROJECT_TRANSFER,
@@ -1073,6 +1099,7 @@ ENTRIES = (
     EVIDENCE_FLAG,
     AGENT_THREAD_QUEUE,
     NOTIFICATION_DELIVERY,
+    COMMENT_THREAD,
 )
 
 NOT_LIFECYCLE: dict[str, str] = {
@@ -1095,6 +1122,8 @@ NOT_LIFECYCLE: dict[str, str] = {
     "bulletin_command_receipts": "keyed command receipts",
     "bulletin_mention_observations": "notification observation cursor",
     "bulletin_posts": "message rows; edit and delete are marks, not states",
+    "comment_mentions": "mention rows with a notification observation cursor",
+    "comment_posts": "append-only thread posts",
     "bulletin_reads": "per-member read cursor",
     "chat_browser_preferences": "per-chat preference",
     "chat_display": "per-chat title and archive preference",
