@@ -349,13 +349,15 @@ class PaperGit:
                     : limits.PAPER_GIT_AUTHOR_MAX_CHARS
                 ]
             key = self.directory(project_id) / "id_ed25519.pub"
+            own = key.with_suffix("")
+            source = own.readlink().parent.name if own.is_symlink() else ""
             snapshot = self.live.run_sync(self.live.snapshot(project_id))
             return {
                 "state": link.state,
                 "repository": link.repository,
                 "branch": link.branch,
-                "public_key": "" if link.key_source or not key.exists() else key.read_text(),
-                "key_source": link.key_source,
+                "public_key": "" if source or not key.exists() else key.read_text(),
+                "key_source": source,
                 "head": {"commit": link.synced_commit, "author": author},
                 "unpushed": snapshot.revision != link.synced_revision
                 and self._differs(link, snapshot),
@@ -382,11 +384,10 @@ class PaperGit:
                 self._unlink(project_id)
             shared = self.shared_key(project_id, repository)
             if shared is None:
-                source, fingerprint = "", generate_key(directory, project_id)
+                fingerprint = generate_key(directory, project_id)
             else:
-                source, key = shared
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                own.symlink_to(key)
+                own.symlink_to(shared[1])
                 fingerprint = ""
             _git(directory, ["init", "--bare", "--template=", str(directory / "repo.git")])
             self.store.save_paper_git_link(
@@ -395,7 +396,6 @@ class PaperGit:
                     repository=repository,
                     branch=branch,
                     key_fingerprint=fingerprint,
-                    key_source=source,
                     linked_by=actor,
                     linked_at=self.store.now(),
                 )

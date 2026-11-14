@@ -621,18 +621,3 @@ def test_shared_deploy_key_lends_only_a_ready_backend_repository(
     found = git_sync.shared_deploy_key(None, layout, "p", "Owner/Repo")
     assert found == ("e", tmp_path / "p" / "e" / "id_ed25519")
     assert git_sync.shared_deploy_key(None, layout, "p", "owner/none") is None
-
-
-def test_links_saved_before_shared_keys_upgrade_with_their_own_key(sync):
-    import sqlite3
-
-    manager, _, _ = sync
-    manager.key("p", "owner/repo", "main", "member")
-    path = manager.store.path
-    with sqlite3.connect(path) as connection:
-        connection.execute("ALTER TABLE paper_git_links DROP COLUMN key_source")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=83")
-    upgraded = AppStore(path)
-    assert upgraded.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
-    link = upgraded.paper_git_link("p")
-    assert link is not None and (link.state, link.key_source) == ("pending", "")
