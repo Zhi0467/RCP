@@ -300,7 +300,10 @@ class Manifest(BaseModel):
                 profile.permissions
                 in (permissions_for("scratch_patch"), permissions_for("discuss"))
             )
-            if profile.permissions is None or legacy_chat:
+            legacy_coach = (
+                surface == "paper_coach" and profile.permissions == _RETIRED_COACH_PERMISSIONS
+            )
+            if profile.permissions is None or legacy_chat or legacy_coach:
                 profile.permissions = expected
             elif profile.permissions != expected:
                 raise ValueError(
@@ -363,7 +366,9 @@ AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
 
 #: Surfaces whose turns can launch a Work-like capability.
 #: Only these profiles are subject to a Work-like launch precondition.
-_WORK_LIKE_SURFACES: frozenset[str] = frozenset({"node_chat", "project_chat", "orchestrator"})
+_WORK_LIKE_SURFACES: frozenset[str] = frozenset(
+    {"node_chat", "project_chat", "paper_coach", "orchestrator"}
+)
 
 
 def launches_work_like(surface: AgentExecutionProfile) -> bool:
@@ -372,16 +377,28 @@ def launches_work_like(surface: AgentExecutionProfile) -> bool:
     return surface in _WORK_LIKE_SURFACES
 
 
+_RETIRED_COACH_PERMISSIONS = AgentPermissions(
+    read_graph=True,
+    read_research_md=True,
+    read_introduction=True,
+    read_repositories="project_scope",
+    read_conversations="none",
+    write_graph_patch=False,
+    write_project_files=False,
+    write_paper=False,
+)
+
+
 def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPermissions:
     """Return the immutable authority envelope for one launch capability."""
 
+    if target == "paper_coach":
+        return permissions_for("work_auto").model_copy(update={"write_paper": True})
     capability: AgentCapability
     if target in {"seed", "refresh"}:
         capability = "scratch_patch"
     elif target in {"node_chat", "project_chat"}:
         capability = "work_auto"
-    elif target == "paper_coach":
-        capability = "paper_suggest"
     elif target == "discuss":
         capability = "discuss"
     elif target == "work_auto":
@@ -390,22 +407,9 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
         capability = "orchestrate"
     elif target == "scratch_patch":
         capability = "scratch_patch"
-    elif target == "paper_suggest":
-        capability = "paper_suggest"
     else:
         raise ValueError(f"Unknown agent surface or capability: {target!r}")
 
-    if capability == "paper_suggest":
-        return AgentPermissions(
-            read_graph=True,
-            read_research_md=True,
-            read_introduction=True,
-            read_repositories="project_scope",
-            read_conversations="none",
-            write_graph_patch=False,
-            write_project_files=False,
-            write_paper=False,
-        )
     if capability == "discuss":
         return AgentPermissions(
             read_graph=True,

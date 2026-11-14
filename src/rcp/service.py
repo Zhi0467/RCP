@@ -11,7 +11,6 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
@@ -29,7 +28,6 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
-from rcp.agents.context import CoachContext
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
@@ -123,9 +121,7 @@ from rcp.limits import (
 from rcp.machine_cards import LoginKey, card, host_of
 from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperLive, PaperService
-from rcp.paper.changes import PaperChanges
 from rcp.paper.folder import paper_folders
-from rcp.paper.projection import publication_badge
 from rcp.provider_login_rows import missing_own_login_row, provider_login_row
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import (
@@ -1128,51 +1124,6 @@ class RunRequest(BaseModel):
         return self
 
 
-class CoachRequest(BaseModel):
-    message: str
-    browser_requested: bool = False
-    mode: Literal["review", "apply_directly"] = "review"
-    refresh_source_task_id: str | None = None
-    refresh_group_ids: list[str] = Field(default_factory=list)
-    provider: ProviderId | None = None
-    model: str | None = None
-    reasoning: str | None = None
-    run_on: str | None = None
-    session_id: str | None = None
-    previous_session_id: str | None = None
-    workflow_ids: list[str] | None = None
-    skill_ids: list[str] | None = None
-    invoked_workflow_ids: list[str] = Field(default_factory=list)
-    invoked_skill_ids: list[str] = Field(default_factory=list)
-    invoked_provider_skill_names: list[str] = Field(default_factory=list)
-    resolved_provider_skills: list[ProviderSkillReference] = Field(default_factory=list)
-    resolved_skill_packages: list[SkillReference] | None = None
-
-    attachment_scope_id: str | None = None
-    attachment_set_id: str | None = None
-    attachment_client_id: str | None = None
-    attachment_batch_id: str | None = None
-    attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
-    references: list[ProjectReferenceSelector] = Field(
-        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def apply_directly_mode(cls, value: object) -> object:
-        if not isinstance(value, dict) or "paper_apply_directly" not in value:
-            return value
-        direct = value["paper_apply_directly"]
-        if not isinstance(direct, bool):
-            raise ValueError("paper_apply_directly must be a boolean")
-        mode = "apply_directly" if direct else "review"
-        if "mode" in value and value["mode"] != mode:
-            raise ValueError("Paper mode and paper_apply_directly disagree")
-        return {key: item for key, item in value.items() if key != "paper_apply_directly"} | {
-            "mode": mode
-        }
-
-
 def resolve_dispatch_authority(
     kind: str,
     request: object,
@@ -1190,14 +1141,6 @@ def resolve_dispatch_authority(
                 episode_id=request.episode_id,
                 patch_kind="work",
             ),
-        )
-    if kind == "paper_coach":
-        if not isinstance(request, CoachRequest):
-            raise TypeError("paper_coach dispatch requires a CoachRequest")
-        return AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="paper_suggest",
-            scope=AgentDispatchScope(),
         )
     if not isinstance(request, RunRequest):
         raise TypeError(f"{kind} dispatch requires a RunRequest")
@@ -1383,7 +1326,6 @@ class ProjectService:
         chat_graph_target: Callable[[str, str], GraphTargetRef | None] | None = None,
         project_service_resolver: Callable[[str], ProjectService] | None = None,
         paper_live: PaperLive | None = None,
-        paper_admission: Callable[[str], AbstractContextManager[object]] | None = None,
         project_catalog: ProjectCatalog | None = None,
     ) -> None:
         self.history = history
@@ -1392,8 +1334,6 @@ class ProjectService:
         self.paper_live = paper_live or PaperLive(
             paper.store, paper_folders(paper.store, data_dir or paper.store.path.parent)
         )
-        self._paper_admission = paper_admission
-        self.paper_changes = PaperChanges(paper.store, self.paper_live, self._admit_paper_changes)
         self.launcher = launcher or AgentLauncher()
         self.provider_skills = provider_skills
         self._data_dir = data_dir
@@ -1431,12 +1371,6 @@ class ProjectService:
         self._indexes: dict[str, ConversationIndex] = {}
         self._chat_summary_lock = threading.Lock()
         self._chat_summary_cache: dict[Path, _ChatSummaryCacheEntry] = {}
-
-    @contextmanager
-    def _admit_paper_changes(self, project_id: str) -> Iterator[None]:
-        with self._paper_admission(project_id) if self._paper_admission else nullcontext():
-            self.paper.store.require_project_accepts_new_work(project_id)
-            yield
 
     @property
     def history_engine(self) -> HistoryEngine:
@@ -1500,7 +1434,6 @@ class ProjectService:
             chat_graph_target=self._chat_graph_target,
             project_service_resolver=self._project_service_resolver,
             paper_live=self.paper_live,
-            paper_admission=self._paper_admission,
         )
 
     def resolve_project_service(self, project_id: str) -> ProjectService:
@@ -1956,7 +1889,6 @@ class ProjectService:
                     mode="json"
                 ),
                 "graph": state.model_dump(mode="json"),
-                "paper": publication_badge(self.paper.store, self.paper.project_id),
                 "paper_coach": self.manifest.coach.model_dump(mode="json"),
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
@@ -3153,7 +3085,7 @@ class ProjectService:
 
     def resolve_skill_selection(
         self,
-        request: RunRequest | CoachRequest | AutoResearchRunRequest,
+        request: RunRequest | AutoResearchRunRequest,
         *,
         required_workflow_ids: Sequence[str] = (),
         required_skill_ids: Sequence[str] = (),
@@ -3173,8 +3105,8 @@ class ProjectService:
 
     def resolve_skill_request(
         self,
-        request: RunRequest | CoachRequest,
-    ) -> RunRequest | CoachRequest:
+        request: RunRequest,
+    ) -> RunRequest:
         selection = self.resolve_skill_selection(request)
         registry = official_registry()
         invoked_workflow_ids, invoked_skill_ids = registry.validate_invocations(
@@ -3208,22 +3140,6 @@ class ProjectService:
                 "resolved_skill_packages": selection.resolved_skill_packages,
             }
         )
-
-    def coach_context(self, paper_path: Path | None = None) -> CoachContext:
-        return ContextAssembler(self.manifest, cards=self.machine_cards()).paper_pointers(
-            paper_path
-        )
-
-    def pointer_hashes(self) -> tuple[str, int, str]:
-        snapshot = self.paper_live.run_sync(self.paper_live.snapshot(self.paper.project_id))
-        ordered = snapshot.model_copy(
-            update={"files": sorted(snapshot.files, key=lambda f: f.file_id)}
-        )
-        paper_hash = hashlib.sha256(ordered.model_dump_json().encode("utf-8")).hexdigest()
-        state = self.history.state()
-        research_path = self.manifest.research_dir / "research.md"
-        research = research_path.read_bytes() if research_path.exists() else b""
-        return paper_hash, state.revision, hashlib.sha256(research).hexdigest()
 
     @staticmethod
     def parse_patch_output(chunks: list[str]) -> tuple[AgentPatch, str | None]:

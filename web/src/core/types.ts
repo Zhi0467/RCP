@@ -35,8 +35,7 @@ export type SteerReceiptStatus = {
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
-export type AgentCapability =
-  "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";
+export type AgentCapability = "discuss" | "work_auto" | "orchestrate" | "scratch_patch";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -3226,7 +3225,6 @@ export interface ProjectSnapshot {
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
   graph: GraphState;
-  paper: boolean;
   paper_coach: {
     default_provider: ProviderId;
     default_model: string;

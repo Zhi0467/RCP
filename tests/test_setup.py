@@ -628,9 +628,6 @@ def test_project_delete_refuses_symlinked_cache_root_without_touching_target(tmp
     display = app.state.catalog._cached_snapshot_path(project_id)
     display.parent.mkdir(parents=True, exist_ok=True)
     display.write_text("saved display", encoding="utf-8")
-    paper = app.state.catalog._paper_snapshot_path(project_id)
-    paper.parent.mkdir(parents=True, exist_ok=True)
-    paper.write_text("saved paper", encoding="utf-8")
     source_cache.parent.mkdir(parents=True)
     external = tmp_path / "external-cache"
     external.mkdir()
@@ -645,7 +642,6 @@ def test_project_delete_refuses_symlinked_cache_root_without_touching_target(tmp
     assert marker.read_text(encoding="utf-8") == "must survive"
     assert stage_marker.read_text(encoding="utf-8") == "saved stage"
     assert display.read_text(encoding="utf-8") == "saved display"
-    assert paper.read_text(encoding="utf-8") == "saved paper"
     assert app.state.background_tasks.store.agent_task("saved-before-cache-validation") is not None
     assert client.get("/api/projects").json()[0]["id"] == project_id
 
@@ -925,7 +921,7 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
     assert manifest.agent_profile("project_chat").runtime == "app-server"
     assert manifest.agent_profile("project_chat").reasoning == "xhigh"
     assert manifest.agent_profile("paper_coach").model == "claude-coach"
-    assert manifest.agent_profile("paper_coach").permissions.write_graph_patch is False
+    assert manifest.agent_profile("paper_coach").permissions == permissions_for("paper_coach")
     assert manifest.agent_profile("refresh").permissions.read_repositories == "run_scope"
     assert "[agent.orchestrator]" in rendered
     assert manifest.agent_profile("orchestrator").model == "codex-refresh"

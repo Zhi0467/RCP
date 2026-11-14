@@ -307,8 +307,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
     (("DELETE",), "/api/projects/{project_id}/paper/files/{file_id}"),
     (("GET",), "/api/paper-assets/typst/{asset}"),
-    (("GET",), "/api/projects/{project_id}/paper/changes"),
-    (("GET",), "/api/projects/{project_id}/paper/changes/{change_id}/proposed"),
     (("GET",), "/api/projects/{project_id}/paper/compile/{compile_id}/pdf"),
     (("GET",), "/api/projects/{project_id}/paper/engines"),
     (("GET",), "/api/projects/{project_id}/paper/files/{file_id}/raw"),
@@ -320,8 +318,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/paper/history"),
     (("GET",), "/api/projects/{project_id}/paper/history/{version_id}/files/{file_id}"),
     (("GET",), "/api/projects/{project_id}/paper/tree"),
-    (("POST",), "/api/projects/{project_id}/paper/changes/undo-all"),
-    (("POST",), "/api/projects/{project_id}/paper/changes/{group_id}/{action}"),
     (("POST",), "/api/projects/{project_id}/paper/compile"),
     (("POST",), "/api/projects/{project_id}/paper/engines/{name}/install"),
     (("POST",), "/api/projects/{project_id}/paper/files"),
@@ -348,7 +344,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/paper/export/arxiv"),
     (("POST",), "/api/projects/{project_id}/paper/uploads"),
     (("PUT",), "/api/projects/{project_id}/paper/files/{file_id}/content"),
-    (("GET",), "/api/projects/{project_id}/paper/sessions"),
     (("DELETE",), "/api/projects/{project_id}/terminals/{session_id}"),
     (("GET",), "/api/projects/{project_id}/terminals"),
     (("GET",), "/api/projects/{project_id}/terminals/repositories"),
@@ -409,8 +404,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 341
+    assert len(_FROZEN_ROUTE_INVENTORY) == 336
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 337
+    assert sum(isinstance(route, APIRoute) for route in routes) == 332
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

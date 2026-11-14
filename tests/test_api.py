@@ -39,7 +39,6 @@ from rcp.core.validation.constants import NODE_ADAPTER
 from rcp.history import HistoryManager, ReplayHalted
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card
-from rcp.paper import WritingSession
 from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
     _chat_stage_name,
@@ -61,7 +60,6 @@ from rcp.runs.shared import (
     _sweep_stale_stages,
     _swept_stage_root,
 )
-from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.graph import (
@@ -72,7 +70,6 @@ from rcp.runs.tasks.graph import (
 )
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import (
-    CoachRequest,
     ProposalDecisionRequest,
     ReviewRequest,
     RunRequest,
@@ -120,7 +117,6 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import wait_for_task_response as _wait_for_run
-from .paper_helpers import coach_execution, wire_saved_paper
 
 
 def _remote_card(app, host: str) -> str:
@@ -4403,217 +4399,6 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(app) -> None:
     assert "could not be staged" in record["error"]
 
 
-def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> None:
-    service = app.state.service
-    wire_saved_paper(service)
-    answer = "State the comparison before introducing the endpoint-KL terminology."
-    session_id = str(uuid.uuid4())
-    launcher = FakeLauncher(
-        [
-            AgentEvent(event="session", session_id=session_id),
-            AgentEvent(event="message", text=answer),
-            AgentEvent(event="done"),
-        ]
-    )
-
-    async def stream(_project_id, kind, request, execution):
-        assert kind == "paper_coach"
-        async for frame in stream_coach(
-            service,
-            launcher,
-            service.paper,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/paper_coach",
-        json={"message": "Review the argument."},
-    )
-
-    assert started.status_code == 202
-    completed = _wait_for_run(
-        client,
-        app.state.default_project_id,
-        started.json()["operation_id"],
-    )
-    assert completed["status"] == "succeeded"
-    assert completed["kind"] == "paper_coach"
-    assert completed["result"] == {
-        "messages": [answer],
-        "artifact_omissions": {"discovery_failed": False},
-    }
-    assert completed["applied_revision"] is None
-    launch = next(
-        receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_launch"
-    )
-    assert launch["payload"]["capability"] == "paper_suggest"
-    assert launch["payload"]["network_access"] is True
-    assert isinstance(launcher.last_kwargs["control"], AgentProcessControl)
-    assert launcher.last_kwargs["capability"] == "paper_suggest"
-    assert service.paper.sessions()[0].native_session_id == session_id
-
-
-def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(
-    app, tmp_path, monkeypatch
-) -> None:
-    from rcp.agents import hidden_read
-
-    host_facts = hidden_read.host_facts
-    monkeypatch.setattr(
-        hidden_read,
-        "host_facts",
-        lambda paths: {**host_facts(paths), "home": str(tmp_path / "account")},
-    )
-    service = app.state.service
-    wire_saved_paper(service)
-    session_id = str(uuid.uuid4())
-
-    class RecordingCoachLauncher:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-            self.sessions: list[str | None] = []
-            self.masters: list[tuple[Path, str]] = []
-
-        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
-            self.prompts.append(prompt)
-            self.sessions.append(kwargs.get("session_id"))
-            path = launch_contract_path(prompt)
-            self.masters.append((path, path.read_text(encoding="utf-8")))
-            yield AgentEvent(event="session", session_id=session_id)
-            yield AgentEvent(event="message", text="Coached.")
-            yield AgentEvent(event="done")
-
-    launcher = RecordingCoachLauncher()
-
-    async def stream(_project_id, _kind, request, execution):
-        async for frame in stream_coach(
-            service, launcher, service.paper, request, tmp_path / "data", execution=execution
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    turns = []
-    for body in (
-        {"message": "Review the argument."},
-        {"message": "Now check the framing.", "session_id": session_id},
-    ):
-        started = client.post(f"/api/projects/{project_id}/tasks/paper_coach", json=body)
-        turns.append(_wait_for_run(client, project_id, started.json()["operation_id"]))
-    assert [turn["status"] for turn in turns] == ["succeeded", "succeeded"]
-
-    store = app.state.background_tasks.store
-    (start_path, start), (master_path, master) = launcher.masters
-    prompt = launcher.prompts[1]
-    assert launcher.sessions == [None, session_id]
-    assert store.agent_task_contract(turns[0]["operation_id"], "session_master") == start
-    assert master_path.parent != start_path.parent
-    assert master_path.parent.parent.name == f"paper-{turns[1]['operation_id']}"
-    assert master == start
-    assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=master_path)
-    assert "Now check the framing." in prompt
-    assert start not in prompt
-    assert store.agent_task_contract(turns[1]["operation_id"], "paper_coach") == prompt
-
-
-def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
-    app, tmp_path
-) -> None:
-    service = app.state.service
-    wire_saved_paper(service)
-    session_id = str(uuid.uuid4())
-    answer = "Define the comparison in ordinary language before naming the metric."
-
-    class PausingCoachLauncher:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.sessions: list[str | None] = []
-
-        async def stream(self, *_args, browser_grant=None, **kwargs):
-            self.calls += 1
-            self.sessions.append(kwargs.get("session_id"))
-            if self.calls == 1:
-                yield AgentEvent(event="session", session_id=session_id)
-                control = kwargs["control"]
-                await async_wait_until(control.pause_requested.is_set)
-                yield AgentEvent(event="paused", text="Provider process paused.")
-                return
-            yield AgentEvent(event="session", session_id=session_id)
-            yield AgentEvent(event="message", text=answer)
-            yield AgentEvent(event="done")
-
-    launcher = PausingCoachLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        assert kind == "paper_coach"
-        async for frame in stream_coach(
-            service,
-            launcher,
-            service.paper,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/paper_coach",
-        json={"message": "Review the framing."},
-    )
-    operation_id = started.json()["operation_id"]
-    _wait_for_status(client, app.state.default_project_id, operation_id, {"running"})
-    wait_until(
-        lambda: (
-            client.get(f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}")
-            .json()
-            .get("native_session_id")
-            == session_id
-        ),
-        timeout=60,
-        detail="coach did not checkpoint its native session",
-    )
-    paused_response = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/pause", json={}
-    )
-
-    assert paused_response.status_code == 202
-    paused = _wait_for_status(
-        client,
-        app.state.default_project_id,
-        operation_id,
-        {"paused"},
-    )
-    assert paused["native_session_id"] == session_id
-    assert paused["can_resume"] is True
-    assert service.paper.sessions() == []
-
-    resumed_response = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/resume", json={}
-    )
-
-    assert resumed_response.status_code == 202
-    resumed = _wait_for_run(
-        client,
-        app.state.default_project_id,
-        resumed_response.json()["operation_id"],
-    )
-    assert resumed["status"] == "succeeded"
-    assert resumed["result"] == {
-        "messages": [answer],
-        "artifact_omissions": {"discovery_failed": False},
-    }
-    assert launcher.sessions == [None, session_id]
-    assert service.paper.sessions()[0].native_session_id == session_id
-
-
 @pytest.mark.asyncio
 async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_path) -> None:
     app, service = _seeded_project(manifest, tmp_path)
@@ -5362,95 +5147,6 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     assert [
         (repository.alias, repository.host, repository.path) for repository in staged.repositories
     ] == [("repo-a", "", "/srv/project"), ("repo-b", "", "/srv/project")]
-
-
-@pytest.mark.asyncio
-async def test_paper_resume_launches_with_changed_model(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    paper = service.paper
-    wire_saved_paper(service)
-    _record_local_codex_path(app)
-    session_id = str(uuid.uuid4())
-    now = datetime.now(UTC)
-    paper.record_session(
-        WritingSession(
-            provider="codex",
-            native_session_id=session_id,
-            machine_id=BACKEND_MACHINE_ID,
-            project_id=paper.project_id,
-            title="Coach",
-            model="gpt-pinned",
-            reasoning="medium",
-            created_at=now,
-            last_resumed_at=now,
-            introduction_hash_examined="intro",
-            graph_revision_examined=0,
-            research_md_hash_examined="research",
-        )
-    )
-    launcher = FakeLauncher([AgentEvent(event="done")])
-
-    events = [
-        item
-        async for item in stream_coach(
-            service,
-            launcher,
-            paper,
-            CoachRequest(
-                message="Review the argument.",
-                session_id=session_id,
-                model="different-model",
-            ),
-            tmp_path / "data",
-            execution=coach_execution(service),
-        )
-    ]
-
-    assert not [
-        item for item in events if json.loads(item.removeprefix("data: "))["event"] == "error"
-    ]
-    assert launcher.calls == 1
-    assert launcher.last_kwargs["session_id"] == session_id
-    assert launcher.last_kwargs["model"] == "different-model"
-
-
-@pytest.mark.asyncio
-async def test_paper_coach_uses_its_read_only_launcher_contract(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    _record_local_codex_path(app)
-    paper = service.paper
-    wire_saved_paper(service)
-    session_id = str(uuid.uuid4())
-    launcher = FakeLauncher(
-        [
-            AgentEvent(event="session", session_id=session_id),
-            AgentEvent(event="message", text="Review the claim boundary."),
-            AgentEvent(event="done"),
-        ]
-    )
-
-    events = [
-        item
-        async for item in stream_coach(
-            service,
-            launcher,
-            paper,
-            CoachRequest(message="Review the argument."),
-            tmp_path / "data",
-            execution=coach_execution(service),
-        )
-    ]
-
-    assert launcher.calls == 1
-    assert launcher.last_kwargs["capability"] == "paper_suggest"
-    assert launcher.last_kwargs["binary"] == "/opt/agents/codex"
-    workspace = launcher.last_kwargs["cwd"]
-    assert workspace.name.startswith("paper-coach-")
-    assert workspace.is_relative_to(tmp_path / "data")
-    assert any("Review the claim boundary." in item for item in events)
-    assert paper.sessions()[0].native_session_id == session_id
 
 
 def _event_frame(event: AgentEvent) -> str:

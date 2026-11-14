@@ -33,7 +33,7 @@ def _request(tmp_path: Path) -> ProviderTurnRequest:
         read_dirs=[],
         write_dirs=[tmp_path / "changes"],
         write_scope=None,
-        capability="paper_suggest",
+        capability="discuss",
         provider_version="0.153.4",
     )
 

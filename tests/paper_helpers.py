@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from uuid import uuid4
 
-from rcp.agents import AgentProcessControl
-from rcp.background import AgentTaskExecution
 from rcp.paper import PaperLive, PaperOp
-from rcp.storage import AgentTaskRecord
 
 _owners: list[tuple[PaperLive, asyncio.AbstractEventLoop, threading.Thread]] = []
 
@@ -61,32 +57,3 @@ def human_edit(live: PaperLive, file_id: str, text: str, project: str = "p"):
     return apply(
         live, [PaperOp(kind="write", path=file.path, base=old, data=text.encode())], project
     )
-
-
-def wire_saved_paper(service):
-    live = start_paper(service.paper_live)
-    project = service.paper.project_id
-    snapshot = saved(live, project)
-    if snapshot.files:
-        apply(live, [PaperOp(kind="delete", file_id=f.file_id) for f in snapshot.files], project)
-    create(live, "paper.md", "Saved paper text.\n", project)
-    return live
-
-
-def coach_execution(service) -> AgentTaskExecution:
-    store = service.paper.store
-    task_id = str(uuid4())
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=task_id,
-            project_id=service.paper.project_id,
-            kind="paper_coach",
-            status="running",
-            request={"message": "Edit the paper", "provider": "codex"},
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-        )
-    )
-    return AgentTaskExecution(task_id, store, AgentProcessControl())

@@ -245,14 +245,11 @@ def test_backup_marks_restored_paper_pending_when_projection_advances(tmp_path, 
         store.close()
 
 
-@pytest.mark.parametrize("coached", [False, True])
-def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch, coached):
+def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch):
     import asyncio
-    from contextlib import nullcontext
 
     from rcp import limits
     from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges, read_paper_changes
     from rcp.storage import AppStore
     from rcp.transport import LocalStateWorkspace
 
@@ -263,33 +260,15 @@ def test_deleted_binary_backup_retains_only_required_bytes(tmp_path, monkeypatch
     live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
 
     async def scenario():
-        """An accepted card no longer pins the old snapshot, but Undo still needs bytes."""
         created = await live.apply(
             "p", [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"image")], "h"
         )
-        changes = PaperChanges(store, live, lambda _: nullcontext())
-        if coached:
-            output = tmp_path / "changes"
-            (output / "files").mkdir(parents=True)
-            (output / "moves.json").write_text('{"delete":["figure.png"]}')
-            groups = await asyncio.to_thread(
-                changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
-            )
-            await asyncio.to_thread(changes.accept, "p", groups[0].group_id, "h")
-            await live.apply("p", [PaperOp(kind="create", path="later.md")], "h")
-        else:
-            await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
+        await live.apply("p", [PaperOp(kind="delete", file_id=created.file_ids[0])], "h")
         await asyncio.to_thread(live._collect_bodies)
         with store.connection() as connection:
-            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == int(
-                coached
-            )
+            assert connection.execute("SELECT count(*) FROM paper_blobs").fetchone()[0] == 0
             section = capture_paper_section(connection, "p")
         assert section is not None and all(file.kind == "text" for file in section.files)
-        if coached:
-            await asyncio.to_thread(changes.undo, "p", groups[0].group_id, "h")
-            restored = await live.snapshot("p")
-            assert any(file.file_id == created.file_ids[0] for file in restored.files)
         await live.close()
 
     try:
@@ -334,68 +313,3 @@ def test_backup_and_live_share_path_validation(path):
         else:
             assert paper_path(path) == path
             entry()
-
-
-def test_pending_binary_card_survives_backup_accept_and_undo(tmp_path):
-    import asyncio
-    from contextlib import nullcontext
-
-    from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges, read_paper_changes
-    from rcp.paper.persistence import collect_bodies
-    from rcp.storage import AppStore
-    from rcp.transport import LocalStateWorkspace
-
-    source = AppStore(tmp_path / "source.sqlite3")
-    target = AppStore(tmp_path / "target.sqlite3")
-    owners = []
-    for name, store in (("source", source), ("target", target)):
-        root = tmp_path / name
-        root.mkdir()
-        owners.append(PaperLive(store, lambda _, root=root: LocalStateWorkspace(root, str(root))))
-    live, restored = owners
-
-    async def scenario():
-        """A rejected card's proposed body is collected because backup no longer needs it."""
-        created = await live.apply(
-            "p",
-            [PaperOp(kind="create", path="figure.png", file_kind="binary", data=b"before")],
-            "h",
-        )
-        output = tmp_path / "changes"
-        (output / "files").mkdir(parents=True)
-        (output / "files/figure.png").write_bytes(b"after")
-        changes = PaperChanges(source, live, lambda _: nullcontext())
-        groups = await asyncio.to_thread(
-            changes.collect, "p", "task", await live.snapshot("p"), read_paper_changes(output)
-        )
-        with source.connection() as connection:
-            section = capture_paper_section(connection, "p")
-        assert section is not None
-        section = PaperSection.model_validate_json(section.model_dump_json())
-        with target.connection() as connection:
-            restore_paper_section(connection, section)
-        await restored.snapshot("p")
-        recovered = PaperChanges(target, restored, lambda _: nullcontext())
-        await asyncio.to_thread(recovered.accept, "p", groups[0].group_id, "h")
-        snapshot = await restored.snapshot("p")
-        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
-        assert restored.blob(figure.blob_sha256) == b"after"
-        await asyncio.to_thread(recovered.undo, "p", groups[0].group_id, "h")
-        snapshot = await restored.snapshot("p")
-        figure = next(file for file in snapshot.files if file.file_id == created.file_ids[0])
-        assert restored.blob(figure.blob_sha256) == b"before"
-        await asyncio.to_thread(changes.reject, "p", groups[0].group_id, "h")
-        with source.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            collect_bodies(connection)
-        with source.connection() as connection:
-            assert capture_paper_section(connection, "p") is not None
-        for owner in owners:
-            await owner.close()
-
-    try:
-        asyncio.run(scenario())
-    finally:
-        source.close()
-        target.close()

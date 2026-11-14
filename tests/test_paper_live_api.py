@@ -129,7 +129,6 @@ def test_tree_upload_history_restore_and_raw_content_policy(manifest, tmp_path):
         )
         assert uploaded.status_code == 200, uploaded.text
         assert client.get(prefix + f"/files/{text_id}/raw").content == b"# Uploaded\n"
-        assert client.get(prefix + "/sessions").status_code == 200
 
 
 def test_websocket_membership_and_revocation(tmp_path, monkeypatch):

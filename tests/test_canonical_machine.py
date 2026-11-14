@@ -7,7 +7,7 @@ from rcp.history import HistoryManager
 from rcp.machine_cards import LoginKey
 from rcp.paper import PaperService
 from rcp.providers import ModelChoice
-from rcp.service import CoachRequest, ProjectService
+from rcp.service import ProjectService
 from rcp.setup import ProjectSetupRequest
 from rcp.storage import AppStore
 from tests.helpers import unchecked_write_authority
@@ -162,52 +162,3 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
         "orchestrator",
     }
     assert probed[0] == ("codex", manifest.base_machine, None)
-
-
-@pytest.mark.asyncio
-async def test_old_coach_checkpoint_starts_fresh_on_base(manifest, tmp_path) -> None:
-    from typing import cast
-
-    from rcp.agents import AgentEvent, AgentLauncher
-    from rcp.runs.tasks.coach import stream_coach
-
-    from .helpers import create_named_app
-    from .paper_helpers import wire_saved_paper
-    from .test_coach_suggestions import execution_for
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    wire_saved_paper(service)
-    execution = execution_for(service)
-    execution.continuation = "resume"
-    execution.stage_machine_id = "d" * 32
-    execution.stage_root = "/old/checkpoint"
-    request = CoachRequest(
-        message="Continue coaching", session_id="old-native", run_on="old-worker"
-    )
-    launched = []
-
-    class Launcher:
-        async def stream(self, _provider, _prompt, **kwargs):
-            launched.append(kwargs)
-            assert kwargs["session_id"] is None
-            assert kwargs.get("host", "") == ""
-            assert str(kwargs["cwd"]) != "/old/checkpoint"
-            yield AgentEvent(event="session", session_id="new-native")
-            yield AgentEvent(event="done")
-
-    events = [
-        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-        async for frame in stream_coach(
-            service,
-            cast(AgentLauncher, Launcher()),
-            service.paper,
-            request,
-            tmp_path / "data",
-            execution,
-        )
-    ]
-    assert launched
-    assert not [event for event in events if event.event == "error"]
-    sessions = {session.native_session_id: session for session in service.paper.sessions()}
-    assert sessions["new-native"].machine_id == manifest.base_machine

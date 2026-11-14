@@ -34,7 +34,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
             read_dirs=[],
             write_dirs=[tmp_path / "changes"],
             write_scope=None,
-            capability="paper_suggest",
+            capability="discuss",
             provider_version="2.200.0",
             fork_session_id="source-thread" if opener == "thread/fork" else None,
         )
@@ -50,7 +50,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
                     "thread": {"id": "fence-thread"},
                     "approvalPolicy": "never",
                     "sandbox": {"type": "readOnly"},
-                    "activePermissionProfile": {"id": "rcp_paper"},
+                    "activePermissionProfile": {"id": "rcp_discuss"},
                 },
             },
         ):
@@ -78,7 +78,7 @@ def _canonical_turn(tmp_path, runtime_id: str):
                 read_dirs=[],
                 write_dirs=[tmp_path / "changes"],
                 write_scope=None,
-                capability="paper_suggest",
+                capability="discuss",
                 provider_version="2.200.0",
             )
         )

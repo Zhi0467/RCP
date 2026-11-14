@@ -115,7 +115,7 @@ class ResourceKey(BaseModel):
         # Episode views summarize their branch head and merge eligibility.
         if self.name in {"episodes", "episode"}:
             return "refs"
-        if self.name in {"chats", "paper", "settings", "refs"}:
+        if self.name in {"chats", "settings", "refs"}:
             return self.name
         return None
 

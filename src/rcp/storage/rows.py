@@ -6,9 +6,6 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
-from rcp.core.authority import (
-    AgentDispatchAuthority,
-)
 from rcp.core.models import (
     AuthorizedHuman,
 )
@@ -29,7 +26,7 @@ from rcp.storage.models import (
     StoredWatcherRecord,
     WatcherRecord,
 )
-from rcp.storage.request_compat import migrate_stored_task_request
+from rcp.storage.request_compat import migrate_stored_task_request, stored_dispatch_authority
 
 
 def _agent_task_status_label(status: str, applied_revision: object) -> str:
@@ -181,11 +178,7 @@ class RowMappingMixin:
         recovery_abandoned = bool(data.pop("recovery_abandoned", False))
         data.pop("campaign_worker_handoffs_cleared_at", None)
         dispatch_json = data.pop("dispatch_authority_json", None)
-        data["dispatch_authority"] = (
-            AgentDispatchAuthority.model_validate_json(dispatch_json)
-            if dispatch_json is not None
-            else None
-        )
+        data["dispatch_authority"] = stored_dispatch_authority(dispatch_json)
         data["authorized_by"] = self._authorized_human_snapshot(data)
         data.pop("authorized_space_id", None)
         data.pop("authorized_user_id", None)

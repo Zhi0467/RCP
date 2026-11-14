@@ -74,14 +74,12 @@ from rcp.runs.steering import (
     chat_steer_action_label,
     chat_steering_state,
     chat_steering_visible,
-    coach_steer_message,
     finish_chat_steer,
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
-from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.runs.turn_attachments import claim_turn_attachments
-from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
+from rcp.service import ChatMessage, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection, official_registry
 from rcp.storage import (
     AgentTaskAdmissionConflict,
@@ -276,11 +274,6 @@ def _agent_task_response(
                 cache[key] = _current_chat_session_id(store, record.project_id, *key)
             session_id = cache[key]
         response["current_chat_session_id"] = session_id
-    if record.kind == "paper_coach":
-        response["steers"] = [
-            coach_steer_message(row).model_dump(mode="json")
-            for row in store.paper_coach_steers(record.operation_id)
-        ]
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -486,8 +479,8 @@ def start_ordinary_task(
             else str(uuid.uuid4())
         )
         claimed_batch: str | None = None
-        if kind in {"node_chat", "project_chat", "paper_coach"}:
-            assert isinstance(request, (RunRequest, CoachRequest))
+        if kind in {"node_chat", "project_chat"}:
+            assert isinstance(request, RunRequest)
             require_attachment_pair(request.attachment_set_id, request.attachment_client_id)
             request, claimed_batch = claim_turn_attachments(
                 store,
@@ -595,10 +588,10 @@ def start_agent_task(
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
     branch_id: str | None = None,
 ) -> dict[str, object]:
-    if body.get("references") and kind not in {"node_chat", "project_chat", "paper_coach"}:
-        raise HTTPException(
-            status_code=422, detail="Project references require an ordinary chat or Paper coach."
-        )
+    if kind == "paper_coach":
+        raise HTTPException(status_code=405, detail="Paper coaching is a Paper chat.")
+    if body.get("references") and kind not in {"node_chat", "project_chat"}:
+        raise HTTPException(status_code=422, detail="Project references require an ordinary chat.")
     if kind in {"auto_research", "branch_merge", "episode_report", "artifact_edit"}:
         raise HTTPException(
             status_code=405,
@@ -674,7 +667,6 @@ def agent_tasks(
     store: StoreDependency,
     background_tasks: BackgroundTasksDependency,
     branch_id: str | None = None,
-    paper_session: str | None = None,
 ) -> list[dict[str, object]]:
     require_registered_project(catalog, project_id)
     target = (
@@ -683,11 +675,7 @@ def agent_tasks(
         else None
     )
     user = get_identity_access(request).acting_user(request)
-    records = (
-        store.paper_session_tasks(project_id, paper_session)
-        if paper_session
-        else store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
-    )
+    records = store.agent_tasks(project_id, graph_target=target, user_id=user.user_id)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     edit_outcomes = store.agent_task_artifact_edit_outcomes(
@@ -1169,18 +1157,6 @@ def resume_task_as(
                 reader, previous.kind, previous.request
             )
         with _chat_recovery_admission(service, store, previous):
-            if isinstance(validated, CoachRequest) and previous.request.get("run_on") not in (
-                None,
-                validated.run_on,
-            ):
-                # A move to the base is a fresh attempt, including its stored session
-                # and stage; Retry already owns that recovery transition.
-                return background_tasks.retry(
-                    operation_id,
-                    run_on=validated.run_on,
-                    skills=skills,
-                    authorized_by=authorized_by,
-                )
             return background_tasks.resume(
                 operation_id,
                 skills=skills,
@@ -1337,9 +1313,8 @@ def retry_agent_task(
                         operation_id=previous.operation_id,
                     )
                 else:
-                    request_type = CoachRequest if previous.kind == "paper_coach" else RunRequest
                     candidate = load_stored_request(
-                        request_type,
+                        RunRequest,
                         {**previous.request, **overrides, "session_id": None},
                         operation_id=previous.operation_id,
                     )
@@ -1352,9 +1327,6 @@ def retry_agent_task(
                         previous.kind,
                         candidate_payload,
                     )
-                    if isinstance(validated, CoachRequest):
-                        candidate = validated
-                        overrides["run_on"] = candidate.run_on
                 if previous.kind == "auto_research":
                     return background_tasks.retry_auto_research(
                         operation_id,
@@ -1362,7 +1334,7 @@ def retry_agent_task(
                         skills=skills,
                         **overrides,
                     ).model_dump(mode="json")
-                assert isinstance(candidate, (RunRequest, CoachRequest))
+                assert isinstance(candidate, RunRequest)
                 with _chat_recovery_admission(service, store, previous, candidate):
                     return background_tasks.retry(
                         operation_id,
@@ -1394,7 +1366,7 @@ def _chat_recovery_admission(
     service: ProjectService,
     store: AppStore,
     previous: AgentTaskRecord,
-    candidate: RunRequest | CoachRequest | None = None,
+    candidate: RunRequest | None = None,
 ):
     if previous.kind not in {"node_chat", "project_chat"}:
         return nullcontext()
@@ -1556,15 +1528,12 @@ def _validated_task_request(
 ) -> AgentTaskRequest:
     if "graph_target" in body or "branch_id" in body:
         raise ValueError("Select the graph target with the branch_id route parameter.")
-    if body.get("references") and kind not in {"node_chat", "project_chat", "paper_coach"}:
-        raise ValueError("Project references require an ordinary chat or Paper coach.")
+    if body.get("references") and kind not in {"node_chat", "project_chat"}:
+        raise ValueError("Project references require an ordinary chat.")
     client_request = dict(body)
     # Claimed batches and descriptors are server-owned for every composer.
     client_request.pop("attachments", None)
     client_request.pop("attachment_batch_id", None)
-    if kind == "paper_coach":
-        coach_request = CoachRequest.model_validate(client_request)
-        return _resolved_coach_request(service, coach_request)
 
     # Resolved compute metadata is a server-owned admission snapshot. A client
     # may echo or forge this field, but it never participates in resolution.
@@ -1648,10 +1617,7 @@ def _validate_stored_task_request(
             cast(RunRequest, resolved_auto_research)
         )
     if kind == "paper_coach":
-        resolved_coach = _resolved_coach_request(
-            service, _coach_request_on_base(service, CoachRequest.model_validate(body))
-        )
-        return resolved_coach, service.resolve_skill_selection(resolved_coach)
+        raise ValueError("A retired Paper coach turn cannot run again.")
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         selection = service.resolve_skill_selection(request)

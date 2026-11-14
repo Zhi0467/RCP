@@ -9,17 +9,13 @@ from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope, requi
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore
 from rcp.storage.request_compat import migrate_stored_task_request
 
 AgentTaskRequest = (
-    RunRequest
-    | CoachRequest
-    | AutoResearchRunRequest
-    | BranchMergeRunRequest
-    | EpisodeReportRunRequest
+    RunRequest | AutoResearchRunRequest | BranchMergeRunRequest | EpisodeReportRunRequest
 )
 DispatchAuthorityResolver = Callable[
     [AgentTaskKind, AgentTaskRequest],

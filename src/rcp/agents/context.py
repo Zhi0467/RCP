@@ -34,13 +34,6 @@ class RepositoryPointer(BaseModel):
     path: str
 
 
-class CoachContext(BaseModel):
-    paper: str
-    graph_path: str
-    research_md_path: str
-    repositories: list[RepositoryPointer]
-
-
 class RunContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -249,15 +242,6 @@ class ContextAssembler:
             profile.id: display(profile.session_roots(self.manifest.sources, remote=remote))
             for profile in sorted(PROVIDERS.values(), key=lambda item: item.id)
         }
-
-    def paper_pointers(self, paper_override: Path | None = None) -> CoachContext:
-        root = self.manifest.research_dir
-        return CoachContext(
-            paper=str(paper_override or root / "paper"),
-            graph_path=str(root / "graph.json"),
-            research_md_path=str(root / "research.md"),
-            repositories=self._repository_pointers(),
-        )
 
 
 def validate_work_patch(patch: Patch) -> None:

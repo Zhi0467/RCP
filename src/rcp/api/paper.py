@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import UploadFile
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from rcp.api.dependencies import _api_services, get_project_service, require_project_membership
+from rcp.api.dependencies import _api_services, require_project_membership
 from rcp.api.paper_compile import get_paper_compiler
 from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
@@ -452,9 +452,3 @@ async def restore_version(
         project_id,
         lambda: live.restore(project_id, version_id, body.file_ids, _actor(request)),
     )
-
-
-@router.get(_PREFIX + "/sessions")
-def paper_sessions(request: Request, project_id: str = _member):
-    paper = get_project_service(_api_services(request).catalog, project_id).paper
-    return [item.model_dump(mode="json") for item in paper.sessions()]

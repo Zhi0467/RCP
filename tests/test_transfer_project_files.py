@@ -13,7 +13,6 @@ import pytest
 from rcp.artifacts import classify_artifact_bytes, descriptor_for
 from rcp.history.manager import canonical_fact_sources, iter_canonical_fact_bytes
 from rcp.service import (
-    CoachRequest,
     canonical_chat_backup_sources,
     iter_canonical_chat_transfer,
 )
@@ -52,7 +51,7 @@ def _finished_project(manifest, tmp_path: Path, source_name: str = "result.html"
         media_type=classify_artifact_bytes(source_name, artifact_bytes),
         size_bytes=len(artifact_bytes),
     ).model_copy(update={"kept_filename": kept_filename, "kept_at": now})
-    request = CoachRequest(
+    request = dict(
         message="Review this history.",
         provider="codex",
         run_on="laptop",
@@ -64,7 +63,7 @@ def _finished_project(manifest, tmp_path: Path, source_name: str = "result.html"
             project_id=project_id,
             kind="paper_coach",
             status="succeeded",
-            request=request.model_dump(mode="json"),
+            request=request,
             result={
                 "messages": ["Complete."],
                 "artifacts": [descriptor.model_dump(mode="json")],

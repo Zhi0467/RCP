@@ -40,7 +40,7 @@ from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_reconciliation import Reconciliation
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
-from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
+from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskAlreadyContinued,
     AgentTaskRecord,
@@ -274,22 +274,6 @@ def test_launch_admitted_valid_task_uses_persisted_cause_and_receipt_order(
     ]
 
 
-def _v0433_coach_row():
-    """v0.4.33 CoachRequest predates mode, refresh and attachment fields."""
-    request = CoachRequest(
-        message="Tighten the abstract.", provider="codex", run_on=BACKEND_MACHINE_ID
-    )
-    added = {"mode", "refresh_source_task_id", "refresh_group_ids", "attachment_scope_id"}
-    added |= {"attachment_set_id", "attachment_client_id", "attachment_batch_id"}
-    added |= {"attachments", "references"}
-    stored = {k: v for k, v in request.model_dump(mode="json").items() if k not in added}
-    return {
-        "kind": "paper_coach",
-        "request": stored,
-        "dispatch_authority": resolve_dispatch_authority("paper_coach", request),
-    }
-
-
 def _v0429_compute_chat_row():
     """v0.4.29 froze the turn's compute selection into every RunRequest."""
     stored = _work_request("legacy-compute").model_dump(mode="json")
@@ -328,8 +312,8 @@ def _v0417_artifact_edit_row():
 
 @pytest.mark.parametrize(
     "legacy_row",
-    [_v0433_coach_row, _v0429_compute_chat_row, _v0417_artifact_edit_row],
-    ids=["v0.4.33-paper-coach", "v0.4.29-compute-chat", "v0.4.17-artifact-edit"],
+    [_v0429_compute_chat_row, _v0417_artifact_edit_row],
+    ids=["v0.4.29-compute-chat", "v0.4.17-artifact-edit"],
 )
 def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row) -> None:
     store = _store(tmp_path)
@@ -337,6 +321,20 @@ def test_a_queued_row_an_older_release_wrote_launches(tmp_path: Path, legacy_row
     task = _admitted_launch_task(store, operation_id="legacy-row", record_updates=legacy_row())
 
     wait_for_task(store, tasks.launch_admitted(task.operation_id).operation_id, expect="succeeded")
+
+
+def test_a_queued_paper_coach_row_never_launches(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    tasks = BackgroundAgentTasks(store, _done_stream)
+    request = {"message": "Tighten the abstract.", "provider": "codex", "mode": "review"}
+    task = _admitted_launch_task(
+        store,
+        operation_id="legacy-coach",
+        record_updates={"kind": "paper_coach", "request": request, "dispatch_authority": None},
+    )
+
+    with pytest.raises(ValueError):
+        tasks.launch_admitted(task.operation_id)
 
 
 @pytest.mark.parametrize("rebound", [False, True])

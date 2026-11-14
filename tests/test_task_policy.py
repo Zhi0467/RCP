@@ -13,7 +13,7 @@ from rcp.runs.task_policy import (
     task_graph_capable,
 )
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import AgentTaskKind
 from rcp.storage.request_compat import migrate_stored_task_request
 
@@ -73,7 +73,6 @@ def test_episode_report_and_unknown_task_kinds_are_not_graph_capable() -> None:
     assert not task_graph_capable("episode_report", report)
     assert not task_graph_capable("auto_research", report)
     assert not task_graph_capable("unknown", {"mode": "work"})
-    assert not task_graph_capable("refresh", CoachRequest(message="hello"))
 
 
 def test_experiment_episode_id_is_selected_only_for_live_experiment_requests() -> None:
@@ -94,7 +93,6 @@ def test_experiment_episode_id_is_selected_only_for_live_experiment_requests() -
         )
         is None
     )
-    assert task_experiment_episode_id(CoachRequest(message="hello")) is None
 
 
 def test_stored_request_keeps_every_declared_field_strict() -> None:

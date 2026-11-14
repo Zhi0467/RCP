@@ -13,7 +13,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future
-from contextlib import AbstractContextManager, nullcontext, suppress
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -57,7 +57,6 @@ from rcp.machine_upgrade import (
 )
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.folder import paper_folders
-from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import PROVIDER_IDS, ProviderId
@@ -141,7 +140,6 @@ _DISPLAY_SNAPSHOT_FIELDS = {
     "counts",
     "graph_mutation",
     "graph",
-    "paper",
     "paper_coach",
     "agent_profiles",
     "provider_readiness",
@@ -840,7 +838,6 @@ class ProjectDeletionResult(BaseModel):
     database_records: dict[str, int]
     removed_stages: int
     removed_display_snapshot: bool
-    removed_paper_snapshot: bool
     #: In-flight work Delete tried to stop and could not confirm stopped.
     unstopped: list[str] = Field(default_factory=list)
 
@@ -885,9 +882,6 @@ class ProjectCatalog:
         self.launcher = launcher
         self.provider_skills = provider_skills
         self.paper_live = PaperLive(store, paper_folders(store, data_dir))
-        self.paper_admission: Callable[[str], AbstractContextManager[object]] = lambda _project_id: (
-            nullcontext()
-        )
         self.on_accepted_transition: Callable[[str, int], None] | None = None
         self.on_accepted_branch_transition: Callable[[str, str, int], None] | None = None
         self.remote_machine_upgrades_allowed: Callable[[], bool] = lambda: True
@@ -987,7 +981,6 @@ class ProjectCatalog:
             project_service_resolver=self.open,
             project_catalog=self,
             paper_live=self.paper_live,
-            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         if root != workspace.root:
             self._display_services[project_id] = (root, service, materialization)
@@ -1309,7 +1302,6 @@ class ProjectCatalog:
                 project_service_resolver=self.open,
                 project_catalog=self,
                 paper_live=self.paper_live,
-                paper_admission=lambda project_id: self.paper_admission(project_id),
             )
             snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
@@ -1538,8 +1530,8 @@ class ProjectCatalog:
         self,
         old_project_id: str,
         canonical_project_id: str,
-    ) -> list[tuple[Literal["display", "paper"], Path, Path, bytes | None]]:
-        migrations: list[tuple[Literal["display", "paper"], Path, Path, bytes | None]] = []
+    ) -> list[tuple[Path, Path, bytes]]:
+        migrations: list[tuple[Path, Path, bytes]] = []
         display_source = self._cached_snapshot_path_for_id(old_project_id)
         display_target = self._cached_snapshot_path_for_id(canonical_project_id)
         if display_source != display_target and display_source.exists():
@@ -1571,31 +1563,15 @@ class ProjectCatalog:
                         "Project display snapshot migration destination already exists; "
                         "nothing was overwritten."
                     )
-            migrations.append(("display", display_source, display_target, content))
-
-        paper_source = self._paper_snapshot_path_for_id(old_project_id)
-        paper_target = self._paper_snapshot_path_for_id(canonical_project_id)
-        if paper_source != paper_target and paper_source.exists():
-            _require_regular_app_file(paper_source, "legacy paper snapshot")
-            if paper_target.exists():
-                raise ValueError(
-                    "Project paper snapshot migration destination already exists; "
-                    "nothing was overwritten."
-                )
-            migrations.append(("paper", paper_source, paper_target, None))
+            migrations.append((display_source, display_target, content))
         return migrations
 
     def _apply_app_file_migration(
         self,
-        migrations: list[tuple[Literal["display", "paper"], Path, Path, bytes | None]],
+        migrations: list[tuple[Path, Path, bytes]],
     ) -> None:
-        for kind, source, target, content in migrations:
+        for source, target, content in migrations:
             target.parent.mkdir(parents=True, exist_ok=True)
-            if kind == "paper":
-                os.replace(source, target)
-                _fsync_directory(target.parent)
-                continue
-            assert content is not None
             if target.exists():
                 _require_regular_app_file(target, "project display snapshot destination")
                 if target.read_bytes() != content:
@@ -1780,7 +1756,6 @@ class ProjectCatalog:
             project_service_resolver=self.open,
             project_catalog=self,
             paper_live=self.paper_live,
-            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
 
     def discard_retired_transfer_source(self, request_id: str) -> None:
@@ -1980,7 +1955,6 @@ class ProjectCatalog:
     ) -> tuple[
         list[ProjectStageRecord],
         Path,
-        Path,
         Path | None,
         ImportedProviderSourceStore | None,
         ImportedProviderSourceInventory | None,
@@ -1989,7 +1963,6 @@ class ProjectCatalog:
 
         stages = self.store.project_deletion_stages(project_id, work_stopped=work_stopped)
         display_snapshot = self._cached_snapshot_path(project_id)
-        paper_snapshot = self._paper_snapshot_path(project_id)
         project_cache_root = _validate_project_cache_roots(self.data_dir, project_id)
         imported_sources: ImportedProviderSourceStore | None = None
         imported_inventory: ImportedProviderSourceInventory | None = None
@@ -2000,11 +1973,9 @@ class ProjectCatalog:
         for stage in stages:
             self._validate_stage_target(stage)
         _validate_optional_regular_app_file(display_snapshot, "project display snapshot")
-        _validate_optional_regular_app_file(paper_snapshot, "project paper snapshot")
         return (
             stages,
             display_snapshot,
-            paper_snapshot,
             project_cache_root,
             imported_sources,
             imported_inventory,
@@ -2046,7 +2017,6 @@ class ProjectCatalog:
                     (
                         stages,
                         display_snapshot,
-                        paper_snapshot,
                         project_cache_root,
                         imported_sources,
                         imported_inventory,
@@ -2062,7 +2032,7 @@ class ProjectCatalog:
                     retry_browser_cleanup(self.store)
                 except BaseException:
                     if stopped:
-                        # The project is kept, so its paper must publish again.
+                        # The project is kept, so its Paper editor resumes.
                         _resume_kept_paper(self.store, project_id)
                     raise
                 self._display_workspaces.pop(project_id, None)
@@ -2086,11 +2056,6 @@ class ProjectCatalog:
                     removed_display = False
                     _warn_project_cleanup_failure(project_id, str(display_snapshot), exc)
                 try:
-                    removed_paper = _unlink_regular_app_file(paper_snapshot)
-                except Exception as exc:
-                    removed_paper = False
-                    _warn_project_cleanup_failure(project_id, str(paper_snapshot), exc)
-                try:
                     _remove_validated_project_cache_root(project_cache_root)
                 except Exception as exc:
                     cache_path = (
@@ -2112,7 +2077,6 @@ class ProjectCatalog:
                 database_records=database_records,
                 removed_stages=removed_stages,
                 removed_display_snapshot=removed_display,
-                removed_paper_snapshot=removed_paper,
                 unstopped=unstopped,
             )
         finally:
@@ -2531,9 +2495,7 @@ class ProjectCatalog:
                 )
         except (TypeError, ValueError):
             return "invalid", None
-        if isinstance(snapshot.get("paper"), dict):
-            # Older releases cached a document summary; the badge is publication state.
-            snapshot["paper"] = publication_badge(self.store, project_id)
+        snapshot.pop("paper", None)
         if not _valid_display_snapshot(
             project_id,
             snapshot,
@@ -2558,18 +2520,6 @@ class ProjectCatalog:
     def _cached_snapshot_path_for_id(self, project_id: str) -> Path:
         digest = hashlib.sha256(project_id.encode()).hexdigest()
         return self.data_dir / "project-snapshots" / f"{digest}.json"
-
-    def _paper_snapshot_path(self, project_id: str) -> Path:
-        project_id = self._canonical_project_id(project_id)
-        return self._paper_snapshot_path_for_id(project_id)
-
-    def _paper_snapshot_path_for_id(self, project_id: str) -> Path:
-        safe_project_id = re.sub(r"[^A-Za-z0-9._-]+", "_", project_id).strip("._")
-        return (
-            self.data_dir
-            / "paper-snapshots"
-            / (f"{(safe_project_id or 'project')[:80]}-introduction.md")
-        )
 
     def _validate_open_identity(
         self, history: HistoryManager, materialization: MaterializationResult, project_id: str
@@ -2647,7 +2597,6 @@ class ProjectCatalog:
             project_service_resolver=self.open,
             project_catalog=self,
             paper_live=self.paper_live,
-            paper_admission=lambda project_id: self.paper_admission(project_id),
         )
         return service, initialized
 
@@ -2897,7 +2846,6 @@ class ProjectDisplayCache:
         payload["skill_catalog"] = official_registry().catalog()
         _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
-        payload["paper"] = publication_badge(self._store, project_id)
         repositories = payload["repositories"]
         assert isinstance(repositories, list)
         payload["repositories"] = project_repository_descriptors(
@@ -3502,8 +3450,6 @@ def _valid_display_snapshot(
         return False
     last_remote_sync_at = snapshot.get("last_remote_sync_at")
     if last_remote_sync_at is not None and not isinstance(last_remote_sync_at, str):
-        return False
-    if not isinstance(snapshot.get("paper"), bool):
         return False
     if not all(
         isinstance(snapshot.get(key), dict)

@@ -54,8 +54,6 @@ def families_for_path(path: str) -> set[str]:
         return {"refs", f"graph:branch:{parts[1]}"}
     if parts[0] == "chat":
         return {"chats", f"chat:{Path(parts[1]).stem[-36:]}"} if len(parts) > 1 else {"chats"}
-    if parts[0] in {"paper", "paper.md", "introduction.md"}:
-        return {"paper"}
     if parts[0] == "manifest.toml":
         return {"settings"}
     if parts[0] in {

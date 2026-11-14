@@ -33,7 +33,6 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
-    _paper_write_roots,
     _provider_error_text,
     _require_project_write_scope,
     _usage_dedupe_key,
@@ -93,7 +92,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             else:
                 self.command[index] = rendered
         if (
-            request.capability in {"discuss", "scratch_patch", "paper_suggest"}
+            request.capability in {"discuss", "scratch_patch"}
             and request.invocation_gate is not None
             and request.invocation_gate.client_path is not None
         ):
@@ -285,7 +284,6 @@ _CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
     "work_auto": _CLAUDE_AGENT_TOOLS,
     "orchestrate": _CLAUDE_AGENT_TOOLS,
     "scratch_patch": _CLAUDE_AGENT_TOOLS,
-    "paper_suggest": _CLAUDE_AGENT_TOOLS,
     "session_summary": (),
 }
 
@@ -547,7 +545,6 @@ class ClaudeProfile(ProviderProfile):
             "work_auto": "dontAsk",
             "orchestrate": "dontAsk",
             "scratch_patch": "acceptEdits",
-            "paper_suggest": "dontAsk",
             "session_summary": "dontAsk",
         }[capability]
         command = [
@@ -582,26 +579,6 @@ class ClaudeProfile(ProviderProfile):
                     "",
                     "--settings",
                     json.dumps(settings, separators=(",", ":")),
-                ]
-            )
-        elif capability == "paper_suggest":
-            roots = _paper_write_roots(write_dirs)
-            self.validate_readiness_version(provider_version, capability=capability)
-            settings = _claude_paper_settings(roots, hidden_read_scope)
-            command.extend(
-                [
-                    "--setting-sources",
-                    "",
-                    "--settings",
-                    json.dumps(settings, separators=(",", ":")),
-                    "--allowedTools",
-                    "Bash",
-                    "Read",
-                    "Glob",
-                    "Grep",
-                    "WebSearch",
-                    "WebFetch",
-                    *(f"Edit({_claude_absolute_pattern(str(root))})" for root in roots),
                 ]
             )
         else:
@@ -807,36 +784,6 @@ def _claude_context_window(model_usage: object, model: str | None) -> int | None
     if model in windows:
         return windows[model]
     return max(windows.values(), default=None)
-
-
-def _claude_paper_settings(
-    roots: list[Path], hidden_read_scope: HiddenReadScope | None
-) -> dict[str, object]:
-    # Edit rules govern Write too. dontAsk denies every unlisted command/edit;
-    # empty setting sources prevent ambient user grants from broadening this.
-    hidden = _claude_hidden_read_settings(hidden_read_scope) if hidden_read_scope else {}
-    permissions = hidden.get("permissions", {})
-    assert isinstance(permissions, dict)
-    return {
-        "disableAllHooks": True,
-        "env": hidden.get("env", {}),
-        "permissions": {
-            "defaultMode": "dontAsk",
-            "disableAutoMode": "disable",
-            "disableBypassPermissionsMode": "disable",
-            "allow": [
-                "Bash",
-                "Read",
-                "Glob",
-                "Grep",
-                "WebSearch",
-                "WebFetch",
-                *(f"Edit({_claude_absolute_pattern(str(root))})" for root in roots),
-            ],
-            "deny": permissions.get("deny", []),
-        },
-        "sandbox": {"enabled": False},
-    }
 
 
 def _claude_write_settings(

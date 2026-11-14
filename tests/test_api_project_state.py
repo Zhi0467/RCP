@@ -1040,7 +1040,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
     assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
     assert updated.agent.default_auto_research_invocation_ceiling == 14
-    assert updated.agent_profile("paper_coach").permissions.write_graph_patch is False
+    assert updated.agent_profile("paper_coach").permissions == permissions_for("paper_coach")
 
 
 def test_project_settings_reject_invalid_scope_without_changing_manifest(

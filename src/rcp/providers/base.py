@@ -31,7 +31,6 @@ AgentCapability = Literal[
     "work_auto",
     "orchestrate",
     "scratch_patch",
-    "paper_suggest",
     "session_summary",
 ]
 
@@ -483,7 +482,7 @@ class ProviderProfile:
     ) -> None:
         """Apply the same version floor used by a real launch of this capability."""
 
-        if capability in {"work_auto", "orchestrate", "paper_suggest"}:
+        if capability in {"work_auto", "orchestrate"}:
             minimum = self.work_like_minimum_version
             if minimum is not None:
                 _require_provider_version(
@@ -683,20 +682,6 @@ def _usage_dedupe_key(value: dict[str, object], raw: str, *fields: str) -> str:
         if isinstance(candidate, str) and candidate:
             return candidate
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _paper_write_roots(write_dirs: list[Path]) -> list[Path]:
-    """The coach's changes folder and attached artifact folders, never cwd or temp."""
-    if not write_dirs:
-        raise ValueError("paper_suggest requires its changes directory")
-    for path in write_dirs:
-        if not path.is_absolute():
-            raise ValueError("paper_suggest write directories must be absolute")
-        if path != path.resolve() or path == Path(path.anchor):
-            raise ValueError("paper_suggest write directories must be resolved non-root paths")
-        if any(character in str(path) for character in "*?[]\\"):
-            raise ValueError("paper_suggest write directories cannot contain permission wildcards")
-    return list(dict.fromkeys(write_dirs))
 
 
 def _require_project_write_scope(

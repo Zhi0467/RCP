@@ -70,9 +70,7 @@ def test_memory_pointer_uses_shared_index_without_staging_snapshot(
     assert not list(tmp_path.rglob("lessons.md"))
 
 
-@pytest.mark.parametrize(
-    "kind", ["seed", "refresh", "branch_merge", "paper_coach", "artifact_edit"]
-)
+@pytest.mark.parametrize("kind", ["seed", "refresh", "branch_merge", "artifact_edit"])
 def test_excluded_runs_do_not_prepare_or_point_to_memory(kind, monkeypatch) -> None:
     from rcp.runs import operational_context
 
@@ -96,7 +94,6 @@ def test_excluded_runs_do_not_prepare_or_point_to_memory(kind, monkeypatch) -> N
         ("seed", False),
         ("refresh", False),
         ("branch_merge", False),
-        ("paper_coach", False),
         ("artifact_edit", False),
     ],
 )

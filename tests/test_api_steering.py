@@ -38,11 +38,6 @@ def running_chat(manifest, tmp_path, monkeypatch, request):
     )
 
 
-@pytest.fixture
-def running_coach(manifest, tmp_path, monkeypatch):
-    yield from _running_turn(manifest, tmp_path, monkeypatch, "codex", "paper_coach")
-
-
 def _running_turn(manifest, tmp_path, monkeypatch, provider, kind):
     runtime = "claude.stream-json.v1" if provider == "claude" else "codex.app-server-stdio.v1"
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -725,60 +720,3 @@ def test_an_answer_steers_the_running_turn_before_queueing_a_new_one(
     else:
         assert settled.client_receipt_revision is None
         assert (answer.operation_id, answer.steering) == (settled.followup_operation_id, None)
-
-
-def test_a_coach_turn_keeps_its_steers_on_its_task_row(running_coach):
-    run = running_coach
-    listed = run.client.get(f"/api/projects/{run.project_id}/tasks").json()[0]
-    assert (listed["kind"], listed["can_steer"], listed["steer_turn_id"]) == (
-        "paper_coach",
-        True,
-        "owned-turn",
-    )
-    assert listed["steers"] == []
-    body = _body()
-    response = run.client.post(run.url + "/steer", json=body)
-    assert response.status_code == 200, response.text
-    message = response.json()
-    assert (message["message_id"], message["operation_id"], message["role"]) == (
-        body["message_id"],
-        run.operation_id,
-        "user",
-    )
-    assert message["text"] == body["message"]
-    assert message["steering"]["status"] == "delivered"
-    assert run.client.post(run.url + "/steer", json=body).json() == message
-    assert len(run.receipts) == 1
-    assert run.client.get(run.url).json()["steers"] == [message]
-    for changes in (
-        {"message": "A different message"},
-        {"attempt": 2},
-        {"expected_turn_id": "different"},
-    ):
-        reused = run.client.post(run.url + "/steer", json={**body, **changes})
-        assert reused.status_code == 409
-    assert len(run.receipts) == 1
-    settled = run.finish()
-    assert settled["steers"] == [message]
-    refused = run.client.post(run.url + "/steer", json=_body())
-    assert refused.status_code == 200
-    assert refused.json()["steering"]["status"] == "refused"
-    assert "not running" in refused.json()["steering"]["reason"]
-    assert len(run.receipts) == 1
-    assert [item["steering"]["status"] for item in run.client.get(run.url).json()["steers"]] == [
-        "delivered",
-        "refused",
-    ]
-
-
-def test_a_coach_steer_waiting_for_its_receipt_is_recorded_once(running_coach, monkeypatch):
-    run = running_coach
-    pending = run.defer()
-    monkeypatch.setattr("rcp.runs.steering.PROVIDER_STEER_ACK_TIMEOUT_SECONDS", 0.05)
-    body = _body()
-    response = run.client.post(run.url + "/steer", json=body)
-    assert response.json()["steering"]["status"] == "unknown"
-    assert pending.cancelled()
-    assert run.client.post(run.url + "/steer", json=body).json() == response.json()
-    assert len(run.receipts) == 1
-    assert run.client.get(run.url).json()["steers"] == [response.json()]

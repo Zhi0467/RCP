@@ -14,7 +14,6 @@ def test_paper_files_live_in_the_projects_paper_folder(manifest, tmp_path) -> No
         created = client.post(project + "/paper/files", json={"path": "sections/start.md"})
         assert created.status_code == 200, created.text
         assert (folder / "sections/start.md").read_bytes() == b""
-        assert client.get(project + "/paper/sessions").json() == []
         file_id = created.json()["file_ids"][0]
         assert client.delete(project + f"/paper/files/{file_id}").status_code == 200
         assert not (folder / "sections/start.md").exists()

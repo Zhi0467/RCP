@@ -14,7 +14,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import ProviderUsage
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.branch_names import backfill_graph_branches
 from rcp.transfer import (
@@ -54,7 +54,7 @@ def _finished_task(
         operation_id, "kept.html", media_type="text/html", size_bytes=18
     ).model_copy(update={"kept_filename": "kept.html", "kept_at": now})
     temporary = descriptor_for(operation_id, "temporary.html", media_type="text/html")
-    request = CoachRequest(
+    request = dict(
         message="Review the current introduction.",
         provider="codex",
         model="gpt-5.6-sol",
@@ -67,7 +67,7 @@ def _finished_task(
         project_id=project_id,
         kind="paper_coach",
         status="succeeded",
-        request=request.model_dump(mode="json"),
+        request=request,
         created_at=now,
         updated_at=now,
         started_at=now,
@@ -236,11 +236,11 @@ def test_export_refuses_unfinished_task_without_changing_it(manifest, tmp_path: 
             project_id=project_id,
             kind="paper_coach",
             status="queued",
-            request=CoachRequest(
+            request=dict(
                 message="Wait",
                 provider="codex",
                 run_on=SOURCE_MACHINE_ID,
-            ).model_dump(mode="json"),
+            ),
             created_at=now,
             updated_at=now,
             status_message="Queued",

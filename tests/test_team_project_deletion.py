@@ -93,9 +93,6 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     display = app.state.catalog._cached_snapshot_path(project_id)
     display.parent.mkdir(parents=True, exist_ok=True)
     display.write_text("display snapshot\n", encoding="utf-8")
-    paper = app.state.catalog._paper_snapshot_path(project_id)
-    paper.parent.mkdir(parents=True, exist_ok=True)
-    paper.write_text("paper snapshot\n", encoding="utf-8")
 
     [v1_card] = client.get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
     assert v1_card["id"] == project_id
@@ -139,7 +136,6 @@ def test_team_delete_removes_rcp_state_and_preserves_checkout_and_key(
     assert store.agent_task("retained-team-task") is None
     assert not stage.exists()
     assert not display.exists()
-    assert not paper.exists()
     assert not source_cache.parent.exists()
     assert not imported_sources.project_root.exists()
     assert _tree_digest(repository) == repository_before

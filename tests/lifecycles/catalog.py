@@ -38,8 +38,6 @@ from rcp.core.models import (
     GraphBranchSummary,
 )
 from rcp.machine_upgrade import _migrate_projects
-from rcp.paper.changes import ChangeGroup, PaperChanges
-from rcp.paper.git_sync import PaperGit
 from rcp.paper.live import PaperLive
 from rcp.paper.models import PaperTree
 from rcp.projects import ProjectCatalog
@@ -663,44 +661,6 @@ COMPUTE_JOB = Entry(
     ),
 )
 
-PAPER_CHANGES = Entry(
-    name="paper changes",
-    status=_field(ChangeGroup, "state"),
-    tables=frozenset({"paper_change_groups", "paper_changes", "paper_change_receipts"}),
-    writers=(
-        PaperChanges.collect,
-        PaperChanges._state,
-        PaperChanges._apply_prepared,
-        PaperChanges._save_receipt,
-        PaperChanges.accept,
-        PaperChanges.reject,
-        PaperChanges.undo,
-        PaperChanges.accept_all,
-        PaperChanges.undo_all,
-        PaperLive._apply,
-        PaperGit._unlink,
-        restore_paper_section,
-    ),
-    rules=(
-        Rule(
-            "decide_from_open",
-            "A group is accepted or rejected only from pending or outdated.",
-            "code guard at PaperChanges.accept",
-        ),
-        Rule(
-            "undo_from_accepted",
-            "Undo applies only to an accepted or applied group.",
-            "code guard at PaperChanges.undo",
-        ),
-        Rule(
-            "coach_writes_changes_only",
-            "The paper coach writes only its own changes folder, which RCP turns into "
-            "change cards.",
-            "invariant 4",
-        ),
-    ),
-)
-
 PAPER_LIVE = Entry(
     name="paper live",
     status=_field(PaperTree, "publish_state"),
@@ -1063,7 +1023,6 @@ ENTRIES = (
     CONVERSATION_WORKTREE,
     BRANCH_MERGE,
     COMPUTE_JOB,
-    PAPER_CHANGES,
     PAPER_LIVE,
     MIRRORED_TERMINAL,
     ARTIFACT,
@@ -1127,7 +1086,10 @@ NOT_LIFECYCLE: dict[str, str] = {
     "notification_web_push_subscriptions": "device subscription identity",
     "owner_credentials": "singleton owner secret hash",
     "paper_blobs": "content-addressed bodies",
-    "paper_coach_steers": "steer receipts; delivery settles an unknown receipt once",
+    "paper_change_groups": "retired Coach cards, dropped after migration",
+    "paper_change_receipts": "retired Coach card receipts, dropped after migration",
+    "paper_changes": "retired Coach card bodies, dropped after migration",
+    "paper_coach_steers": "retired Coach steer receipts, dropped after migration",
     "paper_doc_states": "compacted document cache",
     "paper_drafts": "legacy draft content",
     "paper_files": "file tree rows; deleted_at is a tombstone",

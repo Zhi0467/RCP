@@ -68,9 +68,6 @@ def test_catalog_delete_reclaims_only_app_owned_files_and_persists(
     display = catalog._cached_snapshot_path(record.project_id)
     display.parent.mkdir(parents=True)
     display.write_text("display", encoding="utf-8")
-    paper = catalog._paper_snapshot_path(record.project_id)
-    paper.parent.mkdir(parents=True)
-    paper.write_text("draft", encoding="utf-8")
     catalog._services[record.project_id] = object()  # type: ignore[assignment]
 
     result = catalog.delete(record.project_id)
@@ -78,10 +75,8 @@ def test_catalog_delete_reclaims_only_app_owned_files_and_persists(
     assert result.project_id == record.project_id
     assert result.removed_stages == 1
     assert result.removed_display_snapshot is True
-    assert result.removed_paper_snapshot is True
     assert not stage.exists()
     assert not display.exists()
-    assert not paper.exists()
     assert record.project_id not in catalog._services
     assert _tree_digest(repository) == before
 
