@@ -182,6 +182,9 @@ for (const width of [1280, 390])
     const shell = () => page.frame({ url: /\/files\/html\/preview\?revision=/ });
     const artifact = () => shell()?.childFrames()[0]?.childFrames()[0];
     await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
+    const commenting = page.getByRole("button", { name: "Comment on the page" });
+    assert.equal(await commenting.getAttribute("aria-pressed"), "true");
+    await commenting.click();
     await artifact().locator("#counter").click();
     const initial = await frame.boundingBox();
     const plus = page.getByRole("button", { name: "Zoom in", exact: true });
@@ -572,8 +575,6 @@ test("preview selections name their source, and boxes on PDF pages open comments
     await frame.getAttribute("src"),
     /\/api\/projects\/p\/paper\/files\/html\/preview\?revision=7$/,
   );
-  const toggle = page.locator('header button[aria-pressed="false"]');
-  await toggle.click();
   await page.locator('header button[aria-pressed="true"]').waitFor();
   // A box keeps its area, so two boxes on one labelled image differ for the coach.
   const shell = page.frame({ url: /\/preview\?revision=7$/ });
@@ -740,6 +741,7 @@ test("text selected in an HTML preview offers Comment beside it, with no comment
   const { page, errors, release } = await openHtmlPreview(t, 1280);
   release();
   await page.evaluate(() => window.show());
+  await page.getByRole("button", { name: "Comment on the page", pressed: true }).click();
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
   const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
   const word = shell.childFrames()[0].childFrames()[0].locator("#word");

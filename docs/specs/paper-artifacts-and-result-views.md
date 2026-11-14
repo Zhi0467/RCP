@@ -175,8 +175,9 @@ an HTML page's comment mode, opens the window directly. While a comment window i
 open, a selection offers no Comment button. Text selects natively, also on touch,
 except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a drag
 that starts off text draws an area on a PDF page or image. An area on an HTML page
-needs comment mode, a toggle in the panel header that starts off for each file
-shown, because it turns the page's drags into area selections.
+needs comment mode, a toggle in the panel header that starts on for each file
+shown, as the artifact viewer's does; turning it off hands drags back to the
+page's own scripts.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"

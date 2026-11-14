@@ -905,7 +905,7 @@ for (const width of [1280, 390])
     if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
     await page.locator(".paper-file", { hasText: "page.html" }).click();
     await page.getByRole("button", { name: "Preview", exact: true }).first().click();
-    await page.getByRole("button", { name: "Comment on the page" }).click();
+    await page.getByRole("button", { name: "Comment on the page", pressed: true }).waitFor();
     if (width === 390) {
       await target(page.getByRole("button", { name: "Zoom in", exact: true }));
       await target(page.getByRole("button", { name: "Zoom out", exact: true }));

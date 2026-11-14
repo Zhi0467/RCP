@@ -254,7 +254,7 @@ function HtmlPreview({
   onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
-  const [commentMode, setCommentMode] = useState(false);
+  const [commentMode, setCommentMode] = useState(true);
   const [pageError, setPageError] = useState<{ message: string } | null>(null);
   const [zoom, setZoom] = useState(2);
   const source = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(
