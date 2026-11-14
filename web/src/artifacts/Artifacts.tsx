@@ -3,20 +3,14 @@ import { graphTargetFromHash } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { useState, type MouseEvent } from "react";
-import {
-  Download,
-  ExternalLink,
-  GitCommitHorizontal,
-  MessageCircle,
-  RefreshCw,
-} from "lucide-react";
+import { Download, GitCommitHorizontal, MessageCircle, RefreshCw } from "lucide-react";
 import { openArtifact } from "./artifactViewerModel";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
 import { artifactsProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
+import { storedArtifactViewerUrl } from "./artifactViewerRequests";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
@@ -53,22 +47,11 @@ export function Artifacts({
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
     entry: ProjectArtifact,
   ) => {
-    if (entry.view === "pdf" && !isDesktopRuntime()) {
-      event.preventDefault();
-      return;
-    }
     event.preventDefault();
     setError(null);
     try {
       if (!entry.artifact_id) throw new Error("This artifact has no stored viewer.");
-      if (entry.view === "pdf") {
-        await openDesktopArtifactPdf({
-          projectId,
-          artifactId: entry.artifact_id,
-        });
-      } else {
-        openArtifact({ projectId, artifactId: entry.artifact_id });
-      }
+      openArtifact({ projectId, artifactId: entry.artifact_id });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -126,16 +109,6 @@ export function Artifacts({
             <p>{entry.unavailable_reason || "Preview unavailable."}</p>
           )}
         </div>
-        {!entry.can_open && entry.view === "pdf" && entry.can_download && isDesktopRuntime() && (
-          <button
-            className="icon-button artifact-entry-action"
-            aria-label={`Open ${entry.name}`}
-            title="Open"
-            onClick={(event) => void open(event, entry)}
-          >
-            <ExternalLink size={15} />
-          </button>
-        )}
         {entry.artifact_id && entry.available && (
           <CopyReferenceButton
             projectId={projectId}
@@ -155,11 +128,15 @@ export function Artifacts({
             <Download size={15} />
           </StoredArtifactDownload>
         )}
-        {entry.can_open && entry.view !== "pdf" && (
+        {(entry.can_open || (entry.view === "pdf" && entry.available && entry.artifact_id)) && (
           // The whole row is this link; the actions above it stay clickable.
           <a
             className="artifact-entry-open"
-            href={entry.viewer_url ?? undefined}
+            href={
+              entry.view === "pdf" && entry.artifact_id
+                ? storedArtifactViewerUrl(projectId, entry.artifact_id)
+                : (entry.viewer_url ?? undefined)
+            }
             target="_blank"
             rel="noopener noreferrer"
             aria-label={`Open ${entry.name}`}

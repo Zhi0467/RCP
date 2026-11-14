@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { artifactPopupTarget } from "../src/artifacts/artifactViewerRequests.ts";
+import {
+  artifactPopupTarget,
+  storedArtifactViewerUrl,
+} from "../src/artifacts/artifactViewerRequests.ts";
 
 test("only recognised viewer entrances in the active space become panel targets", () => {
   const origin = "https://rcp.example";
@@ -50,4 +53,11 @@ test("popup targets must belong to the currently open project", () => {
         ),
         null,
       );
+});
+
+test("stored PDF viewer URLs preserve project and artifact identity", () => {
+  assert.equal(
+    storedArtifactViewerUrl("project/a", "pdf b"),
+    "/api/projects/project%2Fa/artifacts/pdf%20b/viewer",
+  );
 });

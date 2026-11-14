@@ -100,7 +100,7 @@ test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.svg", "image")), true);
   assert.equal(isInlineViewable(artifact("a.md", "markdown")), true);
   assert.equal(isInlineViewable(artifact("a.csv", "text")), true);
-  assert.equal(isInlineViewable(artifact("a.pdf", "pdf")), false);
+  assert.equal(isInlineViewable(artifact("a.pdf", "pdf")), true);
   assert.equal(isInlineViewable(artifact("a.bin", "file")), false);
   const artifacts = [artifact("breakout.html", "html")];
   const own = (id) => (id === "op-1" ? artifacts : undefined);
@@ -325,4 +325,33 @@ test("a whole-artifact inline draft keeps its target and sends only on turn asse
     ...annotation.artifact.context,
     selections: [],
   });
+});
+
+test("project inline comments open the viewer while Space keeps its selection toggle", async () => {
+  const { InlineArtifact } = await server.ssrLoadModule("/src/artifacts/InlineArtifact.tsx");
+  const { RefreshRuntimeContext } = await server.ssrLoadModule("/src/core/useResource.ts");
+  const { ResourceStore } = await server.ssrLoadModule("/src/core/resourceStore.ts");
+  const render = (projectId) =>
+    renderToStaticMarkup(
+      createElement(
+        RefreshRuntimeContext.Provider,
+        { value: { store: new ResourceStore(), scheduler: {} } },
+        createElement(InlineArtifact, {
+          projectId,
+          stateProfile: null,
+          artifact: artifact("page.html", "html"),
+          title: "Page",
+          canComment: true,
+          keeping: false,
+          onExpand() {},
+          onKeep: null,
+          download: null,
+          onSelection() {},
+          onSelectionCancel() {},
+          onVersionChange() {},
+        }),
+      ),
+    );
+  assert.doesNotMatch(render("project"), /aria-pressed=/);
+  assert.match(render(null), /aria-pressed="true"/);
 });

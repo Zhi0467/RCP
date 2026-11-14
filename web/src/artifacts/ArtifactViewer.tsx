@@ -26,7 +26,7 @@ import {
   parseViewerPlacement,
   type ViewerPlacement,
 } from "./artifactViewerLayout";
-import { artifactPopupTarget } from "./artifactViewerRequests";
+import { artifactPopupTarget, storedArtifactViewerUrl } from "./artifactViewerRequests";
 import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
@@ -193,7 +193,9 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
       ? repositoryFilePreviewUrl(target.projectId, { path: target.path, line: target.line ?? null })
       : target.kind === "space-artifact"
         ? target.viewerUrl
-        : state?.viewer_url;
+        : state?.media_type === "application/pdf"
+          ? storedArtifactViewerUrl(target.projectId, target.artifactId)
+          : state?.viewer_url;
   const undo = async () => {
     if (target.kind !== "artifact" || undoing) return;
     const generation = requestGeneration.current;

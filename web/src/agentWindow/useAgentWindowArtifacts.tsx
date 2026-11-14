@@ -163,9 +163,17 @@ export function useAgentWindowArtifacts({
     });
   };
 
+  const canOpenArtifact = (artifact: AgentArtifactDescriptor) =>
+    artifact.available &&
+    (artifact.can_open ||
+      ((endpoints.projectId !== null || desktop) &&
+        artifact.view === "pdf" &&
+        artifact.can_download));
+  const canEmbedArtifact = (artifact: AgentArtifactDescriptor) =>
+    isInlineViewable(artifact) && (artifact.view !== "pdf" || endpoints.projectId !== null);
+
   const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
-    const systemPdf = desktop && artifact.view === "pdf" && artifact.can_download;
-    if (!artifact.can_open && !systemPdf) return;
+    if (!canOpenArtifact(artifact)) return;
     const key = `${taskId}:${artifact.artifact_id}`;
     setArtifactShellErrors((current) => withoutMapKey(current, key));
     try {
@@ -281,7 +289,7 @@ export function useAgentWindowArtifacts({
         if (found && artifact) {
           const owner = found.taskId;
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-          if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
+          if (canOpenArtifact(artifact)) {
             await openArtifact(owner, artifact);
           } else {
             if (!taskById.has(owner))
@@ -395,16 +403,14 @@ export function useAgentWindowArtifacts({
       return renderArtifactPlayer(found.taskId, found.name, null, found.name, () => {
         if (!agedInlineArtifacts.has(found.taskId)) void loadTaskArtifacts(found.taskId);
       });
-    // A PDF or download-only file keeps its card below the reply.
-    if (artifact && !isInlineViewable(artifact))
+    if (artifact && !canEmbedArtifact(artifact))
       return (
         <InlineArtifactMissing
           name={found.name}
           attached={found.taskId === taskId ? "below" : "earlier"}
         />
       );
-    if (!artifact || !artifact.available || !artifact.can_open)
-      return <InlineArtifactMissing name={found.name} />;
+    if (!artifact || !canOpenArtifact(artifact)) return <InlineArtifactMissing name={found.name} />;
     return renderArtifactPlayer(found.taskId, found.name, artifact, alt.trim() || artifact.name);
   };
 
@@ -454,9 +460,8 @@ export function useAgentWindowArtifacts({
         if (
           line.role === "agent" &&
           line.text &&
-          isInlineViewable(artifact) &&
-          artifact.available &&
-          artifact.can_open &&
+          canEmbedArtifact(artifact) &&
+          canOpenArtifact(artifact) &&
           inlineArtifactIds(line.text, line.taskId, lineArtifacts(line) ?? []).has(
             artifact.artifact_id,
           )
@@ -505,8 +510,7 @@ export function useAgentWindowArtifacts({
             </span>
             {unavailableReason && <strong>{unavailableReason}</strong>}
             <div className="chat-artifact-actions">
-              {(artifact.can_open ||
-                (desktop && artifact.view === "pdf" && artifact.can_download)) && (
+              {canOpenArtifact(artifact) && (
                 <button type="button" onClick={() => void openArtifact(line.taskId, artifact)}>
                   <ExternalLink size={12} /> Open
                 </button>

@@ -16,7 +16,7 @@
   },
   "src/agentWindow/useAgentWindowArtifacts.tsx": {
     "rcp/no-comments": {
-      "count": 33
+      "count": 32
     }
   },
   "src/agentWindow/useAgentWindowScroll.ts": {
@@ -951,7 +951,7 @@
   },
   "tests/artifacts.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 28
+      "count": 25
     }
   },
   "tests/attentionRunsOntology.test.mjs": {

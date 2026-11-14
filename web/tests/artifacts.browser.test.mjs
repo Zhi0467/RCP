@@ -267,8 +267,16 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     });
     await page.route("**/api/projects/project/artifacts/*/state", (route) => {
       const artifactId = route.request().url().split("/").at(-2);
-      return route.fulfill({ json: viewerState(artifactId) });
+      return route.fulfill({
+        json:
+          artifactId === "pdf"
+            ? { ...viewerState(artifactId), media_type: "application/pdf", viewer_url: null }
+            : viewerState(artifactId),
+      });
     });
+    await page.route("**/api/projects/project/artifacts/pdf/viewer", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>PDF viewer</p>" }),
+    );
     await page.route("**/viewer-shell/*", (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Artifact content</p>" }),
     );
@@ -309,12 +317,12 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     }
     // A refresh reprojects the existing rows after entering the desktop runtime.
     await artifactsChanged(page, "desktop");
-    await page.getByRole("button", { name: "Open pdf.dat", exact: true }).click();
-    await page.waitForFunction(() => window.previewCalls.length === 1);
-    assert.deepEqual(await page.evaluate(() => window.previewCalls[0]), {
-      command: "open_artifact_pdf",
-      args: { projectId: "project", artifactId: "pdf" },
-    });
+    await page.getByRole("link", { name: "Open pdf.dat", exact: true }).click();
+    await page
+      .locator('.artifact-viewer iframe[src="/api/projects/project/artifacts/pdf/viewer"]')
+      .waitFor();
+    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     // Every action sits at the row's right end, whatever the title length.
     const plot = page.locator(".artifact-entry").filter({ hasText: "Saved plot" });
     const [download, openBox, rowBox] = await Promise.all([
@@ -375,6 +383,26 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/**", (route) => route.fulfill({ json: [] }));
     await page.route("**/artifacts/image/content?*", (route) => route.fulfill({ status: 410 }));
+    await page.route("**/artifacts/pdf/state", (route) =>
+      route.fulfill({
+        json: {
+          artifact_id: "pdf",
+          name: "pdf.dat",
+          media_type: "application/pdf",
+          viewer_url: null,
+          pinned_branch_ids: [],
+          current_version: "v1",
+          version_number: 1,
+          can_comment: true,
+          can_keep: false,
+          can_download: true,
+          download_url: "/api/projects/project/artifacts/pdf/download",
+        },
+      }),
+    );
+    await page.route("**/artifacts/pdf/viewer", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<main>PDF viewer</main>" }),
+    );
     const mutations = [];
     await page.route("**/artifacts/file/keep", (route) => {
       mutations.push({
@@ -444,11 +472,14 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       const element = document.createElement("div");
       document.body.replaceChildren(element);
       window.cardRoot = createRoot(element);
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
       window.renderCards = (desktop = false) => {
         if (desktop)
           window.__TAURI_INTERNALS__ = {
             transformCallback: () => 1,
             invoke: async (command, args) => {
+              if (command === "plugin:event|listen") return 1;
+              if (command === "plugin:event|unlisten") return;
               if (command === "open_artifact_pdf") window.pdfCall = { command, args };
               return { opened: true };
             },
@@ -500,7 +531,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
     assert.equal(await page.locator(".chat-artifact").count(), 5);
     assert.equal(await file.getByRole("button").count(), 1);
     assert.equal(await file.locator("a[download]").count(), 1);
-    assert.equal(await page.locator("#artifact-turn-pdf button").count(), 1);
+    assert.equal(await page.locator("#artifact-turn-pdf button").count(), 2);
     await page.waitForFunction(() => !document.querySelector("#artifact-turn-image img"));
     assert.equal(await page.locator("#artifact-turn-image a[download]").count(), 1);
     assert.equal(await page.locator("#artifact-turn-image [data-artifact-action=keep]").count(), 1);
@@ -514,13 +545,22 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
     await file.locator("[data-artifact-action=keep]").click();
     await file.locator("[data-artifact-action=keep]").waitFor({ state: "detached" });
     assert.deepEqual(mutations, [{ method: "POST", body: {}, contentType: "application/json" }]);
+    await page.locator("#artifact-turn-pdf .chat-artifact-actions button").first().click();
+    await page.locator(".artifact-viewer iframe").waitFor();
+    assert.match(
+      await page.locator(".artifact-viewer iframe").getAttribute("src"),
+      /artifacts\/pdf\/viewer/,
+    );
+    assert.equal(await page.locator("#artifact-turn-pdf a[download]").count(), 1);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     await page.evaluate(() => window.renderCards(true));
     await page.locator("#artifact-turn-pdf .chat-artifact-actions button").first().click();
-    await page.waitForFunction(() => window.pdfCall);
-    assert.deepEqual(await page.evaluate(() => window.pdfCall), {
-      command: "open_artifact_pdf",
-      args: { projectId: "project", taskId: "turn", artifactId: "pdf" },
-    });
+    await page.locator(".artifact-viewer iframe").waitFor();
+    assert.match(
+      await page.locator(".artifact-viewer iframe").getAttribute("src"),
+      /artifacts\/pdf\/viewer/,
+    );
+    assert.equal(await page.evaluate(() => window.pdfCall), undefined);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
@@ -749,7 +789,7 @@ test("desktop reports download and run PDFs open by stored identity without a pr
   }
 });
 
-test("an inline page error opens a human comment draft and clears with its version", async () => {
+test("inline comments and page errors expand the viewer and clear with its version", async () => {
   const { execFileSync } = await import("node:child_process");
   const rendered = JSON.parse(
     execFileSync(
@@ -914,36 +954,15 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.ok((await notice.getAttribute("title")).includes("inline-failure"));
     assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
     assert.ok(await embed.locator("[download]").count());
-    // Comment mode starts on, which also draws the artifact's edge; Done hands
-    // the page back to the reader.
-    assert.match(await embed.getAttribute("class"), /\bcommenting\b/);
-    await embed.getByRole("button", { name: "Done commenting" }).click();
     assert.doesNotMatch(await embed.getAttribute("class"), /\bcommenting\b/);
+    await embed.getByRole("button", { name: "Comment", exact: true }).click();
+    await page.locator(".artifact-viewer iframe").waitFor();
+    assert.equal(await page.locator(".chat-annotation-composer").count(), 0);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     await embed.locator("[data-artifact-action=fix]").click();
-    assert.equal(
-      await page.locator(".chat-annotation-composer textarea").inputValue(),
-      "This page hit an error: inline-failure",
-    );
-    const accent = (selector) =>
-      page
-        .locator(selector)
-        .first()
-        .evaluate((node) => getComputedStyle(node).getPropertyValue("--chat-accent"));
-    assert.equal(await accent(".chat-annotation-composer"), await accent(".chat-dock"));
-    await page.getByRole("button", { name: "Add comment", exact: true }).click();
-    await page.getByRole("button", { name: "Send", exact: true }).waitFor();
-    // A comment is an ordinary turn, so a pasted project reference joins it.
-    await page.getByRole("textbox", { name: "Message", exact: true }).evaluate(async (input) => {
-      const { referenceUrl } = await import("/src/core/projectReferences.ts");
-      const clipboardData = new DataTransfer();
-      clipboardData.setData(
-        "text/plain",
-        referenceUrl("project", { kind: "main" }, { kind: "paper" }),
-      );
-      input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true }));
-    });
-    await page.getByLabel("References for this turn").waitFor();
-    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
+    await page.locator(".artifact-viewer iframe").waitFor();
+    assert.equal(await page.locator(".chat-annotation-composer").count(), 0);
+    await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     assert.equal(await page.evaluate(() => Boolean(window.errorTestSent)), false);
     assert.deepEqual(requests, []);
     state = viewerState("plot", 2);

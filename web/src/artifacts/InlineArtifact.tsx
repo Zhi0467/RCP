@@ -8,6 +8,7 @@ import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor } from "../core/types";
 import { INLINE_ARTIFACT_HEIGHT, inlineViewerUrl, type InlineSelection } from "./inlineArtifacts";
 import { useInlineShell } from "./useInlineShell";
+import { storedArtifactViewerUrl } from "./artifactViewerRequests";
 
 function useSpaceArtifactWatermark(
   projectId: string | null,
@@ -149,10 +150,12 @@ export function InlineArtifact({
   const selectable =
     canComment &&
     (profile === null || Boolean(state?.can_comment)) &&
-    (artifact?.view === "html" || artifact?.view === "image");
+    (projectId !== null
+      ? artifact?.view !== "file"
+      : artifact?.view === "html" || artifact?.view === "image");
   // Derived, so a refresh that withdraws commenting (another edit reserving the
   // artifact) also ends comment mode, with no Done left to press.
-  const commentMode = selectable && (commentChoice ?? true);
+  const commentMode = projectId === null && selectable && (commentChoice ?? true);
   const shell = useInlineShell(frame, commentMode, {
     onPageError: setPageError,
     onCancel: onSelectionCancel,
@@ -178,7 +181,14 @@ export function InlineArtifact({
         </span>
       </span>
     );
-  const resolvedViewer = profile === null ? (near ? viewerUrl : null) : state?.viewer_url;
+  const resolvedViewer =
+    profile === null
+      ? near
+        ? viewerUrl
+        : null
+      : near && projectId && artifact.view === "pdf" && artifact.available
+        ? storedArtifactViewerUrl(projectId, artifact.artifact_id)
+        : state?.viewer_url;
   const source = resolvedViewer ? inlineViewerUrl(resolvedViewer) : null;
   const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (
@@ -230,14 +240,18 @@ export function InlineArtifact({
           <button
             type="button"
             className="chat-inline-artifact-comment"
-            aria-pressed={commentMode}
+            aria-pressed={projectId === null ? commentMode : undefined}
             title={
-              commentMode
-                ? "Stop commenting and use the artifact"
-                : "Select a part of this artifact to comment on it"
+              projectId !== null
+                ? "Open comments in the viewer"
+                : commentMode
+                  ? "Stop commenting and use the artifact"
+                  : "Select a part of this artifact to comment on it"
             }
-            aria-label={commentMode ? "Done commenting" : "Comment on a part"}
-            onClick={() => setCommentChoice(!commentMode)}
+            aria-label={
+              projectId !== null ? "Comment" : commentMode ? "Done commenting" : "Comment on a part"
+            }
+            onClick={() => (projectId !== null ? onExpand() : setCommentChoice(!commentMode))}
           >
             <MessageSquarePlus size={12} />
             <span className="chat-inline-artifact-label">{commentMode ? "Done" : "Comment"}</span>
@@ -263,6 +277,10 @@ export function InlineArtifact({
               title={pageErrorText}
               aria-label="Ask to fix"
               onClick={(event) => {
+                if (projectId !== null) {
+                  onExpand();
+                  return;
+                }
                 const rect = event.currentTarget.getBoundingClientRect();
                 onSelection({
                   selection: null,
