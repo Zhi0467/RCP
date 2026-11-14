@@ -34,11 +34,12 @@ def test_comment_notification_delivery_and_withdrawal(tmp_path, withdraw, monkey
         "p",
         target_kind="artifact",
         target_id=artifact.artifact_id,
-        graph_target="branch:topic",
         anchor={"kind": "whole"},
         text=f"<@member:{user_id}>",
         user_id=user_id,
     )
+    with store.connection() as connection:
+        connection.execute("UPDATE comment_threads SET graph_target='branch:topic'")
     catalog = Mock(spec=ProjectCatalog)
     catalog.open.side_effect = OSError("offline")
     sender = NotificationSender(store, catalog, admission=RuntimeAdmissionGate())

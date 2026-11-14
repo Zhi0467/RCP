@@ -22,7 +22,6 @@ def _thread(store, task, *, kind="reply", target=None, text="Please revise"):
         task.project_id,
         target_kind=kind,
         target_id=target or task.operation_id,
-        graph_target="main",
         anchor={"kind": "whole"},
         drawn_version=None,
         text=text,

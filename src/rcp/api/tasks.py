@@ -56,7 +56,6 @@ from rcp.artifacts import (
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.comments.models import COMMENT_MEDIA_TYPES
-from rcp.comments.render import render_thread
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
@@ -624,14 +623,9 @@ def prepare_comment_send(
             status_code=422, detail="Thread sends require a key and a bounded list."
         )
     try:
-        threads = store.sendable_threads(thread_ids, key)
+        threads = store.sendable_threads(project_id, user_id, thread_ids, key)
     except CommentError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
-    for thread in threads:
-        if thread["project_id"] != project_id or not store.comment_target_readable(
-            user_id, thread["target_kind"], thread["target_id"], project_id=project_id
-        ):
-            raise HTTPException(status_code=404, detail="Comment target not found")
     artifacts = {}
     for thread in threads:
         target_kind, target_id = thread["target_kind"], thread["target_id"]
@@ -664,10 +658,7 @@ def prepare_comment_send(
             raise HTTPException(status_code=409, detail="The thread belongs to another chat.")
     if len(artifacts) > 1:
         raise HTTPException(status_code=409, detail="Send comments on one artifact at a time.")
-    rendered = [
-        render_thread(thread, until=thread["closed_at"] if thread["send_key"] == key else None)
-        for thread in threads
-    ]
+    rendered = [thread["rendered"] for thread in threads]
     combined = "\n\n".join(part for part in [message, *rendered] if part)
     if len(combined) > STEERING_MESSAGE_MAX_CHARS:
         raise HTTPException(status_code=422, detail="The comment send is too long.")

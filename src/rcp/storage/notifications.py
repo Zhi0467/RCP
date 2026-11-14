@@ -8,17 +8,20 @@ import sqlite3
 import uuid
 from collections.abc import Collection
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
 from rcp.policies.project import is_member
-from rcp.storage.comments import _target_readable
+from rcp.storage.comments import readable_comment_target
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
 from rcp.storage.question_models import QuestionRecord
 from rcp.storage.questions import _question_record
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 NOTIFICATION_DEFAULTS = {
     "proposal": True,
@@ -145,14 +148,15 @@ class NotificationStoreMixin(StoreMixinBase):
                 observed
                 and previously_observed is None
                 and thread is not None
-                and _target_readable(
+                and readable_comment_target(
+                    cast("AppStore", self),
                     connection,
                     user_id,
+                    notification["project_id"],
                     thread["target_kind"],
                     thread["target_id"],
-                    self.now(),
-                    notification["project_id"],
                 )
+                is not None
             ):
                 self.enqueue_notification(connection, recipients={user_id}, **notification)
             return bool(observed)
@@ -778,13 +782,17 @@ class NotificationStoreMixin(StoreMixinBase):
                 "AND m.user_id=? AND t.state='open' LIMIT 1",
                 (row["item_id"], row["project_id"], device["user_id"]),
             ).fetchone()
-            if thread is None or not _target_readable(
-                connection,
-                device["user_id"],
-                thread["target_kind"],
-                thread["target_id"],
-                self.now(),
-                row["project_id"],
+            if (
+                thread is None
+                or readable_comment_target(
+                    cast("AppStore", self),
+                    connection,
+                    device["user_id"],
+                    row["project_id"],
+                    thread["target_kind"],
+                    thread["target_id"],
+                )
+                is None
             ):
                 connection.execute(
                     "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?",

@@ -249,6 +249,8 @@ def test_can_send_needs_named_identity_and_target_chat(comments_app, report):
             (f'{{"chat_id":"{own_chat.thread_id}"}}',),
         )
     assert client.get(path).json()["thread"]["can_send"] is True
+    assert client.post(path + "/resolve", json={}).json()["thread"]["can_send"] is False
+    assert client.post(path + "/reopen", json={}).json()["thread"]["can_send"] is True
     with store.connection() as connection:
         connection.execute(
             "UPDATE space_users SET display_name=NULL WHERE user_id=?", (store.local_owner.user_id,)
@@ -305,3 +307,40 @@ def test_mentions_name_paper_and_reply_targets(comments_app, kind):
         assert response.json()["thread"]["chat_id"] == "chat"
     row = client.get(f"/api/projects/{project}/comment-mentions").json()["mentions"][0]
     assert row["target_name"] == expected
+
+
+@pytest.mark.parametrize(
+    ("kind", "anchor", "status"),
+    [
+        ("reply", {"kind": "text", "text": "quote"}, 200),
+        ("reply", {"kind": "element", "path": "p"}, 422),
+        ("reply", {"kind": "pdf", "page": 1}, 422),
+        ("paper", {"kind": "pdf", "page": 1}, 200),
+    ],
+)
+def test_anchor_kinds_follow_target_kind(comments_app, kind, anchor, status):
+    from rcp.storage import AgentTaskRecord
+
+    _, client, store, project, _ = comments_app
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO paper_files VALUES (?, 'target', 'a.md', 'text', ?, NULL, NULL)",
+            (project, store.now()),
+        )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="target",
+            project_id=project,
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": "chat"},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="completed",
+        )
+    )
+    response = client.post(
+        f"/api/projects/{project}/comment-threads",
+        json={"target": {"kind": kind, "id": "target"}, "anchor": anchor, "text": "note"},
+    )
+    assert response.status_code == status, response.text
