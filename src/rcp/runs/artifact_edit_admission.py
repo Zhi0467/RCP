@@ -31,11 +31,8 @@ class ArtifactFreshSessionRequired(AgentTaskAdmissionConflict):
 class ArtifactEditAvailability:
     can_comment: bool
     comment_unavailable_reason: str | None = None
-    # Edit now, and Send where the chat takes no human turns, resume the origin's session.
+    # Send where the chat takes no human turns resumes the origin's session.
     fresh_session_required: bool = False
-    can_edit_now: bool = False
-    # Send is an ordinary turn of the artifact's chat.
-    send_to_chat: bool = False
 
 
 def artifact_edit_availability(
@@ -46,13 +43,29 @@ def artifact_edit_availability(
     A comment that is an ordinary chat turn needs only readable context and a chat
     that takes human turns; the origin's master and session gate only the origin edit.
     """
-    fresh = False
     try:
         origin, reply_episode_id = artifact_reply_origin(store, artifact)
         if not supports_comments(artifact.media_type):
             raise ValueError("The artifact type does not support editing.")
         if origin.graph_target != service.history.graph_target:
             raise ValueError("The artifact belongs to another graph target.")
+    except (KeyError, OSError, ValueError) as exc:
+        return ArtifactEditAvailability(False, str(exc))
+    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    if (
+        isinstance(chat_id, str)
+        and chat_id
+        and store.child_human_turn_refusal(artifact.project_id, chat_id) is None
+    ):
+        expired = (
+            artifact.expires_at is not None
+            and artifact.expires_at <= store.now()
+            and artifact.artifact_id not in store.protected_edit_artifact_ids()
+        )
+        reason = "The artifact has expired." if expired else None
+        return ArtifactEditAvailability(reason is None, reason)
+    fresh = False
+    try:
         try:
             _origin_master(store, artifact.project_id, origin, verify=False)
         except ArtifactFreshSessionRequired:
@@ -75,27 +88,7 @@ def artifact_edit_availability(
         )
     except (KeyError, OSError, ValueError) as exc:
         return ArtifactEditAvailability(False, str(exc), fresh)
-    chat_id = _artifact_chat_id(origin, reply_episode_id)
-    if (
-        not isinstance(chat_id, str)
-        or not chat_id
-        or store.child_human_turn_refusal(artifact.project_id, chat_id) is not None
-    ):
-        ok = edit_reason is None
-        return ArtifactEditAvailability(ok, edit_reason, fresh, can_edit_now=ok)
-    expired = (
-        artifact.expires_at is not None
-        and artifact.expires_at <= store.now()
-        and artifact.artifact_id not in store.protected_edit_artifact_ids()
-    )
-    reason = "The artifact has expired." if expired else None
-    return ArtifactEditAvailability(
-        reason is None,
-        reason,
-        fresh,
-        can_edit_now=reason is None and edit_reason is None,
-        send_to_chat=True,
-    )
+    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh)
 
 
 def _require_master_owner(owner: AgentTaskRecord | None) -> None:

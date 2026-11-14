@@ -110,7 +110,7 @@ def test_state_version_undo_and_current_viewer(viewer_app):
     original = _state(client, artifact)
     assert original["version_number"] == 1
     assert not original["can_undo"]
-    assert original["fresh_session_required"] and original["can_comment"]
+    assert not original["fresh_session_required"] and original["can_comment"]
     assert parse_qs(urlsplit(original["thread_href"][1:]).query) == {
         "view": ["chats"],
         "chat": [task.request["chat_id"]],

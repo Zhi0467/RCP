@@ -1037,7 +1037,7 @@ class ArtifactContextRequest(BaseModel):
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
     fresh_session: bool = False
-    # Set by the viewer's Edit now: the one prompt branch asking for the edit this turn.
+    # Retired viewer Edit now flag; stored requests still carry it and nothing reads it.
     edit_now: bool = False
     # The version the selections were drawn on; admission refuses a newer one.
     base_version: str | None = None

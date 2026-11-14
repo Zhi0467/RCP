@@ -182,7 +182,7 @@
   "src/rcp/runs/agent_thread_commands.py": {"comment": 15},
   "src/rcp/runs/agent_threads.py": {"comment": 20},
   "src/rcp/runs/approval_cards.py": {"comment": 4},
-  "src/rcp/runs/artifact_edit_admission.py": {"comment": 8},
+  "src/rcp/runs/artifact_edit_admission.py": {"comment": 7},
   "src/rcp/runs/auto_research.py": {"comment": 30},
   "src/rcp/runs/auto_research_admission.py": {"comment": 29},
   "src/rcp/runs/auto_research_child_reconcile.py": {"comment": 10},
