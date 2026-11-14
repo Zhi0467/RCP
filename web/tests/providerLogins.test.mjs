@@ -220,10 +220,10 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
 
     // Device codes reach only the member who started the sign-in.
     assert.equal(count(team, /ABCD-1234/g), 1);
-    assert.equal(count(team, /data-sign-in-action="cancel"/g), 1);
+    assert.equal(count(team, /data-sign-in-action="cancel"/g), 2);
     const otherViewer = fold(everyState, settingsFor(), "u-eve");
     assert.equal(count(otherViewer, /ABCD-1234|example\.invalid/g), 0);
-    assert.equal(count(otherViewer, /data-sign-in-action="cancel"/g), 0);
+    assert.equal(count(otherViewer, /data-sign-in-action="cancel"/g), 1);
 
     // An unmanaged CLI: its machine card only, no switch, add or ⋯.
     assert.equal(count(opencode, /data-card-state=/g), 1);

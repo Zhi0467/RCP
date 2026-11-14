@@ -240,15 +240,7 @@ class ProjectCheckoutManager:
         state_repository: bool,
         expected_commit: str | None = None,
     ) -> ProjectCheckoutResult:
-        account = self._helper(machine, ("account", machine.os_account))
-        home = account.get("home")
-        if account.get("account") != machine.os_account or not isinstance(home, str):
-            raise ProjectCheckoutRefused("account_or_path", "Invalid execution account receipt.")
-        context = CheckoutAccount(
-            home,
-            machine.os_account,
-            machine.central_root or str(remote_projects_root(home)),
-        )
+        context = self.checkout_account(machine)
         return self._prepare_initial(
             machine,
             context,
@@ -258,6 +250,54 @@ class ProjectCheckoutManager:
             state_repository=state_repository,
             expected_commit=expected_commit,
         )
+
+    def checkout_account(self, machine: MachineRoute) -> CheckoutAccount:
+        account = self._helper(machine, ("account", machine.os_account))
+        home = account.get("home")
+        if account.get("account") != machine.os_account or not isinstance(home, str):
+            raise ProjectCheckoutRefused("account_or_path", "Invalid execution account receipt.")
+        return CheckoutAccount(
+            home,
+            machine.os_account,
+            machine.central_root or str(remote_projects_root(home)),
+        )
+
+    def remove_request_checkout(
+        self,
+        machine: MachineRoute,
+        account: DeployKeyMaterial | CheckoutAccount,
+        project_id: str,
+        repository_alias: str,
+    ) -> bool:
+        """Remove the checkout a request created; report whether one was there."""
+
+        payload = self._helper(
+            machine,
+            (
+                "remove-checkout",
+                machine.os_account,
+                account.account_home,
+                machine.location,
+                machine.central_root or "-",
+                project_id,
+                repository_alias,
+            ),
+        )
+        expected_root = machine.central_root or str(remote_projects_root(account.account_home))
+        expected_path = str(
+            PurePosixPath(expected_root) / project_id / "repositories" / repository_alias
+        )
+        removed = payload.get("removed")
+        if (
+            set(payload) != {"repository_path", "removed"}
+            or payload["repository_path"] != expected_path
+            or not isinstance(removed, bool)
+        ):
+            raise ProjectCheckoutRefused(
+                "account_or_path",
+                "The checkout removal receipt does not match the reviewed machine and project.",
+            )
+        return removed
 
     def adopt_existing(
         self,
@@ -272,15 +312,7 @@ class ProjectCheckoutManager:
         Nothing is created or rewritten; a plain folder or an unborn branch refuses.
         """
 
-        account = self._helper(machine, ("account", machine.os_account))
-        home = account.get("home")
-        if account.get("account") != machine.os_account or not isinstance(home, str):
-            raise ProjectCheckoutRefused("account_or_path", "Invalid execution account receipt.")
-        context = CheckoutAccount(
-            home,
-            machine.os_account,
-            machine.central_root or str(remote_projects_root(home)),
-        )
+        context = self.checkout_account(machine)
         self._verify_git_directory(machine, context, repository_path)
         head = self._git_at(
             machine, context, repository_path, ("rev-parse", "--verify", "HEAD^{commit}")

@@ -49,7 +49,7 @@ def test_verify_real_probe_result_updates_login_and_attributes_member(
     monkeypatch.setattr(
         launcher.credential_gate,
         "hold_blocking",
-        lambda key: holds.append((key.provider, key.machine_id)) or nullcontext(),
+        lambda key, **_: holds.append((key.provider, key.machine_id)) or nullcontext(),
     )
 
     def probe(host, command, *, timeout, **_):
@@ -101,7 +101,7 @@ def test_non_auth_verify_failure_preserves_signed_in(tmp_path, monkeypatch):
         "get_identity_access",
         lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
     )
-    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
+    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_, **__: nullcontext())
     monkeypatch.setattr(
         launcher,
         "_probe",
@@ -539,7 +539,28 @@ def test_member_rows_filter_private_evidence_and_attempt_codes(member_login_api)
     assert rows[shared.login_id]["sign_in"]["user_code"] is None
     assert rows[shared.login_id]["sign_in"]["verification_url"] is None
     assert client.get("/api/providers/codex/logins/sign-in/attempt").status_code == 404
-    assert client.post("/api/providers/codex/logins/sign-in/attempt/cancel").status_code == 404
+    cancelled = client.post("/api/providers/codex/logins/sign-in/attempt/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["user_code"] is None
+
+
+def test_only_members_who_may_change_a_login_may_cancel_its_sign_in(member_login_api):
+    from rcp.runs.provider_sign_in import ProviderSignInStatus
+
+    client, store, runner, viewer = member_login_api
+    own = store.add_provider_login("codex", BACKEND_MACHINE_ID, member_id="alice", added_by="alice")
+    runner._sign_ins["private"] = ProviderSignInStatus(
+        attempt_id="private",
+        login_id=own.login_id,
+        provider="codex",
+        machine_id=BACKEND_MACHINE_ID,
+        state="pending",
+        started_at=store.now(),
+        started_by="alice",
+    )
+    viewer["id"] = "bob"
+    assert client.post("/api/providers/codex/logins/sign-in/private/cancel").status_code == 403
+    assert runner.sign_in_status("private").state == "pending"
 
 
 def test_add_own_conflict_owner_actions_and_remove_rules(member_login_api):
