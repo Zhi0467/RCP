@@ -89,12 +89,17 @@ def wake_paper_turns(background: BackgroundAgentTasks, record: AgentTaskRecord) 
 
 
 def end_paper_turn(store: AppStore, live: PaperLive, project_id: str, operation_id: str) -> None:
-    """Release the Paper from a turn whose provider is gone and record its change list."""
+    """Release the Paper from a turn whose provider is gone and record its two versions.
+
+    The receipt holds only the version ids, so it stays under the receipt cap and
+    History pruning can always read them; the files stay in ``paper_turn_files``.
+    """
     try:
         turn = live.run_sync(live.end_turn(project_id, operation_id))
     except KeyError:
         return
-    store.record_agent_task_receipt(operation_id, "paper_turn", turn)
+    versions = {key: turn[key] for key in ("before_version_id", "after_version_id")}
+    store.record_agent_task_receipt(operation_id, "paper_turn", versions)
 
 
 def end_settled_paper_turns(

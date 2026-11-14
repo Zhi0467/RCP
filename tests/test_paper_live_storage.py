@@ -143,3 +143,46 @@ def test_pruning_keeps_the_running_turns_before_version(tmp_path, monkeypatch):
             ] == ["v1", "v3"]
     finally:
         store.close()
+
+
+def test_pruning_keeps_an_ended_turns_versions_however_many_files_it_changed(tmp_path, monkeypatch):
+    from rcp import limits
+    from rcp.paper.persistence import prune
+    from rcp.runs.paper_turns import end_paper_turn
+    from tests.lifecycles.agent_task import admitted_launch_task, work_request
+
+    class Live:
+        def end_turn(self, project_id, operation_id):
+            files = [
+                {"path": f"chapter-{index}.md", "kind": "write", "clash": False}
+                for index in range(2000)
+            ]
+            return {"before_version_id": "v1", "after_version_id": "v2", "files": files}
+
+        def run_sync(self, value):
+            return value
+
+    monkeypatch.setattr(limits, "PAPER_HISTORY_AUTO_LIMIT", 1)
+    store = AppStore(tmp_path / "app.sqlite3")
+    try:
+        admitted_launch_task(
+            store,
+            operation_id="op",
+            request=work_request("coach").model_copy(update={"focus": "paper"}),
+            record_updates={"project_id": "p"},
+        )
+        end_paper_turn(store, Live(), "p", "op")
+        with store.connection() as connection:
+            connection.executemany(
+                "INSERT INTO paper_versions VALUES ('p',?,?,'auto',NULL,'automatic',?,'[]')",
+                [(f"v{index}", index, f"2026-01-0{index}") for index in (1, 2, 3, 4)],
+            )
+            prune(connection, "p")
+            assert [
+                row[0]
+                for row in connection.execute(
+                    "SELECT version_id FROM paper_versions ORDER BY version_id"
+                )
+            ] == ["v1", "v2", "v4"]
+    finally:
+        store.close()

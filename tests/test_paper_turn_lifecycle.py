@@ -75,7 +75,8 @@ def test_a_paper_turn_holds_the_paper_from_launch_until_its_process_exits(outcom
     assert seen == ["turn", "no receipt yet"]
     assert _held_turn(store) is None
     assert receipt["before_version_id"] != receipt["after_version_id"]
-    assert [(row["path"], row["kind"]) for row in receipt["files"]] == [("a.md", "write")]
+    files = live.turn_files("project", "turn")
+    assert [(row["path"], row["kind"]) for row in files] == [("a.md", "write")]
 
 
 def test_an_ordinary_chat_turn_never_takes_the_paper(paper):
@@ -111,7 +112,8 @@ def test_recovery_ends_a_turn_the_previous_process_left_holding_the_paper(paper)
     end_settled_paper_turns(store, live)
 
     assert _held_turn(store) is None
-    assert [row["path"] for row in _receipt(store, "crashed")["files"]] == ["b.md"]
+    assert _receipt(store, "crashed") is not None
+    assert [row["path"] for row in live.turn_files("project", "crashed")] == ["b.md"]
 
 
 def test_a_new_paper_turn_first_ends_a_settled_turn_still_holding_the_paper(paper):
