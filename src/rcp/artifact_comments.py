@@ -96,9 +96,11 @@ def selection_frame_addon() -> FrameAddon:
     return FrameAddon(
         frame_script=_selection_script()
         + """
+const locateArtifact=installArtifactLocator(document,send);
 let clearSelection=null;
 let selectionActive=false;
 listen(privatePort,'message',(event)=>{
+  if(event.data?.kind==='rcp-artifact-locate') locateArtifact(event.data);
   if(event.data?.kind==='rcp-artifact-selection-enable'){
     selectionActive=true;
     if(!clearSelection)
@@ -117,15 +119,29 @@ listen(privatePort,'message',(event)=>{
 });
 """,
         wrapper_script="""let selectionEnabled=false;
+const pendingLocations=new Map();
 channelListeners.push((value)=>{
+    if(value.kind==='rcp-artifact-position'){
+      parentPost({type:'rcp-artifact-position',version:1,id:value.id,rect:value.rect},'*');
+      return;
+    }
     if(value.kind==='rcp-artifact-selection' && 'selection' in value && window.parent!==window){
       parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
       return;
     }
 });
-channelReady.push(()=>{if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});});
+channelReady.push(()=>{
+  if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  for(const value of pendingLocations.values()) portPost(artifactPort,value);
+  pendingLocations.clear();
+});
 listen(window,'message',(event)=>{
   if(window.parent===window || event.source!==window.parent) return;
+  if(event.data?.type==='rcp-artifact-locate' && event.data.version===1 && typeof event.data.id==='string'){
+    const value={kind:'rcp-artifact-locate',id:event.data.id,anchor:event.data.anchor,scroll:event.data.scroll===true};
+    if(artifactPort) portPost(artifactPort,value);
+    else pendingLocations.set(value.id,value);
+  }
   if(event.data?.type==='rcp-artifact-selection-enable'){
     selectionEnabled=true;
     if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});

@@ -1,6 +1,7 @@
 import { createCommentsClient, CommentRequestError } from "./api.ts";
-import { findAnchor, locateThread } from "./anchors.ts";
+import { findAnchor } from "./anchors.ts";
 import { installBoxTool } from "./box.ts";
+import { createFrameLocator } from "./viewerFrame.ts";
 import { displayedVersion } from "./viewerModel.ts";
 import { selectionInput } from "./selectionInput.ts";
 import { mountComments } from "./ui.ts";
@@ -30,6 +31,8 @@ export function mountViewer(config: ViewerConfig) {
   const frame = document.querySelector<HTMLIFrameElement>("#preview");
   const image = document.querySelector<HTMLImageElement>("#previewImage");
   const abort = new AbortController();
+  const reposition = () => document.dispatchEvent(new Event("scroll"));
+  const frameLocator = frame ? createFrameLocator(frame, reposition) : null;
   let state: ViewerState | null = null;
   let disposed = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -75,6 +78,7 @@ export function mountViewer(config: ViewerConfig) {
     maxSelections: config.maxSelections,
     load: async () => {
       const page = await client.list(target);
+      frameLocator?.track(page.threads);
       if (!disposed)
         ui.update({
           canPost: Boolean(state?.can_comment),
@@ -133,13 +137,19 @@ export function mountViewer(config: ViewerConfig) {
       }
     },
     locate: (thread: CommentThread) => {
-      locateThread(thread, {
-        ...context(),
-        scroll: () => image?.scrollIntoView({ behavior: "smooth", block: "center" }),
-        flash,
-      });
+      if (frameLocator) {
+        frameLocator.locate(thread);
+        return;
+      }
+      const rect = findAnchor(thread.anchor, context());
+      if (!rect) return;
+      image?.scrollIntoView({ block: "center" });
+      const current = findAnchor(thread.anchor, context());
+      if (current) flash(current);
+      reposition();
     },
     position: (thread) => {
+      if (frameLocator) return frameLocator.position(thread.thread_id);
       const rect = findAnchor(thread.anchor, context());
       return rect ? { x: rect.x + rect.width, y: rect.y + rect.height } : null;
     },
@@ -148,6 +158,7 @@ export function mountViewer(config: ViewerConfig) {
   window.addEventListener(
     "message",
     (event) => {
+      frameLocator?.receive(event);
       if (!config.selectionEnabled || !frame || event.source !== frame.contentWindow) return;
       const value: unknown = event.data;
       if (
@@ -165,6 +176,7 @@ export function mountViewer(config: ViewerConfig) {
     { signal: abort.signal },
   );
   const enableSelection = () => {
+    frameLocator?.reload();
     if (config.selectionEnabled)
       frame?.contentWindow?.postMessage({ type: "rcp-artifact-selection-enable" }, "*");
   };

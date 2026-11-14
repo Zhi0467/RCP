@@ -193,9 +193,6 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
         (event.pointerType !== "touch" && textAtPoint(event))
       )
         return;
-      if (event.pointerType !== "touch") event.preventDefault();
-      // Preventing native selection also prevents focus entering an iframe.
-      // Keep Escape with the active drag instead of racing a parent clear message.
       if (surface === doc) view.focus();
       areaGesture = true;
       drag = {
@@ -270,8 +267,9 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
       const element = drag.element;
       endDrag();
       if (!drawn) {
-        if (surface === doc) pickElement(element);
-        else dismiss();
+        if (surface === doc) {
+          if (!publishText()) pickElement(element);
+        } else dismiss();
         return;
       }
       if (right - left < 4 || bottom - top < 4) {
@@ -308,20 +306,21 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
         areaGesture = false;
         return;
       }
-      const selection = doc.getSelection();
-      const text = bounded(selection?.toString(), 4096);
-      if (!text || !selection?.rangeCount) {
-        pickElement(event.target);
-        return;
-      }
-      clear();
-      const range = selection.getRangeAt(0);
-      const container =
-        range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-          ? range.commonAncestorContainer
-          : range.commonAncestorContainer.parentElement;
-      publish({ kind: "text", text, surrounding_text: bounded(container?.textContent, 6144) });
+      if (!publishText()) pickElement(event.target);
     });
+  function publishText() {
+    const selection = doc.getSelection();
+    const text = bounded(selection?.toString(), 4096);
+    if (!text || !selection?.rangeCount) return false;
+    clear();
+    const range = selection.getRangeAt(0);
+    const container =
+      range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
+    publish({ kind: "text", text, surrounding_text: bounded(container?.textContent, 6144) });
+    return true;
+  }
   function pickElement(element) {
     if (!(element instanceof Element) || element.closest("[data-rcp-selection]")) return;
     clear();
@@ -450,4 +449,209 @@ function describeSelection(selection) {
 function describeRegion(rect) {
   const percent = (value) => `${Math.round(value * 100)}%`;
   return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
+}
+
+function installArtifactLocator(doc, publish) {
+  const view = doc.defaultView;
+  const tracked = new Map();
+  let scheduled = false;
+  let flash = null;
+  let flashTimer;
+  function textRange(anchor) {
+    if (typeof anchor.text !== "string" || !anchor.text || anchor.text.length > 6144) return null;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        return node.nodeType === Node.ELEMENT_NODE &&
+          node.matches("script,style,noscript,[data-rcp-selection]")
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const blocks = new Map();
+    const blockOf = (node) => {
+      const parent = node.parentElement;
+      if (!parent || parent === doc.body) return doc.body;
+      if (!blocks.has(parent)) {
+        const display = view.getComputedStyle(parent).display;
+        blocks.set(
+          parent,
+          display.startsWith("inline") || display === "contents" ? blockOf(parent) : parent,
+        );
+      }
+      return blocks.get(parent);
+    };
+    let text = "";
+    const offsets = [];
+    let previousBlock;
+    let breakBefore = false;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        if (node.tagName === "BR") breakBefore = true;
+        continue;
+      }
+      const value = node.textContent;
+      if (!value) continue;
+      const block = blockOf(node);
+      if (
+        text &&
+        !text.endsWith(" ") &&
+        (breakBefore || (previousBlock && block !== previousBlock))
+      ) {
+        text += " ";
+        offsets.push({ node, offset: 0 });
+      }
+      previousBlock = block;
+      breakBefore = false;
+      for (let i = 0; i < value.length; i++) {
+        const character = /\s/.test(value[i]) ? " " : value[i];
+        if (character === " " && text.endsWith(" ")) continue;
+        text += character;
+        offsets.push({ node, offset: i });
+      }
+    }
+    const normalize = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const quote = normalize(anchor.text);
+    const surrounding = normalize(anchor.surrounding_text);
+    const contextAt = surrounding ? text.indexOf(surrounding) : -1;
+    const quoteAt = surrounding.indexOf(quote);
+    const start = contextAt >= 0 && quoteAt >= 0 ? contextAt + quoteAt : text.indexOf(quote);
+    if (start < 0) return null;
+    const first = offsets[start];
+    const last = offsets[start + quote.length - 1];
+    if (!first || !last) return null;
+    const range = doc.createRange();
+    range.setStart(first.node, first.offset);
+    range.setEnd(last.node, last.offset + 1);
+    return { rect: range.getBoundingClientRect(), element: first.node.parentElement };
+  }
+  function find(anchor) {
+    if (anchor.kind === "text") return textRange(anchor);
+    const descriptor = anchor.kind === "box" ? anchor.elements?.[0] : anchor;
+    if (anchor.kind !== "whole" && typeof descriptor?.path !== "string") return null;
+    if (descriptor?.path?.length > 512) return null;
+    let element;
+    try {
+      element = anchor.kind === "whole" ? doc.body : doc.querySelector(descriptor.path);
+    } catch {
+      return null;
+    }
+    if (!element) return null;
+    const bounds = element.getBoundingClientRect();
+    const region = descriptor?.region;
+    if (region) {
+      if (
+        ![region.x, region.y, region.width, region.height].every(
+          (value) => Number.isFinite(value) && value >= 0 && value <= 1,
+        )
+      )
+        return null;
+      return {
+        element,
+        rect: {
+          x: bounds.x + bounds.width * region.x,
+          y: bounds.y + bounds.height * region.y,
+          width: bounds.width * region.width,
+          height: bounds.height * region.height,
+        },
+      };
+    }
+    return { element, rect: bounds };
+  }
+  function report(id, anchor) {
+    const found = find(anchor);
+    const bounds = found?.rect;
+    const rect =
+      bounds && bounds.width > 0 && bounds.height > 0
+        ? { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+        : null;
+    publish({ kind: "rcp-artifact-position", id, rect });
+    return found;
+  }
+  function refresh() {
+    if (scheduled) return;
+    scheduled = true;
+    view.requestAnimationFrame(() => {
+      scheduled = false;
+      for (const [id, anchor] of tracked) report(id, anchor);
+    });
+  }
+  view.addEventListener("scroll", refresh, true);
+  view.addEventListener("resize", refresh);
+  const observer = new ResizeObserver(refresh);
+  observer.observe(doc.documentElement);
+  return (request) => {
+    if (!request || typeof request.id !== "string" || request.id.length > 128) return;
+    const { id, anchor } = request;
+    if (anchor === null) {
+      tracked.delete(id);
+      return;
+    }
+    if (!anchor || !["whole", "text", "element", "box"].includes(anchor.kind)) return;
+    tracked.set(id, anchor);
+    const found = report(id, anchor);
+    if (!request.scroll || !found) return;
+    for (
+      let element = found.element;
+      element && element !== doc.body && element !== doc.documentElement;
+      element = element.parentElement
+    ) {
+      const style = view.getComputedStyle(element);
+      const current = find(anchor);
+      if (!current) break;
+      const rect = current.rect;
+      const bounds = element.getBoundingClientRect();
+      const left = bounds.left + element.clientLeft;
+      const top = bounds.top + element.clientTop;
+      const dx =
+        /auto|scroll|hidden/.test(style.overflowX) &&
+        (rect.x < left || rect.x + rect.width > left + element.clientWidth)
+          ? rect.x + rect.width / 2 - left - element.clientWidth / 2
+          : 0;
+      const dy =
+        /auto|scroll|hidden/.test(style.overflowY) &&
+        (rect.y < top || rect.y + rect.height > top + element.clientHeight)
+          ? rect.y + rect.height / 2 - top - element.clientHeight / 2
+          : 0;
+      if (dx || dy) element.scrollBy({ left: dx, top: dy, behavior: "instant" });
+    }
+    const target = find(anchor)?.rect;
+    if (target)
+      view.scrollBy({
+        left:
+          target.x < 0 || target.x + target.width > view.innerWidth
+            ? target.x + target.width / 2 - view.innerWidth / 2
+            : 0,
+        top:
+          target.y < 0 || target.y + target.height > view.innerHeight
+            ? target.y + target.height / 2 - view.innerHeight / 2
+            : 0,
+        behavior: "instant",
+      });
+    const current = report(id, anchor);
+    if (!current) return;
+    flash?.remove();
+    clearTimeout(flashTimer);
+    flash = doc.createElement("div");
+    flash.dataset.rcpSelection = "locate";
+    const rect = current.rect;
+    Object.assign(flash.style, {
+      position: "fixed",
+      pointerEvents: "none",
+      zIndex: "2147483647",
+      left: `${rect.x}px`,
+      top: `${rect.y}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+      background: "rgba(189,91,54,.2)",
+      outline: "2px solid #bd5b36",
+    });
+    doc.documentElement.appendChild(flash);
+    flashTimer = setTimeout(() => {
+      flash?.remove();
+      flash = null;
+    }, 1100);
+  };
 }
