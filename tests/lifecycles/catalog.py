@@ -39,7 +39,6 @@ from rcp.core.models import (
 )
 from rcp.machine_upgrade import _migrate_projects
 from rcp.paper.live import PaperLive
-from rcp.paper.models import PaperTree
 from rcp.projects import ProjectCatalog
 from rcp.runs.branch_merge import commit_branch_merge_with_history, stream_branch_merge_run
 from rcp.runs.branch_merge_admission import (
@@ -63,7 +62,6 @@ from rcp.runs.episodes.merge import (
 from rcp.runs.project_deletion import _cancel_external_work, stop_project_work
 from rcp.runs.provider_login import delete_removed_credential
 from rcp.server_ops.application_validation import _rebind_local_stage_paths, build_rehearsal_overlay
-from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.backup_paper import restore_paper_section
 from rcp.server_ops.cli import ServerEventEmitter
 from rcp.server_ops.members import _remove_member_agent_data
@@ -89,6 +87,7 @@ from rcp.storage.branch_names import (
 )
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.chat_forks import ChatForkStoreMixin
+from rcp.storage.comments import CommentStoreMixin, _reopen, delete_comments_by_target
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
@@ -110,6 +109,7 @@ from rcp.storage.models import (
 )
 from rcp.storage.notifications import NotificationStoreMixin
 from rcp.storage.owner_auth import OwnerAuthStoreMixin
+from rcp.storage.paper_folder import migrate_paper_folder
 from rcp.storage.project_groups import ProjectGroupStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin, migrate_per_member_provider_logins
@@ -662,43 +662,65 @@ COMPUTE_JOB = Entry(
 )
 
 PAPER_LIVE = Entry(
-    name="paper live",
-    status=_field(PaperTree, "publish_state"),
-    tables=frozenset({"paper_publication"}),
+    name="paper turn",
+    status="turn_operation_id",
+    tables=frozenset({"paper_state"}),
     writers=(
         PaperLive._initialize,
-        PaperLive._revision,
-        PaperLive._publication_result,
-        PaperLive.publish,
-        PaperLive.resolve_hold,
-        PaperLive.pause,
-        PaperLive.resume,
-        PaperLive.drain,
-        PaperLive.dispose,
-        PaperLive.fence,
-        BackupCaptureCoordinator.capture_sqlite,
+        PaperLive._bump,
+        PaperLive._start_turn,
+        PaperLive._finish_turn,
         restore_paper_section,
+        migrate_paper_folder,
     ),
     rules=(
         Rule(
-            "commit_before_broadcast",
-            "An edit commits in SQLite before it is broadcast.",
-            "paper spec: Shared paper",
+            "one_turn_per_project",
+            "A project's Paper is held by at most one Paper turn; later turns wait queued.",
+            "paper spec: Coach",
+        ),
+        Rule(
+            "turn_ends_after_provider_exit",
+            "A turn releases the Paper only after its provider process exits or recovery "
+            "settles it.",
+            "paper spec: A turn's change list",
         ),
         Rule(
             "paused_refuses_writes",
             "A paused or fenced project refuses paper writes.",
-            "code guard at PaperLive.run_sync",
+            "code guard at PaperLive._writable",
         ),
         Rule(
-            "published_revision_rises",
-            "The published revision only rises.",
-            "code guard at PaperLive._publication_result",
+            "revision_rises",
+            "The Paper revision only rises.",
+            "code guard at PaperLive._bump",
+        ),
+    ),
+)
+
+COMMENT_THREAD = Entry(
+    name="comment thread",
+    status="state",
+    tables=frozenset({"comment_threads"}),
+    writers=(
+        CommentStoreMixin.create_comment_thread,
+        CommentStoreMixin.delete_comment_post,
+        CommentStoreMixin.mark_threads_sent,
+        CommentStoreMixin.resolve_comment_thread,
+        _reopen,
+        delete_comments_by_target,
+        ProjectStoreMixin.delete_project_records,
+    ),
+    rules=(
+        Rule(
+            "send_resolves",
+            "An admitted Send resolves a thread and records the operation it went to.",
+            "paper spec: Thread states",
         ),
         Rule(
-            "hold_blocks_publish",
-            "Nothing publishes while a hold is set.",
-            "code guard at PaperLive._publish",
+            "reopen_clears_sent",
+            "Reopening or replying opens a thread and clears its sent mark.",
+            "paper spec: Thread states",
         ),
     ),
 )
@@ -1024,6 +1046,7 @@ ENTRIES = (
     BRANCH_MERGE,
     COMPUTE_JOB,
     PAPER_LIVE,
+    COMMENT_THREAD,
     MIRRORED_TERMINAL,
     ARTIFACT,
     SERVER_STEP_JOURNAL,
@@ -1035,6 +1058,11 @@ ENTRIES = (
 )
 
 NOT_LIFECYCLE: dict[str, str] = {
+    "paper_turn_files": "append-only turn file list",
+    "paper_publication": "retired publication row; the Paper migration clears its hold",
+    "paper_migrations": "one-shot migration receipts",
+    "comment_mentions": "mention rows; observed_at is a one-shot delivery mark",
+    "comment_posts": "thread posts; edit and delete are author actions",
     "_legacy_campaigns_archive": "frozen archive of retired campaign rows, only deleted",
     "agent_threads": "thread identity row; closing is one-way",
     "agent_usage": "append-only usage events",
@@ -1086,16 +1114,11 @@ NOT_LIFECYCLE: dict[str, str] = {
     "notification_web_push_subscriptions": "device subscription identity",
     "owner_credentials": "singleton owner secret hash",
     "paper_blobs": "content-addressed bodies",
-    "paper_change_groups": "retired Coach cards, dropped after migration",
-    "paper_change_receipts": "retired Coach card receipts, dropped after migration",
-    "paper_changes": "retired Coach card bodies, dropped after migration",
-    "paper_coach_steers": "retired Coach steer receipts, dropped after migration",
+    "paper_change_groups": "retired Coach cards; the Paper migration rejects pending ones",
     "paper_doc_states": "compacted document cache",
     "paper_drafts": "legacy draft content",
     "paper_files": "file tree rows; deleted_at is a tombstone",
     "paper_git_links": "one Git link per paper; removing the link deletes the row",
-    "paper_revisions": "append-only revision log, pruned",
-    "paper_saved_snapshots": "saved manifests per revision",
     "paper_updates": "append-only edit log, compacted",
     "paper_version_texts": "content-addressed bodies",
     "paper_versions": "named version manifests",
@@ -1119,7 +1142,6 @@ NOT_LIFECYCLE: dict[str, str] = {
 
 UNKNOWN_TABLE: dict[str, str] = {
     "rcp.paper.persistence:collect_bodies": "deletes unreferenced paper_version_texts and paper_blobs",
-    "rcp.paper.persistence:prune": "prunes paper_updates and paper_doc_states of deleted files",
     "rcp.runs.tasks.work:record_work_graph_failure": "prose that reads as SQL, not a write",
     "rcp.server_ops.provider_update:_pending_steps": "prose that reads as SQL, not a write",
     "rcp.storage.base:AppStoreBase._rebuild_storage_table": (
