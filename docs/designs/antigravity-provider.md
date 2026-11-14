@@ -1,7 +1,8 @@
 # Antigravity CLI (`agy`) as an RCP provider
 
-Status: design, not built. Probed against `agy` 1.5.1 on macOS (arm64) and
-1.5.8 on a Linux GPU host on 2026-11-13. Every prompt-running probe ran in a
+Status: design, not built. Probed against `agy` 1.5.1 and 1.5.8 on macOS
+(arm64) and 1.5.8 on a Linux GPU host on 2026-11-13. The build gates (G1–G5)
+ran on 1.5.8 on both systems. Every prompt-running probe ran in a
 throwaway folder, with no dangerous-permissions flag and none of the user's own
 grants.
 
@@ -39,9 +40,9 @@ homes ([Sign-in contract](#sign-in-contract)).
 
 ## Probe evidence
 
-Each row was observed, not read from docs. Rows P1–P21 ran on macOS only;
-[Gates before build](#gates-before-build) lists the ones that must be repeated
-on Linux. Paths are placeholders.
+Each row was observed, not read from docs. Rows P1–P21 ran on macOS; the
+[gate results](#gate-results) repeat the ones that decide containment on Linux.
+Paths are placeholders.
 
 | # | Probe | Observed |
 | --- | --- | --- |
@@ -95,7 +96,7 @@ Docs: [headless mode](https://antigravity.google/docs/cli/headless.md),
 | `id`, `label` | `base.py:398` | `agy`, "Antigravity" | Native |
 | Executable | `install_paths` `base.py:418` | `~/.local/bin/agy` (one Go binary) | Native |
 | Native update | `ProviderNativeUpdate` `base.py:368` | `agy update` | Native |
-| Version floor | `validate_readiness_version` `base.py:478` | 1.5.1 on **every** capability, overridden as OpenCode does (`opencode/profile.py:174`): every kind relies on the probed rule semantics | Adapter |
+| Version floor | `validate_readiness_version` `base.py:478` | 1.5.8 on **every** capability, the version the gates passed on, overridden as OpenCode does (`opencode/profile.py:174`): every kind relies on the probed rule semantics | Adapter |
 | Dependency registry | `src/rcp/dependencies.py` | Declare `agy`: purpose, roles, macOS and Linux, optional tier | Adapter |
 
 ### Launch and wire protocol
@@ -140,7 +141,7 @@ Docs: [headless mode](https://antigravity.google/docs/cli/headless.md),
 
 | Contract | Owner | agy | Status |
 | --- | --- | --- | --- |
-| Native read denies | `HiddenReadScope` | `read_file(<path>)` denies (P3). Glob patterns and symlinked spellings are unprobed; see gates | Native for literal paths |
+| Native read denies | `HiddenReadScope` | `read_file(<path or folder>)` denies (P3), matched against the resolved path (G2). No glob patterns | Native for paths and folders |
 | Shell wrapper | Claude `CLAUDE_CODE_SHELL_PREFIX`; OpenCode `SHELL` | None (P11). Every agy launch reports `unhidden` with `provider_native_tools_uncovered` | **Missing** |
 | Login credential attributes | `base.py:423-429`; `provider_cleanup.py:93` | `login_credential_files`, `login_home_credentials`, `remote_login_credential_files`, all set to the token path | Adapter |
 | Machine login file | `staged_hidden_read.py:86` (stdlib, runs on the host) | `<home>/.gemini/antigravity-cli/antigravity-oauth-token` added to the host list; agy has no override variable besides `HOME` | Adapter |
@@ -154,7 +155,7 @@ Docs: [headless mode](https://antigravity.google/docs/cli/headless.md),
 | Liveness | `login_probe_command` `base.py:495` | `agy -p /usage --output-format json`, zero tokens (P13) | Native |
 | Sign-in | `provider_auth`, `provider_sign_in.py` | `agy acp --login` per login home: URL out, pasted code in (P22) | Adapter, new `paste_code` method |
 | Sign-out | `ProviderAuthentication.sign_out` | Delete the login home's token file (P25) | Adapter |
-| Work startup probe | `work_like_probe_command` | None until probed | Missing until probed |
+| Work startup probe | `work_like_probe_command` | The full launch argv with stdin closed: zero tokens; rejects bad setting values and an unknown `--agent`; does not check rule syntax (G5) | Native |
 
 ### Models, usage, status, steering, skills
 
@@ -190,11 +191,12 @@ AgyProfile
   runtime_choices = (ProviderRuntimeChoice(id="stream-json", label="Antigravity stream JSON"),)
   turn_fences = {"agy.stream-json.v1": AgyStreamTurnFence}
   usage_profile = "agy.step.v1"
-  work_like_minimum_version = (1, 5, 1)
+  work_like_minimum_version = (1, 5, 8)
   validate_readiness_version -> floor on every capability
   session_format = None; autocompact_hint = None
   shell_timeout_default_seconds = None
-  hidden_read_gaps = ("shell_wrapper",)          # new base attribute
+  hidden_read_gaps = ("shell_wrapper", "glob_rules")   # new base attribute
+  resume_keeps_tools = True                             # new base attribute (G4)
   login_credential_files = (<token path in the login's local directory, as Codex's>,)
   login_home_credentials = (".gemini/antigravity-cli/antigravity-oauth-token",)
   remote_login_credential_files = (".rcp/provider-homes/agy/{login_id}/.gemini/antigravity-cli/antigravity-oauth-token",)
@@ -262,12 +264,22 @@ explicitly so the user's saved values cannot interrupt or stall a headless turn.
 
 Denies on every capability:
 
-- each hidden read path as `read_file(<path>)`, written in both its canonical
-  spelling and its spelling under the launch's `HOME`, so a symlinked overlay
-  path cannot bypass it;
-- `write_file(<cwd>/.agents)` and the client folder. A write to
-  `.agents/hooks.json` would run commands on the next resume, so the deny must
-  cover the whole folder (gate G3).
+- each literal hidden read path as `read_file(<canonical path>)`. agy resolves
+  symlinks before matching (G2), so the overlay spelling needs no rule of its
+  own;
+- the login homes as folders: `read_file(<data dir>/provider-homes)` and
+  `read_file(~/.rcp/provider-homes)`. A folder rule covers everything inside
+  it, which replaces the glob agy cannot express. agy's own run still works:
+  the CLI reads its token directly, and overlay paths resolve into the machine
+  home;
+- hidden read patterns with a wildcard (such as `private-*.jsonl`) cannot be
+  rendered. They are reported through `hidden_read_gaps` as `glob_rules`;
+- `write_file(<cwd>/.agents)` and the client folder. The folder rule refuses a
+  write to `.agents/hooks.json` (G3);
+- `write_file(/tmp)` and `write_file(<resolved $TMPDIR>)`. On Linux the file
+  tools write the system temp folder under every preset (G1). When the stage or
+  a writable root lies inside a temp folder, that launch omits the temp deny and
+  reports the gap.
 
 ### Decoder
 
@@ -396,8 +408,9 @@ Only what agy needs to avoid new id branches:
 | Today | Change |
 | --- | --- |
 | `base.py:435` shell timeout assumed for every profile | `shell_timeout_default_seconds: int \| None`; the machine card omits the field for None |
-| No profile way to say "no shell wrapper" | `hidden_read_gaps` attribute; agy reports `provider_native_tools_uncovered` from it. OpenCode's existing branches stay as they are |
+| No profile way to say "no shell wrapper" | `hidden_read_gaps` attribute (`shell_wrapper`, `glob_rules`); agy reports `provider_native_tools_uncovered` from it. OpenCode's existing branches stay as they are |
 | `staged_hidden_read.py:86` host list of machine login files | add agy's path |
+| `runs/artifact_edit_admission.py` resumes the master's session | profile attribute `resume_keeps_tools`; when True, a revoking edit is admitted with `fresh_session = True` |
 | `providers/codex/homes.py` | move the generic overlay into a shared module, parameterised by machine home and independent paths |
 | `provider_auth.py`, `provider_sign_in.py`, `provider_login.py` | the `paste_code` method |
 | `tests/test_hidden_read_capability_invariant.py:37-108` | an agy branch that reads `--settings` and the staged agent file |
@@ -414,18 +427,22 @@ Test-first, scoped to the change:
    present; scratch kinds never get `--add-dir`; shell tools only for Work-like
    kinds and client-carrying `scratch_patch`; `accept-edits` on every writing
    kind; Work's `write_file` allows equal writable roots minus the workspace;
-   both spellings of each hidden deny; the `.agents` deny; stable digest.
+   canonical hidden denies and the two provider-homes folder denies; the
+   `.agents` deny; the temp denies, and their omission with a gap when the
+   stage is inside temp; stable digest.
 3. **Fence and replay:** shared vectors through the local turn and the remote
    fence, including two queued inputs, an error result, and a replay with one
    steer.
-4. **Overlay homes:** no loop from any ancestor; `HOME` set only on the agy
+4. **Fresh artifact edits:** an agy artifact edit is admitted with
+   `fresh_session = True` and records the fresh start.
+5. **Overlay homes:** no loop from any ancestor; `HOME` set only on the agy
    process; a new top-level file and an atomically renamed file migrate to the
    machine home; the lease blocks migration during a turn.
-5. **Sign-in:** a fake `agy acp --login` that prints a URL and reads a code;
+6. **Sign-in:** a fake `agy acp --login` that prints a URL and reads a code;
    the code reaches stdin once and appears in no stored record.
-6. **Registry:** iterate `PROVIDER_IDS`: remote bundle, catalog fallback,
+7. **Registry:** iterate `PROVIDER_IDS`: remote bundle, catalog fallback,
    version floor.
-7. **Real drive** on throwaway data with real `agy`, local and on one SSH Linux
+8. **Real drive** on throwaway data with real `agy`, local and on one SSH Linux
    host: an artifact edit in a running orchestrator's chat lands in the stage,
    and a write outside shows a clear error; a Work turn writes a repo root, a
    protected path fails, and the shell reaches the network; resume; a steer; the
@@ -433,24 +450,18 @@ Test-first, scoped to the change:
    verify, a turn, and a resume across a login switch; a PATH shim counting real
    `agy` invocations.
 
-## Gates before build
+## Gate results
 
-Each is a probe. A failure changes the design before code starts.
+Run on 1.5.8, macOS and Linux, in throwaway folders. Each run used the staged
+agent and `--settings` the design renders.
 
-- **G1. Linux semantics.** Repeat P3, P6b, P8 and P10 on the Linux host.
-- **G2. Deny matching.** Whether `read_file` and `write_file` denies match a
-  glob pattern, and whether they match the resolved path or the path as typed.
-  If globs fail, the matching hidden reads report uncovered through
-  `hidden_read_gaps`.
-- **G3. Folder deny.** `write_file(<cwd>/.agents)` refuses a write to
-  `<cwd>/.agents/hooks.json`.
-- **G4. Agent switch on resume.** `--conversation` with a different `--agent`
-  and `--settings` than the conversation started with. If agy refuses, agy
-  artifact edits are admitted with `fresh_session = True` from the start, a
-  recorded fresh start. The refused-resume rebuild is keyed to a Codex receipt
-  and does not apply.
-- **G5. Work startup probe.** Whether `--settings` with stdin closed validates
-  the policy and exits.
+| Gate | macOS | Linux | Design consequence |
+| --- | --- | --- | --- |
+| G1. P3, P6b, P8, P10 on Linux | as before | Same, except P8: **a file write outside the workspace into `/tmp` succeeded**, also under `toolPermission:"request-review"`. A write into the home was soft-denied. An explicit `write_file(/tmp)` deny refused it and the turn went on | Temp denies on every launch ([Policy JSON](#policy-json)) |
+| G2. Deny matching | A deny on the real path refused a read through a symlink, and the error named the resolved path. A deny on the symlink spelling did not refuse a read of the real path. `private-*.jsonl` and `**/auth.json` denies did **not** match; the docs allow only a path, a folder or `*` | Same | Canonical paths only; folder denies for login homes; wildcard patterns reported as a gap |
+| G3. Folder deny | `write_file(<cwd>/.agents)` refused `<cwd>/.agents/hooks.json`; the turn went on and the agent file still loaded | Same | Holds |
+| G4. Agent switch on resume | `--conversation` with a different `--agent` kept the **first agent's tools**: the model called `run_command` under the shell-less agent and was soft-denied. The new `--settings` did apply. A fresh conversation with the shell-less agent had no shell | Same | agy artifact edits always start a recorded fresh session ([D1](#d1-a-denied-action-ends-the-turn-settled)) |
+| G5. Work startup probe | Closed stdin: an `init` line, exit 0, zero tokens. A bad `agentMode` and an unknown `--agent` exit 1. A malformed rule is accepted | Same | `work_like_probe_command` is the launch argv with stdin closed |
 
 ## Decisions
 
@@ -468,6 +479,11 @@ human turns.
   client is allowed.
 - A refusal still decodes to a visible error naming the refused action, never
   an empty answer.
+- An agy conversation keeps the tools it started with (G4), so resuming the
+  Work master would bring its shell back. agy artifact edits are therefore
+  admitted with `fresh_session = True`, a recorded fresh start, and never
+  resume the master. A comment then reaches the agent with the artifact and
+  its version, not the master's history.
 
 Rejected: a machine-built RE2 complement deny (no lookahead, fragile), and the
 agy sandbox with `command(*)` (a different contract from every other provider's
