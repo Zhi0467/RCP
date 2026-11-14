@@ -69,6 +69,9 @@ interface CompileResult {
 
 const PAPER_IMAGE = /\.(png|jpe?g|gif|webp|svg)$/i;
 const HTML_ZOOM = { min: 50, max: 200, step: 5 };
+const zoomStop = (percent: number) => Math.log2(percent / 100);
+const zoomPercent = (stop: number) =>
+  Math.round((100 * 2 ** stop) / HTML_ZOOM.step) * HTML_ZOOM.step;
 
 // An asset URL changes only with its bytes, so other files' saves never refetch it.
 function assetUrl(projectId: string, file: PaperFile) {
@@ -331,12 +334,13 @@ function HtmlPreview({
             <input
               type="range"
               aria-label="Preview zoom"
-              min={HTML_ZOOM.min}
-              max={HTML_ZOOM.max}
-              step={HTML_ZOOM.step}
-              value={zoom}
+              min={zoomStop(HTML_ZOOM.min)}
+              max={zoomStop(HTML_ZOOM.max)}
+              step="0.01"
+              value={zoomStop(zoom)}
+              aria-valuetext={`${zoom}%`}
               disabled={!preview}
-              onChange={(event) => zoomTo(Number(event.target.value))}
+              onChange={(event) => zoomTo(zoomPercent(Number(event.target.value)))}
             />
             <button
               type="button"

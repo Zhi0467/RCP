@@ -177,7 +177,8 @@ except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a d
 that starts off text draws an area on a PDF page or image. An area on an HTML page
 needs comment mode, a toggle in the panel header that starts on for each file
 shown, as the artifact viewer's does; turning it off hands drags back to the
-page's own scripts.
+page's own scripts. Zoom is a slider from 50% to 200% that runs on doublings, so 100% sits in
+its middle; it shows on hover or focus, and always at phone width.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
