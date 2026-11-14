@@ -96,7 +96,6 @@ export function ProjectMenu({ children }: { children: ReactNode }) {
       >
         <Ellipsis size={20} />
       </button>
-      {/* Kept mounted so a control's own popover survives the menu closing. */}
       <div
         className="project-menu-panel"
         id="project-menu"
