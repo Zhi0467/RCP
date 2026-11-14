@@ -7,17 +7,13 @@ staging, no mirror, no change cards.
 
 ## Problem
 
-- **Two copies.** Paper content lives in SQLite (saved snapshots and a Yjs log)
-  and is republished as a whole tree into `.research/paper` after idle editing.
-  Agents read a copy that can trail the Paper.
-- **Two launch paths.** The Coach has its own task kind (`paper_coach`),
-  request (`CoachRequest`), permission profile per provider (`paper_suggest`,
-  `rcp_paper`), sessions (`WritingSession`), steering store
-  (`paper_coach_steers`), remote recovery, refresh rounds, and Review/Apply
-  modes. Most of it duplicates ordinary chat Work (`runs/tasks/coach.py`).
-- **Staging and cards.** Each Coach round reads a frozen snapshot, writes whole
-  files to a changes folder, and RCP diffs them into cards. A slow turn applies
-  late and clashes with anything typed meanwhile.
+- **Two copies.** Paper content lives in SQLite and is republished into
+  `.research/paper` after idle editing. Agents read a copy that can trail.
+- **Two launch paths.** The Coach has its own task kind, request, provider
+  profiles, sessions, steering store, recovery, refresh rounds, and modes
+  (`runs/tasks/coach.py`). Most of it duplicates ordinary chat Work.
+- **Staging and cards.** A Coach round writes whole files to a changes folder
+  that become cards. A slow turn applies late and clashes with typing.
 
 ## Settled decisions
 
@@ -43,10 +39,8 @@ Decided with the human in chat:
 
 ## Non-goals
 
-- No Undo button on a turn. History and the Coach revert.
-- No site builds in the Paper preview.
-- No dependency on a live file watcher.
-- No Git repository inside the folder.
+No Undo button on a turn, no site builds in the preview, no live file watcher
+dependency, and no Git repository inside the folder.
 
 ## The folder
 
@@ -54,16 +48,14 @@ The folder follows the project memory folder (`agents/memory_file_io.py`,
 `agents/memory_files.py`), which is already a code-defined write root inside
 RCP-owned storage.
 
-- **Local base** (a team project on the server, or a desktop project):
-  `<data_dir>/paper/<project_id>/`.
-- **SSH base:** `~/.rcp/paper/<project_id>/` on the base host, created by a
-  shipped script like `RemoteRunStage.project_memory`.
+- **Local base:** `<data_dir>/paper/<project_id>/`.
+- **SSH base:** `~/.rcp/paper/<project_id>/`, created by a shipped script like
+  `RemoteRunStage.project_memory`.
 
-Both sit under `rcp_owned_paths`, outside every repository and outside
-`.research`, so no repository grant reaches them. Agents run on the base
-machine, so the Coach edits local files. Project rename and delete follow
-`change_project_memory`. Backup and transfer list `paper` as an app-data root;
-an SSH base is read through the file module below.
+Both sit under `rcp_owned_paths`, outside every repository and `.research`.
+Agents run on the base machine, so the Coach edits local files. Rename and
+delete follow `change_project_memory`; backup and transfer list `paper` as an
+app-data root.
 
 **File module.** New `paper/folder_io.py` is stdlib-only, runs in-process
 locally, and ships over SSH as `memory_file_io.py` does. Operations:
@@ -101,10 +93,10 @@ Deleted after migration: `paper_saved_snapshots`, `paper_revisions`,
 **Revision.** `paper_state.revision` is bumped by every save and by every scan
 that finds a change. "Current" or a `version_id` addresses a past state; a
 bare revision no longer does.
-- `paper_versions.revision`: the counter when the version was taken.
-- `paper_git_links.synced_revision`: the counter at the last sync.
-- `paper_doc_states.through_revision`: the counter the cache equals.
-  `through_seq` goes with `paper_updates`.
+- `paper_versions.revision`, `paper_git_links.synced_revision`, and
+  `paper_doc_states.through_revision`: the counter when the version was taken,
+  at the last sync, and that the cache equals. `through_seq` goes with
+  `paper_updates`.
 - The `revision` query param on the raw, preview, and HTML-preview routes in
   `api/paper.py`, and `PaperCompileRequest.revision`, become `version_id`;
   absent means current.
@@ -117,46 +109,35 @@ bare revision no longer does.
 One per-project loop in `PaperLive` replaces the publisher. Rooms, `receive`,
 framing, acks, and broadcast stay.
 
-- **Load.** Read the disk text. If the cache's `text_sha256` matches, use the
-  cached Yjs state. Otherwise apply `text_replacement(cached, disk)` so the
-  disk wins.
-- **Save** (about 1 s after typing stops, on room close, and before any
-  snapshot): `write`, then the cache, then the ack. An ack now means "on
-  disk". Unacked text stays in the browser's IndexedDB as today.
-- **Reload.** A poll scans the folder while the project has viewers or a Paper
-  turn runs. It hashes only paths whose stat changed, and reads a changed file
-  once its stat is stable for one interval. New constants in `rcp/limits.py`:
-  `PAPER_POLL_SECONDS` (1 s), `PAPER_REMOTE_POLL_SECONDS` (2 s),
-  `PAPER_POLL_MAX_FILES`, and `PAPER_POLL_MAX_HASH_MB` (per poll; the rest
-  waits for the next poll). A disk hash that differs from `last_known` is a
-  foreign write. For an open file it merges in memory with
-  `text_merge(base, ours=buffer, theirs=disk)`; on overlap the buffer wins.
-  The merged text goes to viewers as a Yjs update and is saved if it differs
-  from disk. Any change bumps the `paper` watermark so the file tree refreshes.
-- **Merge base for agent writes.** For each path, the base is the agent's
-  previous write to that path in this turn, or the turn-start version if
-  there is none. Human edits the agent never saw always count as ours. No
-  time window. A foreign change to a binary file: the agent's bytes win,
-  unless a human uploaded that path during the turn; that is a clash and the
-  human wins.
-- **Foreign delete or rename.** If the file is open and its buffer changed
-  since its base, it is a clash: the human wins, the file is recreated, and
-  the turn gets a red row. Otherwise the delete is accepted.
-- **Renames.** In one scan, a vanished path and a new path with the same hash
-  keep the `file_id`, so comments survive.
-- **Outside a turn.** A foreign write with no Paper turn running still merges
-  (the human wins) and is listed on the next Paper turn as "outside a turn".
+- **Load.** If the cache's `text_sha256` matches disk, use the cached Yjs
+  state; else apply `text_replacement(cached, disk)` so the disk wins.
+- **Save** (about 1 s after typing stops, on room close, before a snapshot):
+  `write`, then the cache, then the ack, which now means "on disk".
+- **Reload.** While there are viewers or a Paper turn, a poll scans, hashes
+  only stat-changed paths, and reads one once its stat is stable for one
+  interval. New `rcp/limits.py` constants: `PAPER_POLL_SECONDS` (1 s),
+  `PAPER_REMOTE_POLL_SECONDS` (2 s), and per-poll caps `PAPER_POLL_MAX_FILES`
+  and `PAPER_POLL_MAX_HASH_MB`. A hash that differs from `last_known` is a
+  foreign write; an open file merges with `text_merge(base, ours=buffer,
+  theirs=disk)`, buffer winning overlaps, and goes to viewers as a Yjs update.
+  Any change bumps the `paper` watermark.
+- **Merge base.** Per path, the agent's previous write in this turn, else the
+  turn-start version. Human edits the agent never saw always count as ours.
+  For a binary file the agent's bytes win, unless a human uploaded that path
+  during the turn: a clash, the human wins.
+- **Foreign delete or rename** of an open file whose buffer changed since its
+  base is a clash: the file is recreated with a red row. Else it is accepted.
+- **Renames.** A vanished path and a new path with the same hash in one scan
+  keep the `file_id`.
+- **Outside a turn,** a foreign write still merges (human wins) and is listed
+  on the next Paper turn as "outside a turn".
 
-**Multi-file writes** (tree routes, upload, rename, History restore, Paper Git
-apply) write files in path order. Each file is a three-way merge: base is what
-the operation read, theirs is the operation's result, ours is disk or buffer
-now. On overlap the operation wins for human actions (restore, upload,
-rename) and GitHub wins for Paper Git apply; non-overlapping keystrokes
-survive. An I/O failure stops the write and reports the files already
-written; rerunning is idempotent. The client no longer sends `expect`. These
-writes go through the save, so only agent writes count as foreign.
-
-One poll path serves local and SSH; there is no watcher dependency.
+**Multi-file writes** (tree routes, upload, rename, restore, Paper Git apply)
+go through the save in path order, so only agent writes are foreign. Each file
+merges three ways: base is what the operation read, theirs its result, ours
+disk or buffer now. Overlaps go to the operation for human actions and to
+GitHub for Paper Git; other keystrokes survive. An I/O failure stops and
+reports the files written; a rerun is idempotent. The client drops `expect`.
 
 ## The Coach chat
 
@@ -166,8 +147,7 @@ One poll path serves local and SSH; there is no watcher dependency.
   `RunRequest.focus` and `AgentDispatchScope.focus` default to `None` for old
   rows, so recovery keeps it. The Coach pane lists the member's
   `focus = "paper"` chats.
-- **Always Work.** A Paper chat has no Discuss mode. Its turns run with
-  capability `work_auto`.
+- **Always Work** (`work_auto`). A Paper chat has no Discuss mode.
 - **Write scope.** `ProjectWriteScope.paper_root` (new) is set only for
   `focus = "paper"`. It is handled like `memory_roots`: added to writable
   roots, in the fingerprint when set, and carved out of the RCP-owned deny list
@@ -178,19 +158,17 @@ One poll path serves local and SSH; there is no watcher dependency.
   (`runs/agent_thread_queue.py`). It shows as queued with "Waiting for another
   Paper turn", and the member can cancel it. Any settle (completed,
   interrupted, failed, recovered) releases the gate.
-- **Turn end.** A turn ends only after the provider process tree has exited or
-  recovery has settled, so no late write escapes the list.
+- **Turn end** waits until the provider process tree exits or recovery settles.
 - **Prompt.** The writing guidance moves into the Work contract when `focus` is
   `paper`, rendered from the resolved scope. It names the folder, says to build
   in the artifact folder, and says: "Files change under you. Re-read before
   each edit. If a person reverted your change, keep their text and mention
   it." Other launch kinds name the folder as the Paper, read-only;
   Auto-research gains the line.
-- **Deleted.** `runs/tasks/coach.py`, `CoachRequest`, the `paper_suggest`
-  capability and provider profiles, `WritingSession`, `paper_coach_steers`,
-  refresh rounds, `PaperChanges` (keep `line_changes`), the change-card routes
-  and UI, publication (`publish_paper_tree`, `_select_paper_tree`, the `paper`
-  generation, `.research/paper`), and the publication badge.
+- **Deleted.** `runs/tasks/coach.py`, `CoachRequest`, `paper_suggest` and its
+  profiles, `WritingSession`, `paper_coach_steers`, refresh rounds,
+  `PaperChanges` (keep `line_changes`), change cards, publication
+  (`publish_paper_tree`, `_select_paper_tree`, `.research/paper`), and its badge.
 
 ## A turn's change list
 
@@ -203,17 +181,13 @@ One poll path serves local and SSH; there is no watcher dependency.
   changed and differs from the editor's `last_known` (files nobody had open).
   One `graph_run_receipts` row with category `paper_turn` (new) stores:
 
-  ```json
-  {"before_version_id": "…", "after_version_id": "…",
-   "files": [{"path": "…", "kind": "write", "clash": false,
-              "base_sha": "…", "coach_sha": "…"}]}
-  ```
+  `{"before_version_id", "after_version_id", "files": [{"path", "kind",
+  "clash", "base_sha", "coach_sha"}]}`.
 - **Rows.** "N files changed", with +/− totals. Each row diffs before against
-  the Coach's version with `line_changes`. A red row shows the Coach's version
-  beside the current file. A member reverts through History or asks the Coach.
-- **Comments.** A diff line takes a shared comment with target kind `reply`, so
-  readability follows the chat. It uses the `element` anchor: `path` is the
-  file, `label` is the line ("new line 12"), `text` is the line text.
+  the Coach's version with `line_changes`; a red row shows it beside the
+  current file.
+- **Comments.** A diff line takes a shared `reply` comment with the `element`
+  anchor: `path` is the file, `label` the line, `text` the line text.
 - **Routes.** `GET …/paper/turns/{op}` and `GET …/paper/turns/{op}/files/{path}`.
 - **Prune** (`paper/persistence.py:prune`) keeps only versions referenced by
   `paper_turn` receipts of chats that still exist.
@@ -232,82 +206,65 @@ Runs at startup, per project with Paper data and no `paper_migrations` row:
    deleted on retry.
 2. Fold the `paper_updates` tail into `paper_doc_states`, store
    `text_sha256`, and keep the old `file_id`s.
-3. A legacy draft hold already has its canonical saved as a version; clear it.
-4. Settle queued or running `paper_coach` tasks as interrupted, and reject
+3. Clear legacy draft holds (their canonical is already a version).
+4. Settle queued or running `paper_coach` tasks as interrupted and reject
    pending card groups, each with a notice.
 5. Render old `paper_coach` rows into static transcript text.
 6. Remove `.research/paper`, then write the `paper_migrations` row. A crash
    before it resumes at the first unfinished step. Drop the deleted tables in a
    later release.
 
-The legacy `paper_coach` parsing module is deleted; old rows read only as the
-rendered text.
+The legacy `paper_coach` parsing module is deleted.
 
 ## Save to Paper
 
-The artifact viewer gains **Save to Paper**: pick a folder, and the artifact's
-current version becomes a Paper file through the ordinary upload path.
+The artifact viewer's **Save to Paper** picks a folder and uploads the
+artifact's current version through the ordinary upload path.
 
 ## Alternatives considered
 
-- **SQLite truth plus a two-way mirror.** Two copies drift; every bug becomes a
-  sync bug.
-- **Staging plus cards.** Today's design: slow turns apply late and clash.
-- **A file watcher instead of polling.** No reliable watcher over SSH; polling
-  is one path.
-- **A time-window merge base.** A slow agent falls outside any window and
-  overwrites human text.
-- **History as a Git repo in the folder.** Agents would see and edit it;
-  history stays in SQLite.
+- **SQLite truth plus a two-way mirror:** two copies drift.
+- **Staging plus cards:** slow turns apply late and clash.
+- **A file watcher:** none is reliable over SSH; polling is one path.
+- **A time-window merge base:** a slow agent falls outside it.
+- **History as a Git repo in the folder:** agents would see and edit it.
 
 ## Risks
 
-- **Poll cost** on large folders over SSH. Stat-only scans and the per-poll
-  hash caps bound it.
-- **Agent tools that write in place** (truncate, then write). The poll may read
-  a partial file; the stable-stat wait and the merge base limit the damage.
-- **History growth** from turn versions. Prune keeps only versions referenced
-  by receipts of chats that still exist.
+- **Poll cost** on large folders over SSH; stat-only scans and hash caps bound it.
+- **Agent tools that write in place** may be read half-written; the stable-stat
+  wait and the merge base limit it.
+- **History growth** from turn versions; prune bounds it.
 
 ## Invariants and specs that change
 
 - AGENTS.md invariant 4: "The paper coach writes only its own changes folder.
   RCP turns those changes into paper change cards." becomes "A Paper-focused
   chat also writes the Paper folder."
-- providers-and-containment.md: the Paper coach row and profiles.
-- paper-artifacts-and-result-views.md: storage, publishing, Writing coach,
-  cards.
-- Backup and transfer specs: the `paper` app-data root.
+- providers-and-containment.md (Coach row, profiles);
+  paper-artifacts-and-result-views.md (storage, publishing, Coach, cards);
+  backup and transfer specs (the `paper` app-data root).
 
 ## Checks
 
-- Folder module: a write that lands after the swap is merged; a new path is
-  no-clobber; links and special files are skipped and reported; ignore list;
-  `scan` returns stat data only.
-- Revision: saves and changed scans bump the counter; routes and compile
-  address `version_id` or current.
-- Editor loop: load from cache and from changed disk; save acks only after the
-  write; a foreign write merges into an open buffer with the human winning; a
-  slow agent write against its turn-start base keeps human text; a binary
-  clash with a human upload; a foreign delete of an edited open file is
-  recreated; rename keeps `file_id`; restart between disk write and cache;
-  poll caps.
+- Folder module: a write landing after the swap merges; new paths are
+  no-clobber; links and special files are skipped and reported; stat-only scan.
+- Revision: saves and changed scans bump it; routes take `version_id` or current.
+- Editor loop: cache and changed-disk load; ack after write; open-buffer merge
+  keeps human text; slow agent write against its turn-start base; binary clash
+  with an upload; edited open file recreated after a foreign delete; rename
+  keeps `file_id`; restart between disk and cache; poll caps.
 - Multi-file writes: path order; keystrokes outside the overlap survive; an
-  I/O failure reports written files and a rerun is idempotent.
-- Turn list: other members' saves never appear; files with no open buffer
-  appear; a clash is a red row; a write outside a turn lists on the next one;
-  restart mid-turn keeps `paper_turn_files`; the turn ends only after the
-  process tree exits.
-- Gate: a second Paper turn queues, can be cancelled, and starts after the
-  first settles in each way (completed, interrupted, failed, recovered).
-- Launch: `focus = "paper"` adds exactly the Paper root and runs `work_auto`;
-  other launches cannot write it; old rows load with `focus = None`; prompts
-  per launch kind.
-- Migration on a copy of real Paper data, including a crash after each step;
-  old `paper_coach` rows show as text; backup and restore round-trip a local
-  and an SSH Paper.
-- Claude Code's Edit tool against a file a member is typing in: the member's
-  text survives and the turn reports it.
-- Served drive: a real Coach turn edits several files while a member types in
-  one; the chat shows the list with one red row; a diff comment reaches the
-  agent; 390px.
+  I/O failure reports written files; a rerun is idempotent.
+- Turn list: other members' saves never appear; unopened files appear; a clash
+  is a red row; outside-turn writes list next turn; restart mid-turn keeps
+  `paper_turn_files`; the turn ends only after the process tree exits.
+- Gate: a second Paper turn queues, can be cancelled, and starts after each
+  kind of settle.
+- Launch: `focus = "paper"` adds only the Paper root and runs `work_auto`;
+  other launches cannot write it; old rows load with `focus = None`.
+- Migration on a copy of real Paper data with a crash after each step; old
+  `paper_coach` rows show as text; backup round-trips a local and SSH Paper.
+- Claude Code's Edit tool on a file a member is typing in keeps the member's text.
+- Served drive: a Coach turn edits several files while a member types in one;
+  one red row; a diff comment reaches the agent; 390px.
