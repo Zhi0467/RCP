@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../core/api";
+import { readPref, writePref } from "../core/prefStorage";
 import type { PaperFile } from "../core/types";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 import { PaperConfirm } from "./PaperConfirm";
@@ -50,6 +51,20 @@ function buildTree(files: PaperFile[], extraFolders: string[]): TreeFolder {
   return root;
 }
 const under = (path: string, folder: string) => path.startsWith(`${folder}/`);
+const ancestorsOf = (path: string) =>
+  path
+    .split("/")
+    .slice(0, -1)
+    .map((_, index, parts) => parts.slice(0, index + 1).join("/"));
+
+function readOpened(key: string): Set<string> {
+  try {
+    const stored: unknown = JSON.parse(readPref(key) ?? "[]");
+    return new Set(Array.isArray(stored) ? stored.filter((item) => typeof item === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 // A row's full path is its tooltip only while the name is cut short; otherwise it repeats the row.
 const titleWhenTruncated = (path: string) => (event: PointerEvent<HTMLButtonElement>) => {
   const name = event.currentTarget.querySelector("span");
@@ -65,8 +80,11 @@ export function PaperFiles({
   onFold,
   onChanged,
   exportControl,
+  title,
 }: {
   exportControl?: ReactNode;
+  /** Replaces the plain Files heading, as the Files | Changes tabs of a linked paper. */
+  title?: ReactNode;
   apiBase: string;
   projectId: string;
   files: PaperFile[];
@@ -78,7 +96,21 @@ export function PaperFiles({
 }) {
   const [edit, setEdit] = useState<PathEdit | null>(null);
   const editing = edit && (edit.mode === "file" ? edit.file : edit.from);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const openKey = `rcp.paper.openFolders.${projectId}`;
+  const [opened, setOpenedState] = useState<Set<string>>(() => readOpened(openKey));
+  const setOpened = (update: (current: Set<string>) => Set<string>) =>
+    setOpenedState((current) => {
+      const next = update(current);
+      writePref(openKey, JSON.stringify([...next]));
+      return next;
+    });
+  const selectedPath = files.find((file) => file.file_id === selected)?.path ?? "";
+  const [revealed, setRevealed] = useState("");
+  if (selectedPath !== revealed) {
+    setRevealed(selectedPath);
+    const hidden = ancestorsOf(selectedPath).filter((folder) => !opened.has(folder));
+    if (hidden.length) setOpened((current) => new Set([...current, ...hidden]));
+  }
   const [newFolders, setNewFolders] = useState<string[]>([]);
   const [replacing, setReplacing] = useState<{
     file: globalThis.File;
@@ -121,10 +153,7 @@ export function PaperFiles({
     }
   };
   const expand = (path: string) =>
-    setCollapsed(
-      (current) =>
-        new Set([...current].filter((folder) => folder !== path && !under(path, folder))),
-    );
+    setOpened((current) => new Set([...current, ...ancestorsOf(path), path]));
   const closeEdit = () => {
     setEdit(null);
     clearFailure("path");
@@ -142,13 +171,12 @@ export function PaperFiles({
             method: "POST",
             body: JSON.stringify({ path: from, to: path }),
           });
-        setNewFolders((current) =>
-          from
-            ? current.map((folder) =>
-                folder === from || under(folder, from) ? path + folder.slice(from.length) : folder,
-              )
-            : [...current, path],
-        );
+        const moved = (folder: string) =>
+          from && (folder === from || under(folder, from))
+            ? path + folder.slice(from.length)
+            : folder;
+        setNewFolders((current) => (from ? current.map(moved) : [...current, path]));
+        if (from) setOpened((current) => new Set([...current].map(moved)));
         if (parent) expand(parent);
         setEdit(null);
       });
@@ -308,7 +336,7 @@ export function PaperFiles({
         );
         continue;
       }
-      const open = !collapsed.has(entry.path);
+      const open = opened.has(entry.path);
       const empty = !files.some((file) => under(file.path, entry.path));
       rows.push(
         <div key={`folder:${entry.path}`} className="paper-row">
@@ -318,10 +346,10 @@ export function PaperFiles({
             onPointerEnter={titleWhenTruncated(entry.path)}
             aria-expanded={open}
             onClick={() =>
-              setCollapsed((current) => {
+              setOpened((current) => {
                 const next = new Set(current);
-                if (open) next.add(entry.path);
-                else next.delete(entry.path);
+                if (open) next.delete(entry.path);
+                else next.add(entry.path);
                 return next;
               })
             }
@@ -356,7 +384,7 @@ export function PaperFiles({
       aria-busy={busy}
     >
       <header className="paper-bar">
-        <strong className="paper-grow">Files</strong>
+        {title ?? <strong className="paper-grow">Files</strong>}
         {exportControl}
         {looseFailure && (
           <button

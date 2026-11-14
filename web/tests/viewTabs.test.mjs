@@ -17,18 +17,18 @@ test("each top tab reopens the sub-view last open there, per project", () => {
     removeItem: (key) => values.delete(key),
   };
   try {
-    assert.equal(tabEntryView("a", "artifacts"), "artifacts");
+    assert.equal(tabEntryView("a", "scientific"), "scientific");
     for (const view of ["paper", "chats", "dag", "overview"]) rememberSubview("a", view);
-    assert.equal(tabEntryView("a", "artifacts"), "paper");
     assert.equal(tabEntryView("a", "scientific"), "dag");
-    assert.equal(tabEntryView("b", "artifacts"), "artifacts");
+    assert.equal(tabEntryView("b", "scientific"), "scientific");
     assert.deepEqual(
       [...values.keys()].map((key) => key.split(":").at(-1)),
-      ["artifacts", "scientific"],
+      ["scientific"],
     );
-    rememberSubview("a", "artifacts");
-    assert.equal(tabEntryView("a", "artifacts"), "artifacts");
-    assert.equal(topTab("paper"), "artifacts");
+    rememberSubview("a", "scientific");
+    assert.equal(tabEntryView("a", "scientific"), "scientific");
+    assert.equal(topTab("dag"), "scientific");
+    assert.equal(topTab("paper"), "paper");
     rememberOpenChat("a", "c1");
     assert.equal(rememberedChat("a"), "c1");
     assert.equal(rememberedChat("b"), null);

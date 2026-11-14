@@ -43,7 +43,9 @@ Import publishes after activation without requiring a visit.
 
 Stable file ids survive renames. File, folder, and root menus offer the applicable
 Create, Upload, Rename, Download, and Delete actions. Folders exist through file
-paths, so empty folders are browser-local. Renaming or deleting a folder creates
+paths, so empty folders are browser-local. Folders start folded. Each browser
+remembers which folders it opened, per project, and opening a file opens the
+folders above it. Renaming or deleting a folder creates
 one revision. Downloading a folder produces one zip. Desktop uses native save
 dialogs. New and uploaded files open immediately. Typing focus waits for the
 selected file's editor; an older editor cannot consume that request. Choosing
@@ -157,8 +159,8 @@ untrusted-math options, inline fonts and no external service or server Node
 process. A missing renderer is an explicit preview failure. Authored script
 errors remain visible through the existing private error channel.
 
-The header has Zoom out, percentage reset and Zoom in, from 50% to 200% in fixed
-steps. Zoom transforms the existing viewer without reloading it, persists while
+The header has a zoom slider and a percentage that resets to 100%, from 50% to
+200% in 5% steps. Zoom transforms the existing viewer without reloading it, persists while
 that file stays open and starts at 100% for another file. It clears a selection
 while preserving the comment draft. Making previews artifacts was rejected:
 artifacts are versioned deliverables with their own chat, while Paper follows
@@ -173,8 +175,10 @@ an HTML page's comment mode, opens the window directly. While a comment window i
 open, a selection offers no Comment button. Text selects natively, also on touch,
 except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a drag
 that starts off text draws an area on a PDF page or image. An area on an HTML page
-needs comment mode, a toggle in the panel header that starts off for each file
-shown, because it turns the page's drags into area selections.
+needs comment mode, a toggle in the panel header that starts on for each file
+shown, as the artifact viewer's does; turning it off hands drags back to the
+page's own scripts. The zoom slider runs on doublings, so 100% sits in its middle; it shows on
+hover or focus, and always at phone width.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
@@ -329,9 +333,12 @@ arrives as an ordinary remote file.
 [`entry_reason` and `tree_reason`](../../src/rcp/paper/git_merge.py) own the
 reasons.
 
-**Push is manual.** The member reviews the changed files, writes a commit
-message, and pushes. Clicking a changed file unfolds its line diff against the
-synced commit, bounded in `limits.py`; a binary file shows none. The commit holds every Paper file plus the skipped
+**Push is manual.** A linked paper's file sidebar has Files and Changes tabs.
+Changes lists held conflicts, Git cards, and the changed files, and ends with
+the commit message and Commit & push. Commit and push are one step, because Paper
+keeps no local commits. Clicking a changed file shows its line diff against the
+synced commit in the editor pane, bounded in `limits.py`; a binary file shows
+none. The commit holds every Paper file plus the skipped
 entries. Its author and committer are that member. Its parent is the synced
 commit, and it is never forced. Push sends what Paper holds. After a restore
 to a version from before a pull, the changed-file list shows the co-author's
@@ -352,8 +359,23 @@ It then refuses with:
 A rejected push refetches, merges, and tries once more before it reports
 Git's message.
 
-The unpushed mark is off while the Paper revision equals the synced revision.
-Otherwise it compares the tree a push would send with the synced commit's tree. An edit typed and then undone leaves no mark.
+The Changes count is off while the Paper revision equals the synced revision.
+Otherwise it compares the tree a push would send with the synced commit's tree. An edit typed and then undone leaves no count.
+The Git pill shows only the branch, so unpushed edits never read as an alarm.
+
+**Branches.** The pill opens the repository's branch list, read from GitHub.
+Switching moves the project's link to that branch and runs an ordinary pull
+against it, keeping the old synced commit as the base. Files Paper left
+unchanged take the branch's version, files only on the old branch go, and
+unpushed edits carry over through the three-way merge, with overlaps as cards.
+The switch changes the branch for every member. A switch is refused while a
+file is held, and to a branch GitHub does not have.
+**Why:** the merge already treats a different remote version like a
+force-push, so a switch needs no second merge path.
+
+A new branch starts at the synced commit and becomes the link's branch. Paper
+does not change, and the next push goes there. A name GitHub already has is
+refused.
 
 **Unlink** deletes the link, the directory, and all Git cards. Paper files stay.
 
@@ -572,7 +594,7 @@ immutable final snapshots or identities produce static errors.
 
 `rcp-open-node` crosses only exact-child frame hops and accepts only ids in the
 last delivered graph. Pinned views open trusted RCP detail. Other contexts ignore
-it, and HTML gets no reply. Personal HTML pins appear after Files and Paper only
+it, and HTML gets no reply. Personal HTML pins appear as tabs on the Files page only
 on their selected main or branch target. They are bounded per target and always
 show the current version. Pin atomically keeps the artifact. Unpin removes only
 the pin. Transfer omits pins. Viewer target selection defaults to the origin and
