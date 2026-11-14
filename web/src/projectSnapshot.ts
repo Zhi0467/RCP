@@ -14,7 +14,6 @@ import type {
 
 export interface ProjectTabUiState
   extends ProjectHistoryUiState, ChatUiState, GraphSelectionTabSnapshot, ProjectSessionTabState {
-  projectHeaderCollapsed: boolean;
   taskInspectorId: string | null;
   activityTaskId: string | null;
   retryTaskId: string | null;

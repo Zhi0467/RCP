@@ -83,8 +83,6 @@ import {
   TriangleAlert,
   ArrowLeft,
   CloudUpload,
-  ChevronDown,
-  ChevronUp,
   FileText,
   FlaskConical,
   FolderLock,
@@ -249,9 +247,10 @@ import { Banner } from "./ui/Banner";
 import { forgetBanners } from "./ui/bannerDismissal";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
+import { PanelPicker } from "./projects/PanelPicker";
 import { ProjectDock } from "./projects/ProjectDock";
-import { PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
-import { useNarrowViewport } from "./ui/useNarrowViewport";
+import { PhoneProjectBar, ProjectMenu, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { TABLET_MAX_WIDTH_PX, useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
@@ -854,7 +853,6 @@ function MemberApp({
     experimentLoopsUnavailable,
     experimentLoopsUnavailableRows,
     spaceRuns,
-    projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
     loadProjectIndex,
@@ -869,9 +867,6 @@ function MemberApp({
     activateProjectTab: activateProjectRoute,
     closeDockedProject: closeProjectRoute,
     removeProject,
-    resetProjectHeader,
-    restoreProjectHeader,
-    toggleProjectHeader,
     cacheProjectState,
     clearProjectCache,
     rememberLeftRoute,
@@ -1016,6 +1011,7 @@ function MemberApp({
   );
   const appearance = useTheme();
   const phone = useNarrowViewport();
+  const compactHeader = useNarrowViewport(TABLET_MAX_WIDTH_PX);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
@@ -1495,7 +1491,6 @@ function MemberApp({
   currentProjectStateRef.current = targetProject
     ? {
         ...serializeProjectSessionTabState(projectSession),
-        projectHeaderCollapsed,
         selectedNodeId: selectedNode?.id ?? null,
         companionNodeId: companionNode?.id ?? null,
         detailFocusTokens,
@@ -1562,7 +1557,6 @@ function MemberApp({
         ...serializeProjectSessionTabState(next),
       });
       authoritativeProjectId.current = id;
-      restoreProjectHeader(state.projectHeaderCollapsed);
       restoreProjectSelection(
         id,
         nextGraph,
@@ -1585,7 +1579,6 @@ function MemberApp({
     [
       cacheProjectState,
       restoreProjectChats,
-      restoreProjectHeader,
       restoreProjectHistory,
       restoreProjectSelection,
       restoreProjectSessionTab,
@@ -1950,7 +1943,6 @@ function MemberApp({
           });
         resetProjectTasks();
         resetProjectHistory();
-        resetProjectHeader(projectId);
       }
     }
     const snapshot = store.view<ProjectSnapshot>(
@@ -1980,7 +1972,6 @@ function MemberApp({
     refreshProjectInvitations,
     resetProjectChats,
     resetProjectTasks,
-    resetProjectHeader,
     resetProjectHistory,
     resetProjectSelection,
     restoreProjectTabState,
@@ -4885,7 +4876,7 @@ function MemberApp({
         <Settings size={16} />
       </button>
       <LandingIdentityMenu
-        compact={!phone}
+        compact={!compactHeader}
         identity={actorIdentity}
         identityError={actorIdentityError}
         onRequestName={requestActorName}
@@ -5033,6 +5024,13 @@ function MemberApp({
     onLayout: changeView,
     onTrustView: changeTrustView,
   };
+  const projectMenu = (
+    <>
+      {showTrustFilter && <ViewPicker inline {...viewChoice} />}
+      {autoResearchButton}
+      {projectUtilities}
+    </>
+  );
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -5041,8 +5039,10 @@ function MemberApp({
       activeProjectId={projectId}
       onActivate={activateProjectTab}
       onClose={closeDockedProject}
+      onNew={phone ? undefined : returnToProjects}
     />
   );
+  const currentNavItem = navItems.find((item) => navItemActive(item.view, view)) ?? navItems[0];
 
   // Pinned pages follow the Files tab on the Files page.
   const pinTabs = (
@@ -5100,83 +5100,50 @@ function MemberApp({
           onBack={returnToProjects}
           dock={projectDock}
           sync={syncControls}
-          menu={
-            <>
-              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
-              {autoResearchButton}
-              {projectUtilities}
-            </>
-          }
+          menu={projectMenu}
         />
       )}
-      {!phone && !projectHeaderCollapsed && (
+      {!phone && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="project-header-navigation">
             <button className="project-back" onClick={returnToProjects} aria-label="All projects">
               <ArrowLeft size={16} />
             </button>
+            <PanelPicker
+              icon={currentNavItem.icon}
+              label={currentNavItem.label}
+              inboxCount={attentionCount}
+            >
+              {navItems.map(renderNavItem)}
+            </PanelPicker>
             {projectDock}
           </div>
-          <div className="project-header-actions" id="project-header-actions">
+          <div className="project-header-actions">
+            <div className="project-header-group project-ref-group">
+              {!compactHeader && showTrustFilter && <ViewPicker {...viewChoice} />}
+              {branchPicker}
+            </div>
             <div
               className="project-header-group project-action-group"
               role="group"
               aria-label="Project actions"
             >
               {syncControls}
-              {autoResearchButton}
+              {!compactHeader && autoResearchButton}
             </div>
-            <div
-              className="project-header-group project-utility-group"
-              role="group"
-              aria-label="Project utilities"
-            >
-              {projectUtilities}
-            </div>
+            {compactHeader ? (
+              <ProjectMenu>{projectMenu}</ProjectMenu>
+            ) : (
+              <div
+                className="project-header-group project-utility-group"
+                role="group"
+                aria-label="Project utilities"
+              >
+                {projectUtilities}
+              </div>
+            )}
           </div>
         </header>
-      )}
-
-      {!phone && (
-        <nav className="project-tabs" aria-label="Project panels">
-          {projectHeaderCollapsed && (
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-          )}
-          {/* Folded, the expand control sits beside the back arrow it came from. */}
-          <button
-            aria-expanded={!projectHeaderCollapsed}
-            aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
-            aria-label={
-              projectHeaderCollapsed ? "Expand project header" : "Collapse project header"
-            }
-            className="project-tabs-toggle"
-            title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-            onClick={toggleProjectHeader}
-          >
-            {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-          </button>
-          {projectHeaderCollapsed && (
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          )}
-          {navItems.map(renderNavItem)}
-          {/* Pinned to the strip's right edge so a long tab row scrolls under it. */}
-          <div className="project-tabs-trailing">
-            {showTrustFilter && <ViewPicker {...viewChoice} />}
-            {branchPicker}
-          </div>
-        </nav>
       )}
 
       {(projectReconciliation === "opening" || projectReconciliation === "reconciling") && (
