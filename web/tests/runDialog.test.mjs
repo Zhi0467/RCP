@@ -28,7 +28,7 @@ const { chosenWorktreeRepository } = await server.ssrLoadModule(
   "/src/chat/worktreeRepositories.ts",
 );
 const { shouldStartWindowDrag } = await server.ssrLoadModule("/src/ui/DraggableWindow.tsx");
-const { NodeChat } = await server.ssrLoadModule("/src/chat/NodeChat.tsx");
+const { AgentChatView } = await server.ssrLoadModule("/src/chat/AgentChatView.tsx");
 const { providerPathPresentation } = await server.ssrLoadModule("/src/projects/providerPaths.ts");
 const { ChatsWorkspace } = await server.ssrLoadModule("/src/chat/ChatsWorkspace.tsx");
 
@@ -646,7 +646,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
     onClose() {},
   };
   const html = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...props,
       watchers: [
         { ...watcher, continuation: { patch_kind: "work" } },
@@ -660,7 +660,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
     }),
   );
   const experimentHtml = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...props,
       watchers: [{ ...watcher, continuation: { patch_kind: "experiment_loop" } }],
     }),
@@ -674,7 +674,7 @@ test("conversation watcher status and wake attribution stay operational", () => 
   assert.equal(html.match(/chat-watcher-count/g).length, 1);
   assert.equal(experimentHtml.match(/chat-watcher-count/g).length, 1);
   assert.match(html, /chat-turn-trigger watcher/);
-  assert.doesNotMatch(html, /node-chat-line human/);
+  assert.doesNotMatch(html, /agent-chat-view-line human/);
 });
 
 test("a new Experiment chat sees the node loop and only its own generic watcher", () => {
@@ -719,7 +719,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     onRetryTask() {},
   };
   const html = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...props,
       watchers: [
         watcher,
@@ -749,7 +749,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
     }),
   );
   const projectChatHtml = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       ...props,
       node: null,
       watchers: [watcher],
@@ -764,7 +764,7 @@ test("a new Experiment chat sees the node loop and only its own generic watcher"
 test("long human chat messages render a bounded preview control", () => {
   const longMessage = "Please compare each of these constraints carefully. ".repeat(8);
   const html = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       project,
       node: null,
       tasks: [],
@@ -858,7 +858,7 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     status_label: "Running",
   };
   const html = renderMarkup(
-    React.createElement(NodeChat, {
+    React.createElement(AgentChatView, {
       project,
       node: null,
       tasks: [activeTask],
@@ -921,7 +921,7 @@ test("a running watcher wake or episode turn shows its Activity row before any a
       status_label: "Running",
     };
     const html = renderMarkup(
-      React.createElement(NodeChat, {
+      React.createElement(AgentChatView, {
         project,
         node: null,
         tasks: [running],
@@ -1376,7 +1376,7 @@ test("A locked Auto-research child keeps its transcript and Runs route without a
   };
   const child = renderMarkup(React.createElement(ChatsWorkspace, common));
   assert.doesNotMatch(child, /<textarea/);
-  assert.match(child, /class="node-chat-line agent"/);
+  assert.match(child, /class="agent-chat-view-line agent"/);
   const link = [...child.matchAll(/href="([^"]+)"/g)].map((match) =>
     match[1].replaceAll("&amp;", "&"),
   );

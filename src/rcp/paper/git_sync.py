@@ -240,8 +240,33 @@ def snapshot_tree(snapshot):
     }
 
 
+def shared_deploy_key(store, layout, project_id: str, repository: str) -> tuple[str, Path] | None:
+    """A ready, write-verified project repository on the backend's own machine
+    that is the same GitHub repository lends its deploy key to Paper."""
+    from rcp.machine_cards import host_of
+    from rcp.provisioning_repositories import team_repository_sources
+
+    sources = team_repository_sources(store, project_id)
+    for alias, record in sorted((sources or {}).items()):
+        if (
+            record.repository is None
+            or record.repository.identity != repository.lower()
+            or not record.git_check.write_verified
+        ):
+            continue
+        try:
+            if host_of(store, record.machine_id):
+                continue
+        except KeyError:
+            continue
+        key = layout.project_deploy_key_path(project_id, alias)
+        if key.is_file():
+            return alias, key
+    return None
+
+
 class PaperGit:
-    def __init__(self, store, live, data_dir, admission):
+    def __init__(self, store, live, data_dir, admission, shared_key=lambda _p, _r: None):
         from contextlib import nullcontext
         from threading import RLock
 
@@ -251,6 +276,7 @@ class PaperGit:
         self.live = live
         self.root = data_dir / "paper-git"
         self.admission = admission
+        self.shared_key = shared_key
         self.changes = PaperChanges(store, live, lambda _: nullcontext())
         self._locks = {}
         self._locks_guard = RLock()
@@ -306,6 +332,7 @@ class PaperGit:
                     "repository": "",
                     "branch": "",
                     "public_key": "",
+                    "key_source": "",
                     "head": {"commit": "", "author": ""},
                     "unpushed": False,
                     "conflicts": 0,
@@ -322,12 +349,15 @@ class PaperGit:
                     : limits.PAPER_GIT_AUTHOR_MAX_CHARS
                 ]
             key = self.directory(project_id) / "id_ed25519.pub"
+            own = key.with_suffix("")
+            source = own.readlink().parent.name if own.is_symlink() else ""
             snapshot = self.live.run_sync(self.live.snapshot(project_id))
             return {
                 "state": link.state,
                 "repository": link.repository,
                 "branch": link.branch,
-                "public_key": key.read_text() if key.exists() else "",
+                "public_key": "" if source or not key.exists() else key.read_text(),
+                "key_source": source,
                 "head": {"commit": link.synced_commit, "author": author},
                 "unpushed": snapshot.revision != link.synced_revision
                 and self._differs(link, snapshot),
@@ -349,9 +379,16 @@ class PaperGit:
                 if (existing.repository, existing.branch) != (repository, branch):
                     raise GitError("Unlink the pending repository before changing it")
                 return self.status(project_id)
-            if existing or (directory / "id_ed25519").exists():
+            own = directory / "id_ed25519"
+            if existing or own.is_symlink() or own.exists():
                 self._unlink(project_id)
-            fingerprint = generate_key(directory, project_id)
+            shared = self.shared_key(project_id, repository)
+            if shared is None:
+                fingerprint = generate_key(directory, project_id)
+            else:
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                own.symlink_to(shared[1])
+                fingerprint = ""
             _git(directory, ["init", "--bare", "--template=", str(directory / "repo.git")])
             self.store.save_paper_git_link(
                 PaperGitLink(
@@ -363,7 +400,9 @@ class PaperGit:
                     linked_at=self.store.now(),
                 )
             )
-            return self.status(project_id)
+        if shared is not None:
+            return self.link(project_id)
+        return self.status(project_id)
 
     def _unlink(self, project_id: str) -> None:
         with self.store.connection() as connection:

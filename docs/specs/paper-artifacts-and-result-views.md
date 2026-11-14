@@ -243,6 +243,15 @@ the same key. Changing them needs Unlink first. A relink always makes a new
 key, because GitHub refuses a deploy key already attached to another
 repository. Without `ssh-keygen`, linking is refused with the reason.
 
+When the repository is one of the team project's own repositories, ready,
+write-verified and checked out on the backend's machine, the paper borrows
+that repository's deploy key instead
+([`shared_deploy_key`](../../src/rcp/paper/git_sync.py)). Linking then skips
+the key step and probes at once. The link records the repository alias, not
+the key, so a re-keyed repository keeps working, and Unlink never removes the
+shared key. A repository on another machine, a different repository, and
+personal projects keep the paper's own key.
+
 RCP ships GitHub's SSH host keys and trusts nothing else: no operator step and
 no trust on first use. **Why:** a personal space has no operator. A GitHub host
 key rotation therefore needs an RCP release, and the failure says so. Git runs

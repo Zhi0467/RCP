@@ -2,7 +2,7 @@ import { ResourceRuntime } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import "../../src/styles.css";
 
 const profile = {
@@ -98,7 +98,7 @@ function Fixture() {
   fixture.refreshChatFixture = () => setTasks((current) => current.map((task) => ({ ...task })));
   return (
     <main style={{ height: "100vh", padding: 24 }}>
-      <NodeChat
+      <AgentChatView
         graphTarget={{ kind: "main" }}
         project={project as never}
         tasks={tasks as never}

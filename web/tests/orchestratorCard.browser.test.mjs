@@ -38,7 +38,7 @@ async function withCard(chain, check) {
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/orchestratorCard.html?chain=${chain}`,
     );
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await lines.getByText("Root findings.").waitFor();
     await check(page, lines);
     assert.deepEqual(unexpected, []);
@@ -52,7 +52,7 @@ async function withCard(chain, check) {
 test("A running orchestrator card shows its turns and its composer messages the orchestrator", async () => {
   await withCard("running", async (page, lines) => {
     // Each turn's recorded human input precedes its answer.
-    const texts = await lines.locator(".node-chat-line").allInnerTexts();
+    const texts = await lines.locator(".agent-chat-view-line").allInnerTexts();
     const order = [
       "Trace the evidence.",
       "Root findings.",

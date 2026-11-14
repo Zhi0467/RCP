@@ -352,7 +352,7 @@ export function groupChatConversations(
 }
 
 /**
- * The orchestrator conversation as NodeChat reads a chat: each loaded orchestrator
+ * The orchestrator conversation as AgentChatView reads a chat: each loaded orchestrator
  * turn or artifact edit becomes a project-chat turn carrying the human input its
  * transcript line recorded (or the starting instruction; an ordinary chat turn
  * keeps its own kind and message), so status and progress

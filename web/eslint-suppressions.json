@@ -139,6 +139,11 @@
       "count": 7
     }
   },
+  "src/chat/AgentChatView.tsx": {
+    "rcp/no-comments": {
+      "count": 65
+    }
+  },
   "src/chat/AgentRename.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -172,11 +177,6 @@
   "src/chat/ChatsWorkspace.tsx": {
     "rcp/no-comments": {
       "count": 41
-    }
-  },
-  "src/chat/NodeChat.tsx": {
-    "rcp/no-comments": {
-      "count": 65
     }
   },
   "src/chat/OrchestratorComposer.tsx": {

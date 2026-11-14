@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ResourceRuntime } from "./resourceRuntime";
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import { ChatBranchPicker } from "../../src/chat/ChatBranchPicker";
 import { loadChatTranscript } from "../../src/chat/chatApi";
 import { api } from "../../src/core/api";
@@ -78,7 +78,7 @@ function Fixture() {
   }, []);
   return (
     <main style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
-      <NodeChat
+      <AgentChatView
         key={chat.chat_id}
         actorId={null}
         project={project as never}

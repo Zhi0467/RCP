@@ -21,7 +21,7 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await composer.waitFor();
 
     // A reader who moves up even slightly from the bottom keeps their position
@@ -44,7 +44,7 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     assert.equal(await lines.getByText("Lost on the way", { exact: true }).count(), 1);
     assert.equal(
       await lines
-        .locator(".node-chat-line.human")
+        .locator(".agent-chat-view-line.human")
         .last()
         .getByText("Lost on the way", { exact: true })
         .count(),
@@ -64,6 +64,39 @@ test("a failed send stays in place and Resend reuses its request id", async () =
     // Starting before a provider process exists shows no steering refusal.
     assert.equal(await page.getByText("No live provider process", { exact: false }).count(), 0);
     assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("Jump to latest returns a reader far up the transcript to the bottom", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html`);
+    const lines = page.locator(".agent-chat-view-lines");
+    const jump = page.getByRole("button", { name: "Jump to latest", exact: true });
+    await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    assert.equal(await jump.isVisible(), false);
+
+    await lines.evaluate((element) => (element.scrollTop = 0));
+    await jump.waitFor({ state: "visible" });
+    await jump.click();
+    await page.waitForFunction(() => {
+      const element = document.querySelector(".agent-chat-view-lines");
+      return element.scrollHeight - element.scrollTop - element.clientHeight < 2;
+    });
+    await jump.waitFor({ state: "hidden" });
   } finally {
     await browser?.close();
     await server.close();
@@ -92,7 +125,7 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     });
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html?fresh`);
     const composer = page.getByRole("textbox", { name: "Message", exact: true });
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await composer.waitFor();
 
     const text = "Every keystroke arrives in a chat that never ran";
@@ -103,11 +136,11 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     await lines.getByText(text, { exact: true }).waitFor();
     // The held start shows the message once, though both the store and the
     // chat hold it.
-    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
+    assert.equal(await lines.locator(".agent-chat-view-line.human").count(), 1);
     // A lost request keeps that one line, now with Resend.
     await page.evaluate(() => window.failHeldStart());
     await lines.getByRole("button", { name: "Resend", exact: true }).waitFor();
-    assert.equal(await lines.locator(".node-chat-line.human").count(), 1);
+    assert.equal(await lines.locator(".agent-chat-view-line.human").count(), 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

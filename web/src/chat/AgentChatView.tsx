@@ -205,7 +205,7 @@ const SYSTEM_DICTATION_ELSEWHERE =
 // One empty map, so a chat without graph nodes keeps its answers' parse memoized.
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 
-export function NodeChat({
+export function AgentChatView({
   project,
   actorId,
   graphTarget,
@@ -1347,7 +1347,7 @@ export function NodeChat({
         {/* Open cards end the transcript and scroll with it, so they never
             squeeze the conversation above the composer. */}
         {questionState.error && (
-          <div className="node-chat-line error" role="alert">
+          <div className="agent-chat-view-line error" role="alert">
             {questionState.error}
           </div>
         )}
@@ -1367,7 +1367,7 @@ export function NodeChat({
               }
             />
           ))}
-        {submitError && <div className="node-chat-line error">{submitError}</div>}
+        {submitError && <div className="agent-chat-view-line error">{submitError}</div>}
       </AgentWindowLines>
       {archived ? (
         <div className="chat-composer" role="status">

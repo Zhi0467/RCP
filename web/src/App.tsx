@@ -458,8 +458,8 @@ const ProjectSettings = lazy(() =>
 const ChatsWorkspace = lazy(() =>
   import("./chat/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
 );
-const NodeChat = lazy(() =>
-  import("./chat/NodeChat").then((module) => ({ default: module.NodeChat })),
+const AgentChatView = lazy(() =>
+  import("./chat/AgentChatView").then((module) => ({ default: module.AgentChatView })),
 );
 
 const Artifacts = lazy(() =>
@@ -4684,7 +4684,7 @@ function MemberApp({
           </div>
         }
       >
-        <NodeChat
+        <AgentChatView
           key={selectedExperimentChatId}
           project={project}
           actorId={draftActorId}
@@ -5938,7 +5938,7 @@ function MemberApp({
               </div>
             }
           >
-            <NodeChat
+            <AgentChatView
               key={floatingChat.chatId}
               project={project}
               actorId={draftActorId}

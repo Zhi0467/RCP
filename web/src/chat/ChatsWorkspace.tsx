@@ -80,7 +80,7 @@ import { BulletinPanel } from "./BulletinPanel";
 import { ProviderMark, hasProviderLogo } from "../projects/ProviderMark";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../core/api";
-import { NodeChat } from "./NodeChat";
+import { AgentChatView } from "./AgentChatView";
 import { profileRunConfig } from "../core/AgentConfigControls";
 import { sameGraphTarget, MAIN_GRAPH, projectViewHash } from "../core/graphTarget";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
@@ -1238,7 +1238,7 @@ export function ChatsWorkspace({
           </button>
         )}
         {showingOwnThread ? null : selected && selected.conversationKind === "auto_research" ? (
-          <NodeChat
+          <AgentChatView
             key={selected.chatId}
             project={project}
             actorId={actorId}
@@ -1288,7 +1288,7 @@ export function ChatsWorkspace({
             onClose={() => undefined}
           />
         ) : selected && sameGraphTarget(selected.graphTarget ?? MAIN_GRAPH, graphTarget) ? (
-          <NodeChat
+          <AgentChatView
             key={selected.chatId}
             project={project}
             actorId={actorId}
