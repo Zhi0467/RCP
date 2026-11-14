@@ -67,22 +67,22 @@ release deletes that runner once no store holds an unsettled Discuss task.
 4. The composer has no mode toggle. The stored `rcp:chat-mode:*` preference is
    ignored.
 5. Artifact comments:
-   - In a chat that accepts human turns (Experiment chats included), Edit now
-     becomes the existing Send route (`artifact_send_chat_turn`,
-     `runs/artifact_edit_admission.py:291`), which already carries `edit_now`:
-     a Work turn in that chat, on its session, queued or steered exactly as
-     Send is. Edit now is available exactly when Send is; `can_edit_now` and
-     `fresh_session_required` apply only to refused chats. The viewer shows one
-     "Send to agent" action. No new dispatcher.
+   - In a chat that accepts human turns (Experiment chats included), comments
+     go through the existing Send route (`artifact_send_chat_turn` in
+     `runs/artifact_edit_admission.py`): a Work turn in that chat, on its
+     session, queued or steered exactly as Send is. The agent decides from each
+     comment whether to edit. No new dispatcher.
+   - Edit now is deleted for these chats: the `edit_now` request field and its
+     short-circuit in the viewer's handler in `api/artifacts.py`, `can_edit_now`,
+     the panel's Edit now gate, and the prompt line that acts on `edit_now`.
+     `fresh_session_required` remains only for refused chats.
    - Viewer buttons (`src/rcp/artifact_comment_panel.js`): today's "Edit now",
      "Edit now in a new session", "Send to original chat" and "Send in a new
-     session" become one "Send to agent". In an ordinary chat it posts the
-     queued comments through Send with `edit_now: false`, so the agent decides
-     from each comment whether to edit; the `edit_now` bypass in
-     `api/artifacts.py` (the viewer's Edit now handler) routes to Send. In a refused chat it posts the scratch edit, and
-     reads "Send to agent in a new session" when `fresh_session_required`
-     holds. The shared artifact comment design owns the panel's look; this
-     design owns only the routing.
+     session" become one "Send to agent". It first saves a typed, unqueued
+     comment as a comment, then sends every queued comment. In a refused chat
+     it posts the scratch edit and reads "Send to agent in a new session" when
+     `fresh_session_required` holds. The shared artifact comment design owns
+     the panel's look; this design owns only the routing.
    - No new task is admitted with `launch_kind="discuss"`. Refused chats always
      use `launch_kind="revoking"` (`_launch_kind_for_master_owner` and
      `artifact_edit_admission.py:342` change to match).
@@ -95,17 +95,10 @@ release deletes that runner once no store holds an unsettled Discuss task.
      "only in Discuss" refusal (`artifact_edit_admission.py:275-276`) and hands
      it to `admit_artifact_edit` whatever the mode.
    - Episode-report replies follow the same split.
-6. The Work chat master is the only master for new turns.
-   `CHAT_MASTER_CONTEXT_VERSION` bumps, so a resumed session gets the Work-only
-   master through the existing master-replacement rule. Discuss and Work share
-   one master today, so the closed runner gets a frozen copy: today's master
-   renderer and version move beside the runner as
-   `LEGACY_DISCUSS_MASTER_VERSION`, and the runner renders only that. The
-   session master key helpers (`chat_master_contract_key` and its callers in
-   `runs/chat.py` and `discuss.py`) take the version as an argument, so a
-   session the closed runner touched records the legacy version and the next
-   Work turn on it replaces the master. The global bump then changes only new
-   Work turns.
+6. The chat master is unchanged in this release. It already carries both the
+   Discuss and Work contracts and names the turn's mode, so the closed runner
+   and new Work turns share it as today. The release that deletes the runner
+   removes the Discuss contract and bumps `CHAT_MASTER_CONTEXT_VERSION`.
 
 ## Historical Discuss tasks
 
@@ -123,14 +116,23 @@ already recorded as Discuss:
   Discuss task the runner admits;
 - legacy private-edit stage proofs (`discuss.py:609-768`).
 
-A human Retry of a settled Discuss chat turn is not a recovery. Its Retry
-button puts the turn's message back into the composer; the member sends it as
-an ordinary Work turn, so the request, attachments and references follow the
-normal send path. Pressing it also records `transport_auto_retry_superseded`
-on the old Discuss task, and both the in-process retry timer
-(`_transport_retry_superseded`) and the provider-login retry honour that
-receipt, so an owed automatic retry stands down. The old turn keeps its record.
-The Discuss-to-Work continuation guard in the store is unchanged.
+A human Retry of a settled Discuss chat turn is not a recovery.
+- `POST /tasks/{id}/retry` refuses a Discuss chat task with 409 and the reason
+  "Send it again as an ordinary turn".
+- The web Retry button on such a turn (the transcript's retry action in
+  `web/src/agents/agentTasks.ts`) puts the turn's message text into the chat
+  composer instead of calling the route. Attachments and references are not
+  restored.
+- Sending that composer text carries `supersedes: <old operation id>`. The chat
+  admission in `api/tasks.py` checks that the old task is a settled Discuss
+  task in the same chat and records `transport_auto_retry_superseded` on it in
+  the admission transaction.
+- New code honours that receipt: `_transport_retry_superseded` in
+  `background.py` (the in-process timer) and the parked retry in
+  `runs/provider_login.py` stand down when it exists, as the restart path
+  already does. Each gets a test.
+- The old turn keeps its record. The Discuss-to-Work continuation guard in the
+  store is unchanged.
 
 Recorded `artifact_edit` tasks are not chat turns: their Resume and Retry keep
 `launch_kind="discuss"` or `"revoking"` through the closed runner and the
@@ -155,7 +157,8 @@ turns and on their question cards.
 
 The WebMCP send tool drops its `mode` input; a call that still passes it is
 refused by the tool schema. Its inspection output and description stop naming
-Discuss. Voice receipts stop recording a mode, and voice watches every send
+Discuss. `VoiceActionReceipt.mode` (`service_connections.py`, strict model)
+becomes optional: saved receipts still decode, new receipts omit it, and voice watches every send
 (today it watches only `mode === "work"` in `voiceExecutor.ts`). Today the
 send tool asks for confirmation only for Work, and only voice reads
 that (`webmcp/shared.ts:28-46` strips it before host registration). Since every
@@ -227,7 +230,7 @@ One PR in slices, each green on its own:
    the removal of the refused-chat Work refusal in
    `admit_chat_artifact_comment`, so no slice sends a mode a route refuses.
    Config, readiness, old-writer regression, Retry-to-composer with the
-   superseded receipt, and the frozen legacy master version.
+   superseded receipt and both retry paths honouring it.
 2. Artifact-comment routing (Send for ordinary and Experiment chats, the
    revoking kind for refused chats) and the viewer's one button.
 3. Web cleanup: Paper styling props, question card label.
