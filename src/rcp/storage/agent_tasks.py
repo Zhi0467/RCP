@@ -144,6 +144,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "codex_resume_refused",
     "codex_fresh_session_retry",
     "codex_history_context",
+    "paper_turn",
     # The latest discovery outcome is projected as the turn's omission notice.
     "artifact_discovery",
     "artifact_edit_published",

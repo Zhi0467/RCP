@@ -185,6 +185,7 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
+from rcp.runs.paper_turns import end_settled_paper_turns
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
@@ -1284,6 +1285,7 @@ def create_app(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
         watcher_canceller=cancel_watcher_from_work,
+        paper_live=paper_live,
     )
 
     @contextmanager
@@ -2126,6 +2128,7 @@ def create_app(
                 await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()
+                await asyncio.to_thread(end_settled_paper_turns, store, paper_live)
                 await asyncio.to_thread(reconcile_thread_handoffs)
                 for project in store.projects():
                     if project.machine_ids_pending:

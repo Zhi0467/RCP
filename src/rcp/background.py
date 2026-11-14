@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast, get_args
+from typing import TYPE_CHECKING, Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
@@ -70,7 +70,7 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
-from rcp.runs.paper_turns import paper_turn_waits, wake_paper_turns
+from rcp.runs.paper_turns import begin_paper_turn, finish_paper_turn, paper_turn_waits
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -117,6 +117,9 @@ from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateU
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
 from rcp.watchers import WatcherCanceller
+
+if TYPE_CHECKING:
+    from rcp.paper import PaperLive
 
 logger = logging.getLogger(__name__)
 
@@ -444,8 +447,10 @@ class BackgroundAgentTasks:
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         watcher_canceller: WatcherCanceller | None = None,
+        paper_live: PaperLive | None = None,
     ) -> None:
         self.store = store
+        self.paper_live = paper_live
         self.experiment_starter = experiment_starter
         self.episode_controls = episode_controls
         self.watcher_canceller = watcher_canceller
@@ -2348,6 +2353,7 @@ class BackgroundAgentTasks:
         awaiting_remote_result = False
         try:
             try:
+                begin_paper_turn(self, record)
                 outcome = asyncio.run(
                     self._consume(record.project_id, record.kind, request, execution)
                 )
@@ -3295,7 +3301,7 @@ class BackgroundAgentTasks:
 
         settle_provider_login(self, record)
         try:
-            wake_paper_turns(self, record)
+            finish_paper_turn(self, record)
         except Exception:
             logger.exception("Waiting Paper turns could not start after %s", record.operation_id)
 
