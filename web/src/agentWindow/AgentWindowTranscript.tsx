@@ -13,7 +13,6 @@ import type {
   AgentQuestion,
   AgentTask,
   ArtifactEditOutcome,
-  ConversationMode,
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
@@ -230,8 +229,8 @@ export function AgentWindowTranscript({
               {browserNotices && (
                 <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
               )}
-              {showModes && line.role === "human" && line.mode && (
-                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+              {showModes && line.role === "human" && line.mode === "discuss" && (
+                <span className="chat-turn-mode discuss">Discuss</span>
               )}
               {failedTurn && (
                 <AgentWindowResend
@@ -770,8 +769,4 @@ function artifactEditOutcomeText(
   return separate.length
     ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
     : "Not edited in place; the current version is kept.";
-}
-
-function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
-  return mode === "discuss" ? "Discuss" : "Work";
 }
