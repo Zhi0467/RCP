@@ -246,3 +246,22 @@ def test_ssh_identity_change_and_deletion_run_on_the_base(tmp_path):
     assert (tmp_path / ".rcp/paper/new/a.md").read_bytes() == b"a"
     stage.paper_folder({"op": "change", "project_id": "new", "destination": None})
     assert not (tmp_path / ".rcp/paper/new").exists()
+
+
+def test_startup_migrates_every_registered_project_through_its_workspace(manifest, tmp_path):
+    from rcp.agents import AgentLauncher
+    from rcp.projects import ProjectCatalog
+
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    try:
+        catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+        record = catalog.register(str(manifest.path), identity_action="adopted")
+        seed_legacy_paper(store, record.project_id, manifest.research_dir)
+        assert catalog.migrate_papers() == []
+        folder = catalog.paper_folder(record.project_id)
+        assert _files(folder) == legacy_tree()
+        assert not (manifest.research_dir / "paper").exists()
+        assert not needs_paper_migration(store, record.project_id)
+    finally:
+        store.close()

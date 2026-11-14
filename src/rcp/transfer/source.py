@@ -158,6 +158,7 @@ def advance_source_project_transfer(
             stop_paper_project(store, transfer.project_id)
             _require_reviewed_source_unchanged(store, service, transfer)
             attributions = _source_attributions(transfer)
+            catalog.migrate_paper(transfer.project_id)
             records = store.export_project_transfer_records(
                 transfer.project_id,
                 attributions=attributions,
