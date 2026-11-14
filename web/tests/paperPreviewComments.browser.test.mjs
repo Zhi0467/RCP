@@ -514,12 +514,24 @@ test("preview selections name their source, and boxes on PDF pages open comments
 
   // A mouse box from an empty corner of the page collects the text inside it.
   await words.scrollIntoViewIfNeeded();
+  await page.waitForFunction(
+    () =>
+      new Promise((settled) => {
+        const page = document.querySelector('.paper-pdf-page[data-page="2"]');
+        const top = page.getBoundingClientRect().top;
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => settled(page.getBoundingClientRect().top === top)),
+        );
+      }),
+  );
   const slot = await page.locator('.paper-pdf-page[data-page="2"]').boundingBox();
   const span = await words.boundingBox();
+  const drawn = await page.evaluate(() => window.comments.length);
   await page.mouse.move(slot.x + 4, slot.y + 4);
   await page.mouse.down();
   await page.mouse.move(span.x + span.width + 4, span.y + span.height + 4, { steps: 4 });
   await page.mouse.up();
+  await page.waitForFunction((count) => window.comments.length > count, drawn);
   const box = await page.evaluate(() => window.comments.at(-1));
   assert.match(box.quote, /Hello world/);
   // The coach gets the box's place on the page, since no pixels are sent.
@@ -531,6 +543,7 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await page.mouse.down();
   await page.mouse.move(span.x + span.width * 0.45, span.y + span.height + 4, { steps: 4 });
   await page.mouse.up();
+  await page.waitForFunction((count) => window.comments.length > count + 1, drawn);
   assert.match(await page.evaluate(() => window.comments.at(-1).quote), /^Hello\s*$/);
   // Escape during a drag cancels it: no box, no comment.
   const before = await page.evaluate(() => window.comments.length);

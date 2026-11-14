@@ -5421,7 +5421,7 @@ function MemberApp({
                       consolidationCount={consolidationCount}
                       onSelectNode={openNode}
                     />
-                    <CommentMentionsInbox key={project.id} projectId={project.id} />
+                    <CommentMentionsInbox projectId={project.id} />
                     <ProposalJudgmentSection
                       proposals={pendingProposals}
                       graph={attentionGraph}
