@@ -44,9 +44,9 @@ function Tab() {
         remembered.current = state;
       }}
       tasks={(coach?.tasks ?? []) as never}
-      onStartTask={async (kind, request) => {
+      onStartTask={async (kind, request, requestId) => {
         if (!coach) throw new Error("unused");
-        coach.started.push({ kind, request });
+        coach.started.push({ kind, request, requestId });
         const turn = coach.tasks[0] as Record<string, unknown>;
         return {
           ...turn,

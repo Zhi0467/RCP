@@ -781,44 +781,57 @@ test("a coach turn carrying only a project reference names its attachment scope"
   assert.equal(started.request.attachment_set_id, undefined);
 });
 
-test("a comment opened from the preview closes when another file is shown", async (t) => {
-  const { page } = await open(t, {
+test("a preview selection starts a shared thread, which the rail sends through the coach", async (t) => {
+  const { page, errors } = await open(t, {
     width: 1280,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
     configure: ({ tree }) => tree.files.push({ ...tree.files[0], file_id: "f2", path: "other.md" }),
   });
   await page.getByRole("button", { name: "Preview", exact: true }).first().click();
   const text = page.locator(".paper-right-pane [data-paper-path] p").first();
   await text.waitFor();
-  const box = await text.boundingBox();
-  await page.mouse.move(box.x + 1, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 });
-  await page.mouse.up();
+  const offer = page.locator(".chat-selection-comment");
   const select = async () => {
+    const box = await text.boundingBox();
     await page.mouse.move(box.x + 1, box.y + box.height / 2);
     await page.mouse.down();
     await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, { steps: 4 });
     await page.mouse.up();
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await offer.click();
   };
-  await page.getByRole("button", { name: "Comment", exact: true }).click();
-  const comment = page.getByRole("textbox", { name: "Comment", exact: true });
-  await comment.waitFor();
-  // Closing it returns focus to the preview it came from, not the hidden Coach.
-  await comment.press("Escape");
-  await page.waitForFunction(() => document.activeElement?.closest(".paper-right-pane"));
   await select();
+  const composer = page.getByRole("dialog", { name: "Comment" });
+  const comment = composer.getByRole("textbox", { name: "Comment", exact: true });
   await comment.waitFor();
+  await comment.press("Escape");
+  await composer.waitFor({ state: "detached" });
+  await select();
+  await comment.fill("Tighten this claim");
+  await composer.getByRole("button", { name: "Comment", exact: true }).click();
+  await composer.waitFor({ state: "detached" });
+  const rail = page.getByRole("complementary", { name: "Comments" });
+  await rail.getByText("Tighten this claim").waitFor();
+  const created = await page.evaluate(() =>
+    fetch("/api/projects/p/comment-threads?target_kind=paper&target_id=f1")
+      .then((response) => response.json())
+      .then((page) => page.threads[0]),
+  );
+  assert.deepEqual(created.target_kind, "paper");
+  assert.equal(created.anchor.kind, "text");
+  assert.match(created.anchor.where, /\(preview\)$/);
+  await rail.getByRole("button", { name: "Send thread to agent" }).click();
+  await page.waitForFunction(() => window.paperCoachFixture.started.length === 1);
+  const [started] = await page.evaluate(() => window.paperCoachFixture.started);
+  assert.equal(started.kind, "paper_coach");
+  assert.deepEqual(started.request.comment_thread_ids, [created.thread_id]);
+  assert.match(started.requestId, /^[0-9a-f-]{36}$/);
+  // A composer drawn on one file closes when another is shown.
+  await select();
   await comment.fill("half written");
   await page.locator(".paper-file", { hasText: "other.md" }).click();
-  await comment.waitFor({ state: "detached", timeout: 5000 });
-  // The typed text waits for the next selection; Escape discards it.
-  await text.waitFor();
-  await select();
-  assert.equal(await comment.inputValue(), "half written");
-  await comment.press("Escape");
-  await select();
-  assert.equal(await comment.inputValue(), "");
+  await composer.waitFor({ state: "detached", timeout: 5000 });
+  await fits(page);
+  assert.deepEqual(errors, []);
 });
 
 for (const state of ["ready", "warning", "refusal"])
@@ -882,9 +895,8 @@ for (const state of ["ready", "warning", "refusal"])
 
 for (const width of [1280, 390])
   test(`a new selection in the HTML page keeps the typed comment and its own mark at ${width}px`, async (t) => {
-    const { page, context } = await open(t, {
+    const { page, context, errors } = await open(t, {
       width,
-      init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
       configure: ({ tree }) =>
         tree.files.push({
           file_id: "f3",
@@ -931,50 +943,26 @@ for (const width of [1280, 390])
         text,
       );
     await post("First words");
-    const comment = page.getByRole("textbox", { name: "Comment", exact: true });
+    const composer = page.getByRole("dialog", { name: "Comment" });
+    const comment = composer.getByRole("textbox", { name: "Comment", exact: true });
     await comment.fill("half written");
     await post("Second words");
-    await page.getByText("Second words").first().waitFor();
+    await composer.locator("blockquote", { hasText: "Second words" }).waitFor();
     assert.equal(await comment.inputValue(), "half written");
     assert.equal(await shell.evaluate(() => window.clears ?? 0), 0);
-    // A quote longer than a comment allows is cut to the limit, so it stages.
-    await shell.evaluate(() =>
-      parent.postMessage(
-        {
-          type: "rcp-artifact-selection",
-          version: 1,
-          selection: {
-            kind: "box",
-            rect: { x: 0, y: 0, width: 1, height: 1 },
-            viewport: { width: 500, height: 400 },
-            elements: Array.from({ length: 8 }, (_, n) => ({
-              path: `p:nth-child(${n + 1})`,
-              label: "",
-              text: `${n}`.repeat(512),
-            })),
-          },
-          description: "",
-        },
-        location.origin,
-      ),
+    const inside = await composer.boundingBox();
+    assert.ok(inside.x >= 0 && inside.x + inside.width <= width, JSON.stringify(inside));
+    await composer.getByRole("button", { name: "Comment", exact: true }).click();
+    await composer.waitFor({ state: "detached" });
+    const created = await page.evaluate(() =>
+      fetch("/api/projects/p/comment-threads?target_kind=paper&target_id=f3")
+        .then((response) => response.json())
+        .then((page) => page.threads[0]),
     );
-    const quote = page.locator(".chat-annotation-composer blockquote, form blockquote").first();
-    await page.waitForFunction(
-      () => (document.querySelector("form blockquote")?.textContent.length ?? 0) > 1000,
-    );
-    const long = await quote.textContent();
-    assert.equal(long.length, 4096);
-    assert.ok(long.endsWith("…"));
-    // Any other way in replaces the open comment the same way: its mark goes, its text stays.
-    await coach(page);
-    await page.getByRole("button", { name: "Comment on this answer" }).click();
-    await page.getByRole("textbox", { name: "Select answer text" }).waitFor();
-    await shell.waitForFunction(() => (window.clears ?? 0) === 1);
-    assert.equal(await shell.evaluate(() => window.clears ?? 0), 1);
-    // A frame selection replacing that keyboard step carries the same text.
-    await post("Third words");
-    await page.getByText("Third words").first().waitFor();
-    assert.equal(await comment.inputValue(), "half written");
+    assert.equal(created.anchor.text, "Second words");
+    assert.equal(created.anchor.where, "page.html (preview)");
+    await fits(page);
+    assert.deepEqual(errors, []);
   });
 
 const running = {

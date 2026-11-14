@@ -51,8 +51,9 @@ one revision. Downloading a folder produces one zip. Desktop uses native save
 dialogs. New and uploaded files open immediately. Typing focus waits for the
 selected file's editor; an older editor cannot consume that request. Choosing
 Preview or Coach cancels pending editor focus. Replacement uploads require
-confirmation. Splits retain a usable width and the browser's preference. They
-support keyboard resizing and omit the divider when stacked.
+confirmation. The Files tree and the editor each have a split that retains a usable
+width and the browser's preference. They support keyboard resizing and omit the
+divider when stacked.
 
 Deleting a file with unsent peer text keeps that editor read-only with Recreate.
 Otherwise, deletion selects another file. Hidden deleted files with unsent text
@@ -131,7 +132,8 @@ A text `.html` or `.htm` file previews its saved page through the inline artifac
 shell and the same opaque sandbox and CSP as agent HTML
 ([sandbox rules](#answer-and-artifacts-are-independent)). It never runs as the top
 document. Relative PNG, JPEG, GIF, WebP and SVG images resolve against the HTML's
-Paper directory and are inlined from the same captured saved revision. Lookup
+Paper directory, and a site-root path such as `/images/a.svg` against the Paper
+root, as Jekyll writes them. They are inlined from the same captured saved revision. Lookup
 decodes the path once, ignores queries, retains SVG fragments and refuses paths
 outside the Paper tree. It never reads arbitrary server paths or fetches URLs.
 Admission checks metadata before reading bytes, deduplicates source reads and
@@ -139,7 +141,9 @@ counts every expanded reference against the limits in `limits.py`. Missing,
 unsupported and oversized figures produce a bounded warning on hover in the
 panel header. Other resource references still pass through the ordinary sanitizer.
 Paper and HTTP(S) links do not open because the frame allows no popups.
-A `#id` link scrolls the page to the element with that id or name.
+A `#id` link scrolls the page to the element with that id or name. A leading YAML
+front matter block, from a first `---` line to the next `---` or `...` line, is
+hidden in HTML and Markdown previews, which show only the body; the editor keeps it.
 
 On entry and when the saved Paper revision or HTML bytes change, the preview
 checks its member-only `/preview/state` route and hides the prior page behind
@@ -231,15 +235,20 @@ repository. [`PaperGit`](../../src/rcp/paper/git_sync.py) owns the mechanism,
 [the routes](../../src/rcp/api/paper_git.py) the member actions. Limits live in
 `limits.py` as `PAPER_GIT_*`.
 
-**Linking.** The repository is `owner/name` and always resolves to GitHub over
-SSH. RCP generates one deploy key per paper and shows the public half. A member
+**Linking.** The repository is `owner/name`; a pasted GitHub URL, with or
+without `.git`, or an SSH address reduces to it. It always resolves to GitHub
+over SSH. RCP generates one deploy key per paper and shows the public half. A member
 adds it to the repository with write access and presses Link. The backend then
 proves the key can write with a dry-run push that creates nothing on GitHub,
-and runs the first pull. A failed probe returns Git's message and keeps the
-link pending. Asking again for the same pending repository and branch returns
-the same key. Changing them needs Unlink first. A relink always makes a new
-key, because GitHub refuses a deploy key already attached to another
-repository. Without `ssh-keygen`, linking is refused with the reason.
+and runs the first pull. The branch is optional. A blank branch becomes the
+repository's default branch at Link. An empty repository gets `main`, which the
+first push creates. A typed branch that GitHub lacks is refused when the
+repository has other branches; the error names up to five of them. A failed
+probe, refusal, or first pull returns its message and keeps the link pending.
+Asking again for the same pending repository and branch returns the same key.
+Changing them, or keying a linked paper, needs Unlink first. A relink always
+makes a new key, because GitHub refuses a deploy key already attached to
+another repository. Without `ssh-keygen`, linking is refused with the reason.
 
 When the repository is one of the team project's own repositories, ready,
 write-verified and checked out on the backend's machine, the paper borrows
@@ -268,8 +277,9 @@ directory. Transfer carries no link and drops Git cards on import. A backup's
 database keeps the link row and Git cards, and the missing-key check below
 removes them after a restore. A restored or transferred project arrives
 unlinked. Project deletion removes both. A link
-whose key file is missing at backend start is removed with its Git cards. An
-older database opens as not linked.
+whose key file is missing at backend start is removed with its Git cards, and
+the backend logs it. A paper directory without a link is removed at backend
+start. An older database opens as not linked.
 
 **Pull is automatic.** The backend checks each linked paper that has a live
 editor, on a fixed interval, and once when a member opens the workspace. A
@@ -280,9 +290,10 @@ after its clean edits applied keeps them and does not advance the synced
 commit. Either way it records the error on the link and waits before that
 paper is polled again. Network Git runs outside project admission, so a
 slow remote never blocks Paper work. The merge and the link writes of a successful sync take it.
-A missing branch or an empty repository counts as the empty tree, and the first
-push creates the branch. A branch that vanishes after a sync refuses the pull
-and keeps the Paper.
+An empty repository counts as the empty tree, and the first push creates the
+branch. Before the first sync, a branch missing from a repository that has other
+branches refuses the pull and names them; the branch menu switches to one. A
+branch that vanishes after a sync refuses the pull and keeps the Paper.
 **Why:** treating a vanished branch as empty would delete every synced file.
 
 **Merge.** The merge is path-wise over three versions of each file: the base

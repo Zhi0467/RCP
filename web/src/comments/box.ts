@@ -17,7 +17,13 @@ export function boxFractions(start: Point, end: Point, bounds: Box): Box | null 
   return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
 }
 
-export function installBoxTool(surface: HTMLElement, publish: (box: Box) => void) {
+/** Draws a box over `surface` and publishes it in fractions of the surface. A press
+ *  that `accept` refuses, such as one on selectable text, stays the platform's own. */
+export function installBoxTool(
+  surface: HTMLElement,
+  publish: (box: Box) => void,
+  accept: (event: PointerEvent) => boolean = () => true,
+) {
   const abort = new AbortController();
   let start: Point | null = null;
   let active = false;
@@ -35,6 +41,7 @@ export function installBoxTool(surface: HTMLElement, publish: (box: Box) => void
     (event) => {
       if (!event.isPrimary || event.button !== 0) return;
       clear();
+      if (!accept(event)) return;
       start = { x: event.clientX, y: event.clientY };
       const activate = () => {
         active = true;
@@ -80,6 +87,13 @@ export function installBoxTool(surface: HTMLElement, publish: (box: Box) => void
     { signal: abort.signal },
   );
   surface.addEventListener("pointercancel", clear, { signal: abort.signal });
+  surface.ownerDocument.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape" && start) clear();
+    },
+    { signal: abort.signal },
+  );
   return () => {
     clear();
     abort.abort();

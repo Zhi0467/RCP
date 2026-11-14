@@ -8,16 +8,20 @@ import sqlite3
 import uuid
 from collections.abc import Collection
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
 from rcp.policies.project import is_member
+from rcp.storage.comments import readable_comment_target
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
 from rcp.storage.question_models import QuestionRecord
 from rcp.storage.questions import _question_record
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 NOTIFICATION_DEFAULTS = {
     "proposal": True,
@@ -27,6 +31,7 @@ NOTIFICATION_DEFAULTS = {
     "episode_finished": False,
     "consolidation": True,
     "bulletin_mention": True,
+    "comment_mention": True,
     "agent_thread": True,
 }
 
@@ -109,6 +114,53 @@ def migrate_question_notifications(connection: sqlite3.Connection) -> None:
 
 
 class NotificationStoreMixin(StoreMixinBase):
+    def unobserved_comment_mentions(self, project_id: str) -> list[dict[str, Any]]:
+        with self.connection() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT m.*, t.graph_target FROM comment_mentions m "
+                    "JOIN comment_threads t ON t.thread_id=m.thread_id "
+                    "WHERE m.project_id=? AND m.observed_at IS NULL "
+                    "ORDER BY m.created_at,m.post_id,m.user_id",
+                    (project_id,),
+                )
+            ]
+
+    def observe_comment_mention(self, user_id: str, notification: dict[str, Any]) -> bool:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previously_observed = connection.execute(
+                "SELECT 1 FROM comment_mentions WHERE thread_id=? AND user_id=? "
+                "AND observed_at IS NOT NULL",
+                (notification["item_id"], user_id),
+            ).fetchone()
+            observed = connection.execute(
+                "UPDATE comment_mentions SET observed_at=? "
+                "WHERE project_id=? AND thread_id=? AND user_id=? AND observed_at IS NULL",
+                (self.now(), notification["project_id"], notification["item_id"], user_id),
+            ).rowcount
+            thread = connection.execute(
+                "SELECT * FROM comment_threads WHERE thread_id=? AND project_id=? AND state='open'",
+                (notification["item_id"], notification["project_id"]),
+            ).fetchone()
+            if (
+                observed
+                and previously_observed is None
+                and thread is not None
+                and readable_comment_target(
+                    cast("AppStore", self),
+                    connection,
+                    user_id,
+                    notification["project_id"],
+                    thread["target_kind"],
+                    thread["target_id"],
+                )
+                is not None
+            ):
+                self.enqueue_notification(connection, recipients={user_id}, **notification)
+            return bool(observed)
+
     def unobserved_bulletin_mentions(self, project_id: str) -> list[dict[str, Any]]:
         with self.connection() as connection:
             return [
@@ -723,6 +775,30 @@ class NotificationStoreMixin(StoreMixinBase):
         ).fetchone()
         if row is None or (row["last_status"] == "posted" and not allow_posted):
             return False
+        if row["kind"] == "comment_mention":
+            thread = connection.execute(
+                "SELECT t.* FROM comment_threads t JOIN comment_mentions m "
+                "ON m.thread_id=t.thread_id WHERE t.thread_id=? AND t.project_id=? "
+                "AND m.user_id=? AND t.state='open' LIMIT 1",
+                (row["item_id"], row["project_id"], device["user_id"]),
+            ).fetchone()
+            if (
+                thread is None
+                or readable_comment_target(
+                    cast("AppStore", self),
+                    connection,
+                    device["user_id"],
+                    row["project_id"],
+                    thread["target_kind"],
+                    thread["target_id"],
+                )
+                is None
+            ):
+                connection.execute(
+                    "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?",
+                    (device_id, notification_id),
+                )
+                return False
         if row["kind"] == "agent_thread":
             thread = connection.execute(
                 "SELECT user_id FROM agent_threads WHERE thread_id=? AND project_id=? "

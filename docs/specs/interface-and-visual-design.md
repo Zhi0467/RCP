@@ -550,7 +550,11 @@ publish changes as the same artifact's next version, just as project turns do.
 Space has no Keep, node references, version controls or comment panel in its
 opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
-bubble. Answer comments join the next message in both.
+bubble. Answer comments join the next message only in Space threads. In a
+project chat, selected reply text starts a
+[shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
+at the quote's end opens it, the header count lists the chat's threads, and Send
+to agent carries threads through the composer's own send, a steer while a turn runs.
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve
 on the right. Their outcome replaces the need for a separate member answer

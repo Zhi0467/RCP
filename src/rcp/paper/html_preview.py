@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import posixpath
+import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from urllib.parse import quote, unquote, urlsplit
@@ -102,9 +103,10 @@ def _relative_path(source: str | None, page: str) -> tuple[str, str]:
         raise ValueError("Invalid image path")
     url = urlsplit(value)
     decoded = unquote(url.path, errors="strict")
-    if url.scheme or url.netloc or decoded.startswith("/") or not decoded:
-        raise ValueError("Image must name a relative Paper file")
-    path = posixpath.normpath(posixpath.join(posixpath.dirname(page), decoded))
+    if url.scheme or url.netloc or not decoded.strip("/"):
+        raise ValueError("Image must name a Paper file")
+    base = "" if decoded.startswith("/") else posixpath.dirname(page)
+    path = posixpath.normpath(posixpath.join(base, decoded.lstrip("/")))
     return paper_path(path), quote(unquote(url.fragment, errors="strict"), safe="")
 
 
@@ -197,6 +199,20 @@ def _resolve_sources(
     return dependencies, warnings
 
 
+_FRONT_MATTER = re.compile(
+    r"\A---[ \t]*\r?\n.*?^(?:---|\.\.\.)[ \t]*\r?$", re.DOTALL | re.MULTILINE
+)
+
+
+def _blank_front_matter(source: str) -> str:
+    """Blanks a leading YAML front matter block, as Jekyll pages start with, so the page
+    shows only its body; every character keeps its offset, so tags stay where parsed."""
+    match = _FRONT_MATTER.match(source)
+    if match is None:
+        return source
+    return re.sub(r"[^\n]", " ", match.group()) + source[match.end() :]
+
+
 def read_html_preview(
     reader: PaperSnapshotReader, project_id: str, file_id: str, revision: int | None = None
 ) -> PaperHTMLPreview:
@@ -205,7 +221,7 @@ def read_html_preview(
     if entry is None or file_format(entry["path"], entry["kind"]) != "html":
         raise KeyError("Paper file has no HTML preview")
     file, body = reader.raw_file(project_id, file_id, revision)
-    source = body.decode("utf-8")
+    source = _blank_front_matter(body.decode("utf-8"))
     parser = _Images(source)
     parser.feed(source)
     parser.close()

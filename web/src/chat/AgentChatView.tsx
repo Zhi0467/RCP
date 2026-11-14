@@ -56,7 +56,9 @@ import {
 } from "./chatWorkspace";
 import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
 import { assembleChatTurn, replaceTextSpan, stagedArtifactContext } from "./chatInput";
-import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "./answerComments";
+import { AnswerCommentLayers, useAnswerComments } from "./answerComments";
+import { useReplyComments } from "./ReplyComments";
+import type { SendThreads } from "../comments/react/useComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -98,6 +100,7 @@ import type {
   AgentRunConfig,
   AgentTask,
   ChatMessage,
+  SteerRequest,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
@@ -364,7 +367,7 @@ export function AgentChatView({
     storageKey: annotationsKey,
     enabled: !readOnly,
     busy: submitting,
-    sources: [transcriptSource(chatLinesRef)],
+    sources: [],
     message: textareaRef,
     onError: setSubmitError,
   });
@@ -962,20 +965,33 @@ export function AgentChatView({
     }
   };
 
-  const steer = async (task: AgentTask) => {
+  /** Steers the running turn with the composer's text and any comment threads, whose
+   *  send key is the steer's message id. Resolves whether a receipt came back. */
+  const steer = async (
+    task: AgentTask,
+    threads: { ids: readonly string[]; key: string } | null = null,
+  ): Promise<boolean> => {
     const draftMessage = draft.get();
     const draftAnnotations = annotations;
     const text = assembleChatTurn(draftMessage, annotations);
-    if (!comments.requireComplete()) return;
+    if (!comments.requireComplete()) return false;
     // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (!text || composer.staged || artifactContext || submitting || !task.steer_turn_id) return;
+    if (
+      !(text || threads) ||
+      composer.staged ||
+      artifactContext ||
+      submitting ||
+      !task.steer_turn_id
+    )
+      return false;
     if (dictating) stopDictation(true);
     scroll.current?.follow();
-    const request = {
-      message_id: crypto.randomUUID(),
+    const request: SteerRequest = {
+      message_id: threads?.key ?? crypto.randomUUID(),
       attempt: task.attempt,
       expected_turn_id: task.steer_turn_id,
       message: text,
+      ...(threads ? { comment_thread_ids: [...threads.ids] } : {}),
     };
     setSubmitError(null);
     setSubmitting(true);
@@ -998,10 +1014,12 @@ export function AgentChatView({
       draft.set((current) => (current === draftMessage ? "" : current));
       comments.clear(draftAnnotations);
       skills.reset();
+      return true;
     } catch (error) {
       setSubmitError(
         `Steering receipt could not be read. Nothing was resent. ${error instanceof Error ? error.message : String(error)}`,
       );
+      return false;
     } finally {
       setSubmitting(false);
     }
@@ -1025,7 +1043,10 @@ export function AgentChatView({
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return;
     }
-    if (steeringTask) return steer(steeringTask);
+    if (steeringTask) {
+      await steer(steeringTask);
+      return;
+    }
     if (worktree.chosen && !worktree.state?.can_choose) {
       setSubmitError(
         worktree.error ??
@@ -1081,9 +1102,10 @@ export function AgentChatView({
     });
   };
 
-  /** Start a turn, or start it again after a failed send under the same key. */
-  const submitTurn = async (turn: PendingChatTurn) => {
-    if (!canCompose) return;
+  /** Start a turn, or start it again after a failed send under the same key.
+   *  Resolves whether it was admitted. */
+  const submitTurn = async (turn: PendingChatTurn): Promise<boolean> => {
+    if (!canCompose) return false;
     const pending = { ...turn, error: undefined };
     scroll.current?.follow();
     setPendingTurn(pending);
@@ -1104,6 +1126,7 @@ export function AgentChatView({
         setSupersedes((current) =>
           current?.operationId === turn.submission.supersedes ? null : current,
         );
+      return true;
     } catch (error) {
       // A replaced backend admitted nothing and Reconnect is already offered, so
       // the text returns to the composer with no failed turn to resend. The
@@ -1113,7 +1136,7 @@ export function AgentChatView({
         if (!readStorage(draftKey)) writeStorage(draftKey, turn.draft);
         setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
         draft.set((current) => (current ? current : turn.draft));
-        return;
+        return false;
       }
       // The request may never have reached the server, so the turn stays where it
       // was sent, with Resend under the same key: at most one turn is admitted.
@@ -1132,10 +1155,75 @@ export function AgentChatView({
         current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
       );
       draft.set((current) => (current ? current : turn.draft));
+      return false;
     } finally {
       setSubmitting(false);
     }
   };
+
+  /** Comment threads ride this composer's own send: a steer while the turn takes one,
+   *  else a new turn with the typed text, under the threads' send key. A refusal shows
+   *  in the chat, as any send's does. */
+  const sendThreads: SendThreads = async (threadIds, key) => {
+    const notSent = new Error("Not sent; the chat shows why.");
+    if (steeringTask) {
+      if (!(await steer(steeringTask, { ids: threadIds, key }))) throw notSent;
+      return;
+    }
+    if (dictating || !comments.requireComplete()) throw notSent;
+    if (relatedActive || submitting || repairingTaskId || reviewPending)
+      throw new Error("Wait for the running turn to finish.");
+    if (attachmentsUnready || !providerReady) throw notSent;
+    const draftMessage = draft.get();
+    const text = assembleChatTurn(draftMessage, annotations);
+    draft.set("");
+    composer.closeMenu();
+    const admitted = await submitTurn({
+      clientId: `pending-${key}`,
+      requestId: key,
+      text,
+      draft: draftMessage,
+      timestamp: new Date().toISOString(),
+      mode: "work",
+      attachments: readyAttachments,
+      submission: {
+        kind: surface,
+        config,
+        nodeId: node?.id ?? null,
+        message: text,
+        chatId,
+        sessionId,
+        supersedes: supersededId,
+        artifactContext,
+        attachments: composer.turnFields(),
+        skills: skills.selection,
+        providerSkillNames: skills.providerSkillNames,
+        worktree: worktree.chosen,
+        worktreeRepository,
+        commentThreadIds: threadIds,
+      },
+      submittedOverride: configOverride,
+    });
+    if (!admitted) throw notSent;
+  };
+  const replyIds = useMemo(
+    () => [
+      ...new Set(
+        transcript
+          .filter((line) => line.role === "agent" && line.text && !line.running)
+          .map((line) => line.taskId),
+      ),
+    ],
+    [transcript],
+  );
+  const replyComments = useReplyComments({
+    projectId: project.id,
+    chatId,
+    replyIds,
+    linesRef: chatLinesRef,
+    canPost: !readOnly,
+    send: readOnly ? null : sendThreads,
+  });
 
   const integrateWorktree = async (option: WorktreeIntegrationOption) => {
     if (
@@ -1228,6 +1316,7 @@ export function AgentChatView({
       {(showProvider || !readOnly) && agentSummary}
       <AgentStatusStrip tasks={statusTasks} />
       {presentation === "workspace" && watcherToggle}
+      {replyComments.headerButton}
       <ChatHeaderMenu
         actions={[
           ...headerActions,
@@ -1329,6 +1418,7 @@ export function AgentChatView({
           endpoints={endpoints}
           artifacts={artifacts}
           comments={comments}
+          answerComments={false}
           compactionByLine={compactionByLine}
           continuedTaskIds={continuedTaskIds}
           latestGraphReceiptLineIds={latestGraphReceiptLineIds}
@@ -1614,6 +1704,7 @@ export function AgentChatView({
         />
       )}
       <AnswerCommentLayers comments={comments} />
+      {replyComments.layers}
     </div>
   );
 }

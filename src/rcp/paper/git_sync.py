@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -17,6 +18,8 @@ from pathlib import Path
 from rcp import limits
 from rcp.git_identity import member_git_email
 from rcp.limits import PAPER_GIT_DIFF_LINES, PAPER_GIT_TIMEOUT_SECONDS
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -373,14 +376,17 @@ class PaperGit:
         remote_url(repository)
         directory = self.directory(project_id)
         with self.lock(project_id), self.admission(project_id):
-            _git(directory, ["check-ref-format", "refs/heads/" + branch])
+            if branch:
+                _git(directory, ["check-ref-format", "refs/heads/" + branch])
             existing = self.store.paper_git_link(project_id)
             if existing and existing.state == "pending":
                 if (existing.repository, existing.branch) != (repository, branch):
                     raise GitError("Unlink the pending repository before changing it")
                 return self.status(project_id)
+            if existing:
+                raise GitError("Unlink first")
             own = directory / "id_ed25519"
-            if existing or own.is_symlink() or own.exists():
+            if own.is_symlink() or own.exists():
                 self._unlink(project_id)
             shared = self.shared_key(project_id, repository)
             if shared is None:
@@ -422,15 +428,34 @@ class PaperGit:
     def reconcile(self) -> None:
         for link in self.store.paper_git_links():
             if not (self.directory(link.project_id) / "id_ed25519").is_file():
+                _LOG.warning("Paper Git link of %s dropped: its key is missing", link.project_id)
                 with self.lock(link.project_id):
                     self._unlink(link.project_id)
+        for directory in self.root.iterdir() if self.root.is_dir() else ():
+            if directory.is_symlink() or not directory.is_dir():
+                continue
+            with self.lock(directory.name):
+                if self.store.paper_git_link(directory.name) is None:
+                    shutil.rmtree(directory)
 
-    def _head(self, link) -> str:
+    def _remote_heads(self, link) -> tuple[dict[str, str], str]:
+        """The remote's branch heads and its default branch, "" when HEAD is unborn."""
         output = _git(
             self.directory(link.project_id),
-            ["ls-remote", remote_url(link.repository), "refs/heads/" + link.branch],
+            ["ls-remote", "--symref", remote_url(link.repository), "HEAD", "refs/heads/*"],
         )
-        return output.split()[0].decode() if output else ""
+        heads: dict[str, str] = {}
+        default = ""
+        for line in output.decode(errors="replace").splitlines():
+            value, _, ref = line.partition("\t")
+            if ref == "HEAD" and value.startswith("ref: refs/heads/"):
+                default = value.removeprefix("ref: refs/heads/")
+            elif ref.startswith("refs/heads/"):
+                heads[ref.removeprefix("refs/heads/")] = value
+        return heads, default
+
+    def _head(self, link) -> str:
+        return self._remote_heads(link)[0].get(link.branch, "")
 
     def link(self, project_id: str):
         with self.lock(project_id):
@@ -447,11 +472,13 @@ class PaperGit:
                         f"{probe}:refs/heads/rcp-link-probe-{uuid.uuid4().hex}",
                     ],
                 )
+                if not link.branch:
+                    link.branch = self._remote_heads(link)[1] or "main"
                 head = self._fetch(link)
                 with self.admission(project_id):
+                    self._merge(link, head)
                     link.state = "linked"
                     self.store.save_paper_git_link(link)
-                    self._merge(link, head)
             except Exception as exc:
                 self._error(project_id, exc)
                 raise
@@ -465,16 +492,7 @@ class PaperGit:
 
     def branches(self, project_id: str) -> list[str]:
         with self.lock(project_id):
-            link = self._linked(project_id)
-            output = _git(
-                self.directory(project_id),
-                ["ls-remote", "--heads", remote_url(link.repository)],
-            )
-        return sorted(
-            line.split(b"\trefs/heads/", 1)[1].decode(errors="replace")
-            for line in output.splitlines()
-            if b"\trefs/heads/" in line
-        )
+            return sorted(self._remote_heads(self._linked(project_id))[0])
 
     def switch(self, project_id: str, branch: str, *, create: bool):
         with self.lock(project_id):
@@ -569,9 +587,16 @@ class PaperGit:
     def _fetch(self, link) -> str:
         directory = self.directory(link.project_id)
         self._budget(directory)
-        head = self._head(link)
+        heads = self._remote_heads(link)[0]
+        head = heads.get(link.branch, "")
         if not head and link.synced_commit:
             raise GitError("Paper Git branch is missing from the remote")
+        if not head and heads:
+            names = sorted(heads)
+            more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+            raise GitError(
+                f"Branch {link.branch} is not on GitHub. It has {', '.join(names[:5])}{more}."
+            )
         if head and head != link.synced_commit:
             _git(
                 directory,

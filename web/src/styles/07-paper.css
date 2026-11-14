@@ -703,7 +703,7 @@
 }
 .paper-git-body {
   overflow: auto;
-  padding: 2px 14px 14px;
+  padding: 8px 14px 14px;
 }
 .paper-git-body > * {
   flex: none;

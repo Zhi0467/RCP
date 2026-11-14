@@ -544,11 +544,6 @@
       "count": 8
     }
   },
-  "src/paper/PaperBoxSelect.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "src/paper/PaperChanges.tsx": {
     "rcp/no-comments": {
       "count": 4
@@ -581,12 +576,12 @@
   },
   "src/paper/PaperPreview.tsx": {
     "rcp/no-comments": {
-      "count": 7
+      "count": 6
     }
   },
   "src/paper/PaperWorkspace.tsx": {
     "rcp/no-comments": {
-      "count": 28
+      "count": 25
     }
   },
   "src/paper/paperDocuments.ts": {
@@ -596,7 +591,7 @@
   },
   "src/paper/previewComments.ts": {
     "rcp/no-comments": {
-      "count": 9
+      "count": 5
     }
   },
   "src/paper/typst.worker.ts": {
@@ -1006,7 +1001,7 @@
   },
   "tests/chatAnnotations.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 9
+      "count": 8
     }
   },
   "tests/chatBranch.browser.test.mjs": {
@@ -1316,7 +1311,7 @@
   },
   "tests/paperCoach.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 20
+      "count": 16
     }
   },
   "tests/paperDialogs.browser.test.mjs": {

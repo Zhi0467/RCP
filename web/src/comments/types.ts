@@ -68,6 +68,8 @@ export interface CommentThread {
   closed_at: string | null;
   sent_operation_id: string | null;
   send_key?: string | null;
+  /** The chat a reply thread's turn belongs to; null for other targets. */
+  chat_id?: string | null;
   can_send: boolean;
   posts: CommentPost[];
 }
@@ -85,4 +87,8 @@ export interface CommentMention {
   target_kind: CommentTarget["kind"];
   target_id: string;
   graph_target: string;
+  /** The target's display name: the artifact, Paper file, or chat. */
+  target_name: string;
+  /** Members the thread's posts mention, so their tokens read as names. */
+  members?: CommentMember[];
 }

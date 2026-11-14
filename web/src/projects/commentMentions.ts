@@ -2,26 +2,9 @@ import { api } from "../core/api";
 import { buildNotificationLink } from "../core/notificationLinks";
 import type { ResourceProfile } from "../core/resourceStore";
 import { bulletinDecodeMentions, bulletinMentionCandidates } from "../chat/bulletinModel";
+import { anchorQuote } from "../comments/model.ts";
+import type { CommentMention } from "../comments/types.ts";
 import { projectResourceKey } from "./projectResources";
-
-interface MentionPost {
-  post_id: string;
-  author: { user_id: string; display_name: string };
-  text: string;
-}
-
-/** One `GET …/comment-mentions` row: the caller's mention, with its open thread. */
-export interface CommentMention {
-  thread_id: string;
-  post_id: string;
-  created_at: string;
-  target_name: string;
-  thread: {
-    graph_target: string;
-    anchor: { text?: string };
-    posts: MentionPost[];
-  };
-}
 
 export interface CommentMentionRow {
   key: string;
@@ -50,16 +33,19 @@ export function commentMentionRows(
     const { posts, anchor, graph_target } = mention.thread;
     const post = posts.find((item) => item.post_id === mention.post_id);
     if (!post) return [];
-    const authors = bulletinMentionCandidates(
-      posts.map((item) => item.author),
-      [],
+    const members = new Map(
+      [...(mention.members ?? []), ...posts.map((item) => item.author)].map((member) => [
+        member.user_id,
+        member,
+      ]),
     );
+    const known = bulletinMentionCandidates([...members.values()], []);
     return [
       {
         key: `${mention.post_id}:${mention.thread_id}`,
         author: post.author.display_name || post.author.user_id,
         targetName: mention.target_name,
-        excerpt: anchor.text || bulletinDecodeMentions(posts[0].text, authors),
+        excerpt: anchorQuote(anchor) || bulletinDecodeMentions(posts[0].text, known),
         createdAt: mention.created_at,
         link: buildNotificationLink({
           projectId,

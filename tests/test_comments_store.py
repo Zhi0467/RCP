@@ -22,10 +22,18 @@ def test_lifecycle_and_send_replay(store):
     item = thread(store)
     tid = item["thread_id"]
     actor = store.local_owner.user_id
+    store.add_comment_post("project", tid, user_id=actor, text="second")
     store.mark_threads_sent([tid], "op", "key", actor)
-    assert store.sendable_threads([tid], "key")[0]["sent_operation_id"] == "op"
+    with store.connection() as connection:
+        connection.execute("UPDATE comment_posts SET created_at='9999' WHERE text='second'")
+    sent = store.sendable_threads("project", actor, [tid], "key")[0]
+    assert sent["sent_operation_id"] == "op"
+    assert "note" in sent["rendered"] and "second" not in sent["rendered"]
     with pytest.raises(CommentError):
-        store.sendable_threads([tid], "other")
+        store.sendable_threads("project", actor, [tid], "other")
+    with pytest.raises(CommentError) as error:
+        store.sendable_threads("elsewhere", actor, [tid], "key")
+    assert error.value.status_code == 404
     store.mark_threads_sent([tid], "other", "other", actor)
     assert store.get_comment_thread("project", tid)["sent_operation_id"] == "op"
     item = store.add_comment_post("project", tid, user_id=actor, text="reply")
@@ -60,8 +68,14 @@ def test_budget_is_atomic_and_author_only(store):
         store.add_comment_post("project", tid, user_id=actor, text="c" * 2048)
     assert error.value.status_code == 422
     assert len(store.get_comment_thread("project", tid)["posts"]) == 2
+    from .test_bulletin_store import other_member
+
+    member = other_member(store)
+    store.seat_project_member("project", member.user_id)
     with pytest.raises(CommentError) as error:
-        store.edit_comment_post("project", item["posts"][0]["post_id"], user_id="other", text="x")
+        store.edit_comment_post(
+            "project", item["posts"][0]["post_id"], user_id=member.user_id, text="x"
+        )
     assert error.value.status_code == 403
 
 
@@ -81,15 +95,15 @@ def test_paper_disappears_and_returns(store):
     )
     with store.connection() as connection:
         connection.execute("UPDATE paper_files SET deleted_at='now'")
-    assert store.list_comment_threads("project", "paper", "file") == []
     assert store.open_comment_mentions("project", actor) == []
-    assert not store.comment_target_readable(actor, "paper", "file")
+    assert store.comment_target_route(actor, "paper", "file", project_id="project") is None
+    with pytest.raises(CommentError) as error:
+        store.add_comment_post("project", item["thread_id"], user_id=actor, text="gone")
+    assert error.value.status_code == 404
     with store.connection() as connection:
         connection.execute("UPDATE paper_files SET deleted_at=NULL")
-    assert (
-        store.list_comment_threads("project", "paper", "file")[0]["thread_id"] == item["thread_id"]
-    )
-    assert store.comment_target_readable(actor, "paper", "file")
+    assert store.open_comment_mentions("project", actor)[0]["thread_id"] == item["thread_id"]
+    assert store.comment_target_route(actor, "paper", "file", project_id="project") is not None
 
 
 @pytest.mark.parametrize("expire", [False, True])
@@ -280,5 +294,56 @@ def test_member_mentions_drop_private_target_nonreaders(store):
         user_id=actor,
     )
     assert item["posts"][0]["mentions"] == []
-    assert not store.comment_target_readable(member.user_id, "reply", "turn")
+    assert store.comment_target_route(member.user_id, "reply", "turn", project_id="project") is None
     assert store.open_comment_mentions("project", member.user_id) == []
+
+
+def test_mutators_recheck_readability(store):
+    from .test_bulletin_store import other_member
+
+    actor = store.local_owner.user_id
+    item = thread(store)
+    tid, pid = item["thread_id"], item["posts"][0]["post_id"]
+    member = other_member(store)
+    store.seat_project_member("project", member.user_id)
+    chat = next(
+        chat
+        for chat in store.ensure_agent_threads(
+            member.user_id, ["project"], default_names=("Agent",)
+        )
+        if chat.project_id == "project"
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json,'$.chat_id',?) "
+            "WHERE operation_id='turn'",
+            (chat.thread_id,),
+        )
+    for mutate in (
+        lambda: store.add_comment_post("project", tid, user_id=actor, text="x"),
+        lambda: store.resolve_comment_thread("project", tid, user_id=actor),
+        lambda: store.reopen_comment_thread("project", tid, user_id=actor),
+        lambda: store.edit_comment_post("project", pid, user_id=actor, text="x"),
+        lambda: store.delete_comment_post("project", pid, user_id=actor),
+    ):
+        with pytest.raises(CommentError) as error:
+            mutate()
+        assert error.value.status_code == 404
+
+
+def test_rename_cannot_push_saved_thread_over_budget(store):
+    from rcp.comments.render import render_thread
+    from rcp.limits import COMMENT_THREAD_MAX_CHARS
+
+    actor = store.local_owner.user_id
+    tid = thread(store, "a" * 500)["thread_id"]
+    with pytest.raises(CommentError):
+        while True:
+            store.add_comment_post("project", tid, user_id=actor, text="b" * 500)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE space_users SET display_name=? WHERE user_id=?", ("n" * 500, actor)
+        )
+    assert len(render_thread(store.get_comment_thread("project", tid))) <= (
+        COMMENT_THREAD_MAX_CHARS
+    )

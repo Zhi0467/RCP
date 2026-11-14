@@ -239,7 +239,10 @@ open ──Resolve, or Send admitted──▶ resolved ──Reopen / reply─�
 - Only `open` threads show pins, can be ticked, and are listed or delivered as
   mentions.
 - The rail folds resolved threads under "Resolved · N".
-- Reopening clears `closed_*`, `sent_operation_id`, and `send_key`.
+- Reopening clears `closed_*`, `sent_operation_id`, and `send_key`. A reply
+  reopens a resolved thread, so a repeat sent after a reply is a new send; its
+  text differs and the replay path answers 409, which the client shows as a
+  failed send.
 
 ## Send to agent
 
@@ -272,8 +275,8 @@ added.
 `mark_threads_sent` stores the key in `send_key`. A thread counts as sendable
 when it is `open`, or when it is resolved with `send_key` equal to this request's
 key. When the key matches, `render_thread` renders only the posts created at or
-before `closed_at`, so a repeat produces the same text even if someone replied
-meanwhile, and the existing replay paths match it:
+before `closed_at`, so a repeat produces the same text and the existing replay
+paths match it:
 - the `existing is not None` branch of `client_request_admission` for turns;
 - `begin_chat_steer` with `_require_same_steer` for steers.
 

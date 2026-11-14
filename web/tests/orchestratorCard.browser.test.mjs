@@ -21,6 +21,8 @@ async function withCard(chain, check) {
     await page.route("**/api/**", (route) => {
       const url = route.request().url();
       if (url.endsWith("/questions")) return route.fulfill({ json: [] });
+      if (/\/comment-threads\?target_kind=reply&/.test(url))
+        return route.fulfill({ json: { threads: [] } });
       if (url.endsWith("/chat-display"))
         return route.fulfill({ json: { archived: [], titles: {}, pinned: [] } });
       // Listed from main, the card reads its own branch's watchers.
