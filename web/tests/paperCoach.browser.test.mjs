@@ -863,8 +863,8 @@ for (const state of ["ready", "warning", "refusal"])
         await toolbar.getByRole("status", { name: "Saved image unavailable" }).waitFor();
       }
     }
-    const controls = toolbar.locator(":is(button, [role=status]):visible");
-    assert.equal(await controls.count(), state === "ready" ? 8 : 9);
+    const controls = toolbar.locator(":is(button, input, [role=status]):visible");
+    assert.equal(await controls.count(), state === "ready" ? 7 : 8);
     const segments = await toolbar.getByRole("group", { name: "Paper view" }).boundingBox();
     const tools = await toolbar.locator(".paper-panel-tools").boundingBox();
     assert.ok(tools.y >= segments.y + segments.height);
@@ -907,8 +907,7 @@ for (const width of [1280, 390])
     await page.getByRole("button", { name: "Preview", exact: true }).first().click();
     await page.getByRole("button", { name: "Comment on the page", pressed: true }).waitFor();
     if (width === 390) {
-      await target(page.getByRole("button", { name: "Zoom in", exact: true }));
-      await target(page.getByRole("button", { name: "Zoom out", exact: true }));
+      await target(page.getByRole("slider", { name: "Preview zoom" }));
       await target(page.getByRole("button", { name: "Reset preview zoom", exact: true }));
     }
     await fits(page);

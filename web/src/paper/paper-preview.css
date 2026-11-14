@@ -160,7 +160,27 @@
   transform-origin: 0 0;
 }
 .paper-html-zoom {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+.paper-html-zoom input {
+  width: 96px;
+}
+.paper-html-zoom button {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--type-xs);
   font-variant-numeric: tabular-nums;
+  min-width: 4ch;
+  padding: 0;
+  text-align: right;
+}
+.paper-html-zoom button:disabled {
+  cursor: default;
 }
 .paper-preview-loading {
   margin: auto;
@@ -176,6 +196,13 @@
   box-shadow: 0 2px 10px rgb(0 0 0 / 16%);
 }
 @media (max-width: 560px) {
+  .paper-html-zoom input,
+  .paper-html-zoom button {
+    min-height: 44px;
+  }
+  .paper-html-zoom button {
+    min-width: 44px;
+  }
   .paper-phone-segments:has(.paper-html-zoom) {
     flex-direction: column;
     align-items: stretch;
