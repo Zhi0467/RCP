@@ -605,8 +605,8 @@ Files retain their identity across renames. Copy links open that file.
 The editor shows durable save coverage separately from publication. Markdown
 previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
-HTML previews put Zoom out, percentage reset, Zoom in and Comment in the panel
-header. Their loading and error states occupy that same preview surface.
+HTML previews put the zoom percentage, its hover slider, and Comment in the
+panel header. Their loading and error states occupy that same preview surface.
 At phone width, Write, Preview, Coach, and Refs occupy one pane selected by the
 segmented control. HTML tools occupy a second row so warnings do not displace
 Comment or change the toolbar height. Files and History open as panels.
@@ -615,10 +615,12 @@ References fold under Files as one row with a count. The Reference tab shows
 one reference as a page. At phone width, Refs shows the list, and a chosen
 entry shows its page with a back control.
 
-The Git pill sits in the file header. It shows the branch, a count of files in
-conflict, and a mark for unpushed edits. Its hover shows the last error, or else
-the last sync time. It opens one dialog that links the repository, lists conflicts
-above the changed and skipped files, and pushes with a commit message. At phone
+The Git pill sits in the file header and shows only the branch. Its hover shows
+the last error, or else the repository. On a linked paper it opens the branch
+list, with switch, new branch, and Unlink; otherwise it opens the link dialog.
+Conflicts, changed and skipped files, and Commit & push live in the Changes tab
+of the file sidebar, whose count is the only unpushed mark, and a changed
+file's diff opens in the editor pane. At phone
 width the pill keeps its place as an icon without the branch name, and hides in
 Coach view with presence and History.
 

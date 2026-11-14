@@ -159,8 +159,8 @@ untrusted-math options, inline fonts and no external service or server Node
 process. A missing renderer is an explicit preview failure. Authored script
 errors remain visible through the existing private error channel.
 
-The header has Zoom out, percentage reset and Zoom in, from 50% to 200% in fixed
-steps. Zoom transforms the existing viewer without reloading it, persists while
+The header has a zoom slider and a percentage that resets to 100%, from 50% to
+200% in 5% steps. Zoom transforms the existing viewer without reloading it, persists while
 that file stays open and starts at 100% for another file. It clears a selection
 while preserving the comment draft. Making previews artifacts was rejected:
 artifacts are versioned deliverables with their own chat, while Paper follows
@@ -177,8 +177,8 @@ except inside an HTML page, which takes a mouse or pen. With a mouse or pen, a d
 that starts off text draws an area on a PDF page or image. An area on an HTML page
 needs comment mode, a toggle in the panel header that starts on for each file
 shown, as the artifact viewer's does; turning it off hands drags back to the
-page's own scripts. Zoom is a slider from 50% to 200% that runs on doublings, so 100% sits in
-its middle; it shows on hover or focus, and always at phone width.
+page's own scripts. The zoom slider runs on doublings, so 100% sits in its middle; it shows on
+hover or focus, and always at phone width.
 
 Each comment records where it came from: path and line for Markdown and plain
 text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near"
