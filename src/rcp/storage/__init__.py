@@ -28,6 +28,7 @@ from rcp.storage.bulletin import BulletinStoreMixin
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.chat_forks import ChatForkStoreMixin
 from rcp.storage.client_requests import ClientRequestStoreMixin
+from rcp.storage.comments import CommentStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
@@ -74,6 +75,7 @@ class AppStore(
     DigestStoreMixin,
     ConsolidationStoreMixin,
     BulletinStoreMixin,
+    CommentStoreMixin,
     EvidenceFlagStoreMixin,
     QuestionStoreMixin,
     NotificationStoreMixin,

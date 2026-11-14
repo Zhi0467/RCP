@@ -208,6 +208,25 @@ def migrate_bulletin_actor_ids(connection: sqlite3.Connection) -> None:
         )
 
 
+def _member_and_agent_tokens(
+    connection: sqlite3.Connection, project_id: str, text: str
+) -> list[dict[str, str]]:
+    members = {member["user_id"] for member in _members(connection, project_id)}
+    return [
+        {"kind": kind, "id": identity}
+        for kind, identity in dict.fromkeys(re.findall(r"<@(member|agent):([^<>\s]+)>", text))
+        if kind == "agent" or identity in members
+    ]
+
+
+def parse_member_mentions(
+    connection: sqlite3.Connection, project_id: str, text: str
+) -> list[dict[str, str]]:
+    if "<@agent:" in text:
+        raise ValueError("agent mentions are not accepted")
+    return _member_and_agent_tokens(connection, project_id, text)
+
+
 def _parse(
     connection: sqlite3.Connection, project_id: str, text: str
 ) -> tuple[list[str], list[dict[str, str]]]:
@@ -218,12 +237,7 @@ def _parse(
             token.rstrip(".,;:)") for token in re.findall(r"#([A-Za-z0-9][A-Za-z0-9_./-]*)", text)
         )
     )[:BULLETIN_REFS_MAX_COUNT]
-    members = {member["user_id"] for member in _members(connection, project_id)}
-    mentions = [
-        {"kind": kind, "id": identity}
-        for kind, identity in dict.fromkeys(re.findall(r"<@(member|agent):([^<>\s]+)>", text))
-        if kind == "agent" or identity in members
-    ]
+    mentions = _member_and_agent_tokens(connection, project_id, text)
     if "<@agent:" not in text:
         return refs, mentions
     # The mention list offers the project's agents in every channel, so any of them counts;

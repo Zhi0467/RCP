@@ -682,8 +682,12 @@ def _artifact_comments(store: AppStore, request: dict[str, object]) -> ChatArtif
     artifact = store.artifact(context.artifact_id)
     quotes = []
     for selection in context.selections:
-        if selection.kind == "text":
+        if selection.kind == "whole":
+            quote = ""
+        elif selection.kind == "text" or selection.kind == "pdf":
             quote = selection.text
+        elif selection.kind == "element":
+            quote = selection.label or selection.text
         elif selection.elements is None:
             quote = selection.labels  # A box from the viewer before elements were named.
         else:

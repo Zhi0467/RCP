@@ -722,6 +722,8 @@ class ArtifactStoreMixin(StoreMixinBase):
         saved list stop expecting the bytes; pins go for every member. Without
         `wait`, a running capture leaves everything in place and returns False.
         """
+        from rcp.storage.comments import delete_comments_by_target
+
         artifact_id = artifact.artifact_id
         with _capture_guard(self.path.parent).deletion(wait=wait) as idle:
             if not idle:
@@ -732,6 +734,7 @@ class ArtifactStoreMixin(StoreMixinBase):
                     "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, ?, 0, NULL, ?)",
                     (artifact_id, artifact.project_id, state, reason),
                 )
+                delete_comments_by_target(connection, artifact.project_id, "artifact", artifact_id)
                 for table in (
                     "artifact_operations",
                     "artifact_versions",
