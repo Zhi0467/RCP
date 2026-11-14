@@ -979,11 +979,7 @@ function MemberApp({
   );
   displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
-  const paperResource = useResource(
-    `${projectId}:paper-nav`,
-    backendSessionReady && projectId ? paperProfile(projectId) : null,
-  );
-  const paper = paperResource.value?.paper ?? project?.paper ?? null;
+  const paper = project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);

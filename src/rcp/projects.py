@@ -56,6 +56,7 @@ from rcp.machine_upgrade import (
     upgraded_manifest_text,
 )
 from rcp.paper import PaperLive, PaperService
+from rcp.paper.folder import paper_folders
 from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -883,9 +884,7 @@ class ProjectCatalog:
         self.store = store
         self.launcher = launcher
         self.provider_skills = provider_skills
-        self.paper_live = PaperLive(
-            store, lambda project_id: self._display_workspace_or_refresh(project_id)[1]
-        )
+        self.paper_live = PaperLive(store, paper_folders(store, data_dir))
         self.paper_admission: Callable[[str], AbstractContextManager[object]] = lambda _project_id: (
             nullcontext()
         )

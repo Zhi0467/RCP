@@ -1,4 +1,4 @@
-"""Resolve HTML images from one saved Paper manifest without loading unrelated bodies."""
+"""Resolve HTML images from one Paper state without loading unrelated bodies."""
 
 from __future__ import annotations
 
@@ -13,8 +13,7 @@ from urllib.parse import quote, unquote, urlsplit
 from rcp import limits
 from rcp.artifact_preview import _html_attributes, _is_inline_image
 from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
-from rcp.paper.models import PaperFile, PaperLimit, file_format, paper_path
-from rcp.paper.persistence import PaperSnapshotReader
+from rcp.paper.models import PaperEntry, PaperLimit, PaperSource, file_format, paper_path
 
 
 @dataclass(frozen=True)
@@ -61,7 +60,7 @@ class _Asset:
 
 @dataclass(frozen=True)
 class PaperHTMLPreview:
-    file: PaperFile
+    file: PaperEntry
     revision: int
     key: str
     source: str
@@ -72,7 +71,7 @@ class PaperHTMLPreview:
 
 @dataclass(frozen=True)
 class PaperHTMLContent:
-    file: PaperFile
+    file: PaperEntry
     revision: int
     data: bytes
     warnings: list[str]
@@ -108,9 +107,7 @@ def _relative_path(source: str | None, page: str) -> tuple[str, str]:
     return paper_path(path), quote(unquote(url.fragment, errors="strict"), safe="")
 
 
-def _resolve_image(
-    reader: PaperSnapshotReader, source: str | None, page: str, entries: dict[str, dict]
-) -> _Asset:
+def _resolve_image(source: str | None, page: str, entries: dict[str, PaperEntry]) -> _Asset:
     path, fragment = _relative_path(source, page)
     entry = entries.get(path)
     if entry is None:
@@ -119,22 +116,12 @@ def _resolve_image(
     media_type = ARTIFACT_MEDIA_TYPES.get(extension, "application/octet-stream")
     if not media_type.startswith("image/"):
         raise ValueError("Unsupported image type")
-    sha = entry.get("text_sha256") or entry["blob_sha256"]
-    if entry["kind"] == "binary":
-        row = reader.connection.execute(
-            "SELECT size FROM paper_blobs WHERE sha256=?", (sha,)
-        ).fetchone()
-        if row is None:
-            raise ValueError("Saved image bytes are missing")
-        size = row[0]
-    else:
-        size = entry["size"]
     return _Asset(
         path,
-        entry["file_id"],
-        sha,
+        entry.file_id,
+        entry.sha256,
         media_type,
-        size,
+        entry.size,
         "#" + fragment if fragment and media_type == "image/svg+xml" else "",
     )
 
@@ -152,9 +139,8 @@ def _admit_image(asset: _Asset, used: set[str], total: int, expanded: int) -> tu
 
 
 def _resolve_sources(
-    reader: PaperSnapshotReader,
     page: str,
-    manifest: dict[str, dict],
+    manifest: dict[str, PaperEntry],
     sources: list[str | None],
     images: list[_Asset | str | None],
     expanded: int,
@@ -170,7 +156,7 @@ def _resolve_sources(
             continue
         try:
             if value not in resolved:
-                resolved[value] = _resolve_image(reader, value, page, manifest)
+                resolved[value] = _resolve_image(value, page, manifest)
             asset = resolved[value]
             dependencies.append((asset.path, asset.file_id, asset.sha256))
             total, expanded = _admit_image(asset, used, total, expanded)
@@ -197,35 +183,31 @@ def _resolve_sources(
     return dependencies, warnings
 
 
-def read_html_preview(
-    reader: PaperSnapshotReader, project_id: str, file_id: str, revision: int | None = None
-) -> PaperHTMLPreview:
-    revision, entries = reader.manifest(project_id, revision)
-    entry = next((entry for entry in entries if entry["file_id"] == file_id), None)
-    if entry is None or file_format(entry["path"], entry["kind"]) != "html":
+def read_html_preview(source: PaperSource, file_id: str) -> PaperHTMLPreview:
+    entry = next((entry for entry in source.entries if entry.file_id == file_id), None)
+    if entry is None or file_format(entry.path, entry.kind) != "html":
         raise KeyError("Paper file has no HTML preview")
-    file, body = reader.raw_file(project_id, file_id, revision)
-    source = body.decode("utf-8")
-    parser = _Images(source)
-    parser.feed(source)
+    body = source.read(entry)
+    text = body.decode("utf-8")
+    parser = _Images(text)
+    parser.feed(text)
     parser.close()
     sources = [value for tag in parser.tags for name, value in tag.attrs if name == "src"]
     inline_sources = [value if _is_inline_image(value) else None for value in sources]
     images: list[_Asset | str | None] = list(inline_sources)
-    expanded = len(_render(source, parser.tags, inline_sources).encode())
+    expanded = len(_render(text, parser.tags, inline_sources).encode())
     if max(expanded, len(body)) > limits.PAPER_HTML_PREVIEW_MAX_OUTPUT_BYTES:
         raise PaperLimit("Paper HTML exceeds its preview byte limit")
     dependencies, warnings = _resolve_sources(
-        reader, file.path, {entry["path"]: entry for entry in entries}, sources, images, expanded
+        entry.path, {item.path: item for item in source.entries}, sources, images, expanded
     )
-    identity = [file.file_id, file.path, hashlib.sha256(body).hexdigest(), dependencies]
+    identity = [entry.file_id, entry.path, hashlib.sha256(body).hexdigest(), dependencies]
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return PaperHTMLPreview(file, revision, key, source, parser.tags, images, warnings)
+    return PaperHTMLPreview(entry, source.revision, key, text, parser.tags, images, warnings)
 
 
-def inline_html_images(
-    preview: PaperHTMLPreview, reader: PaperSnapshotReader, project_id: str
-) -> bytes:
+def inline_html_images(preview: PaperHTMLPreview, source: PaperSource) -> bytes:
+    entries = {entry.file_id: entry for entry in source.entries}
     cached: dict[str, bytes] = {}
     replacements: list[str | None] = []
     for image in preview.images:
@@ -233,7 +215,7 @@ def inline_html_images(
             replacements.append(image)
             continue
         if image.sha256 not in cached:
-            _, cached[image.sha256] = reader.raw_file(project_id, image.file_id, preview.revision)
+            cached[image.sha256] = source.read(entries[image.file_id])
         data = cached[image.sha256]
         replacements.append(
             f"data:{image.media_type};base64," + base64.b64encode(data).decode() + image.fragment
@@ -241,15 +223,10 @@ def inline_html_images(
     return _render(preview.source, preview.tags, replacements).encode()
 
 
-def read_html_content(
-    reader: PaperSnapshotReader, project_id: str, file_id: str, revision: int | None = None
-) -> PaperHTMLContent:
-    preview = read_html_preview(reader, project_id, file_id, revision)
+def read_html_content(source: PaperSource, file_id: str) -> PaperHTMLContent:
+    preview = read_html_preview(source, file_id)
     return PaperHTMLContent(
-        preview.file,
-        preview.revision,
-        inline_html_images(preview, reader, project_id),
-        preview.warnings,
+        preview.file, preview.revision, inline_html_images(preview, source), preview.warnings
     )
 
 

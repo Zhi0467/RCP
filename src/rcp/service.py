@@ -124,6 +124,7 @@ from rcp.machine_cards import LoginKey, card, host_of
 from rcp.operation_ids import canonical_operation_uuid
 from rcp.paper import PaperLive, PaperService
 from rcp.paper.changes import PaperChanges
+from rcp.paper.folder import paper_folders
 from rcp.paper.projection import publication_badge
 from rcp.provider_login_rows import missing_own_login_row, provider_login_row
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -1388,7 +1389,9 @@ class ProjectService:
         self.history = history
         self.project_catalog = project_catalog
         self.paper = paper
-        self.paper_live = paper_live or PaperLive(paper.store, lambda _project: paper.workspace)
+        self.paper_live = paper_live or PaperLive(
+            paper.store, paper_folders(paper.store, data_dir or paper.store.path.parent)
+        )
         self._paper_admission = paper_admission
         self.paper_changes = PaperChanges(paper.store, self.paper_live, self._admit_paper_changes)
         self.launcher = launcher or AgentLauncher()

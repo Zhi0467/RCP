@@ -5,21 +5,19 @@ import json
 from tests.helpers import create_named_app, signed_in_client
 
 
-def test_project_paper_badge_tracks_the_saved_tree_and_sessions(manifest, tmp_path) -> None:
+def test_paper_files_live_in_the_projects_paper_folder(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    folder = tmp_path / "data/paper" / app.state.default_project_id
     with signed_in_client(app) as client:
         project = f"/api/projects/{app.state.default_project_id}"
         assert client.get(project + "/paper/tree").json()["files"] == []
-        initial = client.get(project).json()["paper"]
-        assert initial is False
         created = client.post(project + "/paper/files", json={"path": "sections/start.md"})
         assert created.status_code == 200, created.text
-        badge = client.get(project).json()["paper"]
-        assert badge is True
+        assert (folder / "sections/start.md").read_bytes() == b""
         assert client.get(project + "/paper/sessions").json() == []
         file_id = created.json()["file_ids"][0]
         assert client.delete(project + f"/paper/files/{file_id}").status_code == 200
-        assert client.get(project).json()["paper"] is True
+        assert not (folder / "sections/start.md").exists()
 
 
 def test_live_paper_writes_do_not_need_a_display_generation(manifest, tmp_path, monkeypatch):
@@ -84,8 +82,10 @@ def test_source_uploads_are_live_text_documents(manifest, tmp_path):
         files = client.get(prefix + "/tree").json()["files"]
         assert len(files) == 6
         assert all(file["kind"] == "text" for file in files)
-        with app.state.services.store.connection() as conn:
-            assert conn.execute("SELECT COUNT(*) FROM paper_updates").fetchone()[0] == 6
+        folder = tmp_path / "data/paper" / app.state.default_project_id
+        assert sorted(path.name for path in folder.iterdir()) == sorted(
+            f"source.{extension}" for extension in ("md", "tex", "typ", "bib", "txt", "csv")
+        )
 
 
 def test_an_svg_figure_is_served_as_an_inline_image_that_cannot_run_script(manifest, tmp_path):
@@ -125,7 +125,7 @@ def test_folder_actions_cover_every_file_under_the_folder_and_only_those(manifes
         revision = client.get(prefix + "/tree").json()["revision"]
         renamed = client.post(prefix + "/folders/rename", json={"path": "draft", "to": "final"})
         assert renamed.status_code == 200, renamed.text
-        assert renamed.json()["revision"] == revision + 1
+        assert renamed.json()["revision"] > revision
         paths = {file["path"] for file in client.get(prefix + "/tree").json()["files"]}
         assert paths == {"final/intro.md", "final/deep/notes.md", "final/figure.png", "drafts.md"}
 
@@ -150,28 +150,28 @@ def test_folder_actions_cover_every_file_under_the_folder_and_only_those(manifes
             assert missing.status_code == 404
 
 
-def test_a_folder_action_refuses_a_file_added_after_its_files_were_read(manifest, tmp_path):
+def test_a_folder_action_covers_only_the_files_it_read(manifest, tmp_path):
     from rcp.paper import PaperOp
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     live = app.state.paper_live
-    snapshot = live.snapshot
+    tree = live.tree
 
-    async def stale_snapshot(project_id, revision=None):
-        """A peer adds a file under the folder between the read and the admitted mutation."""
-        read = await snapshot(project_id, revision)
-        await live.apply(project_id, [PaperOp(kind="create", path="draft/late.md")], "peer", {})
-        live.snapshot = snapshot
+    async def late_tree(project_id):
+        """A peer adds a file under the folder between the read and the write."""
+        read = await tree(project_id)
+        late = PaperOp(kind="write", path="draft/late.md", data=b"late")
+        await live.apply(project_id, [late], "peer")
+        live.tree = tree
         return read
 
     with signed_in_client(app) as client:
         prefix = f"/api/projects/{app.state.default_project_id}/paper"
         assert client.post(prefix + "/files", json={"path": "draft/intro.md"}).status_code == 200
-        live.snapshot = stale_snapshot
-        refused = client.post(prefix + "/folders/delete", json={"path": "draft"})
-        assert refused.status_code == 409, refused.text
+        live.tree = late_tree
+        assert client.post(prefix + "/folders/delete", json={"path": "draft"}).status_code == 200
         paths = {file["path"] for file in client.get(prefix + "/tree").json()["files"]}
-        assert paths == {"draft/intro.md", "draft/late.md"}
+        assert paths == {"draft/late.md"}
 
 
 def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
@@ -200,7 +200,7 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
         revision = client.get(prefix + "/tree").json()["revision"]
         file_url = prefix + f"/files/{ids['page.html']}"
 
-        shell = client.get(file_url + "/preview", params={"revision": revision})
+        shell = client.get(file_url + "/preview")
         assert shell.status_code == 200
         config = re.search(r"const inlineConfig=(\{.*?\});", shell.text)
         assert config
@@ -208,9 +208,11 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
         assert json.loads(config.group(1))["followAppearance"] is False
         target = urlsplit(json.loads(config.group(1))["contentUrl"])
         assert target.path == file_url + "/preview/content"
-        assert parse_qs(target.query)["revision"] == [str(revision)]
+        state = client.get(file_url + "/preview/state").json()
+        assert parse_qs(target.query)["key"] == [state["key"]]
+        assert state["revision"] == revision
 
-        content = client.get(file_url + "/preview/content", params={"revision": revision})
+        content = client.get(file_url + "/preview/content")
         _, media_type, csp = artifact_content(
             "page.html", "text/html", page, frame_addon=selection_frame_addon()
         )
@@ -224,12 +226,12 @@ def test_text_html_previews_inside_the_artifact_sandbox(manifest, tmp_path):
         assert framed and 'id="mark">hello' in html.unescape(framed.group(1))
         inline = client.get(
             file_url + "/preview/content",
-            params={"revision": revision, "presentation": "inline", "color_mode": "dark"},
+            params={"presentation": "inline", "color_mode": "dark"},
         )
         assert inline.text == content.text
 
         for missing in (
-            client.get(file_url + "/preview/content", params={"revision": revision + 99}),
+            client.get(file_url + "/preview/content", params={"version_id": "missing"}),
             client.get(prefix + f"/files/{ids['blob.htm']}/preview"),
             client.get(prefix + "/files/unknown/preview/content"),
         ):
@@ -265,6 +267,7 @@ def test_html_preview_loads_saved_tree_images_and_tracks_their_versions(manifest
         assert state.headers["cache-control"] == "no-store"
         before = state.json()
         assert set(before) == {"revision", "key"}
+        version = client.post(prefix + "/history", json={"name": "before"}).json()
         client.post(prefix + "/files", json={"path": "unrelated.md"})
         assert client.get(url + "/state").json()["key"] == before["key"]
         changed_svg = svg.replace(b'width="5"', b'width="15"')
@@ -273,7 +276,7 @@ def test_html_preview_loads_saved_tree_images_and_tracks_their_versions(manifest
         )
         assert changed.status_code == 200
         assert client.get(url + "/state").json()["key"] != before["key"]
-        old = client.get(url + "/content", params={"revision": before["revision"]})
+        old = client.get(url + "/content", params={"version_id": version["version_id"]})
         assert base64.b64encode(svg).decode() in html.unescape(old.text)
         assert base64.b64encode(changed_svg).decode() not in html.unescape(old.text)
 
@@ -307,3 +310,13 @@ def test_html_preview_reports_missing_renderer_assets_explicitly(manifest, tmp_p
         missing = client.get(url)
         assert missing.status_code == 503
         assert "Rebuild the Web assets" in missing.json()["detail"]
+
+
+def test_replacing_content_of_a_missing_file_is_not_found(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{app.state.default_project_id}/paper"
+        response = client.put(
+            prefix + "/files/missing/content", files={"file": ("a.md", b"text", "text/markdown")}
+        )
+        assert response.status_code == 404

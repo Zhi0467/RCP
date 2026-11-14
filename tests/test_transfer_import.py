@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import shutil
@@ -15,7 +14,6 @@ from rcp.agents import AgentLauncher
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.paper import PaperLive, PaperOp
 from rcp.projects import ProjectCatalog
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.github import parse_github_repository_ref
@@ -236,7 +234,6 @@ def _archive_fixture(
     include_episode_archive: bool = False,
     include_pending_branch: bool = False,
     deleted_report: bool | None = None,
-    saved_paper: bool = False,
 ):
     from rcp.rcp_home import rcp_temp_dir
 
@@ -247,16 +244,6 @@ def _archive_fixture(
     )
     _write_canonical_sources(service, records.tasks[0].operation_id)
     source = service.paper.store
-    if saved_paper:
-        live = PaperLive(source, lambda _: service.paper.workspace)
-
-        async def save():
-            await live.apply(
-                records.project_id, [PaperOp(kind="create", path="chapter.md", text="saved")], "h"
-            )
-            await live.close()
-
-        asyncio.run(save())
     source_actor = authorized_human(source)
     if include_episode_archive:
         source.seat_project_member(records.project_id, source_actor.user_id)

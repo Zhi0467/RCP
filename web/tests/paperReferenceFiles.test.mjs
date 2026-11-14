@@ -26,13 +26,7 @@ test("all bib files load by hash, changed hashes reload, deleted files leave the
   const signal = new AbortController().signal;
   const file = { file_id: "f1", path: "a.bib", sha256: "one" };
   const other = { file_id: "f2", path: "b.bib", sha256: "two" };
-  const entries = await readReferenceFiles(
-    "p",
-    [file, other, { path: "main.tex" }],
-    1,
-    signal,
-    cache,
-  );
+  const entries = await readReferenceFiles("p", [file, other, { path: "main.tex" }], signal, cache);
   assert.deepEqual(
     entries.map((entry) => [entry.key, entry.file.path]),
     [
@@ -40,11 +34,11 @@ test("all bib files load by hash, changed hashes reload, deleted files leave the
       ["one", "b.bib"],
     ],
   );
-  await readReferenceFiles("p", [file, other], 2, signal, cache);
+  await readReferenceFiles("p", [file, other], signal, cache);
   assert.equal(calls.length, 2);
-  await readReferenceFiles("p", [{ ...file, sha256: "new" }], 3, signal, cache);
+  await readReferenceFiles("p", [{ ...file, sha256: "new" }], signal, cache);
   assert.equal(calls.length, 3);
-  assert.equal(calls[2], "/api/projects/p/paper/files/f1/raw?revision=3");
+  assert.equal(calls[2], "/api/projects/p/paper/files/f1/raw?sha256=new");
   assert.deepEqual([...cache.keys()], ["p:new"]);
 });
 
@@ -53,7 +47,7 @@ test("failed reads remain visible and aborted reads never fill the cache", async
   const cache = new Map();
   const files = [{ file_id: "f", path: "a.bib", sha256: "hash" }];
   t.mock.method(globalThis, "fetch", async () => new Response("", { status: 503 }));
-  const entries = await readReferenceFiles("p", files, 1, controller.signal, cache);
+  const entries = await readReferenceFiles("p", files, controller.signal, cache);
   assert.deepEqual(
     entries.map(({ key, unreadable }) => [key, unreadable]),
     [["", true]],
@@ -62,7 +56,7 @@ test("failed reads remain visible and aborted reads never fill the cache", async
     controller.abort();
     return new Response("@misc{k}");
   };
-  await readReferenceFiles("p", files, 1, controller.signal, cache);
+  await readReferenceFiles("p", files, controller.signal, cache);
   assert.equal(cache.size, 0);
 });
 
@@ -86,7 +80,7 @@ for (const failure of ["http", "network", "body"]) {
     });
     const cache = new Map();
     const signal = new AbortController().signal;
-    const entries = await readReferenceFiles("p", files, 1, signal, cache);
+    const entries = await readReferenceFiles("p", files, signal, cache);
     assert.deepEqual(
       entries.map(({ key, unreadable, file }) => [file.file_id, key, unreadable]),
       [
@@ -97,7 +91,7 @@ for (const failure of ["http", "network", "body"]) {
     assert.deepEqual([...cache.keys()], ["p:good"]);
     globalThis.fetch = async () => new Response("@misc{recovered}");
     assert.deepEqual(
-      (await readReferenceFiles("p", files, 2, signal, cache)).map(({ key }) => key),
+      (await readReferenceFiles("p", files, signal, cache)).map(({ key }) => key),
       ["kept", "recovered"],
     );
   });

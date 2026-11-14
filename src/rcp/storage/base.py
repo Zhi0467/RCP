@@ -155,6 +155,7 @@ class AppStoreBase:
         (82, "paper_git_links_v1"),
         (83, "comments_v1"),
         (84, "chat_focus_v1"),
+        (85, "paper_folder_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1119,6 +1120,11 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=84, name="chat_focus_v1", migration=self._migrate_chat_focus
+        )
+        from rcp.storage.paper_folder import migrate_paper_folder
+
+        self._run_storage_schema_migration(
+            connection, version=85, name="paper_folder_v1", migration=migrate_paper_folder
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

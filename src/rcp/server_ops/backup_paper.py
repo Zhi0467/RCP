@@ -229,7 +229,7 @@ def capture_paper_section(connection: sqlite3.Connection, project_id: str) -> Pa
         return None
     from rcp.paper.persistence import PaperSnapshotReader
 
-    raw = PaperSnapshotReader(connection).snapshot(project_id)
+    raw = PaperSnapshotReader(connection).legacy_saved_snapshot(project_id)
     snapshot = SavedPaperSnapshot.model_validate(raw.model_dump())
     blob_refs, text_refs = _references(snapshot.files, tables)
     for table, hashes in (("paper_blobs", blob_refs), ("paper_version_texts", text_refs)):

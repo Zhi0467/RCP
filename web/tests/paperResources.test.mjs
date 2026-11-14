@@ -14,32 +14,23 @@ after(() => server.close());
 
 const tree = {
   revision: 4,
-  saved_revision: 4,
-  published_revision: 3,
-  publish_state: "pending",
-  hold: null,
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
 
-test("Paper profile reads the tree with cancellation and derives the publication badge", async () => {
+test("Paper profile reads the tree with cancellation", async () => {
   const original = globalThis.fetch;
   const requests = [];
   try {
     const controller = new AbortController();
-    for (const publishState of ["published", "pending", "failed"]) {
-      globalThis.fetch = async (path, init) => {
-        requests.push({ path, ...init });
-        return Response.json({ ...tree, publish_state: publishState });
-      };
-      const result = await paperProfile("project").fetch(controller.signal);
-      assert.deepEqual(result.tree, { ...tree, publish_state: publishState });
-      assert.equal(result.paper, publishState !== "published");
-    }
-    assert.ok(
-      requests.every(
-        ({ path, method, signal }) =>
-          path === "/api/projects/project/paper/tree" && !method && signal === controller.signal,
-      ),
+    globalThis.fetch = async (path, init) => {
+      requests.push({ path, ...init });
+      return Response.json(tree);
+    };
+    const result = await paperProfile("project").fetch(controller.signal);
+    assert.deepEqual(result.tree, tree);
+    assert.deepEqual(
+      requests.map(({ path, method, signal }) => [path, method, signal === controller.signal]),
+      [["/api/projects/project/paper/tree", undefined, true]],
     );
   } finally {
     globalThis.fetch = original;

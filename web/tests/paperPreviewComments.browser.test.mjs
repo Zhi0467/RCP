@@ -83,7 +83,7 @@ async function openHtmlPreview(t, width) {
           const toolbar = document.querySelector('header');
           const root = createRoot(document.getElementById('root'));
           window.comments = []; window.cancelled = []; window.spots = []; window.offers = [];
-          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision:revision+(window.unsaved?1:0),saved_revision:revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer)} />);`;
+          window.show = (revision=1, active=true, id='html', hash='html-bytes') => root.render(<PaperPreview projectId="p" file={{file_id:id,path:id+'.html',kind:'text',format:'html',sha256:hash}} tree={{files:[],revision}} text={${JSON.stringify(htmlPreview.source)}} active={active} toolbar={active ? toolbar : null} cursorLine={1} onDirectComment={comment=>window.comments.push(comment)} onDirectCancel={clear=>window.cancelled.push(clear)} onSourceSpot={spot=>window.spots.push(spot)} onSelectionOffer={offer=>window.offers.push(offer)} />);`;
       },
     },
   ]);
@@ -178,8 +178,8 @@ for (const width of [1280, 390])
     fixture.release();
     const frame = page.locator(".paper-html-preview iframe");
     await frame.waitFor();
-    assert.match(await frame.getAttribute("src"), /\/preview\?revision=1$/);
-    const shell = () => page.frame({ url: /\/files\/html\/preview\?revision=/ });
+    assert.match(await frame.getAttribute("src"), /\/preview\?key=html-and-image-1$/);
+    const shell = () => page.frame({ url: /\/files\/html\/preview\?key=/ });
     const artifact = () => shell()?.childFrames()[0]?.childFrames()[0];
     await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
     const commenting = page.getByRole("button", { name: "Comment on the page" });
@@ -270,7 +270,7 @@ for (const width of [1280, 390])
     await page.getByLabel("Loading preview").waitFor();
     assert.equal(loads.length, 1);
     const replaced = page.waitForResponse((response) =>
-      /\/preview\?revision=3$/.test(response.url()),
+      /\/preview\?key=html-and-image-2$/.test(response.url()),
     );
     fixture.release();
     await replaced;
@@ -285,7 +285,7 @@ for (const width of [1280, 390])
     await page.getByLabel("Loading preview").waitFor();
     assert.equal(loads.length, 2);
     const htmlReload = page.waitForResponse((response) =>
-      /\/preview\?revision=4$/.test(response.url()),
+      /\/preview\?key=updated-html-bytes$/.test(response.url()),
     );
     fixture.release();
     await htmlReload;
@@ -330,7 +330,7 @@ test("HTML preview rechecks hidden entry, aborts old reads, and retries a visibl
   fixture.release();
   await frame.waitFor();
   assert.equal(await frame.getAttribute("title"), "other.html");
-  assert.match(await frame.getAttribute("src"), /revision=3$/);
+  assert.match(await frame.getAttribute("src"), /key=other-file$/);
   assert.equal(await page.getByRole("button", { name: "Reset preview zoom" }).innerText(), "100%");
   fixture.fail(true);
   const refusal = page.waitForResponse((response) => response.url().endsWith("/preview/state"));
@@ -343,7 +343,9 @@ test("HTML preview rechecks hidden entry, aborts old reads, and retries a visibl
   fixture.update({ revision: 4, key: "other-file-updated" });
   await retry.click();
   await frame.waitFor();
-  await page.waitForFunction(() => document.querySelector("iframe")?.src.endsWith("revision=4"));
+  await page.waitForFunction(() =>
+    document.querySelector("iframe")?.src.endsWith("key=other-file-updated"),
+  );
   assert.equal(await frame.isVisible(), true);
   assert.deepEqual(
     errors.filter((message) => !message.includes("503")),
@@ -573,11 +575,11 @@ test("preview selections name their source, and boxes on PDF pages open comments
   await frame.waitFor();
   assert.match(
     await frame.getAttribute("src"),
-    /\/api\/projects\/p\/paper\/files\/html\/preview\?revision=7$/,
+    /\/api\/projects\/p\/paper\/files\/html\/preview\?key=e$/,
   );
   await page.locator('header button[aria-pressed="true"]').waitFor();
   // A box keeps its area, so two boxes on one labelled image differ for the coach.
-  const shell = page.frame({ url: /\/preview\?revision=7$/ });
+  const shell = page.frame({ url: /\/preview\?key=e$/ });
   const post = (selection) =>
     shell.evaluate(
       (selection) =>
@@ -719,7 +721,7 @@ test("a double-clicked word in an HTML preview names its source line", async (t)
   release();
   await page.evaluate(() => window.show());
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
-  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const shell = page.frame({ url: /\/files\/html\/preview\?key=/ });
   const word = () => shell.childFrames()[0].childFrames()[0].locator("#word");
   await word().dblclick();
   await page.waitForFunction(() => window.spots.length === 1);
@@ -727,13 +729,6 @@ test("a double-clicked word in an HTML preview names its source line", async (t)
   assert.equal(spot.path, "html.html");
   assert.equal(spot.from, 2);
   assert.ok(htmlPreview.source.split("\n")[1].includes(spot.word));
-  await page.evaluate(() => {
-    window.unsaved = true;
-    window.show();
-  });
-  await word().dblclick();
-  await page.waitForTimeout(300);
-  assert.equal(await page.evaluate(() => window.spots.length), 1);
   assert.deepEqual(errors, []);
 });
 
@@ -743,7 +738,7 @@ test("text selected in an HTML preview offers Comment beside it, with no comment
   await page.evaluate(() => window.show());
   await page.getByRole("button", { name: "Comment on the page", pressed: true }).click();
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
-  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const shell = page.frame({ url: /\/files\/html\/preview\?key=/ });
   const word = shell.childFrames()[0].childFrames()[0].locator("#word");
   await word.dblclick();
   await page.waitForFunction(() => window.offers.some((offer) => offer));
@@ -761,7 +756,7 @@ test("an in-page link in an HTML preview scrolls to its target", async (t) => {
   release();
   await page.evaluate(() => window.show());
   await page.waitForFunction(() => window.frames[0]?.frames[0]?.frames.length === 1);
-  const shell = page.frame({ url: /\/files\/html\/preview\?revision=/ });
+  const shell = page.frame({ url: /\/files\/html\/preview\?key=/ });
   const content = shell.childFrames()[0].childFrames()[0];
   assert.equal(await content.evaluate(() => scrollY), 0);
   await content.locator("#jump").click();

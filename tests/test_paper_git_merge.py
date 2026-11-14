@@ -11,41 +11,44 @@ def tree(body: bytes | None):
 
 
 @pytest.mark.parametrize(
-    "base,ours,theirs,expected,held",
+    "base,ours,theirs,expected",
     [
-        (b"base", b"ours", b"base", b"ours", None),
-        (b"base", b"same", b"same", b"same", None),
-        (b"base", None, None, None, None),
-        (None, None, b"new", b"new", None),
-        (b"base", b"base", b"new", b"new", None),
-        (b"base", b"base", None, None, None),
-        (b"a\nb\nc\n", b"A\nb\nc\n", b"a\nb\nC\n", b"A\nb\nC\n", None),
-        (b"base\n", b"ours\n", b"theirs\n", b"ours\n", "text"),
-        (None, b"ours", b"theirs", b"ours", "text"),
-        (b"base", b"ours\0", b"theirs", b"ours\0", "file"),
-        (b"base", b"ours", None, b"ours", "file"),
-        (b"base", None, b"theirs", None, "file"),
-        (b"base", b"base", b"binary\0", b"binary\0", None),
+        (b"base", b"ours", b"base", b"ours"),
+        (b"base", b"same", b"same", b"same"),
+        (b"base", None, None, None),
+        (None, None, b"new", b"new"),
+        (b"base", b"base", b"new", b"new"),
+        (b"base", b"base", None, None),
+        (b"a\nb\nc\n", b"A\nb\nc\n", b"a\nb\nC\n", b"A\nb\nC\n"),
+        (b"a\nb\nc\n", b"A\nb\nc\n", b"X\nb\nC\n", b"X\nb\nC\n"),
+        (b"base\n", b"ours\n", b"theirs\n", b"theirs\n"),
+        (None, b"ours", b"theirs", b"theirs"),
+        (b"base", b"ours\0", b"theirs", b"theirs"),
+        (b"base", b"ours", None, None),
+        (b"base", None, b"theirs", b"theirs"),
+        (b"base", b"base", b"binary\0", b"binary\0"),
     ],
 )
-def test_merge_table(base, ours, theirs, expected, held):
+def test_github_wins_every_overlap(base, ours, theirs, expected):
     result = merge_trees(tree(base), tree(theirs), tree(ours))
     assert result.tree == tree(expected)
-    assert [item["kind"] for item in result.held] == ([held] if held else [])
     assert bool(result.ops) == (ours != expected)
+
+
+def test_a_write_names_the_bytes_it_read_as_its_base():
+    result = merge_trees(
+        tree(b"a\nb\nc\n"), tree(b"a\nb\nC\n"), {"paper.md": GitEntry(b"A\nb\nc\n", file_id="f")}
+    )
+    (op,) = result.ops
+    assert (op.kind, op.path, op.base, op.data) == ("write", "paper.md", b"A\nb\nc\n", b"A\nb\nC\n")
+    deleted = merge_trees(tree(b"x"), {}, {"paper.md": GitEntry(b"x", file_id="f")})
+    assert [(op.kind, op.file_id) for op in deleted.ops] == [("delete", "f")]
 
 
 def test_invalid_remote_entries_are_skipped():
     theirs = {".git/config": GitEntry(b"bad"), "link": GitEntry(b"target", "120000")}
     result = merge_trees({}, theirs, {})
     assert {item["path"] for item in result.skipped} == set(theirs)
-    assert not result.ops
-
-
-def test_limit_demotion(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("rcp.limits.PAPER_MAX_DOC_BYTES", 8)
-    result = merge_trees(tree(b"a\nb\nc\n"), tree(b"a\nb\nCCC\n"), tree(b"AAA\nb\nc\n"))
-    assert result.held[0]["kind"] == "file"
     assert not result.ops
 
 
@@ -75,37 +78,11 @@ def test_collision_checks_every_parent():
     assert result.skipped[0]["path"] == "a/b"
 
 
-def test_proposed_conflicts_fit_together(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr("rcp.limits.PAPER_MAX_TREE_BYTES", 12)
-    base = {"a": GitEntry(b"a\n"), "b": GitEntry(b"b\n")}
-    ours = {"a": GitEntry(b"A\n"), "b": GitEntry(b"B\n")}
-    theirs = {"a": GitEntry(b"remoteA\n"), "b": GitEntry(b"remoteB\n")}
-    result = merge_trees(base, theirs, ours)
-    assert [item["kind"] for item in result.held] == ["text", "file"]
-
-
-def test_binary_base_with_two_text_replacements_is_file_conflict():
-    result = merge_trees(tree(b"binary\0"), tree(b"theirs"), tree(b"ours"))
-    assert result.held[0]["kind"] == "file"
-    assert not result.ops
-
-
-def test_oversized_theirs_merge_is_demoted(monkeypatch: pytest.MonkeyPatch):
+def test_an_oversized_merge_takes_githubs_file(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("rcp.limits.PAPER_MAX_DOC_BYTES", 13)
-    result = merge_trees(
-        tree(b"a\n1\n2\n3\nb\n"), tree(b"AAAA\n1\n2\n3\nb\n"), tree(b"A\n1\n2\n3\nBBBB\n")
-    )
-    assert result.held[0]["kind"] == "file"
-    assert not result.ops
-
-
-def test_path_too_long_for_change_store_is_file_conflict():
-    path = "/".join(["a" * 255] * 4)
-    result = merge_trees(
-        {path: GitEntry(b"base")}, {path: GitEntry(b"remote")}, {path: GitEntry(b"local")}
-    )
-    assert result.held[0]["kind"] == "file"
-    assert not result.proposals
+    remote = b"AAAA\n1\n2\n3\nb\n"
+    result = merge_trees(tree(b"a\n1\n2\n3\nb\n"), tree(remote), tree(b"A\n1\n2\n3\nBBBB\n"))
+    assert result.tree == tree(remote)
 
 
 def test_later_clean_file_respects_earlier_proposal_budget(monkeypatch: pytest.MonkeyPatch):

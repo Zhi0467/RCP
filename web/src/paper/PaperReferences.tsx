@@ -12,13 +12,7 @@ export function usePaperReferences(projectId: string, tree: PaperTree | undefine
   });
   useEffect(() => {
     const controller = new AbortController();
-    void readReferenceFiles(
-      projectId,
-      tree?.files ?? [],
-      tree?.revision ?? 0,
-      controller.signal,
-      cache.current,
-    )
+    void readReferenceFiles(projectId, tree?.files ?? [], controller.signal, cache.current)
       .then((entries) => {
         if (!controller.signal.aborted) setResult({ entries, error: null });
       })

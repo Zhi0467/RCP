@@ -56,25 +56,15 @@ def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_servic
     live = start_paper(branch_services[0].paper_live)
     apply(
         live,
-        [PaperOp(kind="delete", file_id=f.file_id) for f in saved(live, "project").files],
-        "project",
-    )
-    apply(
-        live,
         [
-            PaperOp(kind="create", file_id="tex", path="main.tex", text="include{sections/a}"),
-            PaperOp(kind="create", file_id="section", path="sections/a.tex", text="Saved draft"),
-            PaperOp(
-                kind="create",
-                file_id="figure",
-                path="figures/a.png",
-                file_kind="binary",
-                data=b"binary",
-            ),
+            PaperOp(kind="write", path="main.tex", data=b"include{sections/a}"),
+            PaperOp(kind="write", path="sections/a.tex", data=b"Saved draft"),
+            PaperOp(kind="write", path="figures/a.png", data=b"\x89binary"),
         ],
         "project",
     )
     snapshot = saved(live, "project")
+    section = next(file.file_id for file in snapshot.files if file.path == "sections/a.tex")
     items = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
     assert [item.reference.path for item in items] == [
         "figures/a.png",
@@ -82,9 +72,9 @@ def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_servic
         "sections/a.tex",
     ]
     assert {item.reference.version for item in items} == {str(snapshot.revision)}
-    one = _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="section")])
+    one = _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id=section)])
     assert len(one) == 1 and one[0].content == b"Saved draft"
-    assert one[0].reference.source_id == "section"
+    assert one[0].reference.source_id == section
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper", file_id="missing")])
     monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
@@ -150,9 +140,11 @@ def test_whole_paper_subsumes_selected_files_and_stages_once(
     import uuid
 
     from rcp.attachments import ChatAttachmentStore
-    from tests.paper_helpers import saved, start_paper
+    from tests.paper_helpers import create, saved, start_paper
 
     live = start_paper(branch_services[0].paper_live)
+    create(live, "introduction.md", "Saved draft", "project")
+    create(live, "notes.md", "More", "project")
     snapshot = saved(live, "project")
     selectors = [
         PaperReferenceSelector(kind="paper", file_id=snapshot.files[0].file_id),

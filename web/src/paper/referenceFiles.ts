@@ -20,7 +20,6 @@ export function findReference(
 export async function readReferenceFiles(
   projectId: string,
   treeFiles: PaperFile[],
-  revision: number,
   signal: AbortSignal,
   cache: Map<string, string>,
 ): Promise<PaperReference[]> {
@@ -33,7 +32,9 @@ export async function readReferenceFiles(
         const key = `${projectId}:${file.sha256}`;
         let text = cache.get(key);
         if (text === undefined) {
-          const response = await fetch(paperRawUrl(projectId, file.file_id, revision), { signal });
+          const response = await fetch(paperRawUrl(projectId, file.file_id, file.sha256), {
+            signal,
+          });
           if (!response.ok) throw new Error(`Could not read ${file.path} (${response.status})`);
           text = await response.text();
           if (!signal.aborted) cache.set(key, text);

@@ -29,8 +29,7 @@ from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
 from rcp.paper import PaperOp
 from rcp.paper.compile import root_candidates
 from rcp.paper.html_preview import source_frame_addon
-from rcp.paper.live import text_replacement
-from rcp.paper.models import Receipt, file_format, paper_file_kind
+from rcp.paper.models import Receipt, file_format
 
 router = APIRouter()
 _member = Depends(require_project_membership)
@@ -108,11 +107,6 @@ class RestoreVersion(BaseModel):
     file_ids: list[str]
 
 
-class ResolveHold(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    keep: Literal["draft", "canonical"]
-
-
 def _actor(request: Request) -> str:
     return _api_services(request).identity_access.acting_user(request).user_id
 
@@ -122,7 +116,7 @@ async def _apply(request: Request, project_id: str, op: PaperOp, *, checkpoint: 
     return await paper_mutation(
         request,
         project_id,
-        lambda: live.apply(project_id, [op], _actor(request), {}, checkpoint=checkpoint),
+        lambda: live.apply(project_id, [op], _actor(request), checkpoint=checkpoint),
     )
 
 
@@ -133,7 +127,9 @@ async def paper_tree(request: Request, project_id: str = _member):
 
 @router.post(_PREFIX + "/files")
 async def create_file(body: CreateFile, request: Request, project_id: str = _member):
-    return await _apply(request, project_id, PaperOp(kind="create", path=body.path))
+    return await _apply(
+        request, project_id, PaperOp(kind="write", path=body.path, data=b"", exclusive=True)
+    )
 
 
 @router.post(_PREFIX + "/files/{file_id}/rename")
@@ -151,28 +147,20 @@ async def delete_file(file_id: str, request: Request, project_id: str = _member)
 
 
 async def _folder_ops(request: Request, project_id: str, folder: str, op) -> Receipt:
-    """Apply one operation per file under `folder` as a single revision, or refuse.
-
-    The files are read before admission, so the mutation re-checks that the folder still
-    holds exactly those files at those paths; a concurrent move or addition refuses it."""
+    """One operation per file under `folder`, written in path order."""
     live = get_paper_live(request)
-    tree = await live.snapshot(project_id)
-    files = tree.files_under(folder)
+    files = [
+        file
+        for file in (await live.tree(project_id)).files
+        if file.path.startswith(f"{folder}/") and file.kind != "unsupported"
+    ]
     if not files:
         raise HTTPException(404, "Paper folder not found")
-    checks = [
-        {"folder": folder, "file_ids": [file.file_id for file in files]},
-        *({"file_id": file.file_id, "path": file.path} for file in files),
-    ]
     return await paper_mutation(
         request,
         project_id,
         lambda: live.apply(
-            project_id,
-            [op(file) for file in files],
-            _actor(request),
-            {"checks": checks},
-            checkpoint=True,
+            project_id, [op(file) for file in files], _actor(request), checkpoint=True
         ),
     )
 
@@ -213,17 +201,8 @@ async def _upload(request: Request, *, new: bool) -> tuple[str | None, bytes]:
 @router.post(_PREFIX + "/uploads")
 async def upload_file(request: Request, project_id: str = _member):
     path, data = await _upload(request, new=True)
-    kind = paper_file_kind(path or "", data)
     return await _apply(
-        request,
-        project_id,
-        PaperOp(
-            kind="create",
-            path=path,
-            file_kind=kind,
-            text=data.decode("utf-8") if kind == "text" else "",
-            data=data if kind == "binary" else None,
-        ),
+        request, project_id, PaperOp(kind="write", path=path, data=data, exclusive=True)
     )
 
 
@@ -231,38 +210,26 @@ async def upload_file(request: Request, project_id: str = _member):
 async def replace_content(file_id: str, request: Request, project_id: str = _member):
     _, data = await _upload(request, new=False)
     live = get_paper_live(request)
-    tree = await live.snapshot(project_id)
-    current = next((file for file in tree.files if file.file_id == file_id), None)
-    if current is None:
-        raise HTTPException(404, "Paper file not found")
-    if current.kind == "binary":
-        return await _apply(
-            request, project_id, PaperOp(kind="binary", file_id=file_id, data=data), checkpoint=True
-        )
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(409, "Paper text files take UTF-8 uploads") from exc
-    old = current.text or ""
-    # The whole-text guard refuses an upload that would overwrite a concurrent edit.
-    op = text_replacement(file_id, old, text)
-    if op is None:
-        return Receipt(revision=tree.revision)
-    checks = [{"file_id": file_id, "kind": "text", "text": old}]
-    return await paper_mutation(
-        request,
-        project_id,
-        lambda: live.apply(project_id, [op], _actor(request), {"checks": checks}, checkpoint=True),
-    )
+        current, base = await live.raw_file(project_id, file_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Paper file not found") from exc
+    if current.kind == "text":
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(409, "Paper text files take UTF-8 uploads") from exc
+    op = PaperOp(kind="write", path=current.path, base=base, data=data)
+    return await _apply(request, project_id, op, checkpoint=True)
 
 
 @router.get(_PREFIX + "/files/{file_id}/raw")
 async def raw_file(
-    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+    file_id: str, request: Request, version_id: str | None = None, project_id: str = _member
 ):
     live = get_paper_live(request)
     try:
-        file, data = await live.raw_file(project_id, file_id, revision)
+        file, data = await live.raw_file(project_id, file_id, version_id)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
     images = {
@@ -291,10 +258,10 @@ _PREVIEW_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosn
 
 @router.get(_PREFIX + "/files/{file_id}/preview/state")
 async def html_preview_state(
-    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+    file_id: str, request: Request, version_id: str | None = None, project_id: str = _member
 ):
     try:
-        preview = await get_paper_live(request).html_preview_state(project_id, file_id, revision)
+        preview = await get_paper_live(request).html_preview_state(project_id, file_id, version_id)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
     return JSONResponse(
@@ -304,14 +271,14 @@ async def html_preview_state(
 
 @router.get(_PREFIX + "/files/{file_id}/preview")
 async def html_preview(
-    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+    file_id: str, request: Request, version_id: str | None = None, project_id: str = _member
 ):
     """The inline artifact shell around a Paper HTML file; invariant 10e holds one frame in."""
     try:
-        preview = await get_paper_live(request).html_preview_state(project_id, file_id, revision)
+        preview = await get_paper_live(request).html_preview_state(project_id, file_id, version_id)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
-    query = urlencode({"revision": preview.revision})
+    query = urlencode({"version_id": version_id} if version_id else {"key": preview.key})
     content_url = (
         f"{_PREFIX.format(project_id=quote(project_id, safe=''))}"
         f"/files/{quote(file_id, safe='')}/preview/content" + (f"?{query}" if query else "")
@@ -333,11 +300,11 @@ async def html_preview(
 
 @router.get(_PREFIX + "/files/{file_id}/preview/content")
 async def html_preview_content(
-    file_id: str, request: Request, revision: int | None = None, project_id: str = _member
+    file_id: str, request: Request, version_id: str | None = None, project_id: str = _member
 ):
     """The page as its author wrote it: unlike a reply's artifact, it takes no app theme."""
     try:
-        preview = await get_paper_live(request).html_preview(project_id, file_id, revision)
+        preview = await get_paper_live(request).html_preview(project_id, file_id, version_id)
     except KeyError as exc:
         raise HTTPException(404, "Paper file or revision not found") from exc
     try:
@@ -484,14 +451,6 @@ async def restore_version(
         request,
         project_id,
         lambda: live.restore(project_id, version_id, body.file_ids, _actor(request)),
-    )
-
-
-@router.post(_PREFIX + "/hold/resolve")
-async def resolve_hold(body: ResolveHold, request: Request, project_id: str = _member):
-    live = get_paper_live(request)
-    return await paper_mutation(
-        request, project_id, lambda: live.resolve_hold(project_id, body.keep, _actor(request))
     )
 
 

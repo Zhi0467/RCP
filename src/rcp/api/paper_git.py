@@ -1,8 +1,6 @@
-"""Member-owned Paper Git transport and conflict decisions."""
+"""Member-owned Paper Git transport."""
 
 from __future__ import annotations
-
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -23,16 +21,6 @@ class KeyRequest(BaseModel):
     branch: str = ""
 
 
-class ResolveRequest(BaseModel):
-    path: str
-    take: Literal["theirs", "mine"]
-
-
-class DecideRequest(BaseModel):
-    group_id: str
-    decision: Literal["accept", "reject"]
-
-
 class PushRequest(BaseModel):
     message: str
 
@@ -50,7 +38,7 @@ def _call(project_id: str, request: Request, action):
             require_project_membership(canonical, request)
             return action(manager, canonical)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Paper Git conflict not found") from exc
+        raise HTTPException(status_code=404, detail="Paper Git link not found") from exc
     except MaintenanceAdmissionClosed as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (ValueError, OSError) as exc:
@@ -103,38 +91,6 @@ def changes(project_id: str, request: Request):
 @router.get("/changes/diff")
 def change_diff(project_id: str, path: str, request: Request):
     return _call(project_id, request, lambda manager, project: manager.file_diff(project, path))
-
-
-@router.get("/conflicts")
-def conflicts(project_id: str, request: Request):
-    return _call(project_id, request, lambda manager, project: manager.conflicts(project))
-
-
-@router.post("/conflicts/resolve")
-def resolve(project_id: str, body: ResolveRequest, request: Request):
-    member = _member(request)
-    return _call(
-        project_id,
-        request,
-        lambda manager, project: manager.resolve(project, body.path, body.take, member.user_id),
-    )
-
-
-@router.post("/conflicts/decide")
-def decide(project_id: str, body: DecideRequest, request: Request):
-    member = _member(request)
-    return _call(
-        project_id,
-        request,
-        lambda manager, project: manager.decide(
-            project, body.group_id, body.decision, member.user_id
-        ),
-    )
-
-
-@router.post("/conflicts/refresh")
-def refresh(project_id: str, request: Request):
-    return _call(project_id, request, lambda manager, project: manager.pull(project, refresh=True))
 
 
 @router.post("/push")

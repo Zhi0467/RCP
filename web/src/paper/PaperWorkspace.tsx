@@ -42,7 +42,6 @@ import {
 } from "./PaperReferences";
 import { PaperExport } from "./PaperExport";
 import { PaperGitChanges, PaperGitDiff, PaperGitPill, usePaperGit } from "./PaperGit";
-import { decidePaperGit, PAPER_GIT_TASK } from "./gitSync";
 import { findReference } from "./referenceFiles";
 import { citation } from "./citeKeys";
 import { PaperFiles } from "./PaperFiles";
@@ -51,7 +50,6 @@ import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach, type CoachOpening } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
-import { PaperConfirm } from "./PaperConfirm";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
 import {
   previewSourceSpot,
@@ -159,7 +157,6 @@ export function PaperWorkspace({
     error: string;
     retry: () => Promise<void>;
   } | null>(null);
-  const [resolving, setResolving] = useState(false);
   // The coach's send state and comments live here: the preview stages comments too,
   // and its failures show on the Coach segment while the coach is hidden.
   const [coachSubmitting, setCoachSubmitting] = useState(false);
@@ -393,13 +390,7 @@ export function PaperWorkspace({
       setActionError({ error: String(error), retry: action });
     }
   };
-  const gitChanges = changeFeed.changes.filter(
-    (change) =>
-      change.task_id === PAPER_GIT_TASK &&
-      (change.state === "pending" || change.state === "outdated"),
-  );
-  const gitRefresh = `${tree?.revision}:${gitChanges.map((change) => `${change.change_id}:${change.state}`).join("|")}`;
-  const git = usePaperGit(apiBase, gitRefresh, () => {
+  const git = usePaperGit(apiBase, `${tree?.revision}`, () => {
     refresh();
     void changeFeed.refresh();
   });
@@ -408,7 +399,7 @@ export function PaperWorkspace({
   const [diffPath, setDiffPath] = useState<string | null>(null);
   const changesTab = gitLinked && sideTab === "changes";
   const shownDiff = gitLinked ? diffPath : null;
-  const changeCount = git.files.length + (git.status?.conflicts ?? 0);
+  const changeCount = git.files.length;
   const sideTabs = gitLinked ? (
     <div className="segmented paper-grow paper-side-tabs" role="group" aria-label="Sidebar">
       {(["files", "changes"] as const).map((tab) => (
@@ -423,9 +414,7 @@ export function PaperWorkspace({
   ) : undefined;
   const act = async (id: string, action: PaperChangeAction) => {
     try {
-      if (gitChanges.some((change) => change.group_id === id))
-        await decidePaperGit(apiBase, id, action).finally(changeFeed.refresh);
-      else await changeFeed.act(id, action);
+      await changeFeed.act(id, action);
     } finally {
       refresh();
     }
@@ -515,14 +504,7 @@ export function PaperWorkspace({
             </header>
             <PaperGitChanges
               git={git}
-              changes={gitChanges}
               openPath={shownDiff}
-              onAction={act}
-              onLocate={(change) => {
-                setDiffPath(null);
-                setFilesOpen(false);
-                locate(changeFocus(change));
-              }}
               onOpenDiff={(path) => {
                 setDiffPath(path);
                 setFilesOpen(false);
@@ -670,7 +652,7 @@ export function PaperWorkspace({
           </div>
           {phone && <span className="paper-panel-bar" ref={setPanelBar} />}
         </div>
-        {shownDiff && <PaperGitDiff git={git} path={shownDiff} refreshKey={gitRefresh} />}
+        {shownDiff && <PaperGitDiff git={git} path={shownDiff} refreshKey={`${tree?.revision}`} />}
         <div
           className="paper-writing-pane"
           ref={writingPane}
@@ -820,48 +802,6 @@ export function PaperWorkspace({
           onClose={() => setHistory(false)}
           onRestored={refresh}
         />
-      )}
-      {tree?.hold && (
-        <PaperConfirm
-          label="Choose Paper version"
-          failed={Boolean(actionError)}
-          onClose={() => {
-            /* A version must be chosen. */
-          }}
-        >
-          {(["draft", "canonical"] as const).map((keep) => (
-            <button
-              key={keep}
-              className="button"
-              disabled={resolving}
-              onClick={() =>
-                void perform(async () => {
-                  setResolving(true);
-                  try {
-                    await api(`${apiBase}/paper/hold/resolve`, {
-                      method: "POST",
-                      body: JSON.stringify({ keep }),
-                    });
-                    refresh();
-                  } finally {
-                    setResolving(false);
-                  }
-                })
-              }
-            >
-              {keep === "draft" ? "Keep draft" : "Keep saved"}
-            </button>
-          ))}
-          {actionError && (
-            <button
-              className="icon-button"
-              aria-label="Retry choice"
-              onClick={() => void perform(actionError.retry)}
-            >
-              <RotateCcw size={16} />
-            </button>
-          )}
-        </PaperConfirm>
       )}
     </section>
   );

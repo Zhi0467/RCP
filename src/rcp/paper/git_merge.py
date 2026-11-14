@@ -1,28 +1,23 @@
-"""Deterministic path-wise three-tree merge, without persistent state."""
+"""Deterministic path-wise three-tree merge where GitHub wins every overlap."""
 
 from __future__ import annotations
 
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from rcp import limits
 from rcp.paper.git_sync import GitEntry, GitError, _git
-from rcp.paper.live import text_replacement
-from rcp.paper.models import PaperOp, digest, paper_file_kind, paper_path
+from rcp.paper.models import PaperOp, paper_file_kind, paper_path
 from rcp.rcp_home import rcp_temp_dir
-from rcp.storage.paper_git_links import HeldFile, SkippedEntry
+from rcp.storage.paper_git_links import SkippedEntry
 
 
 @dataclass
 class MergeResult:
     tree: dict[str, GitEntry]
     ops: list[PaperOp]
-    checks: list[dict[str, object]]
-    held: list[HeldFile]
     skipped: list[SkippedEntry]
-    proposals: dict[str, bytes]
 
 
 def text_merge(base: bytes, ours: bytes, theirs: bytes) -> tuple[bytes, bytes | None]:
@@ -69,98 +64,41 @@ def tree_reason(tree: dict[str, GitEntry]) -> str:
     return ""
 
 
-def _check(path: str, old: GitEntry, kind: Literal["text", "binary"]) -> dict[str, object]:
-    check: dict[str, object] = {"file_id": old.file_id or path, "path": path, "kind": kind}
-    check.update(
-        {"text": old.data.decode()} if kind == "text" else {"blob_sha256": digest(old.data)}
-    )
-    return check
-
-
-def _create(path: str, new: GitEntry, kind: Literal["text", "binary"]) -> PaperOp:
-    return PaperOp(
-        kind="create",
-        path=path,
-        file_kind=kind,
-        text=new.data.decode() if kind == "text" else "",
-        data=new.data if kind == "binary" else None,
-    )
-
-
-def _update(
-    file_id: str, old: GitEntry, new: GitEntry, kind: Literal["text", "binary"]
-) -> PaperOp | None:
-    if kind == "text":
-        return text_replacement(file_id, old.data.decode(), new.data.decode())
-    return PaperOp(kind="binary", file_id=file_id, data=new.data)
-
-
-def tree_ops(
-    ours: dict[str, GitEntry], target: dict[str, GitEntry]
-) -> tuple[list[PaperOp], list[dict[str, object]]]:
-    deletes: list[PaperOp] = []
-    edits: list[PaperOp | None] = []
-    checks: list[dict[str, object]] = []
+def tree_ops(ours: dict[str, GitEntry], target: dict[str, GitEntry]) -> list[PaperOp]:
+    """Writes that turn `ours` into `target`; each names the bytes it read as its base."""
+    ops: list[PaperOp] = []
     for path in sorted(ours.keys() | target.keys()):
         old, new = ours.get(path), target.get(path)
         if old is not None and new is not None and old.data == new.data:
             continue
-        old_kind = paper_file_kind(path, old.data) if old else None
-        new_kind = paper_file_kind(path, new.data) if new else None
-        if old is None:
-            checks.append({"path_free": path})
-        else:
-            checks.append(_check(path, old, old_kind or "text"))
-            if old_kind != new_kind:
-                deletes.append(PaperOp(kind="delete", file_id=old.file_id or path))
         if new is None:
+            if old is not None:
+                ops.append(PaperOp(kind="delete", file_id=old.file_id))
             continue
-        if old is None or old_kind != new_kind:
-            edits.append(_create(path, new, new_kind or "text"))
-        else:
-            edits.append(_update(old.file_id or path, old, new, new_kind or "text"))
-    return deletes + [op for op in edits if op is not None], checks
+        ops.append(
+            PaperOp(
+                kind="write", path=path, base=old.data if old is not None else None, data=new.data
+            )
+        )
+    return ops
 
 
 def _candidate(
     path: str, ancestor: GitEntry | None, remote: GitEntry | None, local: GitEntry | None
-) -> tuple[GitEntry | None, str, bytes | None]:
-    old = ancestor.data if ancestor is not None else None
-    if (local.data if local is not None else None) == old:
-        return remote, "", None
-    if (
-        local is None
-        or remote is None
-        or any(
-            paper_file_kind(path, entry.data) != "text"
-            for entry in (ancestor, local, remote)
-            if entry is not None
-        )
+) -> GitEntry | None:
+    if local is None or remote is None or local.data == (ancestor.data if ancestor else None):
+        return remote
+    if any(
+        paper_file_kind(path, entry.data) != "text"
+        for entry in (ancestor, local, remote)
+        if entry is not None
     ):
-        return local, "file", None
-    merged, proposal = text_merge(old or b"", local.data, remote.data)
-    if max(len(merged), len(proposal or b"")) > limits.PAPER_MAX_DOC_BYTES:
-        return local, "file", None
-    return (
-        GitEntry(merged, local.mode, local.file_id),
-        "text" if proposal is not None else "",
-        proposal,
-    )
-
-
-def _fit_reason(
-    trial: dict[str, GitEntry], proposals: dict[str, bytes], path: str, proposal: bytes | None
-) -> str:
-    reason = tree_reason(trial)
-    if proposal is None and not proposals:
-        return reason
-    if proposal is not None:
-        try:
-            paper_path("files/" + path)
-        except ValueError:
-            return "change_path_limit"
-        proposals = proposals | {path: proposal}
-    return reason or tree_reason(trial | {name: GitEntry(body) for name, body in proposals.items()})
+        return remote
+    merged, theirs = text_merge(ancestor.data if ancestor else b"", local.data, remote.data)
+    data = theirs if theirs is not None else merged
+    if len(data) > limits.PAPER_MAX_DOC_BYTES:
+        return remote
+    return GitEntry(data, local.mode, local.file_id)
 
 
 def merge_trees(
@@ -171,9 +109,7 @@ def merge_trees(
         for path, entry in ours.items()
         if path in theirs or path not in base or entry.data != base[path].data
     }
-    held: list[HeldFile] = []
     skipped: list[SkippedEntry] = []
-    proposals: dict[str, bytes] = {}
     for path in sorted(base.keys() | theirs.keys() | ours.keys()):
         ancestor, remote, local = base.get(path), theirs.get(path), ours.get(path)
         if remote is not None and (reason := entry_reason(path, remote)):
@@ -182,26 +118,13 @@ def merge_trees(
         new = remote.data if remote is not None else None
         if new in (ancestor.data if ancestor else None, local.data if local else None):
             continue
-        candidate, conflict, proposal = _candidate(path, ancestor, remote, local)
+        candidate = _candidate(path, ancestor, remote, local)
         trial = {name: entry for name, entry in result.items() if name != path}
         if candidate is not None:
             trial[path] = candidate
-        if reason := _fit_reason(trial, proposals, path, proposal):
+        if reason := tree_reason(trial):
             if local is None:
                 skipped.append({"path": path, "reason": reason})
-                continue
-            conflict, proposal, trial = "file", None, result
+            continue
         result = trial
-        if conflict:
-            held.append(
-                {
-                    "file_id": local.file_id if local else "",
-                    "path": path,
-                    "base_commit": "",
-                    "kind": "text" if conflict == "text" else "file",
-                }
-            )
-        if proposal is not None:
-            proposals[path] = proposal
-    ops, checks = tree_ops(ours, result)
-    return MergeResult(result, ops, checks, held, skipped, proposals)
+    return MergeResult(result, tree_ops(ours, result), skipped)

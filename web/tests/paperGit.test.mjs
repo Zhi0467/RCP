@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ApiError } from "../src/core/api.ts";
 import {
-  decidePaperGit,
   deployKeyUrl,
   gitPill,
   paperGit,
@@ -17,7 +16,6 @@ const status = {
   public_key: "ssh-ed25519 AAAA",
   head: { commit: "abc", author: "Lena" },
   unpushed: true,
-  conflicts: 2,
   skipped: [],
   last_error: "",
   checked_at: "2026-11-09T10:00:00Z",
@@ -72,15 +70,10 @@ test("requests reach the project's Git routes and keep a refusal's reason", asyn
   });
   assert.deepEqual(await paperGit("/api/projects/p", ""), status);
   await paperGit("/api/projects/p", "/key", "POST", { repository: "lab/paper", branch: "main" });
-  await decidePaperGit("/api/projects/p", "g1", "accept");
-  await decidePaperGit("/api/projects/p", "g1", "refresh");
   assert.deepEqual(calls, [
     ["/api/projects/p/paper/git", "GET", undefined],
     ["/api/projects/p/paper/git/key", "POST", '{"repository":"lab/paper","branch":"main"}'],
-    ["/api/projects/p/paper/git/conflicts/decide", "POST", '{"group_id":"g1","decision":"accept"}'],
-    ["/api/projects/p/paper/git/conflicts/refresh", "POST", undefined],
   ]);
-  assert.throws(() => decidePaperGit("/api/projects/p", "g1", "undo"));
   reply = () => new Response(JSON.stringify({ reason: "conflicts" }), { status: 409 });
   await assert.rejects(
     paperGit("/api/projects/p", "/push", "POST", { message: "m" }),

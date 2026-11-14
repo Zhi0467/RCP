@@ -40,23 +40,21 @@ def test_poller_failure_backs_off_and_maintenance_blocks():
 def test_live_open_projects_requires_a_subscriber(tmp_path):
     import asyncio
 
-    from rcp.paper import PaperLive, PaperOp
+    from rcp.paper import PaperLive
+    from rcp.paper.folder import LocalPaperFolder
     from rcp.storage import AppStore
-    from rcp.transport import LocalStateWorkspace
-    from tests.paper_helpers import apply, start_paper
+    from tests.paper_helpers import create, start_paper
 
-    root = tmp_path / "state"
+    root = tmp_path / "paper"
     root.mkdir()
     live = start_paper(
-        PaperLive(
-            AppStore(tmp_path / "state.sqlite"), lambda _: LocalStateWorkspace(root, str(root))
-        )
+        PaperLive(AppStore(tmp_path / "state.sqlite"), lambda _: LocalPaperFolder(root))
     )
-    apply(live, [PaperOp(kind="create", file_id="f", path="paper.md", text="text")])
+    file_id = create(live, "paper.md", "text")
     assert live.run_sync(live.open_projects()) == set()
 
     async def subscribe():
-        await live.connect("p", "f", asyncio.Queue())
+        await live.connect("p", file_id, asyncio.Queue())
 
     live.run_sync(subscribe())
     assert live.run_sync(live.open_projects()) == {"p"}

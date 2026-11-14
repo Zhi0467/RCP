@@ -123,7 +123,7 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
             {file_id:'md',path:'sections/main.md',format:'markdown',kind:'text',sha256:'c'},
             {file_id:'methods',path:'sections/methods.md',format:'markdown',kind:'text',sha256:'d'}
           ];
-          window.show = (id, broken=false) => root.render(<PaperPreview projectId="p" file={files.find(f=>f.file_id===id)} tree={{files,saved_revision:1}} text={id==='md' ? '[Methods](methods.md) [External](https://example.org) [Bad](mailto:test@example.org)' : broken ? '#bad' : id==='main' ? '#include "part.typ"' : 'Part'} active onOpenFile={id=>window.opened=id} toolbar={bar} />);
+          window.show = (id, broken=false) => root.render(<PaperPreview projectId="p" file={files.find(f=>f.file_id===id)} tree={{files,revision:1}} text={id==='md' ? '[Methods](methods.md) [External](https://example.org) [Bad](mailto:test@example.org)' : broken ? '#bad' : id==='main' ? '#include "part.typ"' : 'Part'} active onOpenFile={id=>window.opened=id} toolbar={bar} />);
           window.show('main');`;
       },
     },
@@ -177,7 +177,7 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
   await page.route("**/paper/engines", (route) =>
     route.fulfill({ json: { typst: "ready", latex: "ready", errors: {} } }),
   );
-  await page.route("**/raw?revision=1", (route) =>
+  await page.route("**/raw?sha256=*", (route) =>
     route.fulfill({
       body: route.request().url().includes("/main/") ? '#include "part.typ"' : "Part",
     }),
@@ -233,7 +233,7 @@ test("a LaTeX preview opens at the open file's place in the PDF", async (t) => {
             {file_id:'main',path:'main.tex',format:'latex',kind:'text',sha256:'a'},
             {file_id:'results',path:'sections/results.tex',format:'latex',kind:'text',sha256:'b'}
           ];
-          createRoot(document.getElementById('root')).render(<PaperPreview projectId="p" file={files[1]} tree={{files,saved_revision:1}} text="" active toolbar={bar} cursorLine={1} />);`;
+          createRoot(document.getElementById('root')).render(<PaperPreview projectId="p" file={files[1]} tree={{files,revision:1}} text="" active toolbar={bar} cursorLine={1} />);`;
       },
     },
   ]);

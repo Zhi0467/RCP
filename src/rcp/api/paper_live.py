@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import logging
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from typing import Any, TypeVar
@@ -29,6 +30,7 @@ from rcp.paper.models import PaperLimit, PaperPaused, PaperRateLimit
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 
 router = APIRouter()
+_LOG = logging.getLogger(__name__)
 _Result = TypeVar("_Result")
 
 
@@ -277,5 +279,9 @@ async def paper_socket(socket: WebSocket, project_id: str, file_id: str) -> None
             task.cancel()
         with anyio.CancelScope(shield=True):
             await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await live.leave(project_id, file_id, queue)
+            except Exception:
+                _LOG.exception("Paper buffer of %s could not be saved on leave", file_id)
             with suppress(RuntimeError, WebSocketDisconnect):
                 await socket.close(code=close_code)
