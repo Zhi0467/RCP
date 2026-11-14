@@ -291,3 +291,14 @@ def test_the_auto_research_orchestrator_names_the_paper() -> None:
     )
     values = auto.auto_research_prompt_values(**arguments, group_context=None, paper_path=PAPER)
     assert PAPER in contract and values["paper"] == PAPER
+
+
+def test_the_chat_inventory_names_a_paper_chat_by_its_focus(tmp_path: Path) -> None:
+    store = seeded_store(tmp_path)
+    store.admit_chat_focus("project", "coach", "paper")
+    admitted_launch_task(store, operation_id="coach-turn", request=_paper_request("coach"))
+    store.admit_chat_focus("project", "plain", None)
+    store.set_chat_title("project", "plain", "alice", "Plain")
+    admitted_launch_task(store, operation_id="plain-turn", request=work_request("plain"))
+    focus = {row["chat_id"]: row.get("focus") for row in store.chat_inventory("project")}
+    assert focus == {"coach": "paper", "plain": None}

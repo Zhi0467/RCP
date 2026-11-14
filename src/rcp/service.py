@@ -413,6 +413,7 @@ class ChatSummary(BaseModel):
     origin: ChatOriginView | None = None
     # Every listed agent shows its own setup, not only those whose turns are loaded.
     agent_setup: ChatAgentSetup | None = None
+    focus: Literal["paper"] | None = None
 
 
 class ChatSummaryPage(BaseModel):

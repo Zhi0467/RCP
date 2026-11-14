@@ -76,7 +76,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     GROUP BY 1
                 )
                 -- An artifact edit only refreshes a conversation its turns already hold.
-                SELECT display.title, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                SELECT display.title, display.focus, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
                        chats.created_at,
                        MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
                        episode_chats.chat_id IS NOT NULL AS is_episode,
@@ -147,6 +147,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         ),
                         # Artifact edits never set it: an origin-bound one runs the artifact's agent.
                         "agent_setup": chat_agent_setup(request, row["created_at"]),
+                        **({"focus": row["focus"]} if row["focus"] else {}),
                     }
                 )
             summaries.extend(orchestrators.values())

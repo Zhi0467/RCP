@@ -633,9 +633,7 @@ def prepare_comment_send(
             raise HTTPException(status_code=409, detail="The thread belongs to another artifact.")
         if target_kind == "paper":
             if not paper:
-                raise HTTPException(
-                    status_code=409, detail="Paper comments require the Paper coach."
-                )
+                raise HTTPException(status_code=409, detail="Paper comments go to a Paper chat.")
             continue
         if target_kind == "artifact":
             artifact = store.artifact(target_id)
@@ -654,7 +652,7 @@ def prepare_comment_send(
             user_id,
         }:
             raise HTTPException(status_code=404, detail="Comment target not found")
-        if not target_chat or paper or (artifact_id is None and target_chat != chat_id):
+        if not target_chat or (artifact_id is None and target_chat != chat_id):
             raise HTTPException(status_code=409, detail="The thread belongs to another chat.")
     if len(artifacts) > 1:
         raise HTTPException(status_code=409, detail="Send comments on one artifact at a time.")
@@ -755,7 +753,7 @@ def start_agent_task(
             thread_ids,
             str(idempotency_key) if idempotency_key is not None else "",
             chat_id=str(body.get("chat_id", "")),
-            paper=kind == "paper_coach",
+            paper=kind == "paper_coach" or body.get("focus") == "paper",
             message=message,
         )
         message, context = prepared_send
@@ -941,7 +939,7 @@ def steer_agent_task(
             body.comment_thread_ids,
             str(body.message_id),
             chat_id=str(record.request.get("chat_id") or ""),
-            paper=record.kind == "paper_coach",
+            paper=record.kind == "paper_coach" or record.request.get("focus") == "paper",
             message=text,
             selections=False,
         )
