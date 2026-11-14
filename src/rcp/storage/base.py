@@ -154,6 +154,7 @@ class AppStoreBase:
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
         (83, "comments_v1"),
+        (84, "chat_focus_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1115,6 +1116,9 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=83, name="comments_v1", migration=migrate_comments
+        )
+        self._run_storage_schema_migration(
+            connection, version=84, name="chat_focus_v1", migration=self._migrate_chat_focus
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3116,6 +3120,12 @@ class AppStoreBase:
                 PRIMARY KEY (project_id, chat_id)
             )
         """)
+
+    @classmethod
+    def _migrate_chat_focus(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "chat_display", "focus", "TEXT CHECK (focus IS NULL OR focus = 'paper')"
+        )
 
     @staticmethod
     def _migrate_chat_reads_and_pins(connection: sqlite3.Connection) -> None:

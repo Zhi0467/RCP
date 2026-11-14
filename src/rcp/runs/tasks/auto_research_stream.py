@@ -1264,7 +1264,10 @@ def _auto_research_context(
 ) -> ChatContext:
     state = service.history.state()
     context = ContextAssembler(
-        service.manifest, cards=service.launcher.machine_cards(), graph_root=service.history.root
+        service.manifest,
+        cards=service.launcher.machine_cards(),
+        graph_root=service.history.root,
+        paper_path=service.paper_folder(),
     ).chat_context(
         state,
         graph_target=service.history.graph_target,
@@ -1685,6 +1688,7 @@ def _orchestrator_prompt(
         allowed_verbs=allowed_verbs,
         child_profiles=child_profiles,
         compute_profiles=compute_profiles,
+        paper_path=context.paper_path,
     )
 
     graph_prompt = GraphReadPrompt(
@@ -1739,6 +1743,7 @@ def _orchestrator_prompt(
             graph_read_prompt=graph_prompt,
             child_profiles=child_profiles,
             compute_profiles=compute_profiles,
+            paper_path=context.paper_path,
         )
 
     def start_contract() -> str:

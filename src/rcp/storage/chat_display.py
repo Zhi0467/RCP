@@ -482,6 +482,34 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             else None
         )
 
+    def admit_chat_focus(self, project_id: str, chat_id: str, focus: str | None) -> None:
+        """Fix a chat's focus on its first turn; every later turn must name the same one."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            started = connection.execute(
+                "SELECT 1 FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if started is None:
+                connection.execute(
+                    "INSERT INTO chat_display(project_id,chat_id,focus) VALUES(?,?,?) "
+                    "ON CONFLICT(project_id,chat_id) DO UPDATE SET focus=excluded.focus",
+                    (project_id, chat_id, focus),
+                )
+                connection.execute(
+                    "DELETE FROM chat_display WHERE project_id=? AND chat_id=? "
+                    "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
+                    (project_id, chat_id),
+                )
+                return
+            row = connection.execute(
+                "SELECT focus FROM chat_display WHERE project_id=? AND chat_id=?",
+                (project_id, chat_id),
+            ).fetchone()
+        if focus != (row["focus"] if row is not None else None):
+            raise AgentTaskAdmissionConflict("chat_focus_fixed")
+
     def agent_task_turn_refusal(self, record: AgentTaskRecord) -> str | None:
         with self.connection() as connection:
             return self._agent_task_turn_refusal(connection, record)
@@ -545,7 +573,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id=? AND chat_id=? "
-                "AND title IS NULL AND archived_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
                 (project_id, chat_id),
             )
 
@@ -742,7 +770,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id = ? AND chat_id = ? "
-                "AND title IS NULL AND archived_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
                 (project_id, chat_id),
             )
 

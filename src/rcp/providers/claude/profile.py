@@ -639,6 +639,7 @@ class ClaudeProfile(ProviderProfile):
             additional_dirs = [
                 *read_dirs,
                 *(Path(item) for item in [*scope.repository_roots, *scope.memory_roots]),
+                *([Path(scope.paper_root)] if scope.paper_root else []),
             ]
         for directory in dict.fromkeys(str(item) for item in additional_dirs):
             command.extend(["--add-dir", directory])
@@ -858,6 +859,7 @@ def _claude_write_settings(
             PurePosixPath(scope.stage_root),
             PurePosixPath(scope.workspace_root),
             *(PurePosixPath(path) for path in scope.memory_roots),
+            *([PurePosixPath(scope.paper_root)] if scope.paper_root else []),
         ]
         protected_write_paths = [
             path
