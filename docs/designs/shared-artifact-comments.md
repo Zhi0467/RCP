@@ -65,8 +65,9 @@ These were decided with the human in chat:
     and inlines it into the viewer shell, as `artifact_renderer.renderer_assets`
     does. The shell's `script-src 'unsafe-inline'` CSP stays unchanged.
   - A missing bundle raises the same "Rebuild the Web assets" error.
-  - Python tests that open a viewer use the repo's existing built-assets
-    fixture.
+  - Python tests that open a viewer read the built bundle, as the Paper HTML
+    preview tests read `artifact-renderer.js`. One test points
+    `web_dist_path` at a missing folder to check the error.
   - The viewer, the inline frames, and Paper therefore run one module. Author
     HTML stays in its opaque nested frame (invariant 10e).
 
