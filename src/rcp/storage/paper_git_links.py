@@ -30,6 +30,7 @@ class PaperGitLink(BaseModel):
     repository: str
     branch: str = "main"
     key_fingerprint: str = ""
+    key_source: str = ""
     linked_by: str
     linked_at: str = ""
     synced_commit: str = ""
@@ -48,6 +49,10 @@ def migrate_paper_git_links(connection: sqlite3.Connection) -> None:
         linked_by TEXT NOT NULL, linked_at TEXT NOT NULL, synced_commit TEXT NOT NULL,
         synced_revision INTEGER NOT NULL, held TEXT NOT NULL, skipped TEXT NOT NULL,
         last_error TEXT NOT NULL, checked_at TEXT NOT NULL)""")
+
+
+def migrate_paper_git_link_key_source(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE paper_git_links ADD COLUMN key_source TEXT NOT NULL DEFAULT ''")
 
 
 def _link(row: sqlite3.Row) -> PaperGitLink:

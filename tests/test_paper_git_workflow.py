@@ -570,3 +570,69 @@ def test_switch_refusals_keep_the_current_branch(sync):
     status = manager.status("p")
     assert (status["branch"], status["last_error"]) == ("main", "")
     assert saved(live).files[0].text == "draft\n"
+
+
+def test_same_repository_reuses_the_project_key_and_links_at_once(tmp_path: Path, sync):
+    manager, live, remote = sync
+    commit_remote(remote, {"paper.md": GitEntry(b"from github\n")})
+    shared = tmp_path / "credentials" / "id_ed25519"
+    git_sync.generate_key(shared.parent, "p")
+    manager.shared_key = lambda project, repository: (
+        ("code", shared) if (project, repository) == ("p", "Owner/Repo") else None
+    )
+    status = manager.key("p", "Owner/Repo", "main", "member")
+    assert (status["state"], status["key_source"], status["public_key"]) == ("linked", "code", "")
+    assert saved(live).files[0].text == "from github\n"
+    assert (manager.directory("p") / "id_ed25519").resolve() == shared.resolve()
+    manager.disconnect("p")
+    assert shared.is_file()
+    assert manager.key("p", "owner/other", "main", "member")["state"] == "pending"
+
+
+def test_shared_deploy_key_lends_only_a_ready_backend_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from types import SimpleNamespace
+
+    def record(identity: str, *, verified: bool = True, machine: str = "backend"):
+        return SimpleNamespace(
+            repository=SimpleNamespace(identity=identity),
+            git_check=SimpleNamespace(write_verified=verified),
+            machine_id=machine,
+        )
+
+    sources = {
+        "a": record("owner/repo", verified=False),
+        "b": record("owner/repo", machine="gpu"),
+        "c": record("owner/other"),
+        "d": record("owner/repo"),
+        "e": record("owner/repo"),
+    }
+    hosts = {"backend": "", "gpu": "gpu.example"}
+    monkeypatch.setattr("rcp.provisioning_repositories.team_repository_sources", lambda *_: sources)
+    monkeypatch.setattr("rcp.machine_cards.host_of", lambda _store, machine: hosts[machine])
+    layout = SimpleNamespace(
+        project_deploy_key_path=lambda project, alias: tmp_path / project / alias / "id_ed25519"
+    )
+    for alias in "abce":
+        key = tmp_path / "p" / alias / "id_ed25519"
+        key.parent.mkdir(parents=True)
+        key.write_text("key")
+    found = git_sync.shared_deploy_key(None, layout, "p", "Owner/Repo")
+    assert found == ("e", tmp_path / "p" / "e" / "id_ed25519")
+    assert git_sync.shared_deploy_key(None, layout, "p", "owner/none") is None
+
+
+def test_links_saved_before_shared_keys_upgrade_with_their_own_key(sync):
+    import sqlite3
+
+    manager, _, _ = sync
+    manager.key("p", "owner/repo", "main", "member")
+    path = manager.store.path
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE paper_git_links DROP COLUMN key_source")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=83")
+    upgraded = AppStore(path)
+    assert upgraded.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
+    link = upgraded.paper_git_link("p")
+    assert link is not None and (link.state, link.key_source) == ("pending", "")

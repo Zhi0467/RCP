@@ -153,6 +153,7 @@ class AppStoreBase:
         (80, "space_chat_session_machines_v1"),
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
+        (83, "paper_git_link_key_source_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1102,13 +1103,22 @@ class AppStoreBase:
             name="watcher_purposes_v1",
             migration=self._migrate_watcher_purpose_versions,
         )
-        from rcp.storage.paper_git_links import migrate_paper_git_links
+        from rcp.storage.paper_git_links import (
+            migrate_paper_git_link_key_source,
+            migrate_paper_git_links,
+        )
 
         self._run_storage_schema_migration(
             connection,
             version=82,
             name="paper_git_links_v1",
             migration=migrate_paper_git_links,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=83,
+            name="paper_git_link_key_source_v1",
+            migration=migrate_paper_git_link_key_source,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

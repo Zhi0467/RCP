@@ -323,7 +323,7 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
               className="button primary"
               disabled={busy || !validRepository(repository) || !branch.trim()}
             >
-              Create key
+              Continue
             </button>
           </div>
         </form>
@@ -333,27 +333,33 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
           <strong className="paper-git-repository">
             {status.repository} · {status.branch}
           </strong>
-          <a href={deployKeyUrl(status.repository)} target="_blank" rel="noreferrer">
-            Deploy key, with write access
-          </a>
-          <code className="paper-well paper-git-key">{status.public_key}</code>
+          {!status.key_source && (
+            <>
+              <a href={deployKeyUrl(status.repository)} target="_blank" rel="noreferrer">
+                Deploy key, with write access
+              </a>
+              <code className="paper-well paper-git-key">{status.public_key}</code>
+            </>
+          )}
           <div className="paper-git-actions">
             {failure && <Failure text={failure} />}
-            <button
-              className="button"
-              onClick={() =>
-                void copyText(status.public_key).then(
-                  () => {
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 1500);
-                  },
-                  (error) => git.setFailure(String(error)),
-                )
-              }
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-              Copy key
-            </button>
+            {!status.key_source && (
+              <button
+                className="button"
+                onClick={() =>
+                  void copyText(status.public_key).then(
+                    () => {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 1500);
+                    },
+                    (error) => git.setFailure(String(error)),
+                  )
+                }
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                Copy key
+              </button>
+            )}
             <button
               className="button primary"
               disabled={busy}
