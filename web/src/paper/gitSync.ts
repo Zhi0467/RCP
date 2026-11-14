@@ -7,6 +7,7 @@ export interface PaperGitStatus {
   repository: string;
   branch: string;
   public_key: string;
+  key_source: string;
   head: { commit: string; author: string };
   unpushed: boolean;
   conflicts: number;
