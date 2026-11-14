@@ -1,7 +1,7 @@
 {
   "src/App.tsx": {
     "rcp/no-comments": {
-      "count": 165
+      "count": 164
     }
   },
   "src/agentWindow/AgentWindowTranscript.tsx": {

@@ -592,7 +592,7 @@ immutable final snapshots or identities produce static errors.
 
 `rcp-open-node` crosses only exact-child frame hops and accepts only ids in the
 last delivered graph. Pinned views open trusted RCP detail. Other contexts ignore
-it, and HTML gets no reply. Personal HTML pins appear after Files and Paper only
+it, and HTML gets no reply. Personal HTML pins appear as tabs on the Files page only
 on their selected main or branch target. They are bounded per target and always
 show the current version. Pin atomically keeps the artifact. Unpin removes only
 the pin. Transfer omits pins. Viewer target selection defaults to the origin and

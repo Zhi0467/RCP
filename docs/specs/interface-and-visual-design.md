@@ -108,9 +108,11 @@ the DAG. It also sets which records show. On phones, it sits in the ⋯ menu.
 The DAG toolbar's type and layer filter is its Lens menu.
 View and the branch picker stay pinned to the strip's right edge.
 Tabs that overflow scroll under them.
-Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
-unsynced badge on Artifacts. The member's pinned pages follow Paper in that switch.
-On phones, the switch scrolls within its own width and pin titles truncate.
+Files and Paper are separate top tabs, with routes `artifacts` and `paper`;
+Paper carries the unsynced badge. Paper gets no second row, so the editor keeps
+the full height. The member's pinned pages are tabs on the Files page after its
+Files tab, and that row exists only while a pin does. On phones, the pin row
+scrolls within its own width and pin titles truncate.
 Unpin has its own icon button. The destination order ends with Terminals, Agents,
 and Settings.
 

@@ -388,7 +388,7 @@ its outcome as a notice. An episode opens its exact run when it is still
 listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
-opens on its source target, and the paper opens under Artifacts. Copy reference
+opens on its source target, and the paper opens in Paper. Copy reference
 writes the full URL. The chat composer turns a same-project reference link into
 a reference chip.
 
