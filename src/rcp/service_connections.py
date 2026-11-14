@@ -82,7 +82,6 @@ class VoiceActionReceipt(BaseModel):
     argument_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     task_id: str | None = Field(default=None, max_length=200)
     episode_id: str | None = Field(default=None, max_length=200)
-    # A conversation send's mode; Resume rebuilds watches only for Work sends.
     mode: Literal["work", "discuss"] | None = None
     request_id: str | None = Field(
         default=None,

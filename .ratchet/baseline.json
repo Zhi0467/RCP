@@ -276,7 +276,7 @@
   "src/rcp/server_ops/restore.py": {"comment": 97},
   "src/rcp/server_ops/service_errors.py": {"comment": 3},
   "src/rcp/service.py": {"comment": 56},
-  "src/rcp/service_connections.py": {"comment": 16},
+  "src/rcp/service_connections.py": {"comment": 15},
   "src/rcp/setup.py": {"comment": 5},
   "src/rcp/skill_registry.py": {"comment": 3},
   "src/rcp/source_checkout.py": {"comment": 2},
