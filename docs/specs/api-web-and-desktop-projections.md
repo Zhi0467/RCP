@@ -1686,7 +1686,11 @@ moves forward. Markers are not moved with a transferred project.
 ### Paper, Settings, and History
 
 Paper owns the co-edited file tree, its previews, and the Coach's Paper chats
-([Paper](paper-artifacts-and-result-views.md)). Settings has two
+([Paper](paper-artifacts-and-result-views.md)). The Coach pane is the ordinary
+chat view over the member's chats with `focus = "paper"`; each turn it starts
+sends `focus: "paper"`. A settled turn's reply ends with its folded changed-file
+list, and a row opens that file's diff beside the chat
+([change list](paper-artifacts-and-result-views.md#a-turns-change-list)). Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
 display preferences in its Appearance pane
 ([grammar](interface-and-visual-design.md#visual-grammar)), the server status
@@ -2342,6 +2346,19 @@ member. Delivery keeps it only while the mention row exists, the thread is
 open, and the device's member can read the target. Its link is
 `#/projects/{project_id}/targets/{target}/comment/{thread_id}`, with the
 target's branch key.
+
+## Paper turn API
+
+[Paper turn routes](../../src/rcp/api/paper_turns.py) serve a Paper chat turn's
+[change list](paper-artifacts-and-result-views.md#a-turns-change-list) to
+whoever can read the turn's reply. `GET
+/api/projects/{project_id}/paper/turns/{operation_id}` returns the turn's
+before and after version ids and its changed files, clashes first, each with its
+added and removed line counts. A turn that never took the Paper returns no
+files and null version ids. `GET .../files/{path}` returns one file's turn-start
+text, the agent's text, and their line hunks; a clash row also carries the
+current text. An unreadable turn, and a file the turn did not change, answer
+404. [Turn models](../../src/rcp/paper/turns.py) own the bodies.
 
 ## Agent thread API
 

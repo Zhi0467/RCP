@@ -146,7 +146,9 @@ preserve peer positions. Identical text is a no-op. Per-file restore is a new
 live edit. Automatic versions form a bounded ring. Named versions have count and
 byte quotas. They refuse new names instead of evicting old versions or blocking
 edits. Members may delete named versions. Deleting automatic versions is refused.
-Pruning keeps every version a `paper_turn` receipt of an existing chat names.
+Pruning keeps every version a `paper_turn` receipt of an existing chat names,
+and the running turn's start version. The receipt holds only the two ids, so
+it never passes the receipt cap however many files a turn changed.
 
 ### Preview
 
@@ -513,13 +515,15 @@ read-only. There is no Undo on a turn; History restore is the undo.
 - **End.** After the provider process tree exits or recovery settles, the
   editor flushes, the loop scans, and History saves the after version. A
   changed file nobody had open joins the list. One `paper_turn` receipt records
-  both versions and the files.
+  the before and after version ids; the files stay in `paper_turn_files`. A
+  turn that failed before it took the Paper has no receipt and lists no files.
 
 The turn shows "N files changed" with line totals, folded. A row opens the diff
 of the before version against the agent's version beside the chat. A clash row
 is red, sorts first, and shows the agent's version beside the current file,
-where the human's text won. A diff line takes a shared comment on the reply,
-anchored to the file and line; Send returns it to the agent. Other members'
+where the human's text won. A diff line takes a shared comment on the reply
+with an `element` anchor: `path` is the file, `label` the line, and `text` the
+line's text. Send returns it to the agent. Other members'
 saves never appear in a turn's list. `GET …/paper/turns/{op}` and
 `GET …/paper/turns/{op}/files/{path}` serve the list and one file.
 
