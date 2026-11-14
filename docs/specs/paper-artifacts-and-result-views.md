@@ -547,7 +547,7 @@ Play downloads video into a blob URL. This avoids WebKit's Range probes against
 the whole-file byte route. Leaving aborts the download and revokes the URL.
 Bounded text prefixes are labelled, while Download returns the full bytes.
 Broken previews retain Download, Keep, and the reply. Backend offers to view,
-open, download, keep, or discuss are independent. `can_open` means the RCP viewer,
+open, download, keep, or comment on are independent. `can_open` means the RCP viewer,
 not system PDF opening. Keep refreshes the task projection.
 
 ## Live HTML pages
@@ -712,10 +712,10 @@ one artifact and version in the composer. Admission refuses moved versions.
 Cancel or Escape in the window discards its text. A cancel in the frame, a new
 selection, or leaving comment mode closes or replaces the window and keeps the
 text for the next selection. Version changes clear stale regions with a notice and
-keep the open window's text. Composer comments follow the
-chat's mode and profile. They can combine attachments and references, including
-in Experiments. Read-only lineage children allow only Discuss comments without
-references. Both paths can publish tracked next versions. Keep follows viewer state.
+keep the open window's text. Composer comments are
+ordinary Work turns with the chat's profile. They can combine attachments and
+references, including in Experiments. A read-only lineage child takes them only
+as scratch edits, without references. Both paths can publish tracked next versions. Keep follows viewer state.
 
 ### Selection and comments
 
@@ -724,18 +724,17 @@ inline, where comment mode starts on until the reader presses Done. Other viewab
 available only for download refuse comments. Text selection highlights text.
 Dragging on figures or blank space selects a boxed region. Add saves a comment
 in the tray.
-Edit now sends only the comment being written without changing the tray. Cancel
-or Escape discards it. Clicking elsewhere closes the window but retains the text
-for the next selection. The tray offers Remove, a whole-file comment, and Send to
-original chat for all filed comments. These are prompt inputs, never graph annotations.
+Cancel or Escape discards the comment being written. Clicking elsewhere closes
+the window but retains the text for the next selection. The tray offers Remove,
+a whole-file comment, and one Send to agent. It files a typed comment first, then
+sends every filed comment; when the typed comment does not fit the tray, nothing
+is sent. These are prompt inputs, never graph annotations.
 
-Browser-profile storage retains filed and unsent comments per artifact. Both
-send paths retain refused comments with a reason. A refused Edit now files the
-comment in the tray or returns it to the box if the tray is full. Success removes
-only sent comments and reports the operation. Fresh-session admission is labelled
-where the send resumes the origin. Ordinary Send and inline comments need a
-readable artifact and a chat that accepts human turns. The origin master and
-session gate Edit now. A later failure remains in `edit_failure` until replaced.
+Browser-profile storage retains filed and unsent comments per artifact. Send
+retains refused comments with a reason. Success removes only sent comments and
+reports the operation. Send needs a readable, unexpired artifact context. Only a
+chat that refuses human turns can require a fresh session; the button then reads
+Send to agent in a new session. A later failure remains in `edit_failure` until replaced.
 The theme follows the app or the standalone preference.
 
 `ArtifactContextRequest` in [service models](../../src/rcp/service.py) owns bounded
@@ -745,27 +744,27 @@ Image areas use displayed fractions corrected for orientation. Raster crops
 decode once from the staged version and survive recovery. Animation uses the
 first frame and labels it. SVG and oversized images carry only positions. Legacy
 viewer areas are never cropped. Both routes number human comments and regions
-identically. Edit now adds only the immediate request. Human bubbles name the
+identically. Human bubbles name the
 artifact and selected text, elements, or image area. Editable context provides a
 URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions
 
-Admission freezes the version and route. Composer comments are ordinary turns
-with that chat's mode, profile, session, scope, graph, compute, and worktree.
+Admission freezes the version and route. Composer comments are ordinary Work
+turns with that chat's profile, session, scope, graph, compute, and worktree.
 Viewer Send uses the same Work path with the latest profile when the chat accepts
-human turns. This includes ordinary chats, Experiments, and ended orchestrators.
-Edit now resumes the recorded master. Send also resumes that master for a running
-orchestrator or read-only child. A chat or child master uses Discuss with the
-origin profile. An Experiment or orchestrator master uses a scratch-only edit
+human turns, queued or steered as Send is. This includes ordinary chats,
+Experiments, and ended orchestrators. The agent decides from each comment
+whether to edit. In a chat that refuses human turns, a running orchestrator or
+read-only child, a comment resumes the recorded master with a scratch-only edit
 that revokes graph, watcher, master, and repository rights.
 [Edit admission](../../src/rcp/runs/artifact_edit_admission.py) owns routing.
 **Why:** the recorded master defines session compatibility. After a revoking edit,
 the next operational turn must reopen its master. Versions need no Accept because
 Undo is reversible and never overwrites human repository files.
 
-Admission atomically reserves the session and stage across owners. A busy owner
-refuses the edit rather than queuing or steering it. Edits spend no episode
+A scratch edit's admission atomically reserves the session and stage across
+owners. A busy owner refuses it rather than queuing or steering it. Edits spend no episode
 invocation. They do not change health, Stop, or operational membership. The durable
 origin routes replies. Chat and child replies go to chat. Experiment replies go
 to node chat. Orchestrator replies go to Runs as delivered mail with a labelled

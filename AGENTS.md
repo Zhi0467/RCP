@@ -132,9 +132,7 @@ spec, and executable test, not this registry.
 8. **One RCP process owns one data directory.** OS advisory locks, not path existence,
    establish local and remote ownership.
 10b. **Only a captured Work turn has conversation graph authority.** Message wording or
-   a stray file cannot upgrade Discuss. Every agent-thread
-   turn, wake and schedule fire is a captured Work turn authorized by the
-   thread's member.
+   a stray file cannot grant it.
 10e. **Agent HTML previews cannot act on RCP.** Keep the opaque sandbox, bounded
    artifact discovery, no popups, forms, or downloads, and no implied zero-network claim.
 10g. **One episode, one graph target, one validated session and stage, one graceful

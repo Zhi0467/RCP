@@ -227,7 +227,7 @@ Each member also has private memory on the backend at
 standing requests. Launch creates it on demand. A symlinked or non-directory
 folder is never granted.
 
-Ordinary project Work and Discuss chats, including private project threads,
+Ordinary project chats, including private project threads,
 read and write `shared/`. A member's own thread turns also read and write that
 member's private folder: the Space thread, and each private project thread that
 runs on the backend machine. A private project thread on another machine gets no

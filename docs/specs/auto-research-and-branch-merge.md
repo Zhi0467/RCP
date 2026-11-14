@@ -89,7 +89,7 @@ becomes `fork-<mon>-<day>` the same way; a lineage fork is named
 Migration backfills legacy names and their reservations. Renames preserve other names.
 Transfer carries current and retired reservations.
 
-Discuss, Work, Seed, Refresh, Experiment, Auto-research, and merge launches carry
+Chat, Seed, Refresh, Experiment, Auto-research, and merge launches carry
 the same inventory of retained readable branches in their resolved read scope
 and history usage. Archived readable targets remain listed. Names or ids resolve
 through [History reads](graph-history-and-transitions.md#history-reads).
@@ -353,6 +353,12 @@ Human members dispatch episode Merge from any owner-chain card without a budget.
 Fully delivered, foreign, concurrent, or live-writer requests are refused with
 specific reasons. Reservations fence work across the isolation binding through
 cleanup. History is retained.
+Every chat turn is a graph writer, so a live chat turn on the source branch
+blocks a merge from starting, and while a merge runs, a new chat turn on that
+branch is refused with 409 and the merge-fence reason. The member sends again
+after the merge settles.
+**Why:** merges take seconds to minutes, and a chat turn has no read-only mode
+that could safely run beside one.
 
 ## Episode code merge and cleanup
 
@@ -481,7 +487,7 @@ neighbouring context, creations, updates, removals, before and after values,
 provenance, and task filtering. Lens switches never change edit or picker targets.
 Removed objects have only history.
 
-Branch edits, Sync, Inbox, Discuss, Work, and standalone Experiments remain
+Branch edits, Sync, Inbox, chat, and standalone Experiments remain
 available during and after episodes under their own human authority, session,
 and budget. Only episode work gets episode provenance. Recovery and wakes preserve
 targets, and merge fences writers. Drafts, selection, viewport, requests, and chats
