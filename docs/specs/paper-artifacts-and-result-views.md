@@ -231,8 +231,9 @@ repository. [`PaperGit`](../../src/rcp/paper/git_sync.py) owns the mechanism,
 [the routes](../../src/rcp/api/paper_git.py) the member actions. Limits live in
 `limits.py` as `PAPER_GIT_*`.
 
-**Linking.** The repository is `owner/name` and always resolves to GitHub over
-SSH. RCP generates one deploy key per paper and shows the public half. A member
+**Linking.** The repository is `owner/name`; a pasted GitHub URL, with or
+without `.git`, or an SSH address reduces to it. It always resolves to GitHub
+over SSH. RCP generates one deploy key per paper and shows the public half. A member
 adds it to the repository with write access and presses Link. The backend then
 proves the key can write with a dry-run push that creates nothing on GitHub,
 and runs the first pull. A failed probe returns Git's message and keeps the
