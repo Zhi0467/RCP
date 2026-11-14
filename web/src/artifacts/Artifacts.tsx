@@ -10,7 +10,6 @@ import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
 import { artifactsProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
-import { storedArtifactViewerUrl } from "./artifactViewerRequests";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
@@ -128,15 +127,11 @@ export function Artifacts({
             <Download size={15} />
           </StoredArtifactDownload>
         )}
-        {(entry.can_open || (entry.view === "pdf" && entry.available && entry.artifact_id)) && (
+        {entry.can_open && (
           // The whole row is this link; the actions above it stay clickable.
           <a
             className="artifact-entry-open"
-            href={
-              entry.view === "pdf" && entry.artifact_id
-                ? storedArtifactViewerUrl(projectId, entry.artifact_id)
-                : (entry.viewer_url ?? undefined)
-            }
+            href={entry.viewer_url ?? undefined}
             target="_blank"
             rel="noopener noreferrer"
             aria-label={`Open ${entry.name}`}

@@ -8,7 +8,6 @@ import { errorMessage } from "../core/errors";
 import type { AgentArtifactDescriptor } from "../core/types";
 import { INLINE_ARTIFACT_HEIGHT, inlineViewerUrl, type InlineSelection } from "./inlineArtifacts";
 import { useInlineShell } from "./useInlineShell";
-import { storedArtifactViewerUrl } from "./artifactViewerRequests";
 import type { CommentThread } from "../comments/types.ts";
 import { useInlineArtifactPins, type PickInlineThread } from "./InlineArtifactPins";
 
@@ -196,14 +195,7 @@ export function InlineArtifact({
         </span>
       </span>
     );
-  const resolvedViewer =
-    profile === null
-      ? near
-        ? viewerUrl
-        : null
-      : near && projectId && artifact.view === "pdf" && artifact.available
-        ? storedArtifactViewerUrl(projectId, artifact.artifact_id)
-        : state?.viewer_url;
+  const resolvedViewer = profile === null ? (near ? viewerUrl : null) : state?.viewer_url;
   const source = resolvedViewer ? inlineViewerUrl(resolvedViewer) : null;
   const pageErrorText = pageError ? `This page hit an error: ${pageError.message}` : "";
   return (

@@ -25,7 +25,7 @@ export function textRange(root: Node, start: number, end: number): Range | null 
 }
 
 /** Where `node`'s text begins within `root`'s text. */
-export function textOffset(root: Node, node: Node, offset: number): number {
+function textOffset(root: Node, node: Node, offset: number): number {
   const before = root.ownerDocument!.createRange();
   before.setStart(root, 0);
   before.setEnd(node, offset);

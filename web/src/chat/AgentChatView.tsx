@@ -958,7 +958,16 @@ export function AgentChatView({
     const draftMessage = draft.get();
     const text = draftMessage.trim();
     // Files are staged for a new turn; a steer carries text only.
-    if (!(text || threads) || composer.staged || submitting || !task.steer_turn_id) return false;
+    if (!(text || threads)) return false;
+    if (composer.staged || submitting || !task.steer_turn_id) {
+      if (threads)
+        setSubmitError(
+          composer.staged
+            ? "Remove the attached files to steer the running turn."
+            : "Wait for the running turn to take a steer.",
+        );
+      return false;
+    }
     if (dictating) stopDictation(true);
     scroll.current?.follow();
     const request: SteerRequest = {
@@ -1013,9 +1022,13 @@ export function AgentChatView({
   const send = async (
     threads: { ids: readonly string[]; key: string } | null = null,
   ): Promise<boolean> => {
-    if (threads ? !canSendThreads : readOnly) return false;
+    const refuse = (reason: string) => {
+      if (threads) setSubmitError(reason);
+      return false;
+    };
+    if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
-      if (threads) return false;
+      if (threads) return refuse("Finish dictating before sending comments.");
       setSendAfterDictation({ target: sendTarget(steeringTask, launchSettings(), relatedActive) });
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return false;
@@ -1035,14 +1048,11 @@ export function AgentChatView({
     }
     const draftMessage = readOnly ? "" : draft.get();
     const text = draftMessage.trim();
-    if (
-      !(text || threads) ||
-      attachmentsUnready ||
-      // Enter reaches here without the button, so a new turn checks readiness itself.
-      !providerReady
-    )
-      return false;
-    if (!confirmDiscardKeptSpeech("send")) return false;
+    if (!(text || threads)) return false;
+    if (attachmentsUnready) return refuse("Wait for the attachments to finish.");
+    // Enter reaches here without the button, so a new turn checks readiness itself.
+    if (!providerReady) return refuse("The agent is not ready to start a turn.");
+    if (!confirmDiscardKeptSpeech("send")) return refuse("Sending was cancelled.");
     // A new send is a new request; only Resend reuses a failed turn's key.
     const requestId = threads?.key ?? crypto.randomUUID();
     draft.set("");

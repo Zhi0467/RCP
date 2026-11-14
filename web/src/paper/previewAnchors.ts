@@ -48,7 +48,7 @@ function endBottom(range: Range, last: Text) {
 }
 
 /** A page slot's rect cut to `rect`, in fractions of the page; null when they miss. */
-export function pageFraction(page: DOMRect, rect: CommentRect): CommentRect | null {
+function pageFraction(page: DOMRect, rect: CommentRect): CommentRect | null {
   const left = Math.max(page.left, rect.x);
   const top = Math.max(page.top, rect.y);
   const right = Math.min(page.right, rect.x + rect.width);
@@ -123,7 +123,7 @@ export function previewSelectionAnchor(
  *
  * pdf.js often lays a whole line out as one run, so a box over part of a line is
  * judged character by character. */
-export function boxText(target: HTMLElement, rect: DOMRect): string {
+function boxText(target: HTMLElement, rect: DOMRect): string {
   return [...target.querySelectorAll<HTMLElement>(".textLayer span")]
     .map((span) => textInside(span, rect))
     .join(" ")
