@@ -46,7 +46,7 @@ function Header() {
         <button className="project-back" aria-label="All projects">
           <ArrowLeft size={16} />
         </button>
-        <PanelPicker icon={current[1]} label={current[0]}>
+        <PanelPicker icon={current[1]} label={current[0]} inboxCount={3}>
           {panels.map(([label, icon]) => (
             <button
               key={label}

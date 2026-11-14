@@ -74,6 +74,7 @@ test("the one-row header fits its controls and its panel picker drops above the 
       );
       await menu.getByRole("button", { name: "Inbox", exact: true }).click();
       assert.equal(await trigger.getAttribute("aria-label"), "Panel: Inbox");
+      assert.equal(await trigger.locator(".inbox-count").textContent(), "3");
       assert.equal(await trigger.getAttribute("aria-expanded"), "false");
 
       await page.mouse.move(width - 5, 600);

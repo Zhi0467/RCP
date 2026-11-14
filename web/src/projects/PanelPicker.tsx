@@ -11,12 +11,12 @@ const HOVER_CLOSE_DELAY_MS = 160;
 export function PanelPicker({
   icon,
   label,
-  badge,
+  inboxCount,
   children,
 }: {
   icon: ReactNode;
   label: string;
-  badge?: ReactNode;
+  inboxCount: number;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -70,7 +70,7 @@ export function PanelPicker({
       >
         {icon}
         <span>{label}</span>
-        {badge}
+        {inboxCount > 0 && <small className="inbox-count">{inboxCount}</small>}
         <ChevronDown size={13} aria-hidden="true" />
       </button>
       <nav

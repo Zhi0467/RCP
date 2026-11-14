@@ -104,8 +104,7 @@ branch picker, Sync, Auto-research, then History, Refresh, Space settings, and
 the identity menu.
 The panel picker names the current panel. Hovering, clicking, or Enter drops
 one column of every panel with its icon and badge, the current one highlighted;
-choosing one or Escape closes it. Inbox's count also shows on the picker
-while another panel is open.
+choosing one or Escape closes it. Inbox's count always shows on the picker.
 Project tabs look like browser tabs: the active one joins the page below and
 the others recede. Each has a close control. Tabs shrink to a readable minimum,
 then the strip scrolls sideways without a scrollbar, and the active tab scrolls

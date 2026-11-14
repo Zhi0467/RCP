@@ -5112,10 +5112,7 @@ function MemberApp({
             <PanelPicker
               icon={currentNavItem.icon}
               label={currentNavItem.label}
-              badge={
-                currentNavItem.view !== "attention" &&
-                attentionCount > 0 && <small className="inbox-count">{attentionCount}</small>
-              }
+              inboxCount={attentionCount}
             >
               {navItems.map(renderNavItem)}
             </PanelPicker>
