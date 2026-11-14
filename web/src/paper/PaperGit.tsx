@@ -495,14 +495,15 @@ export function PaperGitDiff({
   path: string;
   refreshKey: string;
 }) {
-  const [diff, setDiff] = useState<PaperGitFileDiff | null>(null);
+  const [loaded, setLoaded] = useState<{ path: string; diff: PaperGitFileDiff } | null>(null);
   const [failure, setFailure] = useState("");
   const { apiBase } = git;
+  const diff = loaded?.path === path ? loaded.diff : null;
   useEffect(() => {
     let current = true;
     setFailure("");
     paperGit<PaperGitFileDiff>(apiBase, `/changes/diff?path=${encodeURIComponent(path)}`)
-      .then((next) => current && setDiff(next))
+      .then((next) => current && setLoaded({ path, diff: next }))
       .catch(
         (error) => current && setFailure(String(error instanceof Error ? error.message : error)),
       );
