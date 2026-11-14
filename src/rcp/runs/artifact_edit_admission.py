@@ -98,21 +98,15 @@ def artifact_edit_availability(
     )
 
 
-def _launch_kind_for_master_owner(
-    owner: AgentTaskRecord | None,
-) -> Literal["discuss", "revoking"]:
+def _require_master_owner(owner: AgentTaskRecord | None) -> None:
     """The task that recorded a session's master is that master's owner.
 
-    Its durable kind and patch kind say which contract the session holds; the
-    master's prose is never parsed for authority.
+    Only a chat or orchestrator master admits the revoking edit; the master's
+    prose is never parsed for authority.
     """
 
-    if owner is not None and owner.kind == "auto_research":
-        return "revoking"
-    if owner is not None and owner.kind in {"node_chat", "project_chat"}:
-        if owner.request.get("patch_kind") == "experiment_loop":
-            return "revoking"
-        return "discuss"
+    if owner is not None and owner.kind in {"auto_research", "node_chat", "project_chat"}:
+        return
     raise ArtifactFreshSessionRequired(
         "The artifact's session holds no master that can admit an edit. "
         "Edit in a new session explicitly."
@@ -143,7 +137,8 @@ def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *,
         )
     if verify and hashlib.sha256(content.encode()).hexdigest() != found[1]:
         raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
-    return found, content, _launch_kind_for_master_owner(store.agent_task(found[0]))
+    _require_master_owner(store.agent_task(found[0]))
+    return found, content
 
 
 def artifact_reply_origin(
@@ -269,7 +264,7 @@ def admit_chat_artifact_comment(
     if not request.chat_id or _artifact_chat_id(origin, reply_episode_id) != request.chat_id:
         raise ValueError("The artifact belongs to another chat.")
     # A read-only Auto-research child or running orchestrator chat composes only
-    # comments, which keep the origin-bound Discuss edit the viewer uses. Any
+    # comments, which keep the origin-bound scratch edit the viewer uses. Any
     # other chat, Experiment chats included, takes an ordinary human turn.
     if store.child_human_turn_refusal(project_id, request.chat_id) is not None:
         if request.references:
@@ -337,9 +332,8 @@ def admit_artifact_edit(
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
     fresh = context.fresh_session
     found, content = None, None
-    launch_kind: Literal["discuss", "revoking"] = "revoking" if reply_episode_id else "discuss"
     if not fresh:
-        found, content, launch_kind = _origin_master(store, project_id, origin, verify=True)
+        found, content = _origin_master(store, project_id, origin, verify=True)
     operation_id = str(uuid.uuid4())
     base_version = _edit_version(store, artifact, context)
     edit = ArtifactEditAdmission(
@@ -349,7 +343,7 @@ def admit_artifact_edit(
         media_type=artifact.media_type,
         operation_id=operation_id,
         origin_operation_id=origin.operation_id,
-        launch_kind=launch_kind,
+        launch_kind="revoking",
         master_operation_id=found[0] if found else None,
         master_sha256=found[1] if found else None,
         master_path=session_master_label("artifact-master", content) if content else None,

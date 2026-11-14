@@ -1016,15 +1016,12 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
         artifact_id = completed["result"]["artifacts"][0]["artifact_id"]
         edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={
-                "comments": [{"text": "Revise this note"}],
-                "edit_now": True,
-            },
+            json={"comments": [{"text": "Revise this note"}]},
         )
         assert edit.status_code == 202, edit.text
         revised = wait_for_task_response(client, project_id, edit.json()["operation_id"])
         assert revised["status"] == "succeeded", revised.get("error")
-        assert revised["request"]["mode"] == "discuss"
+        assert revised["request"]["mode"] == "work"
         assert launcher.sessions == [None, "private-native-session"]
         assert launcher.workspaces[0] == launcher.workspaces[1]
         store = app.state.catalog.store
@@ -1037,6 +1034,8 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
 @pytest.fixture
 def legacy_private_artifact_edit(manifest, tmp_path, monkeypatch):
     import rcp.runs.tasks.discuss as discuss
+    from rcp.runs.artifact_edit_admission import admit_artifact_edit, start_artifact_edit
+    from rcp.service import ArtifactContextRequest
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
@@ -1102,18 +1101,34 @@ def legacy_private_artifact_edit(manifest, tmp_path, monkeypatch):
                 "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
                 (completed["operation_id"],),
             )
+        origin = store.agent_task(completed["operation_id"])
+        admitted = admit_artifact_edit(
+            store,
+            app.state.service,
+            project_id,
+            RunRequest(
+                message="Revise this note",
+                artifact_context=ArtifactContextRequest(
+                    operation_id=origin.operation_id, artifact_id=artifact_id, fresh_session=True
+                ),
+            ),
+        )
+        old_writer_edit = admitted.model_copy(
+            update={
+                "artifact_edit": admitted.artifact_edit.model_copy(
+                    update={"launch_kind": "discuss"}
+                )
+            }
+        )
         with monkeypatch.context() as old_writer:
             old_writer.setattr(discuss, "_chat_stage_owner", lambda *_args: None)
-            edit = client.post(
-                f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-                json={
-                    "comments": [{"text": "Revise this note"}],
-                    "edit_now": True,
-                    "fresh_session": True,
-                },
+            edit = start_artifact_edit(
+                app.state.background_tasks,
+                project_id,
+                old_writer_edit,
+                authorized_by=origin.authorized_by,
             )
-            assert edit.status_code == 202, edit.text
-            paused = wait_for_task_response(client, project_id, edit.json()["operation_id"])
+            paused = wait_for_task_response(client, project_id, edit.operation_id)
         assert paused["status"] == "paused", paused.get("error")
         assert paused["request"]["artifact_edit"]["fresh_session"] is True
         assert launcher.sessions == [None, None]
@@ -1184,12 +1199,11 @@ def test_old_writer_private_fresh_artifact_edit_recovers_its_exact_checkpoint(
         app.state.background_tasks.stream = stream
         new_edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={"comments": [{"text": "Review again"}], "edit_now": True, "fresh_session": True},
+            json={"comments": [{"text": "Review again"}]},
         )
         assert new_edit.status_code == 202, new_edit.text
         new_edit_task = wait_for_task_response(client, project_id, new_edit.json()["operation_id"])
         assert new_edit_task["status"] == "succeeded", new_edit_task.get("error")
-        following.native_session_id = "following-private-human-session"
         message = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
             json={

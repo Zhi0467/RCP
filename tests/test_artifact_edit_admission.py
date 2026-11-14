@@ -52,15 +52,15 @@ def _request(task, artifact, *, fresh=False):
 
 
 @pytest.mark.parametrize(
-    ("kind", "patch_kind", "shape"),
+    ("kind", "patch_kind"),
     [
-        ("project_chat", "work", "discuss"),
-        ("node_chat", "work", "discuss"),
-        ("node_chat", "experiment_loop", "revoking"),
-        ("auto_research", None, "revoking"),
+        ("project_chat", "work"),
+        ("node_chat", "work"),
+        ("node_chat", "experiment_loop"),
+        ("auto_research", None),
     ],
 )
-def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
+def test_every_master_owner_admits_the_revoking_edit(edit_origin, kind, patch_kind):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "explanation.md", b"Original")
     request = {**task.request, "patch_kind": patch_kind} if patch_kind else task.request
@@ -78,7 +78,7 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
         ),
     )
     assert admitted.reasoning == task.request["reasoning"]
-    assert admitted.artifact_edit.launch_kind == shape
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.mode == "discuss"
     assert not admitted.artifact_edit.fresh_session
     assert admitted.session_id == task.native_session_id
@@ -118,6 +118,7 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
     admitted = admit_artifact_edit(
         store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
     )
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.session_id is None
     assert admitted.artifact_edit.stage_root is None
     assert admitted.artifact_edit.fresh_session
@@ -536,18 +537,23 @@ def test_composer_refuses_another_chat_artifact(edit_origin):
     assert "another chat" in response.json()["detail"]
 
 
-def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_origin, monkeypatch):
-    """Official invocations resolve after the origin profile replaces client fields."""
-    app, _store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+def _refuse_human_turns(monkeypatch):
     monkeypatch.setattr(
         AppStore,
         "child_human_turn_refusal",
         lambda *_args: {"code": "auto_research_child_read_only", "detail": "read only"},
     )
+
+
+def test_read_only_child_chat_comment_runs_the_revoking_scratch_edit(edit_origin, monkeypatch):
+    """Official invocations resolve after the origin profile replaces client fields."""
+    app, _store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    _refuse_human_turns(monkeypatch)
     started = []
 
     def capture(project_id, kind, request, **kwargs):
+        assert kind == "artifact_edit"
         started.append(request)
         return task.model_copy(
             update={
@@ -584,6 +590,7 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
     (admitted,) = started
     assert admitted.mode == "discuss"
     assert admitted.artifact_edit.origin_bound
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.session_id == task.native_session_id
     assert admitted.invoked_skill_ids == ["graph-audit"]
     assert admitted.workflow_ids == []
@@ -721,6 +728,24 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     edited = store.agent_task(response.json()["operation_id"])
     assert edited.request["mode"] == "discuss"
     assert edited.request["artifact_edit"]["origin_bound"]
+
+
+def test_viewer_comment_in_a_refused_chat_runs_the_revoking_scratch_edit(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    _refuse_human_turns(monkeypatch)
+    monkeypatch.setattr(app.state.background_tasks, "admit_provider_task", lambda *a, **k: None)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"comments": [{"text": "Fix the typo"}]},
+    )
+    assert response.status_code == 202, response.text
+    edited = store.agent_task(response.json()["operation_id"])
+    assert edited.kind == "artifact_edit"
+    assert edited.request["mode"] == "discuss"
+    assert edited.request["artifact_edit"]["launch_kind"] == "revoking"
+    assert edited.native_session_id == task.native_session_id
 
 
 def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, monkeypatch):

@@ -469,18 +469,9 @@ def start_ordinary_task(
             )
 
         if isinstance(request, RunRequest) and request.artifact_edit is not None:
-            kind = (
-                "artifact_edit"
-                if request.artifact_edit.launch_kind == "revoking"
-                else ("project_chat" if request.chat_scope == "project" else "node_chat")
-            )
+            kind = "artifact_edit"
         if kind in {"node_chat", "project_chat"}:
             assert isinstance(request, RunRequest)
-        if (
-            kind in {"node_chat", "project_chat"}
-            and isinstance(request, RunRequest)
-            and (request.artifact_edit is None or not request.artifact_edit.origin_bound)
-        ):
             assert request.chat_id is not None
             chat_admission_lock = admit_fresh_chat_turn(service, store, project_id, request)
             request = chat_admission_lock.__enter__()
