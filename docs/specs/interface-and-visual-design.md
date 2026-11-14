@@ -98,19 +98,35 @@ RCP windows. Verify at 390px.
 
 ## Project shell
 
+The desktop project header is one row. From the left: Back, the panel picker,
+the open project tabs, and + to open another project. On the right: View, the
+branch picker, Sync, Auto-research, then History, Refresh, Space settings, and
+the identity menu.
+The panel picker names the current panel. Hovering, clicking, or Enter drops
+one column of every panel with its icon and badge, the current one highlighted;
+choosing one or Escape closes it. Inbox's count always shows on the picker.
+Project tabs look like browser tabs: the active one joins the page below and
+the others recede. Each has a close control. Tabs shrink to a readable minimum,
+then the strip scrolls sideways without a scrollbar, and the active tab scrolls
+into view. At widths <=920px the header keeps Back, the panel picker, tabs, the
+branch picker, and Sync, and moves View, Auto-research, and the utilities into
+the same labelled-row ⋯ menu phones use. That menu stays mounted while closed,
+so a control's own popover survives it closing, and the account panel opens in
+the menu's flow rather than floating off its scroll box. When the row is still short, the
+branch name truncates before the tab strip narrows below one tab and +.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
 Group the icon-only History and Refresh controls together.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
-One View picker at the end of the tab strip switches between the drill-down and
-the DAG. It also sets which records show. On phones, it sits in the ⋯ menu.
+View switches between the drill-down and the DAG and sets which records show.
+On phones, it sits in the ⋯ menu.
 The DAG toolbar's type and layer filter is its Lens menu.
-View and the branch picker stay pinned to the strip's right edge.
-Tabs that overflow scroll under them.
-Paper is under Artifacts' Files | Paper switch, retaining route `paper` and an
-unsynced badge on Artifacts. The member's pinned pages follow Paper in that switch.
-On phones, the switch scrolls within its own width and pin titles truncate.
+Files and Paper are separate panels, with routes `artifacts` and `paper`;
+Paper carries the unsynced badge. Paper gets no second row, so the editor keeps
+the full height. The member's pinned pages are tabs on the Files page after its
+Files tab, and that row exists only while a pin does. On phones, the pin row
+scrolls within its own width and pin titles truncate.
 Unpin has its own icon button. The destination order ends with Terminals, Agents,
 and Settings.
 
@@ -303,8 +319,9 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 ## Conversation composer
 
-Discuss is plum. Work is forest. Shift+Tab toggles an idle focused composer.
-Each turn retains its mode. The Agents header has a title, a picker for provider,
+Chat is forest and the Paper coach is plum. The composer has no mode control.
+Each human turn keeps its recorded label; a historical Discuss turn reads Discuss
+in plum. The Agents header has a title, a picker for provider,
 model, and effort, a context ring, an active-watcher count toggle when watchers
 exist, and one menu. The menu holds Rename, Archive,
 New session, and Branch this chat. The worktree repository choice sits in Chat Options.
@@ -331,7 +348,7 @@ Assistant prose is unboxed. Progress folds behind Activity.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with
-its text. A second row holds the caller's own tools, such as Discuss/Work and
+its text. A second row holds the caller's own tools, such as
 Options, only when it has any.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.
@@ -376,6 +393,12 @@ and display math scroll sideways. Paths and URLs wrap.
 Code Copy is icon-only and copies the exact text. It has 44px phone targets.
 New chats open at the bottom and follow new content.
 Scrolled-up chats retain their exact session-memory position despite later loads.
+Every agent window transcript, including chats, threads, and the Paper coach,
+shows a round Jump to latest arrow centered above the composer edge once the
+reader is more than one viewport above the bottom. It fades in and out, is a
+44px target on phones, and names itself only on hover. Clicking it scrolls
+smoothly to the bottom, instantly under reduced motion, and the chat follows new
+content again as if the reader had scrolled down.
 On touch phones, Return inserts a newline. Only Send sends.
 In an empty composer, Up and Down scroll the transcript; once it holds text, or
 the package menu is open, they move the caret or the highlight as before.
@@ -603,8 +626,8 @@ Files retain their identity across renames. Copy links open that file.
 The editor shows durable save coverage separately from publication. Markdown
 previews use the
 chat renderer. LaTeX and Typst previews show a PDF.
-HTML previews put Zoom out, percentage reset, Zoom in and Comment in the panel
-header. Their loading and error states occupy that same preview surface.
+HTML previews put the zoom percentage, its hover slider, and Comment in the
+panel header. Their loading and error states occupy that same preview surface.
 At phone width, Write, Preview, Coach, and Refs occupy one pane selected by the
 segmented control. HTML tools occupy a second row so warnings do not displace
 Comment or change the toolbar height. Files and History open as panels.
@@ -613,10 +636,12 @@ References fold under Files as one row with a count. The Reference tab shows
 one reference as a page. At phone width, Refs shows the list, and a chosen
 entry shows its page with a back control.
 
-The Git pill sits in the file header. It shows the branch, a count of files in
-conflict, and a mark for unpushed edits. Its hover shows the last error, or else
-the last sync time. It opens one dialog that links the repository, lists conflicts
-above the changed and skipped files, and pushes with a commit message. At phone
+The Git pill sits in the file header and shows only the branch. Its hover shows
+the last error, or else the repository. On a linked paper it opens the branch
+list, with switch, new branch, and Unlink; otherwise it opens the link dialog.
+Conflicts, changed and skipped files, and Commit & push live in the Changes tab
+of the file sidebar, whose count is the only unpushed mark, and a changed
+file's diff opens in the editor pane. At phone
 width the pill keeps its place as an icon without the branch name, and hides in
 Coach view with presence and History.
 

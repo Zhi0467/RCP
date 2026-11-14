@@ -48,8 +48,8 @@ ProviderSelectorKind = Literal["request", "project"]
 _PROFILE_CAPABILITY: dict[AgentExecutionProfile, AgentCapability] = {
     "seed": "scratch_patch",
     "refresh": "scratch_patch",
-    "node_chat": "discuss",
-    "project_chat": "discuss",
+    "node_chat": "work_auto",
+    "project_chat": "work_auto",
     "paper_coach": "paper_suggest",
     "orchestrator": "orchestrate",
 }

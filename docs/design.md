@@ -62,7 +62,8 @@ home for repository-wide invariants and their stable identifiers.
   [Proposal authority](specs/authority-and-proposals.md).
 - A **Task** is one durable operation or recovery attempt, which may invoke a provider.
 - A **Conversation** is a reusable scratch workspace for a native session.
-  Its turns are explicitly labelled Discuss or Work.
+  Every new human turn is a Work turn; turns older releases recorded as Discuss
+  keep that label.
 - An **Artifact** is an RCP-owned file with SQLite metadata and immutable versions.
   It is never a graph object or a second answer channel.
 - An **Episode** is a persisted parent for bounded Experiment control or
@@ -88,7 +89,7 @@ home for repository-wide invariants and their stable identifiers.
   durable receipts
   ([previous path](specs/compute-jobs.md)).
 - [Conversations, episodes, and watchers](specs/conversations-episodes-and-watchers.md)
-  covers Discuss and Work context, private agent threads and handoff, Experiment
+  covers chat turns, private agent threads and handoff, Experiment
   control, native-session continuity, watcher delivery, Stop, and reporting.
 - [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) covers
   orchestrator authority, budgets, child work, episode graph branches, and

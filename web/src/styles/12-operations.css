@@ -314,7 +314,7 @@
 }
 
 @media (max-width: 560px) {
-  .node-chat-lines {
+  .agent-chat-view-lines {
     padding: 18px 14px;
   }
   .chat-composer {

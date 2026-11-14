@@ -11,7 +11,13 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.session_master import SESSION_MASTER_ROLE
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
-from tests.helpers import changed_values, create_named_app, signed_in_client, wait_for_task_response
+from tests.helpers import (
+    changed_values,
+    create_named_app,
+    discuss_turn,
+    signed_in_client,
+    wait_for_task_response,
+)
 from tests.test_chat_prompt_protocol import _RecordingLauncher
 
 
@@ -58,24 +64,27 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     chat_id = str(uuid4())
 
     def send(target_chat, branch_id=None, *, fail=False, conflicting_profile=False):
-        response = client.post(
-            f"/api/projects/{project_id}/tasks/project_chat",
-            json={
-                "chat_id": target_chat,
-                "message": "Investigate this",
-                "mode": mode,
-                **(
-                    {
-                        "provider": "opencode",
-                        "model": "wrong-model",
-                        "reasoning": "wrong",
-                        "run_on": "missing-machine",
-                    }
-                    if conflicting_profile
-                    else {}
-                ),
-            },
-            params={"branch_id": branch_id} if branch_id else {},
+        url = f"/api/projects/{project_id}/tasks/project_chat"
+        if branch_id:
+            url += f"?branch_id={branch_id}"
+        body = {
+            "chat_id": target_chat,
+            "message": "Investigate this",
+            **(
+                {
+                    "provider": "opencode",
+                    "model": "wrong-model",
+                    "reasoning": "wrong",
+                    "run_on": "missing-machine",
+                }
+                if conflicting_profile
+                else {}
+            ),
+        }
+        response = (
+            discuss_turn(client, url, body)
+            if mode == "discuss"
+            else client.post(url, json=body | {"mode": mode})
         )
         assert response.status_code == 202, response.text
         task = wait_for_task_response(client, project_id, response.json()["operation_id"])
@@ -85,6 +94,16 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         else:
             assert task["status"] == "succeeded", task.get("error")
         return store.agent_task(task["operation_id"])
+
+    def retry(operation_id):
+        if mode == "discuss":
+            previous = store.agent_task(operation_id)
+            return app.state.background_tasks.retry(
+                operation_id, authorized_by=previous.authorized_by
+            ).operation_id
+        response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/retry", json={})
+        assert response.status_code == 202, response.text
+        return response.json()["operation_id"]
 
     source = send(chat_id)
     assert source is not None
@@ -151,22 +170,14 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
         assert launcher.failed_kwargs.get("session_id") is None
         assert forked.native_session_id is None
         redirect_machine = True
-        refused_retry = client.post(
-            f"/api/projects/{project_id}/tasks/{forked.operation_id}/retry", json={}
-        )
-        assert refused_retry.status_code == 202, refused_retry.text
-        refused = wait_for_task_response(client, project_id, refused_retry.json()["operation_id"])
+        refused = wait_for_task_response(client, project_id, retry(forked.operation_id))
         redirect_machine = False
         assert refused["status"] == "failed", refused
         assert refused["can_retry"]
         assert refused["native_session_id"] is None
         assert len(launcher.prompts) == 1
         forked = store.agent_task(refused["operation_id"])
-        retry = client.post(
-            f"/api/projects/{project_id}/tasks/{forked.operation_id}/retry", json={}
-        )
-        assert retry.status_code == 202, retry.text
-        finished = wait_for_task_response(client, project_id, retry.json()["operation_id"])
+        finished = wait_for_task_response(client, project_id, retry(forked.operation_id))
         assert finished["status"] == "succeeded", finished.get("error")
         forked = store.agent_task(finished["operation_id"])
     assert forked.graph_target.model_dump() == target

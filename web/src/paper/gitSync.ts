@@ -7,6 +7,7 @@ export interface PaperGitStatus {
   repository: string;
   branch: string;
   public_key: string;
+  key_source: string;
   head: { commit: string; author: string };
   unpushed: boolean;
   conflicts: number;
@@ -44,8 +45,6 @@ export function gitPill(status: PaperGitStatus | null) {
   const linked = status?.state === "linked";
   return {
     branch: linked ? status.branch : "",
-    unpushed: linked && status.unpushed,
-    conflicts: linked ? status.conflicts : 0,
     failed: Boolean(status?.last_error),
     hover: status?.last_error || status?.checked_at || "",
   };

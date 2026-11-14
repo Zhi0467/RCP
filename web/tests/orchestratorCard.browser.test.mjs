@@ -38,7 +38,7 @@ async function withCard(chain, check) {
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/orchestratorCard.html?chain=${chain}`,
     );
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     await lines.getByText("Root findings.").waitFor();
     await check(page, lines);
     assert.deepEqual(unexpected, []);
@@ -52,7 +52,7 @@ async function withCard(chain, check) {
 test("A running orchestrator card shows its turns and its composer messages the orchestrator", async () => {
   await withCard("running", async (page, lines) => {
     // Each turn's recorded human input precedes its answer.
-    const texts = await lines.locator(".node-chat-line").allInnerTexts();
+    const texts = await lines.locator(".agent-chat-view-line").allInnerTexts();
     const order = [
       "Trace the evidence.",
       "Root findings.",
@@ -81,7 +81,7 @@ test("An ended orchestrator card takes ordinary chat turns on the chain's branch
   await withCard("ended", async (page) => {
     assert.equal(await page.getByRole("textbox", { name: "Message orchestrator" }).count(), 0);
     await page.getByRole("textbox", { name: "Message", exact: true }).fill("Summarize the chain.");
-    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => window.startedTasks.length === 1);
     const [[kind, request, , target]] = await page.evaluate(() => window.startedTasks);
     assert.equal(kind, "project_chat");

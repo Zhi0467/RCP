@@ -31,8 +31,10 @@ from tests.helpers import signed_in_client
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    authorized_human,
     changed_values,
     current_command_client,
+    discuss_turn,
     launch_contract_path,
     refresh_patch,
     seed_patch,
@@ -40,6 +42,12 @@ from .helpers import (
     write_turn_outcome,
 )
 from .helpers import create_named_app as create_app
+
+
+def _send_turn(client, url: str, body: dict[str, object]):
+    if body.get("mode") == "discuss":
+        return discuss_turn(client, url, body)
+    return client.post(url, json=body)
 
 
 class _RecordingLauncher:
@@ -486,9 +494,10 @@ def test_fresh_chat_master_names_every_project_machine_and_ignores_client_select
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
+    response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": "Use the project machines.",
             "run_truth_scope": ["repo-a"],
@@ -566,9 +575,10 @@ def test_launch_states_the_machines_current_at_launch_not_at_admission(manifest,
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
+    response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": "757241ec-60af-4784-b315-44003a93c1dd",
             "message": "Use the GPU.",
             "mode": "discuss",
@@ -619,9 +629,10 @@ def test_resumed_chat_delivers_changed_machines_in_the_same_session(manifest, tm
         }
         if not first:
             body["session_id"] = session_id
-        response = client.post(
+        response = _send_turn(
+            client,
             f"/api/projects/{project_id}/tasks/project_chat",
-            json=body,
+            body,
         )
         assert response.status_code == 202, response.text
         operation_id = response.json()["operation_id"]
@@ -699,9 +710,10 @@ def test_old_task_row_with_a_frozen_compute_selection_loads_and_retries(manifest
     client = signed_in_client(app)
 
     assert client.get(f"/api/projects/{project_id}/tasks/{failed.operation_id}").status_code == 200
-    retried = client.post(f"/api/projects/{project_id}/tasks/{failed.operation_id}/retry", json={})
-    assert retried.status_code == 202, retried.text
-    done = wait_for_task_response(client, project_id, retried.json()["operation_id"])
+    retried = app.state.background_tasks.retry(
+        failed.operation_id, authorized_by=authorized_human(app)
+    )
+    done = wait_for_task_response(client, project_id, retried.operation_id)
 
     assert done["status"] == "succeeded"
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
@@ -788,9 +800,10 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    first_response = client.post(
+    first_response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": first_message,
             "run_truth_scope": ["repo-a"],
@@ -803,9 +816,10 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     master_path = Path(launcher.prompts[0].splitlines()[1])
 
     second_message = "/graph-audit Keep  this spacing.\nAnd this line."
-    second_response = client.post(
+    second_response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": second_message,
             "session_id": session_id,
@@ -841,9 +855,10 @@ def test_ordinary_resumed_discuss_repeats_only_master_pointer_with_turn_context(
     assert contract_path.read_text(encoding="utf-8") == prompt
 
     third_message = "No package invocation on this turn."
-    third_response = client.post(
+    third_response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": third_message,
             "session_id": session_id,
@@ -889,9 +904,10 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    first = client.post(
+    first = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": "First discuss this.",
             "run_truth_scope": ["repo-a"],
@@ -909,9 +925,10 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
             )
 
     work_message = "/graph-audit Keep this slash invocation unchanged."
-    second = client.post(
+    second = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": chat_id,
             "message": work_message,
             "session_id": session_id,
@@ -999,15 +1016,12 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
         artifact_id = completed["result"]["artifacts"][0]["artifact_id"]
         edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={
-                "comments": [{"text": "Revise this note"}],
-                "edit_now": True,
-            },
+            json={"comments": [{"text": "Revise this note"}]},
         )
         assert edit.status_code == 202, edit.text
         revised = wait_for_task_response(client, project_id, edit.json()["operation_id"])
         assert revised["status"] == "succeeded", revised.get("error")
-        assert revised["request"]["mode"] == "discuss"
+        assert revised["request"]["mode"] == "work"
         assert launcher.sessions == [None, "private-native-session"]
         assert launcher.workspaces[0] == launcher.workspaces[1]
         store = app.state.catalog.store
@@ -1020,6 +1034,8 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
 @pytest.fixture
 def legacy_private_artifact_edit(manifest, tmp_path, monkeypatch):
     import rcp.runs.tasks.discuss as discuss
+    from rcp.runs.artifact_edit_admission import admit_artifact_edit, start_artifact_edit
+    from rcp.service import ArtifactContextRequest
 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
@@ -1085,18 +1101,34 @@ def legacy_private_artifact_edit(manifest, tmp_path, monkeypatch):
                 "UPDATE graph_runs SET history_only = 1 WHERE operation_id = ?",
                 (completed["operation_id"],),
             )
+        origin = store.agent_task(completed["operation_id"])
+        admitted = admit_artifact_edit(
+            store,
+            app.state.service,
+            project_id,
+            RunRequest(
+                message="Revise this note",
+                artifact_context=ArtifactContextRequest(
+                    operation_id=origin.operation_id, artifact_id=artifact_id, fresh_session=True
+                ),
+            ),
+        )
+        old_writer_edit = admitted.model_copy(
+            update={
+                "artifact_edit": admitted.artifact_edit.model_copy(
+                    update={"launch_kind": "discuss"}
+                )
+            }
+        )
         with monkeypatch.context() as old_writer:
             old_writer.setattr(discuss, "_chat_stage_owner", lambda *_args: None)
-            edit = client.post(
-                f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-                json={
-                    "comments": [{"text": "Revise this note"}],
-                    "edit_now": True,
-                    "fresh_session": True,
-                },
+            edit = start_artifact_edit(
+                app.state.background_tasks,
+                project_id,
+                old_writer_edit,
+                authorized_by=origin.authorized_by,
             )
-            assert edit.status_code == 202, edit.text
-            paused = wait_for_task_response(client, project_id, edit.json()["operation_id"])
+            paused = wait_for_task_response(client, project_id, edit.operation_id)
         assert paused["status"] == "paused", paused.get("error")
         assert paused["request"]["artifact_edit"]["fresh_session"] is True
         assert launcher.sessions == [None, None]
@@ -1167,12 +1199,11 @@ def test_old_writer_private_fresh_artifact_edit_recovers_its_exact_checkpoint(
         app.state.background_tasks.stream = stream
         new_edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={"comments": [{"text": "Review again"}], "edit_now": True, "fresh_session": True},
+            json={"comments": [{"text": "Review again"}]},
         )
         assert new_edit.status_code == 202, new_edit.text
         new_edit_task = wait_for_task_response(client, project_id, new_edit.json()["operation_id"])
         assert new_edit_task["status"] == "succeeded", new_edit_task.get("error")
-        following.native_session_id = "following-private-human-session"
         message = client.post(
             f"/api/projects/{project_id}/tasks/project_chat",
             json={
@@ -1494,9 +1525,10 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
         }
         if resume:
             body["session_id"] = session_id
-        response = client.post(
+        response = _send_turn(
+            client,
             f"/api/projects/{project_id}/tasks/project_chat",
-            json=body,
+            body,
         )
         assert response.status_code == 202, response.text
         operation_id = response.json()["operation_id"]
@@ -1605,9 +1637,10 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
+    response = _send_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": "7d1e2f30-4a5b-4c6d-8e7f-90a1b2c3d4e5",
             "message": "Long assignment. " * (AGENT_TASK_RECEIPT_MAX_BYTES // 16),
             "run_truth_scope": ["repo-a"],

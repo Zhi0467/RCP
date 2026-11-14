@@ -21,15 +21,14 @@ const items = document.getElementById("items"),
   count = document.getElementById("count"),
   tray = document.getElementById("tray"),
   queue = document.getElementById("queue"),
-  editNow = document.getElementById("editNow"),
   send = document.getElementById("send"),
   general = document.getElementById("general"),
   notice = document.getElementById("notice");
 const message = document.getElementById("message");
 const askFix = document.getElementById("askFix");
 // Every comment is one object: its text, and the selection it is anchored to (or
-// none, for the whole artifact). Send posts the queued list; Edit now posts only
-// the comment being written and leaves the list alone.
+// none, for the whole artifact). Send files the comment being written, then posts
+// the whole list.
 const comments = [];
 let current = null;
 let viewerState = null;
@@ -284,10 +283,8 @@ function updateSend() {
   if (askFix) askFix.disabled = blocked;
   const writing = Boolean(current && message.value.trim());
   queue.disabled = !writing;
-  editNow.disabled = blocked || !viewerState?.can_edit_now || !writing;
-  send.disabled = blocked || comments.length === 0;
-  editNow.textContent = fresh ? "Edit now in a new session" : "Edit now";
-  send.textContent = fresh && !viewerState?.send_to_chat ? "Send in a new session" : "Send to original chat";
+  send.disabled = blocked || (comments.length === 0 && !writing);
+  send.textContent = fresh ? "Send to agent in a new session" : "Send to agent";
 }
 async function refreshState() {
   if (stateLoading || stopped || permanentStateError || document.hidden) return;
@@ -315,12 +312,12 @@ async function refreshState() {
   updateSend();
 }
 message.addEventListener("input", () => { sendError = ""; saveComments(); updateSend(); });
-async function postComments(now, only = null) {
+async function postComments() {
   sendError = "";
   sending = true;
   updateSend();
   // A comment added while this send is in flight stays in the list.
-  const sent = only ? [only] : comments.slice();
+  const sent = comments.slice();
   try {
     const response = await fetch(config.commentsUrl, {
       method: "POST",
@@ -328,7 +325,6 @@ async function postComments(now, only = null) {
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
         comments: sent.map(({ text, selection }) => ({ text, selection })),
-        edit_now: now,
         fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required,
       }),
     });
@@ -354,33 +350,19 @@ async function postComments(now, only = null) {
   } catch (error) {
     sendError = error.message;
     notice.textContent = sendError;
-    // A refused Edit now keeps its comment, queued for another try, or back in the
-    // comment box when the tray is full.
-    if (only && !trayRefusal(only)) {
-      comments.push(only);
-      saveComments();
-      render();
-    } else if (only) {
-      offerSelection(only.selection ?? { kind: "whole" }, only.text);
-    }
   } finally {
     sending = false;
     updateSend();
   }
 }
-// Edit now asks for an edit from the comment being written alone.
-editNow.addEventListener("click", () => {
-  const comment = editNow.disabled ? null : draftComment(current);
-  if (!comment) return;
-  message.value = "";
-  current = null;
-  saveComments();
-  clearSelection();
-  offerComposer(null);
-  void postComments(true, comment);
-});
 send.addEventListener("click", () => {
-  if (!send.disabled) void postComments(false);
+  if (send.disabled) return;
+  if (current && message.value.trim()) {
+    if (!addComment(current)) return;
+    clearSelection();
+    offerComposer(null);
+  }
+  void postComments();
 });
 window.addEventListener("focus", refreshState);
 async function pollState() {

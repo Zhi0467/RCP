@@ -14,6 +14,7 @@ from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import Artifact
 from tests.helpers import (
     create_named_app,
+    discuss_turn,
     launch_contract_path,
     signed_in_client,
     wait_for_task_response,
@@ -74,14 +75,16 @@ def test_a_chat_turn_edits_an_attached_saved_artifact_in_place(manifest, tmp_pat
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
-        f"/api/projects/{project_id}/tasks/project_chat",
-        json={
-            "chat_id": str(uuid4()),
-            "message": "Tighten the report",
-            "mode": mode,
-            "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
-        },
+    url = f"/api/projects/{project_id}/tasks/project_chat"
+    body = {
+        "chat_id": str(uuid4()),
+        "message": "Tighten the report",
+        "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
+    }
+    response = (
+        discuss_turn(client, url, body)
+        if mode == "discuss"
+        else client.post(url, json=body | {"mode": mode})
     )
     assert response.status_code == 202, response.text
     task = wait_for_task_response(client, project_id, response.json()["operation_id"])
@@ -128,12 +131,12 @@ def test_a_retry_never_publishes_its_attached_version_over_a_newer_one(manifest,
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
+    response = discuss_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": str(uuid4()),
             "message": "Tighten the report",
-            "mode": "discuss",
             "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
         },
     )
@@ -146,11 +149,11 @@ def test_a_retry_never_publishes_its_attached_version_over_a_newer_one(manifest,
         operation_id="viewer-edit",
         data=b"human draft",
     )
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
+    retried = app.state.background_tasks.retry(
+        failed["operation_id"],
+        authorized_by=store.agent_task(failed["operation_id"]).authorized_by,
     )
-    assert retried.status_code == 202, retried.text
-    task = wait_for_task_response(client, project_id, retried.json()["operation_id"])
+    task = wait_for_task_response(client, project_id, retried.operation_id)
     assert task["status"] == "succeeded", task.get("error")
     assert launcher.seen[-1] == b"first draft"
     assert store.artifact(artifact.artifact_id).current_version == newer.version_id
@@ -260,12 +263,12 @@ def test_a_failed_publish_of_an_attached_edit_settles_as_failed(manifest, tmp_pa
 
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
-    response = client.post(
+    response = discuss_turn(
+        client,
         f"/api/projects/{project_id}/tasks/project_chat",
-        json={
+        {
             "chat_id": str(uuid4()),
             "message": "Tighten the report",
-            "mode": "discuss",
             "references": [{"kind": "artifact", "artifact_id": artifact.artifact_id}],
         },
     )

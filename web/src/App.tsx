@@ -83,8 +83,6 @@ import {
   TriangleAlert,
   ArrowLeft,
   CloudUpload,
-  ChevronDown,
-  ChevronUp,
   FileText,
   FlaskConical,
   FolderLock,
@@ -136,7 +134,9 @@ import {
   unreadChatIdsFromReads,
   conversationHref,
   chatEntryConversationId,
+  chatIdForTask,
   groupChatConversations,
+  retryRefillsComposer,
   startConversationTurn,
   pickOrCreateConversation,
   type ChatKind,
@@ -249,9 +249,10 @@ import { Banner } from "./ui/Banner";
 import { forgetBanners } from "./ui/bannerDismissal";
 import { DraggableWindow } from "./ui/DraggableWindow";
 import { ProjectHistoryDrawer } from "./agents/ProjectHistoryDrawer";
+import { PanelPicker } from "./projects/PanelPicker";
 import { ProjectDock } from "./projects/ProjectDock";
-import { PhoneProjectBar, PhoneTabBar } from "./projects/PhoneProjectChrome";
-import { useNarrowViewport } from "./ui/useNarrowViewport";
+import { PhoneProjectBar, ProjectMenu, PhoneTabBar } from "./projects/PhoneProjectChrome";
+import { TABLET_MAX_WIDTH_PX, useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
@@ -458,8 +459,8 @@ const ProjectSettings = lazy(() =>
 const ChatsWorkspace = lazy(() =>
   import("./chat/ChatsWorkspace").then((module) => ({ default: module.ChatsWorkspace })),
 );
-const NodeChat = lazy(() =>
-  import("./chat/NodeChat").then((module) => ({ default: module.NodeChat })),
+const AgentChatView = lazy(() =>
+  import("./chat/AgentChatView").then((module) => ({ default: module.AgentChatView })),
 );
 
 const Artifacts = lazy(() =>
@@ -475,8 +476,8 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
-  // Paper is a sub-panel of Artifacts; its route stays `paper`.
-  { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
+  { view: "artifacts", label: "Files", icon: <Files size={14} /> },
+  { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <SquareTerminal size={14} /> },
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings size={14} /> },
@@ -486,7 +487,6 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
 const GRAPH_REF_VIEWS: ReadonlySet<AppView> = new Set<AppView>([
   ...navItems.map((item) => item.view),
   "dag",
-  "paper",
 ]);
 
 /** A tab stays highlighted while one of its sub-views is open. */
@@ -494,44 +494,28 @@ function navItemActive(item: AppView, view: AppView): boolean {
   return topTab(view) === item;
 }
 
-function ArtifactsSubnav({
-  view,
-  filesActive = true,
-  paperUnsynced,
-  failed = false,
-  onChange,
+/** The Files page's own tabs: its file list, then each pinned view. Absent without pins. */
+function PinnedViewTabs({
+  filesActive,
+  failed,
+  onFiles,
   children,
 }: {
-  view: AppView;
-  filesActive?: boolean;
-  paperUnsynced: boolean;
-  failed?: boolean;
-  onChange: (view: AppView) => void;
-  children?: React.ReactNode;
+  filesActive: boolean;
+  failed: boolean;
+  onFiles: () => void;
+  children: React.ReactNode;
 }) {
   return (
     <div
       className={`artifacts-subnav${failed ? " failed" : ""}`}
       role="group"
-      aria-label="Artifacts sections"
+      aria-label="Pinned views"
     >
-      {(
-        [
-          ["artifacts", "Files"],
-          ["paper", "Paper"],
-        ] as const
-      ).map(([target, label]) => (
-        <button
-          key={target}
-          type="button"
-          aria-pressed={view === target && (target !== "artifacts" || filesActive)}
-          onClick={() => onChange(target)}
-        >
-          {target === "paper" ? <FileText size={14} /> : <Files size={14} />}
-          {label}
-          {target === "paper" && paperUnsynced && <small>1</small>}
-        </button>
-      ))}
+      <button type="button" aria-pressed={filesActive} onClick={onFiles}>
+        <Files size={14} />
+        Files
+      </button>
       {children}
     </div>
   );
@@ -701,6 +685,7 @@ function MemberApp({
   const [groupFiling, setGroupFiling] = useState<{ projectId: string; groupId: string } | null>(
     null,
   );
+  const [composerRetry, setComposerRetry] = useState<AgentTask | null>(null);
   const [requestedChat, setRequestedChat] = useState(() => ({
     hash: window.location.hash,
     projectId: initialRoute.project.projectId,
@@ -871,7 +856,6 @@ function MemberApp({
     experimentLoopsUnavailable,
     experimentLoopsUnavailableRows,
     spaceRuns,
-    projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
     loadProjectIndex,
@@ -886,9 +870,6 @@ function MemberApp({
     activateProjectTab: activateProjectRoute,
     closeDockedProject: closeProjectRoute,
     removeProject,
-    resetProjectHeader,
-    restoreProjectHeader,
-    toggleProjectHeader,
     cacheProjectState,
     clearProjectCache,
     rememberLeftRoute,
@@ -1033,6 +1014,7 @@ function MemberApp({
   );
   const appearance = useTheme();
   const phone = useNarrowViewport();
+  const compactHeader = useNarrowViewport(TABLET_MAX_WIDTH_PX);
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
     useState<ProjectReconciliation>("opening");
@@ -1512,7 +1494,6 @@ function MemberApp({
   currentProjectStateRef.current = targetProject
     ? {
         ...serializeProjectSessionTabState(projectSession),
-        projectHeaderCollapsed,
         selectedNodeId: selectedNode?.id ?? null,
         companionNodeId: companionNode?.id ?? null,
         detailFocusTokens,
@@ -1579,7 +1560,6 @@ function MemberApp({
         ...serializeProjectSessionTabState(next),
       });
       authoritativeProjectId.current = id;
-      restoreProjectHeader(state.projectHeaderCollapsed);
       restoreProjectSelection(
         id,
         nextGraph,
@@ -1602,7 +1582,6 @@ function MemberApp({
     [
       cacheProjectState,
       restoreProjectChats,
-      restoreProjectHeader,
       restoreProjectHistory,
       restoreProjectSelection,
       restoreProjectSessionTab,
@@ -1967,7 +1946,6 @@ function MemberApp({
           });
         resetProjectTasks();
         resetProjectHistory();
-        resetProjectHeader(projectId);
       }
     }
     const snapshot = store.view<ProjectSnapshot>(
@@ -1997,7 +1975,6 @@ function MemberApp({
     refreshProjectInvitations,
     resetProjectChats,
     resetProjectTasks,
-    resetProjectHeader,
     resetProjectHistory,
     resetProjectSelection,
     restoreProjectTabState,
@@ -3913,6 +3890,14 @@ function MemberApp({
   );
 
   const requestRetry = (task: AgentTask) => {
+    if (retryRefillsComposer(task)) {
+      const chatId = chatIdForTask(task);
+      selectTaskInspector(null);
+      setComposerRetry(task);
+      if (chatId && chatId !== floatingChat?.chatId && chatId !== selectedExperimentChatId)
+        openChats(chatId);
+      return;
+    }
     if (task.kind === "seed" || task.kind === "refresh") {
       chooseRetryTask(task);
       return;
@@ -4701,7 +4686,7 @@ function MemberApp({
           </div>
         }
       >
-        <NodeChat
+        <AgentChatView
           key={selectedExperimentChatId}
           project={project}
           actorId={draftActorId}
@@ -4723,6 +4708,8 @@ function MemberApp({
           onStartTask={startAgentTask}
           onResumeTask={(task) => void operateTask(task, "resume")}
           onRetryTask={requestRetry}
+          composerRetry={composerRetry}
+          onComposerRetryTaken={() => setComposerRetry(null)}
           onRefreshTask={refreshAgentTask}
           onInspectTask={selectTaskInspector}
           onOpenInbox={() => changeView("attention")}
@@ -4902,7 +4889,7 @@ function MemberApp({
         <Settings size={16} />
       </button>
       <LandingIdentityMenu
-        compact={!phone}
+        compact={!compactHeader}
         identity={actorIdentity}
         identityError={actorIdentityError}
         onRequestName={requestActorName}
@@ -4974,7 +4961,7 @@ function MemberApp({
         {item.view === "attention" && attentionCount > 0 && (
           <small className="inbox-count">{attentionCount}</small>
         )}
-        {item.view === "artifacts" && paper && <small>1</small>}
+        {item.view === "paper" && paper && <small>1</small>}
         {item.view === "chats" && chatsIndicator && (
           <small
             className={`chats-indicator ${chatsIndicator}`}
@@ -5050,6 +5037,13 @@ function MemberApp({
     onLayout: changeView,
     onTrustView: changeTrustView,
   };
+  const projectMenu = (
+    <>
+      {showTrustFilter && <ViewPicker inline {...viewChoice} />}
+      {autoResearchButton}
+      {projectUtilities}
+    </>
+  );
   const phonePrimaryViews = new Set<AppView>(["overview", "attention", "scientific", "execution"]);
   const projectDock = (
     <ProjectDock
@@ -5058,10 +5052,12 @@ function MemberApp({
       activeProjectId={projectId}
       onActivate={activateProjectTab}
       onClose={closeDockedProject}
+      onNew={phone ? undefined : returnToProjects}
     />
   );
+  const currentNavItem = navItems.find((item) => navItemActive(item.view, view)) ?? navItems[0];
 
-  // Pinned pages follow Files | Paper in both Artifacts sections.
+  // Pinned pages follow the Files tab on the Files page.
   const pinTabs = (
     <>
       {pins.map((pin) => (
@@ -5117,83 +5113,50 @@ function MemberApp({
           onBack={returnToProjects}
           dock={projectDock}
           sync={syncControls}
-          menu={
-            <>
-              {showTrustFilter && <ViewPicker inline {...viewChoice} />}
-              {autoResearchButton}
-              {projectUtilities}
-            </>
-          }
+          menu={projectMenu}
         />
       )}
-      {!phone && !projectHeaderCollapsed && (
+      {!phone && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="project-header-navigation">
             <button className="project-back" onClick={returnToProjects} aria-label="All projects">
               <ArrowLeft size={16} />
             </button>
+            <PanelPicker
+              icon={currentNavItem.icon}
+              label={currentNavItem.label}
+              inboxCount={attentionCount}
+            >
+              {navItems.map(renderNavItem)}
+            </PanelPicker>
             {projectDock}
           </div>
-          <div className="project-header-actions" id="project-header-actions">
+          <div className="project-header-actions">
+            <div className="project-header-group project-ref-group">
+              {!compactHeader && showTrustFilter && <ViewPicker {...viewChoice} />}
+              {branchPicker}
+            </div>
             <div
               className="project-header-group project-action-group"
               role="group"
               aria-label="Project actions"
             >
               {syncControls}
-              {autoResearchButton}
+              {!compactHeader && autoResearchButton}
             </div>
-            <div
-              className="project-header-group project-utility-group"
-              role="group"
-              aria-label="Project utilities"
-            >
-              {projectUtilities}
-            </div>
+            {compactHeader ? (
+              <ProjectMenu>{projectMenu}</ProjectMenu>
+            ) : (
+              <div
+                className="project-header-group project-utility-group"
+                role="group"
+                aria-label="Project utilities"
+              >
+                {projectUtilities}
+              </div>
+            )}
           </div>
         </header>
-      )}
-
-      {!phone && (
-        <nav className="project-tabs" aria-label="Project panels">
-          {projectHeaderCollapsed && (
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-          )}
-          {/* Folded, the expand control sits beside the back arrow it came from. */}
-          <button
-            aria-expanded={!projectHeaderCollapsed}
-            aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
-            aria-label={
-              projectHeaderCollapsed ? "Expand project header" : "Collapse project header"
-            }
-            className="project-tabs-toggle"
-            title={projectHeaderCollapsed ? "Expand project header" : "Collapse project header"}
-            onClick={toggleProjectHeader}
-          >
-            {projectHeaderCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-          </button>
-          {projectHeaderCollapsed && (
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          )}
-          {navItems.map(renderNavItem)}
-          {/* Pinned to the strip's right edge so a long tab row scrolls under it. */}
-          <div className="project-tabs-trailing">
-            {showTrustFilter && <ViewPicker {...viewChoice} />}
-            {branchPicker}
-          </div>
-        </nav>
       )}
 
       {(projectReconciliation === "opening" || projectReconciliation === "reconciling") && (
@@ -5513,19 +5476,18 @@ function MemberApp({
               )}
               {view === "artifacts" && (
                 <div className="artifacts-shell">
-                  <ArtifactsSubnav
-                    view={view}
-                    filesActive={!activePin}
-                    paperUnsynced={paper}
-                    failed={Boolean(pinsResource.error)}
-                    onChange={(next) => {
-                      setPinSelection(null);
-                      setRequestedPin(null);
-                      changeView(next);
-                    }}
-                  >
-                    {pinTabs}
-                  </ArtifactsSubnav>
+                  {(pins.length > 0 || Boolean(pinsResource.error)) && (
+                    <PinnedViewTabs
+                      filesActive={!activePin}
+                      failed={Boolean(pinsResource.error)}
+                      onFiles={() => {
+                        setPinSelection(null);
+                        setRequestedPin(null);
+                      }}
+                    >
+                      {pinTabs}
+                    </PinnedViewTabs>
+                  )}
                   {activePin ? (
                     <PinnedView
                       key={`${pinScope}:${activePin.artifact_id}`}
@@ -5646,14 +5608,6 @@ function MemberApp({
               )}
               {view === "paper" && (
                 <div className="artifacts-shell">
-                  <ArtifactsSubnav
-                    view={view}
-                    paperUnsynced={paper}
-                    failed={Boolean(pinsResource.error)}
-                    onChange={changeView}
-                  >
-                    {pinTabs}
-                  </ArtifactsSubnav>
                   <PaperWorkspace
                     key={project.id}
                     apiBase={apiBase}
@@ -5754,6 +5708,8 @@ function MemberApp({
                   onStartTask={startAgentTask}
                   onResumeTask={(task) => void operateTask(task, "resume")}
                   onRetryTask={requestRetry}
+                  composerRetry={composerRetry}
+                  onComposerRetryTaken={() => setComposerRetry(null)}
                   onRefreshTask={refreshAgentTask}
                   onInspectTask={selectTaskInspector}
                   onOpenInbox={() => changeView("attention")}
@@ -5964,7 +5920,7 @@ function MemberApp({
               </div>
             }
           >
-            <NodeChat
+            <AgentChatView
               key={floatingChat.chatId}
               project={project}
               actorId={draftActorId}
@@ -5988,6 +5944,8 @@ function MemberApp({
               onStartTask={startAgentTask}
               onResumeTask={(task) => void operateTask(task, "resume")}
               onRetryTask={requestRetry}
+              composerRetry={composerRetry}
+              onComposerRetryTaken={() => setComposerRetry(null)}
               onRefreshTask={refreshAgentTask}
               onInspectTask={selectTaskInspector}
               onOpenInbox={() => {

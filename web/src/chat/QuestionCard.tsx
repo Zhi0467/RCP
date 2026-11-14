@@ -175,7 +175,9 @@ export function QuestionCard({
               disabled={busy || answerBlocked || !canSubmitQuestion(question, text, choices)}
             >
               {continueChat
-                ? `Answer and continue ${question.capability === "discuss" ? "Discuss" : "Work"}`
+                ? question.capability === "discuss"
+                  ? "Answer and continue Discuss"
+                  : "Answer and continue"
                 : "Answer"}
             </button>
           </div>

@@ -15,7 +15,6 @@ import type {
   ChatOrigin,
   ChatReads,
   ChatSummary,
-  ConversationMode,
   GraphTargetRef,
   SkillDefaults,
   WorktreeIntegrationOption,
@@ -64,42 +63,6 @@ export function chatDraftStorageKey(
   chatId: string,
 ): string | null {
   return memberDraftKey(actorId, `chat-draft:${projectId}:${chatId}`);
-}
-
-export function chatModeStorageKey(projectId: string, chatId: string): string {
-  return `rcp:chat-mode:${projectId}:${chatId}`;
-}
-
-export function parseConversationMode(value: unknown): ConversationMode | null {
-  return value === "discuss" || value === "work" ? value : null;
-}
-
-export function toggleConversationMode(mode: ConversationMode): ConversationMode {
-  return mode === "discuss" ? "work" : "discuss";
-}
-
-export function isConversationModeShortcut(key: string, shiftKey: boolean): boolean {
-  return key === "Tab" && shiftKey;
-}
-
-export function latestPersistedConversationMode(
-  messages: ChatMessage[],
-  tasks: AgentTask[],
-): ConversationMode {
-  const candidates: Array<{ mode: ConversationMode; timestamp: number; order: number }> = [];
-  let order = 0;
-  messages.forEach((message) => {
-    const mode = parseConversationMode(message.mode);
-    if (mode) candidates.push({ mode, timestamp: comparableTime(message.timestamp), order });
-    order += 1;
-  });
-  tasks.forEach((task) => {
-    const mode = parseConversationMode(task.request.mode);
-    if (mode) candidates.push({ mode, timestamp: comparableTime(task.created_at), order });
-    order += 1;
-  });
-  candidates.sort((left, right) => left.timestamp - right.timestamp || left.order - right.order);
-  return candidates.at(-1)?.mode ?? "discuss";
 }
 
 /** The transcript records "use the provider default" as a literal sentinel; a
@@ -205,7 +168,7 @@ export interface ConversationTurnSubmission {
   message: string;
   chatId: string;
   sessionId: string | null;
-  mode: ConversationMode;
+  supersedes?: string | null;
   artifactContext?: ArtifactContextRequest | null;
   /** The composer's staged files and references, as `turnFields()` gives them. */
   attachments?: ComposerTurnFields;
@@ -229,7 +192,8 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
     message,
     chat_id: submission.chatId,
     session_id: submission.sessionId,
-    mode: submission.mode,
+    mode: "work",
+    ...(submission.supersedes ? { supersedes: submission.supersedes } : {}),
     ...(submission.worktree
       ? {
           worktree: true,
@@ -260,7 +224,7 @@ export type StartConversationTask = (
   graphTarget?: GraphTargetRef,
 ) => Promise<AgentTask>;
 
-/** One ordinary Discuss/Work dispatch boundary shared by the visible composer
+/** One ordinary chat-turn dispatch boundary shared by the visible composer
  * and non-UI callers. Admission and durable task recording remain in App's
  * start-task owner. */
 export async function startConversationTurn(
@@ -269,6 +233,14 @@ export async function startConversationTurn(
   requestId?: string,
 ): Promise<AgentTask> {
   return startTask(submission.kind, conversationTurnRequest(submission), requestId);
+}
+
+export function retryRefillsComposer(task: AgentTask): boolean {
+  return (
+    (task.kind === "node_chat" || task.kind === "project_chat") &&
+    task.request.mode !== "work" &&
+    task.request.artifact_edit == null
+  );
 }
 
 /** An Auto-research orchestrator turn, or an artifact edit replying to its chain:
@@ -380,7 +352,7 @@ export function groupChatConversations(
 }
 
 /**
- * The orchestrator conversation as NodeChat reads a chat: each loaded orchestrator
+ * The orchestrator conversation as AgentChatView reads a chat: each loaded orchestrator
  * turn or artifact edit becomes a project-chat turn carrying the human input its
  * transcript line recorded (or the starting instruction; an ordinary chat turn
  * keeps its own kind and message), so status and progress

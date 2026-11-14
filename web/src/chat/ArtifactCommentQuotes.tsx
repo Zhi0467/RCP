@@ -28,7 +28,7 @@ export function ArtifactCommentQuotes({
           <strong>{comments.name}</strong>
         </button>
       )}
-      {lead && <span className="node-chat-text">{lead}</span>}
+      {lead && <span className="agent-chat-view-text">{lead}</span>}
       <ol className="chat-artifact-comments">
         {comments.quotes.map((quote, index) => (
           <li key={index}>
@@ -36,7 +36,7 @@ export function ArtifactCommentQuotes({
               {quote.kind === "box" && <SquareDashed size={12} aria-hidden="true" />}
               {quote.kind === "box" ? quote.quote || "Selected area" : quote.quote}
             </blockquote>
-            <span className="node-chat-text">{quote.comment.trim()}</span>
+            <span className="agent-chat-view-text">{quote.comment.trim()}</span>
           </li>
         ))}
       </ol>

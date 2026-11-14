@@ -41,6 +41,7 @@ def edit_origin(manifest, tmp_path):
 def _request(task, artifact, *, fresh=False):
     return RunRequest(
         message="Update the explanation.",
+        mode="work",
         artifact_context={
             "operation_id": task.operation_id,
             "artifact_id": artifact.artifact_id,
@@ -51,15 +52,15 @@ def _request(task, artifact, *, fresh=False):
 
 
 @pytest.mark.parametrize(
-    ("kind", "patch_kind", "shape"),
+    ("kind", "patch_kind"),
     [
-        ("project_chat", "work", "discuss"),
-        ("node_chat", "work", "discuss"),
-        ("node_chat", "experiment_loop", "revoking"),
-        ("auto_research", None, "revoking"),
+        ("project_chat", "work"),
+        ("node_chat", "work"),
+        ("node_chat", "experiment_loop"),
+        ("auto_research", None),
     ],
 )
-def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
+def test_every_master_owner_admits_the_revoking_edit(edit_origin, kind, patch_kind):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "explanation.md", b"Original")
     request = {**task.request, "patch_kind": patch_kind} if patch_kind else task.request
@@ -77,7 +78,7 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
         ),
     )
     assert admitted.reasoning == task.request["reasoning"]
-    assert admitted.artifact_edit.launch_kind == shape
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.mode == "discuss"
     assert not admitted.artifact_edit.fresh_session
     assert admitted.session_id == task.native_session_id
@@ -88,8 +89,9 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
 
 
 @pytest.mark.parametrize("missing", ["stage", "session", "history", "contract"])
-def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing):
+def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, monkeypatch, missing):
     app, store, task = edit_origin
+    _refuse_human_turns(monkeypatch)
     artifact = _stored_artifact(app, task.operation_id, "explanation.txt", b"Original")
     with store.connection() as connection:
         if missing == "stage":
@@ -110,13 +112,14 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
     assert availability.can_comment and availability.fresh_session_required
     response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"comments": [{"text": "Update"}], "edit_now": True},
+        json={"comments": [{"text": "Update"}]},
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "fresh_session_required"
     admitted = admit_artifact_edit(
         store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
     )
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.session_id is None
     assert admitted.artifact_edit.stage_root is None
     assert admitted.artifact_edit.fresh_session
@@ -294,7 +297,7 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
 
 
-def test_viewer_session_collision_gates_only_edit_now(edit_origin):
+def test_viewer_session_collision_does_not_gate_send(edit_origin):
     """Send is a turn of the artifact's chat, which the other chat's launch does not hold."""
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
@@ -312,12 +315,8 @@ def test_viewer_session_collision_gates_only_edit_now(edit_origin):
     response = client.get(url + "/state")
     assert response.status_code == 200
     state = response.json()
-    assert state["can_comment"] and state["send_to_chat"]
-    assert not state["can_edit_now"] and not state["fresh_session_required"]
-    response = client.post(
-        url + "/comments", json={"comments": [{"text": "Update this"}], "edit_now": True}
-    )
-    assert response.status_code == 409
+    assert state["can_comment"] and not state["fresh_session_required"]
+    assert "can_edit_now" not in state
 
 
 def test_viewer_defers_master_integrity_check_to_admission(edit_origin, monkeypatch):
@@ -395,18 +394,14 @@ def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
 
 def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
     """A box with only its own comment is a complete request, sent at once."""
-    from types import SimpleNamespace
-
-    from rcp.agents.prompts import _attachment_items
-
-    app, store, task = edit_origin
+    app, _store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Score</p>")
     started = []
     monkeypatch.setattr(
-        "rcp.api.artifacts.start_artifact_edit",
-        lambda _tasks, _project, admitted, **_: (
-            started.append(admitted)
-            or SimpleNamespace(model_dump=lambda **_: {"operation_id": "edit"})
+        app.state.background_tasks,
+        "start",
+        lambda _project, _kind, admitted, **kwargs: (
+            started.append(admitted) or task.model_copy(update=kwargs)
         ),
     )
     box = {
@@ -421,26 +416,21 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
         url,
         json={
             "comments": [{"text": "Label these rows", "selection": box}, {"text": "Shorter"}],
-            "edit_now": True,
         },
     )
     assert response.status_code == 202, response.text
     (admitted,) = started
     context = admitted.artifact_context
-    assert context.edit_now
+    assert admitted.mode == "work"
     assert [selection.comment for selection in context.selections] == ["Label these rows"]
     for text in ("Label these rows", "Shorter"):
         assert admitted.message.count(text) == 1
     assert client.post(url, json={"comments": [{"text": " ", "selection": box}]}).status_code == 422
-
-    pointer = {"name": "report.html", "media_type": "text/html", "path": "/a/report.html"}
-    pointer |= {"source_artifact_id": artifact.artifact_id, "selections": [box]}
-    queued, now = (_attachment_items([{**pointer, "edit_now": flag}]) for flag in (False, True))
-    assert len(now.splitlines()) == len(queued.splitlines()) + 1
+    retired = {"comments": [{"text": "Shorter"}], "edit_now": True}
+    assert client.post(url, json=retired).status_code == 422
 
 
-@pytest.mark.parametrize("mode", ["discuss", "work"])
-def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch, mode):
+def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.html", b"<p>Original</p>")
     with store.connection() as connection:
@@ -478,7 +468,6 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         f"/api/projects/{task.project_id}/tasks/project_chat",
         json={
             "chat_id": task.request["chat_id"],
-            "mode": mode,
             "provider": "codex",
             "model": "gpt-5.6-codex",
             "reasoning": "high",
@@ -492,7 +481,7 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
     )
     assert response.status_code == 202, response.text
     (admitted,) = started
-    assert admitted.mode == mode
+    assert admitted.mode == "work"
     assert (admitted.provider, admitted.model, admitted.reasoning, admitted.run_on) == (
         "codex",
         "gpt-5.6-codex",
@@ -537,18 +526,23 @@ def test_composer_refuses_another_chat_artifact(edit_origin):
     assert "another chat" in response.json()["detail"]
 
 
-def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_origin, monkeypatch):
-    """Official invocations resolve after the origin profile replaces client fields."""
-    app, _store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+def _refuse_human_turns(monkeypatch):
     monkeypatch.setattr(
         AppStore,
         "child_human_turn_refusal",
         lambda *_args: {"code": "auto_research_child_read_only", "detail": "read only"},
     )
+
+
+def test_read_only_child_chat_comment_runs_the_revoking_scratch_edit(edit_origin, monkeypatch):
+    """Official invocations resolve after the origin profile replaces client fields."""
+    app, _store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    _refuse_human_turns(monkeypatch)
     started = []
 
     def capture(project_id, kind, request, **kwargs):
+        assert kind == "artifact_edit"
         started.append(request)
         return task.model_copy(
             update={
@@ -580,12 +574,12 @@ def test_read_only_child_chat_comment_keeps_the_origin_bound_discuss_edit(edit_o
         "resolved_skill_packages": [{"id": "stale-skill", "kind": "skill", "version": "1"}],
     }
     url = f"/api/projects/{task.project_id}/tasks/project_chat"
-    assert client.post(url, json={**body, "mode": "work"}).status_code == 422
-    response = client.post(url, json={**body, "mode": "discuss"})
+    response = client.post(url, json={**body, "mode": "work"})
     assert response.status_code == 202, response.text
     (admitted,) = started
     assert admitted.mode == "discuss"
     assert admitted.artifact_edit.origin_bound
+    assert admitted.artifact_edit.launch_kind == "revoking"
     assert admitted.session_id == task.native_session_id
     assert admitted.invoked_skill_ids == ["graph-audit"]
     assert admitted.workflow_ids == []
@@ -717,12 +711,24 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     assert sent.request["chat_id"] == task.request["chat_id"]
     assert sent.dispatch_authority is not None
     assert sent.request.get("artifact_edit") is None
-    store.complete_agent_task(sent.operation_id, applied_revision=None, result={})
-    response = client.post(url, json={"comments": [{"text": "Fix the typo"}], "edit_now": True})
+
+
+def test_viewer_comment_in_a_refused_chat_runs_the_revoking_scratch_edit(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    _refuse_human_turns(monkeypatch)
+    monkeypatch.setattr(app.state.background_tasks, "admit_provider_task", lambda *a, **k: None)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    response = signed_in_client(app).post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"comments": [{"text": "Fix the typo"}]},
+    )
     assert response.status_code == 202, response.text
     edited = store.agent_task(response.json()["operation_id"])
+    assert edited.kind == "artifact_edit"
     assert edited.request["mode"] == "discuss"
-    assert edited.request["artifact_edit"]["origin_bound"]
+    assert edited.request["artifact_edit"]["launch_kind"] == "revoking"
+    assert edited.native_session_id == task.native_session_id
 
 
 def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, monkeypatch):

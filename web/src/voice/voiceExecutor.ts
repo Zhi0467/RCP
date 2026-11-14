@@ -86,8 +86,6 @@ export type VoiceReceipt = {
   call_id: string;
   argument_fingerprint: string;
   outcome: "accepted" | "refused" | "unknown";
-  /** A conversation send's mode; Resume watches only Work sends. */
-  mode?: "work" | "discuss" | null;
   request_id?: string | null;
   task_id?: string | null;
   episode_id?: string | null;
@@ -169,10 +167,6 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
           call_id: call.call_id,
           argument_fingerprint: fingerprint,
           outcome: "unknown",
-          ...(call.name === "rcp_send_conversation_message" &&
-          (args.mode === "work" || args.mode === "discuss")
-            ? { mode: args.mode }
-            : {}),
         }
       : null;
     const callKey = receipt ? receiptKey(receipt) : `${call.name}:${fingerprint}`;
@@ -260,7 +254,7 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
           : text;
       if (receipt && isWrite) {
         // Receipts read the tool's own result, never the voice envelope.
-        const watch = voiceWatchFromResult(call.name, args, text, () => target!.project_name);
+        const watch = voiceWatchFromResult(call.name, text, () => target!.project_name);
         try {
           await deps.saveReceipt?.({
             ...receipt,
@@ -344,7 +338,6 @@ export function voiceCallOutcome(output: string): {
 
 export function voiceWatchFromResult(
   name: string,
-  args: Record<string, unknown>,
   output: string,
   projectName: (projectId: string) => string,
 ): VoiceWatch | null {
@@ -358,7 +351,7 @@ export function voiceWatchFromResult(
   const text = (key: string) => (typeof result[key] === "string" ? (result[key] as string) : null);
   if (!projectId) return null;
   const base = { project_id: projectId, project_name: projectName(projectId), last: null };
-  if (name === "rcp_send_conversation_message" && args.mode === "work" && text("task_id")) {
+  if (name === "rcp_send_conversation_message" && text("task_id")) {
     return { ...base, kind: "work_turn", record: "task", id: text("task_id")! };
   }
   if (name === "rcp_start_experiment") {
@@ -505,7 +498,6 @@ export function voiceWatchFromReceipt(receipt: VoiceReceipt): VoiceWatch | null 
   if (receipt.outcome !== "accepted") return null;
   return voiceWatchFromResult(
     receipt.tool,
-    { mode: receipt.mode ?? null },
     JSON.stringify({
       project_id: receipt.target.project_id,
       task_id: receipt.task_id,

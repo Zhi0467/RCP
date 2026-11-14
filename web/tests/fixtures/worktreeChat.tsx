@@ -1,7 +1,7 @@
 import { ResourceRuntime } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { NodeChat } from "../../src/chat/NodeChat";
+import { AgentChatView } from "../../src/chat/AgentChatView";
 import type { AgentTask, AgentTaskRequest, ProjectSnapshot } from "../../src/core/types";
 import "../../src/styles.css";
 
@@ -43,7 +43,7 @@ function Fixture() {
   return (
     <main style={{ height: "100vh", padding: 24 }}>
       <button onClick={() => setChatId("other-chat")}>Switch chat</button>
-      <NodeChat
+      <AgentChatView
         graphTarget={{ kind: "main" }}
         project={project}
         tasks={tasks}

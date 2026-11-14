@@ -923,8 +923,6 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             "  Once you change it in place, you can show it in your reply with Markdown "
             f"image syntax: `![Short title]({quote(str(item['path']), safe='/')})`."
         )
-        if item.get("edit_now"):
-            lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             if selection.get("kind") == "text":

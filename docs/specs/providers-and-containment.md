@@ -13,16 +13,21 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 | Run | Operational contract |
 | --- | --- |
 | Seed/Refresh | Read provider logs and repositories; write scratch Patch only. |
-| Discuss | Writable conversation scratch and shared project memory, read-only project context, public web; human chats may ask and query graph history. No active Patch contract. |
+| Discuss | Historical Discuss chat turns, their question follow-ups, and the scratch artifact edit only. Writable conversation scratch and shared project memory, read-only project context, public web; a historical chat turn may ask and query graph history. No active Patch contract. |
 | Work | Noninteractive tools, public web, exact repository roots, optional Patch. [Consolidation](graph-consolidation-and-lessons.md) may commit keyed Patches during its turn. |
 | Experiment-loop | Work-like access with focused Experiment and watcher authority. |
 | Auto-research orchestrate | Work-like access, staged command client, orchestrator graph profile. |
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
 | Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
-| Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Chat-master viewer comments use ordinary Discuss; composer comments use that chat turn's mode. |
+| Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Admitted only for a chat that refuses human turns; elsewhere a viewer or composer comment is an ordinary Work turn in that chat. |
 | Paper coach | Reads a snapshot of the saved paper and runs commands as Work does; its file tools write only its task's changes folder, its turn's artifact folder, and the folders of saved artifacts the member attached to the message; RCP reviews the changes folder or applies by the human's Review or Accept choice; no graph mutation. Graph history reads use the protected command client. |
 
 Manifest settings and skills select execution details and methods, not capability.
+Every new human chat turn is Work
+([chat turns](conversations-episodes-and-watchers.md#chat-turns)). The
+`node_chat` and `project_chat` profiles carry the Work permission table; a stored
+table equal to an older Discuss or scratch-Patch chat table loads as Work, and any
+other table is refused.
 
 ## Machine provider settings
 
@@ -517,7 +522,7 @@ the provider contract. Discuss, Seed and Refresh receive their read context as
 `Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
 `acceptEdits` an added directory is also editable, which would hand Discuss
 write access to project files. The code-defined shared memory folder is separately
-admitted through `--add-dir` for ordinary Discuss chats.
+admitted through `--add-dir` for historical Discuss chat turns.
 
 Every Claude launch names its tools with `--tools`, from one code-defined set
 per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
@@ -554,6 +559,9 @@ emits only the `Edit` form. These rules govern file-editing tools, subject to th
 on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
+Every human chat turn is Work, so a message that only asks a question has this
+shell reach too. That is accepted: the same member's next Work turn has it, and
+the graph still changes only through the stage and Proposals.
 
 ### Session summaries
 
@@ -646,7 +654,7 @@ profile decides each of these explicitly rather than inheriting them:
 Containment is proved against the real CLI at that floor: config precedence,
 path bases, and anything that can rewrite the rules, such as plugins. Tests that
 cover every provider iterate `PROVIDER_IDS`; only tests of one provider's
-protocol name it. Before merge, drive the served app through Discuss, Work,
+protocol name it. Before merge, drive the served app through chat,
 Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
@@ -828,7 +836,7 @@ descriptions and authorable endpoints from `RELATION_SPEC`, which relations
 carry an Evidence assessment, id prefixes, and value vocabularies. Retired
 relations remain available to historical readers but are not offered as new
 links; the authoring choices and validation use the same specs. A read-only
-contract (Discuss, chat) receives the definitions and the method for searching
+contract (Discuss) receives the definitions and the method for searching
 `graph.json`. A graph-writing contract also receives the hand-written method
 that spans several nodes: the Experiment input-versus-result causal check and a
 short list of cross-cutting write habits. Ontology extension rules are added
@@ -882,7 +890,7 @@ choices. Fresh transport ids poll the same key under one deadline. Once any roun
 delivered, later transport failure stays `unknown`. At deadline the agent may
 repeat exactly or end its turn.
 
-Human Discuss/Work chats, human Experiment episodes and the orchestrator may ask;
+Human chat turns, human Experiment episodes and the orchestrator may ask;
 viewer edits, workers and child Work/Experiments may not. The handler's resolved
 verbs also drive the prompt. For live answers, the client acknowledges the
 server's durable receipt token through the same authenticated request path only
@@ -1016,7 +1024,7 @@ state workspace.
 
 ### Live human steering
 
-Steering addresses RCP's live process for one exact ordinary Discuss/Work,
+Steering addresses RCP's live process for one exact ordinary chat,
 Space-thread, or Paper coach attempt. Space-thread turns steer through
 `POST /api/agent-threads/{thread_id}/tasks/{operation_id}/steer`.
 It cannot select a newer attempt, start work or target an episode worker. Agent
@@ -1103,7 +1111,7 @@ widens repository or write scope.
 and agents that were not told a machine's route guessed a raw address and
 failed. Giving every agent every machine keeps one source of truth.
 
-Chat Discuss and Work, Seed and Refresh, Experiment Runs and continuations,
+Chat turns, Seed and Refresh, Experiment Runs and continuations,
 Auto-research orchestrators and their children (each from the base),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
 Paper coach and the branch-merge agent receive no compute-machine context;
@@ -1616,8 +1624,10 @@ Claude's zero-cost Work startup probe uses enforced settings, stream-json and
 closed empty stdin. It proves CLI acceptance, not containment. Its availability
 and diagnostic are separate from general readiness and shown for profiles that
 can launch Work, including chat. Work/orchestrate refuse launch when this probe
-fails and enforce the version floor; Discuss does neither, and Paper enforces
-only the version floor. Transport failures stay transport failures.
+fails and enforce the version floor; a historical Discuss run does neither, and
+Paper enforces only the version floor. Chat profiles are checked as Work, in
+readiness and in `rcp server provider check`, so a provider that fails the probe
+or the floor is unavailable for chat; there is no Discuss fallback. Transport failures stay transport failures.
 
 The first decoded error includes bounded, TTY-filtered stderr; a result lacking
 text uses its subtype. Service start/end logs carry only identifiers and RCP
@@ -1814,7 +1824,7 @@ one resolved verb set drives
 both the contract's usage lines and command admission. Discuss sees the Bulletin
 launch snapshot without holding the `bulletin` verb.
 
-Ordinary Discuss and Work chats, Experiment conversations, child Work chats,
+Ordinary chats, Experiment conversations, child Work chats,
 and Auto-research orchestrator chains hold `name "short task name"` only when
 storage's resolved launch state permits their first self-name, independently of
 the Bulletin toggle. Seated Auto-research workers have no board conversation;

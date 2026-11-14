@@ -14,7 +14,7 @@ from rcp.runs.session_master import record_session_master
 from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
 from rcp.service import RunRequest
 from rcp.skill_registry import official_registry
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.transport import StateUnavailable
 from tests.helpers import signed_in_client
 
@@ -526,9 +526,15 @@ def test_a_retry_is_admitted_and_staged_after_its_base_was_pruned(manifest, tmp_
     assert _tracked_file(staged).read_bytes() == b"<p>newer</p>"
 
 
-def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest, tmp_path):
-
+def test_comment_route_refuses_busy_session_but_undo_remains_available(
+    manifest, tmp_path, monkeypatch
+):
     app, _request, execution, source, _workspace = _setup(manifest, tmp_path)
+    monkeypatch.setattr(
+        AppStore,
+        "child_human_turn_refusal",
+        lambda *_args: {"code": "auto_research_child_read_only", "detail": "read only"},
+    )
     record_session_master(
         execution.store,
         "origin",
@@ -536,9 +542,7 @@ def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest,
     )
     client = signed_in_client(app)
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
-    refused = client.post(
-        path + "/comments", json={"comments": [{"text": "Change this chart"}], "edit_now": True}
-    )
+    refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
     assert refused.status_code == 409
     undone = client.post(path + "/undo", json={})
     assert undone.status_code == 200

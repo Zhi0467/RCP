@@ -388,7 +388,7 @@ its outcome as a notice. An episode opens its exact run when it is still
 listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
-opens on its source target, and the paper opens under Artifacts. Copy reference
+opens on its source target, and the paper opens in Paper. Copy reference
 writes the full URL. The chat composer turns a same-project reference link into
 a reference chip.
 
@@ -491,7 +491,7 @@ Durable display caches are main-only; branch cached-snapshot reads explicitly
 miss. Authoritative branch reads validate without repairing/publishing graph
 outputs and fail if refresh is unavailable. Target resources never replace each
 other. An active merge makes graph mutation unavailable, rejects Sync/new writers,
-and fences new Discuss turns on the reserved binding through cleanup.
+and fences new Discuss runs on the reserved binding through cleanup.
 
 ## Human question API and cards
 
@@ -554,8 +554,9 @@ open question cards at the end of the transcript, scrolling with it. The
 composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format. A parked
-chat answer with no running turn names Discuss or Work continuation on its submit
-control, matching the asking turn's capability.
+chat answer with no running turn names its continuation on its submit control,
+matching the asking turn's capability: Work, or Discuss for a question a
+historical Discuss turn asked.
 Experiment and Auto-research detail show the same cards; a `turns` card adds an
 **Add turns** field beside Answer, and cards a Stop withdrew retain their history
 with an **Episode ended** state. Chat and episode views select
@@ -1019,7 +1020,8 @@ safe commands/actions, values, success check, and resume command shared with CLI
 
 ## Project tabs
 
-The project shell keeps a session-scoped dock beside the index control. Opening
+The project shell keeps a session-scoped dock between the panel picker and its
++ control, which returns to the index. Opening
 a project appends and activates one tab; reopening activates without duplicating
 or reordering. Inactive tabs shrink within the capped dock while the active one
 retains more width. Tabs cannot be reordered.
@@ -1029,7 +1031,7 @@ exact Runs-route state. Every project view writes its route, and leaving a tab
 remembers the exact route it left, so returning lands on that page even when the
 tab's snapshot is gone (for example after a backend restart). Within a project,
 each view tab reopens the sub-view the viewer last had open there (Research its
-graph, Artifacts its Paper, Agents the chat it was left on while that chat still
+graph, Agents the chat it was left on while that chat still
 exists, else the member's own project thread), remembered per project in browser storage. Activating a tab is
 cache-only and never blocks on remote I/O. Closing a tab changes no canonical state, task, draft, conversation, or
 project data. Closing the active tab selects the right neighbor, otherwise the
@@ -1065,7 +1067,7 @@ its old surface retires.
 
 `web/src/voice/toolCatalog.ts` owns the host-independent catalog, schemas, local
 `confirm(args)`, Responses serialization, and page-state `resolve(name)` refusal.
-Confirmation applies to Work Send, Experiment Start, Auto-research authorization,
+Confirmation applies to every Send, Experiment Start, Auto-research authorization,
 and terminal commands. It is local to voice, not WebMCP host confirmation. The two
 terminal tools are voice-only because WebMCP has no RCP confirmation card.
 
@@ -1102,8 +1104,9 @@ branch; history requires a bounded revision window. Results are paged and marked
 untrusted; voice envelopes also name source and arguments. These broad reads
 retain backend paths, unlike named reads.
 
-Send launches one asynchronous ordinary Discuss/Work turn with the composer's
+Send launches one asynchronous ordinary Work turn with the composer's
 admission, profile, skill, session, and execution owners, returning its task id.
+It takes no `mode` input.
 Attachments, references, and compute choices remain visible-composer controls.
 Start/Stop reuse readiness, Sync, budget, single-start, exact-episode, and graceful
 Stop guards. Auto-research takes integer `invocation_ceiling >= 1`, optional
@@ -1570,7 +1573,7 @@ composer; independent branch chats retain their own sessions/authority.
 ### Agents
 
 Agents (route view `chats`) groups project and node conversations. Every human and assistant turn
-keeps its immutable Discuss/Work label; progress stays inline under the triggering
+keeps its immutable Discuss/Work label (new turns are Work); progress stays inline under the triggering
 message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run. A running watcher wake or episode turn has
 no human message, so it holds an Activity row in its chat until its first output.
@@ -1660,7 +1663,7 @@ across provider or machine switches, which each switch turn records as
 turn or its history out of the Paper panel.
 
 Chat task responses include `current_chat_session_id`, resolved from server task
-metadata independently of the displayed historical task. NodeChat and WebMCP
+metadata independently of the displayed historical task. AgentChatView and WebMCP
 use that projection, never a search through task or transcript native-session
 ids. Admission re-resolves and binds atomically; a client hint cannot pin a new
 ordinary turn to a superseded session. Artifact comments keep their artifact's
@@ -2200,8 +2203,8 @@ The authenticated artifact shell pins both HTML and live reads to one version,
 polls while visible, and relays through the existing private artifact channel.
 The agent frame remains opaque with its existing CSP and sandbox restrictions.
 The shell is frameable only by its own RCP origin. It posts one `comments` list,
-each `{text, selection?}`, with `edit_now` and an explicit fresh-session flag to
-the existing comments route. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
+each `{text, selection?}`, with an explicit fresh-session flag, to the existing
+comments route. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
 version 1 to the same-origin parent with the artifact and operation ids.
 
 ### Inline artifact presentation

@@ -13,7 +13,6 @@ import type {
   AgentQuestion,
   AgentTask,
   ArtifactEditOutcome,
-  ConversationMode,
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
@@ -220,7 +219,7 @@ export function AgentWindowTranscript({
               </div>
             )}
             <div
-              className={`node-chat-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
+              className={`agent-chat-view-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
               data-source={line.source ?? undefined}
               data-task-id={line.taskId}
               data-time-shown={timeShownIds.has(line.lineId) ? "" : undefined}
@@ -230,8 +229,8 @@ export function AgentWindowTranscript({
               {browserNotices && (
                 <BrowserTurnNotice status={line.browserStatus} turnId={line.taskId} />
               )}
-              {showModes && line.role === "human" && line.mode && (
-                <span className={`chat-turn-mode ${line.mode}`}>{modeLabel(line.mode)}</span>
+              {showModes && line.role === "human" && line.mode === "discuss" && (
+                <span className="chat-turn-mode discuss">Discuss</span>
               )}
               {failedTurn && (
                 <AgentWindowResend
@@ -293,7 +292,7 @@ export function AgentWindowTranscript({
                           onOpen={() => endpoints.openArtifactPanel?.(artifactComments.artifact_id)}
                         />
                       ) : (
-                        <span className="node-chat-text">{line.text}</span>
+                        <span className="agent-chat-view-text">{line.text}</span>
                       )}
                     </div>
                     {collapsible && (
@@ -334,7 +333,7 @@ export function AgentWindowTranscript({
                   </>
                 ))
               ) : pausedLineTask ? null : (
-                <span className="node-chat-text">{line.text}</span>
+                <span className="agent-chat-view-text">{line.text}</span>
               )}
               {retryLineTask && onRetryTask && (
                 <button
@@ -770,8 +769,4 @@ function artifactEditOutcomeText(
   return separate.length
     ? `Not edited in place; the current version is kept. ${separate.map((item) => item.name).join(", ")} is a separate artifact.`
     : "Not edited in place; the current version is kept.";
-}
-
-function modeLabel(mode: ConversationMode): "Discuss" | "Work" {
-  return mode === "discuss" ? "Discuss" : "Work";
 }

@@ -150,7 +150,7 @@ const TURN_DETAIL_MARGIN = "600px 0px";
 function topRow(root: HTMLElement | null): { row: HTMLElement; top: number } | null {
   if (!root) return null;
   const edge = root.getBoundingClientRect().top;
-  for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line")) {
+  for (const row of root.querySelectorAll<HTMLElement>(".agent-chat-view-line")) {
     const box = row.getBoundingClientRect();
     if (box.bottom > edge) return { row, top: box.top };
   }
@@ -1015,7 +1015,7 @@ export function AgentThreadView({
         }),
       { root, rootMargin: TURN_DETAIL_MARGIN },
     );
-    for (const row of root.querySelectorAll<HTMLElement>(".node-chat-line[data-task-id]"))
+    for (const row of root.querySelectorAll<HTMLElement>(".agent-chat-view-line[data-task-id]"))
       observer.observe(row);
     return () => observer.disconnect();
   }, [lines.transcript]);
@@ -1415,12 +1415,7 @@ export function AgentThreadView({
   ];
 
   return (
-    <div
-      className="chat-dock workspace agent-thread"
-      data-mode="work"
-      role="region"
-      aria-label={thread.agent_name}
-    >
+    <div className="chat-dock workspace agent-thread" role="region" aria-label={thread.agent_name}>
       <header className="conversation-header thread-header">
         {leading}
         <div className="conversation-heading">
@@ -1476,12 +1471,12 @@ export function AgentThreadView({
         scroll={scroll}
       >
         {messages === null && !shownLoadError && (
-          <div className="node-chat-line meta" role="status">
+          <div className="agent-chat-view-line meta" role="status">
             <LoaderCircle className="spin" size={14} />
           </div>
         )}
         {shownLoadError && (
-          <div className="node-chat-line error" role="alert">
+          <div className="agent-chat-view-line error" role="alert">
             {shownLoadError}
             <button
               type="button"
@@ -1598,7 +1593,7 @@ export function AgentThreadView({
             .map(renderQuestion)}
         />
         {latest?.active && (
-          <div className="node-chat-line agent">
+          <div className="agent-chat-view-line agent">
             <TurnProgress task={latest} />
             <span className="agent-turn-live" role="status">
               <LoaderCircle className="spin" size={12} aria-hidden="true" />
@@ -1637,7 +1632,7 @@ export function AgentThreadView({
           </div>
         )}
         {shownNotice && (
-          <div className="node-chat-line error" role="alert">
+          <div className="agent-chat-view-line error" role="alert">
             {shownNotice}
           </div>
         )}
@@ -1656,7 +1651,6 @@ export function AgentThreadView({
       )}
       <ThreadQueue key={thread.thread_id} items={queue} onRemove={removeQueued} />
       <ChatComposer
-        mode="work"
         composer={attachments}
         comments={comments}
         skills={skills.props}
@@ -1749,7 +1743,7 @@ export function AgentThreadView({
         }
         notice={composer.error && <span role="alert">{composer.error}</span>}
       />
-      <AnswerCommentLayers comments={comments} mode="work" />
+      <AnswerCommentLayers comments={comments} />
     </div>
   );
 }

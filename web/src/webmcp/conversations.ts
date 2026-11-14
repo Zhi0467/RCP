@@ -18,6 +18,7 @@ import {
 } from "../chat/chatWorkspace";
 import { filterSkillCatalogToDefaults } from "../core/skillPickerModel";
 import {
+  ALWAYS_CONFIRM,
   NEVER_CONFIRM,
   type WebMcpToolDefinition,
   type WebMcpToolSpec,
@@ -281,7 +282,6 @@ export async function inspectProjectConversation(
     send_options: {
       can_send: refusal === null,
       refusal_reason: refusal,
-      modes: ["discuss", "work"],
       stable_session_id: sessionId,
       provider: config.provider,
       provider_label: readiness?.label ?? config.provider,
@@ -542,9 +542,8 @@ export async function sendProjectConversationMessage(
   }
   const message = requiredStringInput(input, "message").trim();
   if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
-  const mode = requiredStringInput(input, "mode");
-  if (mode !== "discuss" && mode !== "work") {
-    throw new Error("mode must be discuss or work.");
+  if (Object.prototype.hasOwnProperty.call(input, "mode")) {
+    throw new Error("mode is not supported by WebMCP Send.");
   }
   const workflowIds = exactEnabledSkillIds(
     project,
@@ -574,7 +573,6 @@ export async function sendProjectConversationMessage(
       message,
       chatId,
       sessionId: existing?.sessionId ?? null,
-      mode,
       skills: { workflow_ids: workflowIds, skill_ids: skillIds },
       providerSkillNames,
     },
@@ -587,7 +585,6 @@ export async function sendProjectConversationMessage(
     task_id: task.operation_id,
     kind: surface,
     node_id: node?.id ?? null,
-    mode,
     accepted: true,
     status: task.status_label,
     active: task.active,
@@ -597,7 +594,7 @@ export async function sendProjectConversationMessage(
 
 export const SEND_CONVERSATION_TOOL: WebMcpToolSpec = {
   name: "rcp_send_conversation_message",
-  description: "Start one asynchronous RCP Discuss or Work turn in a new or existing conversation.",
+  description: "Start one asynchronous RCP turn in a new or existing conversation.",
   inputSchema: {
     type: "object",
     properties: {
@@ -606,11 +603,6 @@ export const SEND_CONVERSATION_TOOL: WebMcpToolSpec = {
         minLength: 1,
         maxLength: 2_000,
         description: "Natural-language request for the provider turn.",
-      },
-      mode: {
-        type: "string",
-        enum: ["discuss", "work"],
-        description: "Discuss cannot change project truth; Work uses RCP's bounded Work authority.",
       },
       chat_id: {
         type: "string",
@@ -642,12 +634,11 @@ export const SEND_CONVERSATION_TOOL: WebMcpToolSpec = {
         description: "Exact provider-native skill names returned by conversation inspection.",
       },
     },
-    required: ["message", "mode"],
+    required: ["message"],
     additionalProperties: false,
   },
   annotations: { readOnlyHint: false },
-  // Work can change project truth; Discuss cannot.
-  confirm: (input) => input.mode === "work",
+  confirm: ALWAYS_CONFIRM,
 };
 
 export function projectConversationSendToolDefinitions(

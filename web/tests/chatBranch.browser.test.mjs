@@ -139,7 +139,7 @@ for (const width of [1000, 390]) {
     // A pending fork keeps its source's agent; a detached one picks its own.
     assert.equal(await page.locator(".agent-config-chip").isDisabled(), width !== 390);
     // The link starts the transcript's column, never left of the first message's edge.
-    const column = await page.locator(".node-chat-lines").evaluate((lines) => {
+    const column = await page.locator(".agent-chat-view-lines").evaluate((lines) => {
       const style = getComputedStyle(lines);
       const inner =
         lines.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
@@ -176,7 +176,7 @@ for (const width of [1000, 390]) {
     const message = page.getByRole("textbox", { name: "Message", exact: true });
     assert.equal(await message.inputValue(), "");
     await message.fill("Continue here");
-    await page.getByRole("button", { name: "Start Discuss turn", exact: true }).click();
+    await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.getByRole("button", { name: "Resend", exact: true }).waitFor();
     const sent = requests.find((request) => request.path === "/api/start").body;
     assert.equal(sent.provider, "codex");

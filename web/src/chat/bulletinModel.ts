@@ -75,7 +75,7 @@ export interface BulletinChannel {
 }
 
 const ACTOR_KINDS: Record<string, string> = {
-  human_chat_work: "Work",
+  human_chat_work: "Chat",
   human_chat_discuss: "Discuss",
   auto_research_root: "Auto-research",
   worker_node: "Node worker",

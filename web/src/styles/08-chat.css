@@ -248,18 +248,17 @@
   width: 100%;
 }
 /* The selection pill and annotation popover are portaled out of the dock, so
-   they carry the chat's mode themselves. */
-.chat-dock[data-mode="discuss"],
-.chat-selection-comment[data-mode="discuss"],
-.chat-annotation-composer[data-mode="discuss"] {
-  --chat-mode-accent: var(--plum);
-  --chat-mode-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
+   they carry the owning component's colours themselves. */
+.chat-dock,
+.chat-selection-comment,
+.chat-annotation-composer {
+  --chat-accent: var(--forest);
+  --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
-.chat-dock[data-mode="work"],
-.chat-selection-comment[data-mode="work"],
-.chat-annotation-composer[data-mode="work"] {
-  --chat-mode-accent: var(--forest);
-  --chat-mode-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
+.chat-dock.paper-coach,
+.paper-coach-comment {
+  --chat-accent: var(--plum);
+  --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
 }
 .chat-dock.floating {
   border: 1px solid var(--line-strong);
@@ -403,7 +402,7 @@
 .chat-watcher-row > [role="alert"] {
   color: var(--red);
 }
-.node-chat-lines {
+.agent-chat-view-lines {
   flex: 1;
   overflow: auto;
   /* Every embed holds a fixed box, so nothing above the reader resizes on its
@@ -418,7 +417,54 @@
      scrolls into empty space below the composer. */
   position: relative;
 }
-.node-chat-line {
+.agent-chat-view-jump {
+  --jump-size: 34px;
+  bottom: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: sticky;
+  transform: translateY(6px);
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease,
+    visibility 0s linear 150ms;
+  visibility: hidden;
+  z-index: 3;
+}
+.agent-chat-view-jump[data-shown] {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 150ms ease,
+    transform 150ms ease;
+  visibility: visible;
+}
+.agent-chat-view-lines > .agent-chat-view-jump > button.icon-button {
+  border-radius: 50%;
+  bottom: 12px;
+  height: var(--jump-size);
+  left: 50%;
+  margin-left: calc(var(--jump-size) / -2);
+  min-height: var(--jump-size);
+  padding: 0;
+  pointer-events: auto;
+  position: absolute;
+  width: var(--jump-size);
+}
+@media (max-width: 700px), (pointer: coarse) {
+  .agent-chat-view-jump {
+    --jump-size: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-chat-view-jump,
+  .agent-chat-view-jump[data-shown] {
+    transform: none;
+    transition: none;
+  }
+}
+.agent-chat-view-line {
   border-radius: 0;
   font-size: var(--type-md);
   line-height: 1.62;
@@ -433,7 +479,7 @@
   white-space: pre-wrap;
   width: 100%;
 }
-.node-chat-line.human {
+.agent-chat-view-line.human {
   background: color-mix(in srgb, var(--paper-deep) 72%, var(--sheet));
   border: 1px solid color-mix(in srgb, var(--rule) 82%, transparent);
   border-radius: 14px;
@@ -441,13 +487,13 @@
   margin-left: auto;
   padding: 13px 16px 14px;
 }
-.node-chat-line.agent {
+.agent-chat-view-line.agent {
   background: transparent;
   font-family: var(--ui);
   font-size: var(--type-base);
   padding: 2px 3px 8px;
 }
-.node-chat-text {
+.agent-chat-view-text {
   display: block;
 }
 .chat-human-message.collapsed {
@@ -497,7 +543,7 @@
 .chat-message-toggle {
   background: transparent;
   border: 0;
-  color: var(--chat-mode-accent);
+  color: var(--chat-accent);
   display: block;
   font-size: var(--type-2xs);
   font-weight: 700;
@@ -524,7 +570,7 @@
 }
 /* An unsent turn: a red edge instead of the progress spinner, and its one
    action, an icon-only Resend, in the top-right corner. */
-.node-chat-line.unsent {
+.agent-chat-view-line.unsent {
   border-color: var(--red);
   position: relative;
 }
@@ -1071,20 +1117,20 @@
   font-size: var(--type-4xs);
   margin-top: 6px;
 }
-.node-chat-line.error {
+.agent-chat-view-line.error {
   background: var(--red-soft);
   border-radius: 8px;
   color: var(--red);
   padding: 10px 12px;
 }
 /* Retry sits beside the whole message; a trigger chip stays a one-line label above it. */
-.node-chat-line.error:has(.chat-error-retry) {
+.agent-chat-view-line.error:has(.chat-error-retry) {
   align-items: center;
   column-gap: 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
 }
-.node-chat-line.error:has(.chat-error-retry) > :not(.chat-error-retry) {
+.agent-chat-view-line.error:has(.chat-error-retry) > :not(.chat-error-retry) {
   grid-column: 1;
 }
 .chat-error-retry {
@@ -1092,7 +1138,7 @@
   grid-column: 2;
   grid-row: 1 / span 9;
 }
-.node-chat-line.meta {
+.agent-chat-view-line.meta {
   background: var(--amber-soft);
   border-radius: 8px;
   color: var(--walnut);
@@ -1180,13 +1226,13 @@
 }
 .chat-annotatable-answer::selection,
 .chat-annotatable-answer *::selection {
-  background: color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 28%, transparent);
+  background: color-mix(in srgb, var(--chat-accent, var(--plum)) 28%, transparent);
 }
 .chat-answer-annotation-button {
   align-items: center;
   background: transparent;
   border: 0;
-  color: var(--chat-mode-accent, var(--plum));
+  color: var(--chat-accent, var(--plum));
   display: flex;
   font: 700 var(--type-3xs) var(--mono);
   gap: 4px;
@@ -1205,10 +1251,10 @@
 }
 .chat-annotation-count {
   align-items: center;
-  background: color-mix(in srgb, var(--chat-mode-soft) 68%, var(--paper));
-  border: 1px solid color-mix(in srgb, var(--chat-mode-accent) 62%, var(--line));
+  background: color-mix(in srgb, var(--chat-soft) 68%, var(--paper));
+  border: 1px solid color-mix(in srgb, var(--chat-accent) 62%, var(--line));
   border-radius: 999px;
-  color: var(--chat-mode-accent);
+  color: var(--chat-accent);
   display: inline-flex;
   font: 700 var(--type-3xs) var(--mono);
   gap: 5px;
@@ -1217,8 +1263,8 @@
 .chat-annotation-count:hover,
 .chat-annotation-count.is-open,
 .chat-annotation-count:focus-visible {
-  background: color-mix(in srgb, var(--chat-mode-soft) 86%, var(--paper));
-  border-color: var(--chat-mode-accent);
+  background: color-mix(in srgb, var(--chat-soft) 86%, var(--paper));
+  border-color: var(--chat-accent);
 }
 .chat-annotation-review {
   background: var(--surface);
@@ -1260,7 +1306,7 @@
 }
 .chat-annotation-review blockquote,
 .chat-annotation-composer blockquote {
-  border-left: 2px solid var(--chat-mode-accent, var(--plum));
+  border-left: 2px solid var(--chat-accent, var(--plum));
   color: var(--ink-soft);
   font-family: var(--editorial);
   line-height: 1.45;
@@ -1297,7 +1343,7 @@
 /* Offered over a finished answer selection; the composer opens only from here. */
 .chat-selection-comment {
   align-items: center;
-  background: var(--chat-mode-accent, var(--plum));
+  background: var(--chat-accent, var(--plum));
   border: 0;
   border-radius: 999px;
   box-shadow: 0 5px 14px rgb(var(--shadow-rgb) / 24%);
@@ -1328,7 +1374,7 @@
 }
 .chat-annotation-composer {
   background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 65%, var(--line));
+  border: 1px solid color-mix(in srgb, var(--chat-accent, var(--plum)) 65%, var(--line));
   border-radius: 9px;
   box-shadow: 0 16px 42px rgb(var(--shadow-rgb) / 22%);
   display: grid;
@@ -1358,8 +1404,8 @@
   white-space: pre-wrap;
 }
 .chat-annotation-composer textarea:focus-visible {
-  border-color: var(--chat-mode-accent, var(--plum));
-  outline: 2px solid color-mix(in srgb, var(--chat-mode-accent, var(--plum)) 30%, transparent);
+  border-color: var(--chat-accent, var(--plum));
+  outline: 2px solid color-mix(in srgb, var(--chat-accent, var(--plum)) 30%, transparent);
   outline-offset: 1px;
 }
 .chat-annotation-composer > .button {
@@ -1419,8 +1465,8 @@
   min-width: 15px;
 }
 .chat-composer.is-dragging-files {
-  background: color-mix(in srgb, var(--chat-mode-soft) 72%, var(--surface));
-  box-shadow: inset 0 0 0 2px var(--chat-mode-accent);
+  background: color-mix(in srgb, var(--chat-soft) 72%, var(--surface));
+  box-shadow: inset 0 0 0 2px var(--chat-accent);
 }
 .chat-add-file {
   border-radius: 10px;
@@ -1579,9 +1625,9 @@
   position: relative;
 }
 .chat-composer:focus-within {
-  border-color: var(--chat-mode-accent);
+  border-color: var(--chat-accent);
   box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--chat-mode-accent) 18%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--chat-accent) 18%, transparent),
     0 8px 24px rgb(var(--shadow-rgb) / 8%);
 }
 .chat-skill-menu {
@@ -1649,34 +1695,24 @@
 .chat-skill-menu-status.stale {
   color: var(--oxblood);
 }
-.chat-mode-toggle button.discuss[aria-pressed="true"] {
-  background: var(--plum);
-  box-shadow: none;
-  color: var(--accent-ink);
-}
-.chat-mode-toggle button.work[aria-pressed="true"] {
-  background: var(--forest);
-  box-shadow: none;
-  color: var(--accent-ink);
-}
-.chat-dock[data-mode="discuss"] .chat-send-button {
-  background: var(--plum);
-  border-color: var(--plum);
-}
-.chat-dock[data-mode="work"] .chat-send-button {
+.chat-dock .chat-send-button {
   background: var(--forest);
   border-color: var(--forest);
+}
+.chat-dock.paper-coach .chat-send-button {
+  background: var(--plum);
+  border-color: var(--plum);
 }
 .chat-send-button {
   border-radius: 10px;
 }
-.chat-dock[data-mode="discuss"] .chat-send-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--plum) 84%, black);
-  border-color: color-mix(in srgb, var(--plum) 84%, black);
-}
-.chat-dock[data-mode="work"] .chat-send-button:hover:not(:disabled) {
+.chat-dock .chat-send-button:hover:not(:disabled) {
   background: color-mix(in srgb, var(--forest) 84%, black);
   border-color: color-mix(in srgb, var(--forest) 84%, black);
+}
+.chat-dock.paper-coach .chat-send-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--plum) 84%, black);
+  border-color: color-mix(in srgb, var(--plum) 84%, black);
 }
 
 .toast {
@@ -1759,7 +1795,7 @@
   overflow-wrap: anywhere;
 }
 /* In a transcript the card sits in the same column as the turns around it. */
-.node-chat-lines > .question-card {
+.agent-chat-view-lines > .question-card {
   max-width: 820px;
   margin: 0 auto 24px;
 }

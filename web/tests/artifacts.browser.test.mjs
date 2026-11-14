@@ -392,7 +392,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { ArtifactViewer } = await import("/src/artifacts/ArtifactViewer.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
@@ -457,7 +457,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
           React.createElement(
             RefreshRuntimeContext.Provider,
             { value: runtime },
-            React.createElement(NodeChat, {
+            React.createElement(AgentChatView, {
               key: String(desktop),
               project: {
                 id: "project",
@@ -803,11 +803,6 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
         body: state.version_number === 1 ? rendered.broken : rendered.fixed,
       }),
     );
-    // The human picked Work; an artifact comment must not take that away.
-    await page.addInitScript(() => {
-      // Sandboxed artifact frames have no storage; only the app document needs it.
-      if (window === window.top) localStorage.setItem("rcp:chat-mode:project:error-chat", "work");
-    });
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
     );
@@ -816,7 +811,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = {
@@ -844,7 +839,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
         React.createElement(
           RefreshRuntimeContext.Provider,
           { value: runtime },
-          React.createElement(NodeChat, {
+          React.createElement(AgentChatView, {
             project: {
               id: "project",
               name: "Project",
@@ -929,14 +924,14 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       await page.locator(".chat-annotation-composer textarea").inputValue(),
       "This page hit an error: inline-failure",
     );
-    // The popover is portaled out of the dock and carries the chat's mode itself.
-    assert.equal(await page.locator(".chat-annotation-composer").getAttribute("data-mode"), "work");
+    const accent = (selector) =>
+      page
+        .locator(selector)
+        .first()
+        .evaluate((node) => getComputedStyle(node).getPropertyValue("--chat-accent"));
+    assert.equal(await accent(".chat-annotation-composer"), await accent(".chat-dock"));
     await page.getByRole("button", { name: "Add comment", exact: true }).click();
-    assert.equal(
-      await page.getByRole("button", { name: "Work", exact: true }).getAttribute("aria-pressed"),
-      "true",
-    );
-    await page.getByRole("button", { name: "Start Work turn", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Send", exact: true }).waitFor();
     // A comment is an ordinary turn, so a pasted project reference joins it.
     await page.getByRole("textbox", { name: "Message", exact: true }).evaluate(async (input) => {
       const { referenceUrl } = await import("/src/core/projectReferences.ts");
@@ -948,10 +943,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
       input.dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true }));
     });
     await page.getByLabel("References for this turn").waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "Start Work turn", exact: true }).isEnabled(),
-      true,
-    );
+    assert.equal(await page.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
     assert.equal(await page.evaluate(() => Boolean(window.errorTestSent)), false);
     assert.deepEqual(requests, []);
     state = viewerState("plot", 2);
@@ -1100,7 +1092,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
       const {
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { NodeChat } = await import("/src/chat/NodeChat.tsx");
+      const { AgentChatView } = await import("/src/chat/AgentChatView.tsx");
       const { RefreshRuntimeContext } = await import("/src/core/useResource.ts");
       const { runtime } = await import("/tests/fixtures/resourceRuntime.ts");
       const profile = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
@@ -1129,7 +1121,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
           React.createElement(
             RefreshRuntimeContext.Provider,
             { value: runtime },
-            React.createElement(NodeChat, {
+            React.createElement(AgentChatView, {
               project: {
                 id: "project",
                 name: "Project",
@@ -1180,7 +1172,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
     });
     const after = page.locator("p", { hasText: "After the embeds." });
     const top = async () => (await after.boundingBox()).y;
-    const lines = page.locator(".node-chat-lines");
+    const lines = page.locator(".agent-chat-view-lines");
     const scroll = () =>
       lines.evaluate((element) => ({
         top: element.scrollTop,

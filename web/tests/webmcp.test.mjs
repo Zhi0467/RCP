@@ -1422,7 +1422,7 @@ test("a branch conversation stays read-only when its tasks have aged out of the 
     sendProjectConversationMessage(
       project,
       [],
-      { message: "continue", mode: "work", chat_id: "chat-1" },
+      { message: "continue", chat_id: "chat-1" },
       source,
       false,
       () => {
@@ -1569,7 +1569,7 @@ test("a keyed fresh Send that replays its first turn reports that turn's chat", 
   const result = await sendProjectConversationMessage(
     project,
     [],
-    { message: "Draw the curve.", mode: "work" },
+    { message: "Draw the curve." },
     conversationSource(transcript),
     false,
     () => "chat-minted-on-retry",
@@ -1591,7 +1591,6 @@ test("conversation Send resumes the exact saved route and returns after durable 
     {
       chat_id: "chat-1",
       message: "  Compare the next replicate.  ",
-      mode: "work",
       workflow_ids: ["analyze"],
       skill_ids: ["plot"],
       provider_skill_names: ["browser"],
@@ -1624,7 +1623,6 @@ test("conversation Send resumes the exact saved route and returns after durable 
       message: "Compare the next replicate.",
       chatId: "chat-1",
       sessionId: "session-1",
-      mode: "work",
       skills: { workflow_ids: ["analyze"], skill_ids: ["plot"] },
       providerSkillNames: ["browser"],
     },
@@ -1635,7 +1633,6 @@ test("conversation Send resumes the exact saved route and returns after durable 
     task_id: "task-chat-2",
     kind: "node_chat",
     node_id: "hyp-1",
-    mode: "work",
     accepted: true,
     status: "Queued",
     active: true,
@@ -1672,8 +1669,8 @@ test("conversation Send creates only one fresh project or node conversation afte
         };
       },
     );
-  await send({ message: "Discuss the project.", mode: "discuss" });
-  await send({ message: "Work on this node.", mode: "work", node_id: "hyp-1" });
+  await send({ message: "Ask about the project." });
+  await send({ message: "Work on this node.", node_id: "hyp-1" });
   assert.deepEqual(created, [
     ["project_chat", null, "new-1"],
     ["node_chat", "hyp-1", "new-2"],
@@ -1701,7 +1698,6 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
         chat_id: "chat-1",
         node_id: "hyp-1",
         message: "Ambiguous.",
-        mode: "discuss",
       },
       conversationSource(transcript),
       false,
@@ -1714,7 +1710,7 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
     sendProjectConversationMessage(
       project,
       [{ ...task, active: true, settled: false, status_message: "Still running" }],
-      { chat_id: "chat-1", message: "Too soon.", mode: "discuss" },
+      { chat_id: "chat-1", message: "Too soon." },
       conversationSource(transcript),
       false,
       unreachable,
@@ -1726,7 +1722,18 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
     sendProjectConversationMessage(
       project,
       [],
-      { message: "Use it.", mode: "work", skill_ids: ["not-enabled"] },
+      { message: "Ask.", mode: "discuss" },
+      conversationSource(transcript),
+      false,
+      unreachable,
+      unreachable,
+    ),
+  );
+  await assert.rejects(
+    sendProjectConversationMessage(
+      project,
+      [],
+      { message: "Use it.", skill_ids: ["not-enabled"] },
       conversationSource(transcript),
       false,
       unreachable,
@@ -1749,7 +1756,7 @@ test("conversation Send refuses supplied references before invoking any callback
         sendProjectConversationMessage(
           project,
           [],
-          { message: "Read the reference.", mode: "discuss", chat_id, references },
+          { message: "Read the reference.", chat_id, references },
           callback,
           false,
           callback,
@@ -1761,7 +1768,7 @@ test("conversation Send refuses supplied references before invoking any callback
   assert.equal(calls.length, 0);
 });
 
-test("the one Send tool exposes only semantic target, mode, message, and skill inputs", () => {
+test("the one Send tool exposes only semantic target, message, and skill inputs", () => {
   const project = projectFixture();
   const tools = projectConversationSendToolDefinitions(
     project,
@@ -1777,14 +1784,14 @@ test("the one Send tool exposes only semantic target, mode, message, and skill i
   );
   assert.deepEqual(Object.keys(tools[0].inputSchema.properties), [
     "message",
-    "mode",
     "chat_id",
     "node_id",
     "workflow_ids",
     "skill_ids",
     "provider_skill_names",
   ]);
-  assert.deepEqual(tools[0].inputSchema.required, ["message", "mode"]);
+  assert.deepEqual(tools[0].inputSchema.required, ["message"]);
+  assert.equal(tools[0].inputSchema.additionalProperties, false);
   assert.equal("provider" in tools[0].inputSchema.properties, false);
   assert.equal("attachment_ids" in tools[0].inputSchema.properties, false);
 });
@@ -2262,12 +2269,12 @@ test("resolve returns the published definition or the reason a tool cannot run",
   publishToolSurface(null, []);
 });
 
-test("only Work, Experiment Start, Auto-research, and terminal runs ask for confirmation", () => {
+test("only Send, Experiment Start, Auto-research, and terminal runs ask for confirmation", () => {
   const send = catalog().find((tool) => tool.name === "rcp_send_conversation_message");
-  assert.equal(send.confirm({ message: "Check", mode: "discuss" }), false);
+  assert.equal(send.confirm({ message: "Check" }), true);
   assert.deepEqual(
     catalog()
-      .filter((tool) => tool.confirm({ mode: "work" }))
+      .filter((tool) => tool.confirm({}))
       .map((tool) => tool.name)
       .sort(),
     [
@@ -2577,7 +2584,7 @@ test("ordinary branch conversations can send from their matching graph view", as
   await sendProjectConversationMessage(
     project,
     [branchTask],
-    { message: "Review this branch", mode: "work", chat_id: "chat-1" },
+    { message: "Review this branch", chat_id: "chat-1" },
     source,
     false,
     () => {

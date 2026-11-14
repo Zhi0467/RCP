@@ -1,7 +1,7 @@
 {
   "src/App.tsx": {
     "rcp/no-comments": {
-      "count": 165
+      "count": 162
     }
   },
   "src/agentWindow/AgentWindowTranscript.tsx": {
@@ -139,6 +139,11 @@
       "count": 7
     }
   },
+  "src/chat/AgentChatView.tsx": {
+    "rcp/no-comments": {
+      "count": 65
+    }
+  },
   "src/chat/AgentRename.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -172,11 +177,6 @@
   "src/chat/ChatsWorkspace.tsx": {
     "rcp/no-comments": {
       "count": 41
-    }
-  },
-  "src/chat/NodeChat.tsx": {
-    "rcp/no-comments": {
-      "count": 72
     }
   },
   "src/chat/OrchestratorComposer.tsx": {
@@ -654,11 +654,6 @@
       "count": 1
     }
   },
-  "src/projects/PhoneProjectChrome.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "src/projects/ProjectConsolidation.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -781,7 +776,7 @@
   },
   "src/projects/useProjectTabs.ts": {
     "rcp/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/terminals/TerminalPane.tsx": {
@@ -891,7 +886,7 @@
   },
   "src/webmcp/conversations.ts": {
     "rcp/no-comments": {
-      "count": 8
+      "count": 7
     }
   },
   "src/webmcp/overview.ts": {
@@ -966,7 +961,7 @@
   },
   "tests/artifacts.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 31
+      "count": 28
     }
   },
   "tests/attentionRunsOntology.test.mjs": {
@@ -1209,11 +1204,6 @@
       "count": 1
     }
   },
-  "tests/fixtures/projectTabStrip.tsx": {
-    "rcp/no-comments": {
-      "count": 2
-    }
-  },
   "tests/fixtures/providerLogin.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -1291,7 +1281,7 @@
   },
   "tests/liveSteering.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 9
+      "count": 6
     }
   },
   "tests/machinePower.test.mjs": {
@@ -1417,11 +1407,6 @@
   "tests/projectSetup.test.mjs": {
     "rcp/no-comments": {
       "count": 9
-    }
-  },
-  "tests/projectTabStrip.browser.test.mjs": {
-    "rcp/no-comments": {
-      "count": 2
     }
   },
   "tests/projectTransfer.browser.test.mjs": {
@@ -1596,7 +1581,7 @@
   },
   "tests/voice.test.mjs": {
     "rcp/no-comments": {
-      "count": 3
+      "count": 2
     }
   },
   "tests/webmcp.test.mjs": {

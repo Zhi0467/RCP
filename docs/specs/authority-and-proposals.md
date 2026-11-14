@@ -149,7 +149,9 @@ Two constant code profiles grant semantic permission:
   dispatches of forks its lineage owns, and a human-dispatched graph merge.
 
 Manifests cannot edit these profiles. Surface contracts narrow them.
-Discuss and Paper expose no Patch. Experiment work has its focused policy.
+Every new human chat turn is Work under the ordinary profile; only a captured
+Work turn carries conversation graph authority. Historical Discuss runs, the
+scratch artifact edit and Paper expose no Patch. Experiment work has its focused policy.
 A merge has no repository write roots unless it lands episode code.
 In that case, it gets exactly the local-merge roots used by chat Integrate:
 the episode worktree and shared checkout.

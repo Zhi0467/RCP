@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
-import type { ConversationMode } from "../core/types";
 import { StagedAnswerComments, type AnswerComments } from "./answerComments";
 import {
   ComposerAddPicker,
@@ -16,7 +15,6 @@ import {
  */
 export function ChatComposer({
   hint,
-  mode,
   composer,
   comments,
   skills,
@@ -29,7 +27,6 @@ export function ChatComposer({
 }: {
   /** A caller-owned hint above staged comments, such as a provider switch. */
   hint?: ReactNode;
-  mode: ConversationMode;
   composer?: ComposerAttachments;
   comments: AnswerComments;
   skills?: SkillPickerProps;
@@ -46,7 +43,6 @@ export function ChatComposer({
   return (
     <div
       className={`chat-composer${className ? ` ${className}` : ""}${composer?.dragging ? " is-dragging-files" : ""}`}
-      data-mode={mode}
       {...composer?.dropTarget()}
     >
       {skills && <SkillPicker {...skills} />}

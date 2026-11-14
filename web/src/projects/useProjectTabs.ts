@@ -23,7 +23,6 @@ import type {
   SpaceRunIndexEntry,
 } from "../core/types";
 
-const PROJECT_HEADER_COLLAPSED_KEY = "rcp:project-header-collapsed";
 export const EXPERIMENT_BOARD_POLL_DELAY_MS = 5_000;
 interface UseProjectTabsOptions {
   initialProjectId: string | null;
@@ -117,9 +116,6 @@ export function useProjectTabs<
   );
   const unavailableExperimentLoops = experimentIndex.value?.unavailable ?? [];
   const [spaceRuns, setSpaceRuns] = useState<SpaceRunIndexEntry[]>([]);
-  const [projectHeaderCollapsed, setProjectHeaderCollapsed] = useState(() =>
-    readProjectHeaderCollapsed(initialProjectId),
-  );
   const activeProjectId = useRef(projectId);
   const openProjectTabsRef = useRef(openProjectTabs);
   const projectTabStatesRef = useRef(new Map<string, { state: T }>());
@@ -284,16 +280,6 @@ export function useProjectTabs<
     [setTabs],
   );
 
-  const resetProjectHeader = useCallback((nextProjectId: string | null) => {
-    setProjectHeaderCollapsed(readProjectHeaderCollapsed(nextProjectId));
-  }, []);
-  const restoreProjectHeader = useCallback((collapsed: boolean) => {
-    setProjectHeaderCollapsed(collapsed);
-  }, []);
-  const toggleProjectHeader = useCallback(() => {
-    setProjectHeaderCollapsed((collapsed) => !collapsed);
-  }, []);
-
   const cacheProjectState = useCallback((id: string, state: T) => {
     projectTabStatesRef.current.set(graphSessionKey(id, state.graphTarget), { state });
   }, []);
@@ -344,18 +330,6 @@ export function useProjectTabs<
   }, [project, projectId, setTabs]);
 
   useEffect(() => {
-    if (!projectId) return;
-    try {
-      localStorage.setItem(
-        projectHeaderCollapsedStorageKey(projectId),
-        String(projectHeaderCollapsed),
-      );
-    } catch {
-      // Layout state is a convenience; storage failures must not affect the project.
-    }
-  }, [projectHeaderCollapsed, projectId]);
-
-  useEffect(() => {
     if (!projectIndexReady || projectId || setupOpen) return;
     let stopped = false;
     let timer = 0;
@@ -400,7 +374,6 @@ export function useProjectTabs<
     experimentLoopsLoaded: projectId !== null && !experimentIndex.loading,
     experimentLoopsUnavailable: projectId !== null && experimentIndex.stale,
     spaceRuns,
-    projectHeaderCollapsed,
     isActiveProject,
     getActiveProjectId,
     replaceProjects,
@@ -416,9 +389,6 @@ export function useProjectTabs<
     activateProjectTab,
     closeDockedProject,
     removeProject,
-    resetProjectHeader,
-    restoreProjectHeader,
-    toggleProjectHeader,
     cacheProjectState,
     clearProjectCache,
     rememberLeftRoute,
@@ -427,19 +397,6 @@ export function useProjectTabs<
     isProjectTabOpen,
     adjacentProjectId,
   };
-}
-
-function projectHeaderCollapsedStorageKey(projectId: string): string {
-  return `${PROJECT_HEADER_COLLAPSED_KEY}:${projectId}`;
-}
-
-function readProjectHeaderCollapsed(projectId: string | null): boolean {
-  if (!projectId) return false;
-  try {
-    return localStorage.getItem(projectHeaderCollapsedStorageKey(projectId)) === "true";
-  } catch {
-    return false;
-  }
 }
 
 function pageIsHidden(): boolean {

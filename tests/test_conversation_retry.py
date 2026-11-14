@@ -24,6 +24,8 @@ from tests.paper_helpers import start_paper
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    authorized_human,
+    discuss_turn,
     refresh_patch,
     seed_patch,
     store_test_claude_token,
@@ -119,18 +121,27 @@ def _retry_task(
     retry_body: dict[str, object] | None = None,
     after_failure: Callable[[dict[str, object]], None] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    started = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
+    discuss = body.get("mode") == "discuss"
+    url = f"/api/projects/{project_id}/tasks/{kind}"
+    started = discuss_turn(client, url, body) if discuss else client.post(url, json=body)
     assert started.status_code == 202
     failed = wait_for_task_response(client, project_id, started.json()["operation_id"])
     assert failed["status"] == "failed"
     if after_failure is not None:
         after_failure(failed)
-    retried_response = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry",
-        json=retry_body or {},
-    )
-    assert retried_response.status_code == 202
-    retried = wait_for_task_response(client, project_id, retried_response.json()["operation_id"])
+    if discuss:
+        app = client.app
+        retried_id = app.state.background_tasks.retry(
+            str(failed["operation_id"]), authorized_by=authorized_human(app), **(retry_body or {})
+        ).operation_id
+    else:
+        retried_response = client.post(
+            f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry",
+            json=retry_body or {},
+        )
+        assert retried_response.status_code == 202
+        retried_id = retried_response.json()["operation_id"]
+    retried = wait_for_task_response(client, project_id, retried_id)
     assert retried["status"] == "succeeded"
     return failed, retried
 
@@ -762,7 +773,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
             mode="discuss",
         )
     with signed_in_client(app) as client:
-        response = client.post(f"/api/projects/{project_id}/tasks/{kind}", json=body)
+        response = discuss_turn(client, f"/api/projects/{project_id}/tasks/{kind}", body)
         assert response.status_code == 202
         first = wait_for_task_response(
             client,
@@ -780,13 +791,17 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
             return original_factory(**kwargs) + "\n" + updated_guidance
 
         monkeypatch.setattr(PromptFactory, factory_name, staticmethod(updated_contract))
-        response = client.post(
-            f"/api/projects/{project_id}/tasks/{first['operation_id']}/{recovery}", json={}
-        )
-        assert response.status_code == 202
-        completed = wait_for_task_response(
-            client, project_id, response.json()["operation_id"], expect="succeeded"
-        )
+        if recovery == "retry":
+            recovered_id = app.state.background_tasks.retry(
+                first["operation_id"], authorized_by=authorized_human(app)
+            ).operation_id
+        else:
+            response = client.post(
+                f"/api/projects/{project_id}/tasks/{first['operation_id']}/resume", json={}
+            )
+            assert response.status_code == 202
+            recovered_id = response.json()["operation_id"]
+        completed = wait_for_task_response(client, project_id, recovered_id, expect="succeeded")
 
     assert launcher.sessions == [None, launcher.native_session_id]
     assert launcher.workspaces[0] == launcher.workspaces[1]
@@ -880,9 +895,12 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
             ).status_code
             == 200
         )
-        response = client.post(
-            f"/api/projects/{project_id}/tasks/project_chat",
-            json={"chat_id": chat_id, "message": "Continue", "mode": mode},
+        url = f"/api/projects/{project_id}/tasks/project_chat"
+        body = {"chat_id": chat_id, "message": "Continue"}
+        response = (
+            discuss_turn(client, url, body)
+            if mode == "discuss"
+            else client.post(url, json=body | {"mode": mode})
         )
         assert response.status_code == 202
         operation_id = response.json()["operation_id"]

@@ -393,7 +393,7 @@ export function PaperCoach({
     setSubmitError: setError,
   });
   return (
-    <div className="chat-dock paper-coach" data-mode="discuss">
+    <div className="chat-dock paper-coach">
       {panelTools(
         toolbar,
         <>
@@ -478,7 +478,7 @@ export function PaperCoach({
               {sessionTasks
                 .filter((task) => !lastReplies.has(task.operation_id))
                 .map((task) => (
-                  <div key={task.operation_id} className="node-chat-line agent">
+                  <div key={task.operation_id} className="agent-chat-view-line agent">
                     {cards(task.operation_id)}
                   </div>
                 ))}
@@ -504,7 +504,6 @@ export function PaperCoach({
             sessionId={currentSessionId}
           />
         }
-        mode="discuss"
         composer={composer}
         comments={comments}
         skills={skills.props}

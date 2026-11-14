@@ -240,8 +240,33 @@ def snapshot_tree(snapshot):
     }
 
 
+def shared_deploy_key(store, layout, project_id: str, repository: str) -> tuple[str, Path] | None:
+    """A ready, write-verified project repository on the backend's own machine
+    that is the same GitHub repository lends its deploy key to Paper."""
+    from rcp.machine_cards import host_of
+    from rcp.provisioning_repositories import team_repository_sources
+
+    sources = team_repository_sources(store, project_id)
+    for alias, record in sorted((sources or {}).items()):
+        if (
+            record.repository is None
+            or record.repository.identity != repository.lower()
+            or not record.git_check.write_verified
+        ):
+            continue
+        try:
+            if host_of(store, record.machine_id):
+                continue
+        except KeyError:
+            continue
+        key = layout.project_deploy_key_path(project_id, alias)
+        if key.is_file():
+            return alias, key
+    return None
+
+
 class PaperGit:
-    def __init__(self, store, live, data_dir, admission):
+    def __init__(self, store, live, data_dir, admission, shared_key=lambda _p, _r: None):
         from contextlib import nullcontext
         from threading import RLock
 
@@ -251,6 +276,7 @@ class PaperGit:
         self.live = live
         self.root = data_dir / "paper-git"
         self.admission = admission
+        self.shared_key = shared_key
         self.changes = PaperChanges(store, live, lambda _: nullcontext())
         self._locks = {}
         self._locks_guard = RLock()
@@ -306,6 +332,7 @@ class PaperGit:
                     "repository": "",
                     "branch": "",
                     "public_key": "",
+                    "key_source": "",
                     "head": {"commit": "", "author": ""},
                     "unpushed": False,
                     "conflicts": 0,
@@ -322,12 +349,15 @@ class PaperGit:
                     : limits.PAPER_GIT_AUTHOR_MAX_CHARS
                 ]
             key = self.directory(project_id) / "id_ed25519.pub"
+            own = key.with_suffix("")
+            source = own.readlink().parent.name if own.is_symlink() else ""
             snapshot = self.live.run_sync(self.live.snapshot(project_id))
             return {
                 "state": link.state,
                 "repository": link.repository,
                 "branch": link.branch,
-                "public_key": key.read_text() if key.exists() else "",
+                "public_key": "" if source or not key.exists() else key.read_text(),
+                "key_source": source,
                 "head": {"commit": link.synced_commit, "author": author},
                 "unpushed": snapshot.revision != link.synced_revision
                 and self._differs(link, snapshot),
@@ -349,9 +379,16 @@ class PaperGit:
                 if (existing.repository, existing.branch) != (repository, branch):
                     raise GitError("Unlink the pending repository before changing it")
                 return self.status(project_id)
-            if existing or (directory / "id_ed25519").exists():
+            own = directory / "id_ed25519"
+            if existing or own.is_symlink() or own.exists():
                 self._unlink(project_id)
-            fingerprint = generate_key(directory, project_id)
+            shared = self.shared_key(project_id, repository)
+            if shared is None:
+                fingerprint = generate_key(directory, project_id)
+            else:
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                own.symlink_to(shared[1])
+                fingerprint = ""
             _git(directory, ["init", "--bare", "--template=", str(directory / "repo.git")])
             self.store.save_paper_git_link(
                 PaperGitLink(
@@ -363,7 +400,9 @@ class PaperGit:
                     linked_at=self.store.now(),
                 )
             )
-            return self.status(project_id)
+        if shared is not None:
+            return self.link(project_id)
+        return self.status(project_id)
 
     def _unlink(self, project_id: str) -> None:
         with self.store.connection() as connection:
@@ -418,6 +457,64 @@ class PaperGit:
                 raise
             return self.status(project_id)
 
+    def _linked(self, project_id: str):
+        link = self._record(project_id)
+        if link.state != "linked":
+            raise GitError("Paper link is pending")
+        return link
+
+    def branches(self, project_id: str) -> list[str]:
+        with self.lock(project_id):
+            link = self._linked(project_id)
+            output = _git(
+                self.directory(project_id),
+                ["ls-remote", "--heads", remote_url(link.repository)],
+            )
+        return sorted(
+            line.split(b"\trefs/heads/", 1)[1].decode(errors="replace")
+            for line in output.splitlines()
+            if b"\trefs/heads/" in line
+        )
+
+    def switch(self, project_id: str, branch: str, *, create: bool):
+        with self.lock(project_id):
+            link = self._linked(project_id)
+            directory = self.directory(project_id)
+            _git(directory, ["check-ref-format", "refs/heads/" + branch])
+            if branch == link.branch and not create:
+                return self.status(project_id)
+            if self._active_held(link):
+                raise GitError("conflicts")
+            link.branch = branch
+            head = self._head(link)
+            if create:
+                if head:
+                    raise GitError("That branch already exists on GitHub")
+                if link.synced_commit:
+                    _git(
+                        directory,
+                        [
+                            "push",
+                            f"--force-with-lease=refs/heads/{branch}:",
+                            remote_url(link.repository),
+                            link.synced_commit + ":refs/heads/" + branch,
+                        ],
+                    )
+                with self.admission(project_id):
+                    self._checked(link)
+                return self.status(project_id)
+            if not head:
+                raise GitError("Paper Git branch is missing from the remote")
+            head = self._fetch(link)
+            with self.admission(project_id):
+                self.store.save_paper_git_link(link)
+                try:
+                    self._merge(link, head)
+                except Exception as exc:
+                    self._error(project_id, exc)
+                    raise
+            return self.status(project_id)
+
     def _error(self, project_id: str, error: Exception) -> None:
         link = self._record(project_id)
         link.last_error = str(error)
@@ -425,9 +522,7 @@ class PaperGit:
 
     def pull(self, project_id: str, *, refresh: bool = False):
         with self.lock(project_id):
-            link = self._record(project_id)
-            if link.state != "linked":
-                raise GitError("Paper link is pending")
+            link = self._linked(project_id)
             try:
                 head = self._fetch(link)
                 with self.admission(project_id):

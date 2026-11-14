@@ -1283,7 +1283,6 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
                 "chat_id": loop.chat_id,
                 "node_id": EXPERIMENT_ID,
                 "message": "Discuss the preserved stopped-loop history.",
-                "mode": "discuss",
                 "model": failed.request["model"],
             },
         )
