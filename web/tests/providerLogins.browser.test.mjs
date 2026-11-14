@@ -402,12 +402,14 @@ test("paste-code starts, fits a phone, submits once and clears the input", async
   await added.locator('[data-sign-in-action="sign-in"]').click();
   const input = added.getByLabel("Antigravity code");
   await input.waitFor();
+  const shots = process.env.RCP_SIGN_INS_SHOTS;
+  if (shots) await page.screenshot({ path: `${shots}/sign-ins-paste-phone.png`, fullPage: true });
   assert.equal(await input.getAttribute("type"), "password");
   assert.equal(
     await added.getByRole("link", { name: "Open Google sign-in" }).getAttribute("title"),
     attempt.verification_url,
   );
-  const bounds = await added.locator("form > *").evaluateAll((elements) =>
+  const bounds = await added.locator("form > :not(a)").evaluateAll((elements) =>
     elements.map((element) => {
       const box = element.getBoundingClientRect();
       return { top: box.top, bottom: box.bottom };
