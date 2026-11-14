@@ -33,24 +33,7 @@ from rcp.agents.context import CoachContext
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
-from rcp.comments.models import (
-    ArtifactBoxElement as ArtifactBoxElement,
-)
-from rcp.comments.models import (
-    ArtifactBoxSelection as ArtifactBoxSelection,
-)
-from rcp.comments.models import (
-    ArtifactSelectionRect as ArtifactSelectionRect,
-)
-from rcp.comments.models import (
-    ArtifactTextSelection as ArtifactTextSelection,
-)
-from rcp.comments.models import (
-    ArtifactViewport as ArtifactViewport,
-)
-from rcp.comments.models import (
-    CommentAnchor,
-)
+from rcp.comments.models import CommentAnchor
 from rcp.compute import machine_compute_context
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,

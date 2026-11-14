@@ -140,6 +140,7 @@ export function createPaperFixture({
 } = {}) {
   const tree = structuredClone(paperTestTree);
   const posts = [];
+  const threads = [];
   const rooms = new Map([["f1", room]]);
   let nextFile = 10;
   const versions = [
@@ -169,6 +170,7 @@ export function createPaperFixture({
     tree,
     cards,
     posts,
+    threads,
     versions,
     respond(path, method = "GET", body = {}) {
       if (method === "POST") posts.push({ path, body });
@@ -267,6 +269,37 @@ export function createPaperFixture({
         const index = versions.findIndex((version) => path.endsWith(`/${version.version_id}`));
         if (method === "DELETE") return { json: versions.splice(index, 1)[0] };
       }
+      if (path.endsWith("/comment-threads") && method === "POST") {
+        const thread = {
+          thread_id: `c${threads.length + 1}`,
+          project_id: "p",
+          target_kind: body.target.kind,
+          target_id: body.target.id,
+          graph_target: "main",
+          drawn_version: body.drawn_version,
+          anchor: body.anchor,
+          state: "open",
+          created_by: "member",
+          created_at: new Date().toISOString(),
+          closed_by: null,
+          closed_at: null,
+          sent_operation_id: null,
+          can_send: true,
+          posts: [
+            {
+              post_id: `p${threads.length + 1}`,
+              thread_id: `c${threads.length + 1}`,
+              author: { user_id: "member", display_name: "Member" },
+              text: body.text,
+              created_at: new Date().toISOString(),
+            },
+          ],
+        };
+        threads.push(thread);
+        return { json: { thread } };
+      }
+      if (path.endsWith("/comment-threads")) return { json: { threads } };
+      if (path.endsWith("/members")) return { json: [] };
       return { status: 404, json: { detail: `Unmocked fixture route: ${method} ${path}` } };
     },
   };

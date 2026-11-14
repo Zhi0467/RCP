@@ -30,15 +30,18 @@ class ArtifactViewport(BaseModel):
     height: int = Field(ge=1, le=32768)
 
 
-class ArtifactTextSelection(BaseModel):
+class CommentAnchorFields(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    kind: Literal["text"]
-    text: str = Field(min_length=1, max_length=4096)
-    surrounding_text: str = Field(default="", max_length=6144)
     comment: str = Field(default="", max_length=COMMENT_THREAD_MAX_CHARS)
     where: str | None = Field(default=None, max_length=256)
     drawn_version: str | None = None
+
+
+class ArtifactTextSelection(CommentAnchorFields):
+    kind: Literal["text"]
+    text: str = Field(min_length=1, max_length=4096)
+    surrounding_text: str = Field(default="", max_length=6144)
 
 
 class ArtifactBoxElement(BaseModel):
@@ -50,25 +53,12 @@ class ArtifactBoxElement(BaseModel):
     region: ArtifactSelectionRect | None = None
 
 
-class ArtifactBoxSelection(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
+class ArtifactBoxSelection(CommentAnchorFields):
     kind: Literal["box"]
     rect: ArtifactSelectionRect
     viewport: ArtifactViewport
     elements: list[ArtifactBoxElement] | None = Field(default=None, max_length=8)
     labels: str = Field(default="", max_length=4096)
-    comment: str = Field(default="", max_length=COMMENT_THREAD_MAX_CHARS)
-    where: str | None = Field(default=None, max_length=256)
-    drawn_version: str | None = None
-
-
-class CommentAnchorFields(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    comment: str = Field(default="", max_length=COMMENT_THREAD_MAX_CHARS)
-    where: str | None = Field(default=None, max_length=256)
-    drawn_version: str | None = None
 
 
 class ArtifactWholeSelection(CommentAnchorFields):
@@ -126,4 +116,10 @@ COMMENT_MEDIA_TYPES: dict[str, frozenset[str]] = {
     ),
     "element": frozenset({"text/html"}),
     "pdf": frozenset({"application/pdf"}),
+}
+
+COMMENT_TARGET_ANCHOR_KINDS: dict[str, frozenset[str]] = {
+    "artifact": frozenset(COMMENT_MEDIA_TYPES),
+    "paper": frozenset({"whole", "text", "element", "pdf", "box"}),
+    "reply": frozenset({"whole", "text"}),
 }

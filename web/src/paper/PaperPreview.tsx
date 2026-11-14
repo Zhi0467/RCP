@@ -38,15 +38,13 @@ import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
 import { synctexSpot, type SyncTexMap } from "./synctex";
 import { usePreviewText } from "./usePreviewText";
-import {
-  boxArea,
-  htmlSourceSpot,
-  rehypeSourceLines,
-  type PreviewDirectComment,
-  type PreviewSelectionOffer,
-  type PreviewSourceSpot,
-} from "./previewComments";
-import { PaperBoxSelect, type PaperBox } from "./PaperBoxSelect";
+import { htmlSourceSpot, rehypeSourceLines, type PreviewSourceSpot } from "./previewComments";
+import { imageBoxAnchor } from "./previewAnchors";
+import { blankFrontMatter } from "./frontMatter";
+import { installBoxTool } from "../comments/box.ts";
+import { selectionInput } from "../comments/selectionInput.ts";
+import { boxArea, previewWhere } from "../comments/where.ts";
+import type { CommentAnchor } from "../comments/types.ts";
 import { useInlineShell } from "../artifacts/useInlineShell";
 import { rehypeHeadingIds } from "./markdownHtml";
 import type { PluggableList } from "unified";
@@ -177,14 +175,54 @@ const MarkdownPreview = memo(function MarkdownPreview({
   );
 });
 
-/** A drawn box as a comment: its text, where it sits, anchored on the box. */
-function boxComment(box: PaperBox): PreviewDirectComment {
-  return {
-    quote: box.text || "Selected area",
-    where: box.where,
-    anchor: { left: box.rect.left, right: box.rect.right, top: box.rect.top },
-    clear: box.clear,
-  };
+/** A place drawn in the preview, as a thread anchor, and where it shows in the window. */
+export interface PreviewAnchor {
+  anchor: CommentAnchor;
+  rect: { left: number; top: number; right: number; bottom: number };
+  /** Removes the selection drawn for it, when its comment closes. */
+  clear?: () => void;
+}
+
+/** A Paper image that takes boxes, in fractions of the image. */
+function ImagePreview({
+  url,
+  path,
+  onAnchor,
+}: {
+  url: string;
+  path: string;
+  onAnchor?: (drawn: PreviewAnchor) => void;
+}) {
+  const frame = useRef<HTMLDivElement>(null);
+  const image = useRef<HTMLImageElement>(null);
+  const handler = useRef(onAnchor);
+  handler.current = onAnchor;
+  const boxes = Boolean(onAnchor);
+  useEffect(() => {
+    const surface = frame.current;
+    if (!surface || !boxes) return;
+    return installBoxTool(surface, (box) => {
+      const bounds = surface.getBoundingClientRect();
+      const left = bounds.left + box.x * bounds.width;
+      const top = bounds.top + box.y * bounds.height;
+      handler.current?.({
+        anchor: imageBoxAnchor(image.current!, path, box),
+        rect: {
+          left,
+          top,
+          right: left + box.width * bounds.width,
+          bottom: top + box.height * bounds.height,
+        },
+      });
+    });
+  }, [boxes, path]);
+  return (
+    <div className="paper-image-preview" data-paper-path={path}>
+      <div className={`paper-image-frame${boxes ? " boxes" : ""}`} ref={frame}>
+        <img ref={image} src={url} alt={path} draggable={false} />
+      </div>
+    </div>
+  );
 }
 
 function useHtmlPreviewState(source: string, revision: number, hash: string, active: boolean) {
@@ -235,8 +273,8 @@ function HtmlPreview({
   savedRevision,
   active,
   toolbar,
-  onDirectComment,
-  onDirectCancel,
+  onAnchor,
+  onAnchorCancel,
   onSourceSpot,
   onSelectionOffer,
 }: {
@@ -246,10 +284,10 @@ function HtmlPreview({
   savedRevision: number;
   active: boolean;
   toolbar: HTMLElement | null;
-  onDirectComment?: (comment: PreviewDirectComment) => void;
-  onDirectCancel?: (clear: () => void) => void;
+  onAnchor?: (drawn: PreviewAnchor) => void;
+  onAnchorCancel?: (clear: () => void) => void;
   onSourceSpot?: (spot: PreviewSourceSpot) => void;
-  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
+  onSelectionOffer?: (drawn: PreviewAnchor | null) => void;
 }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [commentMode, setCommentMode] = useState(true);
@@ -273,22 +311,30 @@ function HtmlPreview({
     onTextOffer: (offer) => {
       if (commentMode) return;
       onSelectionOffer?.(
-        offer && { quote: offer.text, where: file.path, rect: offer.rect, clear: offer.clear },
+        offer && {
+          anchor: {
+            kind: "text",
+            text: offer.text,
+            surrounding_text: offer.text,
+            comment: "",
+            where: previewWhere(file.path),
+          },
+          rect: offer.rect,
+          clear: offer.clear,
+        },
       );
     },
-    onCancel: (clear) => onDirectCancel?.(clear),
+    onCancel: (clear) => onAnchorCancel?.(clear),
     onSelection: ({ selection, anchor, clear }) => {
-      // An element's own text before a label it may inherit from a section around it.
-      const named =
+      const read = selectionInput(selection);
+      if (!read) return;
+      const where =
         selection.kind === "box"
-          ? [...new Set((selection.elements ?? []).map((element) => element.text || element.label))]
-              .filter(Boolean)
-              .join(", ")
-          : "";
-      onDirectComment?.({
-        quote: (selection.kind === "text" ? selection.text : named) || "Selected area",
-        where: selection.kind === "box" ? `${file.path}, ${boxArea(selection.rect)}` : file.path,
-        anchor,
+          ? `${file.path}, ${boxArea(selection.rect)}`
+          : previewWhere(file.path);
+      onAnchor?.({
+        anchor: { ...read, where },
+        rect: { left: anchor.left, right: anchor.right, top: anchor.top, bottom: anchor.top },
         clear,
       });
     },
@@ -348,7 +394,7 @@ function HtmlPreview({
               {zoom}%
             </button>
           </span>
-          {onDirectComment && (
+          {onAnchor && (
             <button
               className="icon-button"
               aria-pressed={commentMode}
@@ -397,8 +443,8 @@ export function PaperPreview({
   onOpenFile,
   toolbar,
   cursorLine,
-  onDirectComment,
-  onDirectCancel,
+  onAnchor,
+  onAnchorCancel,
   onSourceSpot,
   onSelectionOffer,
 }: {
@@ -413,14 +459,14 @@ export function PaperPreview({
   toolbar: HTMLElement | null;
   /** The editor's settled cursor line in this file; a LaTeX PDF scrolls to it. */
   cursorLine: number;
-  /** Opens a comment on a box drawn over a PDF page or image, or a selection inside an HTML page. */
-  onDirectComment?: (comment: PreviewDirectComment) => void;
-  /** The HTML frame cancelled the selection whose comment carries this clear. */
-  onDirectCancel?: (clear: () => void) => void;
+  /** A box drawn over a PDF page or image, or a selection inside an HTML page, to comment on. */
+  onAnchor?: (drawn: PreviewAnchor) => void;
+  /** The HTML frame cancelled the selection drawn with this clear. */
+  onAnchorCancel?: (clear: () => void) => void;
   /** A word double-clicked inside an HTML page, placed in its source. */
   onSourceSpot?: (spot: PreviewSourceSpot) => void;
   /** Text selected inside an HTML page, offered Comment as a native selection is. */
-  onSelectionOffer?: (offer: PreviewSelectionOffer | null) => void;
+  onSelectionOffer?: (drawn: PreviewAnchor | null) => void;
 }) {
   const previewText = usePreviewText(file.format === "markdown" ? text : "", file.file_id, active);
   const compiled = useRef<string | null>(null);
@@ -589,7 +635,13 @@ export function PaperPreview({
     active,
   ]);
 
-  const onBox = onDirectComment && ((box: PaperBox) => onDirectComment(boxComment(box)));
+  const onBox =
+    onAnchor &&
+    ((anchor: CommentAnchor, rect: DOMRect) =>
+      onAnchor({
+        anchor,
+        rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
+      }));
 
   async function install() {
     if (!engine) return;
@@ -605,19 +657,11 @@ export function PaperPreview({
   if (file.format === "markdown")
     return (
       <PaperMarkdownContext.Provider value={{ file, tree, projectId, onOpenFile }}>
-        <MarkdownPreview text={previewText} path={file.path} />
+        <MarkdownPreview text={blankFrontMatter(previewText)} path={file.path} />
       </PaperMarkdownContext.Provider>
     );
   if (file.format === "image" && PAPER_IMAGE.test(file.path))
-    return (
-      <div className="paper-image-preview" data-paper-path={file.path}>
-        <PaperBoxSelect onBox={onBox}>
-          <div className="paper-image-frame" data-box-target>
-            <img src={assetUrl(projectId, file)} alt={file.path} />
-          </div>
-        </PaperBoxSelect>
-      </div>
-    );
+    return <ImagePreview url={assetUrl(projectId, file)} path={file.path} onAnchor={onAnchor} />;
   if (file.format === "html")
     return (
       <HtmlPreview
@@ -628,8 +672,8 @@ export function PaperPreview({
         savedRevision={tree.revision}
         active={active}
         toolbar={toolbar}
-        onDirectComment={onDirectComment}
-        onDirectCancel={onDirectCancel}
+        onAnchor={onAnchor}
+        onAnchorCancel={onAnchorCancel}
         onSourceSpot={onSourceSpot}
         onSelectionOffer={onSelectionOffer}
       />

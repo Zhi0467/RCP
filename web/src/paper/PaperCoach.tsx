@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { History, ListChecks, MessageCirclePlus, RotateCcw, Send, Square, Zap } from "lucide-react";
 import {
   coachConversation,
@@ -29,7 +29,7 @@ import type {
   AgentTask,
   ChatMessage,
   ProjectSnapshot,
-  StartAgentTask,
+  SteerRequest,
   WritingSession,
 } from "../core/types";
 import { taskRetryRequestBody } from "../taskRecovery";
@@ -39,7 +39,8 @@ import { AgentStatusStrip } from "../chat/AgentStatusStrip";
 import { useComposerAttachments } from "../chat/composerAttachments";
 import type { AnswerComments } from "../chat/answerComments";
 import { assembleChatTurn } from "../chat/chatInput";
-import { latestPersistedChatConfig } from "../chat/chatWorkspace";
+import { latestPersistedChatConfig, type StartConversationTask } from "../chat/chatWorkspace";
+import type { SendThreads } from "../comments/react/useComments";
 import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import { PAPER_GIT_TASK } from "./gitSync";
 import "./paper-coach.css";
@@ -78,20 +79,21 @@ export function PaperCoach({
   setError,
   transcriptRef,
   textarea,
+  threadSender,
   opening,
   onOpening,
 }: {
   apiBase: string;
   project: ProjectSnapshot;
   tasks: AgentTask[];
-  onStartTask: StartAgentTask;
+  onStartTask: StartConversationTask;
   changes: PaperChange[];
   onChangeAction: (groupId: string, action: PaperChangeAction) => Promise<void>;
   onUndoAll: (taskId: string) => Promise<void>;
   onLocate: (change: PaperChange) => void;
   /** Where History and New chat sit: the Paper view row, while the coach shows. */
   toolbar: HTMLElement | null;
-  /** Comments the coach and the preview stage for the next turn; the workspace owns them. */
+  /** Comments on coach answers, staged for the next turn; the workspace owns them. */
   comments: AnswerComments;
   submitting: boolean;
   setSubmitting: (value: boolean) => void;
@@ -99,6 +101,8 @@ export function PaperCoach({
   setError: (value: string | null) => void;
   transcriptRef: RefObject<HTMLDivElement | null>;
   textarea: RefObject<HTMLTextAreaElement | null>;
+  /** Set to this composer's sender, which Paper's comment threads ride. */
+  threadSender: RefObject<SendThreads | null>;
   opening?: CoachOpening;
   onOpening: (opening: CoachOpening) => void;
 }) {
@@ -269,20 +273,21 @@ export function PaperCoach({
     input: textarea,
     onComplete: () => setError(null),
   });
-  const steer = async (task: AgentTask) => {
-    if (!text || composer.staged || submitting || !task.steer_turn_id) return;
-    if (!comments.requireComplete()) return;
+  /** Sends the typed text, staged comments, and any Paper threads: a steer while a
+   *  turn takes one, else a new turn. `key` makes a retried thread send repeat itself. */
+  const deliver = async (threadIds: readonly string[] = [], key?: string) => {
     const sent = comments.annotations;
+    const threads = threadIds.length ? { comment_thread_ids: [...threadIds] } : {};
     scroll.current?.follow();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const receipt = await endpoints.steer(task.operation_id, {
-        message_id: crypto.randomUUID(),
-        attempt: task.attempt,
-        expected_turn_id: task.steer_turn_id,
+    if (steeringTask) {
+      const request: SteerRequest = {
+        message_id: key ?? crypto.randomUUID(),
+        attempt: steeringTask.attempt,
+        expected_turn_id: steeringTask.steer_turn_id!,
         message: text,
-      });
+        ...threads,
+      };
+      const receipt = await endpoints.steer(steeringTask.operation_id, request);
       setReceivedSteers((current) => [
         ...current.filter((item) => item.message_id !== receipt.message_id),
         receipt,
@@ -290,23 +295,11 @@ export function PaperCoach({
       setMessage("");
       skills.reset();
       comments.clear(sent);
-    } catch (cause) {
-      setError(`Steering receipt could not be read. Nothing was resent. ${String(cause)}`);
-    } finally {
-      setSubmitting(false);
+      return;
     }
-  };
-  const send = async () => {
-    if (steeringTask) return steer(steeringTask);
-    if (!text || composer.unready || activeTask || submitting) return;
-    if (!comments.requireComplete()) return;
-    const sent = comments.annotations;
-    composer.closeMenu();
-    scroll.current?.follow();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const task = await onStartTask("paper_coach", {
+    const task = await onStartTask(
+      "paper_coach",
+      {
         message: text,
         ...config,
         model: config.model || null,
@@ -315,21 +308,64 @@ export function PaperCoach({
         browser_requested: browserOn,
         ...skills.fields,
         ...composer.turnFields(),
-      });
-      // The conversation follows this turn, even into the fresh session a provider
-      // switch starts, and stays anchored where it opened.
-      setSessionId(openedSession);
-      setStarted((current) => [...current, task]);
-      setMessage("");
-      skills.reset();
-      composer.clear();
-      comments.clear(sent);
+        ...threads,
+      },
+      key,
+    );
+    // The conversation follows this turn, even into the fresh session a provider
+    // switch starts, and stays anchored where it opened.
+    setSessionId(openedSession);
+    setStarted((current) => [...current, task]);
+    setMessage("");
+    skills.reset();
+    composer.clear();
+    comments.clear(sent);
+  };
+  const send = async () => {
+    if (steeringTask) {
+      if (!text || composer.staged || submitting || !steeringTask.steer_turn_id) return;
+    } else if (!text || composer.unready || activeTask || submitting) return;
+    if (!comments.requireComplete()) return;
+    if (!steeringTask) composer.closeMenu();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await deliver();
     } catch (cause) {
-      setError(String(cause));
+      setError(
+        steeringTask
+          ? `Steering receipt could not be read. Nothing was resent. ${String(cause)}`
+          : String(cause),
+      );
     } finally {
       setSubmitting(false);
     }
   };
+  const sendThreads: SendThreads = async (threadIds, key) => {
+    if (submitting) throw new Error("A coach message is being sent.");
+    if (activeTask && !steeringTask)
+      throw new Error(activeTask.steer_unavailable_reason || "The coach is busy.");
+    if (steeringTask && composer.staged)
+      throw new Error("Staged files go with the next turn; send them first.");
+    if (!steeringTask && composer.unready) throw new Error("Files are still uploading.");
+    if (!comments.requireComplete()) throw new Error("Finish the waiting coach comment first.");
+    setSubmitting(true);
+    setError(null);
+    try {
+      await deliver(threadIds, key);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  useLayoutEffect(() => {
+    threadSender.current = sendThreads;
+  });
+  useLayoutEffect(
+    () => () => {
+      threadSender.current = null;
+    },
+    [threadSender],
+  );
   // One UUID per attempt, so a repeated click replays the same retry admission.
   const retryKeys = useRef(new Map<string, string>());
   const continueTask = async (task: AgentTask, action: "resume" | "retry") => {

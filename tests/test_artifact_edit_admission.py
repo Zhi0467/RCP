@@ -38,6 +38,26 @@ def edit_origin(manifest, tmp_path):
     return app, store, task
 
 
+def _saved_comments(app, artifact, comments):
+    store = app.state.background_tasks.store
+    artifact = store.artifact(artifact.artifact_id)
+    client = signed_in_client(app)
+    ids = []
+    for comment in comments:
+        response = client.post(
+            f"/api/projects/{artifact.project_id}/comment-threads",
+            json={
+                "target": {"kind": "artifact", "id": artifact.artifact_id},
+                "anchor": comment.get("selection") or {"kind": "whole"},
+                "drawn_version": artifact.current_version,
+                "text": comment["text"],
+            },
+        )
+        assert response.status_code == 200, response.text
+        ids.append(response.json()["thread"]["thread_id"])
+    return {"thread_ids": ids}
+
+
 def _request(task, artifact, *, fresh=False):
     return RunRequest(
         message="Update the explanation.",
@@ -112,7 +132,8 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, monkeyp
     assert availability.can_comment and availability.fresh_session_required
     response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"comments": [{"text": "Update"}]},
+        json=_saved_comments(app, artifact, [{"text": "Update"}]),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "fresh_session_required"
@@ -274,7 +295,7 @@ def test_selections_drawn_on_an_older_version_are_refused(edit_origin):
     admit_artifact_edit(store, app.state.service, task.project_id, current)
 
 
-@pytest.mark.parametrize("suffix", ["html", "png", "svg", "md", "txt", "json", "py"])
+@pytest.mark.parametrize("suffix", ["html", "png", "svg", "md", "txt", "json", "py", "pdf"])
 def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffix):
     app, store, task = edit_origin
     data = b"Original"
@@ -284,6 +305,8 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
         data = output.getvalue()
     elif suffix == "svg":
         data = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+    elif suffix == "pdf":
+        data = b"%PDF-1.4"
     artifact = _stored_artifact(app, task.operation_id, f"artifact.{suffix}", data)
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
@@ -334,7 +357,7 @@ def test_viewer_defers_master_integrity_check_to_admission(edit_origin, monkeypa
         )
 
 
-@pytest.mark.parametrize("suffix", ["pdf", "bin"])
+@pytest.mark.parametrize("suffix", ["bin"])
 def test_viewer_does_not_offer_edits_for_unsupported_types(edit_origin, suffix):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, f"artifact.{suffix}", b"Original")
@@ -414,20 +437,33 @@ def test_every_comment_is_one_object_on_one_route(edit_origin, monkeypatch):
     client = signed_in_client(app)
     response = client.post(
         url,
-        json={
-            "comments": [{"text": "Label these rows", "selection": box}, {"text": "Shorter"}],
-        },
+        json=_saved_comments(
+            app, artifact, [{"text": "Label these rows", "selection": box}, {"text": "Shorter"}]
+        ),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert response.status_code == 202, response.text
     (admitted,) = started
     context = admitted.artifact_context
     assert admitted.mode == "work"
-    assert [selection.comment for selection in context.selections] == ["Label these rows"]
+    assert [selection.kind for selection in context.selections] == ["box", "whole"]
+    assert "Label these rows" in context.selections[0].comment
+    assert "Shorter" in context.selections[1].comment
     for text in ("Label these rows", "Shorter"):
         assert admitted.message.count(text) == 1
-    assert client.post(url, json={"comments": [{"text": " ", "selection": box}]}).status_code == 422
+    assert (
+        client.post(
+            url,
+            json={"comments": [{"text": " ", "selection": box}]},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        ).status_code
+        == 422
+    )
     retired = {"comments": [{"text": "Shorter"}], "edit_now": True}
-    assert client.post(url, json=retired).status_code == 422
+    assert (
+        client.post(url, json=retired, headers={"Idempotency-Key": str(uuid.uuid4())}).status_code
+        == 422
+    )
 
 
 def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monkeypatch):
@@ -472,12 +508,13 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
             "model": "gpt-5.6-codex",
             "reasoning": "high",
             "run_on": BACKEND_MACHINE_ID,
-            "artifact_context": {
-                "operation_id": task.operation_id,
-                "artifact_id": artifact.artifact_id,
-                "selections": [{"kind": "text", "text": "Original", "comment": "Rewrite"}],
-            },
+            "comment_thread_ids": _saved_comments(
+                app,
+                artifact,
+                [{"text": "Rewrite", "selection": {"kind": "text", "text": "Original"}}],
+            )["thread_ids"],
         },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert response.status_code == 202, response.text
     (admitted,) = started
@@ -494,7 +531,8 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         admitted.artifact_context.base_version
         == store.artifact(artifact.artifact_id).current_version
     )
-    assert admitted.message == "Comment 1: Rewrite"
+    assert "Rewrite" in admitted.message
+    assert "Original" in admitted.message
 
 
 def test_a_comment_and_project_references_share_one_turn(edit_origin, monkeypatch):
@@ -703,7 +741,11 @@ def test_viewer_send_continues_the_chat_with_a_work_turn(edit_origin, monkeypatc
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     client = signed_in_client(app)
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
-    response = client.post(url, json={"comments": [{"text": "Rerun with seed 2"}]})
+    response = client.post(
+        url,
+        json=_saved_comments(app, artifact, [{"text": "Rerun with seed 2"}]),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
     assert response.status_code == 202, response.text
     sent = store.agent_task(response.json()["operation_id"])
     assert sent.kind == task.kind
@@ -721,7 +763,8 @@ def test_viewer_comment_in_a_refused_chat_runs_the_revoking_scratch_edit(edit_or
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     response = signed_in_client(app).post(
         f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"comments": [{"text": "Fix the typo"}]},
+        json=_saved_comments(app, artifact, [{"text": "Fix the typo"}]),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert response.status_code == 202, response.text
     edited = store.agent_task(response.json()["operation_id"])
@@ -752,7 +795,8 @@ def test_viewer_send_continues_an_ended_orchestrator_chat(manifest, tmp_path, mo
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     response = signed_in_client(app).post(
         f"/api/projects/{episode.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"comments": [{"text": "Rerun with seed 2"}]},
+        json=_saved_comments(app, artifact, [{"text": "Rerun with seed 2"}]),
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert response.status_code == 202, response.text
     sent = store.agent_task(response.json()["operation_id"])

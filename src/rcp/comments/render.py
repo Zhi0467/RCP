@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import TypeAdapter
 
 from rcp.comments.models import CommentAnchor
+from rcp.limits import COMMENT_NAME_MAX_CHARS
 
 
 def render_anchor(anchor: CommentAnchor | dict[str, Any]) -> str:
@@ -65,12 +66,28 @@ def render_thread(thread: dict[str, Any], *, until: str | None = None) -> str:
     for post in thread["posts"]:
         if until is not None and post["created_at"] > until:
             continue
-        mentions = {item["id"]: item["display_name"] for item in post.get("mentions", [])}
+        mentions = {
+            item["id"]: item["display_name"][:COMMENT_NAME_MAX_CHARS]
+            for item in post.get("mentions", [])
+        }
         text = re.sub(
             r"<@member:([^<>\s]+)>",
             lambda match, names=mentions: f"@{names[match[1]]}" if match[1] in names else match[0],
             post["text"],
         )
-        author = post["author"]["display_name"]
+        author = post["author"]["display_name"][:COMMENT_NAME_MAX_CHARS]
         lines.append(f"{author}: {text}")
     return "\n".join(lines)
+
+
+def thread_budget_chars(thread: dict[str, Any]) -> int:
+    widest = "n" * COMMENT_NAME_MAX_CHARS
+    posts = [
+        {
+            **post,
+            "author": {**post["author"], "display_name": widest},
+            "mentions": [{**item, "display_name": widest} for item in post.get("mentions", [])],
+        }
+        for post in thread["posts"]
+    ]
+    return len(render_thread({**thread, "posts": posts}))

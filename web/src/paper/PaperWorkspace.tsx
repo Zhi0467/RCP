@@ -6,6 +6,7 @@ import {
   FileWarning,
   History,
   LoaderCircle,
+  MessageSquare,
   PanelLeft,
   RotateCcw,
   X,
@@ -19,8 +20,8 @@ import type {
   PaperFile,
   ProjectSnapshot,
   PublicHealth,
-  StartAgentTask,
 } from "../core/types";
+import type { StartConversationTask } from "../chat/chatWorkspace";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
 import { paperProfile } from "./paperResources";
@@ -45,20 +46,17 @@ import { PaperGitChanges, PaperGitDiff, PaperGitPill, usePaperGit } from "./Pape
 import { findReference } from "./referenceFiles";
 import { citation } from "./citeKeys";
 import { PaperFiles } from "./PaperFiles";
-import { usePaperSplit } from "./usePaperSplit";
+import { usePaperFilesSplit, usePaperSplit } from "./usePaperSplit";
+import "./paper-split.css";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
 import { PaperCoach, type CoachOpening } from "./PaperCoach";
 import { PaperHistory } from "./PaperHistory";
 import { usePaperChanges, type PaperChangeAction } from "./PaperChanges";
-import {
-  previewSourceSpot,
-  type PreviewSelectionOffer,
-  type PreviewSourceSpot,
-  resolvePreviewSelection,
-  type PreviewDirectComment,
-} from "./previewComments";
+import { previewSourceSpot, type PreviewSourceSpot } from "./previewComments";
 import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
+import { usePaperComments } from "./PaperComments";
+import type { SendThreads } from "../comments/react/useComments";
 
 /** Route snapshots retain where the member was; IndexedDB owns all document content. */
 export interface PaperEditorState {
@@ -74,7 +72,8 @@ interface Props {
   requestedFileId?: { fileId: string | null };
   onEditorStateChange?: (state: PaperEditorState) => void;
   tasks: AgentTask[];
-  onStartTask: StartAgentTask;
+  /** Starts a task; a Coach turn carrying threads passes its Idempotency-Key. */
+  onStartTask: StartConversationTask;
 }
 const FOLD_KEY = "rcp:paper-files-folded";
 const openedLinks = new WeakSet<object>();
@@ -157,8 +156,8 @@ export function PaperWorkspace({
     error: string;
     retry: () => Promise<void>;
   } | null>(null);
-  // The coach's send state and comments live here: the preview stages comments too,
-  // and its failures show on the Coach segment while the coach is hidden.
+  // The coach's send state and transcript comments live here: its failures show on
+  // the Coach segment while the coach is hidden.
   const [coachSubmitting, setCoachSubmitting] = useState(false);
   const [coachError, setCoachError] = useState<string | null>(null);
   const coachTranscript = useRef<HTMLDivElement>(null);
@@ -172,24 +171,16 @@ export function PaperWorkspace({
     ),
     enabled: true,
     busy: coachSubmitting,
-    sources: [
-      transcriptSource(coachTranscript),
-      { root: previewPane, origin: previewPane, resolve: resolvePreviewSelection },
-    ],
+    sources: [transcriptSource(coachTranscript)],
     message: coachMessage,
     onError: setCoachError,
   });
-  const openPreviewComment = (comment: PreviewDirectComment) =>
-    comments.openExternal(
-      {
-        selectedText: comment.quote,
-        ...(comment.where ? { where: comment.where } : {}),
-        anchor: comment.anchor,
-      },
-      { clear: comment.clear, origin: previewPane.current },
-    );
-  const offerPreviewComment = (offer: PreviewSelectionOffer | null) =>
-    comments.offerExternal(offer && { ...offer, origin: previewPane.current });
+  /** The Coach composer's sender, which Paper threads ride; the coach sets it while mounted. */
+  const coachThreads = useRef<SendThreads | null>(null);
+  const sendThreads = useCallback<SendThreads>((ids, key) => {
+    const send = coachThreads.current;
+    return send ? send(ids, key) : Promise.reject(new Error("The coach is not ready."));
+  }, []);
   const waiting = comments.annotations.length;
   // The Coach segment carries the waiting comments' count and the coach's failure.
   const segmentLabel = (panel: "write" | "preview" | "coach" | "refs" | "reference") => (
@@ -293,15 +284,6 @@ export function PaperWorkspace({
   const gone = tree !== undefined && tree.revision >= selection.existsAt;
   const file = listed ?? stranded ?? (!selected || gone ? tree?.files[0] : undefined);
   const strandedElsewhere = strandedFiles.find((item) => item.file_id !== file?.file_id);
-  // A comment opened from the preview points at the file shown then; showing another
-  // file closes it and keeps its text. Naming where it came from stands in for "from
-  // the preview": Coach transcript comments carry no `where`.
-  const openPreviewWhere =
-    comments.composer?.step === "comment" ? comments.composer.where : undefined;
-  useEffect(() => {
-    if (openPreviewWhere) comments.closeComment({ keepText: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the shown file changes
-  }, [file?.file_id]);
   // A selection waiting for a newer tree asks for it once rather than show nothing.
   useEffect(() => {
     if (tree && selection.existsAt > tree.revision) refresh();
@@ -482,18 +464,40 @@ export function PaperWorkspace({
   const locateSource = (event: React.MouseEvent) =>
     locateSpot(previewSourceSpot(event.target as Element, window.getSelection(), event.clientY));
   const previewActive = right === "preview" && (!phone || view === "preview");
+  const paperComments = usePaperComments({
+    projectId: project.id,
+    file,
+    subscribe: document?.subscribe,
+    editorPane: writingPane,
+    previewPane,
+    sourceVisible: Boolean(document) && !shownDiff && (!phone || view === "write"),
+    previewVisible: previewActive,
+    showSource: () => switchView("write"),
+    showPreview: () => switchView("preview"),
+    send: sendThreads,
+    canPost: true,
+  });
   // Mounted on first view, then kept while hidden so its PDF and position survive.
   const [previewShown, setPreviewShown] = useState(previewActive);
   if (previewActive && !previewShown) setPreviewShown(true);
   const retryError = actionError?.error ?? identityError ?? resource.error ?? changeFeed.error;
   const split = usePaperSplit();
+  const filesSplit = usePaperFilesSplit(!folded);
   return (
     <section
-      className={`paper-live-workspace ${folded ? "files-folded" : ""} ${filesOpen ? "files-open" : ""} ${retryError ? "paper-failed" : ""}`}
+      className={`paper-live-workspace ${folded ? "files-folded" : ""} ${filesOpen ? "files-open" : ""} ${filesSplit.sized ? "files-sized" : ""} ${paperComments.railOpen && file ? "comments-open" : ""} ${retryError ? "paper-failed" : ""}`}
       data-view={view}
-      style={split.style}
+      style={{ ...split.style, ...filesSplit.style }}
     >
-      <div className="paper-files-column">
+      <div className="paper-files-column" id="paper-files-pane" ref={filesSplit.files}>
+        {filesSplit.handle && (
+          <ResizeHandle
+            label="Resize files"
+            controls="paper-files-pane paper-editor-pane"
+            className="paper-split-handle paper-files-handle"
+            {...filesSplit.handle}
+          />
+        )}
         {changesTab ? (
           <aside className="paper-box paper-files paper-git-side">
             <header className="paper-bar">
@@ -624,6 +628,21 @@ export function PaperWorkspace({
               <RotateCcw size={16} />
             </button>
           )}
+          {file && (
+            <button
+              className="icon-button paper-comments-button"
+              aria-label="Comments"
+              aria-pressed={paperComments.railOpen}
+              onClick={() => paperComments.setRailOpen(!paperComments.railOpen)}
+            >
+              <MessageSquare size={16} />
+              {paperComments.openCount > 0 && (
+                <span className="paper-comment-count" aria-hidden="true">
+                  {paperComments.openCount}
+                </span>
+              )}
+            </button>
+          )}
           <PaperGitPill git={git} />
           <button
             className="icon-button paper-history-button"
@@ -729,10 +748,10 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
-                onDirectComment={openPreviewComment}
-                onDirectCancel={comments.cancelExternal}
+                onAnchor={paperComments.openAnchor}
+                onAnchorCancel={paperComments.cancelAnchor}
                 onSourceSpot={locateSpot}
-                onSelectionOffer={offerPreviewComment}
+                onSelectionOffer={paperComments.offerFrameSelection}
               />
             ) : (
               <PaperPreview
@@ -744,10 +763,10 @@ export function PaperWorkspace({
                 active={previewActive}
                 toolbar={(phone ? view : right) === "preview" ? panelBar : null}
                 cursorLine={cursor.file === file.file_id ? cursor.line : 1}
-                onDirectComment={openPreviewComment}
-                onDirectCancel={comments.cancelExternal}
+                onAnchor={paperComments.openAnchor}
+                onAnchorCancel={paperComments.cancelAnchor}
                 onSourceSpot={locateSpot}
-                onSelectionOffer={offerPreviewComment}
+                onSelectionOffer={paperComments.offerFrameSelection}
               />
             ))}
         </div>
@@ -789,12 +808,14 @@ export function PaperWorkspace({
             setError={setCoachError}
             transcriptRef={coachTranscript}
             textarea={coachMessage}
+            threadSender={coachThreads}
             opening={editorState?.coach}
             onOpening={rememberCoach}
           />
         </div>
       </aside>
       <AnswerCommentLayers comments={comments} className="paper-coach-comment" />
+      {paperComments.layers}
       {history && tree && (
         <PaperHistory
           apiBase={apiBase}

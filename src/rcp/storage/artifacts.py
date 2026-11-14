@@ -144,6 +144,29 @@ def insert_artifact(
         )
 
 
+def readable_artifact_in(
+    connection: sqlite3.Connection, project_id: str, artifact_id: str, *, now: str
+) -> Artifact | None:
+    """This project's artifact while it may be read: unexpired, or held past expiry
+    by an active edit or an unfinished legacy import. Kept artifacts never expire."""
+    row = connection.execute(
+        "SELECT metadata FROM artifacts WHERE artifact_id = ? AND project_id = ?",
+        (artifact_id, project_id),
+    ).fetchone()
+    if row is None:
+        return None
+    artifact = Artifact.model_validate_json(row[0])
+    if (
+        artifact.expires_at is not None
+        and artifact.expires_at <= now
+        and artifact_id
+        not in ArtifactStoreMixin._protected_edit_artifact_ids(connection)
+        | ArtifactImportStoreMixin._legacy_artifact_import_ids(connection)
+    ):
+        return None
+    return artifact
+
+
 class ArtifactStoreMixin(StoreMixinBase):
     @contextmanager
     def artifact_capture(self) -> Iterator[None]:
@@ -164,30 +187,7 @@ class ArtifactStoreMixin(StoreMixinBase):
 
     def readable_artifact(self, project_id: str, artifact_id: str) -> Artifact | None:
         with self.connection() as connection:
-            return self._readable_artifact(connection, project_id, artifact_id, now=self.now())
-
-    @staticmethod
-    def _readable_artifact(
-        connection: sqlite3.Connection, project_id: str, artifact_id: str, *, now: str
-    ) -> Artifact | None:
-        """This project's artifact while it may be read: unexpired, or held past expiry
-        by an active edit or an unfinished legacy import. Kept artifacts never expire."""
-        row = connection.execute(
-            "SELECT metadata FROM artifacts WHERE artifact_id = ? AND project_id = ?",
-            (artifact_id, project_id),
-        ).fetchone()
-        if row is None:
-            return None
-        artifact = Artifact.model_validate_json(row[0])
-        if (
-            artifact.expires_at is not None
-            and artifact.expires_at <= now
-            and artifact_id
-            not in ArtifactStoreMixin._protected_edit_artifact_ids(connection)
-            | ArtifactImportStoreMixin._legacy_artifact_import_ids(connection)
-        ):
-            return None
-        return artifact
+            return readable_artifact_in(connection, project_id, artifact_id, now=self.now())
 
     def artifacts(self, project_id: str) -> list[Artifact]:
         with self.connection() as connection:

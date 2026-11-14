@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.artifact_comments import supports_comments
+from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
@@ -217,15 +218,11 @@ def _checked_artifact(
         raise ValueError("The artifact does not belong to this origin task.")
     if context.source == "episode_report" and context.episode_id != artifact.episode_id:
         raise ValueError("The report belongs to another episode.")
-    if context.selections and artifact.media_type not in {
-        "text/html",
-        "image/png",
-        "image/jpeg",
-        "image/gif",
-        "image/webp",
-        "image/svg+xml",
-    }:
-        raise ValueError("This artifact supports a comment without selections.")
+    if any(
+        artifact.media_type not in COMMENT_MEDIA_TYPES[selection.kind]
+        for selection in context.selections
+    ):
+        raise ValueError("This anchor is not supported by the artifact media type.")
     return artifact, origin, reply_episode_id
 
 

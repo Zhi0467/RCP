@@ -51,6 +51,10 @@ export function createCommentsClient(projectId: string, fetcher: typeof fetch = 
       request<CommentThreadPage>(
         `${base}/comment-threads?${new URLSearchParams({ target_kind: target.kind, target_id: target.id })}`,
       ),
+    listChatReplies: (chatId: string) =>
+      request<CommentThreadPage>(
+        `${base}/comment-threads?${new URLSearchParams({ target_kind: "reply", chat_id: chatId })}`,
+      ),
     get: (id: string) => threadRequest(threadPath(id)),
     create: (
       target: CommentTarget,

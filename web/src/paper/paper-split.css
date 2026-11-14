@@ -1,0 +1,30 @@
+/* A dragged Files width replaces the tree's default column. The handle sits on the
+   column's right edge and covers the gap before the editor, as the editor's own does. */
+@media (min-width: 701px) {
+  .paper-live-workspace.files-sized:not(.files-folded) {
+    grid-template-columns:
+      var(--paper-files-width) minmax(0, var(--paper-editor-width, 1fr))
+      minmax(0, 1fr);
+  }
+}
+.paper-files-column {
+  position: relative;
+}
+.paper-split-handle.paper-files-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(-1 * var(--paper-files-gap, 14px));
+  width: var(--paper-files-gap, 14px);
+  margin-left: 0;
+}
+@media (max-width: 1180px) {
+  .paper-live-workspace {
+    --paper-files-gap: 10px;
+  }
+}
+@media (max-width: 700px) {
+  .paper-split-handle.paper-files-handle {
+    display: none;
+  }
+}

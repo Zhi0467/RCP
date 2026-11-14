@@ -23,7 +23,7 @@ from rcp.limits import (
     BULLETIN_UNREAD_MAX_COUNT,
 )
 from rcp.storage.agent_threads import agent_thread_attribution
-from rcp.storage.artifacts import ArtifactStoreMixin
+from rcp.storage.artifacts import readable_artifact_in
 from rcp.storage.chat_names import chat_title, chat_titles
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
@@ -89,9 +89,7 @@ def _artifact_links(
     """
     links = []
     for artifact_id in _linked_artifact_ids(row["text"]):
-        artifact = ArtifactStoreMixin._readable_artifact(
-            connection, row["project_id"], artifact_id, now=now
-        )
+        artifact = readable_artifact_in(connection, row["project_id"], artifact_id, now=now)
         if artifact is not None:
             links.append(artifact.model_dump(include={"artifact_id", "source_name", "media_type"}))
     return links
@@ -735,9 +733,7 @@ class BulletinStoreMixin(StoreMixinBase):
         store = cast("AppStore", self)
         kept = []
         for link in outcome.get("post", {}).get("artifacts", []):
-            artifact = store._readable_artifact(
-                connection, project_id, link["artifact_id"], now=now
-            )
+            artifact = readable_artifact_in(connection, project_id, link["artifact_id"], now=now)
             if artifact is not None and not artifact.kept_at:
                 kept.append(store._retain_artifact(connection, artifact))
         return kept

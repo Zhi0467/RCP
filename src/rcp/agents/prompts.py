@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
 
+from pydantic import TypeAdapter
+
 from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.context import ChatContext
 from rcp.agents.continuation_prompt import (
@@ -28,6 +30,8 @@ from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
 if TYPE_CHECKING:
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.storage import AppStore
+from rcp.comments.models import CommentAnchor
+from rcp.comments.render import render_anchor
 from rcp.compute_jobs.job_managers import job_manager_rules
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import project_type_of
@@ -830,56 +834,6 @@ def invoked_provider_skill_section(skills: list[ProviderSkillReference] | None) 
     )
 
 
-def _one_line(value: object) -> str:
-    return " ".join(str(value).split())
-
-
-def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[str]:
-    """Name what a box covers and where: its crop, the HTML elements, or its position."""
-
-    elements = selection.get("elements")
-    if elements is None:
-        # A box from the viewer before elements were named: its position was measured
-        # on the viewer area, so only its sampled text says what it covered.
-        labels = _one_line(selection.get("labels", ""))
-        return [f"  Comment {index}, boxed area" + (f" covering: {labels}" if labels else "")]
-    assert isinstance(elements, list)
-    if html:
-        if not elements:
-            return [f"  Comment {index}, boxed area with no element inside"]
-        lines = [f"  Comment {index}, boxed area covering:"]
-        for element in elements:
-            described = f"`{element['path']}`"
-            label = _one_line(element.get("label", ""))
-            if label:
-                described += f' "{label}"'
-            text = _one_line(element.get("text", ""))
-            if text:
-                described += f": {text}"
-            if isinstance(element.get("region"), dict):
-                described += f" (the box covers {_region(element['region'])} of it)"
-            lines.append(f"    {described}")
-        return lines
-    where = f"  Comment {index}, boxed region {_region(selection['rect'])} of the image"
-    crop = selection.get("crop_path")
-    if not isinstance(crop, str):
-        return [where]
-    frame = ", first frame of the animation" if selection.get("first_frame_only") else ""
-    return [f"{where}{frame}: `{crop}`"]
-
-
-def _region(rect: object) -> str:
-    assert isinstance(rect, dict)
-    return (
-        f"x {_percent(rect['x'])}–{_percent(rect['x'] + rect['width'])}, "
-        f"y {_percent(rect['y'])}–{_percent(rect['y'] + rect['height'])}"
-    )
-
-
-def _percent(fraction: float) -> str:
-    return f"{fraction * 100:.1f}".removesuffix(".0") + "%"
-
-
 def message_part(text: str, *, author: Literal["human", "orchestrator"] = "human") -> str:
     """A message's exact bytes between markers, so no RCP section reads as part of it."""
 
@@ -953,13 +907,22 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
         )
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
-            if selection.get("kind") == "text":
-                lines.append(f"  Comment {index}, on text: {_one_line(selection.get('text', ''))}")
-                around = _one_line(selection.get("surrounding_text", ""))
-                if around:
-                    lines.append(f"    Around it: {around}")
-            else:
-                lines.extend(_box_lines(index, selection, html=item["media_type"] == "text/html"))
+            anchor = TypeAdapter(CommentAnchor).validate_python(
+                {
+                    key: value
+                    for key, value in selection.items()
+                    if key not in {"crop_path", "first_frame_only", "drawn_version_missing"}
+                }
+            )
+            lines.append(f"  Comment {index}: {render_anchor(anchor)}")
+            if item.get("current_version"):
+                lines.append(f"  Current version: {item['current_version']}")
+            if selection.get("drawn_version_missing"):
+                lines.append("  Drawn version bytes are unavailable; no crop is attached.")
+            if isinstance(selection.get("crop_path"), str):
+                lines.append(f"  Crop: `{selection['crop_path']}`")
+                if selection.get("first_frame_only"):
+                    lines.append("  Crop shows the first frame of the animation.")
     return "\n".join(lines)
 
 

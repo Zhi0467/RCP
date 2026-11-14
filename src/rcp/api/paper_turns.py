@@ -18,8 +18,11 @@ _PREFIX = "/api/projects/{project_id}/paper/turns/{operation_id}"
 def _turn(request: Request, project_id: str, operation_id: str) -> tuple[str, str]:
     services = _api_services(request)
     user = services.identity_access.acting_user(request)
-    if not services.store.comment_target_readable(
-        user.user_id, "reply", operation_id, project_id=project_id
+    if (
+        services.store.comment_target_route(
+            user.user_id, "reply", operation_id, project_id=project_id
+        )
+        is None
     ):
         raise HTTPException(404, "Paper turn not found")
     try:
