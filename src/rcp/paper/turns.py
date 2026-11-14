@@ -64,7 +64,7 @@ def _text(path: str, data: bytes | None) -> str | None:
 
 def _hunks(before: str, after: str) -> list[PaperTurnHunk]:
     hunks, shift = [], 0
-    for change in line_changes(before, after):
+    for change in line_changes(before, after, grouped=False):
         old, new = change.before.splitlines(), change.after.splitlines()
         hunks.append(
             PaperTurnHunk(

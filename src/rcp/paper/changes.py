@@ -247,21 +247,25 @@ def _line_opcodes(old: list[str], new: list[str]) -> list[tuple[str, int, int, i
     ]
 
 
-def line_changes(before: str, after: str) -> list[LineChange]:
-    """Return deterministic offset ranges for review against the saved base."""
+def line_changes(before: str, after: str, *, grouped: bool = True) -> list[LineChange]:
+    """Return deterministic offset ranges for review against the saved base.
+
+    Grouped changes join nearby edits and become one rewrite past a share of the
+    file; ungrouped changes are each exact edit, as a line diff shows them.
+    """
     old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
     edits = [op for op in _line_opcodes(old, new) if op[0] != "equal"]
     if not edits:
         return []
     regions: list[tuple[int, int, int, int]] = []
     for _tag, a, b, c, d in edits:
-        if regions and a - regions[-1][1] <= _CARD_MERGE_GAP_LINES:
+        if grouped and regions and a - regions[-1][1] <= _CARD_MERGE_GAP_LINES:
             first = regions.pop()
             regions.append((first[0], b, first[2], d))
         else:
             regions.append((a, b, c, d))
     changed = max(sum(b - a for _, a, b, _, _ in edits), sum(d - c for _, _, _, c, d in edits))
-    rewrite = (
+    rewrite = grouped and (
         changed / max(len(old), len(new), 1) > _REWRITE_CHANGED_SHARE
         or len(regions) > _REWRITE_CARD_COUNT
     )

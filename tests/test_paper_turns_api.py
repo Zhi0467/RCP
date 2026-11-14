@@ -14,7 +14,7 @@ def test_a_turn_lists_the_agents_files_clashes_first_and_serves_each_diff(manife
     folder = tmp_path / "data/paper" / project
     with signed_in_client(app) as client:
         prefix = f"/api/projects/{project}/paper"
-        for path, text in (("a.md", "one\ntwo\nthree\n"), ("b.md", "1\n2\n3\n"), ("c.md", "c\n")):
+        for path, text in (("a.md", "one\ntwo\nthree\n"), ("b.md", "b\n"), ("c.md", "c\n")):
             op = PaperOp(kind="write", path=path, data=text.encode(), exclusive=True)
             live.run_sync(live.apply(project, [op], "human"))
         admitted_launch_task(
@@ -27,7 +27,7 @@ def test_a_turn_lists_the_agents_files_clashes_first_and_serves_each_diff(manife
         for path, text in (("a.md", "one\nTWO human\nthree\n"), ("c.md", "c human\n")):
             op = PaperOp(kind="write", path=path, data=text.encode())
             live.run_sync(live.apply(project, [op], "human"))
-        (folder / "b.md").write_text("1\n2\n3\nagent\n")
+        (folder / "b.md").write_text("b\nagent\n")
         (folder / "a.md").write_text("one\ntwo agent\nthree\n")
         live.run_sync(live.poll(project, full=True))
         end_paper_turn(store, live, project, "turn")
@@ -46,7 +46,7 @@ def test_a_turn_lists_the_agents_files_clashes_first_and_serves_each_diff(manife
 
         added = client.get(prefix + "/turns/turn/files/b.md").json()
         assert added["current"] is None
-        assert [(h["new_start"], h["new"]) for h in added["hunks"]] == [(4, ["agent"])]
+        assert [(h["new_start"], h["new"]) for h in added["hunks"]] == [(2, ["agent"])]
 
         assert client.get(prefix + "/turns/turn/files/c.md").status_code == 404
         assert client.get(prefix + "/turns/missing").status_code == 404
