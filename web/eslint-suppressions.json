@@ -544,11 +544,6 @@
       "count": 8
     }
   },
-  "src/paper/PaperChanges.tsx": {
-    "rcp/no-comments": {
-      "count": 4
-    }
-  },
   "src/paper/PaperDialog.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -556,7 +551,7 @@
   },
   "src/paper/PaperEditor.tsx": {
     "rcp/no-comments": {
-      "count": 8
+      "count": 4
     }
   },
   "src/paper/PaperFiles.tsx": {
@@ -911,7 +906,7 @@
   },
   "tests/agentTasks.test.mjs": {
     "rcp/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "tests/agentThreads.browser.test.mjs": {

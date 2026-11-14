@@ -75,7 +75,6 @@ interface Props {
   coachActions: CoachChatActions;
 }
 const FOLD_KEY = "rcp:paper-files-folded";
-const NO_CHANGES: [] = [];
 const openedLinks = new WeakSet<object>();
 export function PaperWorkspace({
   apiBase,
@@ -644,9 +643,7 @@ export function PaperWorkspace({
               onReady={focusReady}
               maxBytes={tree?.max_doc_bytes}
               format={file!.format}
-              changes={NO_CHANGES}
               focus={focus}
-              onDecide={() => undefined}
               onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
           ) : file?.kind === "binary" ? (

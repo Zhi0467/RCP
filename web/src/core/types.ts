@@ -2560,8 +2560,6 @@ export interface AgentTask {
   steer_turn_id: string | null;
   /** Bumped by each queued steer and each final steer receipt; a change means new chat history. */
   steer_revision?: number;
-  /** A Paper coach turn's steered messages, which it has no transcript to hold. */
-  steers?: ChatMessage[];
   //: What sending into this running attempt does, worded by the runtime that
   //: owns the behaviour: Codex app-server injects into the turn, Claude
   //: stream-json queues a follow-up turn. The composer renders this verbatim.
@@ -3596,24 +3594,6 @@ export interface SetupPreview {
   remote_write: boolean;
   providers: Record<ProviderId, ProviderReadiness>;
   agent_readiness: Record<AgentExecutionProfile, ProviderReadiness>;
-}
-
-export interface WritingSession {
-  provider: ProviderId;
-  runtime_id: string;
-  runtime_label: string;
-  provider_label: string;
-  native_session_id: string;
-  machine_id: string;
-  project_id: string;
-  title?: string | null;
-  model: string;
-  reasoning?: string | null;
-  created_at: string;
-  last_resumed_at: string;
-  introduction_hash_examined: string;
-  graph_revision_examined: number;
-  research_md_hash_examined: string;
 }
 
 export interface ProjectArtifact {

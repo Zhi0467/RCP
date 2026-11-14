@@ -13,7 +13,6 @@
 .paper-coach .agent-chat-view-line.agent:empty {
   display: none;
 }
-.paper-agent-popover,
 .paper-session-list {
   background: var(--aqua-surface, var(--sheet));
   border-radius: 10px;
@@ -38,63 +37,6 @@
   padding: 9px;
   border: 0;
   border-radius: 7px;
-}
-.paper-change-summary,
-.paper-change-heading {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-}
-.paper-change-summary {
-  color: var(--muted);
-  font-size: 12px;
-  margin-top: 10px;
-}
-.paper-change-summary > span {
-  flex: 1;
-}
-.paper-change {
-  background: var(--sheet);
-  border-radius: 9px;
-  box-shadow: var(--aqua-raised, var(--shadow));
-  margin-top: 8px;
-  padding: 9px 10px;
-}
-.paper-change-name {
-  display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  gap: 2px 5px;
-  min-width: 0;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.paper-change-name strong {
-  font-weight: 600;
-}
-.paper-change-name > span {
-  color: var(--muted);
-}
-.paper-change-heading > svg,
-.paper-change-heading > button {
-  flex: none;
-}
-@media (min-width: 701px) {
-  .paper-change .icon-button.compact {
-    height: 26px;
-    min-height: 26px;
-    width: 26px;
-    padding: 4px;
-  }
-}
-.paper-change .accept,
-.paper-change.accepted,
-.paper-change.applied {
-  color: var(--forest);
-}
-.paper-change .reject {
-  color: var(--coral);
 }
 .paper-change-diff {
   background: var(--aqua-field, var(--paper));
@@ -124,23 +66,7 @@
   color: var(--muted);
   font: 11px/1.6 var(--ui);
 }
-.paper-change.settled {
-  background: transparent;
-  box-shadow: none;
-  padding: 6px 2px;
-}
-.paper-change.rejected .paper-change-name,
-.paper-change.undone .paper-change-name {
-  text-decoration: line-through;
-  opacity: 0.65;
-}
-.paper-change.outdated {
-  box-shadow:
-    var(--aqua-raised, var(--shadow)),
-    inset 3px 0 0 var(--amber);
-}
 .paper-failure,
-.paper-change.paper-failure,
 .paper-inspector.paper-failure {
   box-shadow:
     var(--aqua-raised, var(--shadow)),
@@ -250,38 +176,12 @@
   .paper-history-comparison {
     grid-template-columns: minmax(0, 1fr);
   }
-  .paper-change {
-    padding: 8px;
-  }
-  .paper-change-name {
-    font-size: 11px;
-  }
 }
 
-.paper-inline-suggestion {
-  margin-inline: 0.4em;
-}
-.paper-inline-suggestion .paper-suggestion-actions {
-  display: inline-flex;
-  vertical-align: middle;
-}
-.paper-inline-suggestion .paper-suggestion-actions button {
-  min-width: 28px;
-  min-height: 28px;
-}
 @media (max-width: 700px) {
-  .paper-inline-suggestion .paper-suggestion-actions button {
-    min-width: 44px;
-    min-height: 44px;
-  }
   :root:has(.paper-live-workspace) .branch-picker-trigger {
     min-height: 44px;
   }
-}
-/* Comments waiting for the coach, counted on its Paper view segment. */
-/* The count sits on the Coach segment's corner, so the segment keeps its width. */
-.segmented button.paper-coach-segment {
-  position: relative;
 }
 .paper-comment-count {
   animation: paper-comment-count-in 0.16s ease-out;
