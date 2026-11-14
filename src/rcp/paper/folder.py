@@ -13,6 +13,7 @@ from rcp.paper.folder_io import Entry, WriteResult
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+    from rcp.storage.models import ProjectRecord
     from rcp.transport.run_stage import RemoteRunStage
 
 
@@ -28,6 +29,8 @@ class PaperFolder(Protocol):
     def delete(self, path: str, expect_sha: str | None) -> WriteResult: ...
 
     def rename(self, source: str, destination: str) -> None: ...
+
+    def install(self, files: dict[str, bytes]) -> bool: ...
 
 
 def _settle(remote: bool) -> dict[str, float]:
@@ -55,6 +58,9 @@ class LocalPaperFolder:
 
     def rename(self, source: str, destination: str) -> None:
         folder_io.rename(self.root, source, destination)
+
+    def install(self, files: dict[str, bytes]) -> bool:
+        return folder_io.install(self.root, files)
 
 
 def _decode(value: str | None) -> bytes | None:
@@ -96,6 +102,10 @@ class RemotePaperFolder:
     def rename(self, source: str, destination: str) -> None:
         self._call("rename", source=source, destination=destination)
 
+    def install(self, files: dict[str, bytes]) -> bool:
+        encoded = {path: base64.b64encode(data).decode("ascii") for path, data in files.items()}
+        return self._call("install", files=encoded)["installed"]
+
 
 def paper_folders(store: AppStore, data_dir: Path) -> Callable[[str], PaperFolder]:
     """The folder on each project's state machine, where its agents run."""
@@ -110,3 +120,16 @@ def paper_folders(store: AppStore, data_dir: Path) -> Callable[[str], PaperFolde
         return LocalPaperFolder(folder_io.paper_root(data_dir, project_id))
 
     return folder
+
+
+def change_project_paper(store: AppStore, project: ProjectRecord, destination: str | None) -> None:
+    """Move or delete a project's Paper folder on its state card, as memory does."""
+    from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+    from rcp.transport.run_stage import RemoteRunStage
+
+    if project.state_machine_id != BACKEND_MACHINE_ID:
+        RemoteRunStage(host_of(store, project.state_machine_id)).paper_folder(
+            {"op": "change", "project_id": project.project_id, "destination": destination}
+        )
+    else:
+        folder_io.change_project_folder(store.path.parent, project.project_id, destination)

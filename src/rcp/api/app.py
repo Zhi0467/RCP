@@ -2117,6 +2117,7 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
+                await asyncio.to_thread(catalog.migrate_papers)
                 await paper_live.start()
                 register_paper_live(store, paper_live)
                 await asyncio.to_thread(paper_git.reconcile)

@@ -56,7 +56,8 @@ from rcp.machine_upgrade import (
     upgraded_manifest_text,
 )
 from rcp.paper import PaperLive, PaperService
-from rcp.paper.folder import paper_folders
+from rcp.paper.folder import change_project_paper, paper_folders
+from rcp.paper.migration import migrate_paper, migrate_papers
 from rcp.paper.projection import publication_badge
 from rcp.project_snapshot_compat import migrate_display_snapshot_settings
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -884,7 +885,8 @@ class ProjectCatalog:
         self.store = store
         self.launcher = launcher
         self.provider_skills = provider_skills
-        self.paper_live = PaperLive(store, paper_folders(store, data_dir))
+        self.paper_folder = paper_folders(store, data_dir)
+        self.paper_live = PaperLive(store, self.paper_folder, prepare=self.migrate_paper)
         self.paper_admission: Callable[[str], AbstractContextManager[object]] = lambda _project_id: (
             nullcontext()
         )
@@ -908,6 +910,21 @@ class ProjectCatalog:
         self._display_services: dict[str, tuple[Path, ProjectService, MaterializationResult]] = {}
         self._display_snapshots: dict[str, tuple[Path, dict[str, object]]] = {}
         self._refresh_display_workspaces()
+
+    def migrate_paper(self, project_id: str) -> bool:
+        """Move one project's SQLite-held Paper into its folder, if still owed."""
+        return migrate_paper(
+            self.store,
+            project_id,
+            self.paper_folder(project_id),
+            lambda: self._remove_paper_projection(project_id),
+        )
+
+    def migrate_papers(self) -> list[str]:
+        return migrate_papers(self.store, self.paper_folder, self._remove_paper_projection)
+
+    def _remove_paper_projection(self, project_id: str) -> None:
+        self._display_workspace_or_refresh(project_id)[1].remove_paper_tree()
 
     def _refresh_display_workspaces(self) -> None:
         workspaces: dict[str, StateWorkspace] = {}
@@ -1225,6 +1242,7 @@ class ProjectCatalog:
                         logging.getLogger(__name__).exception(
                             "Project memory rename remains pending"
                         )
+                    self._move_alias_paper(old_project_id, stored)
                     self._refresh_project_aliases()
                     self._apply_app_file_migration(migration)
                     attachment_store.apply_project_identity_migration(attachment_migration)
@@ -1533,6 +1551,18 @@ class ProjectCatalog:
             self._apply_app_file_migration(migration)
             attachment_store.apply_project_identity_migration(attachment_migration)
             self._migrate_runtime_keys(alias_id, canonical_project_id)
+            canonical = self.store.project(canonical_project_id)
+            if canonical is not None:
+                self._move_alias_paper(alias_id, canonical)
+
+    def _move_alias_paper(self, alias_id: str, project: ProjectRecord) -> None:
+        """Move an alias's Paper folder to the canonical id; a retry finishes it."""
+        try:
+            change_project_paper(
+                self.store, project.model_copy(update={"project_id": alias_id}), project.project_id
+            )
+        except Exception:
+            logging.getLogger(__name__).exception("Project Paper rename remains pending")
 
     def _prepare_app_file_migration(
         self,

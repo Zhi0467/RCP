@@ -2683,41 +2683,70 @@ class AgentTaskStoreMixin(StoreMixinBase):
         rows = connection.execute(
             "SELECT operation_id, status FROM graph_runs ORDER BY operation_id"
         ).fetchall()
-        interrupted = [
-            str(row["operation_id"])
-            for row in rows
-            if row["status"] not in {"succeeded", "failed", "interrupted"}
-        ]
-        if interrupted:
-            selected_json = json.dumps(interrupted, separators=(",", ":"))
-            connection.execute(
-                """
-                UPDATE graph_runs
-                SET status = 'interrupted', updated_at = ?, finished_at = COALESCE(finished_at, ?),
-                    status_message = ?, error = ?, phase = 'interrupted', last_activity_at = ?
-                WHERE operation_id IN (SELECT value FROM json_each(?))
-                """,
-                (now, now, detail, detail, now, selected_json),
-            )
-            for operation_id in interrupted:
-                settle_evidence_flag_address(connection, operation_id, "interrupted")
-                self._insert_agent_task_event(
-                    connection,
-                    operation_id,
-                    detail,
-                    level="warning",
-                    created_at=now,
-                )
-                self._insert_agent_task_receipt(
-                    connection,
-                    operation_id,
-                    "operation_interrupted",
-                    self._bounded_receipt_payload({"status": "interrupted", "reason": "restore"}),
-                    tier="summary",
-                    created_at=now,
-                )
+        self.interrupt_agent_tasks(
+            connection,
+            [
+                str(row["operation_id"])
+                for row in rows
+                if row["status"] not in {"succeeded", "failed", "interrupted"}
+            ],
+            detail=detail,
+            reason="restore",
+            now=now,
+        )
         operation_ids = tuple(str(row["operation_id"]) for row in rows)
         self.detach_agent_tasks_for_history(connection, operation_ids)
+
+    def warn_agent_tasks(
+        self,
+        connection: sqlite3.Connection,
+        operation_ids: list[str],
+        *,
+        detail: str,
+        now: str,
+    ) -> None:
+        """Add one warning event to each named task; unknown ids add nothing."""
+        for operation_id in operation_ids:
+            self._insert_agent_task_event(
+                connection, operation_id, detail, level="warning", created_at=now
+            )
+
+    def interrupt_agent_tasks(
+        self,
+        connection: sqlite3.Connection,
+        operation_ids: list[str],
+        *,
+        detail: str,
+        reason: str,
+        now: str,
+    ) -> None:
+        """Settle unfinished tasks as interrupted inside the caller's transaction.
+
+        Each task gets the detail as its error and a warning event, plus an
+        interruption receipt naming the reason.
+        """
+        if not operation_ids:
+            return
+        connection.execute(
+            """
+            UPDATE graph_runs
+            SET status = 'interrupted', updated_at = ?, finished_at = COALESCE(finished_at, ?),
+                status_message = ?, error = ?, phase = 'interrupted', last_activity_at = ?
+            WHERE operation_id IN (SELECT value FROM json_each(?))
+            """,
+            (now, now, detail, detail, now, json.dumps(operation_ids, separators=(",", ":"))),
+        )
+        self.warn_agent_tasks(connection, operation_ids, detail=detail, now=now)
+        for operation_id in operation_ids:
+            settle_evidence_flag_address(connection, operation_id, "interrupted")
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "operation_interrupted",
+                self._bounded_receipt_payload({"status": "interrupted", "reason": reason}),
+                tier="summary",
+                created_at=now,
+            )
 
     def mark_agent_artifact_kept(
         self,
