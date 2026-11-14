@@ -167,7 +167,8 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
         "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
         "maxChars": STEERING_MESSAGE_MAX_CHARS,
         "stateRefreshMs": ARTIFACT_VIEWER_STATE_REFRESH_MS,
-        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES,
+        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES
+        or config.get("mediaType") == "application/pdf",
         "stateUrl": base_url + "/state",
         "commentsUrl": base_url + "/comments",
     }

@@ -31,6 +31,7 @@ from rcp.artifact_comments import (
     selection_frame_addon,
     supports_comments,
 )
+from rcp.artifact_renderer import ArtifactRendererUnavailable
 from rcp.artifact_theme import artifact_color_mode, artifact_theme
 from rcp.artifact_views import (
     InlineAppearance,
@@ -730,6 +731,8 @@ def stored_artifact_viewer(
             if supports_comments(artifact.media_type)
             else None,
         )
+    except ArtifactRendererUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Artifact has no viewer") from exc
     return Response(

@@ -188,9 +188,9 @@ def artifact_viewer_document(
     selectable: bool = False,
 ) -> tuple[str, str]:
     kind = artifact_view(descriptor.media_type)
-    if kind in {"pdf", "file"}:
+    if kind == "file":
         raise ValueError("Artifact has no viewer")
-    if presentation == "inline":
+    if presentation == "inline" and kind != "pdf":
         return inline_viewer_document(
             descriptor.name,
             kind,
@@ -211,6 +211,11 @@ def artifact_viewer_document(
     )
     if kind == "video":
         preview = _VIDEO_PREVIEW
+    if kind == "pdf":
+        preview = (
+            f'<div id="previewPdf" data-content-url="{url}"></div>'
+            f'<a class="pdf-download" href="{url}" download="{title}">Download</a>'
+        )
     scripts: list[str] = [_video_script(content_url)] if kind == "video" else []
     if panel and panel.script:
         scripts.append(panel.script)
@@ -248,6 +253,7 @@ main{{display:grid;grid-template-rows:minmax(0,1fr) auto;min-height:0}}
 #pageError{{padding:6px 72px 6px 12px;min-width:0}}#pageError:not([hidden]){{display:flex;align-items:center;gap:8px}}
 #pageErrorMessage{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}#askFix{{flex-shrink:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
+.pdf-download{{position:absolute;left:12px;top:12px;z-index:3;color:var(--ink)}}
 {_VIDEO_STYLE if kind == "video" else ""}
 {panel.style if panel else ""}</style></head><body>
 <main><div class="canvas">{preview}</div>{page_error}{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
@@ -255,6 +261,8 @@ iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:bloc
     if connects:
         csp += "connect-src 'self'; "
     csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
+    if kind == "pdf":
+        csp += "; worker-src blob:; font-src blob: data:"
     if kind == "video":
         csp += "; media-src blob:"
     return document, csp

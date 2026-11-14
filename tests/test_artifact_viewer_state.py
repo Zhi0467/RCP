@@ -182,7 +182,7 @@ def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
     assert (state["edit_failure"] is not None) == (status in {"failed", "interrupted"})
 
 
-@pytest.mark.parametrize("name,data", [("paper.pdf", b"%PDF-1.7\n"), ("data.bin", b"\x00\xff")])
+@pytest.mark.parametrize("name,data", [("data.bin", b"\x00\xff")])
 def test_state_download_only_has_no_viewer_or_comment(viewer_app, name, data):
     app, client, store = viewer_app
     artifact = _artifact(store, _task(store, app.state.default_project_id), name=name, data=data)
@@ -391,3 +391,31 @@ def test_delete_waits_only_while_an_edit_using_the_artifact_runs(viewer_app):
         assert client.delete(url).status_code == 409
     assert store.artifact(artifact.artifact_id) is not None
     assert client.delete(url).status_code == 204
+
+
+def test_pdf_viewer_offers_shared_comments(viewer_app):
+    app, client, store = viewer_app
+    task = _task(store, app.state.default_project_id)
+    _save_source_chat(app, task)
+    artifact = _artifact(store, task, name="paper.pdf", data=b"%PDF-1.7\n")
+    state = _state(client, artifact)
+    response = client.get(
+        f"/api/projects/{artifact.project_id}/artifacts/{artifact.artifact_id}/viewer"
+    )
+    assert response.status_code == 200
+    assert 'id="previewPdf"' in response.text
+    assert "RcpComments.mountViewer" in response.text
+    assert client.get(state["download_url"]).content == b"%PDF-1.7\n"
+
+
+def test_viewer_preserves_missing_bundle_error(viewer_app, monkeypatch, tmp_path):
+    from rcp import artifact_comments
+
+    app, client, store = viewer_app
+    artifact = _artifact(store, _task(store, app.state.default_project_id))
+    monkeypatch.setattr(artifact_comments, "web_dist_path", lambda: tmp_path / "missing")
+    response = client.get(
+        f"/api/projects/{artifact.project_id}/artifacts/{artifact.artifact_id}/viewer"
+    )
+    assert response.status_code == 503
+    assert "Rebuild the Web assets" in response.json()["detail"]

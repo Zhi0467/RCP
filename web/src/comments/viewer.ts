@@ -2,6 +2,7 @@ import { createCommentsClient, CommentRequestError } from "./api.ts";
 import { findAnchor } from "./anchors.ts";
 import { installBoxTool } from "./box.ts";
 import { createFrameLocator } from "./viewerFrame.ts";
+import { mountPdf } from "./pdf.ts";
 import { displayedVersion } from "./viewerModel.ts";
 import { selectionInput } from "./selectionInput.ts";
 import { mountComments } from "./ui.ts";
@@ -33,8 +34,11 @@ export function mountViewer(config: ViewerConfig) {
   const abort = new AbortController();
   const reposition = () => document.dispatchEvent(new Event("scroll"));
   const frameLocator = frame ? createFrameLocator(frame, reposition) : null;
+  const pdfRoot = document.querySelector<HTMLElement>("#previewPdf");
+  let pdf: ReturnType<typeof mountPdf> | undefined;
   let state: ViewerState | null = null;
   let disposed = false;
+  let locateRequest = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sendAttempt: { ids: string; key: string; freshSession: boolean } | null = null;
   let freshSessionRequired = false;
@@ -51,13 +55,22 @@ export function mountViewer(config: ViewerConfig) {
       height,
     };
   };
-  const context = () => ({
-    text: "",
-    element: () => null,
-    textRect: () => null,
-    image: imageBounds(),
-    whole: imageBounds(),
-  });
+  const context = (thread?: CommentThread) =>
+    pdf
+      ? {
+          ...pdf.context(),
+          sameVersion:
+            !thread?.drawn_version ||
+            thread.drawn_version ===
+              displayedVersion(pdfRoot?.dataset.contentUrl || location.href, location.href),
+        }
+      : {
+          text: "",
+          element: () => null,
+          textRect: () => null,
+          image: imageBounds(),
+          whole: imageBounds(),
+        };
   const flash = (rect: CommentRect) => {
     const mark = document.createElement("div");
     mark.className = "rcp-comment-flash";
@@ -91,7 +104,10 @@ export function mountViewer(config: ViewerConfig) {
         target,
         anchor,
         text,
-        displayedVersion(frame?.src || image?.src || location.href, location.href),
+        displayedVersion(
+          frame?.src || image?.src || pdfRoot?.dataset.contentUrl || location.href,
+          location.href,
+        ),
       ),
     reply: (id, text) => client.reply(id, text),
     resolve: (id, resolved) => (resolved ? client.resolve(id) : client.reopen(id)),
@@ -136,24 +152,57 @@ export function mountViewer(config: ViewerConfig) {
         throw error;
       }
     },
-    locate: (thread: CommentThread) => {
+    locate: async (thread: CommentThread) => {
+      const request = ++locateRequest;
       if (frameLocator) {
         frameLocator.locate(thread);
         return;
       }
-      const rect = findAnchor(thread.anchor, context());
+      if (pdf && thread.anchor.kind === "pdf") {
+        try {
+          await pdf.prepare(thread.anchor.page);
+        } catch (error) {
+          if (!disposed) ui.showError(error);
+          return;
+        }
+        if (disposed || request !== locateRequest) return;
+      }
+      const rect = findAnchor(thread.anchor, context(thread));
       if (!rect) return;
-      image?.scrollIntoView({ block: "center" });
-      const current = findAnchor(thread.anchor, context());
+      if (pdf) pdf.scroll(rect);
+      else image?.scrollIntoView({ block: "center" });
+      const current = findAnchor(thread.anchor, context(thread));
       if (current) flash(current);
       reposition();
     },
     position: (thread) => {
       if (frameLocator) return frameLocator.position(thread.thread_id);
-      const rect = findAnchor(thread.anchor, context());
-      return rect ? { x: rect.x + rect.width, y: rect.y + rect.height } : null;
+      const rect = findAnchor(thread.anchor, context(thread));
+      if (!rect) return null;
+      const point = { x: rect.x + rect.width, y: rect.y + rect.height };
+      const bounds = pdfRoot?.getBoundingClientRect();
+      if (
+        bounds &&
+        (point.y < bounds.top ||
+          point.y > bounds.bottom ||
+          point.x < bounds.left ||
+          point.x > bounds.right)
+      )
+        return null;
+      return point;
     },
   });
+  if (pdfRoot?.dataset.contentUrl) {
+    pdf = mountPdf(
+      pdfRoot,
+      pdfRoot.dataset.contentUrl,
+      (anchor, point) => {
+        if (config.selectionEnabled) ui.offer(anchor, point);
+      },
+      (error) => ui.showError(error),
+    );
+    void pdf.ready.then(reposition).catch((error: unknown) => ui.showError(error));
+  }
   root.querySelector(".rcp-comments-notice")?.setAttribute("id", "notice");
   window.addEventListener(
     "message",
@@ -267,6 +316,7 @@ export function mountViewer(config: ViewerConfig) {
     clearBox?.();
     observer?.disconnect();
     layer?.remove();
+    pdf?.destroy();
     ui.destroy();
   };
   window.addEventListener("pagehide", destroy, { once: true, signal: abort.signal });
