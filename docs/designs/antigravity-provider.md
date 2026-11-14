@@ -115,7 +115,7 @@ Docs: [headless mode](https://antigravity.google/docs/cli/headless.md),
 | Contract | Owner | agy | Status |
 | --- | --- | --- | --- |
 | Resume | `command(session_id=…)` | `--conversation <id>` (P2) | Native |
-| Fork | `fork_session_id`; `SessionFormat.prepare_session_fork` | No flag. Conversations are SQLite files | **Missing**: [D4](#d4-branching-a-chat-from-an-agy-session) |
+| Fork | `fork_session_id`; `SessionFormat.prepare_session_fork` | No flag. Conversations are SQLite files | **Missing**: fresh session, [D4](#d4-branching-a-chat-from-an-agy-session-settled) |
 | Session indexing | `session_format` | SQLite, not JSONL | Missing by choice, as OpenCode |
 | Stale session | `classify_terminal_error` `__init__.py:133` | Not observed; stays `provider_error` | Missing, safe default |
 | Native memory | spec "Native provider memory is off" | No switch. The staged tool list leaves out the knowledge tools | Adapter, injection unverified |
@@ -484,19 +484,12 @@ agent from planting a cwd hook.
 
 Both pools, through overlay homes. See [Sign-in contract](#sign-in-contract).
 
-### D4. Branching a chat from an agy session
+### D4. Branching a chat from an agy session (settled)
 
-agy has no fork.
+agy has no fork. A branch of an agy chat starts a fresh agy session with the
+existing tail-transcript fallback and records the fresh start visibly.
 
-- **(Recommended) Start a fresh agy session with the existing tail-transcript
-  fallback, and record the fresh start visibly.**
-- Refuse "Branch this chat" for agy sources.
+### D5. Added logins in the first PR (settled)
 
-### D5. Added logins in the first PR
-
-Machine sign-in alone makes agy usable. Added logins need the shared overlay
-module, `paste_code`, and the overlay tests, roughly half the build.
-
-- **(Recommended) One PR with both pools**, as the human asked for parity with
-  Claude and Codex, and as AGENTS.md ships design, code and docs together.
-- Ship machine sign-in first, and added logins in a second PR.
+One PR ships both sign-in pools: the machine sign-in and added logins, with the
+shared overlay module and `paste_code`.
