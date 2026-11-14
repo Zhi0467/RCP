@@ -234,3 +234,8 @@ gain a purpose (migration 81). Exact source
 Git link record (migration 82). Exact source
 `42ce9f418c9491f8db9b9b723f5bd56eb6e54d04` upgrades a copy of
 `pre-space-chat-machines-v45-07622f7` through the existing fixture builder.
+
+`pre-comments-v47-c2b0f07` freezes migration 82 before shared comment threads,
+posts, and mentions (migration 83). Exact source `c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761`
+upgrades a copy of `pre-paper-git-links-v46-42ce9f4` through the existing fixture
+builder. Earlier boundaries remain unchanged.
