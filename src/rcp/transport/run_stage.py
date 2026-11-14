@@ -125,6 +125,18 @@ class RemoteRunStage:
             raise _ssh_failure(result, "could not prepare project memory")
         return json.loads(result.stdout)
 
+    def paper_folder(self, request: dict) -> dict:
+        """Run one Paper folder operation on this stage's host."""
+        source = (
+            importlib.resources.files("rcp.paper")
+            .joinpath("folder_io.py")
+            .read_text(encoding="utf-8")
+        )
+        result = self._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
+        if result.returncode:
+            raise _ssh_failure(result, "could not reach the Paper folder")
+        return json.loads(result.stdout)
+
     def sweep(
         self,
         *,

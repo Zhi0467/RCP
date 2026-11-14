@@ -787,6 +787,10 @@ PAPER_COMPACT_UPDATES = 64
 PAPER_TIMER_SECONDS = 1.0
 # Continuous typing rescans history for pruning at most this often.
 PAPER_PRUNE_SECONDS = 30.0
+PAPER_POLL_SECONDS = 1.0
+PAPER_REMOTE_POLL_SECONDS = 2.0
+PAPER_POLL_MAX_FILES = 64
+PAPER_POLL_MAX_HASH_MB = 16
 
 # PAPER_COMPILE: runtime assets and bounded paper previews.
 PAPER_COMPILE_TIMEOUT_SECONDS = 180
