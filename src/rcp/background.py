@@ -70,6 +70,7 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
+from rcp.runs.paper_turns import paper_turn_waits, wake_paper_turns
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -1961,6 +1962,8 @@ class BackgroundAgentTasks:
             return record
         if self.store.agent_task_turn_refusal(record):
             return record
+        if paper_turn_waits(self.store, record):
+            return self._require_operation(operation_id)
 
         request = self._launchable_request(record)
 
@@ -3291,6 +3294,10 @@ class BackgroundAgentTasks:
                     )
 
         settle_provider_login(self, record)
+        try:
+            wake_paper_turns(self, record)
+        except Exception:
+            logger.exception("Waiting Paper turns could not start after %s", record.operation_id)
 
     async def _consume(
         self,

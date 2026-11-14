@@ -2127,6 +2127,8 @@ export interface AgentTaskRequest {
   references?: ProjectReferenceSelector[];
   session_id?: string | null;
   mode?: ConversationMode;
+  /** Set by a chat's first turn; a Paper chat always runs Work. */
+  focus?: "paper" | null;
   artifact_context?: ArtifactContextRequest | null;
   trigger?: TaskTrigger;
   patch_kind?: GraphPatchKind;

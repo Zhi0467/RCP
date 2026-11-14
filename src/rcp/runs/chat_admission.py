@@ -35,6 +35,7 @@ def admit_fresh_chat_turn(
         # Archive is shared, so a tab that has not seen it yet cannot revive the chat.
         if refusal := store.chat_turn_refusal(project_id, request.chat_id):
             raise AgentTaskAdmissionConflict(refusal)
+        store.admit_chat_focus(project_id, request.chat_id, request.focus)
         request = request.model_copy(
             update={"browser_requested": store.chat_browser_requested(project_id, request.chat_id)}
         )

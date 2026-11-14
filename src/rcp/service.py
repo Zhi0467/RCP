@@ -72,6 +72,7 @@ from rcp.core.attention import (
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
+    ChatFocus,
 )
 from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import (
@@ -1067,6 +1068,7 @@ class RunRequest(BaseModel):
         default=None, exclude_if=lambda value: value is None
     )
     mode: ConversationMode = "discuss"
+    focus: ChatFocus | None = Field(default=None, exclude_if=lambda value: value is None)
     isolation_owner_episode_id: str | None = None
     code_worktree: bool = False
     graph_isolation: bool = False
@@ -1115,6 +1117,14 @@ class RunRequest(BaseModel):
     references: list[ProjectReferenceSelector] = Field(
         default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
     )
+
+    @model_validator(mode="after")
+    def paper_focus_always_works(self) -> RunRequest:
+        if self.focus == "paper":
+            if self.chat_scope != "project" or self.patch_kind != "work":
+                raise ValueError("A Paper chat is a project chat's Work.")
+            self.mode = "work"
+        return self
 
 
 class CoachRequest(BaseModel):
@@ -1212,6 +1222,8 @@ def resolve_dispatch_authority(
     work = request.mode == "work"
     if kind == "space_chat" and (not work or request.patch_kind != "work"):
         raise ValueError("Space threads require ordinary Work authority")
+    if request.focus is not None and kind != "project_chat":
+        raise ValueError("Only a project chat can focus on the Paper.")
     patch_kind = request.patch_kind if work else None
     experiment = patch_kind == "experiment_loop"
     return AgentDispatchAuthority(
@@ -1225,6 +1237,7 @@ def resolve_dispatch_authority(
             patch_kind=patch_kind,
             control_node_id=request.control_node_id if experiment else None,
             control_episode_id=request.control_episode_id if experiment else None,
+            focus=request.focus,
         ),
     )
 
@@ -2118,6 +2131,18 @@ class ProjectService:
             )
         return {**snapshot, "provider_readiness": resolved}
 
+    def paper_folder(self) -> str | None:
+        """The project's Paper folder on its base machine, named read-only to every launch."""
+        from rcp.runs.paper_turns import paper_folder_path
+
+        project_id = self.history.project_id
+        if project_id is None:
+            return None
+        base = self.machine_cards().get(self.manifest.base_machine)
+        remote = base is not None and bool(base.host)
+        path = paper_folder_path(self.paper.store, project_id, remote=remote)
+        return path if remote or Path(path).is_dir() else None
+
     def machine_cards(self) -> dict[str, SpaceMachineRecord]:
         """Every space machine card by id, read now from this project's store."""
 
@@ -3003,7 +3028,10 @@ class ProjectService:
         )
         execution_machine = self.manifest.base_machine
         assembler = ContextAssembler(
-            self.manifest, cards=self.machine_cards(), graph_root=self.history.root
+            self.manifest,
+            cards=self.machine_cards(),
+            graph_root=self.history.root,
+            paper_path=self.paper_folder(),
         )
         source_roots = assembler.source_roots(execution_machine)
         source_errors = preflight_provider_roots(
@@ -3109,7 +3137,10 @@ class ProjectService:
         """Chat context: the graph and live pointers, never the ingest corpus."""
 
         return ContextAssembler(
-            self.manifest, cards=self.machine_cards(), graph_root=self.history.root
+            self.manifest,
+            cards=self.machine_cards(),
+            graph_root=self.history.root,
+            paper_path=self.paper_folder(),
         ).chat_context(
             self.history.state(),
             graph_target=self.history.graph_target,

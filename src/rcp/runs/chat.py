@@ -66,6 +66,7 @@ from rcp.limits import (
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
+from rcp.runs.paper_turns import is_paper_turn, paper_root_for
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.session_artifacts import commented_artifact
 from rcp.runs.session_master import (
@@ -1474,6 +1475,8 @@ def _chat_read_dirs(
         raise ValueError("The local chat input stage is unavailable.")
     read_dirs.append(local_stage / "inputs")
     read_dirs.append(service.manifest.research_dir)
+    if context.paper_path is not None and Path(context.paper_path).is_dir():
+        read_dirs.append(Path(context.paper_path))
     return read_dirs
 
 
@@ -1575,6 +1578,9 @@ def _project_write_scope(
         owner = task_member_memory_owner(execution.store, task)
         if owner is not None:
             member_memory_root, _index_bytes = prepare_member_memory(execution.store, owner)
+    paper_root = None
+    if task is not None and execution is not None and is_paper_turn(task):
+        paper_root = paper_root_for(execution.store, project_id, remote_stage)
     scope = resolve_project_write_scope(
         manifest=service.manifest,
         truth_scope=write_repositories(service.history.state()),
@@ -1585,6 +1591,7 @@ def _project_write_scope(
         workspace_root=str(workspace),
         memory_roots=memory_roots,
         member_memory_root=member_memory_root,
+        paper_root=paper_root,
         admitted_aliases=admitted_aliases,
         repository_pointers=context.repositories,
         remote_stage=remote_stage,

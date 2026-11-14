@@ -1954,6 +1954,8 @@ def _agent_read_dirs(
         return _deduplicate_paths(read_dirs)
     read_dirs = [item for item in read_dirs if item.exists()]
     read_dirs.append(service.manifest.research_dir)
+    if context.paper_path is not None and Path(context.paper_path).is_dir():
+        read_dirs.append(Path(context.paper_path))
     for roots in context.all_source_roots().values():
         for item in roots:
             read_dirs.append(Path(item).expanduser())

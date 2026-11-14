@@ -65,7 +65,10 @@ class EpisodeWorktreeFact(BaseModel):
 
 
 class ProjectWriteScope(BaseModel):
-    """Provider-neutral, canonical filesystem scope for one Work-like launch."""
+    """Provider-neutral, canonical filesystem scope for one Work-like launch.
+
+    Only a Paper chat's Work turn carries `paper_root`, the project's Paper folder.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
@@ -79,6 +82,7 @@ class ProjectWriteScope(BaseModel):
     memory_roots: list[str] = Field(default_factory=list)
     # The thread owner's private notes folder, one of `memory_roots`.
     member_memory_root: str | None = None
+    paper_root: str | None = None
     git_metadata_roots: list[str] = Field(default_factory=list)
     # Space-machine writable paths plus the default temporary roots. Present
     # only on launches that also write repositories.
@@ -118,6 +122,8 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("memory roots must be absolute, sorted and unique")
         if self.member_memory_root is not None and self.member_memory_root not in self.memory_roots:
             raise ValueError("the member memory root must be a memory root")
+        if self.paper_root is not None and not PurePosixPath(self.paper_root).is_absolute():
+            raise ValueError("the Paper root must be absolute")
         if self.git_metadata_roots != sorted(set(self.git_metadata_roots)):
             raise ValueError("Git metadata roots must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.git_metadata_roots):
@@ -156,6 +162,7 @@ class ProjectWriteScope(BaseModel):
         protected_write_paths: list[str],
         memory_roots: list[str] | None = None,
         member_memory_root: str | None = None,
+        paper_root: str | None = None,
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
@@ -183,6 +190,8 @@ class ProjectWriteScope(BaseModel):
             payload["member_memory_root"] = member_memory_root
         if memory_roots:
             payload["memory_roots"] = sorted(set(memory_roots))
+        if paper_root is not None:
+            payload["paper_root"] = paper_root
         if git_metadata_roots:
             payload["git_metadata_roots"] = sorted(set(git_metadata_roots))
         if granted_roots:
@@ -212,6 +221,7 @@ class ProjectWriteScope(BaseModel):
                     *self.repository_roots,
                     *self.git_metadata_roots,
                     *self.memory_roots,
+                    *([self.paper_root] if self.paper_root else []),
                     *self.granted_roots,
                 ]
             )
@@ -225,6 +235,8 @@ class ProjectWriteScope(BaseModel):
             excluded.add("memory_roots")
         if self.member_memory_root is None:
             excluded.add("member_memory_root")
+        if self.paper_root is None:
+            excluded.add("paper_root")
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
         if self.episode_worktree is None:
@@ -332,6 +344,10 @@ class CompositeWriteScope:
         return None
 
     @property
+    def paper_root(self) -> None:
+        return None
+
+    @property
     def absent_protected_paths(self) -> list[str]:
         return sorted({root for scope in self.projects for root in scope.absent_protected_paths})
 
@@ -359,6 +375,7 @@ def resolve_project_write_scope(
     machine_writable_paths: list[str] | None = None,
     memory_roots: list[str] | None = None,
     member_memory_root: str | None = None,
+    paper_root: str | None = None,
 ) -> ProjectWriteScope:
     """Resolve and verify one exact Work-like scope on its execution machine's card.
 
@@ -424,7 +441,12 @@ def resolve_project_write_scope(
         if aliases != [binding.repository_alias] or len(eligible) != 1:
             raise ValueError("conversation worktree requires its exact single repository run scope")
     explicit_protected = list(additional_protected_write_paths or [])
-    declared_paths: list[str] = [stage_root, workspace_root, *explicit_protected]
+    declared_paths: list[str] = [
+        stage_root,
+        workspace_root,
+        *explicit_protected,
+        *([paper_root] if paper_root else []),
+    ]
     for repository in eligible:
         pointer = pointers.get(repository.alias)
         if pointer is None:
@@ -610,6 +632,7 @@ def resolve_project_write_scope(
         git_metadata_roots=[binding.git_common_dir] if binding else [],
         memory_roots=memory_roots,
         member_memory_root=member_memory_root,
+        paper_root=canonical[paper_root] if paper_root else None,
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,

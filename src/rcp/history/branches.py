@@ -102,6 +102,10 @@ class BranchHistoryManager:
     def branch_id(self) -> str:
         return self._metadata.branch_id
 
+    @property
+    def project_id(self) -> str | None:
+        return self.parent.project_id
+
     def initialize(self) -> MaterializationResult:
         with self.workspace.transaction(), self.parent._append_lock():
             self.parent._reload_manifest()
