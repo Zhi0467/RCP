@@ -27,7 +27,13 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE IF EXISTS evidence_flag_carries")
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES, PAPER_SHARED_TABLES
 
-    for table in (*reversed(PAPER_PROJECT_TABLES), *PAPER_SHARED_TABLES):
+    for table in (
+        "paper_state",
+        "paper_turn_files",
+        "paper_migrations",
+        *reversed(PAPER_PROJECT_TABLES),
+        *PAPER_SHARED_TABLES,
+    ):
         connection.execute(f'DROP TABLE IF EXISTS "{table}"')
     triggers = connection.execute(
         "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'resource_%'"
@@ -92,6 +98,8 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         )
     if any(row[1] == "self_named" for row in connection.execute("PRAGMA table_info(chat_display)")):
         connection.execute("ALTER TABLE chat_display DROP COLUMN self_named")
+    if any(row[1] == "focus" for row in connection.execute("PRAGMA table_info(chat_display)")):
+        connection.execute("ALTER TABLE chat_display DROP COLUMN focus")
     connection.execute("DROP TABLE IF EXISTS research_view_pins")
     connection.execute("DROP TABLE IF EXISTS graph_branches")
     connection.execute("DROP TABLE IF EXISTS bulletin_posts")

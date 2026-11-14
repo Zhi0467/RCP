@@ -280,6 +280,7 @@ _EXEMPT_TABLES = {
     "paper_change_receipts": "receipt",
     "paper_coach_steers": "steer receipt; task rows carry it with steer_revision",
     "paper_turn_files": "turn file list; paper_state carries the revision",
+    "paper_migrations": "migration",
 }
 
 
@@ -301,6 +302,9 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "graph_runs",
             "graph_branches",
             "bulletin_posts",
+            "comment_threads",
+            "comment_posts",
+            "comment_mentions",
             "projects",
             "project_groups",
             "chat_reads",

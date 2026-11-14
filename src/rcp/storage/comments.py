@@ -48,30 +48,37 @@ class CommentTargetRoute:
 
 def migrate_comments(connection: sqlite3.Connection) -> None:
     connection.execute(
-        "CREATE TABLE comment_threads (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+        "CREATE TABLE IF NOT EXISTS comment_threads (thread_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
         "target_kind TEXT NOT NULL CHECK(target_kind IN ('artifact','paper','reply')), "
         "target_id TEXT NOT NULL, graph_target TEXT NOT NULL, drawn_version TEXT, anchor_json TEXT NOT NULL, "
         "state TEXT NOT NULL CHECK(state IN ('open','resolved')), created_by TEXT NOT NULL, "
         "created_at TEXT NOT NULL, closed_by TEXT, closed_at TEXT, sent_operation_id TEXT, send_key TEXT)"
     )
     connection.execute(
-        "CREATE INDEX comment_thread_target ON comment_threads(project_id,target_kind,target_id,state)"
+        "CREATE INDEX IF NOT EXISTS comment_thread_target "
+        "ON comment_threads(project_id,target_kind,target_id,state)"
     )
     connection.execute(
-        "CREATE TABLE comment_posts (post_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
+        "CREATE TABLE IF NOT EXISTS comment_posts (post_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, "
         "thread_id TEXT NOT NULL REFERENCES comment_threads(thread_id) ON DELETE CASCADE, "
         "author_id TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, edited_at TEXT)"
     )
-    connection.execute("CREATE INDEX comment_post_thread ON comment_posts(thread_id,created_at)")
     connection.execute(
-        "CREATE TABLE comment_mentions (project_id TEXT NOT NULL, "
+        "CREATE INDEX IF NOT EXISTS comment_post_thread ON comment_posts(thread_id,created_at)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS comment_mentions (project_id TEXT NOT NULL, "
         "post_id TEXT NOT NULL REFERENCES comment_posts(post_id) ON DELETE CASCADE, "
         "thread_id TEXT NOT NULL REFERENCES comment_threads(thread_id) ON DELETE CASCADE, "
         "user_id TEXT NOT NULL, created_at TEXT NOT NULL, observed_at TEXT, PRIMARY KEY(post_id,user_id))"
     )
     connection.execute(
-        "CREATE INDEX comment_mention_member ON comment_mentions(project_id,user_id)"
+        "CREATE INDEX IF NOT EXISTS comment_mention_member ON comment_mentions(project_id,user_id)"
     )
+    for (name,) in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'resource_comment_*'"
+    ).fetchall():
+        connection.execute(f'DROP TRIGGER "{name}"')
     install_comment_resource_versions(connection)
 
 
