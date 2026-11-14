@@ -141,7 +141,7 @@ from rcp.notifications import NotificationSender
 from rcp.paper.compile import PaperCompiler
 from rcp.paper.engines import EngineStore
 from rcp.paper.git_poller import PaperGitPoller
-from rcp.paper.git_sync import PaperGit
+from rcp.paper.git_sync import PaperGit, shared_deploy_key
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -858,7 +858,13 @@ def create_app(
             yield
 
     catalog.paper_admission = paper_admission
-    paper_git = PaperGit(store, paper_live, app_data, paper_admission)
+    paper_git = PaperGit(
+        store,
+        paper_live,
+        app_data,
+        paper_admission,
+        partial(shared_deploy_key, store, server_layout),
+    )
     paper_git_poller = PaperGitPoller(
         paper_git, admission=background_admission_gate, startup_effect_fence=startup_effect_fence
     )

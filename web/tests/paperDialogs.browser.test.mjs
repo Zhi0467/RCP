@@ -193,3 +193,37 @@ test("the Changes tab opens a file's diff in the editor and the pill switches br
   assert.deepEqual(switches, [{ branch: "review", create: false }]);
   assert.deepEqual(errors, []);
 });
+
+test("a link on the project's own repository asks for no deploy key", async (t) => {
+  const { page, errors } = await openPaper(t, {
+    browser,
+    origin: server.origin,
+    configure(fixture) {
+      const respond = fixture.respond;
+      fixture.respond = (path, method, body) => {
+        if (path.endsWith("/paper/git"))
+          return {
+            json: {
+              state: "pending",
+              repository: "owner/repo",
+              branch: "main",
+              public_key: "",
+              key_source: "code",
+              head: { commit: "", author: "" },
+              unpushed: false,
+              conflicts: 0,
+              skipped: [],
+              last_error: "",
+              checked_at: "",
+            },
+          };
+        return respond(path, method, body);
+      };
+    },
+  });
+  await page.getByRole("button", { name: "Paper Git" }).click();
+  await page.getByRole("button", { name: "Link", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Copy key" }).count(), 0);
+  assert.equal(await page.locator(".paper-git-key").count(), 0);
+  assert.deepEqual(errors, []);
+});
