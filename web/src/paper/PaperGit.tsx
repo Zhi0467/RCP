@@ -277,7 +277,7 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
   const { apiBase, busy, failure } = git;
   const [repositoryInput, setRepositoryInput] = useState("");
   const repository = repositoryFromInput(repositoryInput);
-  const [branch, setBranch] = useState("main");
+  const [branch, setBranch] = useState("");
   const [copied, setCopied] = useState(false);
   return (
     <PaperDialog label="Paper Git" className="paper-box paper-git-dialog" onClose={onClose}>
@@ -320,7 +320,7 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
           />
           <input
             aria-label="Branch"
-            placeholder="main"
+            placeholder="Default branch"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
@@ -329,10 +329,7 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
           />
           <div className="paper-git-actions">
             {failure && <Failure text={failure} />}
-            <button
-              className="button primary"
-              disabled={busy || !validRepository(repository) || !branch.trim()}
-            >
+            <button className="button primary" disabled={busy || !validRepository(repository)}>
               Continue
             </button>
           </div>
@@ -341,7 +338,8 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
       {status.state === "pending" && (
         <div className="paper-git-body">
           <strong className="paper-git-repository">
-            {status.repository} · {status.branch}
+            {status.repository}
+            {status.branch && ` · ${status.branch}`}
           </strong>
           {!status.key_source && (
             <>

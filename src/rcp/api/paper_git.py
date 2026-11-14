@@ -20,7 +20,7 @@ router = APIRouter(
 
 class KeyRequest(BaseModel):
     repository: str
-    branch: str = "main"
+    branch: str = ""
 
 
 class ResolveRequest(BaseModel):
