@@ -418,6 +418,10 @@ Masking it would write a stand-in into the home, and flagging it would mark ever
 launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
 on the execution host, outside every write root and inside the hidden set.
+Each launch records its fingerprint on its task row. A folder older than the
+stage retention is swept unless a queued, running, pausing or paused task names
+it: locally at startup and with each provider session sweep pass, and on a
+remote host with its stage sweep.
 When the hiding wrapper is unavailable at command time, the shell runs unwrapped
 without per-command traces only if the launch recorded `wrapper_unavailable` or
 `userns_blocked`. A wrapper that was available at launch but later becomes
@@ -1458,8 +1462,9 @@ entry links to the machine Codex home, including configuration, skills, sessions
 indexes, SQLite databases and caches. `providers/codex/homes.py`, through the shared `providers/login_homes.py` that
 also prepares Antigravity homes, prepares the same layout locally and over SSH, with mode 0700. Known Codex stores are linked before
 first use. Later names are discovered on preparation. Startup prepares recorded
-added homes, including signed-out and removed logins, before recovery chooses a
-usable sign-in. Missing local homes are skipped. Unreachable remote homes are
+added homes, including signed-out logins and removals whose cleanup is pending,
+before recovery chooses a usable sign-in. A finished removal's home is not
+recreated. Missing local homes are skipped. Unreachable remote homes are
 reported without preventing startup and retried on a later startup.
 
 Legacy rollouts move into the machine store at their relative paths. Missing
@@ -1518,7 +1523,14 @@ another allowed login when its previous one is unhealthy, removed, draining or
 limited, and never runs on another member's own login. A lineage login that
 became unusable or removed resolves the same way. Draining logins admit no new
 choices but remain usable by lineage work until its running turns end. Removal retains session files and deletes only credentials; unreachable remote
-cleanup remains pending for reconciliation. Shared removal synchronously settles
+cleanup remains pending for reconciliation. Once nothing runs on the login, removal
+also walks its home without following links, unlinks each link and the provider's
+home credentials, and removes folders left empty. Any other real file stays, and
+so does `<login_id>-retained` with its snapshots, which can hold the only copy of
+a rollout. Deleting a machine runs the same cleanup for its added logins when the
+host is reachable; otherwise it logs the machine and how many login folders
+remain. Nothing else on the host is removed, because another backend may share
+its `~/.rcp`. Shared removal synchronously settles
 any pending device sign-in before taking the credential gate; member removal does
 not, and relies on the late-credential rule above. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.

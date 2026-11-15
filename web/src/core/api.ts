@@ -397,8 +397,7 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "The source conversation moved on after this branch was made. Branch it again to continue.",
   chat_fork_source_unavailable:
     "The source conversation's session is no longer available. Branch it again or start a new conversation.",
-  chat_session_expired:
-    "This chat's agent session expired after 30 idle days. Start a new conversation on the branch.",
+  chat_session_expired: "This chat's agent session was cleared. Start a new session to continue.",
   graph_branch_archived: "This graph branch is archived. Unarchive it to continue here.",
   chat_archived: "This chat is archived. Restore it to continue.",
   chat_has_live_work:

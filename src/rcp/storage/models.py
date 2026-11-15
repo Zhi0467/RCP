@@ -2232,6 +2232,7 @@ class AgentTaskRecord(BaseModel):
     stage_root: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     write_scope_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    hidden_read_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     failure_kind: AgentFailureKind | None = None
     estimate_seconds: float = 300.0
     estimate_samples: int = 0

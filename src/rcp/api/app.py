@@ -131,6 +131,7 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
     PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS,
+    RUN_STAGE_RETENTION_DAYS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -189,7 +190,11 @@ from rcp.runs.provider_session_sweep import sweep_provider_sessions
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
-from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
+from rcp.runs.shared import (
+    _protected_hidden_reads,
+    _protected_run_stage_roots,
+    _sweep_stale_stages,
+)
 from rcp.runs.task_policy import (
     load_stored_request,
     task_experiment_episode_id,
@@ -282,6 +287,7 @@ from rcp.transfer.target import (
     TargetTransferUploadCoordinator,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable, fence_canonical_lock_waits
+from rcp.transport.remote_stage_root import sweep_hidden_reads
 from rcp.transport.ssh import sweep_control_sockets
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
@@ -1888,11 +1894,17 @@ def create_app(
         # project is local still has remote ones.
         await asyncio.to_thread(sweep_control_sockets)
 
+    async def sweep_local_hidden_reads() -> None:
+        protected = _protected_hidden_reads(store)
+        if protected is not None:
+            await asyncio.to_thread(sweep_hidden_reads, RUN_STAGE_RETENTION_DAYS, set(protected))
+
     async def sweep_remote_run_stages() -> None:
         try:
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,
                 protected_roots=_protected_run_stage_roots(store, default_state_machine_id),
+                protected_hidden_reads=_protected_hidden_reads(store),
             )
         except Exception as exc:
             # Stale scratch cleanup is best-effort and must not delay app
@@ -1978,6 +1990,9 @@ def create_app(
     def provider_session_sweep_pass() -> None:
         with background_admission_gate.mutation("provider session sweep"):
             sweep_provider_sessions(store)
+            sweep_hidden_reads(
+                RUN_STAGE_RETENTION_DAYS, set(store.protected_hidden_read_fingerprints())
+            )
 
     async def sweep_provider_sessions_periodically() -> None:
         while not background_admission_gate.closed:
@@ -2093,15 +2108,11 @@ def create_app(
         )
 
     def prepare_added_codex_homes() -> None:
-        # An expired or removed login can still own the only copy of a rollout.
-        # Prepare every recorded home before recovery selects a usable credential.
-        with store.connection() as connection:
-            rows = connection.execute(
-                "SELECT machine_id, login_id FROM provider_login_states "
-                "WHERE provider='codex' AND login_id != '' ORDER BY machine_id, login_id"
-            ).fetchall()
-        for row in rows:
-            login = LoginKey("codex", row["machine_id"], row["login_id"])
+        from rcp.runs.provider_login import login_homes_to_prepare
+
+        # An expired login, or a removal pending cleanup, can own the only copy of
+        # a rollout. Prepare those homes before recovery selects a usable credential.
+        for login in login_homes_to_prepare(store, "codex"):
             if login.machine_id == BACKEND_MACHINE_ID and not any(
                 path.is_dir()
                 for path in (
@@ -2349,6 +2360,7 @@ def create_app(
                     graph_history_cache(source_root.parent / GRAPH_HISTORY_DIRECTORY).sweep()
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 startup_maintenance.append(asyncio.create_task(sweep_stale_control_sockets()))
+                startup_maintenance.append(asyncio.create_task(sweep_local_hidden_reads()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))

@@ -1,16 +1,18 @@
 """Fence a departing member's own logins and delete only their credentials.
 
 Removed rows remain the retry inventory while member removal is pending. Remote
-cleanup executes this module's credential-only helper; sessions and provider
-configuration are never deleted.
+cleanup executes this module's credential helper, which also prunes the login's
+home; sessions and provider configuration are never deleted.
 """
 
 from __future__ import annotations
 
 import importlib.resources
+import os
 import shlex
 import sqlite3
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -29,6 +31,43 @@ def remove_remote_credential(login_id: str, relative_paths: tuple[str, ...]) -> 
     for relative in relative_paths:
         path = Path.home() / relative.format(login_id=login_id)
         path.unlink(missing_ok=True)
+
+
+def prune_login_home(home: Path, credentials: tuple[str, ...] = ()) -> None:
+    """Unlink the home's links and named credentials without following links.
+
+    Folders left empty go. Any other real file stays, and so does its folder.
+    `<login_id>-retained` and its UUID-named folders are siblings and never visited.
+    """
+    if home.is_symlink():
+        home.unlink()
+    elif home.is_dir():
+        _prune(home, "", credentials)
+
+
+def _prune(directory: Path, relative: str, credentials: tuple[str, ...]) -> None:
+    with os.scandir(directory) as entries:
+        for entry in list(entries):
+            name = relative + entry.name
+            if entry.is_symlink() or (name in credentials and entry.is_file(follow_symlinks=False)):
+                os.unlink(entry.path)
+            elif entry.is_dir(follow_symlinks=False):
+                _prune(Path(entry.path), name + "/", credentials)
+    with suppress(OSError):
+        directory.rmdir()
+
+
+def prune_remote_login_homes(login_id: str) -> None:
+    """Prune `~/.rcp/provider-homes/<provider>/<login_id>`; the UUID names one login."""
+    parsed = UUID(login_id)
+    if parsed.version != 4 or str(parsed) != login_id:
+        raise ValueError("Login id must be UUID4 text.")
+    root = Path.home() / ".rcp" / "provider-homes"
+    if root.is_symlink() or not root.is_dir():
+        return
+    for provider in root.iterdir():
+        if provider.is_dir() and not provider.is_symlink():
+            prune_login_home(provider / login_id)
 
 
 def cleanup_member_provider_logins(store: AppStore, member_id: str) -> tuple[str, ...]:
@@ -101,8 +140,9 @@ def cleanup_provider_login_credential(store: AppStore, login: LoginKey) -> bool:
     except KeyError:
         return False
     if not host:
-        for name in profile.login_home_credentials:
-            (credentials.login_home(login.provider, login.login_id) / name).unlink(missing_ok=True)
+        prune_login_home(
+            credentials.login_home(login.provider, login.login_id), profile.login_home_credentials
+        )
         return True
     source = importlib.resources.files("rcp.server_ops").joinpath("provider_cleanup.py").read_text()
     command = shlex.join(
@@ -124,3 +164,5 @@ if __name__ == "__main__":
     import sys
 
     remove_remote_credential(sys.argv[1], tuple(sys.argv[2:]))
+    if sys.argv[1]:
+        prune_remote_login_homes(sys.argv[1])

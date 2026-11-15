@@ -153,7 +153,8 @@ class AppStoreBase:
         (80, "space_chat_session_machines_v1"),
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
-        (83, "provider_session_sweeps_v1"),
+        (86, "provider_session_sweeps_v1"),
+        (87, "hidden_read_fingerprints_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1115,9 +1116,15 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection,
-            version=83,
+            version=86,
             name="provider_session_sweeps_v1",
             migration=migrate_provider_session_sweeps,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=87,
+            name="hidden_read_fingerprints_v1",
+            migration=self._migrate_hidden_read_fingerprints,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3027,6 +3034,14 @@ class AppStoreBase:
 
         cls._migrate_watcher_purposes(connection)
         compare_added_column(connection, "resource_watchers_update", "purpose")
+
+    @classmethod
+    def _migrate_hidden_read_fingerprints(cls, connection: sqlite3.Connection) -> None:
+        """The hidden-read folder a launch runs under, which the folder sweep keeps."""
+        from rcp.storage.resource_versions import compare_added_column
+
+        cls._ensure_column(connection, "graph_runs", "hidden_read_fingerprint", "TEXT")
+        compare_added_column(connection, "resource_graph_runs_update", "hidden_read_fingerprint")
 
     @classmethod
     def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:

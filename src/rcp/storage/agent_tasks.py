@@ -5780,6 +5780,27 @@ class AgentTaskStoreMixin(StoreMixinBase):
             for (machine_id, root), aggregate in sorted(aggregates.items())
         )
 
+    def record_agent_task_hidden_read(self, operation_id: str, fingerprint: str) -> None:
+        """Name the hidden-read folder this launch staged, so the sweep keeps it while live."""
+
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET hidden_read_fingerprint = ? WHERE operation_id = ?",
+                (fingerprint, operation_id),
+            )
+
+    def protected_hidden_read_fingerprints(self) -> tuple[str, ...]:
+        """Hidden-read folders a queued, running, pausing or paused launch still runs under."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT hidden_read_fingerprint FROM graph_runs "
+                "WHERE hidden_read_fingerprint IS NOT NULL "
+                "AND status IN ('queued', 'running', 'pausing', 'paused') "
+                "ORDER BY hidden_read_fingerprint"
+            ).fetchall()
+        return tuple(row[0] for row in rows)
+
     def protected_run_stage_roots(self, stage_machine_id: str) -> tuple[str, ...]:
         """Return exact stages whose durable lifecycle still depends on them."""
 
