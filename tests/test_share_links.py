@@ -288,12 +288,16 @@ def test_unavailable_state_answers_503_only_to_members(team, monkeypatch) -> Non
     node = _token(_copy(client, project, "node", NODE_ID))
     _chat_turn(store, project, "chat-b", "turn-b", GraphTargetRef(kind="branch", branch_id=branch))
     reply = _token(_copy(client, project, "reply", "turn-b"))
+    _artifact(store, project)
+    artifact = _token(_copy(client, project, "artifact", "shared-note"))
 
     def unavailable(*_args, **_kwargs):
         raise StateUnavailable("offline")
 
     monkeypatch.setattr(app.state.catalog, "open", unavailable)
-    assert {_resolve(client, token).status_code for token in (node, reply)} == {503}
+    tokens = (node, reply, artifact)
+    assert {_resolve(client, token).status_code for token in tokens} == {503}
+    assert _copy(client, project, "artifact", "shared-note").status_code == 503
     acting[0] = people[2].user_id
     assert _resolve(client, node).status_code == 404
 

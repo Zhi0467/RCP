@@ -77,11 +77,10 @@ def _graph_nodes(catalog: ProjectCatalog, project_id: str, graph_target: str) ->
 
 def _require_branch(catalog: ProjectCatalog, project_id: str, graph_target: str) -> None:
     target = _target_ref(graph_target)
-    if target.branch_id is None:
-        return
     try:
         with catalog.open(project_id).history.read_view() as reader:
-            read_branch_metadata(reader, target.branch_id)
+            if target.branch_id is not None:
+                read_branch_metadata(reader, target.branch_id)
     except (KeyError, ValueError, OSError, StateMissing) as exc:
         raise _Unreadable from exc
 
