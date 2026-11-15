@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -46,7 +47,15 @@ print("Deleted session " + session + ".")
 """
 
 
-def _run(store, operation_id, session, provider, stage_root="/stage", kind="project_chat"):
+def _run(
+    store,
+    operation_id,
+    session,
+    provider,
+    stage_root="/stage",
+    kind="project_chat",
+    machine="backend",
+):
     _insert(
         store,
         "graph_runs",
@@ -59,9 +68,13 @@ def _run(store, operation_id, session, provider, stage_root="/stage", kind="proj
         updated_at=OLD,
         status_message="",
         native_session_id=session,
-        stage_machine_id="backend",
+        stage_machine_id=machine,
         stage_root=stage_root,
     )
+
+
+def _sweep(store, stop=None):
+    sweep_provider_sessions(store, stop=stop or threading.Event())
 
 
 @pytest.fixture
@@ -87,6 +100,7 @@ def fake_providers(tmp_path, monkeypatch):
     return log
 
 
+@pytest.mark.real_provider_discovery
 def test_a_pass_deletes_only_recorded_sessions_and_keeps_failures_marked(tmp_path, fake_providers):
     store = AppStore(tmp_path / "app.sqlite3")
     _run(store, "codex-turn", RCP_CODEX, "codex")
@@ -95,7 +109,7 @@ def test_a_pass_deletes_only_recorded_sessions_and_keeps_failures_marked(tmp_pat
     _run(store, "opencode-turn", RCP_OPENCODE, "opencode")
     _run(store, "opencode-gone", GONE_OPENCODE, "opencode")
     _run(store, "agy-turn", "agy-session", "agy")
-    sweep_provider_sessions(store)
+    _sweep(store)
     calls = [json.loads(line) for line in fake_providers.read_text().splitlines()]
     named = {call[-1] for call in calls}
     assert HUMAN_CODEX not in named
@@ -117,7 +131,7 @@ def test_a_pass_deletes_only_recorded_sessions_and_keeps_failures_marked(tmp_pat
     assert rows[FORKED_CODEX][1]
     assert sorted(path.name for path in (tmp_path / "provider-home").iterdir()) == [HUMAN_CODEX]
     fake_providers.write_text("")
-    sweep_provider_sessions(store)
+    _sweep(store)
     retried = {json.loads(line)[-1] for line in fake_providers.read_text().splitlines()}
     assert retried == {FORKED_CODEX}
 
@@ -135,7 +149,7 @@ def test_claude_deletes_the_exact_transcript_and_its_folder(tmp_path, monkeypatc
     store = AppStore(tmp_path / "app.sqlite3")
     _run(store, "claude-turn", RCP_CLAUDE, "claude", stage_root=str(stage))
     _run(store, "claude-coach", OTHER_CLAUDE, "claude", kind="paper_coach")
-    sweep_provider_sessions(store)
+    _sweep(store)
     assert sorted(path.name for path in project.iterdir()) == [f"{OTHER_CLAUDE}.jsonl"]
     assert store.provider_session_swept(RCP_CLAUDE)
     assert not store.provider_session_swept(OTHER_CLAUDE)
@@ -151,35 +165,160 @@ def test_an_unreachable_machine_keeps_its_marks(tmp_path, monkeypatch):
         raise RuntimeError("ssh: connect to host: Connection refused")
 
     monkeypatch.setattr(provider_session_sweep, "_delete_on_machine", unreachable)
-    sweep_provider_sessions(store)
+    _sweep(store)
     assert store.provider_session_swept(RCP_CODEX)
     pending = store.provider_session_sweep_targets(store.now())
     assert [(target.session_id, target.marked) for target in pending] == [(RCP_CODEX, True)]
 
 
-def test_the_shipped_script_deletes_over_stdin_with_discovery(tmp_path, fake_providers):
-    import subprocess
-    import sys
+def _codex(index):
+    return f"019a0000-0000-7000-8000-0000000001{index:02d}"
 
-    from rcp.transport.state import _remote_script
 
-    items = [
-        {"provider": "codex", "session_id": RCP_CODEX, "binary": None, "install_paths": []},
-        {"provider": "codex", "session_id": "not-a-uuid", "binary": None, "install_paths": []},
-    ]
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            _remote_script("provider_session_delete.py"),
-            _remote_script("provider_discovery.py"),
-        ],
-        input=json.dumps({"items": items, "timeout": 10}),
-        capture_output=True,
-        text=True,
-        check=True,
+def test_stop_ends_the_pass_between_chunks(tmp_path, monkeypatch):
+    from rcp.runs import provider_session_sweep
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    for index in range(3):
+        _run(store, f"turn-{index}", _codex(index), "codex")
+    stop = threading.Event()
+    calls = []
+
+    def delete(_machine, targets):
+        calls.append([target.session_id for target in targets])
+        stop.set()
+        return [("deleted", None)] * len(targets)
+
+    monkeypatch.setattr(provider_session_sweep, "PROVIDER_SESSION_SWEEP_CHUNK", 1)
+    monkeypatch.setattr(provider_session_sweep, "_delete_on_machine", delete)
+    _sweep(store, stop)
+    assert len(calls) == 1
+    pending = store.provider_session_sweep_targets(store.now())
+    assert len([target for target in pending if target.marked]) == 2
+
+
+def test_failing_retries_cannot_starve_fresh_sessions(tmp_path, monkeypatch):
+    from rcp.runs import provider_session_sweep
+
+    store = AppStore(tmp_path / "app.sqlite3")
+    for index in range(3):
+        _run(store, f"turn-{index}", _codex(index), "codex")
+    monkeypatch.setattr(provider_session_sweep, "PROVIDER_SESSION_SWEEP_BATCH", 2)
+    monkeypatch.setattr(provider_session_sweep, "PROVIDER_SESSION_SWEEP_RETRY_BATCH", 1)
+    attempted = []
+
+    def fail(_machine, targets):
+        attempted.extend(target.session_id for target in targets)
+        return [("failed", "refused")] * len(targets)
+
+    monkeypatch.setattr(provider_session_sweep, "_delete_on_machine", fail)
+    _sweep(store)
+    attempted.clear()
+    _sweep(store)
+    assert _codex(2) in attempted
+    assert len(attempted) == 2
+
+
+def test_a_removed_machine_settles_its_marks_and_marks_nothing_new(tmp_path, caplog):
+    store = AppStore(tmp_path / "app.sqlite3")
+    _run(store, "marked", _codex(0), "codex", machine="removed")
+    assert store.mark_provider_sessions_swept(
+        store.provider_session_sweep_targets(store.now()), store.now()
     )
-    deleted, refused = json.loads(result.stdout)
-    assert deleted is None
-    assert refused
+    _run(store, "fresh", _codex(1), "codex", machine="removed")
+    _sweep(store)
+    assert store.provider_session_sweep_targets(store.now()) == [
+        target for target in store.provider_session_sweep_targets(store.now()) if not target.marked
+    ]
+    assert store.provider_session_swept(_codex(0))
+    assert not store.provider_session_swept(_codex(1))
+    assert "removed" in caplog.text
+
+
+@pytest.mark.real_provider_discovery
+def test_the_remote_program_runs_in_the_login_shell_and_resolves_the_workspace(
+    tmp_path, monkeypatch, fake_providers
+):
+    import os
+    import sys
+    from types import SimpleNamespace
+
+    from rcp.runs import provider_session_sweep
+    from rcp.storage.provider_session_sweeps import ProviderSessionSweepTarget
+
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    (shim / "python3").write_text(f'#!/bin/sh\nexec {sys.executable} -S "$@"\n')
+    (shim / "python3").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim}:{os.environ['PATH']}")
+    config = tmp_path / "login-claude"
+    home = tmp_path / "remote-home"
+    home.mkdir()
+    (home / ".bash_profile").write_text(
+        f"echo 'welcome to the host'\nexport CLAUDE_CONFIG_DIR={config}\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    monkeypatch.setattr(
+        provider_session_sweep, "ssh_arguments", lambda _host, command: ["bash", "-c", command]
+    )
+    stage = (tmp_path / "stage").resolve()
+    stage.mkdir()
+    (tmp_path / "linked").symlink_to(stage)
+    project = config / "projects" / claude_project_directory(stage)
+    project.mkdir(parents=True)
+    (project / f"{RCP_CLAUDE}.jsonl").write_text("{}")
+
+    def target(provider, session):
+        return ProviderSessionSweepTarget(
+            provider=provider,
+            machine_id="worker",
+            session_id=session,
+            marked=True,
+            cwd=str(tmp_path / "linked"),
+        )
+
+    outcomes = provider_session_sweep._delete_on_machine(
+        SimpleNamespace(
+            host="worker-host", provider_paths={"codex": str(tmp_path / "bin" / "codex")}
+        ),
+        [
+            target("codex", RCP_CODEX),
+            target("claude", RCP_CLAUDE),
+            target("claude", OTHER_CLAUDE),
+            target("codex", "not-a-uuid"),
+        ],
+    )
+    assert [state for state, _error in outcomes] == ["deleted", "deleted", "absent", "failed"]
+    assert list(project.iterdir()) == []
     assert [json.loads(line)[-1] for line in fake_providers.read_text().splitlines()] == [RCP_CODEX]
+
+
+@pytest.mark.parametrize("canonical", [True, False])
+def test_only_the_canonical_data_dir_sweeps(manifest, tmp_path, monkeypatch, caplog, canonical):
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    from rcp.api import app as app_module
+    from tests.helpers import create_named_app, wait_until
+
+    data = (tmp_path / "data").resolve()
+    if canonical:
+        monkeypatch.setattr(app_module, "platform_data_dir", lambda: data)
+    passes = []
+    monkeypatch.setattr(
+        app_module, "sweep_provider_sessions", lambda _store, **_kwargs: passes.append(True)
+    )
+    app = create_named_app(str(manifest.path), data_dir=data)
+    with caplog.at_level(logging.INFO, logger="rcp.api.app"), TestClient(app):
+        if canonical:
+            wait_until(lambda: passes)
+        else:
+            wait_until(
+                lambda: any(
+                    record.name == "rcp.api.app" and record.args and record.args[0] == data
+                    for record in caplog.records
+                )
+            )
+            assert passes == []

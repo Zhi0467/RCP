@@ -280,8 +280,70 @@ def test_marking_rechecks_the_rule_and_a_swept_session_is_dropped(store):
     [
         "thread/resume failed: no rollout found for thread id 019a (code -32600)",
         "No conversation found with session ID: 019a",
-        "Error: Session not found",
+        "Error: Session not found: ses_2a9f0c1d",
     ],
 )
 def test_probed_missing_session_texts_are_stale_sessions(text):
     assert classify_terminal_error(text) == "stale_session"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["MCP error -32001: session not found", "can't find session: rcp-1 (tmux session not found)"],
+)
+def test_other_tools_missing_sessions_are_not_stale_provider_sessions(text):
+    assert classify_terminal_error(text) == "provider_error"
+
+
+@pytest.mark.parametrize(
+    ("status", "held"), [("active", True), ("degraded", True), ("completed", False)]
+)
+def test_a_live_watcher_holds_its_chat_session(store, status, held):
+    _run(store, "old")
+    _insert(
+        store,
+        "watchers",
+        watcher_id="w",
+        project_id="p",
+        origin_operation_id="old",
+        origin_task_kind="project_chat",
+        chat_id="chat",
+        machine_id="backend",
+        check_command="true",
+        log_path="/log",
+        cwd="/stage",
+        continuation_json="{}",
+        status=status,
+        created_at=OLD,
+    )
+    assert (_eligible(store) == []) is held
+
+
+def test_a_mark_that_keeps_failing_is_abandoned_and_stays_swept(store):
+    from rcp.limits import PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS
+
+    _run(store, "old")
+    store.mark_provider_sessions_swept(
+        store.provider_session_sweep_targets(NOW.isoformat()), NOW.isoformat()
+    )
+    for attempt in range(PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS):
+        pending = store.provider_session_sweep_targets(NOW.isoformat())
+        assert [target.session_id for target in pending] == [SESSION]
+        abandoned = store.record_provider_session_sweep_results(
+            [(pending[0], "still failing")], NOW.isoformat()
+        )
+        last = attempt == PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS - 1
+        assert [target.session_id for target in abandoned] == ([SESSION] if last else [])
+    assert store.provider_session_sweep_targets(NOW.isoformat()) == []
+    assert store.provider_session_swept(SESSION)
+
+
+def test_marks_on_a_removed_machine_are_abandoned(store):
+    _run(store, "old")
+    store.mark_provider_sessions_swept(
+        store.provider_session_sweep_targets(NOW.isoformat()), NOW.isoformat()
+    )
+    abandoned = store.abandon_provider_session_marks("backend", "machine removed", NOW.isoformat())
+    assert [target.session_id for target in abandoned] == [SESSION]
+    assert store.provider_session_sweep_targets(NOW.isoformat()) == []
+    assert store.provider_session_swept(SESSION)

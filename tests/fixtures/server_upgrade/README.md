@@ -234,3 +234,8 @@ gain a purpose (migration 81). Exact source
 Git link record (migration 82). Exact source
 `42ce9f418c9491f8db9b9b723f5bd56eb6e54d04` upgrades a copy of
 `pre-space-chat-machines-v45-07622f7` through the existing fixture builder.
+
+`pre-provider-session-sweeps-v47-c046bb3` freezes migration 82 before provider
+session sweep marks (migration 86) and hidden-read fingerprints on task rows
+(migration 87). Exact source `c046bb3ade3c55c2507a564abb9a27c303b9c850` upgrades
+a copy of `pre-paper-git-links-v46-42ce9f4` through the existing fixture builder.

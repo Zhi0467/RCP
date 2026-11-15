@@ -1894,11 +1894,6 @@ def create_app(
         # project is local still has remote ones.
         await asyncio.to_thread(sweep_control_sockets)
 
-    async def sweep_local_hidden_reads() -> None:
-        protected = _protected_hidden_reads(store)
-        if protected is not None:
-            await asyncio.to_thread(sweep_hidden_reads, RUN_STAGE_RETENTION_DAYS, set(protected))
-
     async def sweep_remote_run_stages() -> None:
         try:
             await asyncio.to_thread(
@@ -1958,6 +1953,11 @@ def create_app(
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
     artifact_import_tasks: dict[str, asyncio.Task[None]] = {}
     provider_session_sweep_tasks: list[asyncio.Task[None]] = []
+    provider_session_sweep_off_logged: list[bool] = []
+    canonical_data_dir = app_data in {
+        platform_data_dir().expanduser().resolve(),
+        server_layout.data_dir.expanduser().resolve(),
+    }
 
     def import_artifact_pass(project_id: str) -> float | None:
         with background_admission_gate.mutation("legacy artifact import"):
@@ -1987,19 +1987,29 @@ def create_app(
                 return
             await asyncio.sleep(delay)
 
-    def provider_session_sweep_pass() -> None:
-        with background_admission_gate.mutation("provider session sweep"):
-            sweep_provider_sessions(store)
-            sweep_hidden_reads(
-                RUN_STAGE_RETENTION_DAYS, set(store.protected_hidden_read_fingerprints())
+    def provider_session_sweep_pass(stop: threading.Event) -> None:
+        try:
+            sweep_provider_sessions(
+                store,
+                stop=stop,
+                guard=partial(background_admission_gate.mutation, "provider session sweep"),
             )
+        except MaintenanceAdmissionClosed:
+            raise
+        except Exception:
+            logger.exception("Could not sweep provider sessions")
+        protected = _protected_hidden_reads(store)
+        if protected is not None and not stop.is_set():
+            sweep_hidden_reads(RUN_STAGE_RETENTION_DAYS, set(protected))
 
     async def sweep_provider_sessions_periodically() -> None:
         while not background_admission_gate.closed:
-            work = asyncio.create_task(asyncio.to_thread(provider_session_sweep_pass))
+            stop = threading.Event()
+            work = asyncio.create_task(asyncio.to_thread(provider_session_sweep_pass, stop))
             try:
                 await asyncio.shield(work)
             except asyncio.CancelledError:
+                stop.set()
                 with suppress(Exception):
                     await work
                 raise
@@ -2013,6 +2023,15 @@ def create_app(
         if background_admission_gate.closed or any(
             not task.done() for task in provider_session_sweep_tasks
         ):
+            return
+        if not canonical_data_dir:
+            if not provider_session_sweep_off_logged:
+                provider_session_sweep_off_logged.append(True)
+                logger.info(
+                    "Provider session and hidden-read sweeps are off: %s is not this "
+                    "machine's canonical data directory, and its hosts may serve another backend",
+                    app_data,
+                )
             return
         task = asyncio.create_task(sweep_provider_sessions_periodically())
         provider_session_sweep_tasks[:] = [task]
@@ -2360,7 +2379,6 @@ def create_app(
                     graph_history_cache(source_root.parent / GRAPH_HISTORY_DIRECTORY).sweep()
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 startup_maintenance.append(asyncio.create_task(sweep_stale_control_sockets()))
-                startup_maintenance.append(asyncio.create_task(sweep_local_hidden_reads()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
@@ -3059,4 +3077,9 @@ def default_data_dir() -> Path:
     override = os.environ.get("RCP_DATA_DIR")
     if override:
         return Path(override).expanduser()
+    return platform_data_dir()
+
+
+def platform_data_dir() -> Path:
+    """The desktop's own data directory, which `RCP_DATA_DIR` never moves."""
     return Path.home() / "Library" / "Application Support" / "research-control-panel"

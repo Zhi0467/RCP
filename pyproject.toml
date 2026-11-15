@@ -121,6 +121,7 @@ extend-exclude = [
 "src/rcp/transport/compute_process_owner.py" = "py39"
 "src/rcp/transport/conversation_worktree.py" = "py39"
 "src/rcp/transport/provider_discovery.py" = "py39"
+"src/rcp/transport/provider_session_delete.py" = "py39"
 "src/rcp/transport/remote_*.py" = "py39"
 "src/rcp/transport/watcher_process.py" = "py39"
 

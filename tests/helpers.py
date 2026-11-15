@@ -808,8 +808,8 @@ def isolate_host(
     `MonkeyPatch`, because the function-scoped autouse fixture has not run yet.
 
     Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory
-    and Codex home, and every test in the process shares one temporary `HOME`, so no
-    test touches the developer's live state. Provider discovery
+    and Codex home, and every test in the process shares one temporary `HOME` and
+    Claude config under it, so no test touches the developer's live state. Provider discovery
     returns nothing, so an unconfigured provider refuses before any real CLI runs or
     bills a turn; the `real_provider_discovery` marker opts out. Every engine registers
     for shutdown at construction, because most test apps never run a lifespan and would
@@ -828,9 +828,13 @@ def isolate_host(
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
     monkeypatch.setenv("CODEX_HOME", str(root / "machine-codex-home"))
     monkeypatch.setenv("HOME", str(_test_home()))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(_test_home() / ".claude"))
 
     if not provider_discovery:
         monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)
+        monkeypatch.setattr(
+            "rcp.runs.provider_session_sweep.discover_provider", lambda *_args: None
+        )
 
     for owner in ("rcp.api.app", "rcp.api.project_state"):
         monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)

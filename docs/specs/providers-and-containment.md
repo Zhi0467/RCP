@@ -420,8 +420,9 @@ next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerpr
 on the execution host, outside every write root and inside the hidden set.
 Each launch records its fingerprint on its task row. A folder older than the
 stage retention is swept unless a queued, running, pausing or paused task names
-it: locally at startup and with each provider session sweep pass, and on a
-remote host with its stage sweep.
+it: locally with each provider session sweep pass, and on a remote host with
+its stage sweep. Install touches the folder before checking it, so a sweep does
+not age it out mid-install.
 When the hiding wrapper is unavailable at command time, the shell runs unwrapped
 without per-command traces only if the launch recorded `wrapper_unavailable` or
 `userns_blocked`. A wrapper that was available at launch but later becomes
@@ -755,8 +756,8 @@ rows naming the session, by `native_session_id` or by a fork turn's
 running, pausing or paused row; a branched chat that has not launched its first
 turn (the source turn's session); a pending question's origin; a `writing_sessions`
 row; a pending or outdated Paper change group's Coach task; an open episode
-through its rows, `experiment_episode_state` or `episode_wrapups`; or a wrapup
-still pending or running.
+through its rows, `experiment_episode_state` or `episode_wrapups`; a wrapup
+still pending or running; or an active or degraded watcher, through its origin turn.
 
 Only ids recorded in `graph_runs` are candidates, and admission never takes a
 client-supplied session, so sessions people start in their own terminals are never
@@ -771,21 +772,32 @@ and deletes it by exact id:
 - Claude has no delete command and prunes only interactive sessions, so RCP removes
   `<config>/projects/<key>/<id>.jsonl` and the `<id>/` folder beside it, where
   `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude` and `<key>` is the project key of
-  the chat's stage workspace. Claude sessions outside node and project chats have
-  no recorded workspace and are kept.
+  the chat's stage workspace as the host resolves it. A transcript already gone is
+  logged as absent. Claude sessions outside node and project chats have no
+  recorded workspace and are kept.
 - Antigravity has no delete command; its sessions are kept.
 
 A provider answer that the id does not exist counts as deleted. Any other failure
-keeps the mark with its `last_error`, and the next pass retries it.
+keeps the mark with its `last_error`, and a later pass retries it. After
+`PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS` failures, or once its machine card is
+removed, the mark is abandoned and logged; the session stays swept.
 
 `runs/provider_session_sweep.py` runs one pass at startup after recovery and then
-every `PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS`, pausing across an update boundary.
-Per execution machine it marks up to `PROVIDER_SESSION_SWEEP_BATCH` sessions and
-deletes them with the machine's recorded provider binary, else the discovered one.
-The backend's own machine deletes in-process; another machine takes one SSH call to
-`transport/provider_session_delete.py`, which reads the ids on stdin. An unreachable
-host keeps its marks. Each pass logs one line per machine with deleted counts per
-provider, failures and kept sessions.
+every `PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS`. Only the canonical data directory
+sweeps, the desktop's platform default or the team server layout's, because a
+copied data directory still reaches the live backend's hosts; any other logs once
+that the sweep is off. Per execution machine a pass retries up to
+`PROVIDER_SESSION_SWEEP_RETRY_BATCH` marked sessions and marks up to
+`PROVIDER_SESSION_SWEEP_BATCH` new ones, so failures cannot starve new sweeping.
+It deletes them with the machine's recorded provider binary, else the discovered
+one, in chunks of `PROVIDER_SESSION_SWEEP_CHUNK`. The backend's own machine deletes
+in-process; another machine takes one SSH call per chunk to
+`transport/provider_session_delete.py` in the account's login shell, so its
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` apply, and RCP reads the result from the last
+output line. The update gate is held only around the store writes, and a stop
+request ends the pass between chunks. An unreachable host fails its chunk. Each
+pass logs one line per machine with deleted and absent counts per provider,
+failures and kept sessions.
 
 Marks live in the backend-local `provider_session_sweeps` table. One `BEGIN
 IMMEDIATE` transaction rechecks the rule and inserts the marks before any deletion.

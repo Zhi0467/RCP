@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel
 
-from rcp.limits import PROVIDER_SESSION_RETENTION_DAYS
+from rcp.limits import PROVIDER_SESSION_RETENTION_DAYS, PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS
 from rcp.storage.mixin_base import StoreMixinBase
 
 if TYPE_CHECKING:
@@ -33,11 +33,15 @@ def migrate_provider_session_sweeps(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE IF NOT EXISTS provider_session_sweeps (
         provider TEXT NOT NULL, execution_machine TEXT NOT NULL,
         native_session_id TEXT NOT NULL, marked_at TEXT NOT NULL,
-        deleted_at TEXT, last_error TEXT,
+        deleted_at TEXT, last_error TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+        abandoned_at TEXT,
         PRIMARY KEY (provider, execution_machine, native_session_id))""")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS provider_session_sweeps_session "
         "ON provider_session_sweeps(native_session_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS graph_runs_native_session ON graph_runs(native_session_id)"
     )
     connection.execute("""CREATE TABLE IF NOT EXISTS provider_session_sweep_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), restored_at TEXT)""")
@@ -75,6 +79,10 @@ _HELD = f"""
         UNION
         SELECT json_extract(origin_json, '$.native_session_id') FROM questions
         WHERE state = 'pending'
+        UNION
+        SELECT run.native_session_id FROM watchers AS watcher
+        JOIN graph_runs AS run ON run.operation_id = watcher.origin_operation_id
+        WHERE watcher.status IN ('active','degraded')
         UNION
         SELECT native_session_id FROM writing_sessions
         UNION
@@ -121,6 +129,29 @@ _ELIGIBLE = f"""
 """
 
 
+_PENDING = """
+    WITH latest AS (
+        SELECT run.native_session_id, run.stage_machine_id, run.project_id, run.kind,
+               run.stage_root, json_extract(run.request_json, '$.chat_id') AS chat_id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY run.native_session_id ORDER BY run.created_at DESC, run.rowid DESC
+               ) AS position
+        FROM graph_runs AS run
+        WHERE run.native_session_id IN (
+            SELECT native_session_id FROM provider_session_sweeps
+            WHERE deleted_at IS NULL AND abandoned_at IS NULL)
+    )
+    SELECT sweep.provider, sweep.execution_machine AS machine_id,
+           sweep.native_session_id AS session_id, latest.project_id, latest.kind,
+           latest.chat_id, latest.stage_root
+    FROM provider_session_sweeps AS sweep
+    LEFT JOIN latest
+      ON latest.native_session_id = sweep.native_session_id AND latest.position = 1
+    WHERE sweep.deleted_at IS NULL AND sweep.abandoned_at IS NULL
+    ORDER BY sweep.marked_at, sweep.native_session_id
+"""
+
+
 class ProviderSessionSweepStoreMixin(StoreMixinBase):
     def provider_session_swept(self, session_id: str | None) -> bool:
         if not session_id:
@@ -138,19 +169,9 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
         """Marked sessions still to delete, then eligible unmarked ones, oldest first."""
 
         with self.connection() as connection:
-            pending = connection.execute(
-                "SELECT provider, execution_machine AS machine_id, native_session_id AS session_id "
-                "FROM provider_session_sweeps WHERE deleted_at IS NULL ORDER BY marked_at"
-            ).fetchall()
             targets = [
-                ProviderSessionSweepTarget(
-                    provider=row["provider"],
-                    machine_id=row["machine_id"],
-                    session_id=row["session_id"],
-                    marked=True,
-                    cwd=self._swept_session_cwd(connection, row["session_id"]),
-                )
-                for row in pending
+                self._sweep_target(connection, row, marked=True)
+                for row in connection.execute(_PENDING).fetchall()
             ]
             for row in self._eligible_sessions(connection, now, None):
                 targets.append(self._sweep_target(connection, row, marked=False))
@@ -181,17 +202,28 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
 
     def record_provider_session_sweep_results(
         self, results: list[tuple[ProviderSessionSweepTarget, str | None]], now: str
-    ) -> None:
-        """Record each deletion: gone sets `deleted_at`, a failure keeps the mark."""
+    ) -> list[ProviderSessionSweepTarget]:
+        """Record each deletion and return the marks this call abandoned.
+
+        Gone sets `deleted_at`. A failure keeps the mark for a later pass until
+        `PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS` failures abandon it; it stays swept.
+        """
 
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.executemany(
-                "UPDATE provider_session_sweeps SET deleted_at = ?, last_error = ? "
+                "UPDATE provider_session_sweeps SET deleted_at = ?, last_error = ?, "
+                "attempts = attempts + (? IS NOT NULL), "
+                "abandoned_at = CASE WHEN ? IS NOT NULL AND attempts + 1 >= ? THEN ? END "
                 "WHERE provider = ? AND execution_machine = ? AND native_session_id = ?",
                 [
                     (
                         now if error is None else None,
                         error,
+                        error,
+                        error,
+                        PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS,
+                        now,
                         target.provider,
                         target.machine_id,
                         target.session_id,
@@ -199,6 +231,41 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
                     for target, error in results
                 ],
             )
+            return [
+                target
+                for target, error in results
+                if error is not None
+                and connection.execute(
+                    "SELECT 1 FROM provider_session_sweeps WHERE provider = ? "
+                    "AND execution_machine = ? AND native_session_id = ? AND abandoned_at = ?",
+                    (target.provider, target.machine_id, target.session_id, now),
+                ).fetchone()
+                is not None
+            ]
+
+    def abandon_provider_session_marks(
+        self, machine_id: str, reason: str, now: str
+    ) -> list[ProviderSessionSweepTarget]:
+        """Settle every pending mark on a machine RCP can no longer reach by id."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "UPDATE provider_session_sweeps SET abandoned_at = ?, last_error = ? "
+                "WHERE execution_machine = ? AND deleted_at IS NULL AND abandoned_at IS NULL "
+                "RETURNING provider, execution_machine AS machine_id, "
+                "native_session_id AS session_id",
+                (now, reason, machine_id),
+            ).fetchall()
+        return [
+            ProviderSessionSweepTarget(
+                provider=row["provider"],
+                machine_id=row["machine_id"],
+                session_id=row["session_id"],
+                marked=True,
+            )
+            for row in sorted(rows, key=lambda row: (row["provider"], row["session_id"]))
+        ]
 
     @staticmethod
     def detach_provider_session_sweeps_for_restore(
@@ -239,15 +306,6 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
             marked=marked,
             cwd=self._chat_cwd(connection, row),
         )
-
-    def _swept_session_cwd(self, connection: sqlite3.Connection, session_id: str) -> str | None:
-        row = connection.execute(
-            "SELECT stage_machine_id AS machine_id, project_id, kind, stage_root, "
-            "json_extract(request_json, '$.chat_id') AS chat_id FROM graph_runs "
-            "WHERE native_session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            (session_id,),
-        ).fetchone()
-        return None if row is None else self._chat_cwd(connection, row)
 
     def _chat_cwd(self, connection: sqlite3.Connection, row: sqlite3.Row) -> str | None:
         if row["kind"] not in {"node_chat", "project_chat"} or not (
