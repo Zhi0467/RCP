@@ -68,28 +68,50 @@ def _delete(item: dict, *, timeout: float, discover: Discover) -> Outcome:
     if not binary:
         return ("failed", f"{provider} executable not found")
     if provider == "codex":
-        try:
-            rollout = locate_codex_transcript(session_id)
-        except (OSError, ValueError) as exc:
-            return ("failed", str(exc))
-        if rollout is not None and _modified_since(rollout, since):
-            return ("kept", None)
-        command = [binary, "delete", "--force", session_id]
-    else:
-        activity = _opencode_store_check(binary, timeout) or _opencode_activity(
-            binary, session_id, since, timeout
-        )
-        if activity is not None:
-            return activity
-        command = [binary, "session", "delete", session_id]
-    failure, _output = _run(command, timeout)
+        return _delete_codex(binary, session_id, item.get("codex_login_home") or "", since, timeout)
+    activity = _opencode_store_check(binary, timeout) or _opencode_activity(
+        binary, session_id, since, timeout
+    )
+    if activity is not None:
+        return activity
+    failure, _output = _run([binary, "session", "delete", session_id], timeout)
     if failure is None or GONE_MARKERS[provider] in failure.casefold():
         return ("deleted", None)
-    if provider == "codex":
-        probe, _output = _run([binary, "delete", session_id], timeout)
-        if probe is not None and GONE_MARKERS["codex"] in probe.casefold():
-            return ("deleted", None)
     return ("failed", failure)
+
+
+def _delete_codex(
+    binary: str, session_id: str, login_home: str, since: float, timeout: float
+) -> Outcome:
+    """Delete the rollout from each home holding it: the account's, then the turn's login home.
+
+    A login home links its sessions to the account's store once prepared; one
+    not yet prepared, or pruned after its login was removed, keeps its own.
+    """
+
+    homes: list[Path | None] = [None]
+    if login_home and os.path.isdir(os.path.expanduser(login_home)):
+        homes.append(Path(login_home).expanduser())
+    holding: dict[Path | None, str] = {}
+    for home in homes:
+        try:
+            rollout = locate_codex_transcript(session_id, home)
+        except (OSError, ValueError) as exc:
+            return ("failed", str(exc))
+        if rollout is None or rollout in holding.values():
+            continue
+        if _modified_since(rollout, since):
+            return ("kept", None)
+        holding[home] = rollout
+    for home in holding or [None]:
+        env = None if home is None else {**os.environ, "CODEX_HOME": str(home)}
+        failure, _output = _run([binary, "delete", "--force", session_id], timeout, env)
+        if failure is None or GONE_MARKERS["codex"] in failure.casefold():
+            continue
+        probe, _output = _run([binary, "delete", session_id], timeout, env)
+        if probe is None or GONE_MARKERS["codex"] not in probe.casefold():
+            return ("failed", failure)
+    return ("deleted", None)
 
 
 def _opencode_store_check(binary: str, timeout: float) -> Outcome | None:
@@ -130,10 +152,13 @@ def _modified_since(path: str, since: float) -> bool:
     return os.stat(path).st_mtime > since
 
 
-def _run(command: list[str], timeout: float) -> tuple[str | None, str]:
+def _run(
+    command: list[str], timeout: float, env: dict[str, str] | None = None
+) -> tuple[str | None, str]:
     try:
         result = subprocess.run(
             command,
+            env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

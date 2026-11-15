@@ -27,6 +27,7 @@ class ProviderSessionSweepTarget(BaseModel):
     session_id: str
     marked: bool
     cwd: str | None = None
+    login_id: str = ""
 
 
 def migrate_provider_session_sweeps(connection: sqlite3.Connection) -> None:
@@ -114,7 +115,8 @@ _ELIGIBLE = f"""
     SELECT latest.native_session_id AS session_id,
            json_extract(latest.request_json, '$.provider') AS provider,
            latest.stage_machine_id AS machine_id, latest.project_id, latest.kind,
-           json_extract(latest.request_json, '$.chat_id') AS chat_id, latest.stage_root
+           json_extract(latest.request_json, '$.chat_id') AS chat_id, latest.stage_root,
+           latest.login_id
     FROM latest
     WHERE latest.position = 1
       AND latest.stage_machine_id IS NOT NULL AND latest.stage_machine_id != ''
@@ -135,7 +137,7 @@ _PENDING = """
     WITH latest AS (
         SELECT run.native_session_id, run.stage_machine_id, run.project_id, run.kind,
                run.stage_root, json_extract(run.request_json, '$.chat_id') AS chat_id,
-               ROW_NUMBER() OVER (
+               run.login_id, ROW_NUMBER() OVER (
                    PARTITION BY run.native_session_id ORDER BY run.created_at DESC, run.rowid DESC
                ) AS position
         FROM graph_runs AS run
@@ -145,7 +147,7 @@ _PENDING = """
     )
     SELECT sweep.provider, sweep.execution_machine AS machine_id,
            sweep.native_session_id AS session_id, latest.project_id, latest.kind,
-           latest.chat_id, latest.stage_root
+           latest.chat_id, latest.stage_root, latest.login_id
     FROM provider_session_sweeps AS sweep
     LEFT JOIN latest
       ON latest.native_session_id = sweep.native_session_id AND latest.position = 1
@@ -317,6 +319,7 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
             session_id=row["session_id"],
             marked=marked,
             cwd=self._chat_cwd(connection, row),
+            login_id=row["login_id"] or "",
         )
 
     def _chat_cwd(self, connection: sqlite3.Connection, row: sqlite3.Row) -> str | None:

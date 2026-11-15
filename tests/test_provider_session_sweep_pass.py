@@ -64,6 +64,7 @@ def _run(
     stage_root="/stage",
     kind="project_chat",
     machine="backend",
+    login_id=None,
 ):
     _insert(
         store,
@@ -79,6 +80,7 @@ def _run(
         native_session_id=session,
         stage_machine_id=machine,
         stage_root=stage_root,
+        login_id=login_id,
     )
 
 
@@ -264,7 +266,7 @@ def test_stop_ends_the_pass_between_chunks(tmp_path, monkeypatch):
     stop = threading.Event()
     calls = []
 
-    def delete(_machine, targets):
+    def delete(_machine, targets, **_kwargs):
         calls.append([target.session_id for target in targets])
         stop.set()
         return [("deleted", None)] * len(targets)
@@ -287,7 +289,7 @@ def test_failing_retries_cannot_starve_fresh_sessions(tmp_path, monkeypatch):
     monkeypatch.setattr(provider_session_sweep, "PROVIDER_SESSION_SWEEP_RETRY_BATCH", 1)
     attempted = []
 
-    def fail(_machine, targets):
+    def fail(_machine, targets, **_kwargs):
         attempted.extend(target.session_id for target in targets)
         return [("failed", "refused")] * len(targets)
 
@@ -322,6 +324,7 @@ def test_the_remote_program_runs_in_the_login_shell_and_resolves_the_workspace(
     import sys
     from types import SimpleNamespace
 
+    from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.runs import provider_session_sweep
     from rcp.storage.provider_session_sweeps import ProviderSessionSweepTarget
 
@@ -369,6 +372,7 @@ def test_the_remote_program_runs_in_the_login_shell_and_resolves_the_workspace(
             target("claude", OTHER_CLAUDE),
             target("codex", "not-a-uuid"),
         ],
+        credentials=ProviderCredentialStore.for_data_dir(tmp_path),
     )
     assert [state for state, _error in outcomes] == ["deleted", "deleted", "absent", "failed"]
     assert list(project.iterdir()) == []
@@ -403,3 +407,80 @@ def test_only_the_canonical_data_dir_sweeps(manifest, tmp_path, monkeypatch, cap
                 )
             )
             assert passes == []
+
+
+LOGIN = "4f1c2a52-6a0e-4d4f-9a39-0d0f3b1c6e21"
+HOME_FAKE = """#!/usr/bin/env python3
+import glob, json, os, sys
+home = os.environ["CODEX_HOME"]
+with open(os.environ["FAKE_ARGV_LOG"], "a") as log:
+    log.write(json.dumps([home, *sys.argv[1:]]) + "\\n")
+found = glob.glob(os.path.join(home, "*sessions", "**", "rollout-*-" + sys.argv[-1] + ".jsonl"), recursive=True)
+if not found:
+    print("Error: No active or archived session found matching it.", file=sys.stderr)
+    sys.exit(1)
+os.unlink(found[0])
+"""
+
+
+@pytest.mark.real_provider_discovery
+@pytest.mark.parametrize("layout", ["private", "shared", "pruned"])
+def test_a_login_turn_is_found_and_deleted_in_the_home_that_holds_its_rollout(
+    tmp_path, monkeypatch, layout
+):
+    binary = tmp_path / "bin" / "codex"
+    binary.parent.mkdir()
+    binary.write_text(HOME_FAKE)
+    binary.chmod(0o755)
+    log = tmp_path / "argv.jsonl"
+    log.touch()
+    monkeypatch.setenv("PATH", f"{binary.parent}:/usr/bin:/bin")
+    monkeypatch.setenv("FAKE_ARGV_LOG", str(log))
+    machine_home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(machine_home))
+    login_home = tmp_path / "provider-homes" / "codex" / LOGIN
+    (machine_home / "sessions").mkdir(parents=True)
+    login_home.mkdir(parents=True)
+    if layout == "shared":
+        (login_home / "sessions").symlink_to(machine_home / "sessions")
+    elif layout == "pruned":
+        login_home.rmdir()
+    store_home = login_home if layout == "private" else machine_home
+    rollout = store_home / "sessions" / f"rollout-2026-10-01T00-00-00-{RCP_CODEX}.jsonl"
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    rollout.write_text("{}")
+    stale = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    os.utime(rollout, (stale, stale))
+    store = AppStore(tmp_path / "app.sqlite3")
+    _run(store, "codex-login-turn", RCP_CODEX, "codex", login_id=LOGIN)
+    _sweep(store)
+    assert not rollout.exists()
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls == [[str(store_home), "delete", "--force", RCP_CODEX]]
+    assert store.provider_session_swept(RCP_CODEX)
+    assert store.provider_session_sweep_targets(store.now()) == []
+
+
+@pytest.mark.real_provider_discovery
+def test_a_login_turn_used_recently_in_its_login_home_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    rollout = (
+        tmp_path
+        / "provider-homes"
+        / "codex"
+        / LOGIN
+        / "sessions"
+        / f"rollout-2026-11-01T00-00-00-{RCP_CODEX}.jsonl"
+    )
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("{}")
+    store = AppStore(tmp_path / "app.sqlite3")
+    _run(store, "codex-login-turn", RCP_CODEX, "codex", login_id=LOGIN)
+    from rcp.runs import provider_session_sweep
+
+    monkeypatch.setattr(
+        provider_session_sweep, "discover_provider", lambda *_args: str(tmp_path / "missing")
+    )
+    _sweep(store)
+    assert rollout.exists()
+    assert not store.provider_session_swept(RCP_CODEX)

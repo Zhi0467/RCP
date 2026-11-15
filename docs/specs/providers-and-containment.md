@@ -765,8 +765,8 @@ client-supplied session, so sessions people start in their own terminals are nev
 touched. The sweep never lists a provider store. It checks each id's shape
 and deletes it by exact id:
 
-- Codex: `codex delete --force <uuid>` against the account's own Codex home, which
-  added login homes link to. Codex refuses to delete a session while a fork of it
+- Codex: `codex delete --force <uuid>` in each home holding the rollout: the account's
+  own, and the turn's added login home when it still exists and keeps its own copy. Codex refuses to delete a session while a fork of it
   exists; the fork does not need its source, so the source waits until its forks
   are swept.
 - OpenCode: `opencode session delete <id>`, only when `opencode --version` reports

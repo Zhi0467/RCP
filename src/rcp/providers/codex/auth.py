@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.agents.provider_environment import ProviderProcessEnvironment
+from rcp.agents.provider_environment import ProviderProcessEnvironment, remote_login_home
 from rcp.limits import PROVIDER_TOKEN_PLACEMENT_TIMEOUT_SECONDS
 from rcp.provider_auth import DeviceLogin, DeviceLoginStep, ProviderAuthentication
 from rcp.providers.codex.homes import prepare_home, relocate_home
@@ -205,7 +205,7 @@ class CodexAuthentication(ProviderAuthentication):
             "_prepare_home = prepare_home\n_home_lease = home_lease\n"
             f"exec(compile({policy!r}, 'codex/homes.py', 'exec'))"
         )
-        home = f"~/.rcp/provider-homes/codex/{login_id}"
+        home = remote_login_home("codex", login_id)
         command = shlex.join(["python3", "-c", source, home])
         result = subprocess.run(
             ssh_arguments(host, shlex.join(["bash", "-lic", command])),

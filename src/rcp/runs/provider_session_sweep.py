@@ -19,6 +19,7 @@ from collections import Counter, defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING
 
+from rcp.agents.provider_environment import ProviderCredentialStore, remote_login_home
 from rcp.limits import (
     PROVIDER_SESSION_DELETE_TIMEOUT_SECONDS,
     PROVIDER_SESSION_RETENTION_DAYS,
@@ -87,7 +88,16 @@ def sweep_provider_sessions(
                     fresh[machine_id][:PROVIDER_SESSION_SWEEP_BATCH], now
                 )
             )
-        _sweep_machine(store, machine, batch, kept[machine_id], stop=stop, guard=guard, now=now)
+        _sweep_machine(
+            store,
+            machine,
+            batch,
+            kept[machine_id],
+            credentials=ProviderCredentialStore.for_data_dir(store.path.parent),
+            stop=stop,
+            guard=guard,
+            now=now,
+        )
 
 
 def _sweep_machine(
@@ -96,6 +106,7 @@ def _sweep_machine(
     batch: list[ProviderSessionSweepTarget],
     kept: Counter[str],
     *,
+    credentials: ProviderCredentialStore,
     stop: threading.Event,
     guard: Guard,
     now: str,
@@ -109,7 +120,7 @@ def _sweep_machine(
             break
         chunk = batch[start : start + PROVIDER_SESSION_SWEEP_CHUNK]
         try:
-            outcomes = _delete_on_machine(machine, chunk)
+            outcomes = _delete_on_machine(machine, chunk, credentials=credentials)
         except Exception as exc:
             reason = " ".join(str(exc).split())[:500] or type(exc).__name__
             outcomes = [("failed", reason)] * len(chunk)
@@ -165,7 +176,10 @@ def _counts(counter: Counter[str]) -> str:
 
 
 def _delete_on_machine(
-    machine: SpaceMachineRecord, targets: list[ProviderSessionSweepTarget]
+    machine: SpaceMachineRecord,
+    targets: list[ProviderSessionSweepTarget],
+    *,
+    credentials: ProviderCredentialStore,
 ) -> list[tuple[str, str | None]]:
     items = [
         {
@@ -176,6 +190,7 @@ def _delete_on_machine(
             if target.provider in PROVIDERS
             else [],
             "claude_cwd": target.cwd if target.provider == "claude" else None,
+            "codex_login_home": _codex_login_home(machine, target, credentials),
             "retention_seconds": PROVIDER_SESSION_RETENTION_DAYS * 86400,
         }
         for target in targets
@@ -201,6 +216,18 @@ def _delete_on_machine(
     if not isinstance(outcomes, list) or len(outcomes) != len(targets):
         raise RuntimeError("the host returned an unexpected deletion result")
     return [(str(state), error) for state, error in outcomes]
+
+
+def _codex_login_home(
+    machine: SpaceMachineRecord,
+    target: ProviderSessionSweepTarget,
+    credentials: ProviderCredentialStore,
+) -> str | None:
+    if target.provider != "codex" or not target.login_id:
+        return None
+    if machine.host:
+        return remote_login_home("codex", target.login_id)
+    return str(credentials.login_home("codex", target.login_id))
 
 
 def _remote_program() -> str:
