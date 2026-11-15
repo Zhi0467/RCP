@@ -2400,13 +2400,17 @@ item's kind, project, and title. Signed out, it shows no item details. It offers
 "Open here" and, in a Mac browser, "Open in app", plus Remember (its note on
 hover). "Open here" resolves the link after sign-in and hands it to the
 notification resolver. "Open in app" sets the location to
-`rcp://open?space=<space_id>&host=<host>&l=<token>`. A failed resolve shows
-"Not available" with no buttons. The remembered choice lives in browser
-storage: `app`, `here`, or `ask` (the default). `app` skips the card and, after
-a short wait, shows an "Open here" fallback. `here` skips the card. Space
-Settings' Appearance pane shows an "Open share links" row (In app, Here, Ask)
-that edits the same choice in a team space's browser only. The desktop shell
-never shows the card; it resolves and opens in place.
+`rcp://open?space=<space_id>&host=<host>&l=<token>`. The card waits until the
+session state is known. In a browser a 404 shows "Not available" with no
+buttons, and a 503 shows Retry. Any other failure, and every failure in the
+desktop shell, settles the link and shows "This link is not available." over
+the app. The remembered choice lives in browser storage: `app`, `here`, or
+`ask` (the default). `app` skips the card and, after a short wait, shows an
+"Open here" fallback; where "Open in app" is not offered, `app` acts as `ask`.
+`here` skips the card. Space Settings' Appearance pane shows an "Open share
+links" row (Here, Ask, and In app where offered) that edits the same choice in
+a team space's browser only. The desktop shell never shows the card; it
+resolves and opens in place.
 
 **In place.** A click on a share link to the current space opens it in place,
 without the card. In a browser that is a same-origin link. In the desktop shell
@@ -2422,8 +2426,8 @@ to a saved team connection's verified space id and opens that connection's
 `/open#l=<token>`. It never contacts `host`. An unconnected match is
 reconnected once; if that fails, a banner names `host` with Retry and Dismiss.
 With no match, an update-notice-style banner names `host` with "Add team
-space", which opens the add dialog with `host` (without its port) as the SSH
-target. The link stays pending until the space is added or the banner is
+space", which opens the add dialog empty; `host` is shown only as text. The
+link stays pending until the space is added or the banner is
 dismissed.
 
 ## Agent thread API
