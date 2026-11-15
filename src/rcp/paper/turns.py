@@ -100,7 +100,7 @@ def turn_file(
             else PaperSnapshotReader(conn).version_file(project_id, before_version_id, path)
         )
         coach = blob(row["coach_sha"]) if row["coach_sha"] else None
-    if base == coach and not row["clash"]:
+    if base == coach and row["kind"] != "rename" and not row["clash"]:
         return None
     if max(len(base or b""), len(coach or b"")) > PAPER_TURN_DIFF_MAX_BYTES:
         return PaperTurnFile(

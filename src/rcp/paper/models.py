@@ -87,7 +87,8 @@ class PaperOp(BaseModel):
 
     `write` puts `data` at `path`; `base` is the file the operation read (None:
     none). Keystrokes since that read survive outside the overlap. `exclusive`
-    refuses an occupied path.
+    refuses an occupied path. A write that creates a file takes `file_id` when no
+    live file holds it, so a restored file keeps its id.
     """
 
     model_config = ConfigDict(extra="forbid")

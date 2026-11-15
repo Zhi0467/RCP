@@ -628,9 +628,12 @@ class PaperLive:
         state = self.projects[project]
         known = state.known.pop(src)
         known.stat = read.entries[dst]
+        known.kind = _kind(dst, body)
         state.known[dst] = known
         room = self.rooms.get((project, known.file_id))
-        if room is not None:
+        if room is not None and known.kind != "text":
+            self._broadcast(self.rooms.pop((project, known.file_id)), b"")
+        elif room is not None:
             room.path = dst
         await asyncio.to_thread(self._persist_identity, project, known.file_id, dst, known.kind)
         await self._record(project, dst, "rename", body, body, False)
@@ -1279,7 +1282,9 @@ class PaperLive:
         data = op.data or b""
         known = state.known.get(path)
         if known is None:
-            known = Known(str(uuid.uuid4()), _kind(path, data), "", len(data))
+            live = {item.file_id for item in state.known.values()}
+            file_id = op.file_id if op.file_id and op.file_id not in live else str(uuid.uuid4())
+            known = Known(file_id, _kind(path, data), "", len(data))
             state.known[path] = known
             await self._put(project, path, data, None)
             await asyncio.to_thread(
@@ -1396,9 +1401,12 @@ class PaperLive:
     ) -> None:
         """Add a turn's changes no poll saw, such as writes made while RCP was down.
 
-        A path whose current bytes RCP wrote itself is a member's save, never the agent's.
+        A path whose current bytes RCP wrote itself is a member's save, never the agent's,
+        and a vanished path whose bytes a listed rename carried is that rename's source.
         """
-        listed = {row["path"] for row in self.turn_files(project, operation_id)}
+        rows = self.turn_files(project, operation_id)
+        listed = {row["path"] for row in rows}
+        moved = {row["coach_sha"] for row in rows if row["kind"] == "rename"}
         with self.store.connection() as conn:
             reader = PaperSnapshotReader(conn)
             old = {entry.path: entry.sha256 for entry in reader.entries(project, before)[1]}
@@ -1406,6 +1414,8 @@ class PaperLive:
             changes = []
             for path in sorted(old.keys() | new.keys()):
                 if path in listed or old.get(path) == new.get(path):
+                    continue
+                if path not in new and old[path] in moved:
                     continue
                 if path in written:
                     ours = written[path]
@@ -1519,6 +1529,7 @@ class PaperLive:
             ops.append(
                 PaperOp(
                     kind="write",
+                    file_id=file.file_id,
                     path=file.path,
                     base=current.file_bytes(existing) if existing is not None else None,
                     data=data,

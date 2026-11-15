@@ -84,6 +84,9 @@ def test_a_turn_lists_only_changed_files_and_bounds_each_diff(manifest, tmp_path
         live.run_sync(
             live.apply(project, [PaperOp(kind="write", path="a.md", data=b"a\n")], "human")
         )
+        live.run_sync(
+            live.apply(project, [PaperOp(kind="write", path="old.md", data=b"o\n")], "human")
+        )
         (folder / "kept.csv").write_text("x\n" * 100)
         live.run_sync(live.poll(project, full=True))
         admitted_launch_task(
@@ -95,11 +98,13 @@ def test_a_turn_lists_only_changed_files_and_bounds_each_diff(manifest, tmp_path
         live.run_sync(live.begin_turn(project, "turn"))
         (folder / "a.md").write_text("a\nagent\n")
         (folder / "big.csv").write_text("y\n" * 100)
+        (folder / "old.md").rename(folder / "new.md")
         live.run_sync(live.poll(project, full=True))
         end_paper_turn(store, live, project, "turn")
 
         rows = {row["path"]: row for row in client.get(prefix + "/turns/turn").json()["files"]}
-        assert set(rows) == {"a.md", "big.csv"}
+        assert set(rows) == {"a.md", "big.csv", "new.md"}
+        assert rows["new.md"]["kind"] == "rename"
         assert (rows["a.md"]["added"], rows["a.md"]["too_large"]) == (1, False)
         assert (rows["big.csv"]["added"], rows["big.csv"]["too_large"]) == (None, True)
         big = client.get(prefix + "/turns/turn/file", params={"path": "big.csv"}).json()

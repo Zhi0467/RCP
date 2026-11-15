@@ -217,6 +217,21 @@ def test_a_rename_keeps_the_file_id(paper):
     run(scenario())
 
 
+def test_a_rename_to_another_kind_takes_the_new_kind(paper):
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "draft.md", "content")
+        os.rename(root / "p/draft.md", root / "p/draft.pdf")
+        await live.poll("p", full=True)
+        await live.poll("p", full=True)
+        (file,) = (await live.tree("p")).files
+        assert (file.path, file.file_id, file.kind) == ("draft.pdf", file_id, "binary")
+        await live.close()
+
+    run(scenario())
+
+
 def test_a_foreign_delete_of_an_edited_open_file_recreates_it_as_a_clash(paper):
     live, _, root = paper
 
@@ -349,6 +364,21 @@ def test_restore_writes_files_and_keeps_peer_positions_outside_the_change(paper)
         assert client.text == "prefix old suffix"
         assert (root / "p/a.md").read_text() == "prefix old suffix"
         assert position.get_index() == 3
+        await live.close()
+
+    run(scenario())
+
+
+def test_restoring_a_deleted_file_keeps_its_id(paper):
+    live, _, _root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "kept")
+        version = await live.create_version("p", "original", "h")
+        await live.apply("p", [PaperOp(kind="delete", file_id=file_id)], "h")
+        await live.restore("p", version["version_id"], [file_id], "h")
+        (file,) = (await live.tree("p")).files
+        assert (file.path, file.file_id) == ("a.md", file_id)
         await live.close()
 
     run(scenario())
