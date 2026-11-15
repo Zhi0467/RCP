@@ -159,7 +159,10 @@ def _read_projection(workspace: StateWorkspace) -> dict[str, bytes]:
 
 
 def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Plan:
-    """The saved tree with its newest editor text wins; else the publication, whose text a stale draft never replaces."""
+    """The saved tree with its newest editor text wins; else the publication, whose text a stale draft never replaces.
+
+    A draft the winning tree does not hold stays in History.
+    """
     with store.connection() as connection:
         saved = None
         if connection.execute(
@@ -178,6 +181,8 @@ def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Pl
         ).fetchone()
     if saved is not None:
         plan = _Plan(saved)
+        if draft is not None and saved.get(_INTRODUCTION) != draft[0].encode():
+            plan.versions[DRAFT_VERSION] = {_INTRODUCTION: draft[0].encode()}
     else:
         plan = _Plan(dict(projection), identities=True)
         if draft is not None:

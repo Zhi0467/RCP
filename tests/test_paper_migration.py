@@ -576,3 +576,16 @@ def test_the_remote_reachability_probe_uses_the_short_startup_timeout(monkeypatc
     monkeypatch.setattr(stage, "_ssh_bytes", unreachable)
     assert not RemotePaperFolder(stage, "p").reachable()
     assert seen == [limits.PAPER_STARTUP_PROBE_SECONDS]
+
+
+def test_a_draft_beside_a_saved_tree_stays_in_history(legacy):
+    store, _seeded, folder, workspace = legacy
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO paper_drafts(project_id, content, base_hash, updated_at) "
+            "VALUES ('p', 'Unsaved draft', 'deadbeef', '2026-01-01T00:00:00+00:00')"
+        )
+    assert _migrate(store, folder, workspace)
+    assert _files(folder) == legacy_tree()
+    assert _versions(store)[paper_migration.DRAFT_VERSION] == {"introduction.md": "Unsaved draft"}
+    assert _row(store, "SELECT count(*) FROM paper_drafts WHERE project_id='p'") == (0,)

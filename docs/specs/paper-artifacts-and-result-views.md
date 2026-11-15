@@ -146,7 +146,7 @@ publication, into a sibling temp folder and renames it into place. Paths that di
 scan would hide are logged. It folds unsaved editor updates into the cache and
 keeps the old `file_id`s. A legacy draft replaces the published
 `introduction.md` only when it was based on that text. Whatever the folder did
-not take, the publication or a stale draft, stays as a named History version.
+not take, the publication or a draft, stays as a named History version.
 It clears legacy draft holds and drafts. It settles queued or running old Coach
 turns as interrupted and rejects pending change cards, each with a notice. Old
 Coach turns show as static transcript text. It then removes `.research/paper`
