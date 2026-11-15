@@ -1262,6 +1262,7 @@ export function AgentChatView({
       {presentation === "workspace" && watcherToggle}
       {replyComments.headerButton}
       <ChatHeaderMenu
+        link={headerActions.length > 0 ? { projectId: project.id, chatId, graphTarget } : undefined}
         actions={[
           ...headerActions,
           ...(!fixedConversation && !readOnly

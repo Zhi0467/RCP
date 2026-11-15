@@ -1,0 +1,123 @@
+import assert from "node:assert/strict";
+import { after, test } from "node:test";
+import { createServer } from "vite";
+
+const server = await createServer({
+  root: new URL("..", import.meta.url).pathname,
+  configFile: false,
+  logLevel: "silent",
+  server: { middlewareMode: true, hmr: false },
+  optimizeDeps: { noDiscovery: true },
+});
+after(() => server.close());
+const { copyShareLink, shareLinkGraphTarget, shareLinkRequest, shareLinksEnabled } =
+  await server.ssrLoadModule("/src/core/shareLinks.ts");
+
+class FakeItem {
+  constructor(parts) {
+    this.parts = parts;
+  }
+}
+
+function fakeClipboard() {
+  const written = [];
+  return {
+    written,
+    write: async (items) => {
+      for (const item of items) written.push(await (await item.parts["text/plain"]).text());
+    },
+  };
+}
+
+function respond(status, body) {
+  return async () => new Response(JSON.stringify(body), { status });
+}
+
+test("graph targets and references map to share-link requests", () => {
+  assert.equal(shareLinkGraphTarget({ kind: "main" }), "main");
+  assert.equal(shareLinkGraphTarget({ kind: "branch", branch_id: "b1" }), "branch:b1");
+  assert.deepEqual(
+    shareLinkRequest({ kind: "branch", branch_id: "b1" }, { kind: "artifact", artifact_id: "a1" }),
+    { kind: "artifact", item_id: "a1", graph_target: "branch:b1" },
+  );
+  assert.deepEqual(
+    shareLinkRequest(
+      { kind: "branch", branch_id: "b1" },
+      { kind: "node", node_id: "n1", branch_id: null },
+    ),
+    { kind: "node", item_id: "n1", graph_target: "main" },
+  );
+  assert.deepEqual(
+    shareLinkRequest({ kind: "main" }, { kind: "node", node_id: "n1", branch_id: "b2" }),
+    { kind: "node", item_id: "n1", graph_target: "branch:b2" },
+  );
+});
+
+test("copy posts the item and writes the returned URL inside the click", async () => {
+  const calls = [];
+  const clipboard = fakeClipboard();
+  const fetcher = async (path, init) => {
+    calls.push({ path, init });
+    return new Response(JSON.stringify({ url: "https://lab.example/open#l=t1" }), { status: 200 });
+  };
+  const copied = copyShareLink(
+    "p 1",
+    { kind: "chat", item_id: "c1", graph_target: "main" },
+    { fetcher, clipboard, Item: FakeItem },
+  );
+  assert.equal(calls.length, 1);
+  await copied;
+  assert.equal(calls[0].path, "/api/projects/p%201/share-links");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    kind: "chat",
+    item_id: "c1",
+    graph_target: "main",
+  });
+  assert.deepEqual(clipboard.written, ["https://lab.example/open#l=t1"]);
+});
+
+test("a refused link rejects with the server's reason and writes nothing", async () => {
+  for (const [status, body] of [
+    [409, { detail: "This team space has no access address." }],
+    [404, { detail: "Not found" }],
+    [500, null],
+  ]) {
+    const clipboard = fakeClipboard();
+    await assert.rejects(
+      copyShareLink(
+        "p",
+        { kind: "node", item_id: "n", graph_target: "main" },
+        { fetcher: respond(status, body), clipboard, Item: FakeItem },
+      ),
+      (error) => error instanceof Error && error.message.length > 0,
+    );
+    assert.deepEqual(clipboard.written, []);
+  }
+});
+
+test("a blocked clipboard rejects", async () => {
+  await assert.rejects(
+    copyShareLink(
+      "p",
+      { kind: "node", item_id: "n", graph_target: "main" },
+      {
+        fetcher: respond(200, { url: "https://lab.example/open#l=t" }),
+        clipboard: { write: async () => Promise.reject(new Error("denied")) },
+        Item: FakeItem,
+      },
+    ),
+  );
+});
+
+test("share links are on only in a team space with an access URL", async () => {
+  assert.equal(
+    await shareLinksEnabled(respond(200, { space_name: "Lab", access_url: "https://lab.example" })),
+    true,
+  );
+  assert.equal(
+    await shareLinksEnabled(respond(200, { space_name: "Lab", access_url: null })),
+    false,
+  );
+  assert.equal(await shareLinksEnabled(respond(404, { detail: "Not found" })), false);
+});
