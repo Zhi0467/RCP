@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { UpdateNotice, ReleaseCheckRow } from "/src/desktop/UpdateNotice.tsx";
 import { useRecheckOnRelease, useUpdateNotice } from "/src/desktop/useUpdateNotice.ts";
 import { desktopBuildIdentity } from "/src/core/desktopRuntime.ts";
+import { loadUpdateNotice } from "/src/core/api.ts";
 import { useDesktopShell } from "/src/desktop/useDesktopShell.ts";
 window.visibility = new EventTarget();
 window.visibility.visibilityState = "visible";
@@ -11,13 +12,15 @@ window.identity = { kind: "prebuilt", version: "0.4.2", checkout: null };
 window.copied = [];
 window.updaterEnabled = false;
 window.rechecks = [];
+window.answered = 0;
+const load = () => loadUpdateNotice().finally(() => window.answered++);
 const recheck = () => window.rechecks.push(Date.now());
 Object.defineProperty(navigator, "clipboard", {
   value: { writeText: async (value) => window.copied.push(value) },
 });
 window.readIdentity = desktopBuildIdentity;
 function App() {
-  const [notice] = useUpdateNotice(true, undefined, window.visibility);
+  const [notice] = useUpdateNotice(true, load, window.visibility);
   useRecheckOnRelease(notice, window.offered, recheck);
   return (
     <>

@@ -49,14 +49,15 @@ test("release notice transitions, actions, visibility, and storage through a ser
       return route.fulfill({ json: data });
     });
     await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/updateNotice.html`);
-    await page.waitForFunction(() => document.querySelector('[data-status="unchecked"]'));
+    await page.waitForFunction(() => window.answered > 0);
     const refresh = async (identity) => {
       const before = reads;
-      await page.evaluate((identity) => {
+      const answered = await page.evaluate((identity) => {
         if (identity !== undefined) window.identity = identity;
         window.visibility.dispatchEvent(new Event("visibilitychange"));
+        return window.answered;
       }, identity);
-      await page.waitForFunction(() => document.querySelector("[data-status]"));
+      await page.waitForFunction((answered) => window.answered > answered, answered);
       await page.evaluate(
         () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
       );
@@ -172,9 +173,7 @@ test("release notice transitions, actions, visibility, and storage through a ser
         "1",
       );
       await page.reload();
-      await page.waitForFunction(
-        () => document.querySelector("[data-status]")?.dataset.status === "update_available",
-      );
+      await page.waitForFunction(() => window.answered > 0);
       assert.equal(await page.locator("[data-kind]").count(), 0);
       data = { ...fixture, latest_version: "0.4.4" };
       await refresh();
@@ -187,10 +186,11 @@ test("release notice transitions, actions, visibility, and storage through a ser
         });
       });
       await page.locator(".banner-dismiss").click();
-      await page.evaluate(() => window.remount());
-      await page.waitForFunction(
-        () => document.querySelector("[data-status]")?.dataset.status === "update_available",
-      );
+      const answered = await page.evaluate(() => {
+        window.remount();
+        return window.answered;
+      });
+      await page.waitForFunction((answered) => window.answered > answered, answered);
       await refresh();
       assert.equal(await page.locator("[data-kind]").count(), 0);
       data = { ...fixture, latest_version: "0.4.5" };
