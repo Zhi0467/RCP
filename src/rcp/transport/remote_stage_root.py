@@ -64,10 +64,16 @@ def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = Tru
     return present
 
 
+def rcp_home() -> str:
+    """This account's `~/.rcp`, through any link in the home path, as scopes name it."""
+
+    return os.path.join(os.path.realpath(os.path.expanduser("~")), ".rcp")
+
+
 def create_stage(label: str, reuse: bool, thread_owner: str | None = None) -> str:
     """The stage root for `label` (a fresh one when empty); refuses an unsafe parent."""
 
-    rcp = os.path.join(os.path.expanduser("~"), ".rcp")
+    rcp = rcp_home()
     base = os.path.join(rcp, "stages")
     parents = [rcp, base]
     if thread_owner is not None:
@@ -155,7 +161,8 @@ def sweep_stages(
         sweep_hidden_reads(retain_days, hidden_reads)
 
     cutoff = time.time() - retain_days * 86400
-    base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
+    protected = protected | {os.path.realpath(root) for root in protected}
+    base = os.path.join(rcp_home(), "stages")
     thread_parents = glob.glob(os.path.join(os.path.dirname(base), "agent-threads", "*", "stages"))
     for parent in (base, LEGACY_PARENT, *thread_parents):
         if parent != LEGACY_PARENT and os.path.realpath(parent) != parent:
@@ -172,7 +179,7 @@ def sweep_hidden_reads(retain_days: int, protected: set[str]) -> None:
     """Remove `~/.rcp/hidden-read` folders older than `retain_days`, never following links."""
 
     cutoff = time.time() - retain_days * 86400
-    parent = os.path.join(os.path.realpath(os.path.expanduser("~")), ".rcp", "hidden-read")
+    parent = os.path.join(rcp_home(), "hidden-read")
     if os.path.realpath(parent) != parent or not os.path.isdir(parent):
         return
     for name in os.listdir(parent):
@@ -191,7 +198,7 @@ def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
     The saved root itself is checked, never followed through a replacement.
     """
 
-    base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
+    base = os.path.join(rcp_home(), "stages")
     parent = os.path.dirname(root)
     member = os.path.dirname(parent)
     thread_stage = (
@@ -200,7 +207,8 @@ def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
         and os.path.dirname(member) == os.path.join(os.path.dirname(base), "agent-threads")
         and os.path.realpath(parent) == parent
     )
-    legacy = parent == LEGACY_PARENT
+    saved_before_real_home = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
+    legacy = parent in {LEGACY_PARENT, saved_before_real_home}
     if not STAGE_NAME.fullmatch(os.path.basename(root)) or (
         parent != base and not legacy and not thread_stage
     ):

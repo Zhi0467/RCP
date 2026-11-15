@@ -70,6 +70,42 @@ def test_new_remote_stages_land_under_the_remote_rcp_home(
         assert stage.close()
 
 
+@pytest.mark.parametrize("owner", [None, "member"])
+def test_a_remote_home_reached_through_a_link_stages_and_sweeps_at_its_real_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner
+) -> None:
+    real = tmp_path / "real-home"
+    real.mkdir()
+    (tmp_path / "home").symlink_to(real)
+    stage = _local_stage(monkeypatch, tmp_path / "home")
+    monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
+
+    stage.open("op-linked", thread_owner=owner)
+    assert stage.root is not None
+    root = Path(str(stage.root))
+    assert root.parent == real / ".rcp" / ("agent-threads/member/stages" if owner else "stages")
+    stage.attach(str(root))
+    os.utime(root, (0, 0))
+    remote_stage_root.sweep_stages(1, set())
+    assert not root.exists()
+
+
+def test_a_stage_saved_under_a_linked_home_before_it_resolved_attaches_and_stays_protected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real-home"
+    (real / ".rcp" / "stages" / "rcp-run.saved").mkdir(parents=True, mode=0o700)
+    (tmp_path / "home").symlink_to(real)
+    stage = _local_stage(monkeypatch, tmp_path / "home")
+
+    stage.attach(str(tmp_path / "home" / ".rcp" / "stages" / "rcp-run.saved"))
+    os.utime(real / ".rcp" / "stages" / "rcp-run.saved", (0, 0))
+    remote_stage_root.sweep_stages(
+        1, {str(tmp_path / "home" / ".rcp" / "stages" / "rcp-run.saved")}
+    )
+    assert (real / ".rcp" / "stages" / "rcp-run.saved").is_dir()
+
+
 def test_a_stage_parent_another_user_owns_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
