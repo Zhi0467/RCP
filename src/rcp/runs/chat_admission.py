@@ -29,14 +29,17 @@ def admit_fresh_chat_turn(
 ) -> Iterator[RunRequest]:
     """Serialize stable chat admission and keep graph and repository bindings fixed."""
 
-    assert request.chat_id is not None
-    with conversation_worktree_locks(f"{store.path}:{project_id}:{request.chat_id}"):
-        require_chat_graph_target(service, store, project_id, request.chat_id)
+    chat_id = request.chat_id
+    assert chat_id is not None
+    with conversation_worktree_locks(f"{store.path}:{project_id}:{chat_id}"):
+        require_chat_graph_target(service, store, project_id, chat_id)
         # Archive is shared, so a tab that has not seen it yet cannot revive the chat.
-        if refusal := store.chat_turn_refusal(project_id, request.chat_id):
+        if refusal := store.chat_turn_refusal(project_id, chat_id):
             raise AgentTaskAdmissionConflict(refusal)
-        store.admit_chat_focus(project_id, request.chat_id, request.focus)
+        focus = store.admit_chat_focus(project_id, chat_id, request.focus)
+        if focus != request.focus:
+            request = RunRequest.model_validate(request.model_dump() | {"focus": focus})
         request = request.model_copy(
-            update={"browser_requested": store.chat_browser_requested(project_id, request.chat_id)}
+            update={"browser_requested": store.chat_browser_requested(project_id, chat_id)}
         )
         yield admit_conversation_worktree(service, store, project_id, request)

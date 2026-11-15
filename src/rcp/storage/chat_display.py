@@ -483,8 +483,11 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             else None
         )
 
-    def admit_chat_focus(self, project_id: str, chat_id: str, focus: str | None) -> None:
-        """Fix a chat's focus on its first turn; every later turn must name the same one."""
+    def admit_chat_focus(self, project_id: str, chat_id: str, focus: str | None) -> str | None:
+        """Fix a chat's focus on its first turn and return the chat's focus.
+
+        A later turn that names no focus keeps the chat's; naming another is refused.
+        """
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             started = connection.execute(
@@ -503,13 +506,15 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
                     (project_id, chat_id),
                 )
-                return
+                return focus
             row = connection.execute(
                 "SELECT focus FROM chat_display WHERE project_id=? AND chat_id=?",
                 (project_id, chat_id),
             ).fetchone()
-        if focus != (row["focus"] if row is not None else None):
+        stored = row["focus"] if row is not None else None
+        if focus is not None and focus != stored:
             raise AgentTaskAdmissionConflict("chat_focus_fixed")
+        return stored
 
     def agent_task_turn_refusal(self, record: AgentTaskRecord) -> str | None:
         with self.connection() as connection:
