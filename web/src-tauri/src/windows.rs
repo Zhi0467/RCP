@@ -339,6 +339,8 @@ fn startup_navigation_target(
     }
 }
 
+pub const ADD_TEAM_SPACE_FRAGMENT: &str = "/add-team-space";
+
 pub fn personal_root(base_url: &str) -> Result<Url, String> {
     if uses_vite_dev_server() {
         return INITIAL_URL
@@ -353,10 +355,6 @@ pub fn personal_root(base_url: &str) -> Result<Url, String> {
     target.set_query(None);
     target.set_fragment(None);
     Ok(target)
-}
-
-pub fn navigate_main(window: &WebviewWindow, origin: &str) -> Result<(), String> {
-    navigate_main_route(window, origin, None)
 }
 
 pub fn navigate_main_route(

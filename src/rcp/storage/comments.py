@@ -199,7 +199,12 @@ def _chat_route(
         "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
         (project_id, target_id),
     ).fetchone()
-    if row is None:
+    target = (
+        GraphTargetRef.model_validate_json(row[0])
+        if row is not None
+        else store._orchestrator_chat_target(connection, project_id, target_id)
+    )
+    if target is None:
         return None
     owner = _chat_owner(connection, target_id)
     return CommentTargetRoute(
@@ -207,7 +212,7 @@ def _chat_route(
         owner=owner,
         chat_id=target_id,
         chat_owner=owner,
-        graph_target=GraphTargetRef.model_validate_json(row[0]).key,
+        graph_target=target.key,
         title=chat_title(connection, project_id, target_id),
     )
 

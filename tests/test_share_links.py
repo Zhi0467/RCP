@@ -9,7 +9,7 @@ import pytest
 
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.storage.artifact_models import Artifact
 from rcp.team_access import TEAM_ACCESS_URL_ENV
 from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
@@ -17,6 +17,7 @@ from rcp.transport import StateUnavailable
 from tests.helpers import (
     append_fixture_patch,
     create_named_app,
+    fabricated_authorizer,
     seed_patch,
     signed_in_client,
 )
@@ -76,10 +77,9 @@ def _chat_turn(
     )
 
 
-def _branch(app, store, project: str) -> str:
+def _history_branch(app, store, project: str, branch_id: str) -> GraphHeadRef:
     service = app.state.catalog.open(project)
     base = service.history.head_ref()
-    branch_id = str(uuid.uuid4())
     target = GraphTargetRef(kind="branch", branch_id=branch_id)
     service.history.create_branch(
         GraphBranchMetadata(
@@ -95,6 +95,12 @@ def _branch(app, store, project: str) -> str:
             ),
         )
     )
+    return base
+
+
+def _branch(app, store, project: str) -> str:
+    branch_id = str(uuid.uuid4())
+    base = _history_branch(app, store, project, branch_id)
     store.create_graph_branch(
         project_id=project,
         branch_id=branch_id,
@@ -221,6 +227,31 @@ def test_a_turn_item_links_to_its_own_graph_target(team) -> None:
     for kind, item_id in (("chat", "chat-b"), ("reply", "turn-b")):
         body = _resolve(client, _token(_copy(client, project, kind, item_id))).json()
         assert body["link"] == f"#/projects/{project}/targets/{branch}/{kind}/{item_id}"
+
+
+def test_an_auto_research_conversation_links_to_its_branch(team) -> None:
+    app, client, store, people, acting, project = team
+    episode_id = str(uuid.uuid4())
+    now = store.now()
+    store.create_episode(
+        EpisodeRecord(
+            episode_id=episode_id,
+            project_id=project,
+            mode="auto_research",
+            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+            graph_base_head=_history_branch(app, store, project, episode_id),
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=fabricated_authorizer(),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    token = _token(_copy(client, project, "chat", episode_id))
+    body = _resolve(client, token).json()
+    assert body["link"] == f"#/projects/{project}/targets/{episode_id}/chat/{episode_id}"
+    acting[0] = people[2].user_id
+    assert _resolve(client, token).status_code == 404
 
 
 def test_unavailable_state_answers_503_only_to_members(team, monkeypatch) -> None:

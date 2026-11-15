@@ -142,6 +142,33 @@ test("a space switch holds the reads it cancels until the page is known to stay"
   }
 });
 
+test("leaving a team space can carry the Add team space request", async () => {
+  const originalWindow = globalThis.window;
+  const calls = [];
+  const desktopWindow = new EventTarget();
+  desktopWindow.__TAURI_INTERNALS__ = {
+    invoke: async (command, args) => {
+      calls.push([command, args]);
+      throw new Error("stay");
+    },
+  };
+  globalThis.window = desktopWindow;
+  try {
+    await assert.rejects(returnDesktopToPersonal({ addTeamSpace: true }), /stay/);
+    await assert.rejects(returnDesktopToPersonal(), /stay/);
+    assert.deepEqual(
+      calls.map(([command, args]) => [command, args.addTeamSpace]),
+      [
+        ["desktop_return_to_personal", true],
+        ["desktop_return_to_personal", false],
+      ],
+    );
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test("startup acceptance is not lost to an in-flight prepare-show verification", async () => {
   const originalFetch = globalThis.fetch;
   const replacementIdentity = {

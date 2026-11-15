@@ -182,6 +182,7 @@ import {
   isDesktopRuntime,
   listenDesktopEvent,
   openDesktopArtifactPdf,
+  ADD_TEAM_SPACE_HASH,
   returnDesktopToPersonal,
   reverifyBackendIdentity,
   TEAM_TRANSPORT_RECOVERED,
@@ -562,17 +563,20 @@ export {
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
-  useState(() => {
+  const [addTeamSpaceOnLoad, setAddTeamSpaceOnLoad] = useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
     const requestedHash = window.location.hash;
-    const hash = isSetupHash(requestedHash)
-      ? requestedHash
-      : initialProjectHash(requestedHash, navigation?.type, desktop);
+    const addTeamSpace = requestedHash === ADD_TEAM_SPACE_HASH;
+    const hash = addTeamSpace
+      ? ""
+      : isSetupHash(requestedHash)
+        ? requestedHash
+        : initialProjectHash(requestedHash, navigation?.type, desktop);
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return null;
+    return addTeamSpace;
   });
   const identity = useActorIdentity();
   // Retained state belongs to the member. Backend restarts reconcile the held
@@ -584,7 +588,15 @@ export default function App() {
     identity.actorIdentity?.user.identity_kind,
   ]);
   useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
-  return <RefreshMemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+  return (
+    <RefreshMemberApp
+      key={sessionKey}
+      desktop={desktop}
+      identity={identity}
+      addTeamSpaceOnLoad={addTeamSpaceOnLoad}
+      onAddTeamSpaceOnLoadTaken={() => setAddTeamSpaceOnLoad(false)}
+    />
+  );
 }
 
 interface RefreshBindings {
@@ -595,6 +607,8 @@ interface RefreshBindings {
 function RefreshMemberApp(props: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
+  addTeamSpaceOnLoad: boolean;
+  onAddTeamSpaceOnLoadTaken: () => void;
 }) {
   const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
   const mergeDispatch = useRef<BranchMergeRequest | null>(null);
@@ -681,9 +695,13 @@ function MemberApp({
   identity,
   refreshBindings,
   mergeDispatch,
+  addTeamSpaceOnLoad,
+  onAddTeamSpaceOnLoadTaken,
 }: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
+  addTeamSpaceOnLoad: boolean;
+  onAddTeamSpaceOnLoadTaken: () => void;
   refreshBindings: React.RefObject<RefreshBindings>;
   mergeDispatch: React.RefObject<BranchMergeRequest | null>;
 }) {
@@ -829,7 +847,7 @@ function MemberApp({
     [],
   );
   const shareLink = useShareLinkRequest();
-  const [addTeamSpaceRequested, setAddTeamSpaceRequested] = useState(false);
+  const [addTeamSpaceRequested, setAddTeamSpaceRequested] = useState(addTeamSpaceOnLoad);
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);
@@ -4267,9 +4285,9 @@ function MemberApp({
     returnToProjectIndex();
   };
 
-  const exitTeamSpace = () => {
+  const exitTeamSpace = (options?: { addTeamSpace?: boolean }) => {
     voice.end("space");
-    void returnDesktopToPersonal().catch((error) => {
+    void returnDesktopToPersonal(options).catch((error) => {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     });
   };
@@ -4375,7 +4393,7 @@ function MemberApp({
         <ShareLinkNotice
           onAddTeamSpace={() => {
             if (teamSpace) {
-              exitTeamSpace();
+              exitTeamSpace({ addTeamSpace: true });
               return;
             }
             setAddTeamSpaceRequested(true);
@@ -4717,13 +4735,16 @@ function MemberApp({
           identity={actorIdentity}
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
-          onExitTeamSpace={desktop ? exitTeamSpace : undefined}
+          onExitTeamSpace={desktop ? () => exitTeamSpace() : undefined}
           onOpenSpaceSettings={openSpaceSettings}
           onRefresh={refreshSpaceHome}
           onOpenSignIns={openSignIns}
           voice={voice}
           addTeamSpaceRequested={addTeamSpaceRequested}
-          onAddTeamSpaceTaken={() => setAddTeamSpaceRequested(false)}
+          onAddTeamSpaceTaken={() => {
+            setAddTeamSpaceRequested(false);
+            onAddTeamSpaceOnLoadTaken();
+          }}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>

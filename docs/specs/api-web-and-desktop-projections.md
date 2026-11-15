@@ -2382,7 +2382,9 @@ space.
 Every create and resolve rechecks readability. The caller must be a live
 project member, and a branch target must still exist. An artifact, Paper file,
 reply, or chat must pass the comment target check, which also gives its graph
-target and title. A chat must exist and be unowned or the caller's own. A
+target and title. A chat must exist and be unowned or the caller's own. An
+Auto-research conversation is its root episode and resolves to that episode's
+branch. A
 comment needs its thread and then its target to pass. A node must be in the
 target's current graph.
 
@@ -2426,7 +2428,8 @@ to a saved team connection's verified space id and opens that connection's
 `/open#l=<token>`. It never contacts `host`. An unconnected match is
 reconnected once; if that fails, a banner names `host` with Retry and Dismiss.
 With no match, an update-notice-style banner names `host` with "Add team
-space", which opens the add dialog empty; `host` is shown only as text. The
+space", which opens the add dialog empty, first returning to the personal
+space when another team space is open; `host` is shown only as text. The
 link stays pending until the space is added or the banner is
 dismissed.
 

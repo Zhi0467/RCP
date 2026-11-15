@@ -601,9 +601,15 @@ export async function navigateDesktopToTeam(
   await leaveDesktopPage("desktop_navigate_team", { connectionId, projectId });
 }
 
-export async function returnDesktopToPersonal(): Promise<void> {
+export const ADD_TEAM_SPACE_HASH = "#/add-team-space";
+
+export async function returnDesktopToPersonal(
+  options: { addTeamSpace?: boolean } = {},
+): Promise<void> {
   if (!isDesktopRuntime()) return;
-  await leaveDesktopPage("desktop_return_to_personal");
+  await leaveDesktopPage("desktop_return_to_personal", {
+    addTeamSpace: options.addTeamSpace ?? false,
+  });
 }
 
 async function leaveDesktopPage(command: string, args?: object): Promise<void> {
