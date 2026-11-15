@@ -29,9 +29,9 @@ desktop app or in the browser.
    buttons. Members are one lab, so the project name may show. A signed-out
    visitor sees no item details, and "Open here" goes through the team sign-in.
 6. **Desktop.** The app owns the `rcp` scheme (RCP Dev owns `rcp-dev`). It
-   matches the link's space to a saved team connection, queues the link until
-   that session is ready, then navigates. With no match it shows an
-   update-notice-style banner naming `host`, with "Add team space" (prefilled).
+   matches the link's space to a saved team connection, reconnects it, and
+   navigates. With no match it shows an update-notice-style banner naming
+   `host`, with "Add team space" (prefilled).
 7. **Targets.** Comment threads use `#/projects/<p>/targets/<t>/comment/<thread_id>`
    from the comments PR (#400), which merges first. Chat replies get a new
    `turn=<operation_id>` route parameter.
@@ -55,24 +55,26 @@ share_links(token PK, project_id, kind, item_id, graph_target,
 
 - `kind` is `artifact`, `node`, `paper` (file id), `comment` (thread id),
   `chat`, or `reply` (operation id). `graph_target` is `main` or `branch:<id>`.
-- The token is `secrets.token_urlsafe(16)`. Copying an item again reuses its row.
-- It joins `_PROJECT_ID_TABLES` and `TRANSFER_EXCLUDED_PROJECT_TABLES`, so
-  delete and transfer both drop the links.
-- A new `storage/share_links.py` mixin owns it. Its
-  `share_link_readable(user_id, row)` is the single readability check.
+- Create runs `INSERT … ON CONFLICT DO NOTHING` with a fresh
+  `secrets.token_urlsafe(16)`, then selects the row's token. Two concurrent
+  copies of one item get the same URL.
+- `migrate_share_links` and a `ShareLinkStoreMixin` live in
+  `storage/share_links.py`. The table joins `_PROJECT_ID_TABLES` and
+  `TRANSFER_EXCLUDED_PROJECT_TABLES`, so delete and transfer drop the links.
 
-**Readability per kind** reuses each item's own route check.
+**Readability.** `share_link_readable(user_id, row)` is the single check. It
+starts with `live_project_member(connection, project_id, user_id)`, then
+mirrors the private checks in `require_project_membership`
+(`api/dependencies.py:246-266`).
 
 | kind | readable when |
 |---|---|
-| `artifact` | `readable_artifact`, and `private_artifact_owner` is unset or the caller |
-| `node` | the node is in the graph target's materialized graph |
-| `paper` | the Paper file exists and is not deleted |
-| `comment` | `readable_comment_target` for the thread (#400) |
-| `chat` | the chat exists and `private_chat_owner` is unset or the caller |
-| `reply` | the task exists and its chat passes the `chat` check |
+| `artifact`, `paper`, `reply` | `readable_comment_target(store, connection, user_id, project_id, kind, item_id)` (#400) returns a route |
+| `comment` | `store.get_comment_thread(project_id, thread_id)` loads, then `readable_comment_target` passes for its `target_kind` and `target_id` |
+| `chat` | `store.chat_inventory(project_id, chat_id)` is non-empty, and `store.private_chat_owner(chat_id)` is unset or the caller |
+| `node` | `catalog.open(p).for_graph_target(target, initialize=False).history.current_materialization().state.nodes` holds it, as `resolve_project_references` reads it |
 
-The caller must also be a project member, and a branch target must exist.
+A branch target must still exist; `for_graph_target` raising counts as unreadable.
 
 **Routes** in a new `src/rcp/api/share_links.py`. Both answer 404 in a personal space.
 
@@ -81,10 +83,10 @@ The caller must also be a project member, and a branch target must exist.
   `team_access_url()` it returns 409, and the Web app keeps Copy reference.
 - `POST /api/share-links/resolve` with `{token}`. It returns
   `{project_id, project_name, kind, title, link}`. `link` is the generic
-  `#/projects/<p>/targets/<t>/<kind>/<id>` hash. Every failure returns one
-  fixed 404 body. The token rides in the body so it stays out of access logs.
-- `GET /open` serves `index.html` with `no-cache`. Today a navigation 404
-  redirects to `/`, which would depend on the browser keeping the fragment.
+  `#/projects/<p>/targets/<t>/<kind>/<id>` hash, where `<t>` is `main` or the
+  bare branch id: resolve strips `branch:`. Every failure returns one fixed
+  404 body. The token rides in the body so it stays out of access logs.
+- `GET /open` serves `index.html` with `no-cache`.
 
 ### Web
 
@@ -99,24 +101,32 @@ The caller must also be a project member, and a branch target must exist.
   surfaces call the same `copyShareLink` helper. WebKit drops
   clipboard writes that happen after an `await`, so the helper passes a
   promise to `ClipboardItem` inside the click. Drag keeps the reference URL.
-- **/open page.** `web/src/open/OpenLinkPage.tsx` mounts when the path is
-  `/open`. Like `pairingLink.ts`, it reads `#l=` once at load and clears it.
+- **/open page.** `web/src/open/OpenLinkPage.tsx`. A module-level
+  `pendingShareToken`, read like `pairingLink.ts`, holds `#l=` from load. The
+  page mounts only when that token was present.
   - Signed in, it calls resolve and shows kind, project, and title. Signed out,
-    it shows no item details. "Open here" then goes through the team sign-in,
-    which already continues to a link read at load.
-  - "Open in app" sets `location` to the `rcp://open` URL. `space_id` comes
-    from `/api/identity`, `host` from `location.host`.
-  - "Open here" sets the hash to `link`, and the existing resolver takes over.
-  - Inside the desktop shell the page never shows. It resolves and opens here.
+    it shows no item details.
+  - "Open in app" shows on macOS only. It sets `location` to the `rcp://open`
+    URL. `space_id` comes from the public `/api/health` (`verifiedHealth`),
+    `host` from `location.host`.
+  - "Open here" keeps the token pending through the team sign-in. Once
+    `backendSessionReady` is true it resolves, then calls
+    `history.replaceState(null, "", "/" + link)` and the existing resolver
+    takes over. `initialNotificationLink` reads only `#/projects`, so the token
+    must not ride in the hash.
+  - A remembered "app" choice skips the card. After about 1.5 s the page shows a
+    minimal "Opening in RCP… Open here" fallback.
+  - Inside the desktop shell the card never shows. It resolves and opens here.
+    A 404 still shows the "Not available" card. It never fails silently.
 - **Choice.** One `localStorage` key on the team origin holds `app`, `here`, or
-  `ask` (default), wrapped in try/catch. Remember writes it, and a stored
-  choice acts at load. The "Open share links" row in `AppearancePicker`
-  edits the same key. It shows in a team space's browser only, because the
-  desktop shell never shows the card.
+  `ask` (default), wrapped in try/catch. Remember writes it. The "Open share
+  links" row in `AppearancePicker` edits the same key. It shows in a team
+  space's browser only, because the desktop shell never shows the card.
 - **In place.** `installLinkGuard` (`core/linkGuard.ts`) already catches every
-  link click that would leave the app. It first checks for a share link: same
-  origin in a browser, or the space's `access_url` (`/api/team/space`) in the
-  desktop shell. It reads the token and runs the "Open here" path in place.
+  link click that would leave the app. Before `leavesApp`, it checks for a
+  share link: same origin in a browser, or the space's `access_url`
+  (`/api/team/space`) in the desktop shell. It takes the token and runs the
+  "Open here" path. The resulting `/` + hash route stays in the app.
   Other share links keep today's path: a browser tab whose /open page hands
   off through `rcp://`. Saved connections hold no access host to match.
 
@@ -128,17 +138,21 @@ and dev builds already ship separate plists, so each gets a `CFBundleURLTypes`
 entry, `rcp` or `rcp-dev`, with no new crate or permission.
 `tauri-plugin-deep-link` would only add Linux and Windows, which RCP does not ship.
 
-- A new `web/src-tauri/src/share_links.rs` parses `rcp://open?space=&l=`,
-  rejects anything else, and never logs the token. It picks the saved team
-  connection whose `expected_space_id` equals `space`.
-- The link waits in a pending slot, like `pending_click` in `notifications.rs`.
-  `notifications::open` moves to a shared `navigate_space(app, space, url)`.
-  Once the session is established, it navigates the main window to
-  `<local_origin>/open#l=<token>` and shows it.
-- With no match, it emits `share-link-unpaired` with `host`. The Web app shows
-  a banner styled like `UpdateNotice`. "Add team space" opens the dialog in
-  `TeamSpaceGroups.tsx` with SSH target set to `host`, still editable. The link
-  stays pending this app session and opens once that space is added.
+- `share_links.rs` parses `rcp://open?space=&host=&l=`, rejects anything else,
+  and never logs the token.
+- The parsed `{space_id, host, token}` joins the existing `pending_click`
+  retry path in `notifications.rs`. No second slot is added. Each `poll_all`
+  tick re-matches `space_id` against the saved connections' `expected_space_id`.
+  `open(app, space, path_and_fragment)` is generalized to take a path, so a
+  share link opens `<local_origin>/open#l=<token>`.
+- On receipt, the app calls `sessions.reconnect` for the matched connection.
+  If that fails, the banner shows an unreachable state with Retry and Dismiss.
+- With no match, Rust keeps `host` in state. The Web app reads it on mount with
+  a command, as it reads `desktop_status`, so it survives the `finish_startup`
+  reload. Dismiss clears it. The banner is styled like `UpdateNotice`. "Add
+  team space" opens the dialog in `TeamSpaceGroups.tsx` with SSH target set to
+  `host`, still editable. The link stays pending this app session and opens
+  once that space is added.
 
 ## Copy surfaces
 
@@ -165,21 +179,25 @@ text and a "Copy link" `title`. Menus get a "Copy link" item.
 
 ## Checks
 
-**Backend** (`tests/test_share_links.py`): a stable token per item; 404 in a
-personal space; resolve for each kind; byte-equal 404s for an unknown token, a
-non-member, a deleted item, another member's private chat, and a removed
-branch; project delete and transfer drop the rows; `/open` is `no-cache`.
+**Backend** (`tests/test_share_links.py`): a stable token per item; two
+concurrent copies get the same URL; 404 in a personal space; resolve for each
+kind, and a branch target whose link carries the bare branch id; byte-equal
+404s for an unknown token, a non-member, a deleted item, another member's
+private chat, and a removed branch; project delete and transfer drop the rows;
+`/open` is `no-cache`.
 
 **Web** (`web/tests/openLinks.test.mjs`, `notificationLinks.test.mjs`):
-`chat`, `reply`, and `turn` routes; the /open card signed in, signed out, not
-available, and per choice; the guard resolves same-space links in place and
-opens others in a tab; Copy link and the preference row show only where they
+`chat`, `reply`, and `turn` routes; the /open card signed in, signed out (the
+token survives sign-in), not available, per choice, and the skipped hand-off
+fallback; the guard resolves same-space links in place and opens others in a
+tab; Copy link, "Open in app", and the preference row show only where they
 apply. Then `npm --prefix web run build`.
 
 **Desktop:** a Rust test for URL parsing and space matching, then the
 [desktop checks](../desktop.md#test-the-desktop-app) on a packaged `RCP Dev.app`:
-open a link cold, warm, from an unadded space, and inside the app. Quit other
-RCP copies first, because Candidate shares the release scheme.
+open a link cold, warm, from an unadded space, with the team unreachable, and
+inside the app. Quit other RCP copies first, because Candidate shares the
+release scheme.
 
 **Served drive:** a throwaway team server, two members, one project. Copy from
 every surface, open as the other member in a browser at 390px and on desktop,
@@ -189,11 +207,12 @@ delete the item, and confirm "Not available". Check network, console, and logs.
 
 | slice | owns | check |
 |---|---|---|
-| A. Backend | `storage/share_links.py`, `api/share_links.py`, the `/open` route and router in `api/app.py`, `_PROJECT_ID_TABLES`, `transfer/records.py` | `uv run pytest -n0 tests/test_share_links.py` |
-| B. Web links | `core/notificationLinks.ts`, `core/graphTarget.ts`, `core/linkGuard.ts`, the `turn` handling in the transcript, `open/OpenLinkPage.tsx`, the `AppearancePicker` row | `node --experimental-strip-types --test web/tests/openLinks.test.mjs web/tests/notificationLinks.test.mjs` |
-| C. Copy surfaces | `core/CopyReferenceButton.tsx`, `core/shareLinks.ts`, the seven surface files | B's tests plus `npm --prefix web run build` |
-| D. Desktop | `src-tauri/src/share_links.rs`, `notifications.rs`, `lib.rs`, both plists, the unpaired banner, the SSH target prefill | `cargo test` in `web/src-tauri`, then the packaged check |
+| A. Backend | `storage/share_links.py` (`migrate_share_links`, mixin), `storage/__init__.py`, `storage/base.py` (migration call), `_PROJECT_ID_TABLES`, `transfer/records.py`, `SUPPORTED_RESTORE_DATABASE_SCHEMAS` in `server_ops/restore.py`, `api/share_links.py`, the `/open` route and router in `api/app.py`, `tests/lifecycles/catalog.py`, `tests/test_storage.py`, `tests/test_route_inventory.py`, `tests/test_share_links.py` | `uv run pytest -n0 tests/test_share_links.py tests/test_storage.py tests/test_route_inventory.py` |
+| B. Web links | `core/notificationLinks.ts`, `core/graphTarget.ts`, `core/linkGuard.ts`, `open/OpenLinkPage.tsx`, the `AppearancePicker` row, `AgentWindowTranscript.tsx` (`turn` and mounting C's Reply Link), `App.tsx`, `main.tsx` | `node --experimental-strip-types --test web/tests/openLinks.test.mjs web/tests/notificationLinks.test.mjs` |
+| C. Copy surfaces | `core/CopyReferenceButton.tsx`, `core/shareLinks.ts`, a `ReplyLinkButton` component, and the other six surface files | B's tests plus `npm --prefix web run build` |
+| D. Desktop | `src-tauri/src/share_links.rs`, `notifications.rs`, `lib.rs`, both plists, the unpaired banner component with a `shareLinkUnpaired` event and a `prefillSshTarget` prop on the Add team space dialog | `cargo test` in `web/src-tauri`, then the packaged check |
 
 A goes first and owns the `web/src/core/types.ts` edits; B, C, and D follow in
-parallel. Before merge the rules move into `api-web-and-desktop-projections.md`
-and `projects-spaces-and-operations.md`, and this file is deleted.
+parallel. B wires C's component and D's event and prop into `App.tsx`. Before
+merge the rules move into `api-web-and-desktop-projections.md` and
+`projects-spaces-and-operations.md`, and this file is deleted.
