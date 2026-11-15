@@ -65,6 +65,7 @@ shared-contract changes, or integration uncertainty.
   same PR: its data shape in the upgrade seed, or its path in a fake-agent
   journey or a [lifecycle explorer](tests/lifecycles/__init__.py).
 - Before a push, read `uv run python scripts/quality_delta.py origin/main`. It never gates.
+- After a schema or shipped-file change, run `uv run python scripts/regenerate_registries.py`.
 - Spec'd behavior changes run egm `codebase-details` on that spec. Fix confirmed drift.
 - User-visible workflows, reported failures, and substantial route, background, or view
   changes need the affected served-app journey. Inspect network, console, and server

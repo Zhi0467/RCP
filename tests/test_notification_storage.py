@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from rcp.server_ops.backup_capture import _database_schema_sha256
-from rcp.server_ops.restore import SUPPORTED_RESTORE_DATABASE_SCHEMAS
 from rcp.server_ops.restore import _database_schema_sha256 as raw_schema_digest
 from rcp.storage import AppStore
 
+from .restore_schemas import assert_restore_schema_registered
 from .test_storage import _project
 
 
@@ -51,10 +51,10 @@ def test_notification_migration_boundary_and_restore_detachment(tmp_path):
         raw_schema_digest(path)
         == "0f0456bec7bb95895d5d7287684b03aa4b97c605fa36ef8fec17459948fbb967"
     )
-    assert raw_schema_digest(path) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+    assert_restore_schema_registered(raw_schema_digest(path))
     store = AppStore(path)
     assert store.storage_schema_ledger_head() == store.storage_schema_registry_head()
-    assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+    assert_restore_schema_registered(_database_schema_sha256(store))
     assert store.notification_project_baseline("p") is None
     store, _device = _setup(tmp_path / "fresh")
     with store.connection() as connection:
