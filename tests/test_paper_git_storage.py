@@ -19,10 +19,10 @@ def test_link_roundtrip_and_delete(tmp_path: Path):
     assert store.paper_git_link("p") is None
 
 
-def test_previous_schema_opens_edits_and_publishes_unlinked(tmp_path: Path):
-    from rcp.paper import PaperLive, PaperOp
-    from rcp.transport import LocalStateWorkspace
-    from tests.paper_helpers import apply, human_edit, saved, start_paper
+def test_previous_schema_opens_and_edits_unlinked(tmp_path: Path):
+    from rcp.paper import PaperLive
+    from rcp.paper.folder import LocalPaperFolder
+    from tests.paper_helpers import create, human_edit, saved, start_paper
 
     path = tmp_path / "old.sqlite"
     store = AppStore(path)
@@ -30,52 +30,18 @@ def test_previous_schema_opens_edits_and_publishes_unlinked(tmp_path: Path):
         connection.execute("DROP TABLE paper_git_links")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=82")
     assert store.paper_git_link("p") is None
-    root = tmp_path / "state"
+    root = tmp_path / "paper"
     root.mkdir()
-    live = start_paper(PaperLive(store, lambda _: LocalStateWorkspace(root, str(root))))
-    apply(live, [PaperOp(kind="create", file_id="f", path="paper.tex", text="old writer")])
-    live.run_sync(live.publish("p"))
+    live = start_paper(PaperLive(store, lambda _: LocalPaperFolder(root)))
+    file_id = create(live, "paper.tex", "old writer")
     live.run_sync(live.close())
     store.close()
     upgraded = AppStore(path)
-    live = start_paper(PaperLive(upgraded, lambda _: LocalStateWorkspace(root, str(root))))
+    live = start_paper(PaperLive(upgraded, lambda _: LocalPaperFolder(root)))
     assert saved(live).files[0].text == "old writer"
-    human_edit(live, "f", "new writer")
-    live.run_sync(live.publish("p"))
+    human_edit(live, file_id, "new writer")
     assert upgraded.paper_git_link("p") is None
-    assert (root / "paper/paper.tex").read_text() == "new writer"
-
-
-def test_restore_drops_git_cards_and_keeps_coach_cards(tmp_path: Path):
-    from contextlib import nullcontext
-
-    from rcp.paper import PaperLive, PaperOp
-    from rcp.paper.changes import PaperChanges, read_paper_changes
-    from rcp.server_ops.backup_paper import (
-        PAPER_PROJECT_TABLES,
-        capture_paper_section,
-        restore_paper_section,
-    )
-    from rcp.transport import LocalStateWorkspace
-    from tests.paper_helpers import apply, saved, start_paper
-
-    store = AppStore(tmp_path / "state.sqlite")
-    root = tmp_path / "state"
-    root.mkdir()
-    live = start_paper(PaperLive(store, lambda _: LocalStateWorkspace(root, str(root))))
-    apply(live, [PaperOp(kind="create", file_id="f", path="paper.md", text="original")])
-    output = tmp_path / "changes"
-    (output / "files").mkdir(parents=True)
-    (output / "files/paper.md").write_text("proposal")
-    changes = PaperChanges(store, live, lambda _: nullcontext())
-    for task in ("paper-git", "coach"):
-        changes.collect("p", task, saved(live), read_paper_changes(output))
-    with store.connection() as connection:
-        section = capture_paper_section(connection, "p")
-        assert section is not None
-        restore_paper_section(connection, section, "restored")
-    assert "paper_git_links" not in PAPER_PROJECT_TABLES
-    assert [group.task_id for group in changes.groups("restored")] == ["coach"]
+    assert (root / "paper.tex").read_text() == "new writer"
 
 
 def test_delete_removes_machine_local_link_and_transport(tmp_path: Path):

@@ -94,6 +94,38 @@ def test_chat_summary_carries_the_newest_turns_setup(manifest, tmp_path):
     assert chat["agent_setup"] == row["agent_setup"]
 
 
+def test_a_finished_paper_chat_summary_keeps_its_focus(manifest, tmp_path):
+    from rcp.storage import AgentTaskRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    service = app.state.service
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    request = RunRequest(chat_id=chat_id, chat_scope="project", message="edit", focus="paper")
+    store.admit_chat_focus(project_id, chat_id, "paper")
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=str(uuid.uuid4()),
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="",
+            authorized_by=_identity(store),
+        )
+    )
+    _append_chat_exchange(service, request, "done", None, None)
+    for query in ("", "?inventory=true"):
+        rows = client.get(f"/api/projects/{project_id}/chats{query}").json()["items"]
+        assert next(row for row in rows if row["chat_id"] == chat_id)["focus"] == "paper"
+
+
 def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
     manifest, tmp_path, monkeypatch
 ):

@@ -210,17 +210,7 @@ def test_provider_native_invocation_preserves_metadata_and_native_token() -> Non
         mode="retry",
         invoked_provider_skills=[reference],
     )
-    paper = PromptFactory.paper_coach_task_contract(
-        paper_path="/project/paper",
-        changes_path="/stage/changes",
-        artifact_path="/stage/turns/t/artifacts",
-        graph_path="/project/graph.json",
-        research_path="/project/research.md",
-        repositories=[],
-        human_request_path="/stage/human-request.txt",
-        invoked_provider_skills=[reference],
-    )
-    for contract in (resume, retry, paper):
+    for contract in (resume, retry):
         assert serialized in contract
 
 
@@ -532,27 +522,7 @@ def test_discuss_contract_preserves_artifact_path() -> None:
     assert graph_rules(edits=False, ontology_extensions=True) in contract
 
 
-def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> None:
-    invoked = {
-        "id": "evidence-triage",
-        "kind": "skill",
-        "label": "Evidence triage",
-        "version": "3.0.0",
-        "path": "/stage/skills/evidence-triage",
-    }
-    paper = PromptFactory.paper_coach_task_contract(
-        paper_path="/state/paper",
-        changes_path="/stage/changes",
-        artifact_path="/stage/turns/t/artifacts",
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
-        human_request_path="/stage/inputs/human-request.txt",
-        retry_diagnostics_path="/stage/inputs/retry.json",
-        invoked_skill_pointers=[invoked],
-    )
-    assert invoked["path"] in paper
-    assert graph_rules(edits=False, ontology_extensions=False) in paper
+def test_continuation_contracts_only_point_to_dynamic_content() -> None:
     watcher = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
         mode="watch_correction",
@@ -560,10 +530,6 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
         watch_path="/stage/watch.json",
     )
 
-    assert "/state/paper" in paper
-    assert "/stage/changes" in paper
-    assert "/stage/inputs/human-request.txt" in paper
-    assert "/stage/inputs/retry.json" in paper
     assert "/stage/watch.json" in watcher
     assert "/stage/inputs/watch-correction.json" in watcher
 
@@ -858,7 +824,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         PromptFactory.discuss_task_contract,
         PromptFactory.work_task_contract,
         PromptFactory.chat_master_context,
-        PromptFactory.paper_coach_task_contract,
         PromptFactory.continuation_task_contract,
         PromptFactory.retry_handoff_task_contract,
         auto.auto_research_orchestrator_task_contract,

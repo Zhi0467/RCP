@@ -35,8 +35,7 @@ export type SteerReceiptStatus = {
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
-export type AgentCapability =
-  "discuss" | "work_auto" | "orchestrate" | "scratch_patch" | "paper_suggest";
+export type AgentCapability = "discuss" | "work_auto" | "orchestrate" | "scratch_patch";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -2029,12 +2028,10 @@ export interface ComputeConnectionProbe {
 export interface AgentPermissions {
   read_graph: boolean;
   read_research_md: boolean;
-  read_introduction: boolean;
   read_repositories: "none" | "run_scope" | "project_scope";
   read_conversations: "none" | "run_scope";
   write_graph_patch: boolean;
   write_project_files: boolean;
-  write_paper: boolean;
 }
 
 /**
@@ -2127,6 +2124,8 @@ export interface AgentTaskRequest {
   references?: ProjectReferenceSelector[];
   session_id?: string | null;
   mode?: ConversationMode;
+  /** Set by a chat's first turn; a Paper chat always runs Work. */
+  focus?: "paper" | null;
   artifact_context?: ArtifactContextRequest | null;
   /** Shared comment threads the turn carries; the server renders their text. */
   comment_thread_ids?: string[];
@@ -2298,6 +2297,8 @@ export interface AgentTaskResult {
   artifact_edit_outcomes?: ArtifactEditOutcome[];
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
+  /** A retired Paper coach turn, rendered as text when its Paper migrated. */
+  transcript?: string;
   [key: string]: unknown;
 }
 
@@ -2557,8 +2558,6 @@ export interface AgentTask {
   steer_turn_id: string | null;
   /** Bumped by each queued steer and each final steer receipt; a change means new chat history. */
   steer_revision?: number;
-  /** A Paper coach turn's steered messages, which it has no transcript to hold. */
-  steers?: ChatMessage[];
   //: What sending into this running attempt does, worded by the runtime that
   //: owns the behaviour: Codex app-server injects into the turn, Claude
   //: stream-json queues a follow-up turn. The composer renders this verbatim.
@@ -2995,6 +2994,8 @@ export interface ChatSummary {
   updated_at: string;
   message_count: number;
   last_message_preview: string;
+  /** "paper" for a Coach chat, fixed by its first turn. */
+  focus?: "paper" | null;
 }
 
 /** Per-project display choices: archived chats and human-given names. */
@@ -3152,7 +3153,7 @@ export interface ProviderReadiness {
 export interface PaperFile {
   file_id: string;
   path: string;
-  kind: "text" | "binary";
+  kind: "text" | "binary" | "unsupported";
   format: string;
   size: number;
   sha256: string;
@@ -3161,10 +3162,6 @@ export interface PaperFile {
 export interface PaperTree {
   max_doc_bytes: number;
   revision: number;
-  saved_revision: number;
-  published_revision: number;
-  publish_state: "published" | "pending" | "failed";
-  hold: string | null;
   files: PaperFile[];
 }
 
@@ -3232,7 +3229,6 @@ export interface ProjectSnapshot {
   counts: ProjectCounts;
   graph_mutation: GraphMutationAvailability;
   graph: GraphState;
-  paper: boolean;
   paper_coach: {
     default_provider: ProviderId;
     default_model: string;
@@ -3596,24 +3592,6 @@ export interface SetupPreview {
   remote_write: boolean;
   providers: Record<ProviderId, ProviderReadiness>;
   agent_readiness: Record<AgentExecutionProfile, ProviderReadiness>;
-}
-
-export interface WritingSession {
-  provider: ProviderId;
-  runtime_id: string;
-  runtime_label: string;
-  provider_label: string;
-  native_session_id: string;
-  machine_id: string;
-  project_id: string;
-  title?: string | null;
-  model: string;
-  reasoning?: string | null;
-  created_at: string;
-  last_resumed_at: string;
-  introduction_hash_examined: string;
-  graph_revision_examined: number;
-  research_md_hash_examined: string;
 }
 
 export interface ProjectArtifact {

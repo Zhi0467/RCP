@@ -82,7 +82,7 @@ def resolved_agent_surface(
     profile while the owner runs a different one.
     """
 
-    if kind in {"seed", "refresh", "paper_coach"}:
+    if kind in {"seed", "refresh"}:
         return cast(AgentExecutionProfile, kind)
     if kind in {"node_chat", "project_chat"}:
         if not isinstance(request, RunRequest):

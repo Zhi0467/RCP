@@ -201,6 +201,11 @@ def install_paper_resource_versions(connection: sqlite3.Connection) -> None:
     )
 
 
+def install_paper_state_versions(connection: sqlite3.Connection) -> None:
+    """Every save and every scan that finds a change moves the Paper revision."""
+    _install(connection, "paper_state", [_bump("ROW.project_id", "paper")], columns=("revision",))
+
+
 # Migrations 49 and 54 retain their original same-ID branch/chat SQL.
 _TASK_CHAT = (
     "CASE WHEN ROW.kind='auto_research' AND json_extract(ROW.request_json,'$.role')='orchestrator' "

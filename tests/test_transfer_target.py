@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import io
 from pathlib import Path
 
 import pytest
 
 import rcp.transfer.importer as transfer_importer
-from rcp import limits
 from rcp.agents import AgentLauncher
-from rcp.paper import PaperLive
-from rcp.server_ops.paper_lifecycle import register_paper_live, unregister_paper_live
 from rcp.server_runtime import ServerMetadata
 from rcp.setup import ProjectSetupManager
 from rcp.transfer.target import (
@@ -20,7 +16,6 @@ from rcp.transfer.target import (
     target_transfer_archive_path,
     upload_target_transfer_archive,
 )
-from rcp.transport import LocalStateWorkspace
 
 from .test_transfer_import import _archive_fixture
 
@@ -167,32 +162,6 @@ def test_sealed_target_archive_activates_once_and_retry_returns_same_receipt(
             ).fetchone()[0]
             == 1
         )
-
-
-def test_activation_hands_imported_pending_paper_to_the_live_owner(
-    manifest,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fixture, coordinator = _coordinator_fixture(manifest, tmp_path, monkeypatch, saved_paper=True)
-    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
-    target, root = fixture["target"], fixture["target_state_root"]
-    project_id = fixture["archive"].project_id
-    live = PaperLive(target, lambda _: LocalStateWorkspace(root, str(root)))
-
-    async def scenario():
-        await live.start()
-        register_paper_live(target, live)
-        try:
-            await asyncio.to_thread(_activate, coordinator, fixture)
-            await live.tick()
-            await live.drain(project_id)
-            assert (root / "paper/chapter.md").read_text(encoding="utf-8") == "saved"
-        finally:
-            await live.close()
-            unregister_paper_live(target, live)
-
-    asyncio.run(scenario())
 
 
 def test_activation_failure_keeps_exact_inbox_and_never_registers_project(

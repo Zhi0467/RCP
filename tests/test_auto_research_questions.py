@@ -199,6 +199,7 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
         research_md_path="/state/research.md",
         ontology_extensions=False,
         group_context=None,
+        paper_path=None,
     )
     turn = SimpleNamespace(
         task=root,

@@ -11,7 +11,7 @@ import rcp.transfer.records as transfer_records
 from rcp.core.models import AuthorizedHuman
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import AppStore
 from rcp.transfer import (
     TRANSFER_EXCLUDED_PROJECT_TABLES,
@@ -240,14 +240,14 @@ def test_real_task_requests_project_to_typed_history_without_resume_bindings() -
         ),
         (
             "paper_coach",
-            CoachRequest(
+            dict(
                 message="Review this.",
                 provider="codex",
                 model="gpt-5.6-sol",
                 reasoning="high",
                 run_on="source-gpu",
                 session_id="native-paper",
-            ).model_dump(mode="json"),
+            ),
         ),
         (
             "auto_research",

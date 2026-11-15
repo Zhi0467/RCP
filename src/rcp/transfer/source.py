@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import shutil
 import stat
@@ -109,6 +110,7 @@ def advance_source_project_transfer(
 ) -> ProjectTransferRequestRecord:
     """Settle, fence, capture, seal, and bind one confirmed source transfer."""
 
+    from rcp.paper.folder import read_paper_folder
     from rcp.server_ops.paper_lifecycle import stop_paper_project
 
     transfer = _source_transfer(store, request_id)
@@ -157,9 +159,11 @@ def advance_source_project_transfer(
             stop_paper_project(store, transfer.project_id)
             _require_reviewed_source_unchanged(store, service, transfer)
             attributions = _source_attributions(transfer)
+            catalog.migrate_paper(transfer.project_id)
             records = store.export_project_transfer_records(
                 transfer.project_id,
                 attributions=attributions,
+                paper_files=read_paper_folder(catalog.paper_folder(transfer.project_id)),
             )
             proof = store.expose_project_transfer_proof(request_id)
             readback = _capture_and_seal_source_archive(
@@ -223,12 +227,28 @@ def complete_source_project_transfer(
     )
     store.retire_source_project_transfer(request_id)
     catalog.discard_retired_transfer_source(request_id)
+    _remove_retired_paper(store, transfer.project_id)
     if os.path.lexists(destination):
         _require_cleanup_archive_matches_transfer(destination, transfer)
         destination.unlink()
         _fsync_directory(destination.parent)
     store.complete_project_transfer_request(request_id)
     return acknowledgment
+
+
+def _remove_retired_paper(store: AppStore, project_id: str) -> None:
+    """The target holds the Paper now; an unreachable host keeps a stale copy, logged."""
+    from rcp.paper.folder import change_project_paper
+
+    retired = store.retired_project(project_id)
+    if retired is None:
+        return
+    try:
+        change_project_paper(store, retired, None)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Paper folder of transferred project %s stays on its source", project_id
+        )
 
 
 def stream_source_transfer_archive(

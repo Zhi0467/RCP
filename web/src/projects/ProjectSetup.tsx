@@ -90,7 +90,7 @@ const agentExecutionProfiles: Array<{ id: AgentExecutionProfile; label: string }
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
-  { id: "paper_coach", label: "Paper coach" },
+  { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 const agentRows = agentExecutionProfiles.filter(({ id }) => hasRow(id));
@@ -561,7 +561,7 @@ function PersonalProjectSetup({
                         <strong>{label}</strong>
                         <span className="tag">
                           {id === "paper_coach"
-                            ? "read-only coach"
+                            ? "edits the Paper"
                             : id === "orchestrator"
                               ? "auto-research"
                               : "graph patch only"}
@@ -645,7 +645,7 @@ function PersonalProjectSetup({
                       <div className="role-contract">
                         <LockKeyhole size={14} />{" "}
                         {id === "paper_coach"
-                          ? "Introduction and project inputs are read-only · no writes"
+                          ? "Writes the Paper folder and run-scope repositories"
                           : id === "orchestrator"
                             ? "Project-wide research · protected beliefs stay human-controlled"
                             : "Project and run-scope inputs are read-only · graph patch output only"}

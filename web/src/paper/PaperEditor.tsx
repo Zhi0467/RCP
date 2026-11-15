@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Compartment, EditorSelection, EditorState } from "@codemirror/state";
-import {
-  Decoration,
-  EditorView,
-  hoverTooltip,
-  keymap,
-  lineNumbers,
-  WidgetType,
-} from "@codemirror/view";
+import { EditorView, hoverTooltip, keymap, lineNumbers } from "@codemirror/view";
 import { defaultKeymap } from "@codemirror/commands";
 import { defaultHighlightStyle, StreamLanguage, syntaxHighlighting } from "@codemirror/language";
 import { markdown } from "@codemirror/lang-markdown";
@@ -15,50 +8,10 @@ import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { typst_lezer } from "codemirror-lang-typst/lezer";
 import * as Y from "yjs";
 import { yCollab, ySyncAnnotation } from "y-codemirror.next";
-import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { citeKeys } from "./citeKeys";
 import type { PaperReference } from "./PaperReferences";
-import { anchorPaperChange, resolvePaperAnchor } from "./paperAnchors";
 import { paperDocumentKey, type PaperDocument, type PaperDocumentKey } from "./paperDocuments";
-import type { PaperChange } from "./PaperChanges";
 import { sourceSpotRange, type PreviewSourceSpot } from "./previewComments";
-
-class SuggestionWidget extends WidgetType {
-  constructor(
-    readonly change: PaperChange,
-    readonly decide: (id: string, action: "accept" | "reject") => void,
-  ) {
-    super();
-  }
-  toDOM() {
-    const wrapper = document.createElement("span");
-    wrapper.className = "paper-inline-suggestion";
-    const insertion = document.createElement("span");
-    insertion.className = "paper-insertion";
-    insertion.textContent = this.change.preview.added.join("\n");
-    wrapper.append(insertion);
-    const actions = document.createElement("span");
-    actions.className = "paper-suggestion-actions";
-    for (const [action, symbol] of [
-      ["accept", "✓"],
-      ["reject", "×"],
-    ] as const) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "icon-button compact";
-      button.setAttribute("aria-label", `${action} suggestion`);
-      button.textContent = symbol;
-      button.onmousedown = (event) => event.preventDefault();
-      button.onclick = () => this.decide(this.change.group_id, action);
-      actions.append(button);
-    }
-    wrapper.append(actions);
-    return wrapper;
-  }
-  ignoreEvent() {
-    return true;
-  }
-}
 
 /** Per-document undo history, so a file switch keeps it. Keyed by Y.Text: it lives as
  * long as its document, and a rejected document's replacement starts fresh. */
@@ -95,21 +48,14 @@ function settleCursorLine(
   return () => clearTimeout(timer);
 }
 
-/** Where the editor moves when asked: a change card's anchor, or a spot double-clicked in the preview. */
+/** Where the editor moves when asked: a reference, or a spot double-clicked in the preview. */
 export type PaperFocus =
   | { kind: "reference"; file_id: string; from: number }
-  | { kind: "change"; file_id: string; change: PaperChange }
   | { kind: "source"; file_id: string; spot: PreviewSourceSpot };
-
-export function changeFocus(change: PaperChange): PaperFocus {
-  return { kind: "change", file_id: change.file_id, change };
-}
 
 export function PaperEditor({
   owner,
   format,
-  changes,
-  onDecide,
   focus,
   maxBytes,
   onCursorLine,
@@ -121,8 +67,6 @@ export function PaperEditor({
   onReference?: (key: string) => void;
   maxBytes?: number;
   format: string;
-  changes: PaperChange[];
-  onDecide: (id: string, action: "accept" | "reject") => void;
   focus: PaperFocus | null;
   /** The cursor's line once it settles, for a preview that follows it. */
   onCursorLine?: (line: number) => void;
@@ -131,39 +75,20 @@ export function PaperEditor({
   referenceState.current = { references, onReference };
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  const suggestions = useRef(new Compartment());
   const readOnly = useRef(new Compartment());
   const byteLimit = useRef(maxBytes);
   byteLimit.current = maxBytes;
-  const decide = useRef(onDecide);
-  decide.current = onDecide;
   const [position, setPosition] = useState({ line: 1, column: 1 });
   const cursorLine = useRef(onCursorLine);
   cursorLine.current = onCursorLine;
   useEffect(() => settleCursorLine(cursorLine, position.line), [position.line]);
-  const [step, setStep] = useState(0);
   const report = (state: EditorState) => {
     const head = state.selection.main.head;
     const line = state.doc.lineAt(head);
     setPosition({ line: line.number, column: head - line.from + 1 });
   };
-  const pending = useMemo(
-    () =>
-      changes.filter(
-        (change) =>
-          change.file_id === owner.key.file && change.state === "pending" && change.current,
-      ),
-    [changes, owner],
-  );
-  const anchors = useMemo(
-    () => new Map<PaperChange, ReturnType<typeof anchorPaperChange>>(),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the deps reset this anchor cache; the factory needs none of them
-    [pending, owner, owner.text],
-  );
   const { text, error, closed } = owner.getSnapshot();
   const locked = closed !== null;
-  const currentStep = Math.min(step, pending.length - 1);
-  const active = pending[currentStep];
   useEffect(() => {
     if (!host.current) return;
     const language =
@@ -350,7 +275,6 @@ export function PaperEditor({
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ "aria-label": "Paper source", spellcheck: "false" }),
           yCollab(owner.text, owner.provider.awareness, { undoManager: saved.undo }),
-          suggestions.current.of([]),
           readOnly.current.of(EditorState.readOnly.of(owner.getSnapshot().closed !== null)),
           EditorView.domEventObservers({
             scroll(_event, view) {
@@ -392,47 +316,10 @@ export function PaperEditor({
     });
   }, [locked]);
 
-  useEffect(() => {
-    const editor = view.current;
-    if (!editor) return;
-    const marks = pending.flatMap((change) => {
-      let anchor = anchors.get(change);
-      if (!anchors.has(change)) {
-        anchor = anchorPaperChange(change, owner.text);
-        // Wait for the first server text, then keep failed matches hidden until
-        // the server supplies a refreshed card instead of trying an old offset.
-        if (anchor || text || owner.provider.synced) anchors.set(change, anchor);
-      }
-      const range = anchor && resolvePaperAnchor(anchor, change, owner.text);
-      if (!range) return [];
-      const { from, to } = range;
-      // The proposal sits before a trailing newline, and the deletion mark ends where it
-      // starts, so the proposed text is never inside the struck-through range.
-      const at = to > from && editor.state.doc.sliceString(to - 1, to) === "\n" ? to - 1 : to;
-      const result = [
-        Decoration.widget({
-          widget: new SuggestionWidget(change, (id, action) => decide.current(id, action)),
-          side: 1,
-        }).range(at),
-      ];
-      if (at > from && change.preview.removed.length)
-        result.push(Decoration.mark({ class: "paper-deletion" }).range(from, at));
-      return result;
-    });
-    editor.dispatch({
-      effects: suggestions.current.reconfigure(
-        EditorView.decorations.of(Decoration.set(marks, true)),
-      ),
-    });
-  }, [pending, owner, text, anchors]);
-
   const focusRange = (target: PaperFocus) => {
     if (target.kind === "reference")
       return { from: Math.min(target.from, text.length), to: Math.min(target.from, text.length) };
-    if (target.kind === "source") return sourceSpotRange(text, target.spot);
-    const anchor = anchors.get(target.change);
-    const range = anchor && resolvePaperAnchor(anchor, target.change, owner.text);
-    return range ? { from: range.from, to: range.from } : null;
+    return sourceSpotRange(text, target.spot);
   };
   const locate = (target: PaperFocus) => {
     const editor = view.current;
@@ -466,49 +353,6 @@ export function PaperEditor({
           Ln {position.line}, Col {position.column}
         </span>
         <span>{words} words</span>
-        {active && (
-          <div className="paper-suggestion-stepper">
-            <span>
-              {currentStep + 1} / {pending.length}
-            </span>
-            <button
-              className="icon-button compact"
-              aria-label="Previous suggestion"
-              onClick={() => {
-                const next = (currentStep - 1 + pending.length) % pending.length;
-                setStep(next);
-                locate(changeFocus(pending[next]));
-              }}
-            >
-              <ChevronLeft size={14} />
-            </button>
-            <button
-              className="icon-button compact"
-              aria-label="Next suggestion"
-              onClick={() => {
-                const next = (currentStep + 1) % pending.length;
-                setStep(next);
-                locate(changeFocus(pending[next]));
-              }}
-            >
-              <ChevronRight size={14} />
-            </button>
-            <button
-              className="icon-button compact"
-              aria-label="Accept suggestion"
-              onClick={() => onDecide(active.group_id, "accept")}
-            >
-              <Check size={14} />
-            </button>
-            <button
-              className="icon-button compact"
-              aria-label="Reject suggestion"
-              onClick={() => onDecide(active.group_id, "reject")}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
       </footer>
     </>
   );

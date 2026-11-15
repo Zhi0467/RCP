@@ -1,0 +1,67 @@
+"""A Paper turn's change list and one file's diff, readable by whoever reads its chat."""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+from rcp.api.dependencies import _api_services, require_project_membership
+from rcp.api.paper_live import get_paper_live
+from rcp.paper.turns import PaperTurn, PaperTurnFile, turn_file, turn_rows, turn_versions
+
+router = APIRouter()
+_member = Depends(require_project_membership)
+_PREFIX = "/api/projects/{project_id}/paper/turns/{operation_id}"
+
+
+def _turn(request: Request, project_id: str, operation_id: str) -> tuple[str, str] | None:
+    """The turn's before and after versions; None when it never held the Paper."""
+    services = _api_services(request)
+    user = services.identity_access.acting_user(request)
+    if (
+        services.store.comment_target_route(
+            user.user_id, "reply", operation_id, project_id=project_id
+        )
+        is None
+    ):
+        raise HTTPException(404, "Paper turn not found")
+    return turn_versions(services.store, operation_id)
+
+
+@router.get(_PREFIX, response_model=PaperTurn)
+async def paper_turn(operation_id: str, request: Request, project_id: str = _member):
+    versions = await asyncio.to_thread(_turn, request, project_id, operation_id)
+    if versions is None:
+        return PaperTurn(before_version_id=None, after_version_id=None, files=[])
+    before, after = versions
+    live = get_paper_live(request)
+    files = await asyncio.to_thread(live.turn_files, project_id, operation_id)
+    store = _api_services(request).store
+    rows = await asyncio.to_thread(turn_rows, store, project_id, before, files)
+    return PaperTurn(before_version_id=before, after_version_id=after, files=rows)
+
+
+@router.get(_PREFIX + "/file", response_model=PaperTurnFile)
+async def paper_turn_file(
+    operation_id: str, path: str, request: Request, project_id: str = _member
+):
+    versions = await asyncio.to_thread(_turn, request, project_id, operation_id)
+    if versions is None:
+        raise HTTPException(404, "File is not in this Paper turn")
+    before, _after = versions
+    live = get_paper_live(request)
+    files = await asyncio.to_thread(live.turn_files, project_id, operation_id)
+    row = next((row for row in files if row["path"] == path), None)
+    store = _api_services(request).store
+    file = (
+        None if row is None else await asyncio.to_thread(turn_file, store, project_id, before, row)
+    )
+    if file is None:
+        raise HTTPException(404, "File is not in this Paper turn")
+    if file.clash and not file.too_large:
+        source = await live.source(project_id)
+        entry = next((entry for entry in source.entries if entry.path == path), None)
+        if entry is not None and entry.kind == "text":
+            file.current = (await asyncio.to_thread(source.read, entry)).decode()
+    return file

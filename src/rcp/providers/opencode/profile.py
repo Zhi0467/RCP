@@ -34,7 +34,6 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _optional_usage_int,
-    _paper_write_roots,
     _require_project_write_scope,
     _require_provider_version,
     _usage_dedupe_key,
@@ -105,7 +104,7 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             request.invocation_gate,
         )
         if (
-            request.capability in {"discuss", "scratch_patch", "paper_suggest"}
+            request.capability in {"discuss", "scratch_patch"}
             and request.invocation_gate is not None
         ):
             self.command[self.command.index("--agent") + 1] = _agent_name(permission)
@@ -438,11 +437,6 @@ def _permission(
             **dict.fromkeys((path.lstrip("/") for path in patterns), "deny"),
         }
 
-    if capability == "paper_suggest":
-        roots = _paper_write_roots(write_dirs)
-        base["edit"] = {"*": "deny", **{_root_pattern(str(root)): "allow" for root in roots}}
-        base["bash"] = "allow"
-        return base
     if scope is not None:
         allowed, denied = scope.writable_roots, scope.protected_write_paths
     else:

@@ -5,7 +5,6 @@ import { chromium } from "playwright";
 
 import {
   PaperTestRoom as Room,
-  paperTestCard as card,
   appendText as append,
   completingSocket,
   createPaperTestServer,
@@ -177,15 +176,6 @@ test("losing project access keeps unsent text visible with a download", async (t
   assert.equal(await readFile(await (await download).path(), "utf8"), "draft unsent");
   assert.equal(await page.locator('.cm-editor[data-kept="yes"]').count(), 1);
   assert.equal(await page.locator(".cm-content").getAttribute("aria-readonly"), "true");
-});
-
-test("Locate to a file missing from the current tree opens a listed file", async (t) => {
-  const { page } = await openPaper(t, { cards: [{ ...card, file_id: "f9" }] });
-  await page.getByRole("button", { name: "Coach", exact: true }).last().click();
-  await page.getByRole("button", { name: "Locate change", exact: true }).click();
-  await page.waitForTimeout(300);
-  assert.equal(await page.locator(".paper-path").textContent(), "intro.md");
-  assert.ok(await page.evaluate(editorMatches, "draft"));
 });
 
 test("a created file stays selected while a peer's older save is read first", async (t) => {

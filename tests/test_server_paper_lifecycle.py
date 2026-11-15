@@ -9,6 +9,8 @@ import pytest
 from rcp import limits
 from rcp.agents import AgentLauncher
 from rcp.paper import PaperConflict, PaperLive, PaperOp
+from rcp.paper.folder import LocalPaperFolder
+from rcp.paper.folder_io import paper_root
 from rcp.projects import ProjectCatalog
 from rcp.runs.project_deletion import stop_project_work
 from rcp.server_ops import paper_lifecycle
@@ -20,7 +22,6 @@ from rcp.server_ops.maintenance import (
 )
 from rcp.server_ops.paper_lifecycle import register_paper_live, stop_paper_project
 from rcp.storage import AppStore
-from rcp.transport import LocalStateWorkspace
 
 
 class PaperOwner:
@@ -86,15 +87,13 @@ def test_paper_is_drained_before_maintenance_capture(manifest, tmp_path, monkeyp
 def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp_path, monkeypatch):
     from rcp.server_ops.backup_paper import PAPER_PROJECT_TABLES
 
-    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
     monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
+    monkeypatch.setattr(limits, "PAPER_POLL_SECONDS", 0.01)
 
     store = AppStore(tmp_path / "rcp.sqlite3")
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
     record = catalog.register(str(manifest.path), identity_action="adopted")
-    root = tmp_path / "paper-state"
-    root.mkdir()
-    live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
+    live = PaperLive(store, lambda project: LocalPaperFolder(paper_root(tmp_path, project)))
     background = SimpleNamespace(wait_for_stopped_workers=lambda *args, **kwargs: [])
 
     async def scenario():
@@ -102,15 +101,9 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
         register_paper_live(store, live)
         for project in (record.project_id, "other"):
             receipt = await live.apply(
-                project,
-                [PaperOp(kind="create", path="a.md", text="saved")],
-                "human",
-                {"receipt_key": "create"},
+                project, [PaperOp(kind="write", path="a.md", data=b"saved")], "human"
             )
             await live.create_version(project, "named", "human")
-            await asyncio.to_thread(
-                live._compact_bytes, project, receipt.file_ids[0], 1, receipt.revision
-            )
             with store.connection() as connection:
                 connection.execute(
                     "INSERT INTO paper_change_groups VALUES (?, 'group', 'task', ?, 'review', 'accepted', 'human', ?, ?)",
@@ -123,38 +116,28 @@ def test_real_owner_disposes_reopens_and_deletes_only_project_rows(manifest, tmp
                     "INSERT INTO paper_change_receipts VALUES (?, 'accept', 'group', 'accept', '{}', ?)",
                     (project, store.now()),
                 )
-        await live.apply(record.project_id, [PaperOp(kind="create", path="b.md")], "human")
+        await live.apply(record.project_id, [PaperOp(kind="write", path="b.md", data=b"")], "human")
         await asyncio.to_thread(stop_paper_project, store, record.project_id)
         assert not any(key[0] == record.project_id for key in live.rooms)
-        before = await live.tree(record.project_id)
-        history = await live.history(record.project_id)
+        (paper_root(tmp_path, record.project_id) / "c.md").write_text("while stopped")
         await live.tick()
         await live.drain(record.project_id)
-        assert await live.tree(record.project_id) == before
-        assert await live.history(record.project_id) == history
+        assert record.project_id not in live.projects
         await live.resume(record.project_id)
-        await live.tick()
-        await live.drain(record.project_id)
         resumed = await live.tree(record.project_id)
-        assert resumed.published_revision == before.saved_revision
-        assert any(
-            version["revision"] == before.saved_revision and version["kind"] == "auto"
-            for version in await live.history(record.project_id)
-        )
+        assert {file.path for file in resumed.files} == {"a.md", "b.md", "c.md"}
         assert (
             await asyncio.to_thread(stop_project_work, store, background, record.project_id, None)
             == []
         )
         store.delete_project_records(record.project_id)
         with store.connection() as connection:
-            present = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema")}
-            for table in PAPER_PROJECT_TABLES:
-                if table in present:
-                    assert not connection.execute(
-                        f'SELECT 1 FROM "{table}" WHERE project_id=?', (record.project_id,)
-                    ).fetchall()
+            for table in ("paper_state", "paper_turn_files", *PAPER_PROJECT_TABLES):
+                assert not connection.execute(
+                    f'SELECT 1 FROM "{table}" WHERE project_id=?', (record.project_id,)
+                ).fetchall()
             assert connection.execute(
-                "SELECT count(*) FROM paper_saved_snapshots WHERE project_id='other'"
+                "SELECT count(*) FROM paper_versions WHERE project_id='other'"
             ).fetchone()[0]
             assert connection.execute("SELECT count(*) FROM paper_version_texts").fetchone()[0]
             for table in ("paper_change_groups", "paper_changes", "paper_change_receipts"):
@@ -176,7 +159,9 @@ def test_saved_paper_without_registered_owner_cannot_claim_quiescence(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     stop_paper_project(store, "legacy")
     with store.connection() as connection:
-        connection.execute("INSERT INTO paper_publication(project_id) VALUES ('live')")
+        connection.execute(
+            "INSERT INTO paper_files(project_id, file_id, path, kind, created_at) VALUES ('live', 'f', 'a.md', 'text', 'now')"
+        )
     with pytest.raises(RuntimeError):
         stop_paper_project(store, "live")
 
@@ -187,30 +172,33 @@ def test_released_project_stays_inactive_after_restart(tmp_path, monkeypatch, sa
 
     _, app, store, _, transfer, _, _ = _released_source(tmp_path)
     live = app.state.paper_live
-    monkeypatch.setattr(limits, "PAPER_PUBLISH_IDLE_SECONDS", 0)
     monkeypatch.setattr(limits, "PAPER_HISTORY_IDLE_SECONDS", 0)
+    monkeypatch.setattr(limits, "PAPER_POLL_SECONDS", 0.01)
 
     async def scenario():
         if saved:
-            await live.apply(transfer.project_id, [PaperOp(kind="create", path="held.md")], "human")
+            await live.apply(
+                transfer.project_id, [PaperOp(kind="write", path="held.md", data=b"")], "human"
+            )
         await live.close()
-        restarted = PaperLive(store, live.workspace_for)
+        with store.connection() as connection:
+            before = connection.execute(
+                "SELECT revision FROM paper_state WHERE project_id=?", (transfer.project_id,)
+            ).fetchall()
+        restarted = PaperLive(store, live.folder_for)
         await restarted.start()
-        if not saved:
-            with pytest.raises(PaperConflict):
-                await restarted.tree(transfer.project_id)
-            with store.connection() as connection:
-                assert not connection.execute(
-                    "SELECT 1 FROM paper_publication WHERE project_id=?", (transfer.project_id,)
-                ).fetchone()
-            await restarted.close()
-            return
-        before = await restarted.tree(transfer.project_id)
-        history = await restarted.history(transfer.project_id)
+        with pytest.raises(PaperConflict):
+            await restarted.tree(transfer.project_id)
         await restarted.tick()
         await restarted.drain(transfer.project_id)
-        assert await restarted.tree(transfer.project_id) == before
-        assert await restarted.history(transfer.project_id) == history
+        with store.connection() as connection:
+            assert (
+                connection.execute(
+                    "SELECT revision FROM paper_state WHERE project_id=?", (transfer.project_id,)
+                ).fetchall()
+                == before
+            )
+        assert bool(before) == saved
         await restarted.close()
 
     asyncio.run(scenario())
@@ -260,9 +248,7 @@ def test_release_reopens_admission_for_a_never_opened_paper(manifest, tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
     record = catalog.register(str(manifest.path), identity_action="adopted")
-    root = tmp_path / "paper-state"
-    root.mkdir()
-    live = PaperLive(store, lambda _: LocalStateWorkspace(root, str(root)))
+    live = PaperLive(store, lambda project: LocalPaperFolder(paper_root(tmp_path, project)))
     coordinator = MaintenanceCoordinator(
         admission=RuntimeAdmissionGate(),
         background_admission=RuntimeAdmissionGate(),

@@ -29,9 +29,9 @@ export function markdownPaperPath(from: string, url: string): string | null {
   }
 }
 
-export function paperRawUrl(projectId: string, fileId: string, revision?: number): string {
+export function paperRawUrl(projectId: string, fileId: string, sha256?: string): string {
   const path = `/api/projects/${encodeURIComponent(projectId)}/paper/files/${encodeURIComponent(fileId)}/raw`;
-  return revision === undefined ? path : `${path}?revision=${revision}`;
+  return sha256 === undefined ? path : `${path}?sha256=${sha256}`;
 }
 
 /** Read literal dependencies, skipping strings, raw text, and nested comments. */
@@ -124,7 +124,6 @@ export function typstRoots(openPath: string, sources: ReadonlyMap<string, string
 export async function readTypstTree(
   projectId: string,
   files: PaperFile[],
-  revision: number,
   openFile: PaperFile,
   text: string,
   signal: AbortSignal,
@@ -140,7 +139,7 @@ export async function readTypstTree(
       const key = `${projectId}:${file.sha256}`;
       const cached = cache.get(key);
       if (cached) return { path: file.path, bytes: cached };
-      const response = await fetch(paperRawUrl(projectId, file.file_id, revision), { signal });
+      const response = await fetch(paperRawUrl(projectId, file.file_id, file.sha256), { signal });
       if (!response.ok) throw new Error(`Could not read ${file.path} (${response.status})`);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (!signal.aborted) cache.set(key, bytes);

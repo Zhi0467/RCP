@@ -8,7 +8,6 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
-  coachConversation,
   isNewestOfTurnClass,
   resolvedChatSessionId,
   orderTranscriptLines,
@@ -126,6 +125,22 @@ test("temporary input attachment metadata follows the human turn only", () => {
   ]);
   assert.deepEqual(lines[0].attachments, [attachment]);
   assert.equal(lines[1].attachments, undefined);
+});
+
+test("a migrated Paper coach turn shows its rendered transcript as it is", () => {
+  const transcript = "Tighten the abstract.\n\nShorter now.\n\nChanges accepted: abstract.md";
+  const lines = reconstructTaskTranscript([
+    task({
+      operation_id: "old-coach",
+      kind: "paper_coach",
+      request: { message: "Tighten the abstract." },
+      result: { messages: ["Shorter now."], transcript },
+    }),
+  ]);
+  assert.deepEqual(
+    lines.map(({ role, text }) => ({ role, text })),
+    [{ role: "agent", text: transcript }],
+  );
 });
 
 test("node chat reconstruction can select an older explicit chat id", () => {
@@ -973,115 +988,6 @@ test("a later artifact edit leaves Retry on the newest failed turn", () => {
   assert.equal(isNewestOfTurnClass(turn, tasks), true);
   assert.equal(isNewestOfTurnClass(edit, tasks), true);
   assert.equal(isNewestOfTurnClass(tasks[0], tasks), false);
-});
-
-test("a coach conversation follows a provider switch into its fresh session and keeps its history", () => {
-  assert.deepEqual(coachConversation([], null, []), { tasks: [], sessionId: null });
-  assert.deepEqual(coachConversation([], "codex-session", []), {
-    tasks: [],
-    sessionId: "codex-session",
-  });
-  const earlier = task({
-    operation_id: "earlier",
-    kind: "paper_coach",
-    native_session_id: "codex-session",
-    request: { session_id: null, provider: "codex" },
-  });
-  const other = task({
-    operation_id: "other",
-    kind: "paper_coach",
-    native_session_id: "unrelated",
-    created_at: "2026-07-28T00:00:01Z",
-  });
-  const continuation = task({
-    operation_id: "continuation",
-    kind: "paper_coach",
-    native_session_id: null,
-    request: { session_id: "codex-session", provider: "codex" },
-    created_at: "2026-07-28T00:00:02Z",
-  });
-  assert.deepEqual(
-    coachConversation([earlier, other, continuation], "codex-session", []).tasks.map(
-      (item) => item.operation_id,
-    ),
-    ["earlier", "continuation"],
-  );
-  // The server clears session_id when the provider changes; the turn opens a new session.
-  const switched = task({
-    operation_id: "switched",
-    kind: "paper_coach",
-    native_session_id: null,
-    request: { session_id: null, previous_session_id: "codex-session", provider: "claude" },
-    created_at: "2026-07-28T00:00:02Z",
-  });
-  const admitted = coachConversation([earlier, other, switched], "codex-session", ["switched"]);
-  assert.deepEqual(
-    admitted.tasks.map((item) => item.operation_id),
-    ["earlier", "switched"],
-  );
-  assert.deepEqual(
-    coachConversation([earlier, other, switched], "codex-session", []).tasks.map(
-      (item) => item.operation_id,
-    ),
-    ["earlier", "switched"],
-  );
-
-  const settled = { ...switched, native_session_id: "claude-session" };
-  const next = task({
-    operation_id: "next",
-    kind: "paper_coach",
-    native_session_id: "claude-session",
-    request: { session_id: "claude-session" },
-    created_at: "2026-07-28T00:00:03Z",
-  });
-  const followed = coachConversation([earlier, other, settled], "codex-session", ["switched"]);
-  assert.equal(followed.sessionId, "claude-session");
-  assert.deepEqual(
-    coachConversation([earlier, other, settled, next], "codex-session", [
-      "switched",
-      "next",
-    ]).tasks.map((item) => item.operation_id),
-    ["earlier", "switched", "next"],
-  );
-
-  const recorded = {
-    ...settled,
-    request: { ...settled.request, previous_session_id: "codex-session" },
-  };
-  assert.deepEqual(
-    coachConversation([earlier, other, recorded, next], "claude-session", []).tasks.map(
-      (item) => item.operation_id,
-    ),
-    ["earlier", "switched", "next"],
-  );
-  assert.deepEqual(
-    coachConversation([earlier, other, recorded, next], "codex-session", []).tasks.map(
-      (item) => item.operation_id,
-    ),
-    ["earlier", "switched", "next"],
-  );
-  const switchedAgain = task({
-    operation_id: "switched-again",
-    kind: "paper_coach",
-    native_session_id: "opencode-session",
-    request: { session_id: null, previous_session_id: "claude-session", provider: "opencode" },
-    created_at: "2026-07-28T00:00:04Z",
-  });
-  assert.deepEqual(
-    coachConversation([earlier, other, recorded, switchedAgain], "opencode-session", []).tasks.map(
-      (item) => item.operation_id,
-    ),
-    ["earlier", "switched", "switched-again"],
-  );
-  for (const status of ["running", "failed"]) {
-    const pending = { ...switchedAgain, status, native_session_id: null };
-    const reopened = coachConversation([earlier, other, recorded, pending], "codex-session", []);
-    assert.equal(reopened.sessionId, "claude-session");
-    assert.deepEqual(
-      reopened.tasks.map((item) => item.operation_id),
-      ["earlier", "switched", "switched-again"],
-    );
-  }
 });
 
 test("a retry shows its turn's member message once, from the attempt that recorded it", () => {

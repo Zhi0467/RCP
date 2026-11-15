@@ -43,6 +43,7 @@ _CASES = [
         for resource in ("tasks.status", "tasks.progress", "task")
     ],
     ("paper_publication", "paper", "hold", {}),
+    ("paper_state", "paper", "revision", {}),
 ]
 
 
@@ -280,6 +281,8 @@ _EXEMPT_TABLES = {
     "paper_changes": "coach cards",
     "paper_change_receipts": "receipt",
     "paper_coach_steers": "steer receipt; task rows carry it with steer_revision",
+    "paper_turn_files": "turn file list; paper_state carries the revision",
+    "paper_migrations": "migration",
 }
 
 
@@ -316,6 +319,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "artifact_versions",
             "artifact_operations",
             "paper_publication",
+            "paper_state",
         }
     )
     store = AppStore(tmp_path / "store.db")

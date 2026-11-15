@@ -104,8 +104,7 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
 
     async def stream(_project_id, kind, _request, _execution):
         yield _event_frame(AgentEvent(event="message", text=f"{kind} answer"))
-        if kind != "paper_coach":
-            yield _event_frame(AgentEvent(event="message", text='{"applied_revision": 7}'))
+        yield _event_frame(AgentEvent(event="message", text='{"applied_revision": 7}'))
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
@@ -122,7 +121,6 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
             "chat_id": str(uuid.uuid4()),
             "message": "Explain this project.",
         },
-        "paper_coach": {"message": "Review this introduction."},
     }
     operation_ids: dict[str, str] = {}
     for kind, body in requests.items():
@@ -146,119 +144,3 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
         assert payload["result"] == {"messages": [f"{kind} answer"]}
         assert payload["events"]
         assert payload["debug_receipts"]
-
-
-@pytest.mark.parametrize("switch_status", ["running", "failed"])
-def test_a_coach_conversation_lists_every_turn_however_many_newer_tasks_exist(
-    manifest, tmp_path, switch_status
-):
-    from rcp.storage import AgentTaskRecord
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.services.store
-    project_id = app.state.default_project_id
-
-    def seed(kind, minute, status="succeeded", **fields):
-        at = f"2026-11-03T10:{minute:02d}:00+00:00"
-        return store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=str(uuid.uuid4()),
-                project_id=fields.pop("project_id", project_id),
-                kind=kind,
-                status=status,
-                created_at=at,
-                updated_at=at,
-                status_message=status,
-                **fields,
-            )
-        ).operation_id
-
-    answered = seed("paper_coach", 0, request={"message": "Review"}, native_session_id="s1")
-    running = seed("paper_coach", 1, "running", request={"message": "Fix", "session_id": "s1"})
-    seed("paper_coach", 2, request={"message": "Other"}, native_session_id="s2")
-    switched = seed(
-        "paper_coach",
-        3,
-        request={"message": "Switch", "previous_session_id": "s1"},
-        native_session_id="s3",
-    )
-    after = seed("paper_coach", 4, request={"message": "More", "session_id": "s3"})
-    pending = seed(
-        "paper_coach",
-        5,
-        switch_status,
-        request={"message": "Switch again", "session_id": None, "previous_session_id": "s3"},
-    )
-    seed("paper_coach", 6, request={"message": "Other switch", "previous_session_id": "s2"})
-    seed(
-        "paper_coach",
-        7,
-        project_id="other-project",
-        request={"previous_session_id": "s3"},
-        native_session_id="foreign-session",
-    )
-    seed("paper_coach", 8, request={}, native_session_id="foreign-session")
-    for minute in range(9, 34):
-        seed("refresh", minute, request={})
-    client = signed_in_client(app)
-    prefix = f"/api/projects/{project_id}/tasks"
-    assert {task["kind"] for task in client.get(prefix).json()} == {"refresh"}
-    session = client.get(prefix, params={"paper_session": "s1"})
-    assert session.status_code == 200
-    expected = [pending, after, switched, running, answered]
-    assert [task["operation_id"] for task in session.json()] == expected
-    conversation = client.get(prefix, params={"paper_session": "s3"}).json()
-    assert [task["operation_id"] for task in conversation] == expected
-
-
-def test_coach_admission_claims_inputs_only_after_scope_validation(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    append_fixture_patch(app.state.service, seed_patch())
-    project_id = app.state.default_project_id
-    scope_id, client_id = str(uuid.uuid4()), str(uuid.uuid4())
-
-    async def stream(_project_id, _kind, _request, _execution):
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
-    with signed_in_client(app) as client:
-        uploaded = client.post(
-            f"/api/projects/{project_id}/chats/{scope_id}/attachments",
-            data={"client_id": client_id},
-            files={"file": ("notes.txt", b"temporary input", "text/plain")},
-        )
-        assert uploaded.status_code == 200
-        upload = uploaded.json()
-        body = {
-            "attachment_scope_id": scope_id,
-            "message": "Use the uploaded note and hypothesis.",
-            "attachment_set_id": upload["attachment_set_id"],
-            "attachment_client_id": client_id,
-            "references": [{"kind": "node", "node_id": "hyp/replanning-restores-plasticity"}],
-            "attachment_batch_id": "client-forged-batch",
-            "attachments": [{"invalid": "client-forged-descriptor"}],
-        }
-        url = f"/api/projects/{project_id}/tasks/paper_coach"
-        for refused_scope in (None, "invalid", str(uuid.uuid4())):
-            refused = client.post(url, json={**body, "attachment_scope_id": refused_scope})
-            assert refused.status_code == 422
-        started = client.post(url, json=body)
-        assert started.status_code == 202, started.text
-        request = started.json()["request"]
-        assert request["attachment_set_id"] is None
-        assert request["attachment_client_id"] is None
-        assert request["references"] == []
-        assert request["attachment_batch_id"] == upload["attachment_set_id"]
-        assert request["attachments"][0]["attachment_id"] == upload["attachment"]["attachment_id"]
-        assert request["attachments"][1]["reference"]["source_id"] == (
-            "hyp/replanning-restores-plasticity"
-        )
-        assert _wait_for_run(client, project_id, started.json()["operation_id"])["status"] == (
-            "succeeded"
-        )
-        removed = client.delete(
-            f"/api/projects/{project_id}/chats/{scope_id}/attachments/"
-            f"{upload['attachment']['attachment_id']}",
-            params={"client_id": client_id, "attachment_set_id": upload["attachment_set_id"]},
-        )
-        assert removed.status_code == 422

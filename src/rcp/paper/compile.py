@@ -26,14 +26,16 @@ from rcp.limits import (
     PAPER_COMPILE_TIMEOUT_SECONDS,
 )
 from rcp.paper.engines import EngineStore
-from rcp.paper.models import PaperSnapshot
+from rcp.paper.models import PaperSnapshot, PaperTree
 from rcp.paper.synctex import SyncTexMap, read_synctex
 
 
 class PaperLiveAdapter(Protocol):
     """The live owner snapshots on its loop; materialization is worker-safe."""
 
-    async def snapshot(self, project_id: str, revision: int | None = None) -> PaperSnapshot: ...
+    async def snapshot(self, project_id: str, version_id: str | None = None) -> PaperSnapshot: ...
+
+    async def tree(self, project_id: str) -> PaperTree: ...
 
     def materialize(self, snapshot: PaperSnapshot, dest: Path) -> None: ...
 
@@ -115,7 +117,7 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-_Request = tuple[str, int | None, str | None]
+_Request = tuple[str, str | None, int | None, str | None]
 
 
 class PaperCompiler:
@@ -134,11 +136,12 @@ class PaperCompiler:
         self,
         project_id: str,
         file_id: str,
-        revision: int | None = None,
+        version_id: str | None = None,
         root_path: str | None = None,
     ) -> CompileResult:
         compile_id = uuid.uuid4().hex
-        request = (file_id, revision, root_path)
+        current = None if version_id else (await self.live.tree(project_id)).revision
+        request = (file_id, version_id, current, root_path)
         running = self._jobs.get(project_id)
         # Viewers of one saved revision ask for the same PDF: they share one job.
         if running is not None and running[0] == request:
@@ -147,7 +150,7 @@ class PaperCompiler:
             if running is not None:
                 running[1].cancel()
             job = asyncio.create_task(
-                self._compile(project_id, file_id, revision, root_path, compile_id)
+                self._compile(project_id, file_id, version_id, root_path, compile_id)
             )
             self._jobs[project_id] = (request, job)
         self._waiters[job] = self._waiters.get(job, 0) + 1
@@ -172,17 +175,17 @@ class PaperCompiler:
         self,
         project_id: str,
         file_id: str,
-        revision: int | None,
+        version_id: str | None,
         root_path: str | None,
         compile_id: str,
     ) -> CompileResult:
         result = CompileResult(compile_id=compile_id, status="error")
         try:
-            snapshot = await self.live.snapshot(project_id, revision)
+            snapshot = await self.live.snapshot(project_id, version_id)
             entries = snapshot.files
             open_path = next((f.path for f in entries if f.file_id == file_id), None)
             if open_path is None:
-                raise ValueError("The open file is absent from this saved revision.")
+                raise ValueError("The open file is absent from this Paper version.")
             texts = {f.path: f.text for f in entries if f.kind == "text" and f.text is not None}
             roots = root_candidates(texts, open_path)
             # A chosen root must still be one that reaches the open file.

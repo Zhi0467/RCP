@@ -5,7 +5,6 @@ import { copyText } from "../core/MarkdownCodeBlock";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
 import "../graph/GraphPicker.css";
-import { PaperChanges, type PaperChange, type PaperChangeAction } from "./PaperChanges";
 import { PaperConfirm } from "./PaperConfirm";
 import "./paper-coach.css";
 import { PaperDialog } from "./PaperDialog";
@@ -16,7 +15,6 @@ import {
   repositoryFromInput,
   validRepository,
   type PaperGitChangedFile,
-  type PaperGitFileConflict,
   type PaperGitFileDiff,
   type PaperGitStatus,
 } from "./gitSync";
@@ -35,7 +33,6 @@ export type PaperGitState = ReturnType<typeof usePaperGit>;
 export function usePaperGit(apiBase: string, refreshKey: string, onChanged: () => void) {
   const [status, setStatus] = useState<PaperGitStatus | null>(null);
   const [files, setFiles] = useState<PaperGitChangedFile[]>([]);
-  const [conflicts, setConflicts] = useState<PaperGitFileConflict[]>([]);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const generation = useRef(0);
@@ -64,18 +61,12 @@ export function usePaperGit(apiBase: string, refreshKey: string, onChanged: () =
   }, [apiBase, read, refreshKey]);
   const linked = status?.state === "linked";
   const unpushed = linked && status.unpushed;
-  const held = linked ? status.conflicts : 0;
   const head = status?.head.commit;
   useEffect(() => {
     let current = true;
-    void Promise.all([
-      unpushed ? paperGit<PaperGitChangedFile[]>(apiBase, "/changes") : [],
-      held ? paperGit<PaperGitFileConflict[]>(apiBase, "/conflicts") : [],
-    ])
-      .then(([nextFiles, nextConflicts]) => {
-        if (!current) return;
-        setFiles(nextFiles);
-        setConflicts(nextConflicts);
+    void (unpushed ? paperGit<PaperGitChangedFile[]>(apiBase, "/changes") : Promise.resolve([]))
+      .then((nextFiles) => {
+        if (current) setFiles(nextFiles);
       })
       .catch((error) => {
         if (current) setFailure(error instanceof Error ? error.message : String(error));
@@ -83,7 +74,7 @@ export function usePaperGit(apiBase: string, refreshKey: string, onChanged: () =
     return () => {
       current = false;
     };
-  }, [apiBase, unpushed, held, head, refreshKey]);
+  }, [apiBase, unpushed, head, refreshKey]);
   const run = async (action: () => Promise<unknown>) => {
     if (busy) return false;
     setBusy(true);
@@ -100,7 +91,7 @@ export function usePaperGit(apiBase: string, refreshKey: string, onChanged: () =
       setBusy(false);
     }
   };
-  return { apiBase, status, files, conflicts, busy, failure, setFailure, run };
+  return { apiBase, status, files, busy, failure, setFailure, run };
 }
 
 export function PaperGitPill({ git }: { git: PaperGitState }) {
@@ -382,70 +373,30 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
   );
 }
 
-/** The Changes tab: held conflicts, Git change cards, changed files, and Commit & push. */
+/** The Changes tab: changed files and Commit & push. */
 export function PaperGitChanges({
   git,
-  changes,
   openPath,
-  onAction,
-  onLocate,
   onOpenDiff,
 }: {
   git: PaperGitState;
-  changes: PaperChange[];
   openPath: string | null;
-  onAction: (groupId: string, action: PaperChangeAction) => Promise<void>;
-  onLocate: (change: PaperChange) => void;
   onOpenDiff: (path: string) => void;
 }) {
   const [message, setMessage] = useState("");
-  const { apiBase, status, files, conflicts, busy, failure } = git;
+  const { apiBase, status, files, busy, failure } = git;
   if (status?.state !== "linked") return null;
   return (
     <div className="paper-git-changes">
       <div className="paper-git-scroll">
-        {conflicts.length > 0 && (
-          <ul className="paper-well paper-git-files">
-            {conflicts.map((conflict) => (
-              <li key={conflict.path} title={`Mine ${conflict.ours}, theirs ${conflict.theirs}`}>
-                <span>{conflict.path}</span>
-                {(["theirs", "mine"] as const).map((take) => (
-                  <button
-                    key={take}
-                    type="button"
-                    className="button compact"
-                    disabled={busy}
-                    onClick={() =>
-                      void git.run(() =>
-                        paperGit(apiBase, "/conflicts/resolve", "POST", {
-                          path: conflict.path,
-                          take,
-                        }),
-                      )
-                    }
-                  >
-                    {take === "theirs" ? "Take theirs" : "Keep mine"}
-                  </button>
-                ))}
-              </li>
-            ))}
-          </ul>
-        )}
         <button
           className="button compact paper-git-refresh"
           disabled={busy}
-          onClick={() => void git.run(() => paperGit(apiBase, "/conflicts/refresh", "POST"))}
+          onClick={() => void git.run(() => paperGit(apiBase, "/fetch", "POST"))}
         >
           <RefreshCw size={14} />
           Refresh from GitHub
         </button>
-        <PaperChanges
-          apiBase={apiBase}
-          changes={changes}
-          onAction={onAction}
-          onUndoAll={async () => undefined}
-          onLocate={onLocate}
-        />
         <ul className="paper-git-list">
           {files.map((file) => (
             <li key={file.path}>
@@ -488,10 +439,7 @@ export function PaperGitChanges({
           onChange={(event) => setMessage(event.target.value)}
         />
         {failure && <Failure text={refusals[failure] ?? failure} />}
-        <button
-          className="button primary"
-          disabled={busy || status.conflicts > 0 || !files.length || !message.trim()}
-        >
+        <button className="button primary" disabled={busy || !files.length || !message.trim()}>
           Commit &amp; push
         </button>
       </form>
