@@ -18,7 +18,7 @@ from fastapi import (
     HTTPException,
     Request,
 )
-from fastapi.responses import JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -93,6 +93,7 @@ from rcp.api.questions import router as questions_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
 from rcp.api.service_connections import router as service_connections_router
+from rcp.api.share_links import router as share_links_router
 from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
@@ -2832,6 +2833,7 @@ def create_app(
     app.include_router(digest_router)
     app.include_router(bulletin_router)
     app.include_router(comments_router)
+    app.include_router(share_links_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(project_groups_router)
@@ -2868,6 +2870,14 @@ def create_app(
     app.include_router(terminals_router)
 
     web_dist = web_dist_path()
+
+    @app.get("/open", include_in_schema=False)
+    def open_share_link() -> Response:
+        page = web_dist / "index.html"
+        if not page.is_file():
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(page, headers={"Cache-Control": "no-cache"})
+
     if web_dist.exists():
         app.mount("/", _WebPages(directory=web_dist, html=True), name="web")
 
