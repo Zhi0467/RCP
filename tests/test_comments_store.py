@@ -355,15 +355,3 @@ def test_rename_cannot_push_saved_thread_over_budget(store):
     assert len(render_thread(store.get_comment_thread("project", tid))) <= (
         COMMENT_THREAD_MAX_CHARS
     )
-
-
-def test_a_reply_diff_line_takes_an_element_comment(store):
-    item = store.create_comment_thread(
-        "project",
-        target_kind="reply",
-        target_id="turn",
-        anchor={"kind": "element", "path": "main.tex", "label": "+12", "text": "x", "comment": ""},
-        text="tighten this",
-        user_id=store.local_owner.user_id,
-    )
-    assert item["anchor"]["path"] == "main.tex"

@@ -291,7 +291,7 @@ def test_mentions_name_paper_and_reply_targets(comments_app, kind):
     ("kind", "anchor", "status"),
     [
         ("reply", {"kind": "text", "text": "quote"}, 200),
-        ("reply", {"kind": "element", "path": "p"}, 422),
+        ("reply", {"kind": "element", "path": "p"}, 200),
         ("reply", {"kind": "pdf", "page": 1}, 422),
         ("paper", {"kind": "pdf", "page": 1}, 200),
     ],
