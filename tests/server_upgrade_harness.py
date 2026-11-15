@@ -30,7 +30,6 @@ UPGRADE_FORMAT_SOURCES = (
     ("src/rcp/server_ops/config.py", "SERVER_CONFIG_SCHEMA_VERSION"),
     ("src/rcp/server_runtime.py", "SERVER_METADATA_SCHEMA_VERSION"),
 )
-# The installed journey adds release-specific steps for these old writers.
 JOURNEY_SPECIFIC_RELEASES = frozenset({"v0.4.36"})
 PRODUCTION_CORPORA = {"terminal-transfer": "v0.4.40"}
 EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
