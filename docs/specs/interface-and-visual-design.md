@@ -143,7 +143,8 @@ It has one icon-only Dismiss in its corner and uses one per-device store.
 Its key names one occurrence: a release, a sign-out, a failure, or a turn.
 A new occurrence shows again. A banner whose key cannot name its
 occurrence, such as a compute route failure, forgets its dismissal once the
-condition clears.
+condition clears. A banner whose occurrence another owner holds, such as a share
+link waiting in the desktop app, passes that owner's dismiss action instead of a key.
 **Why:** separate banner implementations developed inconsistent dismiss controls.
 Some had none, and the gaps recurred.
 

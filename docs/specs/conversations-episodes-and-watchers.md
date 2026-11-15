@@ -926,8 +926,10 @@ Auto-research card carried: the goal as the starting instruction, the turn
 budget, `--code-worktree on|off`, `--worktree-repository`, `--branch-name`, and
 the orchestrator's provider, model and effort. It first checks the orchestrator
 provider's readiness for the member, as the card's ask did, and refuses with the
-same codes (`provider_not_ready`, `machine_not_found`, `branch_name_taken`,
-`branch_name_invalid`). A chat on a graph branch is refused with
+same codes (`provider_not_ready`, `machine_not_found`,
+`auto_research_profile_unavailable`, `branch_name_taken`, `branch_name_invalid`).
+Any other invalid start, such as one from a Space thread, is refused with
+`auto_research_not_started`. A chat on a graph branch is refused with
 `auto_research_starts_from_main`.
 
 Both starts derive the episode id from the turn's oldest attempt and the command

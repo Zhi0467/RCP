@@ -69,7 +69,6 @@ export function useSkillPicker({ source, target, message, input, onComplete }: O
   useEffect(() => {
     setSelection(EMPTY_SKILL_SELECTION);
     setProviderSkillNames([]);
-    setQuery(null);
   }, [defaultsKey]);
 
   useEffect(() => {

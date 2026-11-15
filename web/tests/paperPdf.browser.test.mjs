@@ -184,10 +184,13 @@ test("preview returns from Markdown, retains root scroll, and keeps failed actio
   );
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/preview-test.html`);
   await page.locator("canvas").first().waitFor();
-  await page.locator(".paper-pdf").evaluate((el) => {
-    el.scrollTop = 3000;
-  });
-  await page.waitForFunction(() => document.querySelector(".paper-pdf").scrollTop === 3000);
+  await page.locator(".paper-pdf").evaluate(
+    (el) =>
+      new Promise((scrolled) => {
+        el.addEventListener("scroll", scrolled, { once: true });
+        el.scrollTop = 3000;
+      }),
+  );
   await page.evaluate(() => window.show("md"));
   await page.getByRole("link", { name: "Methods", exact: true }).click();
   assert.equal(await page.evaluate(() => window.opened), "methods");

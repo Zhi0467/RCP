@@ -353,12 +353,13 @@ Human members dispatch episode Merge from any owner-chain card without a budget.
 Fully delivered, foreign, concurrent, or live-writer requests are refused with
 specific reasons. Reservations fence work across the isolation binding through
 cleanup. History is retained.
-Every chat turn is a graph writer, so a live chat turn on the source branch
-blocks a merge from starting, and while a merge runs, a new chat turn on that
+Every Work chat turn is a graph writer, so a live Work turn on the source branch
+blocks a merge from starting, and while a merge runs, a new Work turn on that
 branch is refused with 409 and the merge-fence reason. The member sends again
-after the merge settles.
-**Why:** merges take seconds to minutes, and a chat turn has no read-only mode
-that could safely run beside one.
+after the merge settles. Discuss turns write no graph, so they neither block a
+merge nor are refused by one.
+**Why:** merges take seconds to minutes, and a Work turn could write the graph
+the merge is rebuilding.
 
 ## Episode code merge and cleanup
 
