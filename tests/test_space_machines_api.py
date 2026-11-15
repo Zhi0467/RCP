@@ -116,6 +116,39 @@ def test_delete_detaches_a_listed_machine_without_repositories(
     assert all(card.machine_id != machine["machine_id"] for card in _store(app).space_machines())
 
 
+@pytest.mark.parametrize("reachable", [True, False])
+def test_delete_cleans_the_machine_logins_or_logs_what_it_left(
+    app, monkeypatch, caplog, reachable
+) -> None:
+    from rcp.server_ops import provider_cleanup
+
+    client = signed_in_client(app)
+    machine = client.post(
+        "/api/space/machines", json={"name": "GPU", "host": "worker@gpu.example"}
+    ).json()
+    store = _store(app)
+    for _ in range(2):
+        store.add_provider_login("codex", str(machine["machine_id"]), added_by="member")
+    calls = []
+
+    def ssh(arguments, **_kwargs):
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0 if reachable else 255)
+
+    monkeypatch.setattr(provider_cleanup.subprocess, "run", ssh)
+    with caplog.at_level(logging.WARNING, logger="rcp.api.space_machines"):
+        response = client.delete(f"/api/space/machines/{machine['machine_id']}")
+
+    assert response.json() == {"deleted": machine["machine_id"]}
+    assert len(calls) == (2 if reachable else 1)
+    leftovers = [
+        record.args
+        for record in caplog.records
+        if record.name == "rcp.api.space_machines" and record.levelno == logging.WARNING
+    ]
+    assert leftovers == ([] if reachable else [(machine["machine_id"], 2)])
+
+
 def test_delete_refuses_unreadable_projects_before_detaching(app, manifest, monkeypatch) -> None:
     client = signed_in_client(app)
     machine = _attach_gpu(client, app)

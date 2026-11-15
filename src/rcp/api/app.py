@@ -2073,15 +2073,11 @@ def create_app(
         )
 
     def prepare_added_codex_homes() -> None:
-        # An expired or removed login can still own the only copy of a rollout.
-        # Prepare every recorded home before recovery selects a usable credential.
-        with store.connection() as connection:
-            rows = connection.execute(
-                "SELECT machine_id, login_id FROM provider_login_states "
-                "WHERE provider='codex' AND login_id != '' ORDER BY machine_id, login_id"
-            ).fetchall()
-        for row in rows:
-            login = LoginKey("codex", row["machine_id"], row["login_id"])
+        from rcp.runs.provider_login import login_homes_to_prepare
+
+        # An expired login, or a removal pending cleanup, can own the only copy of
+        # a rollout. Prepare those homes before recovery selects a usable credential.
+        for login in login_homes_to_prepare(store, "codex"):
             if login.machine_id == BACKEND_MACHINE_ID and not any(
                 path.is_dir()
                 for path in (
