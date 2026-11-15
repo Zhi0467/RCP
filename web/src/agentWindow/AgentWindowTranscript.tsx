@@ -1,11 +1,4 @@
-import {
-  Fragment,
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
 import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
 import {
@@ -26,9 +19,7 @@ import type {
   TurnOutcome,
 } from "../core/types";
 import type { GlossaryIndex } from "../graph/glossary";
-import { hashWithoutTurn, turnFromHash } from "../core/graphTarget";
 import { ReplyLinkButton } from "../core/ReplyLinkButton";
-import { flashRect, toRect } from "../comments/react/domText";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { BrowserTurnNotice } from "../core/BrowserControls";
@@ -95,7 +86,6 @@ interface Props {
   onOpenInbox?: () => void;
   onRepairGraphUpdate?: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
 }
-const TURN_FLASH_DELAY_MS = 350;
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 const NO_ERRORS = new Map<string, string>();
 const NONE_ELSEWHERE: ReadonlySet<string> = new Set();
@@ -165,30 +155,6 @@ export function AgentWindowTranscript({
     const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [transcript]);
-  const requestedTurn = useSyncExternalStore(
-    subscribeHash,
-    () => turnFromHash(window.location.hash),
-    () => null,
-  );
-  const requestedTurnShown =
-    requestedTurn !== null &&
-    transcript.some((line) => line.role === "agent" && line.taskId === requestedTurn);
-  useEffect(() => {
-    if (!requestedTurn || !requestedTurnShown) return;
-    const element = [
-      ...document.querySelectorAll(
-        `.agent-chat-view-line[data-task-id="${CSS.escape(requestedTurn)}"]`,
-      ),
-    ].at(-1);
-    if (!element) return;
-    window.history.replaceState(window.history.state, "", hashWithoutTurn(window.location.hash));
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-    const timer = window.setTimeout(
-      () => flashRect(toRect(element.getBoundingClientRect())),
-      TURN_FLASH_DELAY_MS,
-    );
-    return () => window.clearTimeout(timer);
-  }, [requestedTurn, requestedTurnShown]);
   const entries = agentWindowEntries(transcript, questions, shownElsewhere);
   const dividers = timeDividers(entries);
   const now = new Date();
@@ -473,11 +439,6 @@ export function AgentWindowTranscript({
       {footer}
     </>
   );
-}
-
-function subscribeHash(listener: () => void): () => void {
-  window.addEventListener("hashchange", listener);
-  return () => window.removeEventListener("hashchange", listener);
 }
 
 function watcherChip(line: TaskTranscriptLine): ReactNode {
