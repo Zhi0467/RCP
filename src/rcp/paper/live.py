@@ -454,12 +454,14 @@ class PaperLive:
         if state.turn is None:
             return
         state.written.update(changes)
-        await asyncio.to_thread(self._persist_written, project, state.written)
+        await asyncio.to_thread(self._persist_written, project, changes, dict(state.written))
 
-    def _persist_written(self, project: str, written: dict[str, bytes | None]) -> None:
+    def _persist_written(
+        self, project: str, changes: dict[str, bytes | None], written: dict[str, bytes | None]
+    ) -> None:
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            for data in written.values():
+            for data in changes.values():
                 if data is not None:
                     conn.execute(
                         "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)",
