@@ -33,24 +33,48 @@ export function linkClickAction(
   return { kind: "new-tab" };
 }
 
+function linkClick(event: MouseEvent): { link: HTMLAnchorElement; click: LinkClick } | null {
+  if (event.button !== 0) return null;
+  const link = (event.target as Element | null)?.closest?.("a[href]");
+  if (!(link instanceof HTMLAnchorElement)) return null;
+  return {
+    link,
+    click: {
+      href: link.href,
+      target: link.target,
+      download: link.hasAttribute("download"),
+      modified: event.metaKey || event.ctrlKey || event.shiftKey,
+    },
+  };
+}
+
+/** Share links are taken in the capture phase: the desktop shell's own handler cancels
+ * every targeted link click before a bubbling listener could see it. */
 export function installLinkGuard() {
+  window.addEventListener(
+    "click",
+    (event) => {
+      const found = linkClick(event);
+      if (!found) return;
+      const action = linkClickAction(
+        found.click,
+        new URL(window.location.href),
+        teamAccessOrigin(),
+      );
+      if (action.kind !== "share") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      requestShareLinkInPlace(action.token);
+    },
+    true,
+  );
   document.addEventListener("click", (event) => {
-    if (event.defaultPrevented || event.button !== 0) return;
-    const link = (event.target as Element | null)?.closest?.("a[href]");
-    if (!(link instanceof HTMLAnchorElement)) return;
-    const action = linkClickAction(
-      {
-        href: link.href,
-        target: link.target,
-        download: link.hasAttribute("download"),
-        modified: event.metaKey || event.ctrlKey || event.shiftKey,
-      },
-      new URL(window.location.href),
-      teamAccessOrigin(),
-    );
-    if (action.kind === "pass") return;
+    if (event.defaultPrevented) return;
+    const found = linkClick(event);
+    if (!found) return;
+    const action = linkClickAction(found.click, new URL(window.location.href), teamAccessOrigin());
+    if (action.kind !== "new-tab") return;
     event.preventDefault();
-    if (action.kind === "share") requestShareLinkInPlace(action.token);
-    else window.open(link.href, "_blank", "noopener,noreferrer");
+    window.open(found.link.href, "_blank", "noopener,noreferrer");
   });
 }
