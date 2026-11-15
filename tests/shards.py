@@ -2,20 +2,24 @@
 
 `RCP_TEST_SHARD=<index>/<total>` (1-based) keeps one shard. Whole files stay
 together, so a module fixture is built in one shard only and `--dist loadfile`
-sees the same files it would without sharding. Files go largest first to the
-lightest shard. A file's size in bytes predicts its run time far better than its
-test count, whose split left one shard almost twice as long on CI. Every shard
-computes the same assignment from the same checkout and collection, so each test
-runs in exactly one shard. Lifecycle explorers are small files that each run
-for many seconds, so each counts as large as the largest file.
+sees the same files it would without sharding. Each file weighs its CI seconds
+recorded in shard_timings.json, and a file missing from the record weighs the
+median. Files go heaviest first to the lightest shard. Every shard computes the
+same assignment from the same checkout and collection, so each test runs in
+exactly one shard. `scripts/update_shard_timings.py` rewrites the record.
 """
 
 from __future__ import annotations
 
+import json
+import statistics
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+
 import pytest
 
 SHARD_ENV = "RCP_TEST_SHARD"
-EXPLORER_PREFIX = "tests/lifecycles/test_"
+TIMINGS = Path(__file__).with_name("shard_timings.json")
 
 
 def parse_shard(spec: str) -> tuple[int, int]:
@@ -26,22 +30,32 @@ def parse_shard(spec: str) -> tuple[int, int]:
     return shard, count
 
 
+def load_timings() -> dict[str, float]:
+    return json.loads(TIMINGS.read_text(encoding="utf-8"))
+
+
+def plan_shards(
+    paths: Iterable[str], timings: Mapping[str, float], count: int
+) -> tuple[dict[str, int], list[float]]:
+    """Return each file's 1-based shard and each shard's predicted seconds."""
+
+    default = statistics.median(timings.values()) if timings else 1.0
+    weights = {path: timings.get(path, default) for path in paths}
+    loads = [0.0] * count
+    owner: dict[str, int] = {}
+    for path, weight in sorted(weights.items(), key=lambda entry: (-entry[1], entry[0])):
+        target = loads.index(min(loads))
+        owner[path] = target + 1
+        loads[target] += weight
+    return owner, loads
+
+
 def shard_items(
-    items: list[pytest.Item], shard: int, count: int
+    items: list[pytest.Item], shard: int, count: int, timings: Mapping[str, float]
 ) -> tuple[list[pytest.Item], list[pytest.Item]]:
     """Return the items this shard keeps and the ones it deselects."""
 
-    sizes = {item.nodeid.split("::", 1)[0]: item.path.stat().st_size for item in items}
-    largest = max(sizes.values(), default=0)
-    for path in sizes:
-        if path.startswith(EXPLORER_PREFIX):
-            sizes[path] = largest
-    loads = [0] * count
-    owner: dict[str, int] = {}
-    for path, size in sorted(sizes.items(), key=lambda entry: (-entry[1], entry[0])):
-        target = loads.index(min(loads))
-        owner[path] = target + 1
-        loads[target] += size
+    owner, _ = plan_shards({item.nodeid.split("::", 1)[0] for item in items}, timings, count)
     kept, dropped = [], []
     for item in items:
         (kept if owner[item.nodeid.split("::", 1)[0]] == shard else dropped).append(item)
