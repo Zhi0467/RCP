@@ -78,6 +78,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/providers/{provider}/logins/sign-in"),
     (("GET",), "/api/providers/{provider}/logins/sign-in/{attempt_id}"),
     (("POST",), "/api/providers/{provider}/logins/sign-in/{attempt_id}/cancel"),
+    (("POST",), "/api/providers/{provider}/logins/sign-in/{attempt_id}/code"),
     (("POST",), "/api/providers/{provider}/logins/token"),
     (("POST",), "/api/providers/{provider}/logins/sign-out"),
     (("GET",), "/api/service-connections"),

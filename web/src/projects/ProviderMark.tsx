@@ -1,10 +1,10 @@
 import type { CSSProperties } from "react";
 
-// Monochrome marks from Simple Icons (CC0), served from web/public/providers.
 const PROVIDER_LOGOS: Record<string, string> = {
   claude: "/providers/claude.svg",
   codex: "/providers/codex.svg",
   opencode: "/providers/opencode.svg",
+  agy: "/providers/agy.svg",
 };
 
 export function hasProviderLogo(provider: string): boolean {

@@ -346,6 +346,7 @@ def _machine_view(
                 "default_minutes": profile.shell_timeout_default_seconds // 60,
             }
             for profile in map(profile_for, PROVIDER_IDS)
+            if profile.shell_timeout_default_seconds is not None
         ],
         "job_manager": machine.job_manager,
         "jobs_root": machine.jobs_root,

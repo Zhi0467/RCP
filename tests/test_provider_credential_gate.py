@@ -20,6 +20,7 @@ from rcp.agents import AgentLauncher, AgentProcessControl, credential_gate
 from rcp.agents import launcher as launcher_module
 from rcp.agents.credential_gate import (
     CredentialStartupHold,
+    ProviderCredentialBusy,
     ProviderCredentialGate,
     remaining_startup_hold,
 )
@@ -871,3 +872,27 @@ async def test_added_logins_have_independent_holds_without_account_lock(
     first.release()
     second.release()
     assert not root.exists()
+
+
+def test_a_bounded_blocking_hold_reports_a_busy_credential() -> None:
+    gate = ProviderCredentialGate()
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    with gate.hold_blocking(key):
+        held_elsewhere = threading.Event()
+        outcome: list[BaseException] = []
+
+        def contend() -> None:
+            try:
+                with gate.hold_blocking(key, wait_seconds=0.2):
+                    held_elsewhere.set()
+            except ProviderCredentialBusy as exc:
+                outcome.append(exc)
+
+        worker = threading.Thread(target=contend, daemon=True)
+        worker.start()
+        worker.join(timeout=5)
+
+    assert not held_elsewhere.is_set()
+    assert len(outcome) == 1
+    with gate.hold_blocking(key, wait_seconds=0.2):
+        pass
