@@ -36,6 +36,10 @@ export function shareLinkRequest(
 
 /** Whether this space hands out share links: a team space with an access URL. */
 export async function shareLinksEnabled(fetcher: Fetcher = fetch): Promise<boolean> {
+  const health = await fetcher("/api/health", { credentials: "same-origin" });
+  if (!health.ok || ((await health.json()) as { space_kind?: string }).space_kind !== "team") {
+    return false;
+  }
   const response = await fetcher("/api/team/space", { credentials: "same-origin" });
   if (!response.ok) return false;
   const space = (await response.json()) as { access_url?: string | null };

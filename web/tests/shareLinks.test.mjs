@@ -111,13 +111,24 @@ test("a blocked clipboard rejects", async () => {
 });
 
 test("share links are on only in a team space with an access URL", async () => {
+  const space = (kind, status, body) => {
+    const paths = [];
+    const fetcher = async (path) => {
+      paths.push(path);
+      return path === "/api/health"
+        ? new Response(JSON.stringify({ space_kind: kind }), { status: 200 })
+        : new Response(JSON.stringify(body), { status });
+    };
+    return { paths, fetcher };
+  };
+  const linked = space("team", 200, { space_name: "Lab", access_url: "https://lab.example" });
+  assert.equal(await shareLinksEnabled(linked.fetcher), true);
   assert.equal(
-    await shareLinksEnabled(respond(200, { space_name: "Lab", access_url: "https://lab.example" })),
-    true,
-  );
-  assert.equal(
-    await shareLinksEnabled(respond(200, { space_name: "Lab", access_url: null })),
+    await shareLinksEnabled(space("team", 200, { space_name: "Lab", access_url: null }).fetcher),
     false,
   );
-  assert.equal(await shareLinksEnabled(respond(404, { detail: "Not found" })), false);
+  assert.equal(await shareLinksEnabled(space("team", 404, { detail: "Not found" }).fetcher), false);
+  const personal = space("personal", 404, { detail: "Not found" });
+  assert.equal(await shareLinksEnabled(personal.fetcher), false);
+  assert.deepEqual(personal.paths, ["/api/health"]);
 });
