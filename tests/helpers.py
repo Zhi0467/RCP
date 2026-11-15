@@ -796,8 +796,8 @@ def isolate_host(
     them down. A module-scoped template build applies this with its own
     `MonkeyPatch`, because the function-scoped autouse fixture has not run yet.
 
-    Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory
-    and Codex home, so no test touches the developer's live state. Provider discovery
+    Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory,
+    Codex home and `HOME`, so no test touches the developer's live state. Provider discovery
     returns nothing, so an unconfigured provider refuses before any real CLI runs or
     bills a turn; the `real_provider_discovery` marker opts out. Every engine registers
     for shutdown at construction, because most test apps never run a lifespan and would
@@ -815,6 +815,7 @@ def isolate_host(
     monkeypatch.setattr("rcp.transport.remote_transfer_git._rcp_temp_dir", lambda: root)
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
     monkeypatch.setenv("CODEX_HOME", str(root / "machine-codex-home"))
+    monkeypatch.setenv("HOME", str(root / "test-home"))
 
     if not provider_discovery:
         monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)
