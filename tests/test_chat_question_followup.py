@@ -790,3 +790,17 @@ def test_archived_question_answer_creates_no_followup(tmp_path, refusal):
     assert store.get_question(question.question_id).followup_operation_id is None
     with store.connection() as connection:
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == 1
+
+
+def test_followup_refuses_an_origin_session_the_sweep_marked(tmp_path):
+    store = AppStore(tmp_path / "store.sqlite3")
+    question = _answered(store)
+    with store.connection() as connection:
+        connection.execute("DELETE FROM graph_run_receipts WHERE operation_id = 'origin'")
+        connection.execute(
+            "INSERT INTO provider_session_sweeps "
+            "(provider, execution_machine, native_session_id, marked_at) VALUES (?, ?, ?, ?)",
+            ("codex", BACKEND_MACHINE_ID, "origin-session", store.now()),
+        )
+    with pytest.raises(ValueError, match="question_origin_session_unavailable"):
+        store.admit_chat_question_followup(question.question_id)

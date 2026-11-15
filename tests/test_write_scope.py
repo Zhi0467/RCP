@@ -701,16 +701,17 @@ def test_scope_rejects_pointer_symlink_escape(manifest: Manifest, tmp_path: Path
     ("repository_root", "message"),
     [
         (Path("/"), "(?:filesystem root|repository root is not writable)"),
-        (Path.home(), "(?:execution account home|repository root is not writable)"),
+        (None, "(?:execution account home|repository root is not writable)"),
         (Path(tempfile.gettempdir()), "broad temporary directory"),
     ],
 )
 def test_scope_rejects_broad_local_repository_roots(
     manifest: Manifest,
     tmp_path: Path,
-    repository_root: Path,
+    repository_root: Path | None,
     message: str,
 ) -> None:
+    repository_root = repository_root or Path.home()
     changed = manifest.model_copy(deep=True)
     changed.repository_map["repo-a"].path = str(repository_root)
     pointer = RepositoryPointer(

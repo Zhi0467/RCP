@@ -82,6 +82,7 @@ from rcp.runs.session_master import (
     stage_session_master,
 )
 from rcp.runs.shared import (
+    _protected_hidden_reads,
     _protected_run_stage_roots,
     _read_local_workspace_file,
     _remove_local_tree,
@@ -1445,6 +1446,9 @@ def open_remote_conversation_stage(
             protected_roots=_protected_run_stage_roots(
                 execution.store if execution is not None else None,
                 machine.machine_id,
+            ),
+            protected_hidden_reads=_protected_hidden_reads(
+                execution.store if execution is not None else None
             ),
         )
     stage.touch()

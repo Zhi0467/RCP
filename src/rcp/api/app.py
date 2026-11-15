@@ -131,6 +131,8 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
+    PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS,
+    RUN_STAGE_RETENTION_DAYS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -186,10 +188,15 @@ from rcp.runs.experiment_loop import (
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
 from rcp.runs.paper_turns import end_settled_paper_turns
+from rcp.runs.provider_session_sweep import sweep_provider_sessions
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
-from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
+from rcp.runs.shared import (
+    _protected_hidden_reads,
+    _protected_run_stage_roots,
+    _sweep_stale_stages,
+)
 from rcp.runs.task_policy import (
     load_stored_request,
     task_experiment_episode_id,
@@ -281,6 +288,7 @@ from rcp.transfer.target import (
     TargetTransferUploadCoordinator,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable, fence_canonical_lock_waits
+from rcp.transport.remote_stage_root import sweep_hidden_reads
 from rcp.transport.ssh import sweep_control_sockets
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
@@ -1877,6 +1885,7 @@ def create_app(
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,
                 protected_roots=_protected_run_stage_roots(store, default_state_machine_id),
+                protected_hidden_reads=_protected_hidden_reads(store),
             )
         except Exception as exc:
             # Stale scratch cleanup is best-effort and must not delay app
@@ -1929,6 +1938,12 @@ def create_app(
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
     artifact_import_tasks: dict[str, asyncio.Task[None]] = {}
+    provider_session_sweep_tasks: list[asyncio.Task[None]] = []
+    provider_session_sweep_off_logged: list[bool] = []
+    canonical_data_dir = app_data in {
+        platform_data_dir().expanduser().resolve(),
+        server_layout.data_dir.expanduser().resolve(),
+    }
 
     def import_artifact_pass(project_id: str) -> float | None:
         with background_admission_gate.mutation("legacy artifact import"):
@@ -1957,6 +1972,56 @@ def create_app(
             if delay is None or background_admission_gate.closed:
                 return
             await asyncio.sleep(delay)
+
+    def provider_session_sweep_pass(stop: threading.Event) -> None:
+        try:
+            sweep_provider_sessions(
+                store,
+                stop=stop,
+                guard=partial(background_admission_gate.mutation, "provider session sweep"),
+            )
+        except MaintenanceAdmissionClosed:
+            raise
+        except Exception:
+            logger.exception("Could not sweep provider sessions")
+        protected = _protected_hidden_reads(store)
+        if protected is not None and not stop.is_set():
+            sweep_hidden_reads(RUN_STAGE_RETENTION_DAYS, set(protected))
+
+    async def sweep_provider_sessions_periodically() -> None:
+        while not background_admission_gate.closed:
+            stop = threading.Event()
+            work = asyncio.create_task(asyncio.to_thread(provider_session_sweep_pass, stop))
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                stop.set()
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception("Could not sweep provider sessions")
+            await asyncio.sleep(PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS)
+
+    def schedule_provider_session_sweeps() -> None:
+        if background_admission_gate.closed or any(
+            not task.done() for task in provider_session_sweep_tasks
+        ):
+            return
+        if not canonical_data_dir:
+            if not provider_session_sweep_off_logged:
+                provider_session_sweep_off_logged.append(True)
+                logger.info(
+                    "Provider session and hidden-read sweeps are off: %s is not this "
+                    "machine's canonical data directory, and its hosts may serve another backend",
+                    app_data,
+                )
+            return
+        task = asyncio.create_task(sweep_provider_sessions_periodically())
+        provider_session_sweep_tasks[:] = [task]
+        startup_maintenance.append(task)
 
     def schedule_artifact_imports() -> None:
         if background_admission_gate.closed:
@@ -2001,7 +2066,7 @@ def create_app(
         async def wait_for_scheduled_reads() -> None:
             await sync_coordinator.stop()
             await terminals.end_all(reason="server_maintenance")
-            for task in artifact_import_tasks.values():
+            for task in (*artifact_import_tasks.values(), *provider_session_sweep_tasks):
                 task.cancel()
             pending = {task for task in startup_maintenance if not task.done()}
             if pending:
@@ -2028,6 +2093,7 @@ def create_app(
         if loop is not None and not loop.is_closed():
             loop.call_soon_threadsafe(sync_coordinator.start)
             loop.call_soon_threadsafe(schedule_artifact_imports)
+            loop.call_soon_threadsafe(schedule_provider_session_sweeps)
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -2047,15 +2113,11 @@ def create_app(
         )
 
     def prepare_added_codex_homes() -> None:
-        # An expired or removed login can still own the only copy of a rollout.
-        # Prepare every recorded home before recovery selects a usable credential.
-        with store.connection() as connection:
-            rows = connection.execute(
-                "SELECT machine_id, login_id FROM provider_login_states "
-                "WHERE provider='codex' AND login_id != '' ORDER BY machine_id, login_id"
-            ).fetchall()
-        for row in rows:
-            login = LoginKey("codex", row["machine_id"], row["login_id"])
+        from rcp.runs.provider_login import login_homes_to_prepare
+
+        # An expired login, or a removal pending cleanup, can own the only copy of
+        # a rollout. Prepare those homes before recovery selects a usable credential.
+        for login in login_homes_to_prepare(store, "codex"):
             if login.machine_id == BACKEND_MACHINE_ID and not any(
                 path.is_dir()
                 for path in (
@@ -2308,6 +2370,7 @@ def create_app(
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
+                schedule_provider_session_sweeps()
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 schedule_artifact_imports()
                 # Episode health is local, so its notification baseline is taken
@@ -3009,4 +3072,9 @@ def default_data_dir() -> Path:
     override = os.environ.get("RCP_DATA_DIR")
     if override:
         return Path(override).expanduser()
+    return platform_data_dir()
+
+
+def platform_data_dir() -> Path:
+    """The desktop's own data directory, which `RCP_DATA_DIR` never moves."""
     return Path.home() / "Library" / "Application Support" / "research-control-panel"

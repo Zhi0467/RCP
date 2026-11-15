@@ -663,9 +663,10 @@ class _LocalBackedRemoteStage:
         *,
         reuse: bool = False,
         protected_roots=(),
+        protected_hidden_reads=None,
         thread_owner: str | None = None,
     ):
-        del reuse, protected_roots
+        del reuse, protected_roots, protected_hidden_reads
         parent = (
             self.base / "agent-threads" / thread_owner / "stages" if thread_owner else self.base
         )

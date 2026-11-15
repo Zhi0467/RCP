@@ -10,6 +10,7 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage.chat_forks import ChatForkStoreMixin
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import _required_timestamp
+from rcp.storage.provider_session_sweeps import ProviderSessionSweepStoreMixin
 
 
 class RestoreDetachmentStoreMixin(StoreMixinBase):
@@ -47,6 +48,9 @@ class RestoreDetachmentStoreMixin(StoreMixinBase):
             )
             self.detach_agent_tasks_for_restore(connection, diagnostic=recorded_detail, now=now)
             ChatForkStoreMixin.detach_chat_forks_for_restore(connection)
+            ProviderSessionSweepStoreMixin.detach_provider_session_sweeps_for_restore(
+                connection, now=now
+            )
             self.detach_episode_reports_for_restore(connection, diagnostic=recorded_detail, now=now)
             self.detach_experiment_episodes_for_restore(
                 connection,

@@ -156,6 +156,8 @@ class AppStoreBase:
         (83, "comments_v1"),
         (84, "chat_focus_v1"),
         (85, "paper_folder_v1"),
+        (86, "provider_session_sweeps_v1"),
+        (87, "hidden_read_fingerprints_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -292,7 +294,11 @@ class AppStoreBase:
         return cls._STORAGE_SCHEMA_MIGRATIONS[-1][0]
 
     def check_storage_schema_migrations(self) -> tuple[int, int, tuple[str, ...]]:
-        """Validate a read-only database and report its known pending migrations."""
+        """Validate a read-only database and report its known pending migrations.
+
+        Any registry entry the ledger lacks is pending, even below its head: a store
+        written by a build that merged later migrations first still takes the earlier ones.
+        """
 
         if not getattr(self, "_read_only_snapshot", False):
             raise ValueError("storage migration checks require a read-only SQLite snapshot")
@@ -327,7 +333,7 @@ class AppStoreBase:
                         "RCP storage schema validation failed: migration ledger is missing"
                     )
 
-            if applied != registry[: len(applied)]:
+            if not set(applied) <= set(registry):
                 raise RuntimeError(
                     "RCP storage schema validation failed: migration ledger is unknown"
                 )
@@ -347,7 +353,7 @@ class AppStoreBase:
                     "RCP storage schema validation failed: SQLite quick check failed"
                 )
 
-            pending = tuple(name for _, name in registry[len(applied) :])
+            pending = tuple(name for version, name in registry if (version, name) not in applied)
             if pending:
                 self._rehearse_storage_schema_migrations(connection)
             else:
@@ -1125,6 +1131,20 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=85, name="paper_folder_v1", migration=migrate_paper_folder
+        )
+        from rcp.storage.provider_session_sweeps import migrate_provider_session_sweeps
+
+        self._run_storage_schema_migration(
+            connection,
+            version=86,
+            name="provider_session_sweeps_v1",
+            migration=migrate_provider_session_sweeps,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=87,
+            name="hidden_read_fingerprints_v1",
+            migration=self._migrate_hidden_read_fingerprints,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3034,6 +3054,14 @@ class AppStoreBase:
 
         cls._migrate_watcher_purposes(connection)
         compare_added_column(connection, "resource_watchers_update", "purpose")
+
+    @classmethod
+    def _migrate_hidden_read_fingerprints(cls, connection: sqlite3.Connection) -> None:
+        """The hidden-read folder a launch runs under, which the folder sweep keeps."""
+        from rcp.storage.resource_versions import compare_added_column
+
+        cls._ensure_column(connection, "graph_runs", "hidden_read_fingerprint", "TEXT")
+        compare_added_column(connection, "resource_graph_runs_update", "hidden_read_fingerprint")
 
     @classmethod
     def _migrate_child_work_watchers(cls, connection: sqlite3.Connection) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import pwd
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -258,6 +259,34 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
     assert files[wrapper.name] == staged_hidden_read_source()
     if provider == "opencode" or profile_gaps:
         assert "provider_native_tools_uncovered" in scope.enforcement.reasons
+
+
+def test_a_launch_policy_stays_out_of_the_real_home(manifest, tmp_path):
+    from rcp.agents.staged_hidden_read import host_facts
+
+    real = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+    assert not Path(host_facts()["home"]).is_relative_to(real)
+    scope = prepare_hidden_read_launch(
+        manifest=manifest,
+        machine=SpaceMachineRecord(
+            machine_id="backend",
+            name="backend",
+            host="",
+            os_account="",
+            created_at="",
+            updated_at="",
+        ),
+        provider="codex",
+        capability="discuss",
+        stage_root=str(tmp_path),
+        workspace_root=str(tmp_path),
+        app_data_dir=tmp_path,
+        remote_stage=None,
+    )
+    wrapper = Path(scope.wrapper_path())
+    assert wrapper.is_file()
+    assert not wrapper.resolve().is_relative_to(real)
+    assert not (real / ".rcp" / "hidden-read" / scope.fingerprint).exists()
 
 
 def test_claude_prefix_runs_as_claude_invokes_it(tmp_path):

@@ -129,6 +129,7 @@ from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
     _prepare_hidden_read_scope,
+    _protected_hidden_reads,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -1231,6 +1232,7 @@ def _open_auto_research_actor_stage(
             stage_name,
             reuse=True,
             protected_roots=_protected_run_stage_roots(execution.store, machine.machine_id),
+            protected_hidden_reads=_protected_hidden_reads(execution.store),
         )
         assert remote.root is not None
         execution.checkpoint_stage(machine.machine_id, str(remote.root))

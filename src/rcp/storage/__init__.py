@@ -44,6 +44,7 @@ from rcp.storage.paper_git_links import PaperGitLinkStoreMixin
 from rcp.storage.project_groups import ProjectGroupStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin
+from rcp.storage.provider_session_sweeps import ProviderSessionSweepStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.question_models import (
     QuestionArgumentConflict,
@@ -66,6 +67,7 @@ class AppStore(
     AgentSchedulesStoreMixin,
     ApprovalCardStoreMixin,
     PaperGitLinkStoreMixin,
+    ProviderSessionSweepStoreMixin,
     ResearchViewStoreMixin,
     BranchNameStoreMixin,
     ClientRequestStoreMixin,

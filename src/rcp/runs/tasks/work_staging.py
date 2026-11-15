@@ -41,6 +41,7 @@ from rcp.runs.consolidation import is_consolidation
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import PatchValidationBudget
 from rcp.runs.shared import (
+    _protected_hidden_reads,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _stage_context_paths,
@@ -165,6 +166,9 @@ async def stage_work_turn(
                     protected_roots=_protected_run_stage_roots(
                         execution.store if execution is not None else None,
                         resolved.machine.machine_id,
+                    ),
+                    protected_hidden_reads=_protected_hidden_reads(
+                        execution.store if execution is not None else None
                     ),
                 )
             assert remote_stage.root is not None
