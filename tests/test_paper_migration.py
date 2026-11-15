@@ -477,6 +477,41 @@ def test_case_clashing_saved_paths_both_survive_and_hidden_paths_are_logged(tmp_
         store.close()
 
 
+def test_a_case_clash_rename_keeps_the_file_id_at_its_new_path(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        _seed_saved_tree(store, {"Notes.md": "upper", "notes.md": "lower"})
+        with store.connection() as connection:
+            for file_id, path in (("f0", "Notes.md"), ("f1", "notes.md")):
+                connection.execute(
+                    "INSERT INTO paper_files(project_id, file_id, path, kind, created_at) "
+                    "VALUES ('p', ?, ?, 'text', '2026-01-01T00:00:00+00:00')",
+                    (file_id, path),
+                )
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+        live = PaperLive(
+            store,
+            lambda _project: folder,
+            prepare=lambda _project: migrate_paper(
+                store, "p", folder, lambda: _empty_workspace(tmp_path)
+            ),
+        )
+
+        async def tree():
+            try:
+                return {file.file_id: file.path for file in (await live.tree("p")).files}
+            finally:
+                await live.close()
+
+        ids = asyncio.run(tree())
+        files = _files(folder)
+        assert set(ids) == {"f0", "f1"}
+        assert files[ids["f0"]] == b"upper" and files[ids["f1"]] == b"lower"
+        assert _row(store, "SELECT count(*) FROM paper_files WHERE deleted_at IS NOT NULL") == (0,)
+    finally:
+        store.close()
+
+
 def test_startup_moves_papers_after_machine_cards_settle_and_before_recovery(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 

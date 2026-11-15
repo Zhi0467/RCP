@@ -59,6 +59,7 @@ class _Plan:
     files: dict[str, bytes]
     versions: dict[str, dict[str, bytes]] = field(default_factory=dict)
     identities: bool = False
+    renamed: dict[str, str] = field(default_factory=dict)
 
 
 def needs_paper_migration(store: AppStore, project_id: str) -> bool:
@@ -188,7 +189,7 @@ def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Pl
                 plan.versions[DRAFT_VERSION] = {_INTRODUCTION: text}
     if projection and projection != plan.files:
         plan.versions[PUBLISHED_VERSION] = projection
-    plan.files = _distinct_paths(plan.files)
+    plan.files, plan.renamed = _distinct_paths(plan.files)
     hidden = sorted(
         path for path in plan.files if any(folder_io.ignored(part) for part in path.split("/"))
     )
@@ -197,9 +198,10 @@ def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Pl
     return plan
 
 
-def _distinct_paths(files: dict[str, bytes]) -> dict[str, bytes]:
+def _distinct_paths(files: dict[str, bytes]) -> tuple[dict[str, bytes], dict[str, str]]:
     """Rename paths equal but for case, which a case-insensitive folder would merge."""
     result: dict[str, bytes] = {}
+    renamed: dict[str, str] = {}
     taken: set[str] = set()
     for path, data in sorted(files.items()):
         target = path
@@ -211,9 +213,10 @@ def _distinct_paths(files: dict[str, bytes]) -> dict[str, bytes]:
             number += 1
         if target != path:
             _LOG.warning("Paper path %s clashes by case; it moves to %s", path, target)
+            renamed[path] = target
         taken.add(target.casefold())
         result[target] = data
-    return result
+    return result, renamed
 
 
 def _settle_database(store: AppStore, project_id: str, plan: _Plan) -> None:
@@ -249,7 +252,16 @@ def _settle_database(store: AppStore, project_id: str, plan: _Plan) -> None:
 def _identities(
     connection: sqlite3.Connection, project_id: str, plan: _Plan, now: str
 ) -> dict[str, str]:
-    """Each live path's `file_id`; a published-only tree gets its ids here."""
+    """Each live path's `file_id`; a renamed path keeps its id.
+
+    A published-only tree gets its ids here.
+    """
+    for old, new in plan.renamed.items():
+        connection.execute(
+            "UPDATE paper_files SET path = ? WHERE project_id = ? AND path = ? "
+            "AND deleted_at IS NULL",
+            (new, project_id, old),
+        )
     ids = {
         path: file_id
         for path, file_id in connection.execute(

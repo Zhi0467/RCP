@@ -646,17 +646,26 @@ def test_rehearsal_rebinds_local_browser_paths_and_preserves_remote_owners(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_api():
+async def test_candidate_paper_proof_reads_folder_bytes_and_refuses_broken_live_api():
     import httpx
 
+    from rcp.paper.models import PaperTree, PaperTreeFile
+
     base = "/api/projects/project/paper"
-    content = b"saved but unpublished\x00figure"
-    tree = {
-        "saved_revision": 8,
-        "published_revision": 3,
-        "hold": "migration",
-        "files": [{"file_id": "figure", "sha256": hashlib.sha256(content).hexdigest()}],
-    }
+    content = b"saved folder bytes\x00figure"
+    tree = PaperTree(
+        revision=8,
+        files=[
+            PaperTreeFile(
+                file_id="figure",
+                path="figures/plot.png",
+                kind="binary",
+                format="png",
+                size=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        ],
+    ).model_dump(mode="json")
     responses = {
         base + "/tree": httpx.Response(200, json=tree),
         base + "/history": httpx.Response(200, json=[{"version_id": "named", "revision": 3}]),
@@ -672,8 +681,8 @@ async def test_candidate_paper_proof_reads_saved_bytes_and_refuses_broken_live_a
         transport=httpx.MockTransport(respond), base_url="https://testserver"
     ) as client:
         assert await rehearsal_module._paper_read_proof(client, "project", headers={})
-        assert requested[-1].endswith("?revision=8")
-        responses[base + "/files/figure/raw"] = httpx.Response(200, content=b"published bytes")
+        assert requested[-1].endswith(base + "/files/figure/raw")
+        responses[base + "/files/figure/raw"] = httpx.Response(200, content=b"other bytes")
         with pytest.raises(CandidateRehearsalRefused):
             await rehearsal_module._paper_read_proof(client, "project", headers={})
         responses[base + "/tree"] = httpx.Response(404)

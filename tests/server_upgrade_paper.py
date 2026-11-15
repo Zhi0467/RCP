@@ -112,10 +112,8 @@ def seed_legacy_paper(data_dir: Path, fixture: dict) -> dict:
 
 
 def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
-    """Exercise the live REST writer while divergent migration holds publication."""
+    """Exercise the live REST writer on the Paper folder the upgrade migrated."""
     base = f"/api/projects/{fixture['project_id']}/paper"
-    with request(base + "/git", cookie=cookie) as response:
-        assert json.load(response)["state"] == "none"
 
     def call(path, *, body=None, method="GET", content_type="application/json"):
         with request(
@@ -142,20 +140,13 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         )
 
     tree = call("/tree")
-    baseline = fixture["paper"]
-    writer = baseline["writer"]
-    if writer == "legacy":
-        assert tree["hold"] is not None, "Divergent legacy paper must retain its publication hold"
-        history = call("/history")
-        preserved = set()
-        for version in history:
-            files = version["manifest"]
-            preserved.update(file.get("text_sha256") for file in files)
-        assert [file["sha256"] for file in tree["files"]] == [_sha(DRAFT.encode())]
-        required = {_sha(CANONICAL.encode())}
-        if baseline["ancestor_stored"]:
-            required.add(_sha(ANCESTOR.encode()))
-        assert required <= preserved, "Migration lost a divergent legacy history version"
+    if fixture["paper"]["writer"] == "legacy":
+        preserved = {file["sha256"] for file in tree["files"]}
+        for version in call("/history"):
+            preserved.update(file.get("text_sha256") for file in version["manifest"])
+        assert {_sha(DRAFT.encode()), _sha(CANONICAL.encode())} <= preserved, (
+            "Migration lost the legacy draft or its publication"
+        )
     for path in ("sections/methods.tex", "references.bib"):
         call("/files", body={"path": path, "kind": "text"}, method="POST")
     upload("figures/result.png", FIGURE)
@@ -174,33 +165,28 @@ def seed_current_paper(request, fixture: dict, cookie: str) -> dict:
         method="PUT",
     )
     saved = call("/tree")
-    assert saved["saved_revision"] > before["saved_revision"]
-    if writer == "legacy":
-        assert saved["saved_revision"] > saved["published_revision"]
-    assert saved["hold"] == tree["hold"]
+    assert saved["revision"] > before["revision"]
     assert (
         next(file for file in saved["files"] if file["file_id"] == ids["sections/methods.tex"])[
             "path"
         ]
         == "sections/results.tex"
     )
-    result = {
+    return {
         "writer": "current",
-        "saved_revision": saved["saved_revision"],
+        "revision": saved["revision"],
         "version_id": version["version_id"],
         "file_ids": ids,
         "figure_sha256": _sha(EDITED_FIGURE),
-        "hold": saved["hold"],
     }
-    return result
 
 
 def assert_current_paper(request, fixture: dict, cookie: str, expected: dict) -> None:
     base = f"/api/projects/{fixture['project_id']}/paper"
     with request(base + "/tree", cookie=cookie) as response:
         tree = json.load(response)
-    assert tree["saved_revision"] == expected["saved_revision"]
-    assert tree["hold"] == expected["hold"]
+    paths = {file["file_id"]: file["path"] for file in tree["files"]}
+    assert paths[expected["file_ids"]["sections/methods.tex"]] == "sections/results.tex"
     figure = expected["file_ids"]["figures/result.png"]
     with request(f"{base}/files/{figure}/raw", cookie=cookie) as response:
         assert _sha(response.read()) == expected["figure_sha256"]

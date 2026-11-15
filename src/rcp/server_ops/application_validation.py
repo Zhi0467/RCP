@@ -1457,7 +1457,7 @@ def _verify_unavailable_project(
 async def _paper_read_proof(
     client: httpx.AsyncClient, project_id: str, *, headers: dict[str, str]
 ) -> str:
-    """Read durable live Paper through its served API, including every saved file."""
+    """Read durable live Paper through its served API, including every folder file."""
     base = f"/api/projects/{project_id}/paper"
     proof: list[object] = []
 
@@ -1472,7 +1472,7 @@ async def _paper_read_proof(
     proof.append((await read(f"{base}/history")).json())
     for file in tree["files"]:
         file_id = file["file_id"]
-        raw = await read(f"{base}/files/{file_id}/raw?revision={tree['saved_revision']}")
+        raw = await read(f"{base}/files/{file_id}/raw")
         digest = hashlib.sha256(raw.content).hexdigest()
         if digest != file["sha256"]:
             raise CandidateRehearsalRefused("Candidate Paper file digest differs from its tree.")
