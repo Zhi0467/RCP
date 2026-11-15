@@ -230,19 +230,35 @@ def prune(connection: sqlite3.Connection, project: str, *, refuse: bool = False)
 
 
 def collect_bodies(connection: sqlite3.Connection) -> None:
-    """Rare global maintenance, separate from each project's history pruning."""
-    for table, column in (("paper_version_texts", "text_sha256"), ("paper_blobs", "blob_sha256")):
-        connection.execute(
-            f"DELETE FROM {table} WHERE sha256 NOT IN ("
-            f"SELECT json_extract(value, '$.{column}') FROM paper_versions, json_each(manifest) "
-            f"WHERE json_extract(value, '$.{column}') IS NOT NULL)"
-            + (
-                " AND sha256 NOT IN (SELECT base_sha FROM paper_turn_files "
-                "WHERE base_sha IS NOT NULL UNION SELECT coach_sha FROM paper_turn_files "
-                "WHERE coach_sha IS NOT NULL)"
-                if table == "paper_blobs"
-                else ""
+    """Rare global maintenance, separate from each project's history pruning.
+
+    A project not yet moved into its folder still needs the bodies its saved
+    tree and live file rows name.
+    """
+    unmigrated = "project_id NOT IN (SELECT project_id FROM paper_migrations)"
+    for table, column, extra in (
+        ("paper_version_texts", "text_sha256", ()),
+        (
+            "paper_blobs",
+            "blob_sha256",
+            (
+                "SELECT base_sha FROM paper_turn_files",
+                "SELECT coach_sha FROM paper_turn_files",
+                f"SELECT blob_sha256 FROM paper_files WHERE {unmigrated}",
+            ),
+        ),
+    ):
+        named = f"SELECT json_extract(value, '$.{column}') FROM {{}}, json_each(manifest)"
+        kept = " UNION ".join(
+            (
+                named.format("paper_versions"),
+                named.format("paper_saved_snapshots") + f" WHERE {unmigrated}",
+                *extra,
             )
+        )
+        connection.execute(
+            f"WITH kept(sha) AS ({kept}) DELETE FROM {table} "
+            "WHERE sha256 NOT IN (SELECT sha FROM kept WHERE sha IS NOT NULL)"
         )
 
 

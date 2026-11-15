@@ -265,3 +265,15 @@ def test_startup_migrates_every_registered_project_through_its_workspace(manifes
         assert not needs_paper_migration(store, record.project_id)
     finally:
         store.close()
+
+
+def test_body_collection_keeps_the_saved_tree_of_an_unmigrated_project(legacy):
+    from rcp.paper.persistence import collect_bodies
+
+    store, _seeded, folder, workspace = legacy
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        collect_bodies(connection)
+
+    assert _migrate(store, folder, workspace)
+    assert _files(folder) == legacy_tree()
