@@ -656,3 +656,14 @@ ordinary chats, Experiment conversations, child Work chats, and orchestrator
 chains hold the once-only `name` command; seated workers and Graph consolidation
 do not. The [launch contract](providers-and-containment.md#bulletin-commands-and-context)
 owns eligibility and enforcement.
+
+## Comment operational storage
+
+Migration 83 owns the [shared comment](paper-artifacts-and-result-views.md#shared-comments)
+tables: threads, posts, and mention rows. They are operational records, not
+graph history. They are separate from Bulletin's tables because Bulletin prunes
+old threads and lists by graph target, while a comment thread keeps its anchor
+and state until its target goes. Each mutation of the three tables bumps the
+project's `comments` resource version. Project purge and the legacy-id merge
+cover them. Transfer excludes them. Database backups and restore schema
+fingerprints include them.

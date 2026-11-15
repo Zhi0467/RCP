@@ -18,7 +18,9 @@ export function boxFractions(start: Point, end: Point, bounds: Box): Box | null 
 }
 
 /** Draws a box over `surface` and publishes it in fractions of the surface. A press
- *  that `accept` refuses, such as one on selectable text, stays the platform's own. */
+ *  that `accept` refuses, such as one on selectable text, stays the platform's own.
+ *  An accepted press is the box's alone: it clears the selection instead of letting
+ *  the platform drag it, which would cancel the box. */
 export function installBoxTool(
   surface: HTMLElement,
   publish: (box: Box) => void,
@@ -42,6 +44,8 @@ export function installBoxTool(
       if (!event.isPrimary || event.button !== 0) return;
       clear();
       if (!accept(event)) return;
+      event.preventDefault();
+      surface.ownerDocument.getSelection()?.removeAllRanges();
       start = { x: event.clientX, y: event.clientY };
       const activate = () => {
         active = true;

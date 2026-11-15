@@ -584,7 +584,7 @@ colors, and applies the launcher's idle timeout. Other turns use logic checks.
 | Video | It uses the native player in chat and the viewer, with whole-file comments. |
 | Markdown | The packaged shared chat Markdown and KaTeX renderer runs in an opaque frame. Raw HTML, links and image references remain inert. |
 | Text, data, code, or notebook | It displays as escaped numbered text. Valid JSON and notebooks are formatted. |
-| PDF | It uses the desktop system viewer or browser Download. |
+| PDF | It opens in the viewer as pages with a text layer, with Download. |
 | Other | It offers only Download and Keep. Recognition never changes retroactively. |
 
 [Byte classification](../../src/rcp/artifacts.py) owns the recognized formats.
@@ -894,7 +894,7 @@ their own [answer comments](conversations-episodes-and-watchers.md#conversation-
 | Paper file | project members, while the file exists | the sender's open Coach chat |
 | Chat reply | members who can read its chat; a private one only by its owner | that chat |
 
-`comment_target_readable` is the single readability check. Every comment route,
+`readable_comment_target` is the single readability check. Every comment route,
 the picker, mentions, the Inbox, and notification delivery use it. An unreadable
 target answers 404. A read-only member reads threads but cannot post, resolve,
 or send.
@@ -907,12 +907,13 @@ operation it went to, and the rail marks it Sent to agent. Reopening clears that
 mark. Only open threads show pins, can be ticked, and list or deliver mentions.
 The rail folds resolved threads under a count.
 
-Only its author edits or deletes a post. Deleting a post deletes its mentions.
-Deleting a thread's first post deletes the thread. Deleting or expiring an
-artifact deletes its threads ([Deleting an artifact](#deleting-an-artifact)).
+Posts are never edited or deleted. Deleting or expiring an artifact deletes its
+threads ([Deleting an artifact](#deleting-an-artifact)).
 Paper threads outlive their file, because a Paper file keeps its id through
 delete and restore. While the file is missing, its threads are hidden and its
 mentions are neither listed nor delivered.
+[Comment storage](projects-spaces-and-operations.md#comment-operational-storage)
+owns the tables.
 
 Post and thread limits live in `limits.py`. Saving a post refuses with 422 when
 the rendered thread would pass the thread limit, so every saved thread can be
@@ -965,7 +966,8 @@ thread must fit `STEERING_MESSAGE_MAX_CHARS`; otherwise the send answers 422.
 The rail checks the same total. Any refusal changes no thread.
 
 After admission, RCP resolves the threads with the send mark. A thread someone
-closed meanwhile stays as they left it. If the process stops between admission
+closed meanwhile stays as they left it. A reply posted while the send was in
+flight never reached the agent, so its thread stays open. If the process stops between admission
 and marking, the threads stay open and can be sent again; a duplicate repeats
 only a prompt. Every send carries a client key. A repeat with the same key
 renders the threads as they stood when sent and replays the original turn or
@@ -978,9 +980,9 @@ resolved with the mark; the failure shows in the chat, and Reopen returns them.
 
 ### Comment mentions
 
-A post mentions a member as `<@member:ID>`. A mention of a member who cannot
-read the target stays plain text, and the picker lists only readers. Agent
-tokens are refused. An edit adds and removes mentions without notifying again.
+A post mentions a member as `<@member:ID>`. The picker lists project members.
+A post that mentions a member who cannot read the target is refused, so no
+mention is stored without its Inbox entry. Agent tokens are refused.
 [Comment notifications and the Inbox](api-web-and-desktop-projections.md#comment-api)
 own delivery.
 
