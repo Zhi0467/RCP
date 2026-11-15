@@ -742,6 +742,62 @@ validator, output and command metadata travel inline; they do not authorize
 repeating external effects. After Work-like correction, RCP revalidates the
 candidate against current state even if its bytes are unchanged.
 
+## Provider session retention
+
+RCP deletes a provider session it started once nothing has used it for
+`PROVIDER_SESSION_RETENTION_DAYS`. Age is the newest `graph_runs.updated_at` among
+rows naming the session, by `native_session_id` or by a fork turn's
+`fork_session_id`. A session is held while any of these names it: a queued,
+running, pausing or paused row; a branched chat that has not launched its first
+turn (the source turn's session); a pending question's origin; a `writing_sessions`
+row; a pending or outdated Paper change group's Coach task; an open episode
+through its rows, `experiment_episode_state` or `episode_wrapups`; or a wrapup
+still pending or running.
+
+Only ids recorded in `graph_runs` are candidates, and admission never takes a
+client-supplied session, so sessions people start in their own terminals are never
+touched. The sweep never lists or globs a provider store. It checks each id's shape
+and deletes it by exact id:
+
+- Codex: `codex delete --force <uuid>` against the account's own Codex home, which
+  added login homes link to. Codex refuses to delete a session while a fork of it
+  exists; the fork does not need its source, so the source waits until its forks
+  are swept.
+- OpenCode: `opencode session delete <id>`.
+- Claude has no delete command and prunes only interactive sessions, so RCP removes
+  `<config>/projects/<key>/<id>.jsonl` and the `<id>/` folder beside it, where
+  `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude` and `<key>` is the project key of
+  the chat's stage workspace. Claude sessions outside node and project chats have
+  no recorded workspace and are kept.
+- Antigravity has no delete command; its sessions are kept.
+
+A provider answer that the id does not exist counts as deleted. Any other failure
+keeps the mark with its `last_error`, and the next pass retries it.
+
+`runs/provider_session_sweep.py` runs one pass at startup after recovery and then
+every `PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS`, pausing across an update boundary.
+Per execution machine it marks up to `PROVIDER_SESSION_SWEEP_BATCH` sessions and
+deletes them with the machine's recorded provider binary, else the discovered one.
+The backend's own machine deletes in-process; another machine takes one SSH call to
+`transport/provider_session_delete.py`, which reads the ids on stdin. An unreachable
+host keeps its marks. Each pass logs one line per machine with deleted counts per
+provider, failures and kept sessions.
+
+Marks live in the backend-local `provider_session_sweeps` table. One `BEGIN
+IMMEDIATE` transaction rechecks the rule and inserts the marks before any deletion.
+A marked session is dropped like a stale one: the chat's next turn, Retry, a
+question answer and an orchestrator seed start fresh instead of resuming it, and
+branching from that chat is refused as `chat_session_expired`. A turn that resumed
+the session just before its mark fails as a classified stale session, and its Retry
+starts fresh. The probed missing-session texts ("no thread with id", "no rollout
+found for thread id", "No conversation found with session ID", "Session not
+found") classify as `stale_session`, so a session a provider removed costs one
+failed turn.
+
+Both tables are in backups but never travel with a project. A restored database may
+predate the hosts, so restore records its time in `provider_session_sweep_state`
+and the sweep then ages only sessions whose newest row is newer than the restore.
+
 ## Continuation prompts
 
 A launch without a native session sends the owner's full contract and records

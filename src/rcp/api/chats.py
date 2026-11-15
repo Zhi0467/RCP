@@ -57,6 +57,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore
+from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -84,6 +85,8 @@ def branchable_chat(
         store.require_chat_fork_source(
             catalog.resolve_project_id(project_id), _canonical_chat_id(chat_id)
         )
+    except ChatForkRefused as exc:
+        raise _expired_branch_source(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -116,6 +119,8 @@ def branch_chat(
                 str(body.request_id),
                 target_node_ids=target_node_ids,
             )
+    except ChatForkRefused as exc:
+        raise _expired_branch_source(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return chat(
@@ -124,6 +129,17 @@ def branch_chat(
         catalog=catalog,
         store=store,
         branch_id=body.graph_target.branch_id,
+    )
+
+
+def _expired_branch_source(exc: ChatForkRefused) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail={
+            "code": str(exc),
+            "message": "The source chat's agent session expired. "
+            "Start a new conversation on the branch.",
+        },
     )
 
 

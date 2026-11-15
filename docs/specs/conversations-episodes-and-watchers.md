@@ -510,6 +510,10 @@ own target, which ordinary admission keeps fixed. A node conversation keeps its
 node when that node exists on the target; otherwise the new chat has project
 scope while retaining the native conversation context. A chat without a native
 session of its own, such as a branched chat before its first turn, cannot branch.
+A chat whose latest session the provider dropped, or RCP swept after its
+retention ([provider session retention](providers-and-containment.md#provider-session-retention)),
+is refused with the code `chat_session_expired`; a new conversation on the branch
+is the way forward.
 
 Its first human message forks the source chat's latest session as it stands when
 that message is admitted, with that turn's provider, model, reasoning and machine;
