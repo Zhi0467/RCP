@@ -227,7 +227,8 @@ def test_branch_chat_turns_expose_staged_main_graph(manifest, tmp_path, monkeypa
     from .test_api import ScriptedLauncher
     from .test_branch_chats import _app_branch
 
-    app, service, episode, _root = _app_branch(manifest, tmp_path)
+    app, service, episode, root = _app_branch(manifest, tmp_path)
+    app.state.catalog.store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     launcher = ScriptedLauncher([{}], message="Inspected branch inputs.")
     monkeypatch.setattr(app.state.launcher, "stream", launcher.stream)
     client = signed_in_client(app)
