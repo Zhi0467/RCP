@@ -13,11 +13,7 @@ import {
   type InlineArtifactState,
 } from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
-import {
-  downloadDesktopArtifact,
-  isDesktopRuntime,
-  openDesktopArtifactPdf,
-} from "../core/desktopRuntime";
+import { downloadDesktopArtifact, isDesktopRuntime } from "../core/desktopRuntime";
 import type {
   AgentArtifactDescriptor,
   AgentTask,
@@ -70,10 +66,8 @@ export function projectAgentWindowEndpoints(
     canKeep: true,
     canCommentArtifacts: true,
     openArtifactPanel: (artifactId) => openArtifact({ projectId, artifactId }),
-    openArtifact: async (taskId, artifact) => {
-      if (artifact.view !== "pdf") openArtifact({ projectId, artifactId: artifact.artifact_id });
-      else if (isDesktopRuntime())
-        await openDesktopArtifactPdf({ projectId, taskId, artifactId: artifact.artifact_id });
+    openArtifact: async (_taskId, artifact) => {
+      openArtifact({ projectId, artifactId: artifact.artifact_id });
     },
     downloadArtifact: isDesktopRuntime()
       ? (taskId, artifact) =>

@@ -235,7 +235,12 @@ Git link record (migration 82). Exact source
 `42ce9f418c9491f8db9b9b723f5bd56eb6e54d04` upgrades a copy of
 `pre-space-chat-machines-v45-07622f7` through the existing fixture builder.
 
-`pre-provider-session-sweeps-v47-c046bb3` freezes migration 82 before provider
+`pre-comments-v47-c2b0f07` freezes migration 82 before shared comment threads,
+posts, and mentions (migration 83). Exact source `c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761`
+upgrades a copy of `pre-paper-git-links-v46-42ce9f4` through the existing fixture
+builder. Earlier boundaries remain unchanged.
+
+`pre-provider-session-sweeps-v48-05dfcdb` freezes migration 83 before provider
 session sweep marks (migration 86) and hidden-read fingerprints on task rows
-(migration 87). Exact source `c046bb3ade3c55c2507a564abb9a27c303b9c850` upgrades
-a copy of `pre-paper-git-links-v46-42ce9f4` through the existing fixture builder.
+(migration 87). Exact source `05dfcdb879419991c205d540ea686342f5bb296b` upgrades
+a copy of `pre-comments-v47-c2b0f07` through the existing fixture builder.

@@ -28,7 +28,7 @@ export function ChatComposer({
   /** A caller-owned hint above staged comments, such as a provider switch. */
   hint?: ReactNode;
   composer?: ComposerAttachments;
-  comments: AnswerComments;
+  comments?: AnswerComments;
   skills?: SkillPickerProps;
   addDisabled?: boolean;
   /** The caller's own state, such as a failure edge. */
@@ -47,7 +47,7 @@ export function ChatComposer({
     >
       {skills && <SkillPicker {...skills} />}
       {hint}
-      <StagedAnswerComments comments={comments} />
+      {comments && <StagedAnswerComments comments={comments} />}
       {composer && <ComposerAttachmentChips composer={composer} />}
       <div className="chat-composer-row">
         {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}

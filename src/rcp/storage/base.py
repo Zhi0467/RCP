@@ -153,6 +153,7 @@ class AppStoreBase:
         (80, "space_chat_session_machines_v1"),
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
+        (83, "comments_v1"),
         (86, "provider_session_sweeps_v1"),
         (87, "hidden_read_fingerprints_v1"),
     )
@@ -1111,6 +1112,11 @@ class AppStoreBase:
             version=82,
             name="paper_git_links_v1",
             migration=migrate_paper_git_links,
+        )
+        from rcp.storage.comments import migrate_comments
+
+        self._run_storage_schema_migration(
+            connection, version=83, name="comments_v1", migration=migrate_comments
         )
         from rcp.storage.provider_session_sweeps import migrate_provider_session_sweeps
 

@@ -745,9 +745,12 @@ export function SignInCard({
         {cancelSignIn}
       </span>
     ) : (
-      <span className="sign-in-state">
-        {signIn.started_by_display_name ?? "A member"} is signing in
-      </span>
+      <>
+        <span className="sign-in-state">
+          {signIn.started_by_display_name ?? "A member"} is signing in
+        </span>
+        {actions && cancelSignIn}
+      </>
     );
   } else if (state === "signed_out") {
     body =

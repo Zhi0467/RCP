@@ -550,7 +550,12 @@ publish changes as the same artifact's next version, just as project turns do.
 Space has no Keep, node references, version controls or comment panel in its
 opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
-bubble. Answer comments join the next message in both.
+bubble. Answer comments join the next message only in Space threads. In a
+project chat, selected reply text starts a
+[shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
+just past the quote's end opens it, the header count lists the chat's reply and
+inline-artifact threads, and Send
+to agent carries threads through the composer's own send, a steer while a turn runs.
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve
 on the right. Their outcome replaces the need for a separate member answer
@@ -692,7 +697,7 @@ widths apply. Watcher and task controls keep their owners.
 
 One shell-mounted panel survives branches for loading and identity.
 It closes on project change. Artifact, report, and repository entrances use it
-for supported previews. PDF system viewing and downloads follow the
+for supported previews. PDF viewing and downloads follow the
 [file-type rules](paper-artifacts-and-result-views.md#answer-and-artifacts-are-independent).
 It starts docked on the right at full height. Dragging its left edge resizes it.
 Dragging its title floats it. Double-clicking the title or pressing focused Enter
@@ -711,5 +716,15 @@ owns content, comments, versions, polling, and recovery.
 The title holds the name, live state, version, offered Undo or reply link, dock,
 and close controls. The same-origin shell owns comments and availability without
 reading opaque HTML. Selection alone sends or stages nothing.
+
+The [comment](paper-artifacts-and-result-views.md#shared-comments) rail sits
+beside the artifact, the Paper source, and the Paper preview. Each thread card
+shows a checkbox, avatar, author, time, and quote, with replies in one flat
+column under thin rules. Its reply box offers Reply and Send to agent, then
+Resolve; Send to agent on an empty reply sends the thread as it stands. Ticking
+a thread shows Send N to agent in the footer. Open threads show red numbered
+pins at the end of their anchors, and a selected card highlights its pin. The
+composer is a popover at the selection with Comment and Send to agent; `@` opens
+the picker with the agent row first. At 390px the rail is a bottom sheet.
 Runs preserves server order, with the report first, and labels kind, time, and worker.
 Timeline popovers filter to the exact operation.

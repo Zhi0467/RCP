@@ -1040,6 +1040,34 @@ test("the editor/preview divider resizes within bounds, persists, and is absent 
   assert.deepEqual(errors, []);
 });
 
+test("the files/editor divider resizes within bounds, persists, and is absent when panes stack", async (t) => {
+  const { page, errors } = await openPaper(t);
+  const handle = page.getByRole("separator", { name: "Resize files" });
+  const filesWidth = () =>
+    page
+      .locator(".paper-files-column")
+      .evaluate((column) => Math.round(column.getBoundingClientRect().width));
+  const before = await filesWidth();
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 80, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  const dragged = await filesWidth();
+  assert.ok(dragged > before);
+  await handle.press("Home");
+  assert.equal(await filesWidth(), Number(await handle.getAttribute("aria-valuemin")));
+  await handle.press("End");
+  const widest = await filesWidth();
+  assert.equal(widest, Number(await handle.getAttribute("aria-valuemax")));
+  await page.reload();
+  await page.locator(".cm-content").waitFor();
+  assert.equal(await filesWidth(), widest);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await handle.isVisible(), false);
+  assert.deepEqual(errors, []);
+});
+
 test("double-clicking a word in the preview puts the editor on that word", async (t) => {
   const text = "# Title\n\nFirst sentence here.\nThe cat sat. The cat ran.";
   const room = new Room();

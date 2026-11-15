@@ -108,7 +108,7 @@ home for repository-wide invariants and their stable identifiers.
   tabs, and shell lifecycle.
 - [Paper, artifacts, and viewing](specs/paper-artifacts-and-result-views.md) covers
   human paper authorship, reviewed coaching, previews, reports, unified
-  artifact interaction, and repository-file reading.
+  artifact interaction, shared comments, and repository-file reading.
 - [Interface and visual design](specs/interface-and-visual-design.md) covers the
   visual grammar, project shell, Research and Runs projections, node detail, DAG
   controls, composer, and the no-commentary-lines rule.

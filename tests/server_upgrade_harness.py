@@ -158,10 +158,6 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "42ce9f418c9491f8db9b9b723f5bd56eb6e54d04",
         "c59c7f2c58a03af29aa928e7768f1be617eb0872525562cac014fb9f8c282952",
     ),
-    "pre-provider-session-sweeps-v47-c046bb3": (
-        "c046bb3ade3c55c2507a564abb9a27c303b9c850",
-        "3f1e6d8686c5900ebff4a8e7142b538c3233ad44dc0496f05b2fd2a8a8020c8d",
-    ),
     "team-server-v1-78be62b": (
         "78be62b775fd62d7888c2e22d87569c103bffc83",
         "c6fc54845354bb000a9ae9dc26ac40446ba14f96f4f00b8ad8412338ec65da42",
@@ -217,6 +213,14 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
     "pre-compute-jobs-v14-7d6546f": (
         "7d6546f30d958451080cce3d28818eb5297b7f4b",
         "0f87cc6d05c043b4e0f9ffff3884bfd3d1bc66bce15ffff195d2bf857d0ae3c7",
+    ),
+    "pre-comments-v47-c2b0f07": (
+        "c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761",
+        "b80ea1fdd886b43b1d4f9faf6b688588c2a75b8a580f2f7fa8d28798a7027d54",
+    ),
+    "pre-provider-session-sweeps-v48-05dfcdb": (
+        "05dfcdb879419991c205d540ea686342f5bb296b",
+        "e17c1ea1cf2c2ef95bcc5a808ffe9536f63403528f417683fe4aa8102f91b300",
     ),
 }
 

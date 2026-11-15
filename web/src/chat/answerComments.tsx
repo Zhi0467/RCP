@@ -507,48 +507,6 @@ export function useAnswerComments({
     setComposer(next);
   };
 
-  /** Offers Comment over text selected inside a frame, as a native selection is offered;
-   * null withdraws a frame's offer once its selection is gone. */
-  const offerExternal = (
-    next: {
-      quote: string;
-      where?: string;
-      rect: { left: number; top: number; right: number; bottom: number };
-      origin?: HTMLElement | null;
-      clear?: () => void;
-    } | null,
-  ) => {
-    if (!next) {
-      setOffer((current) => (current?.open ? null : current));
-      return;
-    }
-    if (busy || composer) return;
-    const button = offerRef.current?.getBoundingClientRect();
-    const { quote, where, rect, origin, clear } = next;
-    setOffer({
-      quote,
-      ...(where ? { where } : {}),
-      origin,
-      position: chatSelectionCommentPosition(
-        { firstLine: rect, bottom: rect.bottom },
-        chatAnnotationViewportMetrics(
-          { width: window.innerWidth, height: window.innerHeight },
-          window.visualViewport,
-        ),
-        button?.width ? button : { width: 96, height: 32 },
-      ),
-      open: () =>
-        openExternal(
-          {
-            selectedText: quote,
-            ...(where ? { where } : {}),
-            anchor: { left: rect.left, right: rect.right, top: rect.bottom },
-          },
-          { clear, origin },
-        ),
-    });
-  };
-
   const openFromSelection = ({
     range,
     quote: selectedText,
@@ -715,7 +673,6 @@ export function useAnswerComments({
     setComment,
     focusComment,
     openExternal,
-    offerExternal,
     cancelExternal,
     closeComment,
     requireComplete,
