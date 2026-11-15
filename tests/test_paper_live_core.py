@@ -611,6 +611,34 @@ def test_a_tracked_file_replaced_by_a_symlink_shows_as_unsupported(paper, tmp_pa
     assert (tmp_path / "outside.md").read_text() == "outside"
 
 
+def test_a_file_over_the_read_bound_is_never_read_or_stored(paper, monkeypatch):
+    from rcp import limits
+
+    live, store, root = paper
+    monkeypatch.setattr(limits, "PAPER_MAX_UPLOAD_BYTES", 64)
+
+    async def scenario():
+        await create(live, "a.md", "base")
+        await live.begin_turn("p", "op-1")
+        (root / "p/checkpoint.bin").write_bytes(b"x" * 65)
+        (root / "p/a.md").write_text("agent")
+        await live.poll("p", full=True)
+        await live.poll("p", full=True)
+        turn = await live.end_turn("p", "op-1")
+        tree = await live.tree("p")
+        await live.close()
+        return turn, sorted((file.path, file.kind) for file in tree.files)
+
+    turn, files = run(scenario())
+    assert files == [("a.md", "text"), ("checkpoint.bin", "unsupported")]
+    assert {row["path"]: row["kind"] for row in turn["files"]} == {
+        "a.md": "write",
+        "checkpoint.bin": "unsupported",
+    }
+    with store.connection() as conn:
+        assert conn.execute("SELECT max(size) FROM paper_blobs").fetchone()[0] <= 64
+
+
 def test_a_failed_idle_save_is_retried(paper, monkeypatch):
     live, _, root = paper
     real = folder_write

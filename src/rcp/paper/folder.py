@@ -47,10 +47,10 @@ class LocalPaperFolder:
         self.root = root
 
     def scan(self) -> list[Entry]:
-        return folder_io.scan(self.root)
+        return folder_io.scan(self.root, max_bytes=limits.PAPER_MAX_UPLOAD_BYTES)
 
     def read(self, paths: list[str]) -> dict[str, bytes | None]:
-        return folder_io.read(self.root, paths)
+        return folder_io.read(self.root, paths, max_bytes=limits.PAPER_MAX_UPLOAD_BYTES)
 
     def write(self, path: str, data: bytes, expect_sha: str | None) -> WriteResult:
         return folder_io.write(self.root, path, data, expect_sha, **_settle(False))
@@ -89,10 +89,11 @@ class RemotePaperFolder:
         return self.stage.paper_folder({"op": op, "project_id": self.project_id, **fields})
 
     def scan(self) -> list[Entry]:
-        return [Entry(**entry) for entry in self._call("scan")["entries"]]
+        entries = self._call("scan", max_bytes=limits.PAPER_MAX_UPLOAD_BYTES)["entries"]
+        return [Entry(**entry) for entry in entries]
 
     def read(self, paths: list[str]) -> dict[str, bytes | None]:
-        files = self._call("read", paths=paths)["files"]
+        files = self._call("read", paths=paths, max_bytes=limits.PAPER_MAX_UPLOAD_BYTES)["files"]
         return {path: _decode(value) for path, value in files.items()}
 
     def write(self, path: str, data: bytes, expect_sha: str | None) -> WriteResult:

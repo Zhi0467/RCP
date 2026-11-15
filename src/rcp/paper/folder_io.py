@@ -123,19 +123,24 @@ def ignored(name: str) -> bool:
     return any(fnmatchcase(name, pattern) for pattern in IGNORED_NAMES)
 
 
-def scan(root: Path) -> list[Entry]:
+def scan(root: Path, *, max_bytes: int) -> list[Entry]:
+    """Every entry; a file over `max_bytes` is unsupported, so no caller reads it."""
     entries: list[Entry] = []
     with _directory(root, ()) as descriptor:
-        _scan_into(descriptor, "", entries)
+        _scan_into(descriptor, "", entries, max_bytes)
     return sorted(entries, key=lambda entry: entry.path)
 
 
-def read(root: Path, paths: list[str]) -> dict[str, bytes | None]:
-    return {path: _read_regular(root, path) for path in paths}
+def read(root: Path, paths: list[str], *, max_bytes: int) -> dict[str, bytes | None]:
+    """Each path's bytes; None when missing, unsupported, or over `max_bytes`."""
+    return {path: _read_regular(root, path, max_bytes) for path in paths}
 
 
-def hash(root: Path, paths: list[str]) -> dict[str, str | None]:
-    return {path: None if data is None else _sha(data) for path, data in read(root, paths).items()}
+def hash(root: Path, paths: list[str], *, max_bytes: int) -> dict[str, str | None]:
+    return {
+        path: None if data is None else _sha(data)
+        for path, data in read(root, paths, max_bytes=max_bytes).items()
+    }
 
 
 def write(
@@ -371,10 +376,10 @@ def _unlink_quietly(directory: int, name: str) -> None:
         os.unlink(name, dir_fd=directory)
 
 
-def _read_all(descriptor: int) -> bytes:
+def _read_all(descriptor: int, limit: int | None = None) -> bytes:
     chunks = []
     offset = 0
-    while chunk := os.pread(descriptor, 1 << 20, offset):
+    while (limit is None or offset < limit) and (chunk := os.pread(descriptor, 1 << 20, offset)):
         chunks.append(chunk)
         offset += len(chunk)
     return b"".join(chunks)
@@ -409,7 +414,7 @@ def _settled_read(
         os.close(descriptor)
 
 
-def _read_regular(root: Path, path: str) -> bytes | None:
+def _read_regular(root: Path, path: str, max_bytes: int) -> bytes | None:
     *parents, name = paper_path(path).split("/")
     try:
         with _directory(root, parents) as directory:
@@ -424,12 +429,15 @@ def _read_regular(root: Path, path: str) -> bytes | None:
         status = os.fstat(descriptor)
         if not stat.S_ISREG(status.st_mode) or status.st_nlink > 1:
             return None
-        return _read_all(descriptor)
+        if status.st_size > max_bytes:
+            return None
+        data = _read_all(descriptor, max_bytes + 1)
+        return None if len(data) > max_bytes else data
     finally:
         os.close(descriptor)
 
 
-def _scan_into(directory: int, prefix: str, entries: list[Entry]) -> None:
+def _scan_into(directory: int, prefix: str, entries: list[Entry], max_bytes: int) -> None:
     for name in sorted(os.listdir(directory)):
         if ignored(name):
             continue
@@ -449,11 +457,16 @@ def _scan_into(directory: int, prefix: str, entries: list[Entry]) -> None:
             except OSError:
                 continue
             try:
-                _scan_into(child, f"{path}/", entries)
+                _scan_into(child, f"{path}/", entries, max_bytes)
             finally:
                 os.close(child)
             continue
-        supported = valid and stat.S_ISREG(status.st_mode) and status.st_nlink == 1
+        supported = (
+            valid
+            and stat.S_ISREG(status.st_mode)
+            and status.st_nlink == 1
+            and status.st_size <= max_bytes
+        )
         entries.append(
             Entry(
                 path=path,
@@ -487,13 +500,12 @@ def handle(request: dict, data_dir: Path) -> dict:
     if operation == "root":
         return {"root": str(root)}
     if operation == "scan":
-        return {"entries": [asdict(entry) for entry in scan(root)]}
+        return {"entries": [asdict(entry) for entry in scan(root, max_bytes=request["max_bytes"])]}
     if operation == "read":
-        return {
-            "files": {path: _encode(data) for path, data in read(root, request["paths"]).items()}
-        }
+        files = read(root, request["paths"], max_bytes=request["max_bytes"])
+        return {"files": {path: _encode(data) for path, data in files.items()}}
     if operation == "hash":
-        return {"hashes": hash(root, request["paths"])}
+        return {"hashes": hash(root, request["paths"], max_bytes=request["max_bytes"])}
     if operation == "write":
         data = base64.b64decode(request["data"])
         return _encoded_result(write(root, request["path"], data, request["expect_sha"], **settle))

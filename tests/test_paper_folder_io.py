@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from rcp.limits import PAPER_MAX_UPLOAD_BYTES as MAX
 from rcp.paper import folder_io
 from rcp.paper.folder_io import UnsupportedPath, paper_root
 from rcp.transport.run_stage import RemoteRunStage
@@ -133,7 +134,7 @@ def test_scan_reports_stat_data_and_unsupported_entries(root, tmp_path):
     (root / ".git").mkdir()
     (root / ".git/HEAD").write_bytes(b"")
 
-    entries = {entry.path: entry for entry in folder_io.scan(root)}
+    entries = {entry.path: entry for entry in folder_io.scan(root, max_bytes=MAX)}
 
     assert set(entries) == {
         "main.tex",
@@ -155,7 +156,7 @@ def test_paths_follow_paper_rules(root):
         with pytest.raises(ValueError):
             folder_io.write(root, path, b"data", None)
         with pytest.raises(ValueError):
-            folder_io.read(root, [path])
+            folder_io.read(root, [path], max_bytes=MAX)
 
 
 def test_read_and_hash_skip_missing_and_unsupported(root, tmp_path):
@@ -163,13 +164,13 @@ def test_read_and_hash_skip_missing_and_unsupported(root, tmp_path):
     (tmp_path / "secret").write_bytes(b"secret")
     (root / "link.md").symlink_to(tmp_path / "secret")
     paths = ["a.md", "missing.md", "link.md", "nodir/x.md"]
-    assert folder_io.read(root, paths) == {
+    assert folder_io.read(root, paths, max_bytes=MAX) == {
         "a.md": b"alpha",
         "missing.md": None,
         "link.md": None,
         "nodir/x.md": None,
     }
-    assert folder_io.hash(root, paths) == {
+    assert folder_io.hash(root, paths, max_bytes=MAX) == {
         "a.md": sha(b"alpha"),
         "missing.md": None,
         "link.md": None,
@@ -185,7 +186,7 @@ def test_delete_returns_displaced_bytes_and_is_idempotent(root):
     assert result.displaced == b"v2" and result.conflict and result.sha is None
     again = folder_io.delete(root, "a.md", sha(b"v1"))
     assert again.displaced is None
-    assert [entry.path for entry in folder_io.scan(root)] == []
+    assert [entry.path for entry in folder_io.scan(root, max_bytes=MAX)] == []
 
 
 def test_rename_never_replaces_and_creates_parents(root):
@@ -230,16 +231,18 @@ def test_remote_stage_ships_the_stdlib_only_module(tmp_path, monkeypatch):
     assert base64.b64decode(replaced["displaced"]) == b"remote text"
     assert replaced["conflict"]
     call({"op": "rename", "source": "a.md", "destination": "b/a.md"})
-    [entry] = call({"op": "scan"})["entries"]
+    [entry] = call({"op": "scan", "max_bytes": MAX})["entries"]
     assert (entry["path"], entry["kind"], entry["size"]) == ("b/a.md", "file", 0)
-    assert call({"op": "read", "paths": ["b/a.md", "gone"]})["files"] == {
+    assert call({"op": "read", "paths": ["b/a.md", "gone"], "max_bytes": MAX})["files"] == {
         "b/a.md": "",
         "gone": None,
     }
-    assert call({"op": "hash", "paths": ["b/a.md"]})["hashes"] == {"b/a.md": sha(b"")}
+    assert call({"op": "hash", "paths": ["b/a.md"], "max_bytes": MAX})["hashes"] == {
+        "b/a.md": sha(b"")
+    }
     deleted = call({"op": "delete", "path": "b/a.md", "expect_sha": sha(b"")})
     assert deleted["displaced"] == "" and not deleted["conflict"]
-    assert call({"op": "scan"})["entries"] == []
+    assert call({"op": "scan", "max_bytes": MAX})["entries"] == []
 
 
 def test_a_swap_that_displaced_the_expected_bytes_does_not_wait_to_settle(root):
@@ -297,3 +300,13 @@ def test_deleting_a_project_folder_removes_its_install_staging(tmp_path):
     staging.mkdir()
     folder_io.change_project_folder(tmp_path, "p", None)
     assert not staging.exists()
+
+
+def test_a_file_over_the_bound_is_scanned_as_unsupported_and_never_read(root):
+    folder_io.write(root, "small.md", b"tiny", None)
+    folder_io.write(root, "huge.bin", b"x" * 9, None)
+    kinds = {entry.path: entry.kind for entry in folder_io.scan(root, max_bytes=8)}
+    assert kinds == {"huge.bin": "unsupported", "small.md": "file"}
+    paths = ["small.md", "huge.bin"]
+    assert folder_io.read(root, paths, max_bytes=8) == {"small.md": b"tiny", "huge.bin": None}
+    assert folder_io.hash(root, paths, max_bytes=8)["huge.bin"] is None

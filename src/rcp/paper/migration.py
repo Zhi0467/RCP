@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from pycrdt import Doc, Text, get_update, merge_updates
 
+from rcp import limits
 from rcp.keyed_locks import KeyedLocks
 from rcp.paper import folder_io
 from rcp.paper.models import PaperFile, PaperSnapshot, digest, paper_file_kind
@@ -152,10 +153,12 @@ def _read_projection(workspace: StateWorkspace) -> dict[str, bytes]:
         paper = root / "paper"
         if not paper.is_dir() or paper.is_symlink():
             return {}
-        paths = [entry.path for entry in folder_io.scan(paper) if entry.kind == "file"]
-        return {
-            path: data for path, data in folder_io.read(paper, paths).items() if data is not None
-        }
+        bound = limits.PAPER_MAX_UPLOAD_BYTES
+        paths = [
+            entry.path for entry in folder_io.scan(paper, max_bytes=bound) if entry.kind == "file"
+        ]
+        files = folder_io.read(paper, paths, max_bytes=bound)
+        return {path: data for path, data in files.items() if data is not None}
 
 
 def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Plan:

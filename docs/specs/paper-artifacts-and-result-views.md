@@ -35,7 +35,9 @@ stdlib-only, runs in-process locally, and ships over SSH. A scan reads stat data
 only and skips a code-defined ignore list: editor swap files, `.DS_Store`,
 `__pycache__`, and LaTeX and Typst outputs. A symlink, hard link, or special
 file is skipped and reported; the tree shows it as unsupported, and a tracked
-file that becomes one leaves the editor. Writing an existing file swaps a temp
+file that becomes one leaves the editor. A file over `PAPER_MAX_UPLOAD_BYTES`
+is unsupported the same way: every scan and read, local or over SSH, skips its
+bytes, so it never reaches History or a turn's list. Writing an existing file swaps a temp
 file in atomically. When the swapped-out file changes after the swap, its bytes
 merge as a foreign write; swapped-out bytes RCP already knew return at once, and
 a hard-linked one returns nothing. A new file is created
