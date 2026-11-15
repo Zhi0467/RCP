@@ -36,6 +36,7 @@ WRAPPERS = {"_remote_script": SOURCE / "transport", "terminal_source": SOURCE / 
 EXEMPT_FUNCTIONS = {*WRAPPERS, "_module_source"}
 READERS = {"read_text", "read_bytes", "open"}
 NEWER_THAN_39 = {"tomllib"}
+_PY39_BLOCK = re.compile(r'(?:^"[^"\n]+" = "py39"\n)+', re.MULTILINE)
 
 
 class _NotLiteral(Exception):
@@ -174,9 +175,6 @@ def _import_violations(source: str, shipped: set[Path]) -> list[str]:
 
 def _relative(paths: set[Path]) -> list[str]:
     return sorted(path.relative_to(ROOT).as_posix() for path in paths)
-
-
-_PY39_BLOCK = re.compile(r'(?:^"[^"\n]+" = "py39"\n)+', re.MULTILINE)
 
 
 def shipped_relative_paths() -> list[str]:

@@ -81,7 +81,6 @@ def _observed_digests() -> set[str]:
         str(path.relative_to(ROOT))
         for path in (ROOT / "tests").glob("test_*.py")
         if LOOKUP in path.read_text(encoding="utf-8")
-        and path.name != "test_regenerate_registries.py"
     )
     with tempfile.TemporaryDirectory() as folder:
         record = Path(folder) / "lookups"
@@ -94,9 +93,11 @@ def _observed_digests() -> set[str]:
         )
         observed = set(record.read_text(encoding="utf-8").split())
     if done.returncode:
-        raise SystemExit("The restore schema tests failed; nothing was written.")
+        raise SystemExit(f"The restore schema tests failed; {RESTORE} was not written.")
     if not observed:
-        raise SystemExit("The restore schema tests looked no digest up; nothing was written.")
+        raise SystemExit(
+            f"The restore schema tests looked no digest up; {RESTORE} was not written."
+        )
     return observed
 
 
