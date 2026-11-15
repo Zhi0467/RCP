@@ -670,6 +670,7 @@ PAPER_LIVE = Entry(
         PaperLive._bump,
         PaperLive._start_turn,
         PaperLive._finish_turn,
+        PaperLive._persist_written,
         restore_paper_section,
         migrate_paper_folder,
     ),
