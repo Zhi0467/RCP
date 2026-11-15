@@ -1525,6 +1525,7 @@ class ProjectService:
                         "orchestrator_episode_id": task.orchestrator_episode_id,
                         "human_turn_refusal": task.human_turn_refusal,
                         "graph_title": task.graph_title,
+                        "focus": task.focus,
                         # Task records know which turns were artifact edits; history does not.
                         "agent_setup": task.agent_setup or canonical.agent_setup,
                         # Human turns after an Auto-research chain ends join its one card.
