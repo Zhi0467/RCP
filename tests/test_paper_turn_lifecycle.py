@@ -136,3 +136,31 @@ def test_a_new_paper_turn_first_ends_a_settled_turn_still_holding_the_paper(pape
         tasks.shutdown()
     assert seen == ["next"]
     assert _receipt(store, "settled") is not None
+
+
+def test_one_oversized_text_file_never_blocks_a_turn_or_the_tree(paper):
+    import asyncio
+
+    from rcp import limits
+
+    store, live, folder = paper
+    (folder / "data").mkdir()
+    (folder / "data/big.csv").write_text("x," * (limits.PAPER_MAX_DOC_BYTES // 2 + 1))
+    asyncio.run(live.poll("project", full=True))
+
+    async def stream(_project, _kind, _request, _execution):
+        (folder / "main.md").write_text("# Main\n")
+        yield sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream, paper_live=live)
+    try:
+        tasks.launch_admitted(_paper_turn(store, "turn").operation_id)
+        wait_for_task(store, "turn", expect="succeeded")
+        wait_until(lambda: _receipt(store, "turn"))
+    finally:
+        tasks.shutdown()
+
+    assert "main.md" in [row["path"] for row in live.turn_files("project", "turn")]
+    asyncio.run(live.poll("project"))
+    tree = {file.path: file.size for file in asyncio.run(live.tree("project")).files}
+    assert tree["data/big.csv"] > limits.PAPER_MAX_DOC_BYTES and "main.md" in tree
