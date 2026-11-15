@@ -639,6 +639,55 @@ def test_a_file_over_the_read_bound_is_never_read_or_stored(paper, monkeypatch):
         assert conn.execute("SELECT max(size) FROM paper_blobs").fetchone()[0] <= 64
 
 
+def test_a_text_file_over_the_document_cap_is_listed_but_never_edited(paper):
+    live, _, root = paper
+    big = b"x,y\n" * (3 * 1024 * 1024 // 4)
+
+    async def scenario():
+        file_id = await create(live, "main.md", "base")
+        await live.begin_turn("p", "op-1")
+        foreign(root / "p", "data.csv", big)
+        await live.poll("p", full=True)
+        await live.poll("p", full=True)
+        listed = {file.path: file for file in (await live.tree("p")).files}
+        with pytest.raises(KeyError):
+            await live.connect("p", listed["data.csv"].file_id, asyncio.Queue())
+        _, served = await live.raw_file("p", listed["data.csv"].file_id)
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(4, " typed")
+        await live.leave("p", file_id, client.queue)
+        turn = await live.end_turn("p", "op-1")
+        await live.close()
+        return listed["data.csv"], served, turn
+
+    listed, served, turn = run(scenario())
+    assert listed.kind == "binary"
+    assert served == big
+    assert (root / "p/main.md").read_text() == "base typed"
+    assert {row["path"] for row in turn["files"]} == {"data.csv"}
+
+
+def test_a_file_growing_past_the_document_cap_closes_its_room(paper):
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "notes.md", "short")
+        client = Client(live, file_id)
+        await client.join()
+        foreign(root / "p", "notes.md", "y" * (3 * 1024 * 1024))
+        await live.poll("p", full=True)
+        closed = b"" in client.drain()
+        listed = {file.path: file for file in (await live.tree("p")).files}["notes.md"]
+        await live.close()
+        return closed, listed
+
+    closed, listed = run(scenario())
+    assert closed
+    assert (listed.kind, listed.format) == ("binary", "other")
+    assert (root / "p/notes.md").stat().st_size == 3 * 1024 * 1024
+
+
 def test_a_failed_idle_save_is_retried(paper, monkeypatch):
     live, _, root = paper
     real = folder_write

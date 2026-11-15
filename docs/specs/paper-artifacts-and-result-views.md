@@ -37,7 +37,10 @@ only and skips a code-defined ignore list: editor swap files, `.DS_Store`,
 file is skipped and reported; the tree shows it as unsupported, and a tracked
 file that becomes one leaves the editor. A file over `PAPER_MAX_UPLOAD_BYTES`
 is unsupported the same way: every scan and read, local or over SSH, skips its
-bytes, so it never reaches History or a turn's list. Writing an existing file swaps a temp
+bytes, so it never reaches History or a turn's list. A text file over
+`PAPER_MAX_DOC_BYTES` is binary: it lists, downloads, and joins a turn's list,
+but never opens in the editor, and an open file that grows past it leaves the
+editor like any kind change. Writing an existing file swaps a temp
 file in atomically. When the swapped-out file changes after the swap, its bytes
 merge as a foreign write; swapped-out bytes RCP already knew return at once, and
 a hard-linked one returns nothing. A new file is created

@@ -47,8 +47,6 @@ def entry_reason(path: str, entry: GitEntry) -> str:
         return "mode"
     if (entry.size if entry.size is not None else len(entry.data)) > limits.PAPER_MAX_UPLOAD_BYTES:
         return "upload_limit"
-    if paper_file_kind(path, entry.data) == "text" and len(entry.data) > limits.PAPER_MAX_DOC_BYTES:
-        return "document_limit"
     return ""
 
 

@@ -1173,12 +1173,7 @@ class PaperLive:
                 data = op.data or b""
                 if op.exclusive and path in tree:
                     raise PaperPrecondition("Paper path is occupied")
-                limit = (
-                    limits.PAPER_MAX_DOC_BYTES
-                    if _kind(path, data) == "text"
-                    else limits.PAPER_MAX_UPLOAD_BYTES
-                )
-                if len(data) > limit:
+                if len(data) > limits.PAPER_MAX_UPLOAD_BYTES:
                     raise PaperLimit("Paper file is too large")
                 tree[path] = len(data)
                 steps.append((path, 2, op))

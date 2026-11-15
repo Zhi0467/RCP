@@ -129,13 +129,18 @@ def digest(data: bytes) -> str:
 
 def file_format(path: str, kind: str) -> str:
     extension = PurePosixPath(path).suffix.lower()
-    if extension in {".html", ".htm"}:
-        return "html" if kind == "text" else "other"
+    if kind == "text":
+        authored = {
+            ".html": "html",
+            ".htm": "html",
+            ".md": "markdown",
+            ".tex": "latex",
+            ".typ": "typst",
+            ".bib": "bibtex",
+        }.get(extension)
+        if authored is not None:
+            return authored
     return {
-        ".md": "markdown",
-        ".tex": "latex",
-        ".typ": "typst",
-        ".bib": "bibtex",
         ".png": "image",
         ".jpg": "image",
         ".jpeg": "image",
@@ -147,7 +152,12 @@ def file_format(path: str, kind: str) -> str:
 
 
 def paper_file_kind(path: str, data: bytes) -> Literal["text", "binary"]:
-    """UTF-8 without NUL is editable unless the format is inherently binary."""
+    """UTF-8 without NUL is editable unless the format is inherently binary.
+
+    Text over the document cap is binary too: it lists and downloads, never opens to edit.
+    """
+    if len(data) > limits.PAPER_MAX_DOC_BYTES:
+        return "binary"
     if (
         PurePosixPath(path).suffix.lower()
         in {

@@ -61,14 +61,19 @@ def test_tree_limit_and_collision_skip_in_path_order(monkeypatch: pytest.MonkeyP
     assert result.skipped[0]["path"] == "folder/file"
 
 
-@pytest.mark.parametrize(
-    "limit", ["PAPER_MAX_UPLOAD_BYTES", "PAPER_MAX_DOC_BYTES", "PAPER_MAX_TREE_BYTES"]
-)
+@pytest.mark.parametrize("limit", ["PAPER_MAX_UPLOAD_BYTES", "PAPER_MAX_TREE_BYTES"])
 def test_remote_limits_skip_new_files(monkeypatch: pytest.MonkeyPatch, limit: str):
     monkeypatch.setattr("rcp.limits." + limit, 2)
     result = merge_trees({}, tree(b"long"), {})
     assert result.skipped[0]["path"] == "paper.md"
     assert not result.ops
+
+
+def test_remote_text_over_the_document_cap_is_accepted(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("rcp.limits.PAPER_MAX_DOC_BYTES", 2)
+    result = merge_trees({}, tree(b"long"), {})
+    assert result.tree == tree(b"long")
+    assert not result.skipped
 
 
 def test_collision_checks_every_parent():
