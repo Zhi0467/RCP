@@ -245,6 +245,16 @@ class ProviderSessionSweepStoreMixin(StoreMixinBase):
                 is not None
             ]
 
+    def unmark_provider_sessions(self, targets: list[ProviderSessionSweepTarget]) -> None:
+        """Drop the marks of sessions in use outside RCP; they may resume and age again."""
+
+        with self.connection() as connection:
+            connection.executemany(
+                "DELETE FROM provider_session_sweeps "
+                "WHERE provider = ? AND execution_machine = ? AND native_session_id = ?",
+                [(target.provider, target.machine_id, target.session_id) for target in targets],
+            )
+
     def abandon_provider_session_marks(
         self, machine_id: str, reason: str, now: str
     ) -> list[ProviderSessionSweepTarget]:

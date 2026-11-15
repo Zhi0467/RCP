@@ -762,7 +762,7 @@ still pending or running; or an active or degraded watcher, through its origin t
 
 Only ids recorded in `graph_runs` are candidates, and admission never takes a
 client-supplied session, so sessions people start in their own terminals are never
-touched. The sweep never lists or globs a provider store. It checks each id's shape
+touched. The sweep never lists a provider store. It checks each id's shape
 and deletes it by exact id:
 
 - Codex: `codex delete --force <uuid>` against the account's own Codex home, which
@@ -777,6 +777,11 @@ and deletes it by exact id:
   logged as absent. Claude sessions outside node and project chats have no
   recorded workspace and are kept.
 - Antigravity has no delete command; its sessions are kept.
+
+The provider stores are the account's own, so the machine checks for use outside
+RCP first. A Codex rollout or Claude transcript modified within the window, or an
+OpenCode session whose `opencode db` row was updated within it or has any child
+session (RCP denies `task`, so it never creates one), is kept: its mark is dropped and a later pass may mark it again.
 
 A provider answer that the id does not exist counts as deleted. Any other failure
 keeps the mark with its `last_error`, and a later pass retries it. After

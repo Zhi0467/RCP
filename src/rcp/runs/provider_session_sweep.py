@@ -5,7 +5,8 @@ transaction; a marked session never resumes. Deletion runs afterwards on the
 session's execution machine, in-process for the backend's own and over SSH in
 the account's login shell elsewhere, in chunks a stop request can interrupt.
 Each result clears the mark's work or keeps it for a later pass, until repeated
-failures abandon it.
+failures abandon it. A session the provider shows in use outside RCP loses its
+mark and becomes eligible again on a later pass.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from rcp.limits import (
     PROVIDER_SESSION_DELETE_TIMEOUT_SECONDS,
+    PROVIDER_SESSION_RETENTION_DAYS,
     PROVIDER_SESSION_SWEEP_BATCH,
     PROVIDER_SESSION_SWEEP_CHUNK,
     PROVIDER_SESSION_SWEEP_RETRY_BATCH,
@@ -115,9 +117,16 @@ def _sweep_machine(
         results = [
             (target, error if state == "failed" else None)
             for target, (state, error) in zip(chunk, outcomes, strict=True)
+            if state != "kept"
+        ]
+        in_use = [
+            target
+            for target, (state, _error) in zip(chunk, outcomes, strict=True)
+            if state == "kept"
         ]
         with guard():
             abandoned += store.record_provider_session_sweep_results(results, now)
+            store.unmark_provider_sessions(in_use)
         for target, (state, error) in zip(chunk, outcomes, strict=True):
             states[state][target.provider] += 1
             if error is not None:
@@ -125,10 +134,12 @@ def _sweep_machine(
     if not batch and not kept:
         return
     logger.info(
-        "Provider session sweep on %s: deleted %s; absent %s; failed %d%s; kept %s",
+        "Provider session sweep on %s: deleted %s; absent %s; in use outside RCP %s; "
+        "failed %d%s; kept %s",
         machine.machine_id,
         _counts(states["deleted"]),
         _counts(states["absent"]),
+        _counts(states["kept"]),
         len(failures),
         f" ({'; '.join(failures[:5])})" if failures else "",
         _counts(kept),
@@ -165,6 +176,7 @@ def _delete_on_machine(
             if target.provider in PROVIDERS
             else [],
             "claude_cwd": target.cwd if target.provider == "claude" else None,
+            "retention_seconds": PROVIDER_SESSION_RETENTION_DAYS * 86400,
         }
         for target in targets
     ]

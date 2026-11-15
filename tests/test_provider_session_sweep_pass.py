@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import threading
 from datetime import UTC, datetime, timedelta
@@ -23,7 +24,12 @@ RCP_CLAUDE = "019a0000-0000-7000-8000-00000000000e"
 OTHER_CLAUDE = "019a0000-0000-7000-8000-00000000000f"
 
 FAKE = """#!/usr/bin/env python3
-import json, os, sys
+import json, os, re, sys
+if sys.argv[1] == "db":
+    rows = json.loads(os.environ.get("FAKE_OPENCODE_ROWS", "{{}}"))
+    session = re.search("id = '([^']+)'", sys.argv[2]).group(1)
+    print(json.dumps(rows.get(session, []), indent=2))
+    sys.exit(0)
 with open(os.environ["FAKE_ARGV_LOG"], "a") as log:
     log.write(json.dumps([os.path.basename(sys.argv[0]), *sys.argv[1:]]) + "\\n")
 session = sys.argv[-1]
@@ -97,6 +103,7 @@ def fake_providers(tmp_path, monkeypatch):
     for session in (RCP_CODEX, HUMAN_CODEX, RCP_OPENCODE):
         (home / session).write_text("transcript")
     monkeypatch.setenv("FAKE_PROVIDER_HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     return log
 
 
@@ -136,6 +143,58 @@ def test_a_pass_deletes_only_recorded_sessions_and_keeps_failures_marked(tmp_pat
     assert retried == {FORKED_CODEX}
 
 
+@pytest.mark.real_provider_discovery
+def test_sessions_used_outside_rcp_are_kept_unmarked_and_stay_eligible(
+    tmp_path, monkeypatch, fake_providers, caplog
+):
+    import logging
+
+    stale = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    rollouts = tmp_path / "codex-home" / "sessions" / "2026" / "11" / "01"
+    rollouts.mkdir(parents=True)
+    (rollouts / f"rollout-2026-11-01T00-00-00-{RCP_CODEX}.jsonl").write_text("{}")
+    old_rollout = rollouts / f"rollout-2026-10-01T00-00-00-{HUMAN_CODEX}.jsonl"
+    old_rollout.write_text("{}")
+    os.utime(old_rollout, (stale, stale))
+    monkeypatch.setenv(
+        "FAKE_OPENCODE_ROWS",
+        json.dumps(
+            {
+                RCP_OPENCODE: [
+                    {"time_updated": int(datetime.now(UTC).timestamp() * 1000), "children": 0}
+                ],
+                GONE_OPENCODE: [{"time_updated": int(stale * 1000), "children": 1}],
+            }
+        ),
+    )
+    config = tmp_path / "claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    project = config / "projects" / claude_project_directory(stage.resolve())
+    project.mkdir(parents=True)
+    (project / f"{RCP_CLAUDE}.jsonl").write_text("{}")
+    store = AppStore(tmp_path / "app.sqlite3")
+    _run(store, "codex-resumed", RCP_CODEX, "codex")
+    _run(store, "codex-idle", HUMAN_CODEX, "codex")
+    _run(store, "opencode-resumed", RCP_OPENCODE, "opencode")
+    _run(store, "opencode-parent", GONE_OPENCODE, "opencode")
+    _run(store, "claude-resumed", RCP_CLAUDE, "claude", stage_root=str(stage))
+    with caplog.at_level(logging.INFO):
+        _sweep(store)
+    deleted = [json.loads(line)[-1] for line in fake_providers.read_text().splitlines()]
+    assert deleted == [HUMAN_CODEX]
+    assert (project / f"{RCP_CLAUDE}.jsonl").exists()
+    assert "in use outside RCP claude 1, codex 1, opencode 2" in caplog.text
+    in_use = {RCP_CODEX, RCP_OPENCODE, GONE_OPENCODE, RCP_CLAUDE}
+    assert not any(store.provider_session_swept(session) for session in in_use)
+    assert {
+        target.session_id
+        for target in store.provider_session_sweep_targets(store.now())
+        if not target.marked
+    } == in_use
+
+
 def test_claude_deletes_the_exact_transcript_and_its_folder(tmp_path, monkeypatch):
     config = tmp_path / "claude"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
@@ -145,6 +204,8 @@ def test_claude_deletes_the_exact_transcript_and_its_folder(tmp_path, monkeypatc
     (project / RCP_CLAUDE / "subagents").mkdir(parents=True)
     (project / RCP_CLAUDE / "subagents" / "agent.jsonl").write_text("{}")
     (project / f"{RCP_CLAUDE}.jsonl").write_text("{}")
+    stale = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    os.utime(project / f"{RCP_CLAUDE}.jsonl", (stale, stale))
     (project / f"{OTHER_CLAUDE}.jsonl").write_text("{}")
     store = AppStore(tmp_path / "app.sqlite3")
     _run(store, "claude-turn", RCP_CLAUDE, "claude", stage_root=str(stage))
@@ -239,7 +300,6 @@ def test_a_removed_machine_settles_its_marks_and_marks_nothing_new(tmp_path, cap
 def test_the_remote_program_runs_in_the_login_shell_and_resolves_the_workspace(
     tmp_path, monkeypatch, fake_providers
 ):
-    import os
     import sys
     from types import SimpleNamespace
 
@@ -268,6 +328,8 @@ def test_the_remote_program_runs_in_the_login_shell_and_resolves_the_workspace(
     project = config / "projects" / claude_project_directory(stage)
     project.mkdir(parents=True)
     (project / f"{RCP_CLAUDE}.jsonl").write_text("{}")
+    stale = (datetime.now(UTC) - timedelta(days=40)).timestamp()
+    os.utime(project / f"{RCP_CLAUDE}.jsonl", (stale, stale))
 
     def target(provider, session):
         return ProviderSessionSweepTarget(
