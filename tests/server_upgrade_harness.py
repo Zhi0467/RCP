@@ -218,6 +218,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761",
         "b80ea1fdd886b43b1d4f9faf6b688588c2a75b8a580f2f7fa8d28798a7027d54",
     ),
+    "pre-provider-session-sweeps-v48-05dfcdb": (
+        "05dfcdb879419991c205d540ea686342f5bb296b",
+        "e17c1ea1cf2c2ef95bcc5a808ffe9536f63403528f417683fe4aa8102f91b300",
+    ),
 }
 
 
