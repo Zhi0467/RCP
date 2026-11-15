@@ -216,6 +216,12 @@ def test_a_denied_device_sign_in_fails_with_the_provider_detail_and_stays_signed
         member_id="member",
         detail="Previously verified.",
     )
+    runner.store.mark_provider_login_signed_out(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        source="sign_out",
+        detail="Signed out by a member.",
+    )
     (tmp_path / "deny").write_text("")
     started = runner.start_sign_in(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), member_id="member"
@@ -716,10 +722,16 @@ def test_device_credential_change_interrupted_before_verification_stays_fenced(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    previous = runner.store.mark_provider_login_verified(
+    runner.store.mark_provider_login_verified(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         member_id="member",
         detail="Previously verified.",
+    )
+    previous = runner.store.mark_provider_login_signed_out(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+        member_id="member",
+        source="sign_out",
+        detail="Signed out by a member.",
     )
     (tmp_path / "signed-in").write_text("")
 
@@ -814,6 +826,12 @@ def test_zero_exit_provider_errors_cannot_verify_replacement_credentials(
             is None
         )
     else:
+        runner.store.mark_provider_login_signed_out(
+            LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
+            member_id="member",
+            source="sign_out",
+            detail="Signed out by a member.",
+        )
         (tmp_path / "signed-in").write_text("")
         started = runner.start_sign_in(
             LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), member_id="member"
@@ -903,15 +921,16 @@ def test_cancelling_before_the_gate_opens_starts_no_login_and_leaves_the_account
 ) -> None:
     """A cancellation while the worker waits for the credential gate stops the attempt.
 
-    Nothing is fenced and no provider process runs, so an account that was
-    signed in stays signed in.
+    Nothing is fenced and no provider process runs, so the account keeps the
+    state it already had.
     """
 
     runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
-    signed_in = runner.store.mark_provider_login_verified(
+    before = runner.store.mark_provider_login_signed_out(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         member_id="member",
-        detail="Authenticated request succeeded.",
+        source="sign_out",
+        detail="Signed out by a member.",
     )
 
     with runner.launcher.credential_gate.hold_blocking(
@@ -928,7 +947,7 @@ def test_cancelling_before_the_gate_opens_starts_no_login_and_leaves_the_account
     after = runner.store.provider_login_state(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
     )
-    assert (after.state, after.generation) == (signed_in.state, signed_in.generation)
+    assert (after.state, after.generation) == (before.state, before.generation)
     assert not (tmp_path / "argv.jsonl").exists(), "a cancelled sign-in launched the provider"
 
 
@@ -1356,3 +1375,68 @@ def test_runner_recovery_finishes_shared_drain(tmp_path, monkeypatch):
     runner.store.set_provider_login_draining(key)
     runner.reconcile_recovery()
     assert runner.store.provider_login_state(key).removed_at is not None
+
+
+def test_a_signed_in_login_is_not_replaced_by_a_new_device_sign_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    runner.store.mark_provider_login_verified(key, member_id="member", detail="ok")
+
+    with pytest.raises(ProviderLoginRefused) as refused:
+        runner.start_sign_in(key, member_id="other")
+
+    assert refused.value.status_code == 409
+    assert runner.running_sign_in(key) is None
+    assert runner.store.provider_login_state(key).state == "signed_in"
+
+
+def test_credential_actions_answer_busy_instead_of_waiting_behind_a_sign_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provider_sign_in, "PROVIDER_LOGIN_GATE_WAIT_SECONDS", 0.2)
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+
+    with runner.launcher.credential_gate.hold_blocking(key):
+        for action in (runner.verify, runner.sign_out):
+            with pytest.raises(ProviderLoginRefused) as refused:
+                action(key, member_id="member")
+            assert refused.value.status_code == 409
+
+
+def test_a_token_save_interrupted_by_a_restart_asks_for_the_token_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_claude(tmp_path))
+    key = LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+    runner.store.mark_provider_login_signed_out(
+        key,
+        member_id="member",
+        source="sign_out",
+        detail=provider_sign_in.TOKEN_SAVE_IN_PROGRESS_DETAIL,
+    )
+
+    assert [state.provider for state in runner.settle_interrupted_sign_ins()] == ["claude"]
+    assert (
+        runner.store.provider_login_state(key).detail
+        == provider_sign_in.TOKEN_SAVE_INTERRUPTED_DETAIL
+    )
+
+
+def test_a_sign_in_queued_behind_a_verify_does_not_replace_the_verified_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = _runner(tmp_path, monkeypatch, _fake_codex(tmp_path))
+    key = LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
+
+    with runner.launcher.credential_gate.hold_blocking(key):
+        started = runner.start_sign_in(key, member_id="member")
+        runner.store.mark_provider_login_verified(key, member_id="other", detail="ok")
+
+    ended = _status_when(runner, started.attempt_id, lambda status: status.state != "pending")
+    assert ended.state == "failed"
+    assert ended.detail == provider_sign_in.SIGNED_IN_REPLACE_DETAIL
+    assert runner.store.provider_login_state(key).state == "signed_in"
+    assert not (tmp_path / "argv.jsonl").exists()

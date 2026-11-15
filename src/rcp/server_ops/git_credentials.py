@@ -186,6 +186,65 @@ class GitCredentialManager:
     ) -> None:
         """Prove a replacement restore will not adopt an old deterministic key."""
 
+        if not self._key_absent(
+            machine,
+            space_id=space_id,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        ):
+            raise GitCredentialRefused(
+                "A deterministic deploy-key path already exists before this restore recorded "
+                "key generation. Preserve and inspect it; RCP will not adopt it as a fresh key."
+            )
+
+    def existing_key(
+        self,
+        machine: MachineRoute,
+        repository: GitHubRepositoryRef,
+        *,
+        space_id: str,
+        project_id: str,
+        repository_alias: str,
+    ) -> DeployKeyMaterial | None:
+        """Read the key at its deterministic path, whether or not a label was recorded."""
+
+        if self._key_absent(
+            machine,
+            space_id=space_id,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        ):
+            return None
+        payload = self._helper(
+            machine,
+            (
+                "inspect",
+                machine.os_account,
+                machine.location,
+                str(self.layout.credentials_root) if machine.location == "local" else "-",
+                machine.central_root or "-",
+                space_id,
+                project_id,
+                repository_alias,
+            ),
+        )
+        return self._material(
+            payload,
+            machine,
+            repository,
+            space_id=space_id,
+            project_id=project_id,
+            repository_alias=repository_alias,
+        )
+
+    def _key_absent(
+        self,
+        machine: MachineRoute,
+        *,
+        space_id: str,
+        project_id: str,
+        repository_alias: str,
+    ) -> bool:
         payload = self._helper(
             machine,
             (
@@ -208,11 +267,9 @@ class GitCredentialManager:
             "absent",
         }
         if set(payload) != expected_keys or not isinstance(payload["absent"], bool):
-            raise GitCredentialRefused(
-                "The recovery deploy-key preflight returned an invalid receipt."
-            )
+            raise GitCredentialRefused("The deploy-key absence probe returned an invalid receipt.")
         if not all(isinstance(payload[name], str) for name in expected_keys if name != "absent"):
-            raise GitCredentialRefused("The recovery deploy-key preflight returned invalid fields.")
+            raise GitCredentialRefused("The deploy-key absence probe returned invalid fields.")
         home = str(payload["home"])
         expected_root, expected_private = self._expected_key_paths(
             machine,
@@ -228,13 +285,9 @@ class GitCredentialManager:
             or payload["label"] != label
         ):
             raise GitCredentialRefused(
-                "The recovery deploy-key preflight names another execution target."
+                "The deploy-key absence probe names another execution target."
             )
-        if not payload["absent"]:
-            raise GitCredentialRefused(
-                "A deterministic deploy-key path already exists before this restore recorded "
-                "key generation. Preserve and inspect it; RCP will not adopt it as a fresh key."
-            )
+        return payload["absent"]
 
     def prepare_recovery_key(
         self,

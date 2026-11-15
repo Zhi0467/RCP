@@ -2494,6 +2494,7 @@ def create_app(
     app.state.digest_projector = digest_projector
     app.state.instance_metadata = identity
     app.state.server_control = control_server
+    app.state.project_provision_coordinator = project_provision_coordinator
     app.state.space_id = space_id
     app.state.space_kind = space_kind
     app.state.launcher = launcher
