@@ -9,6 +9,7 @@ busy suite. NON_UUID4 is a constant because a `uuid.uuid1()` call inside
 from __future__ import annotations
 
 import asyncio
+import atexit
 import functools
 import hashlib
 import json
@@ -16,6 +17,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -787,6 +789,15 @@ class _InertSSHAgent:
         pass
 
 
+@functools.cache
+def _test_home() -> Path:
+    """One `HOME` per test process: stable across a module template build and its tests,
+    whose recorded paths must agree."""
+    home = Path(tempfile.mkdtemp(prefix="rcp-test-home-")).resolve()
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+    return home
+
+
 def isolate_host(
     monkeypatch: pytest.MonkeyPatch, root: Path, *, provider_discovery: bool = False
 ) -> list[BackgroundAgentTasks]:
@@ -796,8 +807,9 @@ def isolate_host(
     them down. A module-scoped template build applies this with its own
     `MonkeyPatch`, because the function-scoped autouse fixture has not run yet.
 
-    Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory,
-    Codex home and `HOME`, so no test touches the developer's live state. Provider discovery
+    Each test gets its own provider lock root, `~/.rcp` temp dir, SSH control directory
+    and Codex home, and every test in the process shares one temporary `HOME`, so no
+    test touches the developer's live state. Provider discovery
     returns nothing, so an unconfigured provider refuses before any real CLI runs or
     bills a turn; the `real_provider_discovery` marker opts out. Every engine registers
     for shutdown at construction, because most test apps never run a lifespan and would
@@ -815,7 +827,7 @@ def isolate_host(
     monkeypatch.setattr("rcp.transport.remote_transfer_git._rcp_temp_dir", lambda: root)
     monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
     monkeypatch.setenv("CODEX_HOME", str(root / "machine-codex-home"))
-    monkeypatch.setenv("HOME", str(root / "test-home"))
+    monkeypatch.setenv("HOME", str(_test_home()))
 
     if not provider_discovery:
         monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)

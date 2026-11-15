@@ -130,6 +130,7 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
+    RUN_STAGE_RETENTION_DAYS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -187,7 +188,11 @@ from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
-from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
+from rcp.runs.shared import (
+    _protected_hidden_reads,
+    _protected_run_stage_roots,
+    _sweep_stale_stages,
+)
 from rcp.runs.task_policy import (
     load_stored_request,
     task_experiment_episode_id,
@@ -280,6 +285,7 @@ from rcp.transfer.target import (
     TargetTransferUploadCoordinator,
 )
 from rcp.transport import RemoteRunStage, StateUnavailable, fence_canonical_lock_waits
+from rcp.transport.remote_stage_root import sweep_hidden_reads
 from rcp.transport.ssh import sweep_control_sockets
 from rcp.watchers import (
     GraphWatcherRetryRegistry,
@@ -1886,11 +1892,17 @@ def create_app(
         # project is local still has remote ones.
         await asyncio.to_thread(sweep_control_sockets)
 
+    async def sweep_local_hidden_reads() -> None:
+        protected = _protected_hidden_reads(store)
+        if protected is not None:
+            await asyncio.to_thread(sweep_hidden_reads, RUN_STAGE_RETENTION_DAYS, set(protected))
+
     async def sweep_remote_run_stages() -> None:
         try:
             await asyncio.to_thread(
                 RemoteRunStage(default_state_host).sweep,
                 protected_roots=_protected_run_stage_roots(store, default_state_machine_id),
+                protected_hidden_reads=_protected_hidden_reads(store),
             )
         except Exception as exc:
             # Stale scratch cleanup is best-effort and must not delay app
@@ -2317,6 +2329,7 @@ def create_app(
                     graph_history_cache(source_root.parent / GRAPH_HISTORY_DIRECTORY).sweep()
                 startup_maintenance.append(asyncio.create_task(warm_provider_capabilities()))
                 startup_maintenance.append(asyncio.create_task(sweep_stale_control_sockets()))
+                startup_maintenance.append(asyncio.create_task(sweep_local_hidden_reads()))
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))

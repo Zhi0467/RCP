@@ -285,7 +285,7 @@ def test_a_launch_policy_stays_out_of_the_real_home(manifest, tmp_path):
     )
     wrapper = Path(scope.wrapper_path())
     assert wrapper.is_file()
-    assert wrapper.resolve().is_relative_to(tmp_path.resolve())
+    assert not wrapper.resolve().is_relative_to(real)
     assert not (real / ".rcp" / "hidden-read" / scope.fingerprint).exists()
 
 

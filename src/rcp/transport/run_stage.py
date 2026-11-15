@@ -130,8 +130,10 @@ class RemoteRunStage:
         *,
         retain_days: int = RUN_STAGE_RETENTION_DAYS,
         protected_roots: Iterable[str] | None = (),
+        protected_hidden_reads: Iterable[str] | None = None,
     ) -> None:
-        """Age out stages left behind by failed runs.
+        """Age out stages left behind by failed runs, and with
+        `protected_hidden_reads` the launch policy folders no live run names.
 
         A failed run deliberately keeps its scratch folder so the work is not
         lost, which means nothing else ever deletes it. Best effort: a stage that
@@ -142,6 +144,13 @@ class RemoteRunStage:
         protected = tuple(dict.fromkeys(protected_roots))
         if any(not _safe_root(root) for root in protected):
             raise ValueError("protected remote run stage is outside the staging boundary")
+        hidden_reads = (
+            None if protected_hidden_reads is None else tuple(dict.fromkeys(protected_hidden_reads))
+        )
+        if hidden_reads is not None and any(
+            not remote_stage_root.HIDDEN_READ_NAME.fullmatch(name) for name in hidden_reads
+        ):
+            raise ValueError("protected hidden-read folder is not a policy fingerprint")
         self._ssh(
             [
                 "python3",
@@ -150,6 +159,7 @@ class RemoteRunStage:
                 "sweep",
                 str(int(retain_days)),
                 json.dumps(protected, separators=(",", ":")),
+                *(() if hidden_reads is None else (json.dumps(hidden_reads),)),
             ]
         )
 
@@ -159,6 +169,7 @@ class RemoteRunStage:
         *,
         reuse: bool = False,
         protected_roots: Iterable[str] | None = (),
+        protected_hidden_reads: Iterable[str] | None = None,
         thread_owner: str | None = None,
     ) -> RemoteRunStage:
         """Create this stage, or with `reuse` adopt it when it already exists.
@@ -166,7 +177,7 @@ class RemoteRunStage:
         A chat conversation keeps one stage across its turns, so opening it a
         second time must land in the same directory rather than fail.
         """
-        self.sweep(protected_roots=protected_roots)
+        self.sweep(protected_roots=protected_roots, protected_hidden_reads=protected_hidden_reads)
         label = "" if operation_id is None else _safe_label(operation_id)
         result = self._ssh(
             [

@@ -77,6 +77,7 @@ from rcp.runs.shared import (
     _collect_patch_text,
     _existing_patch_digest,
     _pinned_to_profile,
+    _protected_hidden_reads,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _record_agent_launch_receipt,
@@ -771,6 +772,9 @@ async def stream_graph_run(
                         protected_roots=_protected_run_stage_roots(
                             execution.store if execution is not None else None,
                             machine_id,
+                        ),
+                        protected_hidden_reads=_protected_hidden_reads(
+                            execution.store if execution is not None else None
                         ),
                     )
                     if execution is not None:
