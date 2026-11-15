@@ -698,33 +698,6 @@ PAPER_LIVE = Entry(
     ),
 )
 
-COMMENT_THREAD = Entry(
-    name="comment thread",
-    status="state",
-    tables=frozenset({"comment_threads"}),
-    writers=(
-        CommentStoreMixin.create_comment_thread,
-        CommentStoreMixin.delete_comment_post,
-        CommentStoreMixin.mark_threads_sent,
-        CommentStoreMixin.resolve_comment_thread,
-        _reopen,
-        delete_comments_by_target,
-        ProjectStoreMixin.delete_project_records,
-    ),
-    rules=(
-        Rule(
-            "send_resolves",
-            "An admitted Send resolves a thread and records the operation it went to.",
-            "paper spec: Thread states",
-        ),
-        Rule(
-            "reopen_clears_sent",
-            "Reopening or replying opens a thread and clears its sent mark.",
-            "paper spec: Thread states",
-        ),
-    ),
-)
-
 MIRRORED_TERMINAL = Entry(
     name="mirrored terminal",
     status="ended_at",
@@ -1031,6 +1004,31 @@ NOTIFICATION_DELIVERY = Entry(
     ),
 )
 
+COMMENT_THREAD = Entry(
+    name="comment thread",
+    status="state",
+    tables=frozenset({"comment_threads"}),
+    writers=(
+        CommentStoreMixin.create_comment_thread,
+        CommentStoreMixin.resolve_comment_thread,
+        CommentStoreMixin.mark_threads_sent,
+        _reopen,
+        delete_comments_by_target,
+    ),
+    rules=(
+        Rule(
+            "reply_reopens",
+            "A reply or Reopen returns a thread to open and clears its send mark.",
+            "comments design: Thread states",
+        ),
+        Rule(
+            "send_resolves_what_it_rendered",
+            "An admitted send resolves only open threads with no post newer than it rendered.",
+            "code guard at mark_threads_sent",
+        ),
+    ),
+)
+
 ENTRIES = (
     PROJECT_PROVISIONING,
     PROJECT_TRANSFER,
@@ -1061,8 +1059,6 @@ NOT_LIFECYCLE: dict[str, str] = {
     "paper_turn_files": "append-only turn file list",
     "paper_publication": "retired publication row; the Paper migration clears its hold",
     "paper_migrations": "one-shot migration receipts",
-    "comment_mentions": "mention rows; observed_at is a one-shot delivery mark",
-    "comment_posts": "thread posts; edit and delete are author actions",
     "_legacy_campaigns_archive": "frozen archive of retired campaign rows, only deleted",
     "agent_threads": "thread identity row; closing is one-way",
     "agent_usage": "append-only usage events",
@@ -1082,6 +1078,8 @@ NOT_LIFECYCLE: dict[str, str] = {
     "bulletin_command_receipts": "keyed command receipts",
     "bulletin_mention_observations": "notification observation cursor",
     "bulletin_posts": "message rows; edit and delete are marks, not states",
+    "comment_mentions": "mention rows with a notification observation cursor",
+    "comment_posts": "append-only thread posts",
     "bulletin_reads": "per-member read cursor",
     "chat_browser_preferences": "per-chat preference",
     "chat_display": "per-chat title and archive preference",

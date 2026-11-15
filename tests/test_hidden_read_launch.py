@@ -151,10 +151,11 @@ async def test_launcher_always_passes_scope(monkeypatch, tmp_path, provider, cap
 
 
 @pytest.mark.parametrize("provider", ("claude", "opencode"))
+@pytest.mark.parametrize("profile_gaps", (False, True))
 @pytest.mark.parametrize("failed", (False, True))
 @pytest.mark.parametrize("remote", (False, True))
 def test_preparation_confirms_before_resolving_and_stages_same_policy(
-    monkeypatch, tmp_path, manifest, provider, failed, remote
+    monkeypatch, tmp_path, manifest, provider, profile_gaps, failed, remote
 ):
     """The wrapper is staged outside the writable workspace, inside a folder the scope hides, and
     OpenCode executes it directly as its SHELL.
@@ -162,6 +163,8 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
     from rcp import ssh_agent
     from rcp.agents import hidden_read
 
+    if profile_gaps:
+        monkeypatch.setattr(type(profile_for(provider)), "hidden_read_gaps", ("shell_wrapper",))
     order = []
     monkeypatch.setattr(ssh_agent, "user_ssh_identity_candidates", lambda _: ("/user/key",))
     monkeypatch.setattr(ssh_agent, "running_agent_socket", lambda: "/deploy/socket")
@@ -253,7 +256,7 @@ def test_preparation_confirms_before_resolving_and_stages_same_policy(
         assert os.access(wrapper, os.X_OK)
     assert HiddenReadScope.model_validate_json(files[wrapper.name + ".policy.json"]) == scope
     assert files[wrapper.name] == staged_hidden_read_source()
-    if provider == "opencode":
+    if provider == "opencode" or profile_gaps:
         assert "provider_native_tools_uncovered" in scope.enforcement.reasons
 
 

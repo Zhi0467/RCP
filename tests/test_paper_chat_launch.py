@@ -54,6 +54,7 @@ def test_paper_root_is_a_writable_root_that_changes_scope_identity() -> None:
 
 @pytest.mark.parametrize("paper_root", [None, PAPER])
 def test_each_provider_writes_the_paper_only_with_a_paper_scope(paper_root, tmp_path) -> None:
+    from rcp.providers.agy.profile import _policy as agy_policy
     from rcp.providers.claude.profile import _claude_write_settings
     from rcp.providers.codex.profile import _codex_permission_profile
     from rcp.providers.opencode.profile import _permission, _root_pattern
@@ -74,6 +75,10 @@ def test_each_provider_writes_the_paper_only_with_a_paper_scope(paper_root, tmp_
     assert (edit.get(_root_pattern(PAPER)) == "allow") is granted
     if granted:
         assert order.index(_root_pattern(PAPER)) > order.index(_root_pattern("/home/rcp/data"))
+
+    agy = agy_policy("work_auto", tmp_path, [], scope, None)["permissions"]
+    assert (f"write_file({PAPER})" in agy["allow"]) is granted
+    assert ("write_file(/home/rcp/data)" in agy["deny"]) is not granted
 
 
 @pytest.mark.parametrize("focus", [None, "paper"])

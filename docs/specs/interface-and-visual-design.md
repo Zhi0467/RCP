@@ -553,7 +553,8 @@ including on desktop. Voice and handoff source icons sit inside the human messag
 bubble. Answer comments join the next message only in Space threads. In a
 project chat, selected reply text starts a
 [shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
-at the quote's end opens it, the header count lists the chat's threads, and Send
+just past the quote's end opens it, the header count lists the chat's reply and
+inline-artifact threads, and Send
 to agent carries threads through the composer's own send, a steer while a turn runs.
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve

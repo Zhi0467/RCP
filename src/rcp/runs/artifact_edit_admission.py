@@ -11,6 +11,7 @@ from typing import Literal
 from rcp.artifact_comments import supports_comments
 from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+from rcp.providers import profile_for
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
 from rcp.service import (
@@ -20,6 +21,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, Artifact
+from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage
 
@@ -52,7 +54,7 @@ def artifact_edit_availability(
             raise ValueError("The artifact belongs to another graph target.")
     except (KeyError, OSError, ValueError) as exc:
         return ArtifactEditAvailability(False, str(exc))
-    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    chat_id = artifact_chat_id(origin, reply_episode_id)
     if (
         isinstance(chat_id, str)
         and chat_id
@@ -65,12 +67,14 @@ def artifact_edit_availability(
         )
         reason = "The artifact has expired." if expired else None
         return ArtifactEditAvailability(reason is None, reason)
+    provider_fresh = _origin_keeps_tools(origin)
     fresh = False
     try:
-        try:
-            _origin_master(store, artifact.project_id, origin, verify=False)
-        except ArtifactFreshSessionRequired:
-            fresh = True
+        if not provider_fresh:
+            try:
+                _origin_master(store, artifact.project_id, origin, verify=False)
+            except ArtifactFreshSessionRequired:
+                fresh = True
         now = store.now()
         edit_reason = store.session_launch_unavailable_reason(
             AgentTaskRecord(
@@ -82,14 +86,19 @@ def artifact_edit_availability(
                 created_at=now,
                 updated_at=now,
                 request={"provider": origin.request.get("provider")},
-                native_session_id=None if fresh else origin.native_session_id,
-                stage_machine_id=None if fresh else origin.stage_machine_id,
-                stage_root=None if fresh else origin.stage_root,
+                native_session_id=None if fresh or provider_fresh else origin.native_session_id,
+                stage_machine_id=None if fresh or provider_fresh else origin.stage_machine_id,
+                stage_root=None if fresh or provider_fresh else origin.stage_root,
             )
         )
     except (KeyError, OSError, ValueError) as exc:
-        return ArtifactEditAvailability(False, str(exc), fresh)
-    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh)
+        return ArtifactEditAvailability(False, str(exc), fresh or provider_fresh)
+    return ArtifactEditAvailability(edit_reason is None, edit_reason, fresh or provider_fresh)
+
+
+def _origin_keeps_tools(origin: AgentTaskRecord) -> bool:
+    provider = origin.request.get("provider")
+    return isinstance(provider, str) and profile_for(provider).resume_keeps_tools
 
 
 def _require_master_owner(owner: AgentTaskRecord | None) -> None:
@@ -133,40 +142,6 @@ def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *,
         raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
     _require_master_owner(store.agent_task(found[0]))
     return found, content
-
-
-def artifact_reply_origin(
-    store: AppStore, artifact: Artifact
-) -> tuple[AgentTaskRecord, str | None]:
-    origin = store.agent_task(artifact.origin_operation_id or "")
-    if origin is None or origin.project_id != artifact.project_id:
-        raise AgentTaskAdmissionConflict("The artifact's origin task is unavailable.")
-    episode = store.episode(artifact.episode_id or origin.episode_id or "")
-    if origin.kind == "episode_report":
-        parent = store.agent_task(origin.parent_operation_id or "")
-        if parent is not None:
-            origin = parent
-    if origin.request.get("chat_id"):
-        return origin, None
-    if episode is not None and episode.mode == "auto_research":
-        root = store.agent_task(episode.root_operation_id or "")
-        if root is None:
-            raise AgentTaskAdmissionConflict("The episode's orchestrator thread is unavailable.")
-        return origin, episode.episode_id
-    if episode is not None and episode.mode == "experiment_loop":
-        for task in reversed(store.episode_tasks(episode.episode_id)):
-            if task.request.get("chat_id") and task.request.get("patch_kind") == "experiment_loop":
-                return task, None
-    raise AgentTaskAdmissionConflict("The artifact's reply thread is unavailable.")
-
-
-def _artifact_chat_id(origin: AgentTaskRecord, reply_episode_id: str | None) -> object:
-    """The artifact's conversation: an orchestrator thread's is its chain root's branch."""
-    return (
-        origin.graph_target.branch_id
-        if reply_episode_id is not None
-        else origin.request.get("chat_id")
-    )
 
 
 def artifact_comment_message(message: str | None, context: ArtifactContextRequest) -> str:
@@ -251,7 +226,7 @@ def admit_chat_artifact_comment(
     context = request.artifact_context
     assert context is not None
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
-    if not request.chat_id or _artifact_chat_id(origin, reply_episode_id) != request.chat_id:
+    if not request.chat_id or artifact_chat_id(origin, reply_episode_id) != request.chat_id:
         raise ValueError("The artifact belongs to another chat.")
     # A read-only Auto-research child or running orchestrator chat composes only
     # comments, which keep the origin-bound scratch edit the viewer uses. Any
@@ -283,7 +258,7 @@ def artifact_send_chat_turn(
     latest profile, as the composer would.
     """
     origin, reply_episode_id = artifact_reply_origin(store, artifact)
-    chat_id = _artifact_chat_id(origin, reply_episode_id)
+    chat_id = artifact_chat_id(origin, reply_episode_id)
     if not isinstance(chat_id, str) or not chat_id:
         return None
     if store.child_human_turn_refusal(artifact.project_id, chat_id) is not None:
@@ -320,7 +295,8 @@ def admit_artifact_edit(
         except ArtifactFreshSessionRequired:
             pass
     artifact, origin, reply_episode_id = _checked_artifact(store, service, project_id, context)
-    fresh = context.fresh_session
+    provider_fresh = _origin_keeps_tools(origin)
+    fresh = context.fresh_session or provider_fresh
     found, content = None, None
     if not fresh:
         found, content = _origin_master(store, project_id, origin, verify=True)
@@ -363,8 +339,12 @@ def admit_artifact_edit(
     }
     for key in ("provider", "model", "reasoning", "run_on"):
         updates[key] = origin.request.get(key)
+    if fresh:
+        updates.update(fork_session_id=None, fork_source_machine_id=None, fork_source_cwd=None)
     admitted = RunRequest.model_validate({**request.model_dump(mode="python"), **updates})
-    if fresh or not admitted.provider or not admitted.reasoning or not admitted.run_on:
+    if not provider_fresh and (
+        fresh or not admitted.provider or not admitted.reasoning or not admitted.run_on
+    ):
         if not fresh:
             raise AgentTaskAdmissionConflict("The artifact's execution profile is unavailable.")
         profile = service.resolve_agent_profile(
@@ -382,6 +362,8 @@ def admit_artifact_edit(
                 "run_on": service.manifest.base_machine,
             }
         )
+    if provider_fresh and not admitted.run_on:
+        admitted = admitted.model_copy(update={"run_on": service.manifest.base_machine})
     resolved = service.resolve_skill_request(admitted)
     assert isinstance(resolved, RunRequest)
     return resolved

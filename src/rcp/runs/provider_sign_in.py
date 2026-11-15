@@ -7,18 +7,20 @@ import logging
 import subprocess
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.credential_gate import ProviderCredentialBusy
 from rcp.agents.provider_accounts import (
     ProviderAccounts,
 )
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import (
+    PROVIDER_LOGIN_GATE_WAIT_SECONDS,
     PROVIDER_LOGIN_VERIFY_TIMEOUT_SECONDS,
     PROVIDER_SIGN_IN_CANCEL_GRACE_SECONDS,
     PROVIDER_SIGN_IN_TIMEOUT_SECONDS,
@@ -42,9 +44,15 @@ SIGN_IN_INTERRUPTED_DETAIL = "The last sign-in did not finish. Start it again to
 #: account upgraded mid-attempt still carries it, and would otherwise keep
 #: describing a sign-in that no process is running.
 LEGACY_SIGN_IN_IN_PROGRESS_DETAIL = "A replacement login is awaiting verification."
-INTERRUPTED_SIGN_IN_MARKERS = frozenset(
-    {SIGN_IN_IN_PROGRESS_DETAIL, LEGACY_SIGN_IN_IN_PROGRESS_DETAIL}
-)
+TOKEN_SAVE_IN_PROGRESS_DETAIL = "A replacement credential is awaiting verification."
+TOKEN_SAVE_INTERRUPTED_DETAIL = "Saving the token was interrupted. Paste it again."
+INTERRUPTED_SIGN_IN_DETAILS = {
+    SIGN_IN_IN_PROGRESS_DETAIL: SIGN_IN_INTERRUPTED_DETAIL,
+    LEGACY_SIGN_IN_IN_PROGRESS_DETAIL: SIGN_IN_INTERRUPTED_DETAIL,
+    TOKEN_SAVE_IN_PROGRESS_DETAIL: TOKEN_SAVE_INTERRUPTED_DETAIL,
+}
+LOGIN_BUSY_DETAIL = "This login is busy. Try again shortly."
+SIGNED_IN_REPLACE_DETAIL = "This login is already signed in. Sign out first to replace it."
 
 
 class ProviderLoginRefused(ValueError):
@@ -69,6 +77,7 @@ class ProviderSignInStatus(BaseModel):
     provider: str
     machine_id: str
     state: Literal["pending", "succeeded", "failed"]
+    awaiting_code: bool = False
     user_code: str | None = None
     verification_url: str | None = None
     detail: str | None = None
@@ -240,7 +249,7 @@ class ProviderSignInRunner:
     def verify(self, login: LoginKey, *, member_id: str) -> ProviderLoginStateRecord:
         self.require_login(login, member_id=member_id)
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             try:
                 state = self._verify_locked(login, binary, binaries, member_id)
             finally:
@@ -272,7 +281,9 @@ class ProviderSignInRunner:
         auth = profile.authentication
         # Device verification must probe even a signed-out row: a newly accepted
         # device credential has not yet earned signed_in in durable storage.
-        if "device_code" not in auth.methods and not auth.credential_available(
+        if not {"device_code", "paste_code"}.intersection(
+            auth.methods
+        ) and not auth.credential_available(
             self.credentials, login.machine_id, login.login_id, login_state=current
         ):
             self.store.mark_provider_login_signed_out(
@@ -331,9 +342,29 @@ class ProviderSignInRunner:
         for binary in binaries:
             self.launcher.invalidate_readiness(login, binary=binary)
 
+    def _require_replaceable(self, login: LoginKey, *, member_id: str) -> None:
+        current = self.require_login(login, member_id=member_id)
+        if current.state == "signed_in" and current.source == "verify":
+            raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
+
+    @contextlib.contextmanager
+    def _member_hold(self, login: LoginKey) -> Iterator[None]:
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    self.launcher.credential_gate.hold_blocking(
+                        login, wait_seconds=PROVIDER_LOGIN_GATE_WAIT_SECONDS
+                    )
+                )
+            except ProviderCredentialBusy as exc:
+                raise ProviderLoginRefused(LOGIN_BUSY_DETAIL) from exc
+            yield
+
     def start_sign_in(self, login: LoginKey, *, member_id: str) -> ProviderSignInStatus:
-        self.require_login(login, member_id=member_id)
-        if "device_code" not in profile_for(login.provider).authentication.methods:
+        self._require_replaceable(login, member_id=member_id)
+        if not {"device_code", "paste_code"}.intersection(
+            profile_for(login.provider).authentication.methods
+        ):
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
             )
@@ -376,13 +407,13 @@ class ProviderSignInRunner:
 
         settled = []
         for state in self.store.provider_login_states():
-            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_MARKERS:
+            if state.state == "signed_out" and state.detail in INTERRUPTED_SIGN_IN_DETAILS:
                 settled.append(
                     self.store.mark_provider_login_signed_out(
                         LoginKey(state.provider, state.machine_id, state.login_id),
                         member_id=None,
                         source="restore",
-                        detail=SIGN_IN_INTERRUPTED_DETAIL,
+                        detail=INTERRUPTED_SIGN_IN_DETAILS[state.detail],
                     )
                 )
         return settled
@@ -419,7 +450,9 @@ class ProviderSignInRunner:
             self._canceled[attempt_id] = member_id
             # The code dies with the process; showing it would invite a sign-in
             # that can never be saved.
-            status = status.model_copy(update={"user_code": None, "verification_url": None})
+            status = status.model_copy(
+                update={"user_code": None, "verification_url": None, "awaiting_code": False}
+            )
             self._sign_ins[attempt_id] = status
         if entry is not None:
             process, login = entry
@@ -428,6 +461,30 @@ class ProviderSignInRunner:
             grace.daemon = True
             grace.start()
         return status
+
+    def submit_code(self, attempt_id: str, code: str, *, member_id: str) -> ProviderSignInStatus:
+        with self._lock:
+            status = self._sign_ins.get(attempt_id)
+            if status is None or status.started_by != member_id:
+                raise ProviderLoginRefused("Unknown sign-in.", status_code=404)
+            entry = self._logins.get(attempt_id)
+            if (
+                status.state != "pending"
+                or not status.awaiting_code
+                or entry is None
+                or not entry[1].accepts_code
+                or attempt_id in self._canceled
+            ):
+                raise ProviderLoginRefused("This sign-in is not awaiting a code.")
+            if not code.strip() or "\n" in code or "\r" in code:
+                raise ProviderLoginRefused("Invalid sign-in code.", status_code=422)
+            process, login = entry
+            if process.poll() is not None:
+                raise ProviderLoginRefused("This sign-in is not awaiting a code.")
+            status = status.model_copy(update={"awaiting_code": False})
+            self._sign_ins[attempt_id] = status
+            _write(process, login.code_input(code))
+            return status
 
     def cancel_login_sign_in(self, key: LoginKey) -> None:
         """Finish a pending attempt's credential work before removal takes its gate."""
@@ -472,7 +529,7 @@ class ProviderSignInRunner:
             arguments,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if login.accepts_code else subprocess.DEVNULL,
             text=True,
             env=environment.local_env if not host else None,
         )
@@ -496,21 +553,33 @@ class ProviderSignInRunner:
         watchdog.start()
         failure: str | None = None
         finished = False
+        paste_url_seen = False
         try:
             _write(process, login.initial_input())
             assert process.stdout is not None
             for line in process.stdout:
-                step = login.receive_line(line)
-                if step.fields:
-                    self._update(status.attempt_id, **step.fields)
+                with self._lock:
+                    current = self._sign_ins[status.attempt_id]
+                    if login.accepts_code and (
+                        paste_url_seen or status.attempt_id in self._canceled
+                    ):
+                        continue
+                    step = login.receive_line(line)
+                    if step.fields:
+                        changes: dict[str, object] = dict(step.fields)
+                        if login.accepts_code and step.fields.get("verification_url"):
+                            paste_url_seen = True
+                            changes["awaiting_code"] = True
+                        self._sign_ins[status.attempt_id] = current.model_copy(update=changes)
                 if step.send:
                     _write(process, step.send)
                 if step.finished:
                     failure, finished = step.failure, True
                     break
+            if login.accepts_code and not finished:
+                finished = process.wait() == 0
         finally:
             watchdog.cancel()
-            # The protocol is over; never leave the provider process behind.
             _kill(process)
             returncode = process.wait()
             with self._lock:
@@ -519,6 +588,9 @@ class ProviderSignInRunner:
                 # landed between them would otherwise be acknowledged to the
                 # member and then contradicted by a successful sign-in.
                 self._logins.pop(status.attempt_id, None)
+                self._sign_ins[status.attempt_id] = self._sign_ins[status.attempt_id].model_copy(
+                    update={"awaiting_code": False}
+                )
                 canceled = (
                     SignInCanceled(self._canceled.pop(status.attempt_id))
                     if status.attempt_id in self._canceled
@@ -552,7 +624,7 @@ class ProviderSignInRunner:
                 canceled = self._take_cancellation(status.attempt_id)
                 if canceled:
                     raise canceled
-                self.require_login(login, member_id=status.started_by)
+                self._require_replaceable(login, member_id=status.started_by)
                 # Native login can replace its credential before verification runs.
                 # Persist the fence first so interruption cannot retain old eligibility.
                 self.store.mark_provider_login_signed_out(
@@ -626,7 +698,7 @@ class ProviderSignInRunner:
                 "Token entry is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             self.require_login(login, member_id=member_id)
             try:
                 token = auth.validate_token(token)
@@ -638,7 +710,7 @@ class ProviderSignInRunner:
                 login,
                 member_id=member_id,
                 source="sign_out",
-                detail="A replacement credential is awaiting verification.",
+                detail=TOKEN_SAVE_IN_PROGRESS_DETAIL,
             )
             self._forget_readiness(login, binaries)
             try:
@@ -677,7 +749,7 @@ class ProviderSignInRunner:
                 "Sign-out is not supported by this provider.", status_code=422
             )
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
-        with self.launcher.credential_gate.hold_blocking(login):
+        with self._member_hold(login):
             self.require_login(login, member_id=member_id)
             detail = "Signed out by a member."
             state = self.store.mark_provider_login_signed_out(

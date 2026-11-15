@@ -336,6 +336,7 @@ def prepare_hidden_read_launch(
     from rcp.agents.staged_hidden_read import install as install_hidden_read_files
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.limits import HIDDEN_READ_STAGE_TIMEOUT_SECONDS
+    from rcp.providers import profile_for
     from rcp.ssh_agent import (
         confirm_remote_key_evidence,
     )
@@ -371,6 +372,8 @@ def prepare_hidden_read_launch(
             member_ids=member_ids,
         )
         reasons = set(scope.enforcement.reasons)
+        if profile_for(provider).hidden_read_gaps:
+            reasons.add("provider_native_tools_uncovered")
         if provider == "opencode":
             # grep/glob permissions match search patterns, not filesystem paths.
             reasons.add("provider_native_tools_uncovered")

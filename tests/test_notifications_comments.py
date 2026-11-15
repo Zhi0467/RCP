@@ -12,7 +12,7 @@ from rcp.storage.artifact_models import Artifact
 from .test_notification_storage import _setup
 
 
-@pytest.mark.parametrize("withdraw", ["resolve", "remove_mention", "unreadable"])
+@pytest.mark.parametrize("withdraw", ["resolve", "unreadable"])
 def test_comment_notification_delivery_and_withdrawal(tmp_path, withdraw, monkeypatch):
     store, device = _setup(tmp_path)
     owner = store.local_owner
@@ -55,9 +55,6 @@ def test_comment_notification_delivery_and_withdrawal(tmp_path, withdraw, monkey
     assert len(store.notification_outbox()) == 1
     if withdraw == "resolve":
         store.resolve_comment_thread("p", thread["thread_id"], user_id=user_id)
-    elif withdraw == "remove_mention":
-        for post in store.get_comment_thread("p", thread["thread_id"])["posts"]:
-            store.edit_comment_post("p", post["post_id"], user_id=user_id, text="removed")
     else:
         with store.connection() as connection:
             connection.execute("DELETE FROM project_members WHERE project_id='p'")

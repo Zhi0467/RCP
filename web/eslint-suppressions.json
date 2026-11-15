@@ -16,7 +16,7 @@
   },
   "src/agentWindow/useAgentWindowArtifacts.tsx": {
     "rcp/no-comments": {
-      "count": 33
+      "count": 32
     }
   },
   "src/agentWindow/useAgentWindowScroll.ts": {
@@ -141,7 +141,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 65
+      "count": 64
     }
   },
   "src/chat/AgentRename.tsx": {
@@ -679,11 +679,6 @@
       "count": 22
     }
   },
-  "src/projects/ProviderMark.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "src/projects/RepositoryRequests.tsx": {
     "rcp/no-comments": {
       "count": 1
@@ -929,16 +924,6 @@
       "count": 4
     }
   },
-  "tests/artifactCommentPanel.test.mjs": {
-    "rcp/no-comments": {
-      "count": 5
-    }
-  },
-  "tests/artifactSelection.browser.test.mjs": {
-    "rcp/no-comments": {
-      "count": 9
-    }
-  },
   "tests/artifactViewer.browser.test.mjs": {
     "rcp/no-comments": {
       "count": 3
@@ -946,7 +931,7 @@
   },
   "tests/artifacts.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 28
+      "count": 25
     }
   },
   "tests/attentionRunsOntology.test.mjs": {

@@ -42,7 +42,7 @@ async def paper_turn(operation_id: str, request: Request, project_id: str = _mem
     return PaperTurn(before_version_id=before, after_version_id=after, files=rows)
 
 
-@router.get(_PREFIX + "/files/{path:path}", response_model=PaperTurnFile)
+@router.get(_PREFIX + "/file", response_model=PaperTurnFile)
 async def paper_turn_file(
     operation_id: str, path: str, request: Request, project_id: str = _member
 ):

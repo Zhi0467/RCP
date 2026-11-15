@@ -24,17 +24,13 @@ from rcp.api.dependencies import (
 from rcp.api.episode_timeline import worker_label
 from rcp.api.episodes import child_experiment_on_owned_branch, episode_chain_records
 from rcp.api.identity import IdentityAccess
-from rcp.api.tasks import (
-    _agent_artifact_response,
-    prepare_comment_send,
-    require_comment_send_replay,
-    start_ordinary_task,
-)
+from rcp.api.tasks import _agent_artifact_response, start_ordinary_task
 from rcp.artifact_comments import (
     comment_panel,
     selection_frame_addon,
     supports_comments,
 )
+from rcp.artifact_renderer import ArtifactRendererUnavailable
 from rcp.artifact_theme import artifact_color_mode, artifact_theme
 from rcp.artifact_views import (
     InlineAppearance,
@@ -46,6 +42,7 @@ from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactVi
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.comments.models import COMMENT_MEDIA_TYPES
+from rcp.comments.send import artifact_thread_context
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS
 from rcp.projects import ProjectCatalog
@@ -70,6 +67,7 @@ from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.chat_names import chat_titles
 from rcp.storage.client_requests import ClientRequestConflict
+from rcp.storage.comments import CommentError
 from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
@@ -415,12 +413,12 @@ def saved_artifacts(
                 source_chat_href=chat_origins.get(artifact.artifact_id),
                 source_node_id=_source_node_id(store, project_id, origin, artifact.episode_id),
                 authorized_by=origin.authorized_by if origin else None,
-                viewer_url=f"{artifact_url}/viewer" if view not in {"file", "pdf"} else None,
+                viewer_url=f"{artifact_url}/viewer" if view != "file" else None,
                 view=view,
                 available=True,
                 can_download=True,
                 download_url=f"{artifact_url}/download",
-                can_open=view not in {"file", "pdf"},
+                can_open=view != "file",
                 can_delete=store.artifact_delete_refusal(artifact, holds) is None,
             )
         )
@@ -570,9 +568,7 @@ def stored_artifact_state(
         comment_unavailable_reason=availability.comment_unavailable_reason,
         fresh_session_required=availability.fresh_session_required,
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
-        viewer_url=f"{base}/viewer"
-        if artifact_view(artifact.media_type) not in {"pdf", "file"}
-        else None,
+        viewer_url=f"{base}/viewer" if artifact_view(artifact.media_type) != "file" else None,
         download_url=f"{base}/download",
         can_keep=_temporary(store, artifact),
         can_delete=store.artifact_delete_refusal(artifact, store.artifact_deletion_holds()) is None,
@@ -736,6 +732,8 @@ def stored_artifact_viewer(
             if supports_comments(artifact.media_type)
             else None,
         )
+    except ArtifactRendererUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Artifact has no viewer") from exc
     return Response(
@@ -880,17 +878,12 @@ def comment_artifact(
 ):
     author = identity_access.require_patch_capable_identity(request)
     key = str(idempotency_key)
-    message, context = prepare_comment_send(
-        store,
-        project_id,
-        author.user_id,
-        body.thread_ids,
-        key,
-        chat_id=None,
-        artifact_id=artifact_id,
+    sent = artifact_thread_context(
+        store, project_id, author.user_id, body.thread_ids, key, artifact_id=artifact_id
     )
-    assert context is not None
-    context = context.model_copy(update={"fresh_session": body.fresh_session})
+    assert sent.context is not None
+    message = sent.text
+    context = sent.context.model_copy(update={"fresh_session": body.fresh_session})
     artifact = store.artifact(artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -908,7 +901,7 @@ def comment_artifact(
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
-                require_comment_send_replay(record, message, context)
+                sent.require_replay_of(record)
             else:
                 service = get_graph_service(
                     catalog, project_id, origin.graph_target.branch_id, write=True
@@ -936,8 +929,10 @@ def comment_artifact(
                     record = start_artifact_edit(
                         background_tasks, project_id, admitted, authorized_by=author
                     )
-            store.mark_threads_sent(body.thread_ids, record.operation_id, key, author.user_id)
+            store.mark_threads_sent(sent.rendered_through, record.operation_id, key, author.user_id)
             return record.model_dump(mode="json")
+    except CommentError:
+        raise
     except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ArtifactFreshSessionRequired as exc:

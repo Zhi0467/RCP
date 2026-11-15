@@ -32,6 +32,11 @@ class DeviceLoginStep:
 class DeviceLogin:
     """One provider's device sign-in, driven over that provider's structured protocol."""
 
+    accepts_code = False
+
+    def code_input(self, code: str) -> bytes:
+        raise ValueError("This sign-in does not accept a code.")
+
     def command(self, binary: str) -> list[str]:
         raise NotImplementedError
 

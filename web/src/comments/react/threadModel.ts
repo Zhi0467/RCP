@@ -1,4 +1,4 @@
-import { CommentRequestError } from "../api.ts";
+import { ApiError } from "../../core/api.ts";
 import type { CommentTarget, CommentThread } from "../types.ts";
 
 /** Only threads on the asked targets: a read that answers for another target never shows. */
@@ -11,8 +11,9 @@ export function targetThreads(
   return threads.filter((thread) => thread.target_kind === kind && wanted.has(thread.target_id));
 }
 
-/** One client key per set of threads until that send succeeds, so a retry after an
- *  unanswered request repeats the same admission instead of sending twice. */
+/** One client key per set of threads until that send succeeds or the server refuses
+ *  it, so a retry after an unanswered request or a server fault repeats the same
+ *  admission instead of sending twice. */
 export function sendKeys(newKey: () => string = () => crypto.randomUUID()) {
   let last: { ids: string; key: string } | null = null;
   return {
@@ -24,11 +25,13 @@ export function sendKeys(newKey: () => string = () => crypto.randomUUID()) {
     done() {
       last = null;
     },
+    failed(cause: unknown) {
+      if (cause instanceof ApiError && cause.status < 500) last = null;
+    },
   };
 }
 
 export function errorText(cause: unknown): string {
-  if (cause instanceof CommentRequestError) return cause.message;
   return cause instanceof Error ? cause.message : String(cause);
 }
 

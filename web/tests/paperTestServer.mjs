@@ -160,7 +160,7 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
     versions,
     chats,
     turns,
-    respond(path, method = "GET", body = {}) {
+    respond(path, method = "GET", body = {}, query = new URLSearchParams()) {
       if (method === "POST") posts.push({ path, body });
       if (path === "/api/health")
         return { json: { instance_id: "instance", data_dir_id: "data", version: "test" } };
@@ -197,12 +197,12 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
         };
       const chat = chats.find((item) => path.endsWith(`/chats/${item.chat_id}`));
       if (chat) return { json: { ...chat, messages: [] } };
-      const turn = path.match(/\/paper\/turns\/([^/]+)(?:\/files\/(.+))?$/);
+      const turn = path.match(/\/paper\/turns\/([^/]+)(\/file)?$/);
       if (turn) {
         const known = turns[turn[1]];
         if (!known) return { status: 404, json: { detail: "Paper turn not found" } };
         if (!turn[2]) return { json: known.list };
-        return { json: known.files[decodeURIComponent(turn[2])] };
+        return { json: known.files[query.get("path")] };
       }
       if (path.endsWith("/paper/git"))
         return {
@@ -416,7 +416,8 @@ export async function openPaper(
       }).formData();
       body = { path: form.get("path"), text: await form.get("file").text() };
     } else body = request.postDataJSON();
-    return route.fulfill(fixture.respond(new URL(request.url()).pathname, request.method(), body));
+    const url = new URL(request.url());
+    return route.fulfill(fixture.respond(url.pathname, request.method(), body, url.searchParams));
   });
   await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) => {
     const id = new URL(socket.url()).pathname.split("/").at(-2);

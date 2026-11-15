@@ -5,13 +5,15 @@ import type { CommentMember } from "../types.ts";
 const MAX_POST_CHARS = 2048;
 
 /** A post field with the `@` picker: the target's agent first, then members.
- *  Picking the agent saves the post and sends its thread. */
+ *  Picking the agent saves the post and sends its thread; an empty Reply sends the
+ *  thread as it stands. */
 export function CommentEditor({
   label,
   members,
   canSend,
   agentLabel,
   busy,
+  initialText = "",
   autoFocus = false,
   onSubmit,
 }: {
@@ -20,11 +22,12 @@ export function CommentEditor({
   canSend: boolean;
   agentLabel: string;
   busy: boolean;
+  initialText?: string;
   autoFocus?: boolean;
   /** Resolves true once saved, which clears the field. */
   onSubmit: (text: string, send: boolean) => Promise<boolean>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const [query, setQuery] = useState<{ at: number; text: string } | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
@@ -35,7 +38,7 @@ export function CommentEditor({
   const candidates = useMemo(() => commentMentionCandidates(members, false), [members]);
   const empty = !text.trim();
   const submit = async (value: string, send: boolean) => {
-    if (!value.trim() || busy) return;
+    if (busy || (!value.trim() && !(send && label === "Reply"))) return;
     setQuery(null);
     if (await onSubmit(encodeCommentMentions(value.trim(), candidates), send)) setText("");
   };
@@ -121,7 +124,7 @@ export function CommentEditor({
           <button
             type="button"
             className="rcp-comment-primary"
-            disabled={busy || empty}
+            disabled={busy || (empty && label !== "Reply")}
             onClick={() => void submit(text, true)}
           >
             Send to agent

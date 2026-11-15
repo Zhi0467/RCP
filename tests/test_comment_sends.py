@@ -57,7 +57,7 @@ def test_reply_send_and_replay_mark_threads_without_storing_ids(send_app):
 
 
 @pytest.mark.parametrize(
-    "refusal", ["resolved", "wrong-chat", "budget", "two-artifacts", "private"]
+    "refusal", ["resolved", "wrong-chat", "no-chat", "budget", "two-artifacts", "private"]
 )
 def test_send_refusals_leave_threads_unchanged(send_app, refusal):
     _, client, store, task = send_app
@@ -83,6 +83,9 @@ def test_send_refusals_leave_threads_unchanged(send_app, refusal):
         )
     elif refusal == "wrong-chat":
         changes["chat_id"] = str(uuid.uuid4())
+    elif refusal == "no-chat":
+        changes["chat_id"] = ""
+        expected = 422
     elif refusal == "budget":
         changes["message"] = "x" * 32000
         expected = 422

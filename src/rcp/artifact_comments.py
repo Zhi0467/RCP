@@ -73,7 +73,18 @@ def crop_region(frame: Image.Image, *, x: float, y: float, width: float, height:
 
 
 def _selection_script() -> str:
-    return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
+    """The frame add-on, after the Web build's text locator that the rails also use."""
+    try:
+        locator = (web_dist_path() / "comment-text.js").read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ArtifactRendererUnavailable(
+            "The comment locator is unavailable. Rebuild the Web assets."
+        ) from exc
+    return (
+        locator
+        + "\n"
+        + importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
+    )
 
 
 def _comment_panel_assets() -> tuple[str, str]:
@@ -96,9 +107,11 @@ def selection_frame_addon() -> FrameAddon:
     return FrameAddon(
         frame_script=_selection_script()
         + """
+const locateArtifact=installArtifactLocator(document,send);
 let clearSelection=null;
 let selectionActive=false;
 listen(privatePort,'message',(event)=>{
+  if(event.data?.kind==='rcp-artifact-locate') locateArtifact(event.data);
   if(event.data?.kind==='rcp-artifact-selection-enable'){
     selectionActive=true;
     if(!clearSelection)
@@ -117,15 +130,29 @@ listen(privatePort,'message',(event)=>{
 });
 """,
         wrapper_script="""let selectionEnabled=false;
+const pendingLocations=new Map();
 channelListeners.push((value)=>{
+    if(value.kind==='rcp-artifact-position'){
+      parentPost({type:'rcp-artifact-position',version:1,id:value.id,rect:value.rect},'*');
+      return;
+    }
     if(value.kind==='rcp-artifact-selection' && 'selection' in value && window.parent!==window){
       parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
       return;
     }
 });
-channelReady.push(()=>{if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});});
+channelReady.push(()=>{
+  if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  for(const value of pendingLocations.values()) portPost(artifactPort,value);
+  pendingLocations.clear();
+});
 listen(window,'message',(event)=>{
   if(window.parent===window || event.source!==window.parent) return;
+  if(event.data?.type==='rcp-artifact-locate' && event.data.version===1 && typeof event.data.id==='string'){
+    const value={kind:'rcp-artifact-locate',id:event.data.id,anchor:event.data.anchor,scroll:event.data.scroll===true};
+    if(artifactPort) portPost(artifactPort,value);
+    else pendingLocations.set(value.id,value);
+  }
   if(event.data?.type==='rcp-artifact-selection-enable'){
     selectionEnabled=true;
     if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
@@ -151,7 +178,8 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
         "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
         "maxChars": STEERING_MESSAGE_MAX_CHARS,
         "stateRefreshMs": ARTIFACT_VIEWER_STATE_REFRESH_MS,
-        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES,
+        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES
+        or config.get("mediaType") == "application/pdf",
         "stateUrl": base_url + "/state",
         "commentsUrl": base_url + "/comments",
     }

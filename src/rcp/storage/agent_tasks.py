@@ -2505,21 +2505,26 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT graph_runs.*,
-                       EXISTS (
-                           SELECT 1 FROM graph_run_receipts AS receipt
-                           WHERE receipt.operation_id = graph_runs.operation_id
-                             AND receipt.category IN (
-                                 'experiment_recovery_abandoned',
-                                 'auto_research_recovery_abandoned'
-                             )
-                       ) AS recovery_abandoned
-                FROM graph_runs WHERE operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
+            return self._agent_task_in(connection, operation_id)
+
+    def _agent_task_in(
+        self, connection: sqlite3.Connection, operation_id: str
+    ) -> AgentTaskRecord | None:
+        row = connection.execute(
+            """
+            SELECT graph_runs.*,
+                   EXISTS (
+                       SELECT 1 FROM graph_run_receipts AS receipt
+                       WHERE receipt.operation_id = graph_runs.operation_id
+                         AND receipt.category IN (
+                             'experiment_recovery_abandoned',
+                             'auto_research_recovery_abandoned'
+                         )
+                   ) AS recovery_abandoned
+            FROM graph_runs WHERE operation_id = ?
+            """,
+            (operation_id,),
+        ).fetchone()
         return self._agent_task_record(row) if row else None
 
     def agent_tasks_by_ids(self, operation_ids: Iterable[str]) -> dict[str, AgentTaskRecord]:
@@ -3377,29 +3382,41 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """
 
         with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM (
-                    SELECT graph_runs.*,
-                           EXISTS (
-                               SELECT 1 FROM graph_run_receipts AS receipt
-                               WHERE receipt.operation_id = graph_runs.operation_id
-                                 AND receipt.category IN (
-                                     'experiment_recovery_abandoned',
-                                     'auto_research_recovery_abandoned'
-                                 )
-                           ) AS recovery_abandoned
-                    FROM graph_runs
-                    WHERE episode_id = ?
-                      AND (? OR visible = 1)
-                    ORDER BY created_at DESC, operation_id DESC
-                """
-                + ("    LIMIT ?" if newest is not None else "")
-                + """
-                ) ORDER BY created_at, operation_id
-                """,
-                (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
-            ).fetchall()
+            return self._episode_tasks_in(
+                connection, episode_id, include_hidden=include_hidden, newest=newest
+            )
+
+    def _episode_tasks_in(
+        self,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        *,
+        include_hidden: bool = False,
+        newest: int | None = None,
+    ) -> list[AgentTaskRecord]:
+        rows = connection.execute(
+            """
+            SELECT * FROM (
+                SELECT graph_runs.*,
+                       EXISTS (
+                           SELECT 1 FROM graph_run_receipts AS receipt
+                           WHERE receipt.operation_id = graph_runs.operation_id
+                             AND receipt.category IN (
+                                 'experiment_recovery_abandoned',
+                                 'auto_research_recovery_abandoned'
+                             )
+                       ) AS recovery_abandoned
+                FROM graph_runs
+                WHERE episode_id = ?
+                  AND (? OR visible = 1)
+                ORDER BY created_at DESC, operation_id DESC
+            """
+            + ("    LIMIT ?" if newest is not None else "")
+            + """
+            ) ORDER BY created_at, operation_id
+            """,
+            (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
+        ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
     def branch_merge_tasks(self, project_id: str, source: GraphTargetRef) -> list[AgentTaskRecord]:

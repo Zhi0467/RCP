@@ -11,6 +11,7 @@ from PIL import Image
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
 from rcp.comments.models import COMMENT_MEDIA_TYPES
+from rcp.limits import ARTIFACT_RECENT_VERSIONS
 from rcp.runs.artifact_edit_admission import admit_chat_artifact_comment
 from rcp.runs.chat import stage_artifact_context
 from rcp.service import ArtifactContextRequest, RunRequest
@@ -85,7 +86,8 @@ def test_crops_use_drawn_versions_and_recover_without_old_bytes(
             "resumed": False,
         },
     )
-    artifact = _stored_artifact(app, task.operation_id, "plot.png", _png("red"))
+    artifact = _stored_artifact(app, task.operation_id, "plot.png", _png("white"))
+    _publish_artifact(store, artifact.artifact_id, _png("red"), "drawn-edit")
     first = store.artifact(artifact.artifact_id).current_version
     _publish_artifact(store, artifact.artifact_id, _png("blue"))
     current = store.artifact(artifact.artifact_id).current_version
@@ -154,9 +156,10 @@ def test_crops_use_drawn_versions_and_recover_without_old_bytes(
     assert "crop_path" not in selections[3]
     assert selections[3]["drawn_version_missing"] is True
     assert reads.count(first) == reads.count(current) == reads.count("missing") == 1
-    for version in store.artifact_versions(artifact.artifact_id):
-        if version.version_id == first:
-            store.artifact_file_path(version).unlink()
+    for index in range(ARTIFACT_RECENT_VERSIONS):
+        _publish_artifact(store, artifact.artifact_id, _png((index, 0, 0)), f"later-{index}")
+    with pytest.raises(KeyError):
+        read(artifact.artifact_id, first)
     resumed = task.model_copy(
         update={
             "operation_id": "crop-recovery",
@@ -182,7 +185,6 @@ def test_crops_use_drawn_versions_and_recover_without_old_bytes(
         control=AgentProcessControl(),
         continuation=continuation,
     )
-    _publish_artifact(store, artifact.artifact_id, _png("green"), "new-current")
     recovered = stage()
     assert recovered is not None
     assert recovered.pointer == {

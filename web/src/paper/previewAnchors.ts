@@ -8,8 +8,8 @@ import {
   plainTextWhere,
   previewWhere,
 } from "../comments/where.ts";
-import { surroundingText, MAX_QUOTE_CHARS } from "../comments/react/threadModel.ts";
-import { textOffset } from "../comments/react/domText.ts";
+import { MAX_QUOTE_CHARS } from "../comments/react/threadModel.ts";
+import { textAnchor } from "../comments/react/domText.ts";
 import { pdfSourceNear } from "./previewComments";
 
 const PAGE = ".paper-pdf-page[data-page]";
@@ -48,7 +48,7 @@ function endBottom(range: Range, last: Text) {
 }
 
 /** A page slot's rect cut to `rect`, in fractions of the page; null when they miss. */
-export function pageFraction(page: DOMRect, rect: CommentRect): CommentRect | null {
+function pageFraction(page: DOMRect, rect: CommentRect): CommentRect | null {
   const left = Math.max(page.left, rect.x);
   const top = Math.max(page.top, rect.y);
   const right = Math.min(page.right, rect.x + rect.width);
@@ -109,23 +109,12 @@ export function previewSelectionAnchor(
       rect,
     };
   }
-  const quote = range.toString().trim().slice(0, MAX_QUOTE_CHARS);
-  if (!quote) return null;
-  const text = host.textContent ?? "";
-  const at = text.indexOf(
-    quote,
-    Math.max(0, textOffset(host, range.startContainer, range.startOffset) - 1),
-  );
+  const anchor = textAnchor(host, range);
+  if (!anchor) return null;
   const where =
     host.tagName === "PRE" ? plainTextWhere(host, range) : markdownWhere(host, start, end);
   return {
-    anchor: {
-      kind: "text",
-      text: quote,
-      surrounding_text: at < 0 ? quote : surroundingText(text, at, at + quote.length),
-      comment: "",
-      where: previewWhere(where),
-    },
+    anchor: { ...anchor, where: previewWhere(where) },
     rect,
   };
 }
@@ -134,7 +123,7 @@ export function previewSelectionAnchor(
  *
  * pdf.js often lays a whole line out as one run, so a box over part of a line is
  * judged character by character. */
-export function boxText(target: HTMLElement, rect: DOMRect): string {
+function boxText(target: HTMLElement, rect: DOMRect): string {
   return [...target.querySelectorAll<HTMLElement>(".textLayer span")]
     .map((span) => textInside(span, rect))
     .join(" ")
