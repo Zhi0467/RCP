@@ -18,7 +18,7 @@ from rcp.comments.models import CommentPostBody, CreateCommentThread
 from rcp.history import ReplayHalted
 from rcp.storage import AppStore
 from rcp.storage.chat_names import chat_title
-from rcp.storage.comments import CommentError, CommentTargetRoute
+from rcp.storage.comments import CommentError, CommentTargetRoute, comment_target_not_found
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 StoreDependency = Annotated[AppStore, Depends(get_store)]
@@ -31,7 +31,7 @@ def _route(
     user_id = get_identity_access(request).acting_user(request).user_id
     route = store.comment_target_route(user_id, kind, target, project_id=project)
     if route is None:
-        raise HTTPException(status_code=404, detail="comment_target_not_found")
+        raise comment_target_not_found()
     return route
 
 
@@ -72,8 +72,8 @@ def _write(request: Request, project: str) -> Iterator[str]:
         try:
             get_project_writer(get_catalog(request), project).history.require_writable()
             yield get_identity_access(request).acting_user(request).user_id
-        except CommentError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+        except CommentError:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -94,10 +94,10 @@ def list_threads(
         user_id = get_identity_access(request).acting_user(request).user_id
         listed = store.list_chat_reply_threads(project, chat_id, user_id)
         if listed is None:
-            raise HTTPException(status_code=404, detail="comment_target_not_found")
+            raise comment_target_not_found()
         return {"threads": [_response(thread, route, sender) for thread, route in listed]}
     if target_id is None or chat_id is not None:
-        raise HTTPException(status_code=422, detail="comment_list_needs_one_target")
+        raise CommentError("comment_list_needs_one_target", "Name one commented item.")
     route = _route(store, request, project, target_kind, target_id)
     return {
         "threads": [
@@ -115,10 +115,7 @@ def get_thread(
     project: ProjectDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
-    try:
-        thread = store.get_comment_thread(project, thread_id)
-    except CommentError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    thread = store.get_comment_thread(project, thread_id)
     return _respond(store, request, project, thread)
 
 
@@ -155,33 +152,6 @@ def reply(
     with _write(request, project) as user_id:
         thread = store.add_comment_post(project, thread_id, user_id=user_id, text=body.text)
     return _respond(store, request, project, thread)
-
-
-@router.patch("/api/projects/{project_id}/comment-posts/{post_id}")
-def edit_post(
-    post_id: str,
-    body: CommentPostBody,
-    request: Request,
-    *,
-    project: ProjectDependency,
-    store: StoreDependency,
-) -> dict[str, object]:
-    with _write(request, project) as user_id:
-        thread = store.edit_comment_post(project, post_id, user_id=user_id, text=body.text)
-    return _respond(store, request, project, thread)
-
-
-@router.delete("/api/projects/{project_id}/comment-posts/{post_id}")
-def delete_post(
-    post_id: str,
-    request: Request,
-    *,
-    project: ProjectDependency,
-    store: StoreDependency,
-) -> dict[str, object]:
-    with _write(request, project) as user_id:
-        store.delete_comment_post(project, post_id, user_id=user_id)
-    return {"ok": True}
 
 
 @router.post("/api/projects/{project_id}/comment-threads/{thread_id}/resolve")

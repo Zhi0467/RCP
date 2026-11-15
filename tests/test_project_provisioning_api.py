@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from rcp.server_ops.models import (
     ExternalServiceTarget,
     ServerStep,
 )
+from rcp.server_ops.project_provision import ProjectProvisionRefused
 from rcp.storage import (
     AppStore,
     ProjectProvisioningGitCheckRecord,
@@ -383,22 +385,107 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert running_projection["status"] == "setup_in_progress"
     assert running_projection["can_run_setup"] is True
     assert running_projection["can_review"] is False
-    assert running_projection["can_cancel"] is False
+    assert running_projection["can_cancel"] is True
     assert response.status_code == 409
-    assert "cleanup or reuse disposition" in response.json()["detail"]
     assert action_response.status_code == 200
     action_projection = action_response.json()
     assert action_projection["status"] == "operator_action_needed"
     assert action_projection["next_action"] == action.message
     assert action_projection["can_run_setup"] is True
     assert action_projection["can_review"] is False
-    assert action_projection["can_cancel"] is False
+    assert action_projection["can_cancel"] is True
     assert action_projection["diagnostic"] == "The write grant is not ready yet."
     assert action_projection["operator_action"] == action.model_dump(mode="json")
     projected = action_projection["operator_action"]
     command = next(item for item in projected["actions"] if item["kind"] == "command")
     assert command["execution"] == {"kind": "server_shell", "shell_account": None}
     assert projected["resume_execution"] == {"kind": "server_shell", "shell_account": None}
+
+
+class _CancelCoordinator:
+    def __init__(self, store: AppStore) -> None:
+        self.store = store
+        self.refusal: str | None = None
+
+    @contextlib.contextmanager
+    def member_hold(self, _request_id: str):
+        if self.refusal is not None:
+            raise ProjectProvisionRefused(self.refusal)
+        yield
+
+    def cancel(self, request_id: str):
+        if self.refusal is not None:
+            raise ProjectProvisionRefused(self.refusal)
+        record = self.store.project_provisioning_request(request_id)
+        assert record is not None
+        return self.store.transition_project_provisioning_request(
+            request_id,
+            receipt_id="coordinator-cancel",
+            phase="member_cancel",
+            expected_revision=record.revision,
+            expected_status=record.status,
+            to_status="cancelled",
+            machines=record.machines,
+            repositories=record.repositories,
+            provider_checks=record.provider_checks,
+            cancellation_disposition="prepared_state_preserved",
+        )
+
+
+def test_started_request_cancels_through_the_setup_coordinator(tmp_path) -> None:
+    _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
+    with signed_in_client(app) as client:
+        created = client.post("/api/project-provisioning/requests", json=_payload()).json()
+        store = app.state.background_tasks.store
+        record = store.project_provisioning_request(created["request_id"])
+        assert record is not None
+        store.transition_project_provisioning_request(
+            record.request_id,
+            receipt_id="setup-started",
+            phase="setup_start",
+            expected_revision=0,
+            expected_status="waiting_for_server_setup",
+            to_status="setup_in_progress",
+            machines=record.machines,
+            repositories=record.repositories,
+            provider_checks=record.provider_checks,
+        )
+        coordinator = _CancelCoordinator(store)
+        app.state.project_provision_coordinator = coordinator
+        path = f"/api/project-provisioning/requests/{record.request_id}"
+        coordinator.refusal = refusal = "A setup step is running. Try again when it finishes."
+        busy = client.post(f"{path}/cancel", json={})
+        unchanged = client.get(path).json()
+        coordinator.refusal = None
+        cancelled = client.post(f"{path}/cancel", json={})
+
+    assert busy.status_code == 409
+    assert busy.json()["detail"] == refusal
+    assert unchanged["status"] == "setup_in_progress"
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancellation_disposition"] == "prepared_state_preserved"
+    assert cancelled.json()["next_action"]
+    assert cancelled.json()["can_cancel"] is False
+
+
+def test_completion_waits_for_the_same_request_hold_as_cancel(tmp_path) -> None:
+    _data_dir, _members, _selected, app = _team_app(tmp_path, "Alice")
+    with signed_in_client(app) as client:
+        created = client.post("/api/project-provisioning/requests", json=_payload()).json()
+        store = app.state.background_tasks.store
+        coordinator = _CancelCoordinator(store)
+        coordinator.refusal = "A setup step is running. Try again when it finishes."
+        app.state.project_provision_coordinator = coordinator
+        busy = client.post(
+            f"/api/project-provisioning/requests/{created['request_id']}/complete",
+            json={"final_review_digest": "0" * 64},
+        )
+
+    assert busy.status_code == 409
+    assert busy.json()["detail"] == coordinator.refusal
+    assert store.project_provisioning_request(created["request_id"]).status == (
+        "waiting_for_server_setup"
+    )
 
 
 def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> None:
@@ -484,7 +571,7 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
     assert projected["status"] == "ready_for_review"
     assert projected["can_run_setup"] is False
     assert projected["can_review"] is True
-    assert projected["can_cancel"] is False
+    assert projected["can_cancel"] is True
     assert projected["readiness"]["all_ready"] is True
     assert projected["machines"][0]["ready"] is True
     assert projected["repositories"][0]["ready"] is True

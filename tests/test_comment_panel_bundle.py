@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from rcp import artifact_comments
+from rcp.artifact_renderer import ArtifactRendererUnavailable
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor
 
@@ -35,5 +36,5 @@ def test_comment_panel_requires_built_assets(tmp_path: Path, monkeypatch, assets
     if assets is not None:
         (tmp_path / "comments.js").write_text(assets)
         (tmp_path / "comments.css").write_text(assets)
-    with pytest.raises(ValueError, match="Rebuild the Web assets"):
+    with pytest.raises(ArtifactRendererUnavailable):
         artifact_comments.comment_panel({"projectId": "p", "artifactId": "a"})

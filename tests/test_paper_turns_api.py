@@ -38,17 +38,17 @@ def test_a_turn_lists_the_agents_files_clashes_first_and_serves_each_diff(manife
         assert [(row["path"], row["clash"]) for row in rows] == [("a.md", True), ("b.md", False)]
         assert (rows[1]["added"], rows[1]["removed"]) == (1, 0)
 
-        clash = client.get(prefix + "/turns/turn/files/a.md").json()
+        clash = client.get(prefix + "/turns/turn/file", params={"path": "a.md"}).json()
         assert clash["coach"] == "one\ntwo agent\nthree\n"
         assert clash["current"] == "one\nTWO human\nthree\n"
         (hunk,) = clash["hunks"]
         assert (hunk["old_start"], hunk["old"], hunk["new"]) == (2, ["two"], ["two agent"])
 
-        added = client.get(prefix + "/turns/turn/files/b.md").json()
+        added = client.get(prefix + "/turns/turn/file", params={"path": "b.md"}).json()
         assert added["current"] is None
         assert [(h["new_start"], h["new"]) for h in added["hunks"]] == [(2, ["agent"])]
 
-        assert client.get(prefix + "/turns/turn/files/c.md").status_code == 404
+        assert client.get(prefix + "/turns/turn/file", params={"path": "c.md"}).status_code == 404
         assert client.get(prefix + "/turns/missing").status_code == 404
 
 

@@ -40,15 +40,3 @@ test("frame input refuses invalid geometry and oversized selections", () => {
   ])
     assert.equal(selectionInput(raw), null);
 });
-
-test("displayed version comes from the pinned content URL", async () => {
-  const { displayedVersion } = await import("../src/comments/viewerModel.ts");
-  assert.equal(
-    displayedVersion(
-      "/api/artifacts/a/content?version_id=old&error_channel=x",
-      "https://rcp.example",
-    ),
-    "old",
-  );
-  assert.equal(displayedVersion("/preview", "https://rcp.example"), null);
-});

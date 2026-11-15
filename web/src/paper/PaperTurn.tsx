@@ -28,7 +28,7 @@ function turnPath(apiBase: string, operationId: string) {
 }
 
 function filePath(apiBase: string, operationId: string, path: string) {
-  return `${turnPath(apiBase, operationId)}/files/${path.split("/").map(encodeURIComponent).join("/")}`;
+  return `${turnPath(apiBase, operationId)}/file?${new URLSearchParams({ path })}`;
 }
 
 function Counts({ added, removed }: { added: number | null; removed: number | null }) {

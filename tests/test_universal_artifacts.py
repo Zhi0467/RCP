@@ -154,7 +154,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
         assert download.headers["content-type"].split(";")[0] == descriptor.media_type
         content = client.get(base + "/content")
         viewer = client.get(base + "/viewer")
-        if projected["view"] in {"file", "pdf"}:
+        if projected["view"] == "file":
             assert content.status_code == viewer.status_code == 404
             assert not projected["can_open"]
         else:

@@ -3,20 +3,22 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import TypeAdapter
 
 from rcp.comments.models import COMMENT_MEDIA_TYPES, COMMENT_TARGET_ANCHOR_KINDS, CommentAnchor
-from rcp.comments.render import render_thread, thread_budget_chars
+from rcp.comments.render import render_posts, render_thread, thread_budget_chars
 from rcp.limits import COMMENT_POST_MAX_CHARS, COMMENT_THREAD_MAX_CHARS
 from rcp.storage.agent_threads import private_artifact_owner
+from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.artifacts import readable_artifact_in
 from rcp.storage.bulletin import parse_member_mentions
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
-from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord
+from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord, EpisodeRecord
 from rcp.storage.resource_versions import install_comment_resource_versions
 
 if TYPE_CHECKING:
@@ -24,10 +26,16 @@ if TYPE_CHECKING:
 
 
 class CommentError(ValueError):
-    def __init__(self, code: str, status_code: int = 422):
+    def __init__(self, code: str, message: str, status_code: int = 422):
         self.code = code
         self.status_code = status_code
-        super().__init__(code)
+        super().__init__(message)
+
+
+def comment_target_not_found() -> CommentError:
+    return CommentError(
+        "comment_target_not_found", "The commented item is gone or not visible to you.", 404
+    )
 
 
 @dataclass(frozen=True)
@@ -102,16 +110,30 @@ def _graph_target(task: AgentTaskRecord | None) -> str:
     return task.graph_target.key if task is not None else "main"
 
 
+@dataclass(frozen=True)
+class _ConnectionReader:
+    store: AppStore
+    connection: sqlite3.Connection
+
+    def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
+        return self.store._agent_task_in(self.connection, operation_id)
+
+    def episode(self, episode_id: str) -> EpisodeRecord | None:
+        return self.store._episode_in(self.connection, episode_id)
+
+    def episode_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
+        return self.store._episode_tasks_in(self.connection, episode_id)
+
+
 def _artifact_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
 ) -> CommentTargetRoute | None:
-    from rcp.runs.artifact_edit_admission import _artifact_chat_id, artifact_reply_origin
-
     artifact = readable_artifact_in(connection, project_id, target_id, now=store.now())
     if artifact is None:
         return None
+    reader = _ConnectionReader(store, connection)
     try:
-        chat_id = _artifact_chat_id(*artifact_reply_origin(store, artifact))
+        chat_id = artifact_chat_id(*artifact_reply_origin(reader, artifact))
     except AgentTaskAdmissionConflict:
         chat_id = None
     chat_id = chat_id if isinstance(chat_id, str) and chat_id else None
@@ -120,7 +142,7 @@ def _artifact_route(
         owner=private_artifact_owner(connection, artifact),
         chat_id=chat_id,
         chat_owner=_chat_owner(connection, chat_id),
-        graph_target=_graph_target(store.agent_task(artifact.origin_operation_id or "")),
+        graph_target=_graph_target(reader.agent_task(artifact.origin_operation_id or "")),
         media_type=artifact.media_type,
     )
 
@@ -128,8 +150,8 @@ def _artifact_route(
 def _reply_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
 ) -> CommentTargetRoute | None:
-    task = store.agent_task(target_id)
-    if task is None or task.project_id != project_id:
+    task = store._agent_task_in(connection, target_id)
+    if task is None or task.project_id != project_id or not task.visible:
         return None
     chat_id = task.request.get("chat_id")
     chat_id = chat_id if isinstance(chat_id, str) and chat_id else None
@@ -179,6 +201,21 @@ def readable_comment_target(
     return route if route is not None and route.readable_by(connection, user_id) else None
 
 
+def _readable_routes(
+    store: AppStore, connection: sqlite3.Connection, user_id: str, project_id: str
+) -> Callable[[str, str], CommentTargetRoute | None]:
+    routes: dict[tuple[str, str], CommentTargetRoute | None] = {}
+
+    def route(kind: str, target_id: str) -> CommentTargetRoute | None:
+        if (kind, target_id) not in routes:
+            routes[kind, target_id] = readable_comment_target(
+                store, connection, user_id, project_id, kind, target_id
+            )
+        return routes[kind, target_id]
+
+    return route
+
+
 def _require_readable(
     store: AppStore, connection: sqlite3.Connection, user_id: str, thread: dict[str, Any]
 ) -> CommentTargetRoute:
@@ -191,7 +228,7 @@ def _require_readable(
         thread["target_id"],
     )
     if route is None:
-        raise CommentError("comment_target_not_found", 404)
+        raise comment_target_not_found()
     return route
 
 
@@ -200,7 +237,7 @@ def _thread(connection: sqlite3.Connection, project_id: str, thread_id: str) -> 
         "SELECT * FROM comment_threads WHERE project_id=? AND thread_id=?", (project_id, thread_id)
     ).fetchone()
     if row is None:
-        raise CommentError("comment_thread_not_found", 404)
+        raise CommentError("comment_thread_not_found", "This thread no longer exists.", 404)
     item = dict(row)
     item["anchor"] = json.loads(item.pop("anchor_json"))
     posts = []
@@ -234,36 +271,24 @@ def _save_post(
     user_id: str,
     text: str,
     now: str,
-    *,
-    edit: bool = False,
 ) -> None:
     if not text.strip() or len(text) > COMMENT_POST_MAX_CHARS:
-        raise CommentError("comment_post_invalid")
+        raise CommentError(
+            "comment_post_invalid",
+            f"A comment needs text and at most {COMMENT_POST_MAX_CHARS:,} characters.",
+        )
     try:
         mentions = parse_member_mentions(connection, thread["project_id"], text)
     except ValueError as exc:
-        raise CommentError("comment_agent_mention_invalid") from exc
+        raise CommentError(
+            "comment_agent_mention_invalid", "Use Send to agent instead of an agent mention."
+        ) from exc
     members = {m["id"] for m in mentions if route.readable_by(connection, m["id"])}
-    if edit:
-        connection.execute(
-            "UPDATE comment_posts SET text=?,edited_at=? WHERE post_id=?", (text, now, post_id)
-        )
-    else:
-        connection.execute(
-            "INSERT INTO comment_posts VALUES (?,?,?,?,?,?,NULL)",
-            (post_id, thread["project_id"], thread["thread_id"], user_id, text, now),
-        )
-    existing = {
-        row[0]
-        for row in connection.execute(
-            "SELECT user_id FROM comment_mentions WHERE post_id=?", (post_id,)
-        )
-    }
-    for member in existing - members:
-        connection.execute(
-            "DELETE FROM comment_mentions WHERE post_id=? AND user_id=?", (post_id, member)
-        )
-    for member in members - existing:
+    connection.execute(
+        "INSERT INTO comment_posts VALUES (?,?,?,?,?,?,NULL)",
+        (post_id, thread["project_id"], thread["thread_id"], user_id, text, now),
+    )
+    for member in sorted(members):
         connection.execute(
             "INSERT INTO comment_mentions VALUES (?,?,?,?,?,NULL)",
             (thread["project_id"], post_id, thread["thread_id"], member, now),
@@ -272,17 +297,7 @@ def _save_post(
         thread_budget_chars(_thread(connection, thread["project_id"], thread["thread_id"]))
         > COMMENT_THREAD_MAX_CHARS
     ):
-        raise CommentError("comment_thread_too_long")
-
-
-def _post_thread_id(connection: sqlite3.Connection, project_id: str, post_id: str) -> sqlite3.Row:
-    row = connection.execute(
-        "SELECT thread_id,author_id FROM comment_posts WHERE project_id=? AND post_id=?",
-        (project_id, post_id),
-    ).fetchone()
-    if row is None:
-        raise CommentError("comment_post_not_found", 404)
-    return row
+        raise CommentError("comment_thread_too_long", "This thread is full. Start a new thread.")
 
 
 def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
@@ -308,17 +323,6 @@ class CommentStoreMixin(StoreMixinBase):
         connection.execute("BEGIN IMMEDIATE")
         item = _thread(connection, project_id, thread_id)
         return item, _require_readable(cast("AppStore", self), connection, user_id, item)
-
-    def _authored_thread(
-        self, connection: sqlite3.Connection, project_id: str, post_id: str, user_id: str
-    ) -> tuple[dict[str, Any], CommentTargetRoute]:
-        connection.execute("BEGIN IMMEDIATE")
-        row = _post_thread_id(connection, project_id, post_id)
-        item = _thread(connection, project_id, row["thread_id"])
-        route = _require_readable(cast("AppStore", self), connection, user_id, item)
-        if row["author_id"] != user_id:
-            raise CommentError("comment_not_author", 403)
-        return item, route
 
     def create_comment_thread(
         self,
@@ -346,7 +350,9 @@ class CommentStoreMixin(StoreMixinBase):
                 route.media_type is not None
                 and route.media_type not in COMMENT_MEDIA_TYPES[anchor["kind"]]
             ):
-                raise CommentError("comment_anchor_unsupported")
+                raise CommentError(
+                    "comment_anchor_unsupported", "This kind of comment does not fit this file."
+                )
             now = self.now()
             connection.execute(
                 "INSERT INTO comment_threads VALUES (?,?,?,?,?,?,?,'open',?,?,NULL,NULL,NULL,NULL)",
@@ -395,6 +401,7 @@ class CommentStoreMixin(StoreMixinBase):
                 connection, chat_id
             ) not in {None, user_id}:
                 return None
+            route_of = _readable_routes(store, connection, user_id, project_id)
             listed: list[tuple[dict[str, Any], CommentTargetRoute]] = []
             for row in connection.execute(
                 "SELECT thread.thread_id, thread.target_id FROM comment_threads AS thread "
@@ -404,9 +411,7 @@ class CommentStoreMixin(StoreMixinBase):
                 "ORDER BY thread.created_at,thread.rowid",
                 (project_id, project_id, chat_id),
             ).fetchall():
-                route = readable_comment_target(
-                    store, connection, user_id, project_id, "reply", row[1]
-                )
+                route = route_of("reply", row[1])
                 if route is not None:
                     listed.append((_thread(connection, project_id, row[0]), route))
             return listed
@@ -419,24 +424,6 @@ class CommentStoreMixin(StoreMixinBase):
             _save_post(connection, route, item, uuid.uuid4().hex, user_id, text, self.now())
             _reopen(connection, thread_id)
             return _thread(connection, project_id, thread_id)
-
-    def edit_comment_post(
-        self, project_id: str, post_id: str, *, user_id: str, text: str
-    ) -> dict[str, Any]:
-        with self.connection() as connection:
-            item, route = self._authored_thread(connection, project_id, post_id, user_id)
-            _save_post(connection, route, item, post_id, user_id, text, self.now(), edit=True)
-            return _thread(connection, project_id, item["thread_id"])
-
-    def delete_comment_post(self, project_id: str, post_id: str, *, user_id: str) -> None:
-        with self.connection() as connection:
-            item, _ = self._authored_thread(connection, project_id, post_id, user_id)
-            if item["posts"][0]["post_id"] == post_id:
-                connection.execute(
-                    "DELETE FROM comment_threads WHERE thread_id=?", (item["thread_id"],)
-                )
-            else:
-                connection.execute("DELETE FROM comment_posts WHERE post_id=?", (post_id,))
 
     def resolve_comment_thread(
         self, project_id: str, thread_id: str, *, user_id: str
@@ -458,29 +445,50 @@ class CommentStoreMixin(StoreMixinBase):
             _reopen(connection, thread_id)
             return _thread(connection, project_id, thread_id)
 
-    def mark_threads_sent(self, ids: list[str], operation_id: str, key: str, actor: str) -> None:
+    def mark_threads_sent(
+        self, rendered_through: Mapping[str, str], operation_id: str, key: str, actor: str
+    ) -> None:
+        """Resolve each sent thread unless a post newer than the one its send rendered
+        arrived meanwhile; that thread stays open so its reply can still be sent."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for thread_id in ids:
+            for thread_id, through in rendered_through.items():
                 connection.execute(
                     "UPDATE comment_threads SET state='resolved',sent_operation_id=?,send_key=?,"
-                    "closed_by=?,closed_at=? WHERE thread_id=? AND state='open'",
-                    (operation_id, key, actor, self.now(), thread_id),
+                    "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
+                    "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
+                    (operation_id, key, actor, self.now(), thread_id, thread_id, through),
                 )
 
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[tuple[dict[str, Any], CommentTargetRoute]]:
         store = cast("AppStore", self)
         with self.connection() as connection:
+            route_of = _readable_routes(store, connection, user_id, project_id)
             items = []
             for thread_id in dict.fromkeys(ids):
                 item = _thread(connection, project_id, thread_id)
-                _require_readable(store, connection, user_id, item)
+                route = route_of(item["target_kind"], item["target_id"])
+                if route is None:
+                    raise comment_target_not_found()
                 if item["state"] != "open" and item["send_key"] != key:
-                    raise CommentError("comment_thread_not_sendable", 409)
+                    raise CommentError(
+                        "comment_thread_not_sendable",
+                        "This thread is resolved. Reopen it to send.",
+                        409,
+                    )
                 until = item["closed_at"] if item["send_key"] == key else None
-                items.append({**item, "rendered": render_thread(item, until=until)})
+                rendered = {
+                    "rendered": render_thread(item, until=until),
+                    "rendered_posts": render_posts(item, until=until),
+                    "rendered_through": max(
+                        post["created_at"]
+                        for post in item["posts"]
+                        if until is None or post["created_at"] <= until
+                    ),
+                }
+                items.append(({**item, **rendered}, route))
             return items
 
     def open_comment_mentions(self, project_id: str, user_id: str) -> list[dict[str, Any]]:
@@ -493,15 +501,10 @@ class CommentStoreMixin(StoreMixinBase):
                 "ORDER BY m.created_at,m.rowid",
                 (project_id, user_id),
             ).fetchall()
-            routes: dict[tuple[str, str], CommentTargetRoute | None] = {}
+            route_of = _readable_routes(store, connection, user_id, project_id)
             mentions = []
             for row in rows:
-                target = (row["target_kind"], row["target_id"])
-                if target not in routes:
-                    routes[target] = readable_comment_target(
-                        store, connection, user_id, project_id, *target
-                    )
-                route = routes[target]
+                route = route_of(row["target_kind"], row["target_id"])
                 if route is None:
                     continue
                 thread = _thread(connection, project_id, row["thread_id"])

@@ -530,3 +530,25 @@ async def test_remote_result_requires_observed_process_stop_without_contacting_s
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_fails", [False, True])
+async def test_write_acknowledged_steering_settles_without_provider_echo(tmp_path, write_fails):
+    writes = []
+
+    async def drain():
+        if write_fails:
+            raise BrokenPipeError
+
+    process = SimpleNamespace(
+        returncode=None,
+        stdin=SimpleNamespace(is_closing=lambda: False, write=writes.append, drain=drain),
+    )
+    turn = _turn(tmp_path, "codex")
+    turn.steer_delivered_on_write = True
+    steering = LiveProviderSteering(process, turn, threading.Event())
+    receipt = await asyncio.wait_for(steering.send("turn", "message", "Steer"), 1)
+    assert receipt.status == ("unknown" if write_fails else "delivered")
+    assert len(writes) == 1
+    assert not steering._pending

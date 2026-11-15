@@ -581,9 +581,21 @@ backup and doctor list it as a warning, not a problem.
 remain separate from source code. Restore recreates empty server-only checkouts.
 Adopted folders must already exist at their recorded path and commit.
 
-Cancellation records explicit key and checkout cleanup or reuse. A granted
-public key requires confirmed revocation or preservation. Deleting the private
-key does not revoke the grant.
+Cancellation removes request-owned key and checkout state before it records the
+disposition. It removes each GitHub repository's key at its deterministic path,
+even one written before its label was saved. It removes a checkout only when the
+request recorded `request_created`. The helper derives that path from the same
+arguments as `prepare`, opens each component without following symlinks,
+requires the account to own it and removes only the alias directory. It never
+touches a `reused_existing` checkout. Such checkouts hold only GitHub history or
+RCP's empty first commit, because no agent runs before registration. Removing
+them lets a later request reuse the project id and alias.
+A granted public key requires confirmed revocation or preservation. Deleting the
+private key does not revoke the grant, and RCP holds no GitHub token to revoke
+it. So a request whose GitHub key existed records `prepared_state_preserved`, and
+its ledger links each repository's deploy-key settings with the key label. A
+server-only request records `request_owned_state_removed`. A request with nothing
+to remove records `nothing_to_remove`.
 [Project deletion](projects-spaces-and-operations.md#deletion) leaves central
 checkouts, canonical history and deploy keys for operator disposition.
 
@@ -610,9 +622,23 @@ gets a fresh digest over the new shape, which completion then requires.
 Machine preparation resumes bounded steps for paths, keys, checkouts, readiness
 and write proof. Each step checks for a stale boundary. Empty-repository commits
 are announced before execution. Only ready-for-review readback proves
-preparation completed. Members may inspect requests. A new-project authorizer
-can cancel through the member API only before machine work and with nothing to
-remove. Afterward, the machine owner records the cleanup or reuse disposition.
+preparation completed. Members may inspect requests. The authorizer of a
+create, add or connect request can cancel it in any open status. Incoming
+transfers cannot be cancelled this way. The team service runs the cleanup in
+`ProjectProvisionCoordinator.cancel`, the same process that advances setup. One
+lock per request serializes cancel and completion with a whole setup step and
+with each other. Cancel waits
+`PROJECT_PROVISION_CANCEL_WAIT_SECONDS` for a running step and then refuses.
+Before removing anything, cancel moves the request into cancellation handling
+(`operator_action_needed` with a disposition), which setup refuses to resume. A
+cleanup that stops partway therefore never leaves records that claim a removed
+checkout or key. Cleanup is idempotent. If a key or checkout cannot be removed,
+cancel refuses with the machine and exact path, the request stays in handling,
+and pressing Cancel again retries. The final disposition is written in the
+transition to `cancelled`. The revision bump makes a plan or completion already in flight
+stale. A backend without the team service can cancel only a request still
+waiting for server setup. The setup list shows open requests and cancelled
+requests that still have deploy keys to remove on GitHub.
 
 Creation checks for an existing identity or Patch history before overwrite and
 again at review. Either causes refusal. It never adopts retained research. Personal history requires

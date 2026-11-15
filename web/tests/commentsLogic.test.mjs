@@ -7,7 +7,8 @@ import {
   encodeCommentMentions,
   decodeCommentMentions,
 } from "../src/comments/mentions.ts";
-import { createCommentsClient } from "../src/comments/api.ts";
+import { createCommentsClient, fetchRequest } from "../src/comments/api.ts";
+import { textLocatorCases } from "./fixtures/textLocatorCases.mjs";
 
 const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
 const bounds = { x: 100, y: 200, width: 300, height: 400 };
@@ -27,6 +28,12 @@ const thread = (id, state = "open", text = "hello") => ({
   posts: [{ text }],
 });
 
+test("the text locator matches whitespace runs and prefers the surrounding copy", () => {
+  for (const { text, quote, surrounding, found } of textLocatorCases) {
+    const match = findText(text, quote, surrounding);
+    assert.deepEqual(match && [match.start, match.end], found, quote);
+  }
+});
 test("text context disambiguates duplicates then falls back after surrounding edits", () => {
   assert.deepEqual(findText(context.text, "quote", "new quote end"), { start: 14, end: 19 });
   assert.deepEqual(findText(context.text, "quote", "changed"), { start: 4, end: 9 });
@@ -100,10 +107,13 @@ test("mention picker puts one agent first but only encodes members", () => {
 });
 test("API sends route bodies with stable caller keys and propagates failures", async () => {
   const calls = [];
-  const client = createCommentsClient("p/id", async (url, options) => {
-    calls.push([url, options]);
-    return new Response(JSON.stringify({ thread_id: "t" }), { status: 200 });
-  });
+  const client = createCommentsClient(
+    "p/id",
+    fetchRequest(async (url, options) => {
+      calls.push([url, options]);
+      return new Response(JSON.stringify({ thread_id: "t" }), { status: 200 });
+    }),
+  );
   await client.list({ kind: "artifact", id: "a b" });
   assert.equal(
     calls[0][0],
@@ -114,9 +124,17 @@ test("API sends route bodies with stable caller keys and propagates failures", a
   assert.deepEqual(JSON.parse(calls[1][1].body), { thread_ids: ["t"], fresh_session: false });
   const failing = createCommentsClient(
     "p",
-    async () => new Response(JSON.stringify({ detail: "Denied" }), { status: 403 }),
+    fetchRequest(async () => new Response(JSON.stringify({ detail: "Denied" }), { status: 403 })),
   );
-  await assert.rejects(failing.get("t"), /Denied/);
+  await assert.rejects(failing.get("t"), { status: 403, message: "Denied" });
+  const refused = createCommentsClient(
+    "p",
+    fetchRequest(
+      async () =>
+        new Response(JSON.stringify({ detail: { code: "c", message: "Why" } }), { status: 409 }),
+    ),
+  );
+  await assert.rejects(refused.get("t"), { status: 409, code: "c", message: "Why" });
 });
 
 test("HTML boxes follow the element after a scroll instead of the original viewport", () => {
@@ -132,34 +150,26 @@ test("send budget includes typed text and permits the exact limit", () => {
 });
 test("all mutation entry points preserve their contract", async () => {
   const calls = [];
-  const client = createCommentsClient("p", async (url, options) => {
-    calls.push({ url, ...options, body: options.body && JSON.parse(options.body) });
-    return new Response("{}", { status: 200 });
-  });
+  const client = createCommentsClient(
+    "p",
+    fetchRequest(async (url, options) => {
+      calls.push({ url, ...options, body: options.body && JSON.parse(options.body) });
+      return new Response("{}", { status: 200 });
+    }),
+  );
   const target = { kind: "paper", id: "file" };
   const anchor = { kind: "whole", comment: "" };
   await client.create(target, anchor, "note", "version");
   await client.reply("t", "reply");
-  await client.editPost("post", "edited");
-  await client.deletePost("post");
   await client.resolve("t");
   await client.reopen("t");
-  await client.startTask({ message: "task" }, ["t"], "new-turn-key");
-  await client.steer("op", "", ["t"], "steer-key");
   assert.deepEqual(
     calls.map(({ method }) => method),
-    ["POST", "POST", "PATCH", "DELETE", "POST", "POST", "POST", "POST"],
+    ["POST", "POST", "POST", "POST"],
   );
   assert.deepEqual(calls[0].body, { target, anchor, text: "note", drawn_version: "version" });
-  assert.equal(calls[4].url, "/api/projects/p/comment-threads/t/resolve");
-  assert.equal(calls[5].url, "/api/projects/p/comment-threads/t/reopen");
-  assert.deepEqual(calls[6].body, { message: "task", comment_thread_ids: ["t"] });
-  assert.equal(calls[6].headers["Idempotency-Key"], "new-turn-key");
-  assert.deepEqual(calls[7].body, {
-    message: "",
-    comment_thread_ids: ["t"],
-    message_id: "steer-key",
-  });
+  assert.equal(calls[2].url, "/api/projects/p/comment-threads/t/resolve");
+  assert.equal(calls[3].url, "/api/projects/p/comment-threads/t/reopen");
 });
 
 test("rail respects the send selection count and never encodes an agent token", () => {
@@ -173,24 +183,25 @@ test("clients unwrap the backend thread and mention response envelopes", async (
   const value = thread("saved");
   const client = createCommentsClient(
     "p",
-    async (url) =>
-      new Response(
-        JSON.stringify(
-          url.endsWith("comment-mentions")
-            ? { mentions: [{ thread_id: "saved" }] }
-            : url.includes("target_kind")
-              ? { threads: [value] }
-              : { thread: value },
+    fetchRequest(
+      async (url) =>
+        new Response(
+          JSON.stringify(
+            url.endsWith("comment-mentions")
+              ? { mentions: [{ thread_id: "saved" }] }
+              : url.includes("target_kind")
+                ? { threads: [value] }
+                : { thread: value },
+          ),
+          { status: 200 },
         ),
-        { status: 200 },
-      ),
+    ),
   );
   const target = { kind: "artifact", id: "a" };
   assert.deepEqual(await client.list(target), { threads: [value] });
   assert.deepEqual(await client.get("saved"), value);
   assert.deepEqual(await client.create(target, { kind: "whole", comment: "" }, "hello"), value);
   assert.deepEqual(await client.reply("saved", "reply"), value);
-  assert.deepEqual(await client.editPost("post", "edit"), value);
   assert.deepEqual(await client.resolve("saved"), value);
   assert.deepEqual(await client.reopen("saved"), value);
   assert.deepEqual(await client.mentions(), [{ thread_id: "saved" }]);

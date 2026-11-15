@@ -78,6 +78,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/providers/{provider}/logins/sign-in"),
     (("GET",), "/api/providers/{provider}/logins/sign-in/{attempt_id}"),
     (("POST",), "/api/providers/{provider}/logins/sign-in/{attempt_id}/cancel"),
+    (("POST",), "/api/providers/{provider}/logins/sign-in/{attempt_id}/code"),
     (("POST",), "/api/providers/{provider}/logins/token"),
     (("POST",), "/api/providers/{provider}/logins/sign-out"),
     (("GET",), "/api/service-connections"),
@@ -286,6 +287,13 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/keep"),
     (("DELETE",), "/api/projects/{project_id}/artifacts/{artifact_id}"),
     (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/comments"),
+    (("GET",), "/api/projects/{project_id}/comment-threads"),
+    (("POST",), "/api/projects/{project_id}/comment-threads"),
+    (("GET",), "/api/projects/{project_id}/comment-threads/{thread_id}"),
+    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/posts"),
+    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/resolve"),
+    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/reopen"),
+    (("GET",), "/api/projects/{project_id}/comment-mentions"),
     (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/undo"),
     (("HEAD",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("GET",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
@@ -340,16 +348,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/paper/uploads"),
     (("PUT",), "/api/projects/{project_id}/paper/files/{file_id}/content"),
     (("GET",), "/api/projects/{project_id}/paper/turns/{operation_id}"),
-    (("GET",), "/api/projects/{project_id}/paper/turns/{operation_id}/files/{path:path}"),
-    (("GET",), "/api/projects/{project_id}/comment-mentions"),
-    (("GET",), "/api/projects/{project_id}/comment-threads"),
-    (("POST",), "/api/projects/{project_id}/comment-threads"),
-    (("GET",), "/api/projects/{project_id}/comment-threads/{thread_id}"),
-    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/posts"),
-    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/reopen"),
-    (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/resolve"),
-    (("PATCH",), "/api/projects/{project_id}/comment-posts/{post_id}"),
-    (("DELETE",), "/api/projects/{project_id}/comment-posts/{post_id}"),
+    (("GET",), "/api/projects/{project_id}/paper/turns/{operation_id}/file"),
     (("DELETE",), "/api/projects/{project_id}/terminals/{session_id}"),
     (("GET",), "/api/projects/{project_id}/terminals"),
     (("GET",), "/api/projects/{project_id}/terminals/repositories"),
@@ -410,8 +409,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 342
+    assert len(_FROZEN_ROUTE_INVENTORY) == 341
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 338
+    assert sum(isinstance(route, APIRoute) for route in routes) == 337
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

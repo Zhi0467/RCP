@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { EditorView } from "@codemirror/view";
+import { useInlineArtifactPins } from "../artifacts/InlineArtifactPins";
 import { findAnchor, findText, type AnchorContext } from "../comments/anchors.ts";
 import type { Point } from "../comments/box.ts";
 import type { CommentRect, CommentThread } from "../comments/types.ts";
@@ -22,7 +23,10 @@ import {
   useSelectionComment,
   type SelectionCommentOffer,
 } from "../comments/react/useSelectionComment";
-import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
+import {
+  takeCommentThreadRequest,
+  useCommentThreadRequest,
+} from "../comments/commentThreadRequest";
 import type { PaperFile } from "../core/types";
 import { previewSelectionAnchor } from "./previewAnchors";
 import type { PreviewAnchor } from "./PaperPreview";
@@ -229,11 +233,43 @@ export function usePaperComments({
   };
   const selectionOffer = useSelectionComment(canPost && !offer && Boolean(file), resolveSelection);
 
+  const framedFile = file?.format === "html";
+  const previewFrame = useMemo<RefObject<HTMLIFrameElement | null>>(
+    () => ({
+      get current() {
+        return previewPane.current?.querySelector<HTMLIFrameElement>("iframe") ?? null;
+      },
+    }),
+    [previewPane],
+  );
+  const framedThreads = useMemo(
+    () => (framedFile ? comments.threads.filter((thread) => drawnInPreview(thread.anchor)) : []),
+    [framedFile, comments.threads],
+  );
+  const framed = useInlineArtifactPins(previewFrame, framedThreads);
+  const framedLoad = useRef(framed.onLoad);
+  framedLoad.current = framed.onLoad;
+  useEffect(() => {
+    const pane = previewPane.current;
+    if (!pane) return;
+    const loaded = (event: Event) => {
+      if (event.target instanceof HTMLIFrameElement) framedLoad.current();
+    };
+    pane.addEventListener("load", loaded, true);
+    return () => pane.removeEventListener("load", loaded, true);
+  }, [previewPane]);
+  const inFrame = (thread: CommentThread) => framedFile && drawnInPreview(thread.anchor);
+
   const visibleIn = (thread: CommentThread) =>
     drawnInPreview(thread.anchor) ? previewVisible : sourceVisible;
   const sameVersion = (thread: CommentThread) => thread.drawn_version === version;
   /** Where the thread's anchor ends in its view, scrolled out of sight or not. */
   const placed = (thread: CommentThread): { point: Point; frame: Element } | null => {
+    if (inFrame(thread)) {
+      const pane = previewPane.current;
+      const point = framed.position(thread);
+      return pane && point ? { point, frame: pane } : null;
+    }
     if (drawnInPreview(thread.anchor)) {
       const pane = previewPane.current;
       const point = pane && previewEnd(pane, thread, sameVersion(thread));
@@ -249,6 +285,11 @@ export function usePaperComments({
   };
   /** Scrolls the thread's place into view and flashes it; false when it is not found. */
   const locateNow = (thread: CommentThread): boolean => {
+    if (inFrame(thread)) {
+      if (!previewFrame.current) return false;
+      framed.locate(thread);
+      return true;
+    }
     if (drawnInPreview(thread.anchor)) {
       const pane = previewPane.current;
       if (!pane) return false;
@@ -311,7 +352,7 @@ export function usePaperComments({
     thread.anchor.kind !== "whole" &&
     thread.state === "open" &&
     visibleIn(thread) &&
-    !(file?.format === "html" && drawnInPreview(thread.anchor)) &&
+    !inFrame(thread) &&
     !placed(thread)
       ? GONE
       : undefined;
@@ -346,7 +387,7 @@ export function usePaperComments({
         threads={comments.threads}
         position={position}
         selected={selected}
-        revision={`${fileId}:${sourceVisible}:${previewVisible}`}
+        revision={`${fileId}:${sourceVisible}:${previewVisible}:${framed.revision}`}
         subscribe={subscribe}
         onPick={(thread) => {
           setRailOpen(true);

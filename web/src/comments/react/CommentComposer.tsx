@@ -4,7 +4,7 @@ import type { Point } from "../box.ts";
 import { anchorQuote } from "../model.ts";
 import type { CommentAnchor, CommentTarget, CommentThread } from "../types.ts";
 import { CommentEditor } from "./CommentEditor";
-import type { CommentsController } from "./useComments";
+import type { CommentsController } from "./useCommentActions";
 import "../comments.css";
 
 /** A new thread waiting for its first post: where it was drawn and on what. */
@@ -16,12 +16,14 @@ export interface CommentOffer {
   point: Point | null;
   /** Removes the drawn mark, when the popover closes. */
   clear?: () => void;
+  /** What the field starts with. */
+  text?: string;
 }
 
 const MARGIN = 8;
 
 /** Keeps a fixed popover beside its point and inside the window. */
-export function usePopoverPlacement(point: Point | null) {
+function usePopoverPlacement(point: Point | null) {
   const ref = useRef<HTMLElement | null>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
   useLayoutEffect(() => {
@@ -93,6 +95,8 @@ export function CommentComposer({
   onClose: () => void;
   onCreated?: (thread: CommentThread) => void;
 }) {
+  const { clearError } = comments;
+  useEffect(() => clearError(), [offer, clearError]);
   return (
     <CommentPopover point={offer.point} label="Comment" onClose={onClose}>
       <blockquote>{anchorQuote(offer.anchor)}</blockquote>
@@ -102,6 +106,7 @@ export function CommentComposer({
         canSend={canSend && comments.canSend}
         agentLabel={agentLabel}
         busy={comments.busy}
+        initialText={offer.text}
         autoFocus
         onSubmit={async (text, send) => {
           const thread = await comments.create(

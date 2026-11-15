@@ -18,15 +18,20 @@ def thread(store, text="note"):
     )
 
 
+def through(store, tid, key="key"):
+    actor = store.local_owner.user_id
+    return {tid: store.sendable_threads("project", actor, [tid], key)[0][0]["rendered_through"]}
+
+
 def test_lifecycle_and_send_replay(store):
     item = thread(store)
     tid = item["thread_id"]
     actor = store.local_owner.user_id
     store.add_comment_post("project", tid, user_id=actor, text="second")
-    store.mark_threads_sent([tid], "op", "key", actor)
+    store.mark_threads_sent(through(store, tid), "op", "key", actor)
     with store.connection() as connection:
         connection.execute("UPDATE comment_posts SET created_at='9999' WHERE text='second'")
-    sent = store.sendable_threads("project", actor, [tid], "key")[0]
+    sent, _route = store.sendable_threads("project", actor, [tid], "key")[0]
     assert sent["sent_operation_id"] == "op"
     assert "note" in sent["rendered"] and "second" not in sent["rendered"]
     with pytest.raises(CommentError):
@@ -34,32 +39,53 @@ def test_lifecycle_and_send_replay(store):
     with pytest.raises(CommentError) as error:
         store.sendable_threads("elsewhere", actor, [tid], "key")
     assert error.value.status_code == 404
-    store.mark_threads_sent([tid], "other", "other", actor)
+    store.mark_threads_sent({tid: "9999"}, "other", "other", actor)
     assert store.get_comment_thread("project", tid)["sent_operation_id"] == "op"
     item = store.add_comment_post("project", tid, user_id=actor, text="reply")
     assert item["state"] == "open"
     assert item["send_key"] is None
     store.resolve_comment_thread("project", tid, user_id=actor)
-    store.reopen_comment_thread("project", tid, user_id=actor)
-    store.delete_comment_post("project", item["posts"][0]["post_id"], user_id=actor)
-    assert store.list_comment_threads("project", "reply", "turn") == []
+    assert store.reopen_comment_thread("project", tid, user_id=actor)["state"] == "open"
 
 
-def test_mentions_follow_edits_without_reobservation(store):
+def test_reply_posted_during_a_send_keeps_its_thread_open(store):
     actor = store.local_owner.user_id
-    item = thread(store, f"hello <@member:{actor}>")
-    pid = item["posts"][0]["post_id"]
+    tid = thread(store)["thread_id"]
+    rendered = through(store, tid)
+    store.add_comment_post("project", tid, user_id=actor, text="late reply")
+    store.mark_threads_sent(rendered, "op", "key", actor)
+    item = store.get_comment_thread("project", tid)
+    assert (item["state"], item["sent_operation_id"]) == ("open", None)
+    store.mark_threads_sent(through(store, tid), "op2", "key2", actor)
+    assert store.get_comment_thread("project", tid)["sent_operation_id"] == "op2"
+
+
+def test_observing_a_mention_leaves_the_watermark_and_agents_are_refused(store):
+    actor = store.local_owner.user_id
+    thread(store, f"hello <@member:{actor}>")
     with store.connection() as connection:
+
+        def generation():
+            return connection.execute(
+                "SELECT generation FROM resource_versions WHERE scope='project' AND resource='comments'"
+            ).fetchone()[0]
+
+        before = generation()
         connection.execute("UPDATE comment_mentions SET observed_at='seen'")
-    store.edit_comment_post("project", pid, user_id=actor, text=f"again <@member:{actor}>")
-    assert store.open_comment_mentions("project", actor)[0]["observed_at"] == "seen"
-    store.edit_comment_post("project", pid, user_id=actor, text="gone")
-    assert store.open_comment_mentions("project", actor) == []
-    with pytest.raises(CommentError, match="agent"):
+        assert generation() == before
+    with pytest.raises(CommentError):
         thread(store, "<@agent:chat:c>")
 
 
-def test_budget_is_atomic_and_author_only(store):
+def test_hidden_turn_is_not_a_reply_target(store):
+    actor = store.local_owner.user_id
+    assert store.comment_target_route(actor, "reply", "turn", project_id="project") is not None
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET visible=0 WHERE operation_id='turn'")
+    assert store.comment_target_route(actor, "reply", "turn", project_id="project") is None
+
+
+def test_budget_is_atomic(store):
     item = thread(store, "a" * 2048)
     tid = item["thread_id"]
     actor = store.local_owner.user_id
@@ -68,15 +94,6 @@ def test_budget_is_atomic_and_author_only(store):
         store.add_comment_post("project", tid, user_id=actor, text="c" * 2048)
     assert error.value.status_code == 422
     assert len(store.get_comment_thread("project", tid)["posts"]) == 2
-    from .test_bulletin_store import other_member
-
-    member = other_member(store)
-    store.seat_project_member("project", member.user_id)
-    with pytest.raises(CommentError) as error:
-        store.edit_comment_post(
-            "project", item["posts"][0]["post_id"], user_id=member.user_id, text="x"
-        )
-    assert error.value.status_code == 403
 
 
 def test_paper_disappears_and_returns(store):
@@ -214,22 +231,16 @@ def test_comments_follow_project_identity_and_purge(store):
             assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
 
 
-def test_edit_adds_mentions_and_resolve_fences_send(store):
+def test_mentions_keep_members_and_resolve_fences_send(store):
     actor = store.local_owner.user_id
-    item = thread(store)
-    tid = item["thread_id"]
-    store.edit_comment_post(
-        "project",
-        item["posts"][0]["post_id"],
-        user_id=actor,
-        text=f"<@member:{actor}> <@member:missing>",
-    )
+    tid = thread(store, f"<@member:{actor}> <@member:missing>")["thread_id"]
+    rendered = through(store, tid)
     mentions = store.open_comment_mentions("project", actor)
     assert len(mentions) == 1
     assert mentions[0]["observed_at"] is None
     assert [m["id"] for m in mentions[0]["thread"]["posts"][0]["mentions"]] == [actor]
     closed = store.resolve_comment_thread("project", tid, user_id=actor)
-    store.mark_threads_sent([tid], "op", "key", actor)
+    store.mark_threads_sent(rendered, "op", "key", actor)
     assert store.get_comment_thread("project", tid) == closed
 
 
@@ -300,7 +311,7 @@ def test_mutators_recheck_readability(store):
 
     actor = store.local_owner.user_id
     item = thread(store)
-    tid, pid = item["thread_id"], item["posts"][0]["post_id"]
+    tid = item["thread_id"]
     member = other_member(store)
     store.seat_project_member("project", member.user_id)
     chat = next(
@@ -320,8 +331,6 @@ def test_mutators_recheck_readability(store):
         lambda: store.add_comment_post("project", tid, user_id=actor, text="x"),
         lambda: store.resolve_comment_thread("project", tid, user_id=actor),
         lambda: store.reopen_comment_thread("project", tid, user_id=actor),
-        lambda: store.edit_comment_post("project", pid, user_id=actor, text="x"),
-        lambda: store.delete_comment_post("project", pid, user_id=actor),
     ):
         with pytest.raises(CommentError) as error:
             mutate()

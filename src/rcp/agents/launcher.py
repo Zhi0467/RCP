@@ -1490,27 +1490,11 @@ class AgentLauncher:
                 cwd=cwd,
             )
         command = turn.command
-        if invocation_gate is not None:
-            command = invocation_gate.wrap_command(command)
         if supervise_remote:
             if not host or remote_pid_file is None:
                 raise ValueError("A supervised provider turn requires a remote pidfile.")
             if not supervisor_path:
                 raise ValueError("A supervised provider turn requires its staged supervisor.")
-            command = _supervised_remote_turn_command(
-                command,
-                supervisor_path=supervisor_path,
-                pid_file=remote_pid_file,
-                provider=provider,
-                runtime_id=runtime.id,
-                provider_version=getattr(readiness, "version", None),
-                patch_path=str(cwd / "patch.json"),
-                watch_path=str(cwd / "watch.json"),
-                experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
-                close_input_after_initial=turn.close_input_after_initial,
-                fork_session_id=fork_session_id,
-                fork_source_cwd=fork_source_cwd,
-            )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
@@ -1557,6 +1541,25 @@ class AgentLauncher:
                         browser_grant.path_prefix, remote=bool(host)
                     )
             command = [*environment.command_prefix, *command]
+            if invocation_gate is not None:
+                command = invocation_gate.wrap_command(command)
+            if supervise_remote:
+                assert remote_pid_file is not None
+                assert supervisor_path
+                command = _supervised_remote_turn_command(
+                    command,
+                    supervisor_path=supervisor_path,
+                    pid_file=remote_pid_file,
+                    provider=provider,
+                    runtime_id=runtime.id,
+                    provider_version=getattr(readiness, "version", None),
+                    patch_path=str(cwd / "patch.json"),
+                    watch_path=str(cwd / "watch.json"),
+                    experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
+                    close_input_after_initial=turn.close_input_after_initial,
+                    fork_session_id=fork_session_id,
+                    fork_source_cwd=fork_source_cwd,
+                )
             local_cwd: str | None = str(cwd)
             if host:
                 command = ssh_arguments(

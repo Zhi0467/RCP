@@ -128,3 +128,31 @@ def test_html_shell_loads_have_distinct_error_channels_and_keep_the_version() ->
         assert query["version_id"] == ["v1"]
         channels.append(query["error_channel"][0])
     assert channels[0] != channels[1]
+
+
+def test_pdf_viewer_mounts_comments_and_keeps_download() -> None:
+    from rcp.artifact_comments import comment_panel
+    from rcp.artifacts import AgentArtifactDescriptor
+
+    descriptor = AgentArtifactDescriptor(
+        artifact_id="a" * 24, name="paper.pdf", media_type="application/pdf", size_bytes=1
+    )
+    document, csp = artifact_views.artifact_viewer_document(
+        descriptor,
+        content_url="/content?version_id=v1",
+        state="kept",
+        panel=comment_panel(
+            {
+                "projectId": "project",
+                "artifactId": descriptor.artifact_id,
+                "mediaType": "application/pdf",
+            }
+        ),
+    )
+    elements = Elements(document).tags
+    assert any(attrs.get("id") == "previewPdf" for _, attrs in elements)
+    assert any(attrs.get("id") == "comments-root" for _, attrs in elements)
+    assert any(tag == "a" and "download" in attrs for tag, attrs in elements)
+    assert "RcpComments.mountViewer" in document
+    assert "worker-src blob:" in csp
+    assert "object-src 'none'" in csp

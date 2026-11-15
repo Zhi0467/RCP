@@ -127,7 +127,7 @@ def test_verify_releases_and_claims_only_this_account_once(manifest, tmp_path, m
         launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
     )
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
-    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
+    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_, **__: nullcontext())
     monkeypatch.setattr(
         launcher,
         "_probe",
@@ -177,7 +177,7 @@ def _verify_client(store, background, monkeypatch):
         launcher_module, "_discover_local_provider", lambda _provider: "/test/codex"
     )
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
-    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_: nullcontext())
+    monkeypatch.setattr(launcher.credential_gate, "hold_blocking", lambda *_, **__: nullcontext())
     monkeypatch.setattr(
         launcher,
         "_probe",
