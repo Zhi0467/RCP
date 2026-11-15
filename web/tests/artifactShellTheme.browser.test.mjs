@@ -15,7 +15,7 @@ from rcp.artifact_views import artifact_viewer_document
 d=AgentArtifactDescriptor(artifact_id="a"*24,name="r.html",media_type="text/html",size_bytes=1)
 print(artifact_viewer_document(d,content_url="/preview",state="task",panel=comment_panel({"projectId":"p","artifactId":"a"*24,"mediaType":"text/html"}))[0])`,
   ],
-  { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+  { cwd: new URL("../..", import.meta.url), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
 );
 
 test("the artifact shell paints with the containing app's theme and follows a switch", async () => {

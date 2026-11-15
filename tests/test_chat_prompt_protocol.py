@@ -1014,9 +1014,19 @@ def test_project_agent_artifact_edit_keeps_its_private_native_stage(manifest, tm
         completed = wait_for_task_response(client, project_id, first.json()["operation_id"])
         assert completed["status"] == "succeeded", completed.get("error")
         artifact_id = completed["result"]["artifacts"][0]["artifact_id"]
+        comment = client.post(
+            f"/api/projects/{project_id}/comment-threads",
+            json={
+                "target": {"kind": "artifact", "id": artifact_id},
+                "anchor": {"kind": "whole"},
+                "text": "Revise this note",
+            },
+        )
+        assert comment.status_code == 200, comment.text
         edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={"comments": [{"text": "Revise this note"}]},
+            json={"thread_ids": [comment.json()["thread"]["thread_id"]]},
+            headers={"Idempotency-Key": str(uuid4())},
         )
         assert edit.status_code == 202, edit.text
         revised = wait_for_task_response(client, project_id, edit.json()["operation_id"])
@@ -1197,9 +1207,19 @@ def test_old_writer_private_fresh_artifact_edit_recovers_its_exact_checkpoint(
                 yield frame
 
         app.state.background_tasks.stream = stream
+        comment = client.post(
+            f"/api/projects/{project_id}/comment-threads",
+            json={
+                "target": {"kind": "artifact", "id": artifact_id},
+                "anchor": {"kind": "whole"},
+                "text": "Review again",
+            },
+        )
+        assert comment.status_code == 200, comment.text
         new_edit = client.post(
             f"/api/projects/{project_id}/artifacts/{artifact_id}/comments",
-            json={"comments": [{"text": "Review again"}]},
+            json={"thread_ids": [comment.json()["thread"]["thread_id"]]},
+            headers={"Idempotency-Key": str(uuid4())},
         )
         assert new_edit.status_code == 202, new_edit.text
         new_edit_task = wait_for_task_response(client, project_id, new_edit.json()["operation_id"])

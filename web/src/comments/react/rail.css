@@ -1,0 +1,9 @@
+.rcp-comments-tools {
+  display: inline-flex;
+  gap: 6px;
+}
+.rcp-comments .rcp-comments-close {
+  display: inline-grid;
+  place-items: center;
+  padding: 4px;
+}

@@ -782,3 +782,61 @@ def test_a_coach_steer_waiting_for_its_receipt_is_recorded_once(running_coach, m
     assert run.client.post(run.url + "/steer", json=body).json() == response.json()
     assert len(run.receipts) == 1
     assert run.client.get(run.url).json()["steers"] == [response.json()]
+
+
+@pytest.mark.parametrize("fixture", ["running_chat", "running_coach"])
+def test_steer_saved_threads_and_replay(request, fixture):
+    run = request.getfixturevalue(fixture)
+    store = run.background.store
+    if fixture == "running_coach":
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO paper_files VALUES (?, 'comment-paper', 'a.md', 'text', ?, NULL, NULL)",
+                (run.project_id, store.now()),
+            )
+    thread = store.create_comment_thread(
+        run.project_id,
+        target_kind="paper" if fixture == "running_coach" else "reply",
+        target_id="comment-paper" if fixture == "running_coach" else run.operation_id,
+        anchor={"kind": "whole"},
+        drawn_version=None,
+        text="Thread steer payload",
+        user_id=store.local_owner.user_id,
+    )
+    body = _body(message="", comment_thread_ids=[thread["thread_id"]])
+    response = run.client.post(run.url + "/steer", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["steering"]["status"] == "delivered"
+    assert "Thread steer payload" in run.receipts[0][2]
+    assert (
+        store.get_comment_thread(run.project_id, thread["thread_id"])["sent_operation_id"]
+        == run.operation_id
+    )
+    assert run.client.post(run.url + "/steer", json=body).json() == response.json()
+    assert len(run.receipts) == 1
+
+
+def test_refused_steer_does_not_resolve_threads(running_chat):
+    run = running_chat
+    store = run.background.store
+    thread = store.create_comment_thread(
+        run.project_id,
+        target_kind="reply",
+        target_id=run.operation_id,
+        anchor={"kind": "whole"},
+        drawn_version=None,
+        text="Keep open",
+        user_id=store.local_owner.user_id,
+    )
+    oversized = run.client.post(
+        run.url + "/steer",
+        json=_body(message="x" * 32000, comment_thread_ids=[thread["thread_id"]]),
+    )
+    assert oversized.status_code == 422, oversized.text
+    response = run.client.post(
+        run.url + "/steer",
+        json=_body(expected_turn_id="stale-turn", comment_thread_ids=[thread["thread_id"]]),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["steering"]["status"] == "refused"
+    assert store.get_comment_thread(run.project_id, thread["thread_id"])["state"] == "open"

@@ -214,6 +214,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "7d6546f30d958451080cce3d28818eb5297b7f4b",
         "0f87cc6d05c043b4e0f9ffff3884bfd3d1bc66bce15ffff195d2bf857d0ae3c7",
     ),
+    "pre-comments-v47-c2b0f07": (
+        "c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761",
+        "b80ea1fdd886b43b1d4f9faf6b688588c2a75b8a580f2f7fa8d28798a7027d54",
+    ),
 }
 
 

@@ -255,8 +255,7 @@
   --chat-accent: var(--forest);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
-.chat-dock.paper-coach,
-.paper-coach-comment {
+.chat-dock.paper-coach {
   --chat-accent: var(--plum);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
 }
@@ -2450,6 +2449,14 @@
 .chat-human-message > .chat-input-reference {
   cursor: pointer;
   font: inherit;
+  margin-bottom: 8px;
+}
+.chat-artifact-comment-send > summary {
+  color: var(--muted);
+  cursor: pointer;
+  font-size: var(--type-sm);
+}
+.chat-artifact-comment-send[open] > summary {
   margin-bottom: 8px;
 }
 .chat-artifact-comments {
