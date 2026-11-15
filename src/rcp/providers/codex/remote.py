@@ -18,12 +18,12 @@ if "TurnFence" not in globals():
     from rcp.providers.turn_fence import TurnFence
 
 
-def locate_codex_transcript(session_id: str) -> str | None:
-    """Find one native rollout on this execution host, resolving shared-store links."""
+def locate_codex_transcript(session_id: str, home: Path | None = None) -> str | None:
+    """Find one native rollout in `home`, by default this host's, resolving shared-store links."""
 
     if str(UUID(session_id)) != session_id:
         raise ValueError("A Codex transcript requires a canonical session UUID.")
-    home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser()
+    home = (home or Path(os.environ.get("CODEX_HOME", "~/.codex"))).expanduser()
     matches = {
         path.resolve()
         for directory in ("sessions", "archived_sessions")

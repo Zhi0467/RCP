@@ -56,6 +56,7 @@ from rcp.runs.recorded_turn import decode_recorded_turn
 from rcp.runs.session_master import commit_prepared_graph_observation
 from rcp.runs.shared import (
     _prepare_hidden_read_scope,
+    _protected_hidden_reads,
     _protected_run_stage_roots,
     _ProviderOutcome,
     _remove_local_tree,
@@ -168,6 +169,7 @@ async def stream_branch_merge_task(
             remote_stage = RemoteRunStage(machine.host).open(
                 stage_id,
                 protected_roots=_protected_run_stage_roots(execution.store, machine.machine_id),
+                protected_hidden_reads=_protected_hidden_reads(execution.store),
             )
             assert remote_stage.root is not None
             execution.checkpoint_stage(machine.machine_id, str(remote_stage.root))

@@ -294,6 +294,7 @@ class AgentTask:
         AgentTaskStoreMixin.pause_agent_task,
         AgentTaskStoreMixin.prune_operational_storage,
         AgentTaskStoreMixin.reconcile_agentless_merge_task,
+        AgentTaskStoreMixin.record_agent_task_hidden_read,
         AgentTaskStoreMixin.record_chat_stage_layout,
         AgentTaskStoreMixin.release_recorded_finalization,
         AgentTaskStoreMixin.replace_agent_task_graph_update,
@@ -353,6 +354,9 @@ class AgentTask:
         ),
         AgentTaskStoreMixin.record_chat_stage_layout: (
             "the chat launcher records stage layout; scripted streams skip it"
+        ),
+        AgentTaskStoreMixin.record_agent_task_hidden_read: (
+            "the provider launch records its hidden-read folder; scripted streams skip it"
         ),
         AgentTaskStoreMixin.update_agent_task_status: (
             "only a status stream event writes the live snapshot; scripted streams send none"

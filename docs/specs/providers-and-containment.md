@@ -418,6 +418,11 @@ Masking it would write a stand-in into the home, and flagging it would mark ever
 launch unhidden on an account that uses only some providers. A changed mask set restarts the daemon at its
 next admission. The wrapper and its policy live in `~/.rcp/hidden-read/<fingerprint>`
 on the execution host, outside every write root and inside the hidden set.
+Each launch records its fingerprint on its task row. A folder older than the
+stage retention is swept unless a queued, running, pausing or paused task names
+it: locally with each provider session sweep pass, and on a remote host with
+its stage sweep. Install touches the folder before checking it, so a sweep does
+not age it out mid-install.
 When the hiding wrapper is unavailable at command time, the shell runs unwrapped
 without per-command traces only if the launch recorded `wrapper_unavailable` or
 `userns_blocked`. A wrapper that was available at launch but later becomes
@@ -741,6 +746,80 @@ the original assignment and completed progress. Current inputs, schema,
 validator, output and command metadata travel inline; they do not authorize
 repeating external effects. After Work-like correction, RCP revalidates the
 candidate against current state even if its bytes are unchanged.
+
+## Provider session retention
+
+RCP deletes a provider session it started once nothing has used it for
+`PROVIDER_SESSION_RETENTION_DAYS`. Age is the newest `graph_runs.updated_at` among
+rows naming the session, by `native_session_id` or by a fork turn's
+`fork_session_id`. A session is held while any of these names it: a queued,
+running, pausing or paused row; a branched chat that has not launched its first
+turn (the source turn's session); a pending question's origin, or an answered
+chat question's until its follow-up is admitted or its answer received; a
+`writing_sessions` row; a pending or outdated Paper change group's Coach task; an open episode
+through its rows, `experiment_episode_state` or `episode_wrapups`; a wrapup
+still pending or running; or an active or degraded watcher, through its origin turn.
+
+Only ids recorded in `graph_runs` are candidates, and admission never takes a
+client-supplied session, so sessions people start in their own terminals are never
+touched. The sweep never lists a provider store. It checks each id's shape
+and deletes it by exact id:
+
+- Codex: `codex delete --force <uuid>` in each home holding the rollout: the account's
+  own, and the turn's added login home when it still exists and keeps its own copy. Codex refuses to delete a session while a fork of it
+  exists; the fork does not need its source, so the source waits until its forks
+  are swept.
+- OpenCode: `opencode session delete <id>`, only when `opencode --version` reports
+  major version 1, the store the use check below reads; any other version fails.
+- Claude has no delete command and prunes only interactive sessions, so RCP removes
+  `<config>/projects/<key>/<id>.jsonl` and the `<id>/` folder beside it, where
+  `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude` and `<key>` is the project key of
+  the chat's stage workspace as the host resolves it. A transcript already gone is
+  logged as absent. Claude sessions outside node and project chats have no
+  recorded workspace and are kept.
+- Antigravity has no delete command; its sessions are kept.
+
+The provider stores are the account's own, so the machine checks for use outside
+RCP first. A Codex rollout or Claude transcript modified within the window, or an
+OpenCode session whose `opencode db` row was updated within it or has any child
+session (RCP denies `task`, so it never creates one), is kept: its mark is dropped and a later pass may mark it again.
+
+A provider answer that the id does not exist counts as deleted. Any other failure
+keeps the mark with its `last_error`, and a later pass retries it. After
+`PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS` failures, or once its machine card is
+removed, the mark is abandoned and logged; the session stays swept.
+
+`runs/provider_session_sweep.py` runs one pass at startup after recovery and then
+every `PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS`. Only the canonical data directory
+sweeps, the desktop's platform default or the team server layout's, because a
+copied data directory still reaches the live backend's hosts; any other logs once
+that the sweep is off. Per execution machine a pass retries up to
+`PROVIDER_SESSION_SWEEP_RETRY_BATCH` marked sessions and marks up to
+`PROVIDER_SESSION_SWEEP_BATCH` new ones, so failures cannot starve new sweeping.
+It deletes them with the machine's recorded provider binary, else the discovered
+one, in chunks of `PROVIDER_SESSION_SWEEP_CHUNK`. The backend's own machine deletes
+in-process; another machine takes one SSH call per chunk to
+`transport/provider_session_delete.py` in the account's login shell, so its
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` apply, and RCP reads the result from the last
+output line. The update gate is held only around the store writes, and a stop
+request ends the pass between chunks. An unreachable host fails its chunk. Each
+pass logs one line per machine with deleted and absent counts per provider,
+failures and kept sessions.
+
+Marks live in the backend-local `provider_session_sweeps` table. One `BEGIN
+IMMEDIATE` transaction rechecks the rule and inserts the marks before any deletion.
+A marked session is dropped like a stale one: the chat's next turn, Retry, a
+question answer and an orchestrator seed start fresh instead of resuming it, and
+branching from that chat is refused as `chat_session_expired`. A turn that resumed
+the session just before its mark fails as a classified stale session, and its Retry
+starts fresh. The probed missing-session texts ("no thread with id", "no rollout
+found for thread id", "No conversation found with session ID", OpenCode's "Session
+not found: ses_…") classify as `stale_session`, so a session a provider removed costs one
+failed turn.
+
+Both tables are in backups but never travel with a project. A restored database may
+predate the hosts, so restore records its time in `provider_session_sweep_state`
+and the sweep then ages only sessions whose newest row is newer than the restore.
 
 ## Continuation prompts
 
@@ -1408,8 +1487,9 @@ entry links to the machine Codex home, including configuration, skills, sessions
 indexes, SQLite databases and caches. `providers/codex/homes.py`, through the shared `providers/login_homes.py` that
 also prepares Antigravity homes, prepares the same layout locally and over SSH, with mode 0700. Known Codex stores are linked before
 first use. Later names are discovered on preparation. Startup prepares recorded
-added homes, including signed-out and removed logins, before recovery chooses a
-usable sign-in. Missing local homes are skipped. Unreachable remote homes are
+added homes, including signed-out logins and removals whose cleanup is pending,
+before recovery chooses a usable sign-in. A finished removal's home is not
+recreated. Missing local homes are skipped. Unreachable remote homes are
 reported without preventing startup and retried on a later startup.
 
 Legacy rollouts move into the machine store at their relative paths. Missing
@@ -1468,7 +1548,14 @@ another allowed login when its previous one is unhealthy, removed, draining or
 limited, and never runs on another member's own login. A lineage login that
 became unusable or removed resolves the same way. Draining logins admit no new
 choices but remain usable by lineage work until its running turns end. Removal retains session files and deletes only credentials; unreachable remote
-cleanup remains pending for reconciliation. Shared removal synchronously settles
+cleanup remains pending for reconciliation. Once nothing runs on the login, removal
+also walks its home without following links, unlinks each link and the provider's
+home credentials, and removes folders left empty. Any other real file stays, and
+so do `<login_id>-retained` and the UUID-named snapshot folders beside it, which
+can hold the only copy of a rollout. Deleting a machine runs the same cleanup for its added logins when the
+host is reachable; otherwise it logs the machine and how many login folders
+remain. Nothing else on the host is removed, because another backend may share
+its `~/.rcp`. Shared removal synchronously settles
 any pending device sign-in before taking the credential gate; member removal does
 not, and relies on the late-credential rule above. The sign-in runner's
 recovery pass also reconciles drains and pending cleanup.

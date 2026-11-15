@@ -18,6 +18,7 @@ from tests.test_episode_api import create_terminal_auto_episode
         ("session", "auto_research_session_unavailable"),
         ("stage", "auto_research_session_unavailable"),
         ("history", "auto_research_session_unavailable"),
+        ("swept", "auto_research_session_unavailable"),
         ("merge", "episode_merge_reserved"),
         ("removed", "episode_isolation_unavailable"),
         ("wrapping_up", "auto_research_not_ended"),
@@ -40,6 +41,15 @@ def test_message_refusal_is_projected_and_enforced(
                 connection.execute(
                     f"UPDATE graph_runs SET {updates[condition]} WHERE operation_id = ?",
                     (episode.root_operation_id,),
+                )
+        elif condition == "swept":
+            with store.connection() as connection:
+                connection.execute(
+                    "INSERT INTO provider_session_sweeps "
+                    "(provider, execution_machine, native_session_id, marked_at) "
+                    "SELECT 'codex', 'backend', native_session_id, ? FROM graph_runs "
+                    "WHERE operation_id = ?",
+                    (store.now(), episode.root_operation_id),
                 )
         elif condition == "wrapping_up":
             with store.connection() as connection:

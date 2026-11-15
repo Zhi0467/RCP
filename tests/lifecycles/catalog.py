@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -116,6 +116,7 @@ from rcp.storage.owner_auth import OwnerAuthStoreMixin
 from rcp.storage.project_groups import ProjectGroupStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin, migrate_per_member_provider_logins
+from rcp.storage.provider_session_sweeps import ProviderSessionSweepStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.spaces import SpaceStoreMixin
@@ -1075,6 +1076,32 @@ COMMENT_THREAD = Entry(
     ),
 )
 
+PROVIDER_SESSION_SWEEP = Entry(
+    name="provider session sweep",
+    status=Literal["marked", "deleted", "abandoned"],
+    tables=frozenset({"provider_session_sweeps", "provider_session_sweep_state"}),
+    writers=(
+        ProviderSessionSweepStoreMixin.mark_provider_sessions_swept,
+        ProviderSessionSweepStoreMixin.unmark_provider_sessions,
+        ProviderSessionSweepStoreMixin.record_provider_session_sweep_results,
+        ProviderSessionSweepStoreMixin.abandon_provider_session_marks,
+        ProviderSessionSweepStoreMixin.detach_provider_session_sweeps_for_restore,
+    ),
+    rules=(
+        Rule(
+            "mark_before_delete",
+            "One transaction rechecks eligibility and marks a session before any deletion, "
+            "and a marked session never resumes.",
+            "providers spec: Provider session retention",
+        ),
+        Rule(
+            "retries_converge",
+            "A failing mark is retried a bounded number of times, then abandoned and still swept.",
+            "providers spec: Provider session retention",
+        ),
+    ),
+)
+
 ENTRIES = (
     PROJECT_PROVISIONING,
     PROJECT_TRANSFER,
@@ -1100,6 +1127,7 @@ ENTRIES = (
     AGENT_THREAD_QUEUE,
     NOTIFICATION_DELIVERY,
     COMMENT_THREAD,
+    PROVIDER_SESSION_SWEEP,
 )
 
 NOT_LIFECYCLE: dict[str, str] = {

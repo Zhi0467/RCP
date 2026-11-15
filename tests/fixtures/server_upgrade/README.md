@@ -244,3 +244,8 @@ builder. Earlier boundaries remain unchanged.
 session sweep marks (migration 86) and hidden-read fingerprints on task rows
 (migration 87). Exact source `05dfcdb879419991c205d540ea686342f5bb296b` upgrades
 a copy of `pre-comments-v47-c2b0f07` through the existing fixture builder.
+
+`pre-share-links-v49-e282ed4` freezes migration 87 before project-scoped share
+links (migration 88). Exact source `e282ed45d15d3b9bd106d97e06db740506146973`
+upgrades a copy of `pre-provider-session-sweeps-v48-05dfcdb` through the existing
+fixture builder.

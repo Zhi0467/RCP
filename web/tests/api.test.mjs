@@ -9,6 +9,7 @@ import {
   loadClientRequest,
   TURN_REFUSAL_REASONS,
   api,
+  branchChat,
   clearAllProjectCaches,
   clearProjectCaches,
   createTeamInvitation,
@@ -852,6 +853,27 @@ test("turn admission refusals resolve through the shared code map", async () => 
         });
       }
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an expired branch source reads as its shared reason", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: { code: "chat_session_expired", message: "expired" } }), {
+      status: 422,
+      headers: { "Content-Type": "application/json" },
+    });
+  try {
+    await assert.rejects(
+      branchChat("p", "chat", { kind: "main", branch_id: null }, "r"),
+      (error) => {
+        assert.equal(error.code, "chat_session_expired");
+        assert.equal(error.message, TURN_REFUSAL_REASONS.chat_session_expired);
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

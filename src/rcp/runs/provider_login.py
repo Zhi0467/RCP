@@ -490,6 +490,18 @@ def reconcile_login_removals(store: AppStore, launcher: AgentLauncher) -> None:
 _CLEANUP_PENDING = "Sign-in removed. Remote credential deletion is pending; RCP will retry."
 
 
+def login_homes_to_prepare(store: AppStore, provider: str) -> list[LoginKey]:
+    """Added logins whose homes startup prepares; a finished removal stays pruned."""
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT machine_id, login_id FROM provider_login_states "
+            "WHERE provider=? AND login_id != '' AND (removed_at IS NULL OR detail = ?) "
+            "ORDER BY machine_id, login_id",
+            (provider, _CLEANUP_PENDING),
+        ).fetchall()
+    return [LoginKey(provider, row["machine_id"], row["login_id"]) for row in rows]
+
+
 def delete_removed_credential(store: AppStore, key: LoginKey, *, defer: bool = False) -> bool:
     """Delete only the credential, or with `defer` leave it pending; False if not deleted.
 

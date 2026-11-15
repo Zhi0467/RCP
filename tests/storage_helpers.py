@@ -110,6 +110,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     ):
         connection.execute("ALTER TABLE episode_reports DROP COLUMN deleted_at")
     if any(
+        row[1] == "hidden_read_fingerprint"
+        for row in connection.execute("PRAGMA table_info(graph_runs)")
+    ):
+        connection.execute("ALTER TABLE graph_runs DROP COLUMN hidden_read_fingerprint")
+    if any(
         row[1] == "agent_status_json" for row in connection.execute("PRAGMA table_info(graph_runs)")
     ):
         connection.execute("ALTER TABLE graph_runs DROP COLUMN agent_status_json")
