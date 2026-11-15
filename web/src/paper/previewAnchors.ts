@@ -62,6 +62,16 @@ function pageFraction(page: DOMRect, rect: CommentRect): CommentRect | null {
   };
 }
 
+function firstPageText(shown: string, range: Range, first: HTMLElement, last: HTMLElement) {
+  if (first === last) return shown;
+  const onFirst = range.cloneRange();
+  onFirst.setEnd(first, first.childNodes.length);
+  let left = onFirst.toString().replace(/\s/g, "").length;
+  for (let index = 0; index < shown.length; index++)
+    if (!/\s/.test(shown[index]) && --left <= 0) return shown.slice(0, index + 1);
+  return shown;
+}
+
 /** A selection inside the preview as a thread anchor: Markdown and plain text become
  *  text anchors on the rendered text, a PDF selection a pdf anchor on its first page. */
 export function previewSelectionAnchor(
@@ -81,7 +91,9 @@ export function previewSelectionAnchor(
   const lastPage = end.closest<HTMLElement>(PAGE);
   if (Boolean(firstPage) !== Boolean(lastPage)) return null;
   if (firstPage && lastPage) {
-    const text = selection.toString().trim().slice(0, MAX_QUOTE_CHARS);
+    const text = firstPageText(selection.toString(), range, firstPage, lastPage)
+      .trim()
+      .slice(0, MAX_QUOTE_CHARS);
     const box = pageFraction(firstPage.getBoundingClientRect(), {
       x: rect.left,
       y: rect.top,

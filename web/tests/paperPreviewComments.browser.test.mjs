@@ -575,14 +575,13 @@ test("preview selections name their source, and boxes on PDF pages open comments
   // Across pages, the line comes from where the selection ends on its last page.
   const next = page.locator('.paper-pdf-page[data-page="2"] .textLayer span', { hasText: "Hello" });
   await next.waitFor();
-  assert.equal(
-    await page.evaluate(() => {
-      const spans = (n) =>
-        document.querySelectorAll(`.paper-pdf-page[data-page="${n}"] .textLayer span`);
-      return window.selectSpan(spans(1)[0], spans(2)[0]).where;
-    }),
-    "main.tex, pages 1-2, near sections/a.tex line 12",
-  );
+  const across = await page.evaluate(() => {
+    const spans = (n) =>
+      document.querySelectorAll(`.paper-pdf-page[data-page="${n}"] .textLayer span`);
+    return window.selectSpan(spans(1)[0], spans(2)[0]);
+  });
+  assert.equal(across.where, "main.tex, pages 1-2, near sections/a.tex line 12");
+  assert.equal(across.quote.match(/Hello/g)?.length, 1);
 
   // HTML: the latest saved page in the inline shell, with comment mode in the panel tools.
   await page.evaluate(() => window.show("html"));
