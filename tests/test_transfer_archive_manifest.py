@@ -136,6 +136,7 @@ PROJECT_LINKED_TABLES = {
     "comment_threads",
     "comment_posts",
     "comment_mentions",
+    "share_links",
     "evidence_flags",
     "evidence_flag_carries",
     "evidence_flag_command_receipts",

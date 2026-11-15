@@ -56,6 +56,7 @@ from rcp.storage.questions import QuestionStoreMixin
 from rcp.storage.research_views import ResearchViewStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.rows import RowMappingMixin
+from rcp.storage.share_links import ShareLinkStoreMixin
 from rcp.storage.space_machines import SpaceMachineStoreMixin
 from rcp.storage.spaces import SpaceStoreMixin
 from rcp.storage.transfer import ProjectTransferStoreMixin
@@ -76,6 +77,7 @@ class AppStore(
     ConsolidationStoreMixin,
     BulletinStoreMixin,
     CommentStoreMixin,
+    ShareLinkStoreMixin,
     EvidenceFlagStoreMixin,
     QuestionStoreMixin,
     NotificationStoreMixin,

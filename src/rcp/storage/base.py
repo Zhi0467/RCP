@@ -154,6 +154,7 @@ class AppStoreBase:
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
         (83, "comments_v1"),
+        (88, "share_links_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1115,6 +1116,11 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=83, name="comments_v1", migration=migrate_comments
+        )
+        from rcp.storage.share_links import migrate_share_links
+
+        self._run_storage_schema_migration(
+            connection, version=88, name="share_links_v1", migration=migrate_share_links
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
