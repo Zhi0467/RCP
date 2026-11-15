@@ -1526,8 +1526,8 @@ choices but remain usable by lineage work until its running turns end. Removal r
 cleanup remains pending for reconciliation. Once nothing runs on the login, removal
 also walks its home without following links, unlinks each link and the provider's
 home credentials, and removes folders left empty. Any other real file stays, and
-so does `<login_id>-retained` with its snapshots, which can hold the only copy of
-a rollout. Deleting a machine runs the same cleanup for its added logins when the
+so do `<login_id>-retained` and the UUID-named snapshot folders beside it, which
+can hold the only copy of a rollout. Deleting a machine runs the same cleanup for its added logins when the
 host is reachable; otherwise it logs the machine and how many login folders
 remain. Nothing else on the host is removed, because another backend may share
 its `~/.rcp`. Shared removal synchronously settles
