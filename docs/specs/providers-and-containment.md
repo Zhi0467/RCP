@@ -769,7 +769,8 @@ and deletes it by exact id:
   added login homes link to. Codex refuses to delete a session while a fork of it
   exists; the fork does not need its source, so the source waits until its forks
   are swept.
-- OpenCode: `opencode session delete <id>`.
+- OpenCode: `opencode session delete <id>`, only when `opencode --version` reports
+  major version 1, the store the use check below reads; any other version fails.
 - Claude has no delete command and prunes only interactive sessions, so RCP removes
   `<config>/projects/<key>/<id>.jsonl` and the `<id>/` folder beside it, where
   `<config>` is `CLAUDE_CONFIG_DIR` or `~/.claude` and `<key>` is the project key of

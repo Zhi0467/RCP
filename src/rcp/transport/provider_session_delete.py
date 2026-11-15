@@ -38,6 +38,8 @@ SESSION_ID_SHAPES = {
     "opencode": re.compile(r"ses_[A-Za-z0-9]+"),
 }
 CLAUDE_PROJECT_KEY = re.compile(r"[A-Za-z0-9-]+")
+OPENCODE_VERIFIED_MAJOR = 1
+OPENCODE_VERSION = re.compile(r"(\d+)\.\d+")
 GONE_MARKERS = {
     "codex": "no active or archived session found",
     "opencode": "session not found",
@@ -74,7 +76,9 @@ def _delete(item: dict, *, timeout: float, discover: Discover) -> Outcome:
             return ("kept", None)
         command = [binary, "delete", "--force", session_id]
     else:
-        activity = _opencode_activity(binary, session_id, since, timeout)
+        activity = _opencode_store_check(binary, timeout) or _opencode_activity(
+            binary, session_id, since, timeout
+        )
         if activity is not None:
             return activity
         command = [binary, "session", "delete", session_id]
@@ -86,6 +90,18 @@ def _delete(item: dict, *, timeout: float, discover: Discover) -> Outcome:
         if probe is not None and GONE_MARKERS["codex"] in probe.casefold():
             return ("deleted", None)
     return ("failed", failure)
+
+
+def _opencode_store_check(binary: str, timeout: float) -> Outcome | None:
+    """Refuse any OpenCode major but 1.x, whose `session` table the use check reads."""
+
+    failure, output = _run([binary, "--version"], timeout)
+    if failure is not None:
+        return ("failed", failure)
+    version = OPENCODE_VERSION.search(output)
+    if version is None or int(version.group(1)) != OPENCODE_VERIFIED_MAJOR:
+        return ("failed", f"unsupported OpenCode session store {output.strip()[:40]!r}")
+    return None
 
 
 def _opencode_activity(

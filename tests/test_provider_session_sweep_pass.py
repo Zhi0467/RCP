@@ -25,6 +25,9 @@ OTHER_CLAUDE = "019a0000-0000-7000-8000-00000000000f"
 
 FAKE = """#!/usr/bin/env python3
 import json, os, re, sys
+if sys.argv[1] == "--version":
+    print(os.environ.get("FAKE_OPENCODE_VERSION", "1.0.150"))
+    sys.exit(0)
 if sys.argv[1] == "db":
     rows = json.loads(os.environ.get("FAKE_OPENCODE_ROWS", "{{}}"))
     session = re.search("id = '([^']+)'", sys.argv[2]).group(1)
@@ -193,6 +196,22 @@ def test_sessions_used_outside_rcp_are_kept_unmarked_and_stay_eligible(
         for target in store.provider_session_sweep_targets(store.now())
         if not target.marked
     } == in_use
+
+
+@pytest.mark.real_provider_discovery
+def test_an_unverified_opencode_store_version_is_never_deleted(
+    tmp_path, monkeypatch, fake_providers
+):
+    monkeypatch.setenv("FAKE_OPENCODE_VERSION", "2.0.0")
+    store = AppStore(tmp_path / "app.sqlite3")
+    _run(store, "opencode-turn", RCP_OPENCODE, "opencode")
+    _sweep(store)
+    assert fake_providers.read_text() == ""
+    assert (tmp_path / "provider-home" / RCP_OPENCODE).exists()
+    with store.connection() as connection:
+        row = connection.execute("SELECT * FROM provider_session_sweeps").fetchone()
+    assert row["deleted_at"] is None
+    assert row["last_error"]
 
 
 def test_claude_deletes_the_exact_transcript_and_its_folder(tmp_path, monkeypatch):
