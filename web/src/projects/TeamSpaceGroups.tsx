@@ -74,10 +74,12 @@ export function TeamSpaceGroups({
   addOpen,
   onOpenAdd,
   onCloseAdd,
+  prefillSshTarget,
 }: {
   addOpen: boolean;
   onOpenAdd: () => void;
   onCloseAdd: () => void;
+  prefillSshTarget?: string;
 }) {
   const desktop = isDesktopRuntime();
   const [connections, setConnections] = useState<TeamConnectionView[]>(() => shownViews ?? []);
@@ -206,6 +208,7 @@ export function TeamSpaceGroups({
 
       {addOpen && (
         <AddTeamSpaceDialog
+          prefillSshTarget={prefillSshTarget}
           onClose={onCloseAdd}
           onEstablished={(session) => {
             updateConnection({ connection: session.connection, state: "available", error: null });
@@ -288,12 +291,14 @@ export function TeamConnectionGroup({
 export function AddTeamSpaceDialog({
   onClose,
   onEstablished,
+  prefillSshTarget = "",
 }: {
   onClose: () => void;
   onEstablished: (session: EstablishedTeamSession) => void;
+  prefillSshTarget?: string;
 }) {
   const [mode, setMode] = useState<"enroll" | "existing">("enroll");
-  const [sshTarget, setSshTarget] = useState("");
+  const [sshTarget, setSshTarget] = useState(prefillSshTarget);
   const [port, setPort] = useState("8421");
   const [displayName, setDisplayName] = useState("");
   const [secret, setSecret] = useState("");

@@ -52,6 +52,9 @@
     "allow-open-external",
     "allow-request-quit",
     "allow-check-for-update",
-    "allow-apply-update"
+    "allow-apply-update",
+    "allow-desktop-share-link-notice",
+    "allow-desktop-retry-share-link",
+    "allow-desktop-dismiss-share-link"
   ]
 }

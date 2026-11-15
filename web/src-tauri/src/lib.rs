@@ -12,6 +12,7 @@ mod owner_session;
 mod pdf_preview;
 mod project_transfer;
 mod server_commands;
+mod share_links;
 mod team_connections;
 mod team_session;
 mod team_tunnel;
@@ -116,6 +117,9 @@ pub fn run() {
             commands::request_quit,
             commands::check_for_update,
             commands::apply_update,
+            share_links::desktop_share_link_notice,
+            share_links::desktop_retry_share_link,
+            share_links::desktop_dismiss_share_link,
         ])
         .setup(|app| {
             // Before launch finishes, so a click that launched the app arrives.
@@ -200,6 +204,8 @@ pub fn run() {
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => verify_then_prepare_show(app.clone(), "dock-reopen"),
+        #[cfg(target_os = "macos")]
+        RunEvent::Opened { urls } => share_links::receive(app, urls),
         _ => {}
     });
 }
@@ -255,6 +261,7 @@ fn finish_startup(app: &tauri::AppHandle, status: lifecycle::DesktopStatus) {
     }
     let _ = windows::prepare_show(app, &status, "startup");
     windows::show_when_handshake_does_not_arrive(app);
+    notifications::advance_pending(app);
 }
 
 pub(crate) fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {

@@ -593,7 +593,7 @@ impl CachedTeamProjectCard {
     }
 }
 
-fn validate_uuid4(value: &str, label: &str) -> Result<(), String> {
+pub(crate) fn validate_uuid4(value: &str, label: &str) -> Result<(), String> {
     let parsed =
         Uuid::parse_str(value).map_err(|_| format!("{label} must be a canonical UUID4"))?;
     if parsed.get_version() != Some(UuidVersion::Random) || parsed.to_string() != value {
