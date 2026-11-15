@@ -127,7 +127,9 @@ class RemoteRunStage:
             raise _ssh_failure(result, "could not prepare project memory")
         return json.loads(result.stdout)
 
-    def paper_folder(self, request: dict) -> dict:
+    def paper_folder(
+        self, request: dict, *, timeout_seconds: float = REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS
+    ) -> dict:
         """Run one Paper folder operation on this stage's host."""
         source = (
             importlib.resources.files("rcp.paper")
@@ -135,7 +137,9 @@ class RemoteRunStage:
             .read_text(encoding="utf-8")
         )
         result = self._ssh_bytes(
-            ["python3", "-I", "-c", source], input_data=json.dumps(request).encode()
+            ["python3", "-I", "-c", source],
+            input_data=json.dumps(request).encode(),
+            timeout_seconds=timeout_seconds,
         )
         if result.returncode:
             raise _ssh_failure(result, "could not reach the Paper folder")

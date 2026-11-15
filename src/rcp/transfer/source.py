@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import shutil
 import stat
@@ -226,12 +227,28 @@ def complete_source_project_transfer(
     )
     store.retire_source_project_transfer(request_id)
     catalog.discard_retired_transfer_source(request_id)
+    _remove_retired_paper(store, transfer.project_id)
     if os.path.lexists(destination):
         _require_cleanup_archive_matches_transfer(destination, transfer)
         destination.unlink()
         _fsync_directory(destination.parent)
     store.complete_project_transfer_request(request_id)
     return acknowledgment
+
+
+def _remove_retired_paper(store: AppStore, project_id: str) -> None:
+    """The target holds the Paper now; an unreachable host keeps a stale copy, logged."""
+    from rcp.paper.folder import change_project_paper
+
+    retired = store.retired_project(project_id)
+    if retired is None:
+        return
+    try:
+        change_project_paper(store, retired, None)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Paper folder of transferred project %s stays on its source", project_id
+        )
 
 
 def stream_source_transfer_archive(

@@ -284,3 +284,16 @@ def test_install_refuses_paths_that_land_on_one_file(root, monkeypatch):
     with pytest.raises(ValueError):
         folder_io.install(root, {"a.md": b"a", "b.md": b"b"})
     assert list(root.iterdir()) == []
+
+
+def test_deleting_a_project_folder_removes_its_install_staging(tmp_path):
+    root = paper_root(tmp_path, "p")
+    (root / "a.md").write_text("a")
+    staging = root.parent / ".install-p"
+    staging.mkdir()
+    (staging / "half.md").write_text("half")
+    folder_io.change_project_folder(tmp_path, "p", None)
+    assert not root.exists() and not staging.exists()
+    staging.mkdir()
+    folder_io.change_project_folder(tmp_path, "p", None)
+    assert not staging.exists()

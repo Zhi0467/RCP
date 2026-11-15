@@ -178,6 +178,34 @@ def test_paper_folder_backup_round_trips_local_and_ssh(tmp_path, remote):
     assert read_paper_folder(target)["notes/new.md"] == b"kept newer text"
 
 
+def test_a_restore_keeps_an_emptied_paper_on_a_kept_ssh_base(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from rcp.server_ops.backup_project_files import capture_paper_folder
+    from rcp.server_ops.restore import _restore_project_bytes
+
+    source = LocalPaperFolder(paper_root(tmp_path / "source", "p"))
+    for path, data in FOLDER.items():
+        source.write(path, data, None)
+    payload = tmp_path / "archive"
+    (payload / "projects/p").mkdir(parents=True)
+    entries = capture_paper_folder(source, payload / "projects/p", "p")
+    kept = LocalPaperFolder(paper_root(tmp_path / "kept", "p"))
+    owners = SimpleNamespace(workspace=Mock(), history=Mock())
+
+    _restore_project_bytes(
+        owners,
+        SimpleNamespace(files=entries),
+        payload,
+        [],
+        existing_remote=True,
+        paper_folder=kept,
+    )
+
+    assert read_paper_folder(kept) == {}
+
+
 def test_backup_captures_a_migrated_old_writer_paper_folder(tmp_path):
     """The old writer's Paper reaches the backup through the migration and the folder."""
     import uuid

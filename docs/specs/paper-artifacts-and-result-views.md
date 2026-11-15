@@ -24,7 +24,10 @@ area, or change card. The local folder is `<data_dir>/paper/<project_id>/`; an
 SSH base holds it at `~/.rcp/paper/<project_id>/`. Both sit inside
 `rcp_owned_paths`, outside every repository and `.research`, like
 [project memory](graph-consolidation-and-lessons.md#memory). Project identity
-changes move the folder and project deletion removes it, as they do memory.
+changes move the folder and project deletion removes it, as they do memory,
+with any interrupted install's staging. A transfer's source removes its folder
+once the project retires there. Restore writes the archived folder only into an
+empty folder, and never onto a kept SSH base, whose folder stays as it is.
 **Why:** one copy cannot drift, and agents read and write what members see.
 
 [`folder_io`](../../src/rcp/paper/folder_io.py) owns file access. It is
@@ -135,7 +138,8 @@ artifact sandbox (see Preview); binary HTML downloads. Paper files never execute
 same-origin documents.
 
 An older database or state migrates at startup, once per project, after
-machine cards settle and before recovery. A project with neither SQLite Paper
+machine cards settle and before recovery. A project whose SSH base misses a
+short probe is left for its first Paper open. A project with neither SQLite Paper
 rows nor a `.research/paper` publication is only marked. Migration writes the
 saved snapshot, else the publication, into a sibling temp folder and renames it
 into place. Paths that differ only by case get distinct names, and paths the

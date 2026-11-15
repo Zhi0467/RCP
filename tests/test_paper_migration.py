@@ -427,3 +427,50 @@ def test_startup_moves_papers_after_machine_cards_settle_and_before_recovery(tmp
     )
     with TestClient(app, base_url="http://127.0.0.1:8421"):
         assert order == ["cards", "paper", "recovery"]
+
+
+def test_startup_leaves_a_paper_on_an_unreachable_host_for_later(manifest, tmp_path):
+    from rcp.agents import AgentLauncher
+    from rcp.paper.migration import migrate_papers
+    from rcp.projects import ProjectCatalog
+
+    class Unreachable:
+        remote = True
+
+        def reachable(self) -> bool:
+            return False
+
+        def install(self, files):
+            pytest.fail("startup must not wait on an unreachable host")
+
+    data_dir = tmp_path / "data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    try:
+        catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+        record = catalog.register(str(manifest.path), identity_action="adopted")
+        seed_legacy_paper(store, record.project_id, manifest.research_dir)
+        failed = migrate_papers(store, lambda _p: Unreachable(), catalog._paper_workspace)
+        assert failed == [record.project_id]
+        assert needs_paper_migration(store, record.project_id)
+        assert (manifest.research_dir / "paper").exists()
+    finally:
+        store.close()
+
+
+def test_the_remote_reachability_probe_uses_the_short_startup_timeout(monkeypatch):
+    from rcp import limits
+    from rcp.paper.folder import RemotePaperFolder
+    from rcp.transport.run_stage import RemoteRunStage
+
+    stage = RemoteRunStage("example.invalid")
+    seen = []
+
+    def unreachable(arguments, *, input_data=None, timeout_seconds=None, **kwargs):
+        import subprocess
+
+        seen.append(timeout_seconds)
+        return subprocess.CompletedProcess(arguments, 255, b"", b"no route")
+
+    monkeypatch.setattr(stage, "_ssh_bytes", unreachable)
+    assert not RemotePaperFolder(stage, "p").reachable()
+    assert seen == [limits.PAPER_STARTUP_PROBE_SECONDS]

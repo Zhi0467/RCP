@@ -241,9 +241,15 @@ def install(root: Path, files: dict[str, bytes]) -> bool:
 
 
 def change_project_folder(data_dir: Path, project_id: str, destination: str | None) -> None:
-    """Move a project's folder to another project id, or remove it when none is named."""
+    """Move a project's folder to another project id, or remove it when none is named.
+
+    An interrupted install's staging directory goes with it.
+    """
     parent = data_dir / "paper"
     root = parent / safe_component(project_id)
+    staging = parent / f".install-{root.name}"
+    if not parent.is_symlink() and staging.is_dir() and not staging.is_symlink():
+        shutil.rmtree(staging)
     if not root.exists() and not root.is_symlink():
         return
     if not stat.S_ISDIR(parent.lstat().st_mode):

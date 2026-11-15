@@ -32,6 +32,8 @@ class PaperFolder(Protocol):
 
     def install(self, files: dict[str, bytes]) -> bool: ...
 
+    def reachable(self) -> bool: ...
+
 
 def _settle(remote: bool) -> dict[str, float]:
     seconds = limits.PAPER_REMOTE_POLL_SECONDS if remote else limits.PAPER_POLL_SECONDS
@@ -61,6 +63,9 @@ class LocalPaperFolder:
 
     def install(self, files: dict[str, bytes]) -> bool:
         return folder_io.install(self.root, files)
+
+    def reachable(self) -> bool:
+        return True
 
 
 def _decode(value: str | None) -> bytes | None:
@@ -105,6 +110,19 @@ class RemotePaperFolder:
     def install(self, files: dict[str, bytes]) -> bool:
         encoded = {path: base64.b64encode(data).decode("ascii") for path, data in files.items()}
         return self._call("install", files=encoded)["installed"]
+
+    def reachable(self) -> bool:
+        """One short probe, so startup never waits the full timeout on a dead host."""
+        from rcp.transport.state import StateUnavailable
+
+        try:
+            self.stage.paper_folder(
+                {"op": "root", "project_id": self.project_id},
+                timeout_seconds=limits.PAPER_STARTUP_PROBE_SECONDS,
+            )
+        except StateUnavailable:
+            return False
+        return True
 
 
 def paper_folder_on(

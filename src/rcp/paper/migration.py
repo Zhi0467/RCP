@@ -79,8 +79,13 @@ def migrate_paper(
     project_id: str,
     folder: PaperFolder,
     workspace: Callable[[], StateWorkspace],
+    *,
+    probe: bool = False,
 ) -> bool:
-    """Run every unfinished step for one project; False when nothing was owed."""
+    """Run every unfinished step for one project; False when nothing was owed.
+
+    With `probe`, an unreachable folder host is left for a later attempt at once.
+    """
     with _LOCKS(f"{store.path.resolve()}:{project_id}"):
         if _marked(store, project_id):
             return False
@@ -89,6 +94,8 @@ def migrate_paper(
             _mark(store, project_id)
             return False
         plan = _plan(store, project_id, projection)
+        if probe and not folder.reachable():
+            raise OSError("The Paper folder's host is unreachable")
         if plan.files:
             folder.install(plan.files)
         _settle_database(store, project_id, plan)
@@ -130,6 +137,7 @@ def migrate_papers(
                 project_id,
                 folder_for(project_id),
                 functools.partial(workspace_for, project_id),
+                probe=True,
             )
         except Exception:
             _LOG.exception("Paper of project %s could not move into its folder yet", project_id)

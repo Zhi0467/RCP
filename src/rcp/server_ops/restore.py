@@ -1505,11 +1505,11 @@ def _restore_project_bytes(
     owners, capture, payload, operation_projects, *, existing_remote, paper_folder
 ):
     entries = capture.files
-    _restore_paper_folder(paper_folder, entries, payload)
     if existing_remote:
         owners.workspace.refresh()
         _verify_project_publication_bytes(owners.workspace, entries)
         return owners.history.materialize(write_outputs=False)
+    _restore_paper_folder(paper_folder, entries, payload)
     canonical = {
         e.source_relative_path.removeprefix(".research/"): (
             payload / e.archive_path,
