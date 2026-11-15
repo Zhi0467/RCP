@@ -229,6 +229,34 @@ def test_a_turn_item_links_to_its_own_graph_target(team) -> None:
         assert body["link"] == f"#/projects/{project}/targets/{branch}/{kind}/{item_id}"
 
 
+def test_a_fresh_fork_links_to_its_bound_target(team) -> None:
+    app, client, store, _, _, project = team
+    branch = _branch(app, store, project)
+    source = str(uuid.uuid4())
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="source-turn",
+            project_id=project,
+            kind="project_chat",
+            status="running",
+            request={"chat_id": source, "provider": "codex", "run_on": "backend"},
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+            graph_target=GraphTargetRef(),
+        )
+    )
+    store.checkpoint_agent_task(
+        "source-turn", native_session_id="source-session", stage_root="/stage/source"
+    )
+    store.complete_agent_task("source-turn", applied_revision=None, result={})
+    target = GraphTargetRef(kind="branch", branch_id=branch)
+    fork = store.create_chat_fork(project, source, target, str(uuid.uuid4()))
+    body = _resolve(client, _token(_copy(client, project, "chat", fork.chat_id))).json()
+    assert body["link"] == f"#/projects/{project}/targets/{branch}/chat/{fork.chat_id}"
+
+
 def test_an_auto_research_conversation_links_to_its_branch(team) -> None:
     app, client, store, people, acting, project = team
     episode_id = str(uuid.uuid4())

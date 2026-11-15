@@ -199,9 +199,12 @@ def _chat_route(
         "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
         (project_id, target_id),
     ).fetchone()
+    fork = store._chat_fork_record(connection, project_id, target_id) if row is None else None
     target = (
         GraphTargetRef.model_validate_json(row[0])
         if row is not None
+        else fork.graph_target
+        if fork is not None
         else store._orchestrator_chat_target(connection, project_id, target_id)
     )
     if target is None:
