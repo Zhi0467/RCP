@@ -79,6 +79,8 @@ _HELD = f"""
         UNION
         SELECT json_extract(origin_json, '$.native_session_id') FROM questions
         WHERE state = 'pending'
+           OR (state = 'answered' AND owner_kind = 'chat' AND withdrawn_readonly = 0
+               AND client_receipt_revision IS NULL AND followup_operation_id IS NULL)
         UNION
         SELECT run.native_session_id FROM watchers AS watcher
         JOIN graph_runs AS run ON run.operation_id = watcher.origin_operation_id

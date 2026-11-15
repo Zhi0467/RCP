@@ -754,8 +754,9 @@ RCP deletes a provider session it started once nothing has used it for
 rows naming the session, by `native_session_id` or by a fork turn's
 `fork_session_id`. A session is held while any of these names it: a queued,
 running, pausing or paused row; a branched chat that has not launched its first
-turn (the source turn's session); a pending question's origin; a `writing_sessions`
-row; a pending or outdated Paper change group's Coach task; an open episode
+turn (the source turn's session); a pending question's origin, or an answered
+chat question's until its follow-up is admitted or its answer received; a
+`writing_sessions` row; a pending or outdated Paper change group's Coach task; an open episode
 through its rows, `experiment_episode_state` or `episode_wrapups`; a wrapup
 still pending or running; or an active or degraded watcher, through its origin turn.
 

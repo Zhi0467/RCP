@@ -136,8 +136,19 @@ def test_a_detached_branch_does_not_hold(store):
     assert _eligible(store) == [SESSION]
 
 
-@pytest.mark.parametrize(("state", "held"), [("pending", True), ("answered", False)])
-def test_a_pending_question_holds_its_origin_session(store, state, held):
+@pytest.mark.parametrize(
+    ("state", "settled", "held"),
+    [
+        ("pending", {}, True),
+        ("answered", {}, True),
+        ("answered", {"followup_operation_id": "followup"}, False),
+        ("answered", {"client_receipt_revision": 1}, False),
+        ("dismissed", {}, False),
+    ],
+)
+def test_an_open_question_holds_its_origin_session_until_its_answer_is_claimed(
+    store, state, settled, held
+):
     _run(store, "old")
     _insert(
         store,
@@ -154,6 +165,7 @@ def test_a_pending_question_holds_its_origin_session(store, state, held):
         multiple=0,
         state=state,
         created_at=OLD,
+        **settled,
     )
     assert (_eligible(store) == []) is held
 
