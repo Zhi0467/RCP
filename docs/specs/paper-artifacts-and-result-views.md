@@ -512,8 +512,9 @@ read-only. There is no Undo on a turn; History restore is the undo.
   hash, the agent's hash, clash, and kind (`write`, `delete`, `rename`,
   `outside_turn`, `unsupported`). Bytes go into the History blobs, so a restart
   mid-turn keeps them.
-- **End.** After the provider process tree exits or recovery settles, the
-  editor flushes, the loop scans, and History saves the after version. A
+- **End.** After the provider process tree exits and before the task settles,
+  or when recovery settles it, the editor flushes, the loop scans, and History
+  saves the after version. A
   changed file nobody had open joins the list. One `paper_turn` receipt records
   the before and after version ids; the files stay in `paper_turn_files`. A
   turn that failed before it took the Paper has no receipt and lists no files.

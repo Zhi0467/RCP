@@ -50,9 +50,20 @@ def _paper_turn(store, operation_id: str):
 
 
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "paused"])
-def test_a_paper_turn_holds_the_paper_from_launch_until_its_process_exits(outcome, paper):
+def test_a_paper_turn_holds_the_paper_from_launch_until_its_process_exits(
+    outcome, paper, monkeypatch
+):
     store, live, folder = paper
     seen: list[str | None] = []
+    settled_with_receipt: list[bool] = []
+    for name in ("complete_agent_task", "fail_agent_task", "pause_agent_task"):
+        original = getattr(store, name)
+
+        def settle(operation_id, *args, _original=original, **kwargs):
+            settled_with_receipt.append(_receipt(store, operation_id) is not None)
+            return _original(operation_id, *args, **kwargs)
+
+        monkeypatch.setattr(store, name, settle)
 
     async def stream(_project, _kind, _request, execution):
         seen.append(_held_turn(store))
@@ -68,11 +79,12 @@ def test_a_paper_turn_holds_the_paper_from_launch_until_its_process_exits(outcom
     try:
         tasks.launch_admitted(_paper_turn(store, "turn").operation_id)
         wait_for_task(store, "turn", expect=outcome)
-        receipt = wait_until(lambda: _receipt(store, "turn"))
+        receipt = _receipt(store, "turn")
     finally:
         tasks.shutdown()
 
     assert seen == ["turn", "no receipt yet"]
+    assert settled_with_receipt == [True]
     assert _held_turn(store) is None
     assert receipt["before_version_id"] != receipt["after_version_id"]
     files = live.turn_files("project", "turn")
