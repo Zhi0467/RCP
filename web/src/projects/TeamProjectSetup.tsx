@@ -106,7 +106,7 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
-  { id: "paper_coach", label: "Paper coach" },
+  { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 const agentRows = agentProfiles.filter(({ id }) => hasRow(id));
@@ -852,7 +852,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                       <strong>{label}</strong>
                       <span className="tag">
                         {id === "paper_coach"
-                          ? "read-only coach"
+                          ? "edits the Paper"
                           : id === "orchestrator"
                             ? "auto-research"
                             : "graph patch only"}

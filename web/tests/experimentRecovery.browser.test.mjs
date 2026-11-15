@@ -289,10 +289,6 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         } else if (path === "/api/projects/demo/paper/tree")
           json = {
             revision: 0,
-            saved_revision: 0,
-            published_revision: 0,
-            publish_state: "published",
-            hold: null,
             files: [],
           };
         else if (path.endsWith("/readiness")) json = project();

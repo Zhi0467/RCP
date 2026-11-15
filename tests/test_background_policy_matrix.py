@@ -18,7 +18,7 @@ from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequ
 from rcp.runs.auto_research_admission import start_auto_research
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskKind, AgentTaskRecord, AppStore, ProjectRecord
 
 from .helpers import (
@@ -32,7 +32,6 @@ POLICY_MATRIX = [
     pytest.param("chat Discuss", "start", "fresh task admitted", id="discuss-start"),
     pytest.param("chat Work", "start", "fresh task admitted", id="work-start"),
     pytest.param("ingestion", "start", "fresh task admitted", id="ingestion-start"),
-    pytest.param("paper coach", "start", "fresh task admitted", id="paper-start"),
     pytest.param("Experiment loop", "start", "root admitted atomically", id="experiment-start"),
     pytest.param(
         "Experiment watcher wake",
@@ -60,7 +59,6 @@ POLICY_MATRIX = [
     ),
     pytest.param("chat Work", "resume", "owned checkpoint reused", id="work-resume"),
     pytest.param("ingestion", "resume", "owned checkpoint reused", id="ingestion-resume"),
-    pytest.param("paper coach", "resume", "owned checkpoint reused", id="paper-resume"),
     pytest.param("Experiment loop", "resume", "episode recovery reused", id="experiment-resume"),
     pytest.param("Auto-research", "resume", "paid allocation reused", id="auto-resume"),
     pytest.param(
@@ -142,12 +140,6 @@ POLICY_MATRIX = [
         id="ingestion-graph-repair",
     ),
     pytest.param(
-        "paper coach",
-        "repair_graph_update",
-        "conversation required",
-        id="paper-graph-repair",
-    ),
-    pytest.param(
         "Auto-research",
         "repair_graph_update",
         "conversation required",
@@ -182,12 +174,6 @@ POLICY_MATRIX = [
         "recover_at_startup",
         "active task interrupted",
         id="ingestion-startup",
-    ),
-    pytest.param(
-        "paper coach",
-        "recover_at_startup",
-        "active task interrupted",
-        id="paper-startup",
     ),
     pytest.param(
         "Auto-research",
@@ -328,7 +314,7 @@ def _record(
     *,
     operation_id: str,
     kind: AgentTaskKind,
-    request: RunRequest | CoachRequest,
+    request: RunRequest,
     status: str,
     native_session_id: str | None = None,
     stage_root: str | None = None,
@@ -409,11 +395,6 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
         kind, request = "project_chat", _chat_request()
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
-    elif family == "paper coach":
-        kind, request = (
-            "paper_coach",
-            CoachRequest(provider="codex", message="Review the introduction."),
-        )
     elif family == "Experiment loop":
         task = tasks.start(
             "project",
@@ -594,11 +575,6 @@ def _resume_case(
         kind, request = "project_chat", _chat_request()
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
-    elif family == "paper coach":
-        kind, request = (
-            "paper_coach",
-            CoachRequest(provider="codex", message="Review the introduction."),
-        )
     else:  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
     previous = _record(
@@ -798,10 +774,6 @@ def _repair_case(
 
     request_by_family = {
         "ingestion": ("refresh", _ingestion_request()),
-        "paper coach": (
-            "paper_coach",
-            CoachRequest(provider="codex", message="Review the introduction."),
-        ),
         "Auto-research": ("auto_research", _auto_request()),
         "branch merge": ("branch_merge", _branch_request()),
         "episode report": ("episode_report", _report_request()),
@@ -866,11 +838,6 @@ def _recovery_case(
         kind, request = "project_chat", _chat_request()
     elif family == "ingestion":
         kind, request = "refresh", _ingestion_request()
-    elif family == "paper coach":
-        kind, request = (
-            "paper_coach",
-            CoachRequest(provider="codex", message="Review the introduction."),
-        )
     else:  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
     task = _record(

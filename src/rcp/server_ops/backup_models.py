@@ -45,7 +45,9 @@ _FULL_GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _OPENSSH_FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{20,64}={0,2}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
-BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts", "agent-threads", "memory"})
+BACKUP_APP_DATA_CAPTURED = frozenset(
+    {"project-sources", "artifacts", "agent-threads", "memory", "paper"}
+)
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
@@ -117,6 +119,7 @@ BackupFileGroup = Literal[
     "chat",
     "paper_introduction",
     "paper_projection",
+    "paper_folder",
     "fact",
     "kept_artifact",
     "legacy_kept_result_view",
@@ -286,6 +289,10 @@ class BackupFileEntry(_StrictBackupModel):
             if not (len(source.parts) > 2 and source.parts[:2] == (".research", "paper")):
                 raise ValueError("Paper projection entries must stay below .research/paper")
             safe_paper_path(PurePosixPath(*source.parts[2:]).as_posix())
+        elif self.group == "paper_folder":
+            if not (len(source.parts) > 1 and source.parts[0] == "paper"):
+                raise ValueError("Paper folder entries must stay below paper")
+            safe_paper_path(PurePosixPath(*source.parts[1:]).as_posix())
         elif self.group == "fact" and not (
             len(source.parts) > 2 and source.parts[:2] == (".research", "facts")
         ):
@@ -330,7 +337,9 @@ class BackupFileEntry(_StrictBackupModel):
             if not valid:
                 raise ValueError("imported provider-history entries require owned sealed paths")
         forbidden = {".git", "credentials", "run-stage", "chat-attachments"}
-        if self.group != "paper_projection" and forbidden.intersection(source.parts):
+        if self.group not in {"paper_projection", "paper_folder"} and forbidden.intersection(
+            source.parts
+        ):
             raise ValueError("backup entries cannot include credentials, source Git, or stages")
         return self
 
@@ -597,13 +606,25 @@ class BackupManifestRepository(_StrictBackupModel):
         return _absolute_path(value, label="backup manifest repository path")
 
 
+class BackupAgentPermissions(AgentPermissions):
+    """Permissions as captured; fields a later release retired stay so the digest holds."""
+
+    read_introduction: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    write_paper: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class BackupManifestAgentProfile(_StrictBackupModel):
     profile: AgentExecutionProfile
     provider: ProviderId
     runtime: str
     model: str
     reasoning: str
-    permissions: AgentPermissions
+    permissions: BackupAgentPermissions
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def capture_permissions(cls, value: object) -> object:
+        return value.model_dump() if type(value) is AgentPermissions else value
 
     @field_validator("runtime")
     @classmethod
@@ -729,8 +750,15 @@ class BackupManifestConfiguration(_StrictBackupModel):
         return self.declared_skill_defaults
 
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
-        """Compare human configuration; an older receipt's skill defaults are resolved values."""
-        exclude = {"skill_defaults", "declared_skill_defaults"}
+        """Compare human configuration; an older receipt's skill defaults are resolved values.
+
+        Code fixes each profile's permissions, so a capture from an older release differs there.
+        """
+        exclude = {
+            "skill_defaults": True,
+            "declared_skill_defaults": True,
+            "agent_profiles": {"__all__": {"permissions"}},
+        }
         if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
             return False
         if self.declared_skill_defaults is None:

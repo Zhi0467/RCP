@@ -70,9 +70,7 @@ def test_memory_pointer_uses_shared_index_without_staging_snapshot(
     assert not list(tmp_path.rglob("lessons.md"))
 
 
-@pytest.mark.parametrize(
-    "kind", ["seed", "refresh", "branch_merge", "paper_coach", "artifact_edit"]
-)
+@pytest.mark.parametrize("kind", ["seed", "refresh", "branch_merge", "artifact_edit"])
 def test_excluded_runs_do_not_prepare_or_point_to_memory(kind, monkeypatch) -> None:
     from rcp.runs import operational_context
 
@@ -96,7 +94,6 @@ def test_excluded_runs_do_not_prepare_or_point_to_memory(kind, monkeypatch) -> N
         ("seed", False),
         ("refresh", False),
         ("branch_merge", False),
-        ("paper_coach", False),
         ("artifact_edit", False),
     ],
 )
@@ -115,7 +112,9 @@ def test_launch_scope_only_admits_memory_for_eligible_runs(kind, eligible, tmp_p
     monkeypatch.setattr(chat, "resolve_project_write_scope", lambda **kwargs: kwargs)
     monkeypatch.setattr(chat, "write_repositories", lambda state: [])
     monkeypatch.setattr(chat, "_machine_writable_paths", lambda *args: [])
-    task = SimpleNamespace(kind=kind, project_id="project", episode_id=None, request={})
+    task = SimpleNamespace(
+        kind=kind, project_id="project", episode_id=None, request={}, dispatch_authority=None
+    )
     execution = SimpleNamespace(
         store=SimpleNamespace(agent_task=lambda _: task), operation_id="turn"
     )
@@ -180,7 +179,11 @@ def test_launch_withholds_a_redirected_shared_folder(tmp_path, monkeypatch):
         store,
         "agent_task",
         lambda _: SimpleNamespace(
-            kind="project_chat", project_id="project", episode_id=None, request={}
+            kind="project_chat",
+            project_id="project",
+            episode_id=None,
+            request={},
+            dispatch_authority=None,
         ),
     )
     monkeypatch.setattr(chat, "resolve_project_write_scope", lambda **kwargs: kwargs)
@@ -236,6 +239,7 @@ def test_only_a_backend_private_thread_turn_adds_its_owner_notes(
         episode_id=episode_id,
         request={"chat_id": chat_id},
         authorized_by=SimpleNamespace(user_id="alice"),
+        dispatch_authority=None,
     )
     store = SimpleNamespace(
         path=tmp_path / "rcp.sqlite3",

@@ -10,6 +10,7 @@ from rcp.core.research_md import render_research_md
 from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.paper import PaperService
+from rcp.paper.folder_io import paper_root
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.shared import _stage_context_paths
 from rcp.runs.tasks.auto_research_stream import (
@@ -33,13 +34,12 @@ def branch_services(manifest, tmp_path):
     branch.append(_branch_patch("ev/branch-only"))
     history.append(_branch_patch("ev/main-only", "Main-only result"))
     paper = PaperService(manifest, AppStore(tmp_path / "app.sqlite3"))
-    paper.canonical_path.parent.mkdir(exist_ok=True)
-    paper.canonical_path.write_text("Human paper introduction.\n")
+    (paper_root(tmp_path, "project") / "introduction.md").write_text("Human paper.\n")
     service = ProjectService(manifest, history, paper, project_id="project")
     return service, service.for_graph_target(branch.graph_target)
 
 
-def test_chat_context_reads_exact_materialized_target_and_shared_inputs(branch_services):
+def test_chat_context_reads_exact_materialized_target_and_shared_inputs(branch_services, tmp_path):
     main, branch = branch_services
     for service, included, excluded in (
         (main, "ev/main-only", "ev/branch-only"),
@@ -58,7 +58,7 @@ def test_chat_context_reads_exact_materialized_target_and_shared_inputs(branch_s
         assert "coverage_path" not in context.model_dump()
         for field in ("graph_path", "research_md_path", "glossary_path"):
             assert Path(getattr(context, field)).parent == service.history.root
-        assert context.paper_path == str(main.paper.canonical_path.parent)
+        assert context.paper_path == str(paper_root(tmp_path.resolve(), "project"))
         assert Path(context.paper_path).is_dir()
         assert context.facts_dir == str(main.history.root / "facts")
 
@@ -120,5 +120,5 @@ def test_remote_context_preserves_target_namespace_and_shared_paper_path(branch_
         ("glossary_path", "glossary.json"),
     ):
         assert updates[field] == str(graph_root / filename)
-    assert updates["paper_path"] == str(canonical / "paper")
+    assert "paper_path" not in updates
     assert updates["facts_dir"] == str(canonical / "facts")

@@ -57,6 +57,8 @@ from rcp.attachments import ChatAttachmentDescriptor
 from rcp.limits import AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS, AGENT_TRANSPORT_RETRY_LIMIT
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.machine_upgrade import _Cards, _migrate_artifact_edit_stages, _migrate_stage_receipts
+from rcp.paper.migration import _render_transcript
+from rcp.runs.paper_turns import paper_turn_waits
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -289,6 +291,7 @@ class AgentTask:
         AgentTaskStoreMixin.detach_agent_tasks_for_restore,
         AgentTaskStoreMixin.fail_agent_task,
         AgentTaskStoreMixin.interrupt_active_agent_tasks,
+        AgentTaskStoreMixin.interrupt_agent_tasks,
         AgentTaskStoreMixin.mark_agent_artifact_kept,
         AgentTaskStoreMixin.mark_agent_task_running,
         AgentTaskStoreMixin.pause_agent_task,
@@ -312,6 +315,8 @@ class AgentTask:
         AppStoreBase._migrate_episode_lineage,
         AppStoreBase._migrate_legacy_startup_schema,
         AppStoreBase._migrate_paper_live,
+        _render_transcript,
+        paper_turn_waits,
         ConsolidationStoreMixin.drop_consolidation_request_target,
         EpisodeStoreMixin._finish_episode_report_attempt_error,
         EpisodeStoreMixin.fail_episode_report_allocation_unlaunchable,
@@ -368,6 +373,9 @@ class AgentTask:
         AgentTaskStoreMixin.prune_operational_storage: "maintenance pruning runs on a timer in the app",
         AgentTaskStoreMixin.detach_agent_tasks_for_history: "driven by the restore catalog machine",
         AgentTaskStoreMixin.detach_agent_tasks_for_restore: "driven by the restore catalog machine",
+        AgentTaskStoreMixin.interrupt_agent_tasks: (
+            "driven by the restore catalog machine and the startup Paper migration"
+        ),
         AgentTaskStoreMixin.reconcile_agentless_merge_task: "the branch merge catalog machine",
         AgentTaskStoreMixin.requeue_owned_merge_task: "the branch merge catalog machine",
         AgentTaskStoreMixin.reserve_branch_merge_invocation: "the branch merge catalog machine",
@@ -401,6 +409,7 @@ class AgentTask:
         AppStoreBase._migrate_episode_lineage: _MIGRATION,
         AppStoreBase._migrate_legacy_startup_schema: _MIGRATION,
         AppStoreBase._migrate_paper_live: _MIGRATION,
+        _render_transcript: _MIGRATION,
         _migrate_campaign_episodes: _MIGRATION,
         migrate_artifacts: _MIGRATION,
         migrate_per_member_provider_logins: _MIGRATION,

@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, cast, get_args
+from typing import TYPE_CHECKING, Protocol, cast, get_args
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
@@ -70,6 +70,13 @@ from rcp.runs.experiment_recovery import (
     restart_stopping_experiment_recoveries,
     retry_experiment_loop,
 )
+from rcp.runs.paper_turns import (
+    begin_paper_turn,
+    end_paper_turn,
+    finish_paper_turn,
+    is_paper_turn,
+    paper_turn_waits,
+)
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -94,7 +101,6 @@ from rcp.runs.work_episode_controls import WorkEpisodeControls
 from rcp.runs.work_experiment_commands import start_scheduled_experiment_resumes
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.service import (
-    CoachRequest,
     GraphUpdateResult,
     ProjectService,
     RunRequest,
@@ -116,6 +122,9 @@ from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateU
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
 from rcp.watchers import WatcherCanceller
+
+if TYPE_CHECKING:
+    from rcp.paper import PaperLive
 
 logger = logging.getLogger(__name__)
 
@@ -443,8 +452,10 @@ class BackgroundAgentTasks:
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         watcher_canceller: WatcherCanceller | None = None,
+        paper_live: PaperLive | None = None,
     ) -> None:
         self.store = store
+        self.paper_live = paper_live
         self.experiment_starter = experiment_starter
         self.episode_controls = episode_controls
         self.watcher_canceller = watcher_canceller
@@ -1278,13 +1289,17 @@ class BackgroundAgentTasks:
                 current = self._require_operation(operation_id)
                 if current.phase != "awaiting_remote_result":
                     raise ValueError("This task's recorded result is already being finalized.")
-                return self._pause_waiting_remote_result(current)
+                paused = self._pause_waiting_remote_result(current)
+            self._after_settle(paused)
+            return paused
         if current.phase == "finalizing_recorded_result":
             raise ValueError("This task's recorded result is already being finalized.")
         record = self.store.request_agent_task_pause(operation_id)
         if current.status == "queued" and not self._worker_owns(operation_id):
             self.store.pause_agent_task(operation_id)
-            return self._require_operation(operation_id)
+            paused = self._require_operation(operation_id)
+            self._after_settle(paused)
+            return paused
         self._signal_agent_task_pause(operation_id)
         return record
 
@@ -1347,6 +1362,7 @@ class BackgroundAgentTasks:
         finish_recorded_browser(self.store, record.operation_id)
         self.store.request_agent_task_pause(record.operation_id)
         self.store.finish_remote_provider_pass(record.operation_id, pid_file)
+        self._release_paper(record)
         self.store.pause_agent_task(
             record.operation_id,
             detail="Remote provider stopped at the human's request.",
@@ -1389,6 +1405,7 @@ class BackgroundAgentTasks:
                 )
             settled = self.store.agent_task(operation_id)
             assert settled is not None
+            self._after_settle(settled)
             return settled
         return record
 
@@ -1961,6 +1978,8 @@ class BackgroundAgentTasks:
             return record
         if self.store.agent_task_turn_refusal(record):
             return record
+        if paper_turn_waits(self.store, record):
+            return self._require_operation(operation_id)
 
         request = self._launchable_request(record)
 
@@ -1970,7 +1989,9 @@ class BackgroundAgentTasks:
             require_consolidation_launch(self.store, record)
         except ValueError as exc:
             self.store.fail_agent_task(record.operation_id, str(exc))
-            return self._require_operation(record.operation_id)
+            failed = self._require_operation(record.operation_id)
+            self._after_settle(failed)
+            return failed
 
         lineage_login = ProviderAccounts.for_store(self.store).lineage_login(
             request.provider,
@@ -2344,11 +2365,18 @@ class BackgroundAgentTasks:
         )
         awaiting_remote_result = False
         try:
+            provider_detached = False
             try:
+                begin_paper_turn(self, record)
                 outcome = asyncio.run(
                     self._consume(record.project_id, record.kind, request, execution)
                 )
+            except TaskAwaitingRemoteResult:
+                provider_detached = True
+                raise
             finally:
+                if not provider_detached:
+                    self._release_paper(record)
                 self._stream_closed(record, request, execution)
         except TaskPaused as exc:
             self._settle_unowned_mailbox(execution)
@@ -2871,7 +2899,9 @@ class BackgroundAgentTasks:
                     # needs no request and fail the task for a human to see.
                     self._settle_detached_mailbox(operation_id)
                     finish_recorded_browser(self.store, operation_id)
+                    self._release_paper(record)
                     self.store.fail_agent_task(operation_id, str(exc), remote_pid_file=pid_file)
+                    self._after_settle(record)
                     continue
                 with self._controls_lock:
                     mailbox = self._detached_mailboxes.get(operation_id)
@@ -2883,6 +2913,7 @@ class BackgroundAgentTasks:
                 self._settle_detached_mailbox(operation_id)
                 finish_recorded_browser(self.store, operation_id)
                 if decision.action == "fail":
+                    self._release_paper(record)
                     self.store.fail_agent_task(
                         operation_id,
                         decision.reason,
@@ -2922,6 +2953,7 @@ class BackgroundAgentTasks:
                         recorded=True,
                     )
                 )
+                self._release_paper(record)
                 self._complete_task_outcome(
                     record,
                     request,
@@ -2955,6 +2987,7 @@ class BackgroundAgentTasks:
                 # The host answered: this stage is gone, replaced, or not ours.
                 # Waiting for it to answer differently is waiting forever, so
                 # the turn it belonged to fails for a human to see.
+                self._release_paper(record)
                 self.store.fail_agent_task(record.operation_id, str(exc), remote_pid_file=pid_file)
                 self._task_settled(record, request, execution)
                 continue
@@ -2983,6 +3016,7 @@ class BackgroundAgentTasks:
                         result["artifacts"] = [
                             item.model_dump(mode="json") for item in exc.artifacts
                         ]
+                self._release_paper(record)
                 self.store.fail_agent_task(
                     record.operation_id,
                     str(exc),
@@ -2996,6 +3030,7 @@ class BackgroundAgentTasks:
                     {"exception_type": type(exc).__name__},
                     tier="diagnostic",
                 )
+                self._release_paper(record)
                 self.store.fail_agent_task(
                     record.operation_id,
                     str(exc),
@@ -3291,6 +3326,23 @@ class BackgroundAgentTasks:
                     )
 
         settle_provider_login(self, record)
+        self._after_settle(record)
+
+    def _release_paper(self, record: AgentTaskRecord) -> None:
+        """End a Paper turn whose provider has exited, before its task settles."""
+        if self.paper_live is None or not is_paper_turn(record):
+            return
+        try:
+            end_paper_turn(self.store, self.paper_live, record.project_id, record.operation_id)
+        except Exception:
+            logger.exception("Paper turn %s could not be ended", record.operation_id)
+
+    def _after_settle(self, record: AgentTaskRecord) -> None:
+        """Every settle's follow-up, worker or not: release the Paper and start its next turn."""
+        try:
+            finish_paper_turn(self, record)
+        except Exception:
+            logger.exception("Waiting Paper turns could not start after %s", record.operation_id)
 
     async def _consume(
         self,
@@ -3620,8 +3672,9 @@ class BackgroundAgentTasks:
 
     @staticmethod
     def _request_from_record(record: AgentTaskRecord) -> AgentTaskRequest:
+        if record.kind == "paper_coach":
+            raise ValueError("A retired Paper coach turn cannot run again.")
         model: type[AgentTaskRequest] = {
-            "paper_coach": CoachRequest,
             "auto_research": AutoResearchRunRequest,
             "branch_merge": BranchMergeRunRequest,
             "episode_report": EpisodeReportRunRequest,
@@ -3630,8 +3683,6 @@ class BackgroundAgentTasks:
 
     @staticmethod
     def _validate_request_type(kind: AgentTaskKind, request: AgentTaskRequest) -> None:
-        if kind == "paper_coach" and not isinstance(request, CoachRequest):
-            raise TypeError("paper_coach requires a CoachRequest")
         if kind == "auto_research" and not isinstance(request, AutoResearchRunRequest):
             raise TypeError("auto_research requires an AutoResearchRunRequest")
         if kind == "branch_merge" and not isinstance(request, BranchMergeRunRequest):
@@ -3639,7 +3690,6 @@ class BackgroundAgentTasks:
         if kind == "episode_report" and not isinstance(request, EpisodeReportRunRequest):
             raise TypeError("episode_report requires an EpisodeReportRunRequest")
         if kind not in {
-            "paper_coach",
             "auto_research",
             "branch_merge",
             "episode_report",

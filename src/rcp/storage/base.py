@@ -154,6 +154,8 @@ class AppStoreBase:
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
         (83, "comments_v1"),
+        (84, "chat_focus_v1"),
+        (85, "paper_folder_v1"),
         (86, "provider_session_sweeps_v1"),
         (87, "hidden_read_fingerprints_v1"),
     )
@@ -292,7 +294,11 @@ class AppStoreBase:
         return cls._STORAGE_SCHEMA_MIGRATIONS[-1][0]
 
     def check_storage_schema_migrations(self) -> tuple[int, int, tuple[str, ...]]:
-        """Validate a read-only database and report its known pending migrations."""
+        """Validate a read-only database and report its known pending migrations.
+
+        Any registry entry the ledger lacks is pending, even below its head: a store
+        written by a build that merged later migrations first still takes the earlier ones.
+        """
 
         if not getattr(self, "_read_only_snapshot", False):
             raise ValueError("storage migration checks require a read-only SQLite snapshot")
@@ -327,7 +333,7 @@ class AppStoreBase:
                         "RCP storage schema validation failed: migration ledger is missing"
                     )
 
-            if applied != registry[: len(applied)]:
+            if not set(applied) <= set(registry):
                 raise RuntimeError(
                     "RCP storage schema validation failed: migration ledger is unknown"
                 )
@@ -347,7 +353,7 @@ class AppStoreBase:
                     "RCP storage schema validation failed: SQLite quick check failed"
                 )
 
-            pending = tuple(name for _, name in registry[len(applied) :])
+            pending = tuple(name for version, name in registry if (version, name) not in applied)
             if pending:
                 self._rehearse_storage_schema_migrations(connection)
             else:
@@ -1117,6 +1123,14 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=83, name="comments_v1", migration=migrate_comments
+        )
+        self._run_storage_schema_migration(
+            connection, version=84, name="chat_focus_v1", migration=self._migrate_chat_focus
+        )
+        from rcp.storage.paper_folder import migrate_paper_folder
+
+        self._run_storage_schema_migration(
+            connection, version=85, name="paper_folder_v1", migration=migrate_paper_folder
         )
         from rcp.storage.provider_session_sweeps import migrate_provider_session_sweeps
 
@@ -3140,6 +3154,12 @@ class AppStoreBase:
                 PRIMARY KEY (project_id, chat_id)
             )
         """)
+
+    @classmethod
+    def _migrate_chat_focus(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(
+            connection, "chat_display", "focus", "TEXT CHECK (focus IS NULL OR focus = 'paper')"
+        )
 
     @staticmethod
     def _migrate_chat_reads_and_pins(connection: sqlite3.Connection) -> None:

@@ -26,7 +26,6 @@ from rcp.providers.base import (
     ProviderTurn,
     ProviderTurnRequest,
     ProviderUsage,
-    _paper_write_roots,
     _require_project_write_scope,
     _require_provider_version,
     _usage_int,
@@ -53,7 +52,7 @@ _FILE_TOOLS = (
 _WEB_TOOLS = ("search_web", "read_url_content")
 _SHELL_TOOLS = ("run_command", "command_status", "send_command_input")
 _SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wait")
-_WORK = {"work_auto", "orchestrate", "paper_suggest"}
+_WORK = {"work_auto", "orchestrate"}
 
 
 def _tools(capability: AgentCapability, gate: ProviderInvocationGate | None) -> tuple[str, ...]:
@@ -68,7 +67,12 @@ def _tools(capability: AgentCapability, gate: ProviderInvocationGate | None) -> 
 def _protected_write_denies(scope: ProviderWriteScope | None) -> list[str]:
     if scope is None:
         return []
-    own = [scope.stage_root, scope.workspace_root, *scope.memory_roots]
+    own = [
+        scope.stage_root,
+        scope.workspace_root,
+        *scope.memory_roots,
+        *([scope.paper_root] if scope.paper_root else []),
+    ]
     return [
         f"write_file({root})"
         for root in scope.protected_write_paths
@@ -76,18 +80,14 @@ def _protected_write_denies(scope: ProviderWriteScope | None) -> list[str]:
     ]
 
 
-def _write_roots(
-    capability: AgentCapability, cwd: Path, write_dirs: list[Path], scope: ProviderWriteScope | None
-) -> list[str]:
-    if capability == "paper_suggest":
-        return [str(root) for root in _paper_write_roots(write_dirs)]
+def _write_roots(cwd: Path, scope: ProviderWriteScope | None) -> list[str]:
     return list(scope.writable_roots) if scope is not None else [str(cwd)]
 
 
 def _additional_workspace_args(request: ProviderTurnRequest) -> list[str]:
     if request.capability not in _WORK:
         return []
-    roots = _write_roots(request.capability, request.cwd, request.write_dirs, request.write_scope)
+    roots = _write_roots(request.cwd, request.write_scope)
     return [
         argument
         for root in dict.fromkeys(roots)
@@ -100,12 +100,11 @@ def _policy(
     capability: AgentCapability,
     cwd: Path,
     read_dirs: list[Path],
-    write_dirs: list[Path],
     scope: ProviderWriteScope | None,
     hidden: HiddenReadScope | None,
     gate: ProviderInvocationGate | None = None,
 ) -> dict[str, object]:
-    roots = _write_roots(capability, cwd, write_dirs, scope)
+    roots = _write_roots(cwd, scope)
     allow = ["read_url(*)"]
     if capability in _WORK:
         allow += ["command(*)", "read_file(*)"]
@@ -316,7 +315,7 @@ class AgyProfile(ProviderProfile):
         ]
 
     def work_like_probe_command(self, binary: str) -> list[str]:
-        policy = _policy("work_auto", Path.cwd(), [], [], None, None)
+        policy = _policy("work_auto", Path.cwd(), [], None, None)
         tools = _tools("work_auto", None)
         return [
             binary,
@@ -396,7 +395,6 @@ class AgyProfile(ProviderProfile):
             request.capability,
             request.cwd,
             request.read_dirs,
-            request.write_dirs,
             request.write_scope,
             request.hidden_read_scope,
             request.invocation_gate,

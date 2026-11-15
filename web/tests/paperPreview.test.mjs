@@ -72,10 +72,6 @@ test("Markdown preview resolves paper references without navigating outside the 
         file,
         tree: {
           revision: 3,
-          saved_revision: 3,
-          published_revision: 2,
-          publish_state: "pending",
-          hold: null,
           files: [file, image, vector],
         },
         text: "![plot](../figures/result.png) ![chart](../figures/chart.svg) [local](intro.md) [external](https://example.org/) [missing](missing.md) [unsafe](javascript:alert)",
@@ -99,10 +95,6 @@ test("Markdown preview resolves paper references without navigating outside the 
         file,
         tree: {
           revision: 3,
-          saved_revision: 3,
-          published_revision: 2,
-          publish_state: "pending",
-          hold: null,
           files: [file, image, vector],
         },
         text: [
@@ -169,13 +161,13 @@ test("Typst tree fetches only changed hashes and overlays unsaved open text", as
     const file = { file_id: "main", path: "main.typ", sha256: "main" };
     const part = { file_id: "part", path: "part.typ", sha256: "one" };
     const signal = new AbortController().signal;
-    await readTypstTree("p", [file, part], 1, file, "first", signal, cache);
-    const next = await readTypstTree("p", [file, part], 2, file, "second", signal, cache);
+    await readTypstTree("p", [file, part], file, "first", signal, cache);
+    const next = await readTypstTree("p", [file, part], file, "second", signal, cache);
     assert.equal(requests.length, 1);
     assert.equal(new TextDecoder().decode(next[0].bytes), "second");
-    await readTypstTree("p", [file, { ...part, sha256: "two" }], 3, file, "third", signal, cache);
+    await readTypstTree("p", [file, { ...part, sha256: "two" }], file, "third", signal, cache);
     assert.equal(requests.length, 2);
-    assert.match(requests[1], /revision=3$/);
+    assert.match(requests[1], /sha256=two$/);
     assert.equal(cache.size, 1);
   } finally {
     globalThis.fetch = original;

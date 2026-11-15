@@ -175,7 +175,12 @@ export function useReplyComments({
   ).length;
   const note = (thread: CommentThread) => {
     const root = linesRef.current;
-    return thread.state === "open" && root && !threadRange(root, thread) ? GONE : undefined;
+    return thread.state === "open" &&
+      thread.anchor.kind === "text" &&
+      root &&
+      !threadRange(root, thread)
+      ? GONE
+      : undefined;
   };
 
   const headerButton =

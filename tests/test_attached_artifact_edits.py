@@ -8,7 +8,6 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.api.dependencies import get_graph_service
-from rcp.providers import ProviderTurnRequest, profile_for
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
 from rcp.storage import Artifact
@@ -160,86 +159,6 @@ def test_a_retry_never_publishes_its_attached_version_over_a_newer_one(manifest,
     assert store.read_artifact_bytes(artifact.artifact_id) == b"human draft"
     outcomes = task["result"].get("artifact_edit_outcomes") or []
     assert [item["status"] for item in outcomes] == (["forked"] if edits else [])
-
-
-def _coach_reference_request(service, data, artifact):
-    from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
-    from rcp.project_references import ResolvedProjectReference
-    from rcp.service import CoachRequest
-
-    store = ChatAttachmentStore(data / "chat-attachments")
-    scope, client = str(uuid4()), str(uuid4())
-    batch = store.claim(
-        project_id=service.paper.project_id,
-        chat_id=scope,
-        client_id=client,
-        attachment_set_id=None,
-        operation_id=str(uuid4()),
-        reference_files=[
-            ResolvedProjectReference(
-                filename="report.txt",
-                display_name="Report",
-                media_type="text/plain",
-                content=b"first draft",
-                reference=ProjectReferenceSource(
-                    kind="artifact",
-                    source_id=artifact.artifact_id,
-                    version=artifact.current_version,
-                ),
-            )
-        ],
-    )
-    return CoachRequest(
-        message="Tighten the report", attachment_scope_id=scope, **batch.model_dump()
-    )
-
-
-@pytest.mark.asyncio
-async def test_the_paper_coach_edits_an_attached_saved_artifact_in_place(manifest, tmp_path):
-    from rcp.agents import AgentEvent
-
-    from .paper_helpers import coach_execution, wire_saved_paper
-    from .test_coach_suggestions import run_coach
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    wire_saved_paper(service)
-    store = service.paper.store
-    artifact = _saved_report(store, service.paper.project_id)
-    request = _coach_reference_request(service, tmp_path / "data", artifact)
-
-    class Launcher:
-        async def stream(self, _provider, _prompt, **kwargs):
-            tracked = Path(kwargs["cwd"]) / "turns" / "origin" / "artifacts" / "report.txt"
-            assert tracked.parent in kwargs["write_dirs"]
-            profile_for("codex").runtime("codex.exec-json.v1").turn(
-                ProviderTurnRequest(
-                    prompt="Review",
-                    binary="codex",
-                    cwd=Path(kwargs["cwd"]),
-                    model=None,
-                    reasoning=None,
-                    session_id=None,
-                    read_dirs=[],
-                    write_dirs=list(kwargs["write_dirs"]),
-                    write_scope=None,
-                    capability="paper_suggest",
-                    provider_version="2.200.0",
-                )
-            )
-            assert tracked.read_bytes() == b"first draft"
-            tracked.write_bytes(b"second draft")
-            yield AgentEvent(event="session", session_id="coach-session")
-            yield AgentEvent(event="done")
-
-    events = await run_coach(
-        service, Launcher(), tmp_path / "data", request=request, execution=coach_execution(service)
-    )
-    assert not [event.text for event in events if event.event == "error"]
-    assert [event.artifact.artifact_id for event in events if event.event == "artifact"] == [
-        artifact.artifact_id
-    ]
-    assert store.read_artifact_bytes(artifact.artifact_id) == b"second draft"
 
 
 def test_a_failed_publish_of_an_attached_edit_settles_as_failed(manifest, tmp_path, monkeypatch):

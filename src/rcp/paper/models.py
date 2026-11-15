@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from rcp import limits
+from rcp.paper.folder_io import paper_path as paper_path
 
 
 class PaperConflict(ValueError):
@@ -54,10 +57,20 @@ class PaperSnapshot(BaseModel):
         )
 
 
+class PaperWriteFailed(PaperConflict):
+    """A multi-file write stopped on an I/O failure; a rerun finishes it."""
+
+    def __init__(self, written: list[str], path: str):
+        self.written = written
+        self.path = path
+        done = ", ".join(written) if written else "nothing"
+        super().__init__(f"Paper write stopped at {path}; written: {done}")
+
+
 class PaperTreeFile(BaseModel):
     file_id: str
     path: str
-    kind: Literal["text", "binary"]
+    kind: Literal["text", "binary", "unsupported"]
     format: str
     size: int
     sha256: str
@@ -66,46 +79,48 @@ class PaperTreeFile(BaseModel):
 class PaperTree(BaseModel):
     max_doc_bytes: int = Field(default_factory=lambda: limits.PAPER_MAX_DOC_BYTES)
     revision: int
-    saved_revision: int
-    published_revision: int
-    publish_state: Literal["published", "pending", "failed"]
-    hold: str | None
     files: list[PaperTreeFile]
 
 
 class PaperOp(BaseModel):
-    """Offsets are Python Unicode character offsets in the CURRENT saved text."""
+    """One step of a multi-file write.
+
+    `write` puts `data` at `path`; `base` is the file the operation read (None:
+    none). Keystrokes since that read survive outside the overlap. `exclusive`
+    refuses an occupied path. A write that creates a file takes `file_id` when no
+    live file holds it, so a restored file keeps its id.
+    """
 
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["replace", "create", "rename", "delete", "binary"]
+    kind: Literal["write", "rename", "delete"]
     file_id: str | None = None
     path: str | None = None
-    text: str = ""
-    start: int | None = None
-    end: int | None = None
     data: bytes | None = None
-    blob_sha256: str | None = None
-    file_kind: Literal["text", "binary"] = "text"
+    base: bytes | None = None
+    exclusive: bool = False
 
 
 class Receipt(BaseModel):
     revision: int
-    receipt_key: str | None = None
     file_ids: list[str] = Field(default_factory=list)
 
 
-def paper_path(value: str) -> str:
-    if (
-        not value
-        or len(value.encode()) > 1024
-        or "\\" in value
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        or any(part in {"", ".", "..", ".git", ".publish"} for part in value.split("/"))
-        or any(len(part.encode()) > 255 for part in value.split("/"))
-        or PurePosixPath(value).is_absolute()
-    ):
-        raise ValueError("Invalid Paper path")
-    return value
+@dataclass(frozen=True)
+class PaperEntry:
+    file_id: str
+    path: str
+    kind: Literal["text", "binary"]
+    sha256: str
+    size: int
+
+
+@dataclass(frozen=True)
+class PaperSource:
+    """Entries of one Paper state, with bodies read only on demand."""
+
+    revision: int
+    entries: list[PaperEntry]
+    read: Callable[[PaperEntry], bytes]
 
 
 def digest(data: bytes) -> str:
@@ -114,13 +129,18 @@ def digest(data: bytes) -> str:
 
 def file_format(path: str, kind: str) -> str:
     extension = PurePosixPath(path).suffix.lower()
-    if extension in {".html", ".htm"}:
-        return "html" if kind == "text" else "other"
+    if kind == "text":
+        authored = {
+            ".html": "html",
+            ".htm": "html",
+            ".md": "markdown",
+            ".tex": "latex",
+            ".typ": "typst",
+            ".bib": "bibtex",
+        }.get(extension)
+        if authored is not None:
+            return authored
     return {
-        ".md": "markdown",
-        ".tex": "latex",
-        ".typ": "typst",
-        ".bib": "bibtex",
         ".png": "image",
         ".jpg": "image",
         ".jpeg": "image",
@@ -132,7 +152,12 @@ def file_format(path: str, kind: str) -> str:
 
 
 def paper_file_kind(path: str, data: bytes) -> Literal["text", "binary"]:
-    """UTF-8 without NUL is editable unless the format is inherently binary."""
+    """UTF-8 without NUL is editable unless the format is inherently binary.
+
+    Text over the document cap is binary too: it lists and downloads, never opens to edit.
+    """
+    if len(data) > limits.PAPER_MAX_DOC_BYTES:
+        return "binary"
     if (
         PurePosixPath(path).suffix.lower()
         in {

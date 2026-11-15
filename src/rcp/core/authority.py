@@ -50,6 +50,7 @@ AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
 
 AgentProfile = Literal["ordinary", "orchestrator"]
 DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
+ChatFocus = Literal["paper"]
 
 #: Whether ``user_id`` is currently a member of ``project_id``. Membership is
 #: operational state in SQLite, so the graph core takes it as a callable rather
@@ -98,6 +99,7 @@ class AgentDispatchScope(BaseModel):
     patch_kind: DispatchPatchKind | None = None
     control_node_id: str | None = Field(default=None, min_length=1)
     control_episode_id: str | None = Field(default=None, min_length=1)
+    focus: ChatFocus | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def require_normalized_scope(self) -> AgentDispatchScope:
@@ -119,6 +121,8 @@ class AgentDispatchScope(BaseModel):
                 )
         elif any(value is not None for value in controls):
             raise ValueError("only experiment-loop dispatch scope may name control state")
+        if self.focus is not None and (self.chat_scope != "project" or self.patch_kind != "work"):
+            raise ValueError("a Paper focus requires a project chat's Work scope")
         return self
 
 
@@ -170,7 +174,7 @@ class AgentTaskAuthority(BaseModel):
 
 
 ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
-    {"discuss", "work_auto", "scratch_patch", "paper_suggest"}
+    {"discuss", "work_auto", "scratch_patch"}
 )
 ORCHESTRATOR_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset({"orchestrate"})
 APPLY_CAPABLE_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
@@ -271,22 +275,6 @@ def _require_scope_shape(
                 f"Authority refused action {action!r}: scratch_patch cannot carry chat identity."
             )
         return
-    if contract == "paper_suggest" and any(
-        value is not None
-        for value in (
-            scope.chat_scope,
-            scope.chat_id,
-            scope.node_id,
-            scope.episode_id,
-            scope.patch_kind,
-            scope.control_node_id,
-            scope.control_episode_id,
-        )
-    ):
-        raise ValueError(
-            f"Authority refused action {action!r}: paper_suggest cannot carry chat, Patch, or "
-            "control scope."
-        )
 
 
 def require_dispatch(

@@ -21,7 +21,9 @@ from rcp.history import HistoryManager
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.paper import PaperService
+from rcp.paper.folder import paper_folder_on
 from rcp.rcp_home import rcp_temp_dir
+from rcp.server_ops.backup_paper import section_files
 from rcp.service import ProjectService
 from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import ProjectTransferImportRecord
@@ -141,6 +143,14 @@ def import_project_transfer(
             target_configuration,
         )
         _publish_project_files(owners, archive_root, capture)
+        if capture.records.paper is not None:
+            state = owners.manifest.repository_map[owners.manifest.state.repository]
+            paper_folder_on(
+                catalog.data_dir,
+                archive.project_id,
+                state.machine,
+                lambda card: host_of(store, card),
+            ).install(section_files(capture.records.paper))
         published_imported = _publish_provider_history(owners, archive_root, archive)
         if owners.history.head_ref(materialization) != GraphHeadRef.model_validate(
             archive.main_head.model_dump(mode="json")

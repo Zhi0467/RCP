@@ -76,7 +76,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                     GROUP BY 1
                 )
                 -- An artifact edit only refreshes a conversation its turns already hold.
-                SELECT display.title, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
+                SELECT display.title, display.focus, chats.chat_id, chats.kind, chats.request_json, chats.graph_target_json,
                        chats.created_at,
                        MAX(chats.updated_at, COALESCE(edits.updated_at, '')) AS updated_at,
                        episode_chats.chat_id IS NOT NULL AS is_episode,
@@ -147,6 +147,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
                         ),
                         # Artifact edits never set it: an origin-bound one runs the artifact's agent.
                         "agent_setup": chat_agent_setup(request, row["created_at"]),
+                        **({"focus": row["focus"]} if row["focus"] else {}),
                     }
                 )
             summaries.extend(orchestrators.values())
@@ -482,6 +483,39 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             else None
         )
 
+    def admit_chat_focus(self, project_id: str, chat_id: str, focus: str | None) -> str | None:
+        """Fix a chat's focus on its first turn and return the chat's focus.
+
+        A later turn that names no focus keeps the chat's; naming another is refused.
+        """
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            started = connection.execute(
+                "SELECT 1 FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if started is None:
+                connection.execute(
+                    "INSERT INTO chat_display(project_id,chat_id,focus) VALUES(?,?,?) "
+                    "ON CONFLICT(project_id,chat_id) DO UPDATE SET focus=excluded.focus",
+                    (project_id, chat_id, focus),
+                )
+                connection.execute(
+                    "DELETE FROM chat_display WHERE project_id=? AND chat_id=? "
+                    "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
+                    (project_id, chat_id),
+                )
+                return focus
+            row = connection.execute(
+                "SELECT focus FROM chat_display WHERE project_id=? AND chat_id=?",
+                (project_id, chat_id),
+            ).fetchone()
+        stored = row["focus"] if row is not None else None
+        if focus is not None and focus != stored:
+            raise AgentTaskAdmissionConflict("chat_focus_fixed")
+        return stored
+
     def agent_task_turn_refusal(self, record: AgentTaskRecord) -> str | None:
         with self.connection() as connection:
             return self._agent_task_turn_refusal(connection, record)
@@ -545,7 +579,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id=? AND chat_id=? "
-                "AND title IS NULL AND archived_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
                 (project_id, chat_id),
             )
 
@@ -742,7 +776,7 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id = ? AND chat_id = ? "
-                "AND title IS NULL AND archived_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL AND focus IS NULL",
                 (project_id, chat_id),
             )
 

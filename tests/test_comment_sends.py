@@ -201,7 +201,7 @@ def test_retry_after_a_reply_reopens_a_sent_thread_replays_the_send(send_app):
     assert "Late" in later[0][0]["rendered"]
 
 
-def test_paper_thread_send_uses_coach_message(send_app):
+def test_a_paper_chat_takes_paper_threads_and_a_plain_chat_refuses_them(send_app):
     _, client, store, task = send_app
     with store.connection() as connection:
         connection.execute(
@@ -209,15 +209,19 @@ def test_paper_thread_send_uses_coach_message(send_app):
             (task.project_id, store.now()),
         )
     thread = _thread(store, task, kind="paper", target="paper-file")
+    assert _send(client, task, [thread["thread_id"]]).status_code == 409
     response = client.post(
-        f"/api/projects/{task.project_id}/tasks/paper_coach",
+        f"/api/projects/{task.project_id}/tasks/project_chat",
         headers={"Idempotency-Key": str(uuid.uuid4())},
-        json={"comment_thread_ids": [thread["thread_id"]]},
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "chat_scope": "project",
+            "focus": "paper",
+            "comment_thread_ids": [thread["thread_id"]],
+        },
     )
     assert response.status_code == 202, response.text
-    saved = store.agent_task(response.json()["operation_id"])
-    assert "Please revise" in saved.request["message"]
-    assert "comment_thread_ids" not in saved.request
+    assert "Please revise" in store.agent_task(response.json()["operation_id"]).request["message"]
 
 
 def test_admission_refusal_and_missing_key_keep_thread_open(send_app, monkeypatch):

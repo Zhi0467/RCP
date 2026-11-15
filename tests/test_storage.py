@@ -356,6 +356,28 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
     AppStore(path)
 
 
+def test_a_ledger_missing_a_middle_migration_reports_it_pending_and_applies_it(tmp_path) -> None:
+    path = tmp_path / "rcp.sqlite3"
+    AppStore(path).close()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_name = 'chat_focus_v1'"
+        )
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    snapshot = AppStore.open_read_only_snapshot(path)
+    head = AppStore.storage_schema_registry_head()
+    assert snapshot.check_storage_schema_migrations() == (head, head, ("chat_focus_v1",))
+    snapshot.close()
+    AppStore(path).close()
+    with sqlite3.connect(path) as connection:
+        migrations = connection.execute(
+            "SELECT migration_version, migration_name FROM storage_schema_migrations "
+            "ORDER BY migration_version"
+        ).fetchall()
+    assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
+
+
 def test_current_storage_startup_is_read_only_and_preserves_database_bytes(tmp_path) -> None:
     path = tmp_path / "rcp.sqlite3"
     AppStore(path)
@@ -2208,6 +2230,9 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "comment_threads": 0,
         "comment_posts": 0,
         "comment_mentions": 0,
+        "paper_state": 0,
+        "paper_turn_files": 0,
+        "paper_migrations": 0,
         "paper_change_groups": 0,
         "paper_change_receipts": 0,
         "paper_changes": 0,

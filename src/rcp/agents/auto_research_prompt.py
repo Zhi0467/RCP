@@ -12,6 +12,7 @@ from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     AGENT_NAME_INSTRUCTION,
     BULLETIN_RULES,
+    PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     GraphReadPrompt,
@@ -44,7 +45,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v17"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v18"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -460,6 +461,7 @@ def auto_research_prompt_values(
     allowed_verbs: tuple[CommandVerb, ...] | None = None,
     child_profiles: dict[str, dict[str, dict[str, list[str]]]] | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
+    paper_path: str | None = None,
 ) -> dict[str, object]:
     """The values an actor's master states that can differ on a later launch.
 
@@ -497,6 +499,8 @@ def auto_research_prompt_values(
                 "choice_max_count": ASK_CHOICE_MAX_COUNT,
                 "choice_max_length": ASK_CHOICE_MAX_LENGTH,
             }
+    if paper_path is not None:
+        values["paper"] = paper_path
     if reply_key is not None:
         values["reply_key"] = reply_key
     if child_profiles is not None:
@@ -523,6 +527,7 @@ def auto_research_orchestrator_task_contract(
     lifecycle_path: str | None = None,
     child_profiles: dict[str, dict[str, dict[str, list[str]]]] | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
+    paper_path: str | None = None,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}
@@ -539,7 +544,7 @@ the episode ends; do not limit yourself to the node or view from which the human
 Required current state:
 - graph: `{graph_path}`
 - research rendering: `{research_path}`
-{_optional_pointer("starting instruction", instruction_path)}{_optional_pointer("delivered mail", messages_path)}{_optional_pointer("RCP lifecycle facts", lifecycle_path)}{_repositories(repositories)}
+{_optional_pointer(PAPER_POINTER_LABEL, paper_path)}{_optional_pointer("starting instruction", instruction_path)}{_optional_pointer("delivered mail", messages_path)}{_optional_pointer("RCP lifecycle facts", lifecycle_path)}{_repositories(repositories)}
 {compute_connection_section(compute_profiles)}
 Read the graph for graph facts. RCP lifecycle input is authoritative only about the child task and
 episode transitions it records; it establishes no scientific or graph truth. Delivered messages

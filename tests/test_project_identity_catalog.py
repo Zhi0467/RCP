@@ -135,10 +135,7 @@ def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(
     old_project_id = "actual-stored-id-not-derived"
     _legacy_record(manifest, store, old_project_id)
     display_source = catalog._cached_snapshot_path_for_id(old_project_id)
-    paper_source = catalog._paper_snapshot_path_for_id(old_project_id)
     _write_legacy_display(display_source, old_project_id)
-    paper_source.parent.mkdir(parents=True, exist_ok=True)
-    paper_source.write_text("legacy introduction", encoding="utf-8")
 
     from rcp.agents.memory_files import prepare_project_memory
 
@@ -163,14 +160,10 @@ def test_registered_legacy_project_auto_adopts_actual_id_once_and_rekeys_caches(
     assert patches[0].project_identity is not None
     assert patches[0].project_identity.action == "adopted"
     assert not display_source.exists()
-    assert not paper_source.exists()
     cached = catalog.cached_snapshot(old_project_id)
     assert cached is not None
     assert cached["id"] == adopted.project_id
     assert cached["home_space_id"] == store.space_id
-    assert catalog._paper_snapshot_path(adopted.project_id).read_text(encoding="utf-8") == (
-        "legacy introduction"
-    )
     assert catalog.open(old_project_id) is catalog.open(adopted.project_id)
 
 

@@ -34,13 +34,6 @@ class RepositoryPointer(BaseModel):
     path: str
 
 
-class CoachContext(BaseModel):
-    paper: str
-    graph_path: str
-    research_md_path: str
-    repositories: list[RepositoryPointer]
-
-
 class RunContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -138,10 +131,12 @@ class ContextAssembler:
         *,
         cards: Mapping[str, SpaceMachineRecord],
         graph_root: Path | None = None,
+        paper_path: str | None = None,
     ) -> None:
         self.manifest = manifest
         self.cards = cards
         self.graph_root = graph_root if graph_root is not None else manifest.research_dir
+        self.paper_path = paper_path
 
     def _repository_pointers(self) -> list[RepositoryPointer]:
         return [
@@ -184,7 +179,6 @@ class ContextAssembler:
         writable = self._writable(state, writable)
         repositories = self._repository_pointers()
         root = self.graph_root
-        paper = self.manifest.research_dir / "paper"
         return RunContext(
             project_name=self.manifest.name,
             run_truth_scope=writable,
@@ -194,7 +188,7 @@ class ContextAssembler:
             graph_revision=state.revision,
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
-            paper_path=str(paper) if paper.is_dir() else None,
+            paper_path=self.paper_path,
             glossary_path=str(root / "glossary.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
@@ -220,7 +214,6 @@ class ContextAssembler:
             raise ValueError(f"unknown node: {node_id}")
         repositories = self._repository_pointers()
         root = self.graph_root
-        paper = self.manifest.research_dir / "paper"
         return ChatContext(
             project_name=self.manifest.name,
             run_truth_scope=writable,
@@ -228,7 +221,7 @@ class ContextAssembler:
             graph_target=graph_target,
             graph_path=str(root / "graph.json"),
             research_md_path=str(root / "research.md"),
-            paper_path=str(paper) if paper.is_dir() else None,
+            paper_path=self.paper_path,
             glossary_path=str(root / "glossary.json"),
             facts_dir=str(self.manifest.research_dir / "facts"),
             state_repository=self.manifest.state.repository,
@@ -249,15 +242,6 @@ class ContextAssembler:
             profile.id: display(profile.session_roots(self.manifest.sources, remote=remote))
             for profile in sorted(PROVIDERS.values(), key=lambda item: item.id)
         }
-
-    def paper_pointers(self, paper_override: Path | None = None) -> CoachContext:
-        root = self.manifest.research_dir
-        return CoachContext(
-            paper=str(paper_override or root / "paper"),
-            graph_path=str(root / "graph.json"),
-            research_md_path=str(root / "research.md"),
-            repositories=self._repository_pointers(),
-        )
 
 
 def validate_work_patch(patch: Patch) -> None:
