@@ -1024,6 +1024,7 @@ test("/ in either thread window offers the official skills and sends the chosen 
       await box.waitFor();
       await box.fill("Check it /");
       const list = page.getByRole("listbox", { name: "Select a skill or workflow" });
+      await list.getByRole("option").first().waitFor();
       assert.deepEqual(await list.getByRole("option").allTextContents(), [
         "Graph auditCheck the graph",
       ]);
@@ -1042,6 +1043,27 @@ test("/ in either thread window offers the official skills and sends the chosen 
       assert.deepEqual(errors, []);
       await page.close();
     }
+  });
+});
+
+test("a / typed before the skills arrive opens the menu once they do", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mockApi(page, []);
+    const skills = Promise.withResolvers();
+    await page.route("**/api/skills", async (route) => {
+      await skills.promise;
+      return route.fallback();
+    });
+    await page.goto(`${base}#/agent/space`);
+    const box = page.getByRole("region", { name: "Pip" }).getByRole("textbox", { name: "Message" });
+    await box.waitFor();
+    await box.fill("Check it /");
+    skills.resolve();
+    const list = page.getByRole("listbox", { name: "Select a skill or workflow" });
+    await list.getByRole("option").first().waitFor();
+    assert.equal(await list.getByRole("option").count(), 1);
+    await page.close();
   });
 });
 
@@ -2920,16 +2942,18 @@ test("waiting turns show one line each above the composer; remove and dismiss le
 
       await rows.nth(1).getByRole("button", { name: "Edit" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 2);
-      assert.deepEqual(served.deleted, ["q1"]);
-      assert.equal(
-        await moss.getByRole("textbox", { name: "Message" }).inputValue(),
-        "Then plot the loss curve against the 8k baseline",
+      await page.waitForFunction(
+        ([field, expected]) => field.value === expected,
+        [
+          await moss.getByRole("textbox", { name: "Message" }).elementHandle(),
+          "Then plot the loss curve against the 8k baseline",
+        ],
       );
+      assert.deepEqual(served.deleted, ["q1"]);
 
       await moss.getByRole("textbox", { name: "Message" }).fill("draft");
       await rows.nth(1).getByRole("button", { name: "Dismiss" }).click();
       await page.waitForFunction(() => document.querySelectorAll(".thread-queue-row").length === 1);
-      assert.deepEqual(served.deleted, ["q1", "q2"]);
       await page.waitForFunction(
         ([field, expected]) => field.value === expected,
         [
@@ -2937,6 +2961,7 @@ test("waiting turns show one line each above the composer; remove and dismiss le
           `${refusedText}\n\ndraft`,
         ],
       );
+      assert.deepEqual(served.deleted, ["q1", "q2"]);
 
       served.failRead = true;
       await moveWatermark(page);

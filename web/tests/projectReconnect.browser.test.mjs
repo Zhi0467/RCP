@@ -1767,6 +1767,7 @@ test("returning Agents admits the current transcript before its first frame at 3
   await page.getByText("Retained transcript", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Overview", exact: true }).click();
   await page.locator(".agent-chat-view-lines").waitFor({ state: "detached" });
+  await page.locator('.project-panel[aria-busy="false"]').waitFor();
   const gate = Promise.withResolvers();
   state.watermarkGate = gate;
   // This request started while Agents was still dormant. Its late reply must
