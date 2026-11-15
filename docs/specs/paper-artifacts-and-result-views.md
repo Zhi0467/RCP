@@ -538,7 +538,8 @@ read-only. There is no Undo on a turn; History restore is the undo.
   turn that failed before it took the Paper has no receipt and lists no files.
 
 The turn shows "N files changed" with line totals, folded. A row opens the diff
-of the before version against the agent's version beside the chat. A clash row
+of the before version against the agent's version beside the chat; on a
+phone it takes the chat's place until it closes. A clash row
 is red, sorts first, and shows the agent's version beside the current file,
 where the human's text won. A diff line takes a shared comment on the reply
 with an `element` anchor: `path` is the file, `label` the line, and `text` the

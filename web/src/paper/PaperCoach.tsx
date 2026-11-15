@@ -66,7 +66,7 @@ export function PaperCoach({
   onOpening: (opening: CoachOpening) => void;
   diff: CoachDiff | null;
   onDiff: (diff: CoachDiff | null) => void;
-  /** The diff stacks above the chat here, as on a phone; else the host shows it beside. */
+  /** The diff takes the chat's place here, as on a phone; else the host shows it beside. */
   inlineDiff: boolean;
 }) {
   const inventory = useResource(
