@@ -70,6 +70,34 @@ test("personal home remembers each member's tab at phone width and honors links"
   }
 });
 
+test("an Add team space request on the Agent tab opens the dialog over Projects", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await mockApi(page, []);
+    await page.addInitScript(() => {
+      window.__TAURI_INTERNALS__ = { invoke: async () => [] };
+    });
+    const base = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/agentThreads.html?personal`;
+    await page.goto(base);
+    await page.getByRole("listbox", { name: "Threads" }).waitFor();
+    await page.evaluate(() => window.requestAddTeamSpace());
+    await page.getByRole("dialog", { name: "Add team space" }).waitFor();
+    const cards = page.getByRole("button", { name: "Projects", exact: true });
+    assert.equal(await cards.getAttribute("aria-pressed"), "true");
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 test("the space Agent view lists threads, opens one, and resolves a card by tap", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,

@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+  <body>
+    <a id="share" href="/open#l=shared-token" target="_blank">Shared item</a>
+    <a id="outside" href="https://example.com/paper" target="_blank">Outside</a>
+    <script>
+      window.invoked = [];
+      window.__TAURI_INTERNALS__ = {
+        invoke: async (command, args) => {
+          window.invoked.push({ command, path: args?.path ?? null });
+        },
+      };
+    </script>
+    <script src="./tauriShellOpen.js"></script>
+    <script type="module" src="./linkGuardShell.ts"></script>
+  </body>
+</html>

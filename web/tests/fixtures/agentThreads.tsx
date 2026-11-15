@@ -1,5 +1,5 @@
 import { ArtifactViewer } from "../../src/artifacts/ArtifactViewer";
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useState } from "react";
 import { activateProject, ResourceRuntime } from "./resourceRuntime";
 import { createRoot } from "react-dom/client";
 import { ChatsWorkspace } from "../../src/chat/ChatsWorkspace";
@@ -13,6 +13,7 @@ import "../../src/styles.css";
 declare global {
   interface Window {
     voiceOpened: string[];
+    requestAddTeamSpace: () => void;
   }
 }
 window.voiceOpened = [];
@@ -41,6 +42,8 @@ const identity = {
 };
 
 function Space() {
+  const [addTeamSpaceRequested, setAddTeamSpaceRequested] = useState(false);
+  window.requestAddTeamSpace = () => setAddTeamSpaceRequested(true);
   return (
     <ProjectLanding
       palette="light"
@@ -79,6 +82,8 @@ function Space() {
       onRequestIdentityName={() => {}}
       onOpenSpaceSettings={() => {}}
       voice={voice}
+      addTeamSpaceRequested={addTeamSpaceRequested}
+      onAddTeamSpaceTaken={() => setAddTeamSpaceRequested(false)}
     />
   );
 }
