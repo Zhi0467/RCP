@@ -9,6 +9,7 @@ import { MAIN_GRAPH } from "../core/graphTarget";
 import type { AgentTask, GraphUpdateRecovery, ProjectSnapshot } from "../core/types";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { useResource } from "../core/useResource";
+import { memberPaperChats } from "./coachChats";
 import { panelTools } from "./panelTools";
 import { PaperTurnChanges, PaperTurnDiff } from "./PaperTurn";
 import "./paper-coach.css";
@@ -74,14 +75,21 @@ export function PaperCoach({
   );
   const chats = useMemo(
     () =>
-      (inventory.value?.summaries ?? [])
-        .filter((summary) => summary.focus === "paper")
-        .sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
-    [inventory.value],
+      memberPaperChats(
+        inventory.value?.summaries ?? [],
+        inventory.value?.reads.archived ?? [],
+        tasks,
+        actions.actorId,
+      ),
+    [inventory.value, tasks, actions.actorId],
   );
   const [picked, setPicked] = useState<string | null>(opening?.chatId ?? null);
   const [fresh] = useState(() => crypto.randomUUID());
-  const chatId = picked ?? chats[0]?.chat_id ?? fresh;
+  const newest = chats[0]?.chat_id ?? null;
+  useEffect(() => {
+    if (picked === null && newest !== null) setPicked(newest);
+  }, [picked, newest]);
+  const chatId = picked ?? fresh;
   const summary = chats.find((chat) => chat.chat_id === chatId);
   useEffect(() => onOpening({ chatId: picked }), [picked, onOpening]);
   const transcript = useResource(

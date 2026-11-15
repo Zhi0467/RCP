@@ -255,11 +255,6 @@
   --chat-accent: var(--forest);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
-.chat-dock.paper-coach,
-.paper-coach-comment {
-  --chat-accent: var(--plum);
-  --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--plum));
-}
 .chat-dock.floating {
   border: 1px solid var(--line-strong);
   border-radius: 10px;
@@ -1699,20 +1694,12 @@
   background: var(--forest);
   border-color: var(--forest);
 }
-.chat-dock.paper-coach .chat-send-button {
-  background: var(--plum);
-  border-color: var(--plum);
-}
 .chat-send-button {
   border-radius: 10px;
 }
 .chat-dock .chat-send-button:hover:not(:disabled) {
   background: color-mix(in srgb, var(--forest) 84%, black);
   border-color: color-mix(in srgb, var(--forest) 84%, black);
-}
-.chat-dock.paper-coach .chat-send-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--plum) 84%, black);
-  border-color: color-mix(in srgb, var(--plum) 84%, black);
 }
 
 .toast {

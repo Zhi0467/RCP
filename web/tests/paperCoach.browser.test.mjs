@@ -136,6 +136,7 @@ const turn = {
   updated_at: new Date().toISOString(),
   active: false,
   attempt: 1,
+  authorized_by: { space_id: "space", user_id: "member", display_name: "Member" },
 };
 
 test("a preview selection starts a shared thread, which the rail sends through the coach", async (t) => {

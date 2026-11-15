@@ -319,7 +319,7 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 ## Conversation composer
 
-Chat is forest and the Paper coach is plum. The composer has no mode control.
+Chat, the Coach included, is forest. The composer has no mode control.
 Each human turn keeps its recorded label; a historical Discuss turn reads Discuss
 in plum. The Agents header has a title, a picker for provider,
 model, and effort, a context ring, an active-watcher count toggle when watchers
