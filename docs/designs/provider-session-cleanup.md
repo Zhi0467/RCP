@@ -6,13 +6,28 @@ and against Codex 0.167.0, OpenCode 1.18.30, Claude Code 2.1.325, agy 1.5.9.
 
 ## Rule
 
-RCP keeps an unused provider session for 30 days. A session is unused when:
+RCP keeps an unused provider session for 30 days. A session is held, and never
+swept, while any of these names it:
 
-- no task row naming it is `queued`, `running`, `pausing` or `paused`;
-- no row naming it, and no `experiment_episode_state` row, belongs to an open episode;
-- no `writing_sessions` row names it (Paper prunes those at 180 days);
-- the newest `graph_runs.updated_at` among rows naming it is over 30 days old.
-  This covers "the chat's latest turn names it" and is simpler.
+- a `graph_runs` row with status `queued`, `running`, `pausing` or `paused`, by
+  `native_session_id` or by `request_json.fork_session_id`;
+- a non-detached `chat_forks` row whose fork chat has no `graph_runs` row with a
+  `native_session_id` yet; it holds its source turn's session
+  (`origin.source_operation_id`, storage/chat_forks.py:20-47);
+- a `questions` row with `state='pending'`, by `origin_json.native_session_id`
+  (storage/question_models.py:31-45);
+- a `writing_sessions` row (Paper prunes those at 180 days);
+- a `paper_change_groups` row in state `pending` or `outdated`, through its
+  `task_id`. Coach Refresh resumes that task's session (api/paper_changes.py:89-113).
+  The Coach-as-chat PR deletes this path; whichever PR lands second drops the rule;
+- an open episode, through `graph_runs.episode_id`, `experiment_episode_state`, or
+  `episode_wrapups`. Exactly: `episodes.status IN ('queued','running','stopping',
+  'wrapping_up','needs_action') OR episodes.wrapup_state IN ('pending','running')`
+  (storage/models.py:2325-2344). An `episode_wrapups` row with `state IN
+  ('pending','running')` holds its `native_session_id` regardless.
+
+Otherwise it is swept once the newest `graph_runs.updated_at` among rows naming
+it is over 30 days old, which covers "the chat's latest turn names it".
 
 ## Only sessions RCP started
 
@@ -33,15 +48,13 @@ passes it to the provider's own delete command.
   from `archived_sessions`. Deleting files by hand would leave those rows, so RCP
   uses the CLI with the account's own Codex home; added-login homes link there
   (providers/codex/homes.py:25-56). A missing id exits 1 ("failed to delete
-  session"); the sweep then counts it gone if no `rollout-*-<id>.jsonl*` exists.
+  session"). Any nonzero exit records `last_error` and retries on the next pass.
 - **OpenCode** has no pruning. `opencode session delete <id>` works; a missing id
   prints "Session not found", which counts as gone.
-- **Claude** prunes itself (`cleanupPeriodDays`, default 30), but setting it in
-  RCP's `--settings` (claude/profile.py:568-611) would not help. That sweep is
-  daily housekeeping started from an interactive session. No print-mode call site
-  was found, and a print-mode probe kept a 44-day-old transcript with and without
-  the setting. It is also account-wide, so a flag value would override a person's
-  own retention. Claude has no delete command, so RCP deletes its own transcripts
+- **Claude** prunes itself (`cleanupPeriodDays`), but only from interactive
+  sessions: a print-mode probe kept a 44-day-old transcript with and without the
+  setting in `--settings` (claude/profile.py:568-611). The setting is also
+  account-wide. Claude has no delete command, so RCP deletes its own transcripts
   by exact path: `<config>/projects/<key>/<id>.jsonl` and the folder
   `<config>/projects/<key>/<id>/` (it holds `subagents`). `<config>` is
   `CLAUDE_CONFIG_DIR` or `~/.claude` on the execution account. `<key>` is
@@ -49,20 +62,17 @@ passes it to the provider's own delete command.
   path builds the same path (remote.py:80-82). The cwd is the chat's stage
   workspace (`_chat_stage_workspace`, agent_tasks.py:2300-2308). Only node and
   project chats have it; other Claude sessions are kept and counted in the log.
-- **agy** has no delete or retention command in `agy --help`. RCP leaves it
-  alone; the spec and each sweep's log say so.
+- **agy** has no delete or retention command; RCP leaves it, and logs so.
 
 ## Missing sessions
 
 Partly handled today. A chat drops its session when the latest row is classified
 `stale_session` (storage/agent_tasks.py:1732-1743, 6604-6622); the next turn
-starts fresh with the full contract, and Retry does the same
-(background.py:1031, 1127-1139). But `classify_terminal_error`
-(providers/__init__.py:136-159) knows only Codex's "no thread with id". Probes show three more:
-Codex `exec resume` prints "no rollout found for thread id", Claude `--resume`
-"No conversation found with session ID", and OpenCode `run --session` "Session
-not found". Without them, a chat retries a dead session every turn. With them, a session the
-provider pruned costs one failed turn, and then the chat starts fresh.
+starts fresh, and Retry too (background.py:1031, 1127-1139). But
+`classify_terminal_error` (providers/__init__.py:136-159) knows only "no thread
+with id". Probes add Codex "no rollout found for thread id", Claude "No
+conversation found with session ID", and OpenCode "Session not found". With
+them, a session the provider pruned costs one failed turn, not every turn.
 
 A swept session costs none. A backend-local table
 `provider_session_sweeps(provider, execution_machine, native_session_id,
@@ -72,10 +82,10 @@ sources and orchestrator seeds (agent_tasks.py:1705, 1754, 1817, 2133).
 `_native_resume_unavailable` (background.py:3581) and the question-origin check
 (agent_tasks.py:382-390) read it too.
 
-Order: one `BEGIN IMMEDIATE` transaction re-checks the rule and inserts the mark;
-the delete runs after. A turn admitted earlier has a live row, so the session is
-not eligible. A later turn starts fresh. A turn that read the session just before
-the mark fails as a classified stale session, and its Retry starts fresh.
+One `BEGIN IMMEDIATE` transaction re-checks the rule and inserts the mark; the
+delete runs after. An earlier turn has a live row, so the session is held; a
+later one starts fresh. A turn that read the session just before the mark fails
+as a classified stale session, and its Retry starts fresh.
 
 ## Where the sweep runs
 
@@ -94,33 +104,46 @@ Each launch writes `<home>/.rcp/hidden-read/<fingerprint>/` (core/models.py:317-
 agents/provider_environment.py:391-406). Nothing removes them. This Mac has
 46,914 folders (982 MB), and every sampled policy names `pytest-of-*` paths.
 
-- Sweep folders older than `RUN_STAGE_RETENTION_DAYS`. Locally the pass above
-  does it, off the launch path, since the first run is large. Remotely
-  `sweep_stages` (transport/remote_stage_root.py:145) adds the folder.
-- Touch on use: `install` rewrites both files every launch via `os.replace`
-  (agents/staged_hidden_read.py:251-273), refreshing the folder mtime. The
-  wrapper's command path also touches its folder, so a long turn keeps it.
-- Test gap: `isolate_host` (tests/helpers.py:811-857) patches `rcp_home`, but
-  `host_facts` reads `expanduser("~")` (staged_hidden_read.py:80). `isolate_host`
+- Sweep folders older than `RUN_STAGE_RETENTION_DAYS`, skipping a protected set,
+  as `sweep_stages` skips live stages. The set is the fingerprints of `queued`,
+  `running`, `pausing` and `paused` rows on that machine. Rows do not record the
+  fingerprint, so launch stores it in a new nullable `graph_runs` column beside
+  `write_scope_fingerprint` (background.py:345-347). Locally the pass above
+  sweeps, off the launch path. Remotely `sweep_stages`
+  (transport/remote_stage_root.py:145) takes the folder and the set.
+- Test gap: `isolate_host` (tests/helpers.py:790) patches `rcp_home`, but
+  `host_facts` (staged_hidden_read.py:78) reads `expanduser("~")`. `isolate_host`
   will set `HOME` to a per-test folder; fifteen test files already set it.
 
 ## Removed logins and machines
 
-Login removal deletes only the credential (server_ops/provider_cleanup.py:78-118).
-Startup re-prepares the Codex home of every login, removed ones too (api/app.py:2063-2089).
+Login removal deletes only the credential (server_ops/provider_cleanup.py:78-118),
+and startup re-prepares every login's Codex home (api/app.py:2063-2089).
 
-- Once the credential is gone and no turn runs on the login, RCP runs one
-  migrating preparation, then deletes `provider-homes/<provider>/<login_id>` and
-  `<login_id>-retained`, locally or on the host. A deferred migration or
-  unreachable host keeps `_CLEANUP_PENDING`, which `reconcile_login_removals`
+- Once the credential is gone and no turn runs on the login, RCP walks
+  `provider-homes/<provider>/<login_id>` without following links. It unlinks
+  each symlink and the profile's `login_home_credentials`, then removes folders
+  left empty. Any other real file stays, and so does its folder.
+- RCP never deletes `<login_id>-retained` or its UUID-named siblings
+  (providers/login_homes.py:28-35). They can hold the only copy of a rollout.
+- An unreachable host keeps `_CLEANUP_PENDING`, which `reconcile_login_removals`
   (runs/provider_login.py:472) retries.
 - Startup prepares only `removed_at IS NULL OR detail = _CLEANUP_PENDING`.
 - Machine removal (api/space_machines.py:944-993) runs this cleanup for the
   machine's logins when reachable. Another backend may share the account's
-  `~/.rcp`, so nothing else is removed; stages and hidden-read folders age out
-  via whichever backend still uses it. The route returns only `{"deleted": id}`
-  (space_machines.py:993), with no message to extend. So an unreachable host is
-  logged only: the machine id and the count of leftover login folders.
+  `~/.rcp`, so nothing else is removed; the sweeps age it out. The route returns
+  only `{"deleted": id}` (line 993), so an unreachable host is logged only, with
+  the machine id and the count of leftover login folders.
+
+## Backup and restore
+
+Both new tables are in backups, like the rest of the app database. They join
+`TRANSFER_GLOBAL_TABLES` (transfer/archive.py:87), so they never travel with a
+project, and `_EXEMPT_TABLES` (tests/test_resource_versions.py:215), which CI
+checks against every table. A restored database can be older than the hosts.
+`detach_restored_lifecycle` (storage/restore_detachment.py:18-60) records its
+`detached_at` in a singleton `provider_session_sweep_state.restored_at`. The
+sweep then considers only ids whose newest `graph_runs` row is newer.
 
 ## Limits
 
@@ -143,17 +166,20 @@ both branch routes return `{code, message}`. `TURN_REFUSAL_REASONS`
 
 ## Checks
 
-- Store: eligibility covers age, live statuses, open episodes, writing
-  sessions, swept ids and unrecorded ids.
+- Store: each hold above, the exact open-episode condition, pending wrapups,
+  age, the restore cutoff, swept ids and unrecorded ids.
+- Fork: with a real Codex and a real OpenCode, fork a chat, launch the fork's
+  first turn, delete the source session, then send another fork turn; it works.
 - Guard: fake `codex` and `opencode` on PATH record argv; with an old RCP session
   and a human session in one home, only the RCP id is deleted.
 - Chat: age a chat, sweep, send a turn; it starts fresh with no failed turn.
   Branching it returns `chat_session_expired`.
 - Claude: the exact transcript and its folder go; a sibling session stays.
 - `classify_terminal_error` returns `stale_session` for the three probed texts.
-- Hidden read: old folders go, touched ones stay, remote sweeps too, and tests
-  leave the real `~/.rcp/hidden-read` count unchanged.
-- Logins: home and `-retained` go; startup skips finished removals; unreachable stays pending.
-- `uv run pytest -n0` on affected files, `uv run ruff check`, `uv run pre-commit run --files`.
+- Hidden read: old folders go, a live row's fingerprint stays, remote sweeps
+  too, and tests leave the real `~/.rcp/hidden-read` count unchanged.
+- Logins: links and credentials go and links are not followed; a real file, the
+  `-retained` folder and its UUID siblings stay; startup skips finished
+  removals; unreachable stays pending.
 - Docs: providers-and-containment.md gains "Provider session retention"; its
   Codex-home (line 1404) and login-removal paragraphs change.
