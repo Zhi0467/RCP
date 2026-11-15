@@ -424,7 +424,8 @@ and add the [Paper write root](providers-and-containment.md#paper-write-root).
 A Paper turn launches only while it is the project's oldest queued, running, or
 pausing Paper turn. A later one stays queued with "Waiting for another Paper
 turn", and the member can cancel it. When the holder settles, whether
-completed, interrupted, failed, or recovered, the oldest waiting turn launches.
+completed, interrupted, failed, paused, or recovered, and whether or not it
+ever had a worker, the oldest waiting turn launches.
 A Paper turn ends only after its provider process tree exits or recovery
 settles it.
 **Why:** two agents editing the same files at once would each merge against

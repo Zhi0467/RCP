@@ -1283,13 +1283,17 @@ class BackgroundAgentTasks:
                 current = self._require_operation(operation_id)
                 if current.phase != "awaiting_remote_result":
                     raise ValueError("This task's recorded result is already being finalized.")
-                return self._pause_waiting_remote_result(current)
+                paused = self._pause_waiting_remote_result(current)
+            self._after_settle(paused)
+            return paused
         if current.phase == "finalizing_recorded_result":
             raise ValueError("This task's recorded result is already being finalized.")
         record = self.store.request_agent_task_pause(operation_id)
         if current.status == "queued" and not self._worker_owns(operation_id):
             self.store.pause_agent_task(operation_id)
-            return self._require_operation(operation_id)
+            paused = self._require_operation(operation_id)
+            self._after_settle(paused)
+            return paused
         self._signal_agent_task_pause(operation_id)
         return record
 
@@ -1394,6 +1398,7 @@ class BackgroundAgentTasks:
                 )
             settled = self.store.agent_task(operation_id)
             assert settled is not None
+            self._after_settle(settled)
             return settled
         return record
 
@@ -1977,7 +1982,9 @@ class BackgroundAgentTasks:
             require_consolidation_launch(self.store, record)
         except ValueError as exc:
             self.store.fail_agent_task(record.operation_id, str(exc))
-            return self._require_operation(record.operation_id)
+            failed = self._require_operation(record.operation_id)
+            self._after_settle(failed)
+            return failed
 
         lineage_login = ProviderAccounts.for_store(self.store).lineage_login(
             request.provider,
@@ -2880,6 +2887,7 @@ class BackgroundAgentTasks:
                     self._settle_detached_mailbox(operation_id)
                     finish_recorded_browser(self.store, operation_id)
                     self.store.fail_agent_task(operation_id, str(exc), remote_pid_file=pid_file)
+                    self._after_settle(record)
                     continue
                 with self._controls_lock:
                     mailbox = self._detached_mailboxes.get(operation_id)
@@ -3299,6 +3307,10 @@ class BackgroundAgentTasks:
                     )
 
         settle_provider_login(self, record)
+        self._after_settle(record)
+
+    def _after_settle(self, record: AgentTaskRecord) -> None:
+        """Every settle's follow-up, worker or not: release the Paper and start its next turn."""
         try:
             finish_paper_turn(self, record)
         except Exception:

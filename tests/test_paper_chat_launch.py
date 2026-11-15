@@ -237,6 +237,24 @@ def test_a_waiting_paper_turn_can_be_cancelled(tmp_path: Path) -> None:
         tasks.shutdown()
 
 
+def test_pausing_a_holder_that_never_launched_starts_the_waiting_turn(tmp_path: Path) -> None:
+    store = seeded_store(tmp_path)
+    gate = _Gate()
+    tasks = BackgroundAgentTasks(store, gate.stream)
+    try:
+        first = _paper_turn(store, gate, "first", "coach-a")
+        second = _paper_turn(store, gate, "second", "coach-b")
+        assert tasks.launch_admitted(second.operation_id).status == "queued"
+        assert tasks.pause(first.operation_id).status == "paused"
+        wait_until(lambda: "second" in gate.started)
+        gate.release["second"].set()
+        wait_for_task(store, "second", expect="succeeded")
+    finally:
+        for event in gate.release.values():
+            event.set()
+        tasks.shutdown()
+
+
 def _work_contract(scope: ProjectWriteScope) -> str:
     from rcp.agents.prompts import PromptFactory
 
