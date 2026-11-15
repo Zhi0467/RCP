@@ -540,12 +540,10 @@ function settingsProject() {
   const permissions = {
     read_graph: true,
     read_research_md: true,
-    read_introduction: false,
     read_repositories: "run_scope",
     read_conversations: "none",
     write_graph_patch: false,
     write_project_files: false,
-    write_paper: false,
   };
   const profile = {
     provider: "codex",

@@ -580,19 +580,18 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "cb24ad4d39f7a109a4c887a2de84d94712a73d40cf057467fa40b039ca53f8ab",
         "eb042659f510fed2641d5eca038050a563bbb8d814c886b6c0c68f25db121fb2",
         "f2608da86ba8542eb285bbcbf052646084dd5003d3557738034fba1887d69801",
-        "1813f6aecd1f978ee640ec805ae084cb5a476a257c2a97a2c5a617b9b3e7d4f1",
-        "245539a2c1b8deaf7786971dafcb2e18361cc439633080f4283d81859f01dc78",
-        "4f511892107eb5f507eb44f86f1a60992951100b83e56e0c5f7a702313f1906e",
-        "7dd02df9e23264dd3de80cc8d9521fbefcad604d6a675a0e867b912e6dee8294",
-        "830230da21c1cbb27e32621add26fc31609e205208d8e9835fbd43c81696b3c8",
-        "90066c1d83d6a69c9c75d13c9d2dab5f765cd71bc5f2b50792d5382368fac231",
-        "991ac84bd9f34195521cc470789c34176bb67e4c68491e98bb21ca1a98f856cd",
-        "a353a56c7624b46430a28c5b368e76d48513cd47dba64f8de9766421ee2fca93",
-        "c43715629f44d7a73beecb43d8822c644699f4b85cf4a6e5beb2b1d23cf5a72e",
-        "d8d6a64d499ad4d7f5de9263e147323921f844da459519e1d046351849456ec5",
-        "e55c6fbd77e38d3bcf25911f321d6a05f7c34a2cf305902317a9a6674656a0e1",
-        "f80c6846111dc5de1e220475b6ac5a70fc06cd7ba07d9ef5aaa747ce216f183b",
-        "f823db7ad3e63c63d9204c277099503b769dd83e39796acfbd4088188198b784",
+        "0c9b1d6ec6d70786a22d32593086c403934e57a3bf41de5f519a3752c55720f4",
+        "330888f1b2e85dace8ecb9f5dd2c51f9a7bb3ed55294a7e94e02ff726687e806",
+        "335d87b6d4b2ea65fba89480836ae9158f092d4c9310ec35632c561f485ead1c",
+        "3685bb89d5dc7918d52d150ab94b141a0bd45da28d0b96f2a0de3aa7dd878b06",
+        "7a7b3eef0f9167e8c60e56908d70515330b09169414b0ed2b663ce058cdb2246",
+        "a783dc4e2a3c9900155976aa58fcf724a46e17e88d8e2de683c7f00ab692ace9",
+        "a79172dad95bcfdb1db71c91600d7afc3a838d1f1843ee4fc20f051744134df9",
+        "b5a4bd5895fa299f526d842e82ca0c187623b55c27708ada24b9350134913596",
+        "b8b20cb3b4258ce872ae1439c60ad82bd326f0e719e6819334d436c8778469b7",
+        "d636e2ce73a961f23af7b1d251fa5acdd336507551294208c3a93d0e6c7f22c9",
+        "dd200058325b6beac1e49aac5775ab4ca198b781f08e1120665cd4632d5b9d3d",
+        "3b9ae9e932e5d2df941c8fadbb2ed6ba306bc3f08d64e7aab23b6893a6f283b5",
     }
 )
 
@@ -1513,12 +1512,29 @@ def _recover_repositories(request, manifest, previous_store, members, cards):
     return None
 
 
-def _restore_project_bytes(owners, capture, payload, operation_projects, *, existing_remote):
+def _restore_paper_folder(folder, entries, payload) -> None:
+    """Write the archived Paper folder into an empty folder; a kept folder stays as it is."""
+    files = {}
+    for entry in entries:
+        if entry.group != "paper_folder":
+            continue
+        data = (payload / entry.archive_path).read_bytes()
+        if (hashlib.sha256(data).hexdigest(), len(data)) != (entry.sha256, entry.size_bytes):
+            raise RestoreRefused("An archived Paper file differs from its inventory.")
+        files[PurePosixPath(entry.source_relative_path).relative_to("paper").as_posix()] = data
+    if files:
+        folder.install(files)
+
+
+def _restore_project_bytes(
+    owners, capture, payload, operation_projects, *, existing_remote, paper_folder
+):
     entries = capture.files
     if existing_remote:
         owners.workspace.refresh()
         _verify_project_publication_bytes(owners.workspace, entries)
         return owners.history.materialize(write_outputs=False)
+    _restore_paper_folder(paper_folder, entries, payload)
     canonical = {
         e.source_relative_path.removeprefix(".research/"): (
             payload / e.archive_path,
@@ -1561,6 +1577,8 @@ def _restore_project_bytes(owners, capture, payload, operation_projects, *, exis
 def _verify_project_publication_bytes(workspace, entries) -> None:
     for entry in entries:
         relative = PurePosixPath(entry.source_relative_path)
+        if entry.group == "paper_folder":
+            continue
         if entry.group in {"kept_artifact", "legacy_kept_result_view"}:
             if entry.group == "kept_artifact":
                 data = workspace.read_kept_artifact(
@@ -1589,6 +1607,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     from datetime import UTC
 
     from rcp.__main__ import instance_lock
+    from rcp.paper.folder import paper_folders
     from rcp.projects import (
         complete_restored_project_publication,
         rebind_restored_project_registration,
@@ -1870,6 +1889,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                 existing_remote=state_remote
                 and previous is not None
                 and previous.project(capture.project_id) is not None,
+                paper_folder=paper_folders(store, app)(capture.project_id),
             )
             complete_restored_project_publication(store, capture, owners, materialization)
             _record_restored_checkout_proofs(store, app, capture, request.progress)

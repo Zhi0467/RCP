@@ -487,6 +487,9 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
     )
     proof = _target_activation_proof(target, target_request, completed_export)
     archive_path = source_transfer_export_path(source_data, request.request_id)
+    paper = source_data / "paper" / request.project_id
+    paper.mkdir(parents=True, exist_ok=True)
+    (paper / "left.md").write_text("the target holds the Paper now")
 
     original_discard = source_app.state.catalog.discard_retired_transfer_source
 
@@ -549,3 +552,4 @@ def test_source_cleanup_recovers_after_retirement_and_archive_unlink(
     assert final is not None
     assert final.phase == "completed"
     assert final.proof_state == "consumed"
+    assert not paper.exists()

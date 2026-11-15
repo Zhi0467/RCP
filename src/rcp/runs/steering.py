@@ -35,7 +35,6 @@ from rcp.service import (
     read_space_chat_records,
 )
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.paper_coach_steers import PaperCoachSteerRecord
 from rcp.storage.question_models import QuestionRecord
 from rcp.storage.questions import question_receiver_binds
 
@@ -43,7 +42,7 @@ from rcp.storage.questions import question_receiver_binds
 def chat_steering_visible(store: AppStore, record: AgentTaskRecord) -> bool:
     """Steering belongs to human conversations, never episode or routed work."""
     return (
-        record.kind in {"node_chat", "project_chat", "space_chat", "paper_coach"}
+        record.kind in {"node_chat", "project_chat", "space_chat"}
         and record.request.get("trigger", "human") == "human"
         and record.episode_id is None
         and store.auto_research_child_work_for_operation(record.operation_id) is None
@@ -252,26 +251,8 @@ def _record_steer(
     return stored
 
 
-def coach_steer_message(row: PaperCoachSteerRecord) -> ChatMessage:
-    """A coach steer as the human message a chat transcript would show."""
-    return ChatMessage(
-        message_id=row.message_id,
-        operation_id=row.operation_id,
-        role="user",
-        text=row.text,
-        timestamp=row.created_at,
-        steering=SteeringReceipt(
-            attempt=row.attempt,
-            turn_id=row.turn_id,
-            status=row.status,
-            label=row.label,
-            reason=row.reason,
-        ),
-    )
-
-
 def _require_same_steer(
-    existing: _StoredChatRecord | ChatMessage,
+    existing: _StoredChatRecord,
     operation_id: str,
     text: str,
     attempt: int,
@@ -312,44 +293,6 @@ def _steer_receipt(
     )
 
 
-def _record_coach_steer(
-    background: BackgroundAgentTasks,
-    record: AgentTaskRecord,
-    *,
-    message_id: str,
-    attempt: int,
-    expected_turn_id: str,
-    text: str,
-) -> tuple[ChatMessage, bool]:
-    """Record a coach steer once; True when this call recorded it.
-
-    The row's primary key settles a concurrent replay: only the insert that
-    lands delivers.
-    """
-    store = background.store
-    existing = store.paper_coach_steer(message_id)
-    if existing is None:
-        _, receipt = _steer_receipt(background, record.operation_id, attempt, expected_turn_id)
-        row = PaperCoachSteerRecord(
-            message_id=message_id,
-            operation_id=record.operation_id,
-            text=text,
-            attempt=attempt,
-            turn_id=expected_turn_id,
-            status=receipt.status,
-            label=receipt.label,
-            reason=receipt.reason,
-            created_at=datetime.now(UTC).isoformat(),
-        )
-        if store.add_paper_coach_steer(row):
-            return coach_steer_message(row), True
-        existing = store.paper_coach_steer(message_id)
-        assert existing is not None
-    stored = coach_steer_message(existing)
-    _require_same_steer(stored, record.operation_id, text, attempt, expected_turn_id)
-    return stored, False
-
-
 def begin_chat_steer(
     service: ProjectService | SpaceThreadOwner,
     background: BackgroundAgentTasks,
@@ -359,46 +302,29 @@ def begin_chat_steer(
     attempt: int,
     expected_turn_id: str,
     text: str,
-) -> tuple[_StoredChatRecord | ChatMessage, Future[ProviderSteerReceipt] | None]:
-    """Record once, address one live attempt, and never recover by re-sending.
-
-    A chat records the steer in its transcript; the Paper coach, which has none,
-    in `paper_coach_steers`.
-    """
+) -> tuple[_StoredChatRecord, Future[ProviderSteerReceipt] | None]:
+    """Record once in the chat transcript, address one live attempt, never re-send."""
     if not chat_steering_visible(background.store, record):
         raise ValueError("Only human conversation turns can be steered.")
-    stored: _StoredChatRecord | ChatMessage
-    if record.kind == "paper_coach":
-        stored, recorded = _record_coach_steer(
-            background,
-            record,
-            message_id=message_id,
-            attempt=attempt,
-            expected_turn_id=expected_turn_id,
-            text=text,
+    request = load_stored_request(RunRequest, record.request, operation_id=record.operation_id)
+    path = _steering_path(service, request)
+    with _steering_transaction(service):
+        records = _chat_records(service, path)
+        existing = next((item for item in records if item.uuid == message_id), None)
+        if existing is not None:
+            _require_same_steer(existing, record.operation_id, text, attempt, expected_turn_id)
+            return existing, None
+        current, receipt = _steer_receipt(
+            background, record.operation_id, attempt, expected_turn_id
         )
-        if not recorded:
-            return stored, None
-    else:
-        request = load_stored_request(RunRequest, record.request, operation_id=record.operation_id)
-        path = _steering_path(service, request)
-        with _steering_transaction(service):
-            records = _chat_records(service, path)
-            existing = next((item for item in records if item.uuid == message_id), None)
-            if existing is not None:
-                _require_same_steer(existing, record.operation_id, text, attempt, expected_turn_id)
-                return existing, None
-            current, receipt = _steer_receipt(
-                background, record.operation_id, attempt, expected_turn_id
-            )
-            stored = _record_steer(
-                service,
-                request,
-                current,
-                message_id=message_id,
-                text=text,
-                receipt=receipt,
-            )
+        stored = _record_steer(
+            service,
+            request,
+            current,
+            message_id=message_id,
+            text=text,
+            receipt=receipt,
+        )
     # Recorded before delivery, so other members see a queued steer too.
     background.bump_steer_revision(record.operation_id)
     assert stored.steering is not None
@@ -423,12 +349,12 @@ def finish_chat_steer(
     service: ProjectService | SpaceThreadOwner,
     background: BackgroundAgentTasks,
     record: AgentTaskRecord,
-    delivery: tuple[_StoredChatRecord | ChatMessage, Future[ProviderSteerReceipt] | None],
+    delivery: tuple[_StoredChatRecord, Future[ProviderSteerReceipt] | None],
 ) -> ChatMessage:
     """Wait without project/canonical locks; a disconnect never triggers a resend."""
     stored, future = delivery
     if future is None:
-        return stored if isinstance(stored, ChatMessage) else _message(stored)
+        return _message(stored)
     assert stored.steering is not None
     try:
         result = future.result(timeout=PROVIDER_STEER_ACK_TIMEOUT_SECONDS)
@@ -446,20 +372,14 @@ def finish_chat_steer(
     receipt = _receipt(
         stored.steering.attempt, stored.steering.turn_id, result.status, result.reason
     )
-    if isinstance(stored, ChatMessage):
-        background.store.settle_paper_coach_steer(
-            stored.message_id, status=receipt.status, label=receipt.label, reason=receipt.reason
+    stored = stored.model_copy(update={"steering": receipt})
+    with _steering_transaction(service):
+        path = _steering_path(
+            service,
+            load_stored_request(RunRequest, record.request, operation_id=record.operation_id),
         )
-        message = stored.model_copy(update={"steering": receipt})
-    else:
-        stored = stored.model_copy(update={"steering": receipt})
-        with _steering_transaction(service):
-            path = _steering_path(
-                service,
-                load_stored_request(RunRequest, record.request, operation_id=record.operation_id),
-            )
-            _append_steering_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
-        message = _message(stored)
+        _append_steering_records(service, path, [stored.model_dump(mode="json", by_alias=True)])
+    message = _message(stored)
     # The final receipt replaces the queued one other members may already show.
     background.bump_steer_revision(record.operation_id)
     return message

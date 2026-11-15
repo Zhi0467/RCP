@@ -236,7 +236,7 @@ memory root. Other members' folders are hidden from every run. Experiment,
 Auto-research roots and workers read and add notes; retaining existing notes is
 a prompt rule. Consolidation reads, edits, merges and prunes shared files,
 reports each change, and never touches member folders. Seed, Refresh, branch
-merge, Paper coach and artifact edit receive no memory access. Memory has no
+merge and artifact edit receive no memory access. Memory has no
 graph, replay, merge or paper authority. Member removal deletes the member's
 private folder.
 

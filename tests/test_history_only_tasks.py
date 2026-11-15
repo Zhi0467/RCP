@@ -8,7 +8,7 @@ import pytest
 
 from rcp.artifact_import import import_project_artifacts
 from rcp.artifacts import descriptor_for
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
 from tests.helpers import signed_in_client
 
@@ -175,13 +175,14 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
             project_id=project_id,
             kind="paper_coach",
             status="failed",
-            request=CoachRequest(
-                message="Review the introduction.",
-                provider="codex",
-                model="",
-                reasoning="medium",
-                run_on="laptop",
-            ).model_dump(mode="json"),
+            request={
+                "message": "Review the introduction.",
+                "mode": "review",
+                "provider": "codex",
+                "model": "",
+                "reasoning": "medium",
+                "run_on": "laptop",
+            },
             native_session_id=coach_session_id,
             result={"messages": ["Historical paper feedback."]},
         )

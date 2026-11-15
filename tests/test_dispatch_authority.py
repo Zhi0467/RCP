@@ -24,7 +24,7 @@ from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.watcher_admission import start_watcher_notification
-from rcp.service import CoachRequest, RunRequest, resolve_dispatch_authority
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskKind,
@@ -179,7 +179,6 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
             control_episode_id=episode_id,
         ),
     )
-    paper = resolve_dispatch_authority("paper_coach", CoachRequest(message="Review this."))
 
     assert seed == AgentDispatchAuthority(
         profile="ordinary",
@@ -205,7 +204,6 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
     assert work is not None and work.task_contract == "work_auto"
     assert work.scope.patch_kind == "work"
     assert experiment is not None and experiment.scope.control_episode_id == episode_id
-    assert paper is not None and paper.task_contract == "paper_suggest"
     orchestrator = resolve_dispatch_authority(
         "auto_research",
         AutoResearchRunRequest(
@@ -434,14 +432,6 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
             ),
             "scratch_patch cannot carry chat identity",
         ),
-        (
-            AgentDispatchAuthority(
-                profile="ordinary",
-                task_contract="paper_suggest",
-                scope=AgentDispatchScope(chat_scope="project", chat_id="chat-one"),
-            ),
-            "paper_suggest cannot carry chat, Patch, or control scope",
-        ),
     ],
 )
 def test_incomplete_contract_scope_refuses_dispatch_and_apply(
@@ -509,12 +499,6 @@ def test_refused_dispatch_creates_no_task_and_never_enters_stream(tmp_path: Path
                 "project-one",
                 "project_chat",
                 _work_request().model_copy(update={"mode": "discuss"}),
-            )
-        with pytest.raises(ValueError, match="ordinary agent task.*human authorizer"):
-            ordinary_tasks.start(
-                "project-one",
-                "paper_coach",
-                CoachRequest(provider="codex", message="Review this introduction."),
             )
     finally:
         tasks.shutdown()
@@ -847,7 +831,6 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
         ("cross-project", "unknown agent task"),
         ("missing-binding", "no dispatch authority binding"),
         ("discuss", "exposes no graph Patch channel"),
-        ("paper", "exposes no graph Patch channel"),
         ("scope", "run_truth_scope does not match"),
         ("patch-kind", "Patch kind does not match"),
         ("control-node", "Experiment control node does not match"),
@@ -875,12 +858,6 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
                 chat_scope="project",
                 chat_id=request.chat_id,
             ),
-        )
-    elif case == "paper":
-        authority = AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="paper_suggest",
-            scope=AgentDispatchScope(),
         )
     elif case == "scope":
         authority = AgentDispatchAuthority(

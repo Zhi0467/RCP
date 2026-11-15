@@ -124,7 +124,7 @@ def test_catalog_skills_and_auth():
 
 
 def test_version_and_summary_refusal(tmp_path):
-    for capability in ["discuss", "scratch_patch", "paper_suggest", "work_auto", "orchestrate"]:
+    for capability in ["discuss", "scratch_patch", "work_auto", "orchestrate"]:
         with pytest.raises(ValueError):
             AGY.validate_readiness_version("1.5.7", capability=capability)
     with pytest.raises(ValueError):
@@ -133,27 +133,23 @@ def test_version_and_summary_refusal(tmp_path):
         )
 
 
-@pytest.mark.parametrize("capability", ["work_auto", "orchestrate", "paper_suggest"])
+@pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
 def test_work_tools_and_exact_write_roots(tmp_path, capability):
     from rcp.agents.write_scope import ProjectWriteScope
 
-    scope = None
-    roots = [Path("/coach/changes")]
-    if capability != "paper_suggest":
-        scope = ProjectWriteScope.create(
-            project_id="project",
-            machine_id="backend",
-            capability=capability,
-            stage_root=str(tmp_path.parent),
-            workspace_root=str(tmp_path),
-            repositories=[],
-            granted_roots=["/repo"],
-            protected_write_paths=["/repo/protected"],
-            granted_protected_paths=[],
-        )
-        roots = []
+    scope = ProjectWriteScope.create(
+        project_id="project",
+        machine_id="backend",
+        capability=capability,
+        stage_root=str(tmp_path.parent),
+        workspace_root=str(tmp_path),
+        repositories=[],
+        granted_roots=["/repo"],
+        protected_write_paths=["/repo/protected"],
+        granted_protected_paths=[],
+    )
     turn = AGY.runtime(AGY.legacy_runtime_id).turn(
-        replace(request(tmp_path, capability), write_scope=scope, write_dirs=roots)
+        replace(request(tmp_path, capability), write_scope=scope)
     )
     policy = json.loads(turn.command[turn.command.index("--settings") + 1])
     assert set(policy["permissions"]) == {"allow", "ask", "deny"}
@@ -169,7 +165,7 @@ def test_work_tools_and_exact_write_roots(tmp_path, capability):
     }
     allows = policy["permissions"]["allow"]
     assert "command(*)" in allows
-    expected = scope.writable_roots if scope else list(map(str, roots))
+    expected = scope.writable_roots
     assert {rule for rule in allows if rule.startswith("write_file(")} == {
         f"write_file({root})" for root in expected if root != str(tmp_path)
     }
@@ -367,24 +363,20 @@ def test_profile_commands_leave_wrapping_to_authentication(tmp_path):
         assert "view_file" in tools
 
 
-@pytest.mark.parametrize("capability", ["work_auto", "orchestrate", "paper_suggest"])
+@pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
 def test_work_read_context_never_becomes_an_editable_workspace(tmp_path, capability):
     from rcp.agents.write_scope import ProjectWriteScope
 
-    scope = None
-    writes = [tmp_path / "changes"]
-    if capability != "paper_suggest":
-        scope = ProjectWriteScope.create(
-            project_id="project",
-            machine_id="backend",
-            capability=capability,
-            stage_root=str(tmp_path),
-            workspace_root=str(tmp_path / "workspace"),
-            repositories=[],
-            granted_roots=[str(tmp_path / "outputs")],
-            protected_write_paths=[],
-        )
-        writes = []
+    scope = ProjectWriteScope.create(
+        project_id="project",
+        machine_id="backend",
+        capability=capability,
+        stage_root=str(tmp_path),
+        workspace_root=str(tmp_path / "workspace"),
+        repositories=[],
+        granted_roots=[str(tmp_path / "outputs")],
+        protected_write_paths=[],
+    )
     context = tmp_path / "read-context"
     command = (
         AGY.runtime(AGY.legacy_runtime_id)
@@ -392,7 +384,6 @@ def test_work_read_context_never_becomes_an_editable_workspace(tmp_path, capabil
             replace(
                 request(tmp_path, capability),
                 write_scope=scope,
-                write_dirs=writes,
                 read_dirs=[context],
             )
         )
@@ -400,7 +391,7 @@ def test_work_read_context_never_becomes_an_editable_workspace(tmp_path, capabil
     )
     add_dirs = {command[index + 1] for index, arg in enumerate(command) if arg == "--add-dir"}
     assert str(context) not in add_dirs
-    assert add_dirs == set(scope.writable_roots if scope else map(str, writes)) - {str(tmp_path)}
+    assert add_dirs == set(scope.writable_roots) - {str(tmp_path)}
     policy = json.loads(command[command.index("--settings") + 1])
     assert f"write_file({context})" not in policy["permissions"]["allow"]
 
@@ -424,5 +415,5 @@ def test_staged_tools_are_names_the_custom_agent_registry_accepts():
     from rcp.providers.agy.profile import _tools
 
     accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
-    for capability in ("work_auto", "orchestrate", "paper_suggest", "scratch_patch", "discuss"):
+    for capability in ("work_auto", "orchestrate", "scratch_patch", "discuss"):
         assert set(_tools(capability, None)) <= accepted

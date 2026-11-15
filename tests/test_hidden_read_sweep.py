@@ -116,8 +116,8 @@ def test_a_remote_stage_sweep_carries_the_protected_fingerprints(
 
     def run_shipped(arguments: list[str]):
         calls.append(arguments)
-        assert arguments[:2] == ["python3", "-c"]
-        assert remote_stage_root.main(["remote_stage_root.py", *arguments[3:]]) == 0
+        assert arguments[:3] == ["python3", "-I", "-c"]
+        assert remote_stage_root.main(["remote_stage_root.py", *arguments[4:]]) == 0
 
     monkeypatch.setattr(stage, "_ssh", run_shipped)
 

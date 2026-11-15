@@ -783,6 +783,7 @@ MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
 # PAPER: saved live documents, bounded history, and publication scheduling.
 PAPER_MAX_MESSAGE_BYTES = 4 * 1024 * 1024
 PAPER_MAX_DOC_BYTES = 2 * 1024 * 1024
+PAPER_TURN_DIFF_MAX_BYTES = 1024 * 1024
 PAPER_MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 PAPER_MAX_TREE_BYTES = 64 * 1024 * 1024
 PAPER_MAX_FILES = 256
@@ -805,8 +806,15 @@ PAPER_HISTORY_MAX_BYTES = 256 * 1024 * 1024
 PAPER_SAVED_REVISION_LIMIT = 512
 PAPER_COMPACT_UPDATES = 64
 PAPER_TIMER_SECONDS = 1.0
+PAPER_SAVE_IDLE_SECONDS = 1.0
+PAPER_SAVE_RETRIES = 3
 # Continuous typing rescans history for pruning at most this often.
 PAPER_PRUNE_SECONDS = 30.0
+PAPER_POLL_SECONDS = 1.0
+PAPER_REMOTE_POLL_SECONDS = 2.0
+PAPER_STARTUP_PROBE_SECONDS = 5.0
+PAPER_POLL_MAX_FILES = 64
+PAPER_POLL_MAX_HASH_MB = 16
 
 # PAPER_COMPILE: runtime assets and bounded paper previews.
 PAPER_COMPILE_TIMEOUT_SECONDS = 180
@@ -820,20 +828,12 @@ PAPER_COMPILE_MAX_ASSET_BYTES = 64 * 1024 * 1024
 # Decompressed SyncTeX a compile may parse to let the preview follow the cursor.
 PAPER_SYNCTEX_MAX_BYTES = 64 * 1024 * 1024
 
-# PAPER_CHANGES: bounded coach output and persisted card previews (S3).
-PAPER_CHANGES_MAX_FILES = 256
-PAPER_CHANGES_MAX_ENTRIES = PAPER_CHANGES_MAX_FILES * 4
-PAPER_CHANGES_MAX_FILE_BYTES = 16 * 1024 * 1024
-PAPER_CHANGES_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 PAPER_HTML_PREVIEW_MAX_ASSET_BYTES = PAPER_MAX_UPLOAD_BYTES
-PAPER_HTML_PREVIEW_MAX_ASSET_TOTAL_BYTES = PAPER_CHANGES_MAX_TOTAL_BYTES
-PAPER_HTML_PREVIEW_MAX_OUTPUT_BYTES = PAPER_CHANGES_MAX_TOTAL_BYTES
-PAPER_CHANGES_MAX_MOVES_BYTES = 64 * 1024
-PAPER_CHANGES_PREVIEW_LINES = 12
-# Line pairs a card diff compares after trimming the common head and tail; past it,
-# the changed middle becomes one card instead of a quadratic comparison.
+PAPER_HTML_PREVIEW_MAX_ASSET_TOTAL_BYTES = 32 * 1024 * 1024
+PAPER_HTML_PREVIEW_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+# Line pairs a turn's diff compares after trimming the common head and tail; past it,
+# the changed middle becomes one hunk instead of a quadratic comparison.
 PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
-PAPER_COACH_MAX_REFRESH_ROUNDS = 2
 
 # Single-entry agent context and command bounds.
 AGENT_THREAD_TAIL_MAX_MESSAGES = 40

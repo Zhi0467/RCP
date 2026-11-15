@@ -96,7 +96,7 @@ const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
-  { id: "paper_coach", label: "Paper coach" },
+  { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 const executionRows = executionProfiles.filter(({ id }) => hasRow(id));
@@ -764,7 +764,7 @@ export function ProjectSettings({
                   </span>
                   <span className="tag">
                     {id === "paper_coach"
-                      ? "read-only coach"
+                      ? "edits the Paper"
                       : id === "orchestrator"
                         ? "auto-research"
                         : "graph patch only"}

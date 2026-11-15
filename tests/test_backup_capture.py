@@ -421,7 +421,6 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
     assert groups == {
         "canonical",
         "chat",
-        "paper_introduction",
         "fact",
         "kept_artifact",
         "legacy_kept_result_view",

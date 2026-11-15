@@ -94,36 +94,3 @@ test("backend reverification preserves owners until an observed identity changes
   assert.equal(changed({ ok: false, health: { ...health } }), false);
   assert.equal(changed({ ok: false, health: { ...health, instance_id: "new" } }), true);
 });
-
-test("current UTF-16 anchors follow unrelated local edits and reject stale ranges", async () => {
-  const { anchorPaperChange, resolvePaperAnchor } = await server.ssrLoadModule(
-    "/src/paper/paperAnchors.ts",
-  );
-  const doc = new Y.Doc();
-  const text = doc.getText("text");
-  text.insert(0, "😀one\ntwo");
-  const insertion = {
-    current: { start: 6, end: 6, revision: 2, text: "" },
-    preview: { removed: [] },
-  };
-  const anchor = anchorPaperChange(insertion, text);
-  assert.ok(anchor);
-  text.insert(2, "changed ");
-  assert.deepEqual(resolvePaperAnchor(anchor, insertion, text), { from: 14, to: 14 });
-  const edit = {
-    current: { start: 14, end: 17, revision: 3, text: "two" },
-    preview: { removed: ["two"] },
-  };
-  const editAnchor = anchorPaperChange(edit, text);
-  assert.ok(editAnchor);
-  text.insert(15, "x");
-  assert.equal(resolvePaperAnchor(editAnchor, edit, text), null);
-  for (const current of [
-    null,
-    { start: -1, end: -1 },
-    { start: 999, end: 999 },
-    { start: 5, end: 2 },
-  ])
-    assert.equal(anchorPaperChange({ ...insertion, current }, text), null);
-  doc.destroy();
-});

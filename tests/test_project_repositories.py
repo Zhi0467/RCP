@@ -34,9 +34,8 @@ def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
     assembler = ContextAssembler(manifest, cards={BACKEND_MACHINE_ID: backend})
     run = assembler.assemble(state)
     chat = assembler.chat_context(state, graph_target=GraphTargetRef())
-    coach = assembler.paper_pointers()
 
-    for context in (run, chat, coach):
+    for context in (run, chat):
         assert [pointer.alias for pointer in context.repositories] == ["repo-a", "repo-b"]
     assert run.run_truth_scope == chat.run_truth_scope == ["repo-a"]
     with pytest.raises(ValueError):

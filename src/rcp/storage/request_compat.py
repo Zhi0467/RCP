@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping
 from typing import Final, cast
 
 from pydantic import BaseModel
+
+from rcp.core.authority import AgentDispatchAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,24 @@ def migrate_stored_task_request(
             operation_id or "<unknown>",
         )
     return migrated
+
+
+_RETIRED_TASK_CONTRACTS: Final = frozenset({"paper_readonly", "paper_suggest"})
+
+
+def stored_dispatch_authority(stored: str | None) -> AgentDispatchAuthority | None:
+    """Load one persisted dispatch binding; a retired contract binds nothing.
+
+    Paper coach turns ran under `paper_readonly`, then `paper_suggest`, until the
+    Coach became a Paper chat. Their rows stay history only.
+    """
+
+    if stored is None:
+        return None
+    raw = json.loads(stored)
+    if isinstance(raw, dict) and raw.get("task_contract") in _RETIRED_TASK_CONTRACTS:
+        return None
+    return AgentDispatchAuthority.model_validate_json(stored)
 
 
 def persisted_request_roundtrips(request: BaseModel, stored: object) -> bool:

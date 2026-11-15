@@ -51,14 +51,8 @@ export function useAgentWindowScroll(
     shouldStickToBottomRef.current = false;
   }, [requestedTurn]);
   useEffect(() => () => window.clearTimeout(flashTimerRef.current), []);
-  useEffect(() => {
-    if (lastChatIdRef.current !== scrollKey) {
-      lastChatIdRef.current = scrollKey;
-      restoreTopRef.current = pendingTurnRef.current
-        ? null
-        : (chatScrollPositions.get(scrollKey) ?? null);
-      shouldStickToBottomRef.current = restoreTopRef.current === null && !pendingTurnRef.current;
-    }
+  const placeRef = useRef<() => void>(() => undefined);
+  placeRef.current = () => {
     const element = chatLinesRef.current;
     if (!element) return;
     const settle = () => setFarFromBottom(chatFarFromBottom(chatScrollObservation(element, 0)));
@@ -94,8 +88,38 @@ export function useAgentWindowScroll(
       lastScrollTopRef.current = element.scrollTop;
     }
     settle();
+  };
+  useEffect(() => {
+    if (lastChatIdRef.current !== scrollKey) {
+      lastChatIdRef.current = scrollKey;
+      restoreTopRef.current = pendingTurnRef.current
+        ? null
+        : (chatScrollPositions.get(scrollKey) ?? null);
+      shouldStickToBottomRef.current = restoreTopRef.current === null && !pendingTurnRef.current;
+    }
+    placeRef.current();
     // Question cards load after the transcript and end it, so they move the bottom too.
   }, [scrollKey, chatLinesRef, transcript, questions, requestedTurn]);
+  useEffect(() => {
+    const element = chatLinesRef.current;
+    if (!element) return;
+    let height = element.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const shown = height === 0;
+      height = element.clientHeight;
+      if (height === 0) return;
+      if (shown) {
+        restoreTopRef.current = pendingTurnRef.current
+          ? null
+          : (chatScrollPositions.get(lastChatIdRef.current) ?? null);
+        shouldStickToBottomRef.current = restoreTopRef.current === null && !pendingTurnRef.current;
+        lastScrollTopRef.current = element.scrollTop;
+      }
+      placeRef.current();
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [chatLinesRef]);
   const handleChatScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     // A restore the transcript was still too short to reach is not the reader's move.

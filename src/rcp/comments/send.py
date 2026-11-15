@@ -1,8 +1,8 @@
 """Comment threads sent to an agent, on the send path their target already uses.
 
-Each caller picks its shape: a steer or a Paper coach turn takes every thread as
-text, a chat turn takes one artifact's threads as that artifact's selections, and
-the viewer sends one artifact's threads as its selections.
+Each caller picks its shape: a steer takes every thread as text, a chat turn takes
+one artifact's threads as that artifact's selections, and the viewer sends one
+artifact's threads as its selections. Only a Paper chat takes Paper threads.
 """
 
 from __future__ import annotations
@@ -54,20 +54,13 @@ def thread_send_text(
     key: str,
     *,
     message: str,
-    chat_id: str | None,
+    chat_id: str,
+    paper: bool,
 ) -> CommentSend:
-    """Every thread rendered after `message`, for a steer or for a Paper coach turn.
-
-    `chat_id` names the chat whose reply and artifact threads may ride; None is the
-    Paper coach, which takes Paper threads only.
-    """
+    """Every thread rendered after `message`, for a steer into `chat_id`."""
     routed = _sendable(store, project_id, user_id, thread_ids, key)
     for thread, route in routed:
-        if chat_id is None:
-            if thread["target_kind"] != "paper":
-                raise _wrong_destination()
-        else:
-            _require_chat(thread, route, user_id, chat_id)
+        _require_chat(thread, route, user_id, chat_id, paper=paper)
     return CommentSend(_text(message, routed, routed), None, _through(routed))
 
 
@@ -80,13 +73,14 @@ def chat_turn_send(
     *,
     message: str,
     chat_id: str,
+    paper: bool,
 ) -> CommentSend:
     """A chat's new turn: reply threads as text, one artifact's threads as its selections."""
     if not chat_id:
         raise CommentError("comment_send_needs_chat", "Open the chat to send these threads.")
     routed = _sendable(store, project_id, user_id, thread_ids, key)
     for thread, route in routed:
-        _require_chat(thread, route, user_id, chat_id)
+        _require_chat(thread, route, user_id, chat_id, paper=paper)
     artifact_threads = [item for item in routed if item[0]["target_kind"] == "artifact"]
     replies = [item for item in routed if item[0]["target_kind"] != "artifact"]
     text = _text(message, replies, routed)
@@ -110,7 +104,7 @@ def artifact_thread_context(
             raise CommentError(
                 "comment_thread_elsewhere", "A thread belongs to another artifact.", 409
             )
-        _require_chat(thread, route, user_id, route.chat_id or "")
+        _require_chat(thread, route, user_id, route.chat_id or "", paper=False)
     _text("", [], routed)
     return CommentSend("", _artifact_context(store, routed), _through(routed))
 
@@ -156,10 +150,14 @@ def _sendable(
 
 
 def _require_chat(
-    thread: dict[str, Any], route: CommentTargetRoute, user_id: str, chat_id: str
+    thread: dict[str, Any], route: CommentTargetRoute, user_id: str, chat_id: str, *, paper: bool
 ) -> None:
     if thread["target_kind"] == "paper":
-        raise CommentError("comment_send_needs_coach", "Paper comments go to the Paper coach.", 409)
+        if not paper:
+            raise CommentError(
+                "comment_send_needs_paper_chat", "Paper comments go to a Paper chat.", 409
+            )
+        return
     if route.chat_owner not in {None, user_id}:
         raise comment_target_not_found()
     if not route.chat_id or route.chat_id != chat_id:

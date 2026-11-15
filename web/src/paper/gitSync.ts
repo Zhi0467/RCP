@@ -10,7 +10,6 @@ export interface PaperGitStatus {
   key_source: string;
   head: { commit: string; author: string };
   unpushed: boolean;
-  conflicts: number;
   skipped: { path: string; reason: string }[];
   last_error: string;
   checked_at: string;
@@ -26,13 +25,6 @@ export interface PaperGitFileDiff {
   more: number;
   binary: boolean;
 }
-export interface PaperGitFileConflict {
-  path: string;
-  kind: "file";
-  ours: "present" | "absent";
-  theirs: "present" | "absent";
-}
-
 export function repositoryFromInput(input: string): string {
   const text = input.trim();
   const match =
@@ -69,15 +61,4 @@ export function paperGit<T>(
     method,
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-}
-
-export function decidePaperGit(
-  apiBase: string,
-  groupId: string,
-  action: "accept" | "reject" | "undo" | "refresh",
-): Promise<PaperGitStatus> {
-  if (action === "undo") throw new Error("A Git change has no undo");
-  return action === "refresh"
-    ? paperGit(apiBase, "/conflicts/refresh", "POST")
-    : paperGit(apiBase, "/conflicts/decide", "POST", { group_id: groupId, decision: action });
 }

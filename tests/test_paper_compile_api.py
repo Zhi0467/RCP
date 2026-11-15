@@ -28,8 +28,8 @@ def route_client(tmp_path, monkeypatch):
             raise HTTPException(409)
         yield membership(project_id)
 
-    async def compile(project, file, revision, root_path):
-        state.calls.append((project, file, revision))
+    async def compile(project, file, version_id, root_path):
+        state.calls.append((project, file, version_id))
         return CompileResult(compile_id="result", status="ok", pdf_url="pdf")
 
     def pdf(project, compile_id):
@@ -71,9 +71,9 @@ def route_client(tmp_path, monkeypatch):
 def test_compile_uses_membership_without_write_admission(route_client):
     client, state = route_client
     url = "/api/projects/alias/paper/compile"
-    body = {"file_id": "file", "revision": 4}
+    body = {"file_id": "file", "version_id": "v4"}
     assert client.post(url, json=body).status_code == 200
-    assert state.calls == [("canonical", "file", 4)]
+    assert state.calls == [("canonical", "file", "v4")]
     state.admitted = False
     assert client.post(url, json=body).status_code == 200
     assert len(state.calls) == 2
@@ -145,9 +145,9 @@ def test_application_compiles_real_saved_tree_and_drains(manifest, tmp_path, mon
             project_id,
             [
                 PaperOp(
-                    kind="create", path="paper.tex", text=r"\documentclass{article}\input{section}"
+                    kind="write", path="paper.tex", data=rb"\documentclass{article}\input{section}"
                 ),
-                PaperOp(kind="create", path="section.tex", text="Saved section"),
+                PaperOp(kind="write", path="section.tex", data=b"Saved section"),
             ],
             "human",
         )

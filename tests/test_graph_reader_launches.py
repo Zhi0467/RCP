@@ -11,8 +11,6 @@ from rcp.agents.graph_read_scope import GraphReadScope, readable_branches
 from rcp.agents.prompts import GraphReadPrompt, render_graph_history
 from rcp.core.transition_models import GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.session_master import recorded_master_values
-from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import stream_work_run
@@ -32,7 +30,6 @@ from .helpers import (
     wait_for_task_response,
     write_turn_outcome,
 )
-from .paper_helpers import wire_saved_paper
 from .test_consolidation_work import _apply_request
 from .test_experiment_loop_agent_io import _LoopLauncher
 from .test_graph_history_commands import request as history_request
@@ -98,7 +95,7 @@ class _HistoryLauncher:
         assert response.result["to_head"] == (
             f"{scope.target.key}@{self.service.history.state().revision}"
         )
-        if self.kind in {"discuss", "paper_coach"}:
+        if self.kind == "discuss":
             response = await handler(_apply_request("forbidden"), identity)
             assert response.status == "invalid", response
         if self.during_provider is not None:
@@ -121,15 +118,13 @@ class _HistoryLauncher:
         yield AgentEvent(event="done")
 
 
-@pytest.mark.parametrize("kind", ["seed", "refresh", "paper_coach", "discuss", "work"])
+@pytest.mark.parametrize("kind", ["seed", "refresh", "discuss", "work"])
 @pytest.mark.parametrize("succeed", [True, False])
 def test_graph_reader_master_commands_and_committed_observation(
     manifest, tmp_path, history_handlers, kind, succeed, monkeypatch
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    if kind == "paper_coach":
-        wire_saved_paper(service)
     if kind != "seed":
         from .test_history_forks import fork_metadata
 
@@ -159,11 +154,7 @@ def test_graph_reader_master_commands_and_committed_observation(
 
     async def stream(project_id, task_kind, request, execution):
         agent = cast(AgentLauncher, launcher)
-        if kind == "paper_coach":
-            frames = stream_coach(
-                service, agent, service.paper, request, tmp_path / "data", execution
-            )
-        elif kind in {"discuss", "work"}:
+        if kind in {"discuss", "work"}:
             run = stream_discuss_run if kind == "discuss" else stream_work_run
             frames = run(service, agent, request, tmp_path / "data", execution=execution)
         else:
@@ -174,11 +165,9 @@ def test_graph_reader_master_commands_and_committed_observation(
     app.state.background_tasks.stream = stream
     project_id = app.state.default_project_id
     chat_id = str(uuid4())
-    continue_session = succeed and kind in {"discuss", "work", "paper_coach"}
+    continue_session = succeed and kind in {"discuss", "work"}
     task_kind = "project_chat" if kind in {"discuss", "work"} else kind
-    payload: dict[str, object] = (
-        {"message": "Read the graph."} if kind == "paper_coach" else {"run_truth_scope": ["repo-a"]}
-    )
+    payload: dict[str, object] = {"run_truth_scope": ["repo-a"]}
     if kind in {"discuss", "work"}:
         payload.update(chat_id=chat_id, mode=kind, message="Read the graph.")
     with signed_in_client(app) as client:
@@ -192,15 +181,6 @@ def test_graph_reader_master_commands_and_committed_observation(
         assert started.status_code == 202, started.text
         task = wait_for_task_response(client, project_id, started.json()["operation_id"])
         assert len(branch_reads) == 1
-        if kind == "paper_coach":
-            values = recorded_master_values(service.paper.store, started.json()["operation_id"])
-            assert values is not None
-            assert values["branches"] == [
-                branch.model_dump(mode="json")
-                for branch in readable_branches(
-                    GraphReadScope.resolve(project_id, service.history), service.paper.store
-                )
-            ]
         if continue_session:
             assert task["status"] == "succeeded", task.get("error")
             append_fixture_patch(service, refresh_patch())
@@ -219,13 +199,7 @@ def test_graph_reader_master_commands_and_committed_observation(
             f"current.graph_changed_since: main@{input_revision}" in master
             for master in launcher.masters
         )
-    owner = (
-        f"chat:{chat_id}"
-        if kind in {"discuss", "work"}
-        else "paper"
-        if kind == "paper_coach"
-        else "graph"
-    )
+    owner = f"chat:{chat_id}" if kind in {"discuss", "work"} else "graph"
     seen = app.state.background_tasks.store.graph_seen_head(
         project_id, owner, "reader-session", GraphTargetRef()
     )

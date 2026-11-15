@@ -17,7 +17,7 @@ def _fake_app_server(
     tmp_path: Path,
     *,
     request_approval: bool = False,
-    permission_profile: str | None = "rcp_paper",
+    permission_profile: str | None = "rcp_discuss",
 ) -> tuple[Path, Path]:
     executable = tmp_path / "fake-codex"
     capture = tmp_path / "app-server-capture.json"
@@ -173,7 +173,7 @@ for line in sys.stdin:
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
                 "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_paper"}},
+                "activePermissionProfile": {{"id": "rcp_discuss"}},
             }},
         }})
     elif method == "turn/start":
@@ -200,7 +200,7 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
             write_dirs=[tmp_path / "changes"],
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="paper_suggest",
+            capability="discuss",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -336,7 +336,7 @@ def test_app_server_read_only_capability_rejects_a_project_write_scope(tmp_path:
                 read_dirs=[],
                 write_dirs=[Path("/stage/changes")],
                 write_scope=_work_scope(stage),
-                capability="paper_suggest",
+                capability="discuss",
                 provider_version="0.149.0",
             )
         )
@@ -357,7 +357,7 @@ async def test_app_server_runtime_fails_loudly_on_interactive_request(tmp_path: 
             write_dirs=[tmp_path / "changes"],
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="paper_suggest",
+            capability="discuss",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -399,7 +399,7 @@ async def test_app_server_runtime_uses_the_existing_ssh_wrapper(
             host="research-host",
             remote_pid_file=str(pid_file),
             write_dirs=[tmp_path / "changes"],
-            capability="paper_suggest",
+            capability="discuss",
             runtime_id="codex.app-server-stdio.v1",
         )
     ]
@@ -431,7 +431,7 @@ async def test_app_server_falls_back_to_exec_only_before_prompt_delivery(
             write_dirs=[tmp_path / "changes"],
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="paper_suggest",
+            capability="discuss",
             runtime_id="app-server",
         )
     ]
@@ -460,7 +460,7 @@ async def test_app_server_does_not_fallback_after_prompt_delivery(tmp_path: Path
             write_dirs=[tmp_path / "changes"],
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="paper_suggest",
+            capability="discuss",
             runtime_id="app-server",
         )
     ]
@@ -484,7 +484,7 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
             read_dirs=[],
             write_dirs=[Path("/stage/changes")],
             write_scope=None,
-            capability="paper_suggest",
+            capability="discuss",
             provider_version="0.153.4",
         )
     )
@@ -497,7 +497,7 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
                 "thread": {"id": "accounting-thread"},
                 "approvalPolicy": "never",
                 "sandbox": {"type": "readOnly"},
-                "activePermissionProfile": {"id": "rcp_paper"},
+                "activePermissionProfile": {"id": "rcp_discuss"},
             },
         },
     ):
@@ -519,7 +519,7 @@ def test_app_server_resume_never_asks_for_past_turns(tmp_path: Path) -> None:
             read_dirs=[],
             write_dirs=[Path("/stage/changes")],
             write_scope=None,
-            capability="paper_suggest",
+            capability="discuss",
             provider_version="0.153.4",
         )
     )
@@ -859,7 +859,7 @@ for line in sys.stdin:
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
                 "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_paper"}},
+                "activePermissionProfile": {{"id": "rcp_discuss"}},
             }},
         }})
     elif method == "turn/start":
@@ -912,7 +912,7 @@ async def test_an_unreadable_protocol_line_ends_the_pass_instead_of_waiting(
                 write_dirs=[tmp_path / "changes"],
                 machine_id=BACKEND_MACHINE_ID,
                 host="",
-                capability="paper_suggest",
+                capability="discuss",
                 runtime_id="app-server",
             )
         ]

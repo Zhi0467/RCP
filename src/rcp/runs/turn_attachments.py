@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
-
 from rcp.attachments import ChatAttachmentStore
 from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
-from rcp.service import CoachRequest, RunRequest
+from rcp.service import RunRequest
 from rcp.storage import AppStore
-
-_Request = TypeVar("_Request", bound=RunRequest | CoachRequest)
 
 
 def claim_turn_attachments(
@@ -18,11 +14,11 @@ def claim_turn_attachments(
     catalog: ProjectCatalog,
     attachment_store: ChatAttachmentStore,
     project_id: str,
-    request: _Request,
+    request: RunRequest,
     *,
     operation_id: str,
     viewer_id: str,
-) -> tuple[_Request, str | None]:
+) -> tuple[RunRequest, str | None]:
     """Copy references into the set, bind it to the operation and name it on the request.
 
     Returns the request and the claimed batch id, or None when it carries no files.
@@ -30,7 +26,7 @@ def claim_turn_attachments(
     """
     if not (request.attachment_set_id or request.references):
         return request, None
-    scope_id = request.attachment_scope_id if isinstance(request, CoachRequest) else request.chat_id
+    scope_id = request.chat_id
     if scope_id is None:
         raise ValueError("Attachments and references require an attachment scope.")
     claimed = attachment_store.claim(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import shutil
@@ -15,7 +14,6 @@ from rcp.agents import AgentLauncher
 from rcp.config import AGENT_EXECUTION_PROFILES
 from rcp.core.models import AuthorizedHuman
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.paper import PaperLive, PaperOp
 from rcp.projects import ProjectCatalog
 from rcp.providers import configured_runtime_id
 from rcp.server_ops.github import parse_github_repository_ref
@@ -236,7 +234,6 @@ def _archive_fixture(
     include_episode_archive: bool = False,
     include_pending_branch: bool = False,
     deleted_report: bool | None = None,
-    saved_paper: bool = False,
 ):
     from rcp.rcp_home import rcp_temp_dir
 
@@ -247,16 +244,6 @@ def _archive_fixture(
     )
     _write_canonical_sources(service, records.tasks[0].operation_id)
     source = service.paper.store
-    if saved_paper:
-        live = PaperLive(source, lambda _: service.paper.workspace)
-
-        async def save():
-            await live.apply(
-                records.project_id, [PaperOp(kind="create", path="chapter.md", text="saved")], "h"
-            )
-            await live.close()
-
-        asyncio.run(save())
     source_actor = authorized_human(source)
     if include_episode_archive:
         source.seat_project_member(records.project_id, source_actor.user_id)
@@ -406,6 +393,7 @@ def _archive_fixture(
     records = source.export_project_transfer_records(
         records.project_id,
         attributions=(attribution,),
+        paper_files={"introduction.md": b"# Paper\n"},
     )
     file_capture_root = tmp_path / "project-file-capture"
     capture = capture_project_transfer_files(service, records, file_capture_root)
@@ -648,7 +636,8 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
         fixture["configuration"].manifest_content
     )
     assert fixture["configuration"].manifest_content != manifest.path.read_text(encoding="utf-8")
-    assert (target_state_root / "paper/introduction.md").is_file()
+    paper = fixture["catalog"].data_dir / "paper" / archive.project_id
+    assert (paper / "introduction.md").read_bytes() == b"# Paper\n"
     assert (target_state_root / "facts/methods/protocol.bin").read_bytes() == (b"opaque fact bytes")
     assert (target_state_root.parent / "artifacts" / fixture["artifact_name"]).read_bytes() == (
         fixture["artifact"]

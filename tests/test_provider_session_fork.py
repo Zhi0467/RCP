@@ -26,7 +26,7 @@ def _request(tmp_path: Path, provider: str) -> ProviderTurnRequest:
         read_dirs=[],
         write_dirs=[tmp_path / "changes"],
         write_scope=None,
-        capability="paper_suggest",
+        capability="discuss",
         provider_version="2.200.0",
         fork_session_id="source-session",
     )
@@ -77,7 +77,7 @@ def test_app_server_forks_without_history_payload_and_requires_new_identity(
                     "thread": {"id": returned_session},
                     "approvalPolicy": "never",
                     "sandbox": {"type": "readOnly"},
-                    "activePermissionProfile": {"id": "rcp_paper"},
+                    "activePermissionProfile": {"id": "rcp_discuss"},
                 },
             }
         )
@@ -201,7 +201,7 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
                 write_dirs=[tmp_path / "changes"],
                 machine_id=BACKEND_MACHINE_ID,
                 host="",
-                capability="paper_suggest",
+                capability="discuss",
             )
         )
     events = [
@@ -215,7 +215,7 @@ print(json.dumps({{"type":"result", "subtype":"success", "result":"Fork ready", 
             write_dirs=[tmp_path / "changes"],
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="paper_suggest",
+            capability="discuss",
         )
     ]
     assert events[-1].event == "done", [(event.event, event.text) for event in events]

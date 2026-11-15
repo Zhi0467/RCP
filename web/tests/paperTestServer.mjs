@@ -118,33 +118,16 @@ export class PaperTestRoom {
 export const paperTestTree = {
   max_doc_bytes: 4 * 1024 * 1024,
   revision: 1,
-  saved_revision: 1,
-  published_revision: 1,
-  publish_state: "published",
-  hold: null,
   files: [{ file_id: "f1", path: "intro.md", kind: "text", format: "markdown", size: 5 }],
 };
-export const paperTestCard = {
-  change_id: "c1",
-  group_id: "g1",
-  task_id: "t1",
-  kind: "edit",
-  file_id: "f1",
-  path: "intro.md",
-  lines: { start: 1, end: 1 },
-  preview: { removed: ["draft"], added: ["revised"], more: 0 },
-  state: "pending",
-};
-
 /** The REST contract behind each test page's routes. */
-export function createPaperFixture({
-  room = new PaperTestRoom(),
-  cards = [],
-  proposedTexts = {},
-} = {}) {
+export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
   const tree = structuredClone(paperTestTree);
   const posts = [];
   const threads = [];
+  /** Paper chats the Coach lists, and each finished turn's files by operation id. */
+  const chats = [];
+  const turns = {};
   const rooms = new Map([["f1", room]]);
   let nextFile = 10;
   const versions = [
@@ -166,18 +149,18 @@ export function createPaperFixture({
       content.insert(0, text);
     });
     tree.revision += 1;
-    tree.saved_revision = tree.revision;
     room.ack();
   }
   return {
     room,
     rooms,
     tree,
-    cards,
     posts,
     threads,
     versions,
-    respond(path, method = "GET", body = {}) {
+    chats,
+    turns,
+    respond(path, method = "GET", body = {}, query = new URLSearchParams()) {
       if (method === "POST") posts.push({ path, body });
       if (path === "/api/health")
         return { json: { instance_id: "instance", data_dir_id: "data", version: "test" } };
@@ -193,6 +176,34 @@ export function createPaperFixture({
       if (path.endsWith("/tree")) return { json: tree };
       if (path.endsWith("/sessions")) return { json: [] };
       if (path.endsWith("/tasks")) return { json: [] };
+      if (path.endsWith("/chats"))
+        return {
+          json: { items: chats, total: chats.length, offset: 0, limit: 200 },
+        };
+      if (path.endsWith("/chat-reads"))
+        return { json: { baseline: "", reads: {}, latest_finished: {}, archived: [] } };
+      if (/\/chats\/[^/]+\/questions$/.test(path)) return { json: [] };
+      if (/\/chats\/[^/]+\/browser$/.test(path)) return { json: { browser_requested: false } };
+      if (path === "/api/service-connections") return { json: { dictation: "", connections: [] } };
+      if (/\/chats\/[^/]+\/worktree$/.test(path))
+        return {
+          json: {
+            show_chooser: false,
+            can_choose: false,
+            binding: null,
+            integration_options: [],
+            can_remove: false,
+          },
+        };
+      const chat = chats.find((item) => path.endsWith(`/chats/${item.chat_id}`));
+      if (chat) return { json: { ...chat, messages: [] } };
+      const turn = path.match(/\/paper\/turns\/([^/]+)(\/file)?$/);
+      if (turn) {
+        const known = turns[turn[1]];
+        if (!known) return { status: 404, json: { detail: "Paper turn not found" } };
+        if (!turn[2]) return { json: known.list };
+        return { json: known.files[query.get("path")] };
+      }
       if (path.endsWith("/paper/git"))
         return {
           json: {
@@ -212,27 +223,6 @@ export function createPaperFixture({
         return {
           json: { latex: "ready", typst: "ready", errors: { latex: null, typst: null } },
         };
-      if (path.endsWith("/changes"))
-        return {
-          json: {
-            groups: cards.map((change) => ({
-              base_revision: 1,
-              group_id: change.group_id,
-              task_id: change.task_id,
-              changes: [change],
-            })),
-          },
-        };
-      const proposed = path.match(/\/changes\/([^/]+)\/proposed$/);
-      if (proposed && proposed[1] in proposedTexts)
-        return { body: proposedTexts[proposed[1]], contentType: "text/plain" };
-      if (/\/changes\/[^/]+\/accept$/.test(path)) return { json: {} };
-      const rejected = path.match(/\/changes\/([^/]+)\/reject$/);
-      if (rejected) {
-        for (const change of cards.filter((item) => item.group_id === rejected[1]))
-          change.state = "rejected";
-        return { json: {} };
-      }
       if (method === "POST" && (path.endsWith("/files") || path.endsWith("/uploads"))) {
         const file_id = `f${nextFile++}`;
         const text = body.text ?? "";
@@ -246,7 +236,6 @@ export function createPaperFixture({
         });
         rooms.set(file_id, new PaperTestRoom(text));
         tree.revision += 1;
-        tree.saved_revision = tree.revision;
         return { json: { revision: tree.revision, file_ids: [file_id] } };
       }
       if (method === "POST" && /\/folders\/(rename|delete)$/.test(path)) {
@@ -255,7 +244,6 @@ export function createPaperFixture({
           tree.files = tree.files.filter((file) => !under.includes(file));
         else for (const file of under) file.path = body.to + file.path.slice(body.path.length);
         tree.revision += 1;
-        tree.saved_revision = tree.revision;
         return { json: { revision: tree.revision, file_ids: under.map((file) => file.file_id) } };
       }
       if (path.endsWith("/folders/archive")) return { body: "zip", contentType: "application/zip" };
@@ -275,10 +263,6 @@ export function createPaperFixture({
       if (/\/history\/[^/]+$/.test(path)) {
         const index = versions.findIndex((version) => path.endsWith(`/${version.version_id}`));
         if (method === "DELETE") return { json: versions.splice(index, 1)[0] };
-      }
-      if (path.endsWith("/hold/resolve")) {
-        tree.hold = null;
-        return { json: {} };
       }
       if (path.endsWith("/comment-threads") && method === "POST") {
         const thread = {
@@ -396,8 +380,6 @@ export async function openPaper(
     room = new PaperTestRoom(),
     width = 1280,
     height = 844,
-    cards = [],
-    proposedTexts = {},
     initialText = "draft",
     touch = false,
     configure = () => {},
@@ -418,7 +400,7 @@ export async function openPaper(
   const errors = [];
   const requests = [];
   page.on("request", (request) => requests.push(request.url()));
-  const fixture = createPaperFixture({ room, cards, proposedTexts });
+  const fixture = createPaperFixture({ room });
   configure(fixture);
   const posts = fixture.posts;
   page.on("pageerror", (error) => errors.push(error.message));
@@ -434,7 +416,8 @@ export async function openPaper(
       }).formData();
       body = { path: form.get("path"), text: await form.get("file").text() };
     } else body = request.postDataJSON();
-    return route.fulfill(fixture.respond(new URL(request.url()).pathname, request.method(), body));
+    const url = new URL(request.url());
+    return route.fulfill(fixture.respond(url.pathname, request.method(), body, url.searchParams));
   });
   await context.routeWebSocket(/\/paper\/files\/[^/]+\/live(?:\?.*)?$/, (socket) => {
     const id = new URL(socket.url()).pathname.split("/").at(-2);

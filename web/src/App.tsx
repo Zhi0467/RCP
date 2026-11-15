@@ -1010,11 +1010,6 @@ function MemberApp({
   );
   displayedProjectRef.current = project;
   const graph = project?.graph ?? emptyGraph;
-  const paperResource = useResource(
-    `${projectId}:paper-nav`,
-    backendSessionReady && projectId ? paperProfile(projectId) : null,
-  );
-  const paper = paperResource.value?.paper ?? project?.paper ?? null;
   const openMoveProjectSetup = useCallback((sourceProjectId: string) => {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
@@ -4772,7 +4767,7 @@ function MemberApp({
         {voiceSurface}
       </div>
     );
-  if (!project || paper === null)
+  if (!project)
     return (
       <div className="fatal-state">
         <TriangleAlert />
@@ -5118,7 +5113,6 @@ function MemberApp({
         {item.view === "attention" && attentionCount > 0 && (
           <small className="inbox-count">{attentionCount}</small>
         )}
-        {item.view === "paper" && paper && <small>1</small>}
         {item.view === "chats" && chatsIndicator && (
           <small
             className={`chats-indicator ${chatsIndicator}`}
@@ -5772,6 +5766,15 @@ function MemberApp({
                     project={project}
                     tasks={projectTasks}
                     onStartTask={startAgentTask}
+                    coachActions={{
+                      actorId: draftActorId,
+                      onResumeTask: (task) => void operateTask(task, "resume"),
+                      onRetryTask: requestRetry,
+                      onRefreshTask: refreshAgentTask,
+                      onInspectTask: selectTaskInspector,
+                      onOpenInbox: () => changeView("attention"),
+                      onRepairGraphUpdate: repairGraphUpdate,
+                    }}
                     editorState={paperEditorStates.current.get(project.id)}
                     requestedFileId={requestedPaperFile}
                     onEditorStateChange={(state) =>
@@ -5925,9 +5928,7 @@ function MemberApp({
             (item) => !phonePrimaryViews.has(item.view) && navItemActive(item.view, view),
           )}
           moreBadge={
-            (chatsIndicator || paper) && (
-              <small className="phone-more-badge" aria-label="Updates in More" />
-            )
+            chatsIndicator && <small className="phone-more-badge" aria-label="Updates in More" />
           }
         />
       )}
