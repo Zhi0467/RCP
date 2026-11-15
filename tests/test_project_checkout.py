@@ -317,6 +317,70 @@ def test_shipped_helper_creates_and_reuses_only_the_exact_checkout(tmp_path: Pat
     assert sentinel.read_text(encoding="utf-8") == "preserve"
 
 
+def _remove_checkout_helper(root: Path) -> subprocess.CompletedProcess[str]:
+    account, home = _account_arguments()
+    return _helper("remove-checkout", account, home, "local", str(root), PROJECT_ID, ALIAS)
+
+
+def test_shipped_helper_removes_only_the_derived_request_checkout(tmp_path: Path) -> None:
+    root = tmp_path / "projects"
+    root.mkdir(mode=0o700)
+    checkout = root / PROJECT_ID / "repositories" / ALIAS
+
+    absent = _remove_checkout_helper(root)
+    assert absent.returncode == 0, absent.stderr
+    assert json.loads(absent.stdout) == {"repository_path": str(checkout), "removed": False}
+
+    assert _prepare_helper(root).returncode == 0
+    (checkout / ".git" / "objects").mkdir(parents=True)
+    (checkout / ".git" / "objects" / "pack").write_text("history", encoding="utf-8")
+    sibling = root / PROJECT_ID / "repositories" / "code"
+    sibling.mkdir(mode=0o700)
+
+    removed = _remove_checkout_helper(root)
+
+    assert removed.returncode == 0, removed.stderr
+    assert json.loads(removed.stdout) == {"repository_path": str(checkout), "removed": True}
+    assert not checkout.exists()
+    assert sibling.is_dir()
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "mode"])
+def test_shipped_helper_refuses_an_unsafe_request_checkout(tmp_path: Path, unsafe: str) -> None:
+    root = tmp_path / "projects"
+    repositories = root / PROJECT_ID / "repositories"
+    repositories.mkdir(parents=True, mode=0o700)
+    for directory in (root, root / PROJECT_ID, repositories):
+        directory.chmod(0o700)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (elsewhere / "keep-me").write_text("preserve", encoding="utf-8")
+    if unsafe == "symlink":
+        (repositories / ALIAS).symlink_to(elsewhere, target_is_directory=True)
+    else:
+        (repositories / ALIAS).mkdir(mode=0o700)
+        (repositories / ALIAS / "keep-me").write_text("preserve", encoding="utf-8")
+        (repositories / ALIAS).chmod(0o777)
+
+    refused = _remove_checkout_helper(root)
+
+    assert refused.returncode == 2
+    assert refused.stdout == ""
+    assert (repositories / ALIAS / "keep-me").read_text(encoding="utf-8") == "preserve"
+    assert (elsewhere / "keep-me").exists()
+
+
+def test_manager_removes_a_request_checkout_through_the_shipped_helper(tmp_path: Path) -> None:
+    manager, layout, machine, _material_value, _runner = _manager(tmp_path, tmp_path / "unused")
+    account = manager.checkout_account(machine)
+    checkout = layout.projects_root / PROJECT_ID / "repositories" / ALIAS
+    checkout.mkdir(parents=True, mode=0o700)
+
+    assert manager.remove_request_checkout(machine, account, PROJECT_ID, ALIAS) is True
+    assert not checkout.exists()
+    assert manager.remove_request_checkout(machine, account, PROJECT_ID, ALIAS) is False
+
+
 @pytest.mark.parametrize("unsafe", ["symlink", "mode"])
 def test_shipped_helper_refuses_unsafe_central_root(tmp_path: Path, unsafe: str) -> None:
     actual = tmp_path / "actual"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -40,6 +41,10 @@ from rcp.provisioning_repositories import effective_repositories
 from rcp.server_ops.github import GitHubRepositoryRef, parse_github_repository_ref
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
 from rcp.server_ops.models import ServerStep
+from rcp.server_ops.project_provision import (
+    ProjectProvisionCoordinator,
+    ProjectProvisionRefused,
+)
 from rcp.service import ProjectService
 from rcp.setup import ProjectSetupManager
 from rcp.storage import (
@@ -1415,13 +1420,24 @@ def cancel_project_provisioning_request(
         )
     if record.status == "cancelled":
         return _project_provisioning_response(record, viewer_user_id=viewer.user_id)
+    coordinator: ProjectProvisionCoordinator | None = (
+        request.app.state.project_provision_coordinator
+    )
+    if coordinator is not None:
+        try:
+            cancelled = coordinator.cancel(request_id)
+        except ProjectProvisionRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="The provisioning request changed; reload it before cancelling.",
+            ) from exc
+        return _project_provisioning_response(cancelled, viewer_user_id=viewer.user_id)
     if record.status != "waiting_for_server_setup":
         raise HTTPException(
             status_code=409,
-            detail=(
-                "Server preparation has started. Its machine-owned setup flow must first "
-                "record the exact cleanup or reuse disposition."
-            ),
+            detail="Server setup has started, and this backend cannot run its cleanup.",
         )
     try:
         cancelled = store.transition_project_provisioning_request(
@@ -1463,6 +1479,31 @@ def complete_project_provisioning_request(
 
     identity_access.require_team_space()
     reviewer = identity_access.require_patch_capable_identity(request)
+    coordinator: ProjectProvisionCoordinator | None = (
+        request.app.state.project_provision_coordinator
+    )
+    try:
+        with (
+            coordinator.member_hold(request_id)
+            if coordinator is not None
+            else contextlib.nullcontext()
+        ):
+            return _complete_project_provisioning_request(
+                request_id, body, reviewer, setup, store, catalog, operation_lock
+            )
+    except ProjectProvisionRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _complete_project_provisioning_request(
+    request_id: str,
+    body: ProjectProvisioningCompleteRequest,
+    reviewer: AuthorizedHuman,
+    setup: ProjectSetupManager,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    operation_lock: KeyedLocks,
+) -> ProjectProvisioningResponse:
     record = _request_or_404(store, request_id)
     if record.kind in {"add_repository", "connect_repository"}:
         with operation_lock(record.proposed_project_id):
@@ -1870,7 +1911,8 @@ def _project_provisioning_response(
         status=record.status,
         status_label=_STATUS_LABELS[record.status],
         next_action=_next_action(record),
-        can_run_setup=record.status
+        can_run_setup=record.cancellation_disposition is None
+        and record.status
         in {"waiting_for_server_setup", "setup_in_progress", "operator_action_needed"},
         can_review=record.status == "ready_for_review"
         and (
@@ -1879,7 +1921,7 @@ def _project_provisioning_response(
         ),
         can_cancel=(
             record.kind != "incoming_transfer"
-            and record.status == "waiting_for_server_setup"
+            and record.status not in {"completed", "cancelled"}
             and provisioning_policy.is_requester(record, viewer_user_id)
         ),
         target_space_id=record.target_space_id,
@@ -1940,6 +1982,8 @@ def _next_action(record: ProjectProvisioningRequestRecord) -> str | None:
         return record.operator_action.message
     if record.status == "ready_for_review":
         return "Review the prepared project."
+    if record.cancellation_disposition == "prepared_state_preserved":
+        return "Remove the listed deploy keys on GitHub."
     return None
 
 
