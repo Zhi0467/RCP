@@ -386,8 +386,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 OR (category='provider_terminal_error'
                     AND json_extract(payload_json,'$.classification')='stale_session')
                 OR (category='continuation_context_unavailable'
-                    AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
-                (origin.operation_id,),
+                    AND json_extract(payload_json,'$.retry_required')=1)
+                OR EXISTS (SELECT 1 FROM provider_session_sweeps
+                    WHERE native_session_id=?)) LIMIT 1""",
+                (origin.operation_id, origin.native_session_id),
             ).fetchone()
             if unavailable is not None:
                 raise ValueError("question_origin_session_unavailable")
@@ -1762,10 +1764,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or row["status"] in {"queued", "running", "pausing", "paused"}
             or row["history_only"]
             or row["recovery_abandoned"]
-            or self._dropped_chat_session_reason(row) is not None
             or not all(json.loads(row["request_json"]).get(key) for key in ("provider", "run_on"))
         ):
             raise ValueError("The source chat turn has no settled, usable native session.")
+        if self._dropped_chat_session_reason(row) is not None:
+            raise ChatForkRefused("chat_session_expired")
         return row
 
     def current_chat_session(
@@ -6610,6 +6613,10 @@ _SESSION_DROP_COLUMNS = """
           )
     ) AS recovery_abandoned, (
         SELECT CASE
+            WHEN EXISTS (
+                SELECT 1 FROM provider_session_sweeps AS sweep
+                WHERE sweep.native_session_id = run.native_session_id
+            ) THEN 'session_swept'
             WHEN SUM(receipt.category = 'provider_terminal_error'
                      AND json_extract(receipt.payload_json, '$.classification')
                          = 'stale_session') THEN 'session_stale'

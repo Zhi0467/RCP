@@ -3581,9 +3581,11 @@ class BackgroundAgentTasks:
     def _native_resume_unavailable(self, record: AgentTaskRecord) -> bool:
         """The provider has dropped or explicitly refused this native transcript."""
 
-        return self._failure_classified_as(
-            record, "stale_session"
-        ) or self.store.agent_task_has_receipt(record.operation_id, "codex_resume_refused")
+        return (
+            self._failure_classified_as(record, "stale_session")
+            or self.store.agent_task_has_receipt(record.operation_id, "codex_resume_refused")
+            or self.store.provider_session_swept(record.native_session_id)
+        )
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
         classified_receipt = any(

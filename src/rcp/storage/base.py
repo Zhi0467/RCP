@@ -153,6 +153,7 @@ class AppStoreBase:
         (80, "space_chat_session_machines_v1"),
         (81, "watcher_purposes_v1"),
         (82, "paper_git_links_v1"),
+        (83, "provider_session_sweeps_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1109,6 +1110,14 @@ class AppStoreBase:
             version=82,
             name="paper_git_links_v1",
             migration=migrate_paper_git_links,
+        )
+        from rcp.storage.provider_session_sweeps import migrate_provider_session_sweeps
+
+        self._run_storage_schema_migration(
+            connection,
+            version=83,
+            name="provider_session_sweeps_v1",
+            migration=migrate_provider_session_sweeps,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

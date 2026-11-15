@@ -58,6 +58,7 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        "c4620e1d38eb1ce6551374f9027aa448292e18ff4c9e9d02bb787b4aa67d07c2",
         "4404afe8b61ac3bc3ebac1c47344d7351142f3aa52dfac00c335318e44c80885",
         "cd7532568661b355e6d061586d0f3c5613e1ae517d676ed68c827bf38538c30d",
         "3e3aad963a94d1c15e31aee6e4e733d49cf0379d00daaa7f5d69bab8f310d3ae",
