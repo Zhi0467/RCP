@@ -135,5 +135,6 @@ test("share links are on only in a team space with an access URL", async () => {
   assert.equal(await shareLinksEnabled(space("team", 404, { detail: "Not found" }).fetcher), false);
   const personal = space("personal", 404, { detail: "Not found" });
   assert.equal(await shareLinksEnabled(personal.fetcher), false);
+  await assert.rejects(shareLinksEnabled(space("team", 503, { detail: "busy" }).fetcher));
   assert.deepEqual(personal.paths, ["/api/health"]);
 });
