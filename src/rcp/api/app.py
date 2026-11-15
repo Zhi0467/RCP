@@ -41,6 +41,7 @@ from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import router as chats_router
 from rcp.api.client_events import ClientEventLimiter
 from rcp.api.client_events import router as client_events_router
+from rcp.api.comments import router as comments_router
 from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
     ApiServices,
@@ -272,6 +273,7 @@ from rcp.storage import (
     TeamAuthenticationError,
     WatcherRecord,
 )
+from rcp.storage.comments import CommentError
 from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
@@ -2767,6 +2769,13 @@ def create_app(
             content={"detail": [item.model_dump(mode="json") for item in exc.report.messages]},
         )
 
+    @app.exception_handler(CommentError)
+    async def comment_error(_: Request, exc: CommentError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": {"code": exc.code, "message": str(exc)}},
+        )
+
     @app.exception_handler(StateUnavailable)
     async def state_unavailable(_: Request, exc: StateUnavailable) -> JSONResponse:
         return JSONResponse(status_code=503, content={"detail": str(exc)})
@@ -2822,6 +2831,7 @@ def create_app(
     app.include_router(notifications_router)
     app.include_router(digest_router)
     app.include_router(bulletin_router)
+    app.include_router(comments_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(project_groups_router)

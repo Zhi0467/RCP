@@ -269,10 +269,13 @@ class EpisodeStoreMixin(StoreMixinBase):
 
     def episode(self, episode_id: str) -> EpisodeRecord | None:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT * FROM episodes WHERE episode_id = ?",
-                (episode_id,),
-            ).fetchone()
+            return self._episode_in(connection, episode_id)
+
+    def _episode_in(self, connection: sqlite3.Connection, episode_id: str) -> EpisodeRecord | None:
+        row = connection.execute(
+            "SELECT * FROM episodes WHERE episode_id = ?",
+            (episode_id,),
+        ).fetchone()
         return self._episode_record(row) if row is not None else None
 
     def episode_continuation(self, episode_id: str) -> EpisodeRecord | None:

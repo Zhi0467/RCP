@@ -1111,8 +1111,8 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
     assert viewer.status_code == 200
     assert "rcp-artifact-context" not in viewer.text
-    assert 'id="composer"' in viewer.text
-    assert 'id="message"' in viewer.text
+    assert 'id="comments-root"' in viewer.text
+    assert "RcpComments.mountViewer" in viewer.text
     assert "rcp-artifact-selection-enable" in viewer.text
     assert 'id="keep"' not in viewer.text
     assert 'id="save"' not in viewer.text

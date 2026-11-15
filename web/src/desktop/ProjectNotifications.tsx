@@ -9,6 +9,7 @@ export type NotificationKind =
   | "episode_finished"
   | "consolidation"
   | "bulletin_mention"
+  | "comment_mention"
   | "agent_thread";
 
 export type NotificationPreferences = Record<NotificationKind, boolean>;
@@ -21,6 +22,7 @@ export const NOTIFICATION_KINDS: Array<{ kind: NotificationKind; label: string }
   { kind: "episode_finished", label: "Episodes finished" },
   { kind: "consolidation", label: "Nightly consolidation" },
   { kind: "bulletin_mention", label: "Bulletin mentions" },
+  { kind: "comment_mention", label: "Comment mentions" },
   { kind: "agent_thread", label: "Agent threads" },
 ];
 

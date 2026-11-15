@@ -33,6 +33,15 @@ export interface PaperGitFileConflict {
   theirs: "present" | "absent";
 }
 
+export function repositoryFromInput(input: string): string {
+  const text = input.trim();
+  const match =
+    /^(?:https?:\/\/)?(?:www\.)?github\.com\/([^/\s]+\/[^/\s#?]+?)(?:\.git)?\/?(?:[#?].*)?$/i.exec(
+      text,
+    ) ?? /^git@github\.com:([^/\s]+\/[^/\s]+?)(?:\.git)?$/i.exec(text);
+  return match ? match[1] : text;
+}
+
 export function validRepository(repository: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repository);
 }

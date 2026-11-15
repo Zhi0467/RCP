@@ -3883,6 +3883,15 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
         )
 
     monkeypatch.setattr(app.state.background_tasks, "start", capture_artifact_question)
+    comment = client.post(
+        f"/api/projects/{project_id}/comment-threads",
+        json={
+            "target": {"kind": "artifact", "id": by_name["preview.html"]["artifact_id"]},
+            "anchor": {"kind": "text", "text": "revised version"},
+            "text": "Why?",
+        },
+    )
+    assert comment.status_code == 200, comment.text
     asked = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={
@@ -3890,13 +3899,9 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "message": "Why does this section jump?",
             "run_on": BACKEND_MACHINE_ID,
             "reasoning": "high",
-            "artifact_context": {
-                "source": "task",
-                "operation_id": origin.operation_id,
-                "artifact_id": by_name["preview.html"]["artifact_id"],
-                "selections": [{"kind": "text", "text": "revised version", "comment": "Why?"}],
-            },
+            "comment_thread_ids": [comment.json()["thread"]["thread_id"]],
         },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert asked.status_code == 202
     admitted = admitted_requests[-1]

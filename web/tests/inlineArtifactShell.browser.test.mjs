@@ -186,7 +186,7 @@ for name, script in {"sync":"throw new Error('broken <img src=x>')", "quiet":"",
     result[name], _, result[name+"Csp"] = artifact_content("page.html", "text/html", ("<!doctype html><p id=drawn>drawn</p><script>"+script+"</script>").encode(), frame_addon=addon)
 print(json.dumps(result))`,
     ],
-    { cwd: new URL("../..", import.meta.url), encoding: "utf8" },
+    { cwd: new URL("../..", import.meta.url), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   )
     .trim()
     .split("\n")
@@ -202,9 +202,11 @@ async function errorPage(t, mode, content) {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === "POST") posts.push(path);
     if (path.endsWith("/state")) return route.fulfill({ json: { can_comment: true } });
+    if (path.endsWith("/comment-threads")) return route.fulfill({ json: { threads: [] } });
+    if (path.endsWith("/members")) return route.fulfill({ json: [] });
     const body =
       path === "/app"
-        ? `<iframe id=embed src=/shell></iframe><a download href=/download></a><script>window.received=[];addEventListener('message',e=>received.push(e.data))</script>`
+        ? `<iframe id=embed src=/shell style="width:1000px;height:600px"></iframe><a download href=/download></a><script>window.received=[];addEventListener('message',e=>received.push(e.data))</script>`
         : path === "/shell"
           ? errorPages[mode]
           : errorPages[content];
@@ -236,12 +238,10 @@ test("script errors preserve the drawing and actions and prefill only a human co
   assert.equal(await shell.locator("#pageError img").count(), 0);
   assert.equal(await artifact.locator("#drawn").count(), 1);
   assert.equal(await page.locator("a[download]").count(), 1);
-  await shell.locator("#message").evaluate((field) => (field.value = "my draft"));
+  await shell.getByRole("button", { name: "Comment", exact: true }).waitFor();
   await shell.locator("#askFix").click();
-  const draft = await shell.locator("#message").inputValue();
-  assert.ok(draft.startsWith("my draft") && draft.endsWith("broken <img src=x>"));
-  await shell.locator("#askFix").click();
-  assert.equal(await shell.locator("#message").inputValue(), draft);
+  const draft = shell.getByRole("textbox", { name: "Comment" });
+  assert.ok((await draft.inputValue()).endsWith("broken <img src=x>"));
   assert.deepEqual(posts, []);
 });
 
