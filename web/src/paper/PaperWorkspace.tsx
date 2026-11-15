@@ -313,6 +313,7 @@ export function PaperWorkspace({
     remember({ fileId: file.file_id });
     const [route, query] = window.location.hash.split("?");
     const params = new URLSearchParams(query);
+    if (params.get("view") !== "paper") return;
     params.set("paper_file", file.file_id);
     window.history.replaceState(
       window.history.state,

@@ -139,6 +139,7 @@ PROJECT_LINKED_TABLES = {
     "bulletin_command_receipts",
     "bulletin_reads",
     "bulletin_mention_observations",
+    "share_links",
     "evidence_flags",
     "evidence_flag_carries",
     "evidence_flag_command_receipts",

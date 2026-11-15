@@ -2233,6 +2233,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "paper_state": 0,
         "paper_turn_files": 0,
         "paper_migrations": 0,
+        "share_links": 0,
         "paper_change_groups": 0,
         "paper_change_receipts": 0,
         "paper_changes": 0,

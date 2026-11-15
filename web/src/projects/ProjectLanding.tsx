@@ -57,6 +57,8 @@ import type {
 } from "../core/types";
 import { projectCreationPrimaryLabel } from "./projectSetupModel";
 
+const CARDS_HASH = "#/cards";
+
 const AgentHome = lazy(() =>
   import("../agents/AgentHome").then((module) => ({ default: module.AgentHome })),
 );
@@ -90,6 +92,9 @@ interface Props {
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
   /** The page's voice session, which a thread's mic binds to that thread. */
   voice: VoiceAgent;
+  /** A share link's team host to add, prefilled in the Add team space dialog. */
+  addTeamSpaceRequested?: boolean;
+  onAddTeamSpaceTaken?: () => void;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -369,6 +374,8 @@ export function ProjectLanding({
   onRefresh,
   onOpenSignIns,
   voice,
+  addTeamSpaceRequested = false,
+  onAddTeamSpaceTaken,
   palette,
 }: Props) {
   const [refreshing, setRefreshing] = useState(false);
@@ -396,7 +403,7 @@ export function ProjectLanding({
   }, [homeKey, homeView]);
   const chooseHomeView = (view: "cards" | "agent") => {
     if (homeKey) writePref(homeKey, view);
-    const hash = view === "agent" ? agentThreadHash(null) : "#/cards";
+    const hash = view === "agent" ? agentThreadHash(null) : CARDS_HASH;
     setHomeHash(hash);
     window.location.hash = hash;
   };
@@ -507,6 +514,14 @@ export function ProjectLanding({
     null,
   );
   const [addTeamOpen, setAddTeamOpen] = useState(false);
+  useEffect(() => {
+    if (!addTeamSpaceRequested) return;
+    if (homeKey) writePref(homeKey, "cards");
+    setHomeHash(CARDS_HASH);
+    window.location.hash = CARDS_HASH;
+    setAddTeamOpen(true);
+    onAddTeamSpaceTaken?.();
+  }, [addTeamSpaceRequested, onAddTeamSpaceTaken, homeKey]);
 
   useEffect(() => {
     try {

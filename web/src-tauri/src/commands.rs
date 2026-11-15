@@ -691,9 +691,13 @@ pub fn desktop_navigate_team(
 pub fn desktop_return_to_personal(
     window: WebviewWindow,
     lifecycle: State<'_, BackendState>,
+    add_team_space: Option<bool>,
 ) -> Result<(), String> {
     let target = windows::personal_root(&lifecycle.status()?.base_url)?;
-    windows::navigate_main(&window, target.as_str())
+    let fragment = add_team_space
+        .unwrap_or(false)
+        .then_some(windows::ADD_TEAM_SPACE_FRAGMENT);
+    windows::navigate_main_route(&window, target.as_str(), fragment)
 }
 
 #[tauri::command]

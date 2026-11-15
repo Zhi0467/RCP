@@ -60,6 +60,16 @@ import type { PaperEditorState } from "./paper/PaperWorkspace";
 import { canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
+import { ShareLinkNotice } from "./desktop/ShareLinkNotice";
+import { OpenLinkPage } from "./open/OpenLinkPage";
+import {
+  chooseOpenHere,
+  offersOpenInApp,
+  resolveShareLink,
+  setTeamAccessOrigin,
+  settleShareLink,
+  useShareLinkRequest,
+} from "./open/openLinkModel";
 import { ReconnectOverlay } from "./desktop/ReconnectOverlay";
 import { useRecheckOnRelease, useUpdateNotice } from "./desktop/useUpdateNotice";
 import { TerminalTab } from "./terminals/TerminalTab";
@@ -172,6 +182,7 @@ import {
   isDesktopRuntime,
   listenDesktopEvent,
   openDesktopArtifactPdf,
+  ADD_TEAM_SPACE_HASH,
   returnDesktopToPersonal,
   reverifyBackendIdentity,
   TEAM_TRANSPORT_RECOVERED,
@@ -374,6 +385,7 @@ import {
   projectTabShortcut,
 } from "./projects/projectTabs";
 import {
+  chatNotificationHash,
   commentThreadGraphTarget,
   commentThreadHash,
   episodeNotificationHash,
@@ -551,17 +563,20 @@ export {
 
 export default function App() {
   const desktop = useMemo(() => isDesktopRuntime(), []);
-  useState(() => {
+  const [addTeamSpaceOnLoad, setAddTeamSpaceOnLoad] = useState(() => {
     const navigation = window.performance.getEntriesByType("navigation")[0] as
       PerformanceNavigationTiming | undefined;
     const requestedHash = window.location.hash;
-    const hash = isSetupHash(requestedHash)
-      ? requestedHash
-      : initialProjectHash(requestedHash, navigation?.type, desktop);
+    const addTeamSpace = requestedHash === ADD_TEAM_SPACE_HASH;
+    const hash = addTeamSpace
+      ? ""
+      : isSetupHash(requestedHash)
+        ? requestedHash
+        : initialProjectHash(requestedHash, navigation?.type, desktop);
     if (hash !== window.location.hash) {
       window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
     }
-    return null;
+    return addTeamSpace;
   });
   const identity = useActorIdentity();
   // Retained state belongs to the member. Backend restarts reconcile the held
@@ -573,7 +588,15 @@ export default function App() {
     identity.actorIdentity?.user.identity_kind,
   ]);
   useLayoutEffect(() => closeArtifactViewer(), [sessionKey]);
-  return <RefreshMemberApp key={sessionKey} desktop={desktop} identity={identity} />;
+  return (
+    <RefreshMemberApp
+      key={sessionKey}
+      desktop={desktop}
+      identity={identity}
+      addTeamSpaceOnLoad={addTeamSpaceOnLoad}
+      onAddTeamSpaceOnLoadTaken={() => setAddTeamSpaceOnLoad(false)}
+    />
+  );
 }
 
 interface RefreshBindings {
@@ -584,6 +607,8 @@ interface RefreshBindings {
 function RefreshMemberApp(props: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
+  addTeamSpaceOnLoad: boolean;
+  onAddTeamSpaceOnLoadTaken: () => void;
 }) {
   const bindings = useRef<RefreshBindings>({ open: [], active: null, lostAccess: () => {} });
   const mergeDispatch = useRef<BranchMergeRequest | null>(null);
@@ -670,9 +695,13 @@ function MemberApp({
   identity,
   refreshBindings,
   mergeDispatch,
+  addTeamSpaceOnLoad,
+  onAddTeamSpaceOnLoadTaken,
 }: {
   desktop: boolean;
   identity: ReturnType<typeof useActorIdentity>;
+  addTeamSpaceOnLoad: boolean;
+  onAddTeamSpaceOnLoadTaken: () => void;
   refreshBindings: React.RefObject<RefreshBindings>;
   mergeDispatch: React.RefObject<BranchMergeRequest | null>;
 }) {
@@ -817,6 +846,8 @@ function MemberApp({
     },
     [],
   );
+  const shareLink = useShareLinkRequest();
+  const [addTeamSpaceRequested, setAddTeamSpaceRequested] = useState(addTeamSpaceOnLoad);
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);
@@ -2215,6 +2246,13 @@ function MemberApp({
             });
           }
         }
+      } else if (link.kind === "chat") {
+        next = chatNotificationHash(link, link.itemId);
+      } else if (link.kind === "reply") {
+        const task = await api<AgentTask>(
+          `/api/projects/${encodeURIComponent(link.projectId)}/tasks/${encodeURIComponent(link.itemId)}`,
+        ).catch(() => null);
+        next = chatNotificationHash(link, task && chatIdForTask(task));
       } else {
         setNotificationNode(link);
       }
@@ -2230,6 +2268,43 @@ function MemberApp({
   }, [backendSessionReady]);
   // Each signed-in visit keeps the server's phone record in step with this browser.
   const teamSpace = verifiedHealth?.space_kind === "team";
+  useEffect(() => {
+    if (!teamSpace || !backendSessionReady) return;
+    let live = true;
+    void api<{ access_url: string | null }>("/api/team/space")
+      .then((space) => {
+        if (live) setTeamAccessOrigin(space.access_url ? new URL(space.access_url).origin : null);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [teamSpace, backendSessionReady]);
+  const openLinkUnavailable = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    settleShareLink();
+    setNotice({ kind: "error", text: "This link is not available." });
+  }, []);
+  useEffect(() => {
+    if (!shareLink?.inPlace || !backendSessionReady) return;
+    let live = true;
+    resolveShareLink(shareLink.token).then(
+      (resolved) => {
+        if (!live) return;
+        settleShareLink();
+        if (resolved) window.location.assign(resolved.link);
+        else setNotice({ kind: "error", text: "This link is not available." });
+      },
+      (error: unknown) => {
+        if (!live) return;
+        settleShareLink();
+        reportErrorNotice(String(error));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [shareLink, backendSessionReady, reportErrorNotice]);
   useEffect(() => {
     if (!teamSpace || desktop) return;
     void Promise.all([loadTeamSessions(), loadNotificationDevices()])
@@ -4205,9 +4280,9 @@ function MemberApp({
     returnToProjectIndex();
   };
 
-  const exitTeamSpace = () => {
+  const exitTeamSpace = (options?: { addTeamSpace?: boolean }) => {
     voice.end("space");
-    void returnDesktopToPersonal().catch((error) => {
+    void returnDesktopToPersonal(options).catch((error) => {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     });
   };
@@ -4295,19 +4370,33 @@ function MemberApp({
   };
 
   const updateSurface = (
-    <UpdateNotice
-      notice={releaseUpdate}
-      identity={buildIdentity}
-      desktop={desktop}
-      updaterEnabled={updaterEnabled}
-      update={desktopUpdate}
-      activeWork={updateHasActiveWork}
-      expanded={updateExpanded}
-      applying={updateApplying}
-      error={updateError}
-      onExpand={expandUpdate}
-      onApply={() => void applyUpdate()}
-    />
+    <>
+      <UpdateNotice
+        notice={releaseUpdate}
+        identity={buildIdentity}
+        desktop={desktop}
+        updaterEnabled={updaterEnabled}
+        update={desktopUpdate}
+        activeWork={updateHasActiveWork}
+        expanded={updateExpanded}
+        applying={updateApplying}
+        error={updateError}
+        onExpand={expandUpdate}
+        onApply={() => void applyUpdate()}
+      />
+      {desktop && (
+        <ShareLinkNotice
+          onAddTeamSpace={() => {
+            if (teamSpace) {
+              exitTeamSpace({ addTeamSpace: true });
+              return;
+            }
+            setAddTeamSpaceRequested(true);
+            returnToProjects();
+          }}
+        />
+      )}
+    </>
   );
   const desktopAccessSurface = pendingDesktopProject ? (
     <div className="modal-backdrop desktop-access-backdrop">
@@ -4466,6 +4555,31 @@ function MemberApp({
         {acceptanceAgentSurface}
       </div>
     );
+  if (
+    shareLink &&
+    !shareLink.inPlace &&
+    !(shareLink.openHere && (teamSessionRequired || ownerSessionRequired))
+  )
+    return (
+      <>
+        <OpenLinkPage
+          token={shareLink.token}
+          desktop={desktop}
+          sessionKnown={backendSessionReady || teamSessionRequired || ownerSessionRequired}
+          signedIn={backendSessionReady}
+          openHere={shareLink.openHere}
+          spaceId={verifiedHealth?.space_id ?? null}
+          spaceName={
+            verifiedHealth && "space_name" in verifiedHealth ? verifiedHealth.space_name : null
+          }
+          onOpenHere={chooseOpenHere}
+          onOpened={settleShareLink}
+          onUnavailable={openLinkUnavailable}
+        />
+        {updateSurface}
+        {acceptanceAgentSurface}
+      </>
+    );
   if (ownerSessionRequired)
     return (
       <TeamLoginBoundary
@@ -4560,6 +4674,8 @@ function MemberApp({
             colorModeChoice: appearance.mode,
             onThemeChoiceChange: appearance.setTheme,
             onColorModeChoiceChange: appearance.setMode,
+            openShareLinks: teamSpace && !desktop,
+            openInApp: offersOpenInApp(desktop, navigator.userAgent, navigator.maxTouchPoints),
           }}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
           updateNotice={releaseUpdate}
@@ -4614,11 +4730,16 @@ function MemberApp({
           identity={actorIdentity}
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
-          onExitTeamSpace={desktop ? exitTeamSpace : undefined}
+          onExitTeamSpace={desktop ? () => exitTeamSpace() : undefined}
           onOpenSpaceSettings={openSpaceSettings}
           onRefresh={refreshSpaceHome}
           onOpenSignIns={openSignIns}
           voice={voice}
+          addTeamSpaceRequested={addTeamSpaceRequested}
+          onAddTeamSpaceTaken={() => {
+            setAddTeamSpaceRequested(false);
+            onAddTeamSpaceOnLoadTaken();
+          }}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>

@@ -7,6 +7,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Link,
   PanelLeft,
   Pencil,
   RotateCcw,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { api } from "../core/api";
 import { readPref, writePref } from "../core/prefStorage";
+import { copyShareLink, useShareLinks } from "../core/shareLinks";
 import type { PaperFile } from "../core/types";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 import { PaperConfirm } from "./PaperConfirm";
@@ -126,7 +128,7 @@ export function PaperFiles({
   const [deleting, setDeleting] = useState<{ name: string; remove: () => Promise<void> } | null>(
     null,
   );
-  type Action = "path" | "upload" | "delete" | "download";
+  type Action = "path" | "upload" | "delete" | "download" | "link";
   type Failure = { message: string; retry: () => Promise<void> };
   const [failures, setFailures] = useState<Partial<Record<Action, Failure>>>({});
   const clearFailure = (action: Action) =>
@@ -135,8 +137,10 @@ export function PaperFiles({
   const deleteFailure = failures.delete;
   const uploadFailure = failures.upload;
   // Upload and download failures outside a dialog retry from the header.
-  const looseKind: Action = failures.download ? "download" : "upload";
-  const looseFailure = failures.download ?? (replacing ? undefined : uploadFailure);
+  const looseKind: Action = failures.link ? "link" : failures.download ? "download" : "upload";
+  const looseFailure =
+    failures.link ?? failures.download ?? (replacing ? undefined : uploadFailure);
+  const share = useShareLinks();
   const [busy, setBusy] = useState(false);
   const upload = useRef<HTMLInputElement>(null);
   const uploadFolder = useRef("");
@@ -246,6 +250,7 @@ export function PaperFiles({
     download: PaperDownload | null,
     name: string,
     remove: () => Promise<void>,
+    fileId: string | null = null,
   ): OverflowMenuItem[] => [
     { label: "Rename", icon: Pencil, onSelect: () => startEdit(rename) },
     {
@@ -256,6 +261,18 @@ export function PaperFiles({
         if (download) void perform("download", () => downloadPaper(apiBase, projectId, download));
       },
     },
+    ...(share && fileId
+      ? [
+          {
+            label: "Copy link",
+            icon: Link,
+            onSelect: () =>
+              void perform("link", () =>
+                copyShareLink(projectId, { kind: "paper", item_id: fileId, graph_target: "main" }),
+              ),
+          },
+        ]
+      : []),
     {
       label: "Delete",
       icon: Trash2,
@@ -330,6 +347,7 @@ export function PaperFiles({
                   api(`${apiBase}/paper/files/${encodeURIComponent(entry.file_id)}`, {
                     method: "DELETE",
                   }),
+                entry.file_id,
               )}
             />
           </div>,

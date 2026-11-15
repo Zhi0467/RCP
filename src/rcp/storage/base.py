@@ -158,6 +158,7 @@ class AppStoreBase:
         (85, "paper_folder_v1"),
         (86, "provider_session_sweeps_v1"),
         (87, "hidden_read_fingerprints_v1"),
+        (88, "share_links_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1145,6 +1146,11 @@ class AppStoreBase:
             version=87,
             name="hidden_read_fingerprints_v1",
             migration=self._migrate_hidden_read_fingerprints,
+        )
+        from rcp.storage.share_links import migrate_share_links
+
+        self._run_storage_schema_migration(
+            connection, version=88, name="share_links_v1", migration=migrate_share_links
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

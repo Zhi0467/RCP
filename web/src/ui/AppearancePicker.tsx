@@ -1,4 +1,12 @@
+import { useState } from "react";
 import { Minus, Plus } from "lucide-react";
+import {
+  OPEN_CHOICES,
+  effectiveOpenChoice,
+  readOpenChoice,
+  writeOpenChoice,
+  type OpenChoice,
+} from "../open/openLinkModel";
 import {
   COLOR_MODE_CHOICES,
   THEME_CHOICES,
@@ -15,7 +23,12 @@ export interface AppearancePickerProps {
   colorModeChoice: ColorModeChoice;
   onThemeChoiceChange: (theme: ThemeChoice) => void;
   onColorModeChoiceChange: (mode: ColorModeChoice) => void;
+  /** A team space's browser shows the /open card, so it offers its remembered choice. */
+  openShareLinks?: boolean;
+  openInApp?: boolean;
 }
+
+const OPEN_CHOICE_LABELS: Record<OpenChoice, string> = { app: "In app", here: "Here", ask: "Ask" };
 
 /** Text size is a desktop webview zoom, so only the desktop app offers it. */
 export interface TextScaleControl {
@@ -29,8 +42,12 @@ export function AppearancePicker({
   colorModeChoice,
   onThemeChoiceChange,
   onColorModeChoiceChange,
+  openShareLinks = false,
+  openInApp = false,
   textScale,
 }: AppearancePickerProps & { textScale?: TextScaleControl }) {
+  const [storedChoice, setOpenChoice] = useState(readOpenChoice);
+  const openChoice = effectiveOpenChoice(storedChoice, openInApp);
   return (
     <section className="appearance-picker" aria-label="Appearance">
       <div className="appearance-picker-row">
@@ -63,6 +80,26 @@ export function AppearancePicker({
           ))}
         </div>
       </div>
+      {openShareLinks && (
+        <div className="appearance-picker-row">
+          <span>Open share links</span>
+          <div className="appearance-picker-options" role="group" aria-label="Open share links">
+            {OPEN_CHOICES.filter((choice) => openInApp || choice !== "app").map((choice) => (
+              <button
+                type="button"
+                aria-pressed={choice === openChoice}
+                onClick={() => {
+                  writeOpenChoice(choice);
+                  setOpenChoice(choice);
+                }}
+                key={choice}
+              >
+                {OPEN_CHOICE_LABELS[choice]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {textScale && (
         <div className="appearance-picker-row">
           <span>Text size</span>

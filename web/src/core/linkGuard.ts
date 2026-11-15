@@ -1,3 +1,9 @@
+import {
+  requestShareLinkInPlace,
+  sameSpaceShareToken,
+  teamAccessOrigin,
+} from "../open/openLinkModel";
+
 /** Whether following `href` in place would unload the app document: a link to another
  * origin or to any same-origin path other than this page. Hash routes stay in place. */
 export function leavesApp(href: string, here: URL): boolean {
@@ -5,16 +11,70 @@ export function leavesApp(href: string, here: URL): boolean {
   return target.origin !== here.origin || target.pathname !== here.pathname;
 }
 
-/** A link the page did not handle opens in a new tab instead of stranding the app on a
- * backend URL or a foreign page. Downloads and explicit new-tab links pass through. */
+export type LinkClick = {
+  href: string;
+  target: string;
+  download: boolean;
+  modified: boolean;
+};
+
+/** What a plain click on an unhandled link does: a share link to this same space opens
+ * in place, even from a rendered link that names a target; a link that would unload the
+ * app opens in a new tab. Downloads, modified clicks, and explicit targets pass through. */
+export function linkClickAction(
+  click: LinkClick,
+  here: URL,
+  accessOrigin: string | null,
+): { kind: "share"; token: string } | { kind: "new-tab" } | { kind: "pass" } {
+  if (click.download) return { kind: "pass" };
+  const token = sameSpaceShareToken(click.href, here, accessOrigin);
+  if (token && !click.modified) return { kind: "share", token };
+  if (click.target || !leavesApp(click.href, here)) return { kind: "pass" };
+  return { kind: "new-tab" };
+}
+
+function linkClick(event: MouseEvent): { link: HTMLAnchorElement; click: LinkClick } | null {
+  if (event.button !== 0) return null;
+  const link = (event.target as Element | null)?.closest?.("a[href]");
+  if (!(link instanceof HTMLAnchorElement)) return null;
+  return {
+    link,
+    click: {
+      href: link.href,
+      target: link.target,
+      download: link.hasAttribute("download"),
+      modified: event.metaKey || event.ctrlKey || event.shiftKey,
+    },
+  };
+}
+
+/** Share links are taken in the capture phase: the desktop shell's own handler cancels
+ * every targeted link click before a bubbling listener could see it. */
 export function installLinkGuard() {
+  window.addEventListener(
+    "click",
+    (event) => {
+      const found = linkClick(event);
+      if (!found) return;
+      const action = linkClickAction(
+        found.click,
+        new URL(window.location.href),
+        teamAccessOrigin(),
+      );
+      if (action.kind !== "share") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      requestShareLinkInPlace(action.token);
+    },
+    true,
+  );
   document.addEventListener("click", (event) => {
-    if (event.defaultPrevented || event.button !== 0) return;
-    const link = (event.target as Element | null)?.closest?.("a[href]");
-    if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download") || link.target)
-      return;
-    if (!leavesApp(link.href, new URL(window.location.href))) return;
+    if (event.defaultPrevented) return;
+    const found = linkClick(event);
+    if (!found) return;
+    const action = linkClickAction(found.click, new URL(window.location.href), teamAccessOrigin());
+    if (action.kind !== "new-tab") return;
     event.preventDefault();
-    window.open(link.href, "_blank", "noopener,noreferrer");
+    window.open(found.link.href, "_blank", "noopener,noreferrer");
   });
 }

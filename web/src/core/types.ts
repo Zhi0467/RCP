@@ -4300,3 +4300,32 @@ export interface ProposalCardDecisionResult {
   proposal_id: string;
   status: "approved" | "rejected";
 }
+
+/** An item a team share link can name. */
+export type ShareLinkKind = "artifact" | "node" | "paper" | "comment" | "chat" | "reply";
+
+/** `POST /api/projects/{p}/share-links`. `graph_target` is `main` or `branch:<id>`. */
+export interface CreateShareLinkRequest {
+  kind: ShareLinkKind;
+  item_id: string;
+  graph_target: string;
+}
+
+/** The copyable `https://<access_url>/open#l=<token>` link. */
+export interface ShareLinkResponse {
+  url: string;
+}
+
+/** `POST /api/share-links/resolve`. The token stays out of request paths. */
+export interface ResolveShareLinkRequest {
+  token: string;
+}
+
+/** `link` is the generic `#/projects/<p>/targets/<t>/<kind>/<id>` hash with a bare branch id. */
+export interface ResolvedShareLink {
+  project_id: string;
+  project_name: string;
+  kind: ShareLinkKind;
+  title: string | null;
+  link: string;
+}

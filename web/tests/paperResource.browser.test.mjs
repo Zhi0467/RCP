@@ -163,7 +163,7 @@ test("Paper refuses editing when local persistence is unavailable and exposes re
     };
   });
   const page = await context.newPage();
-  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
+  await page.goto(`${origin}/tests/fixtures/paperResource.html#/projects/p?view=paper`);
   await page.getByRole("button", { name: "Reconnect Paper", exact: true }).waitFor();
   assert.equal(await page.locator(".cm-content").count(), 0);
 });
@@ -973,7 +973,7 @@ test("returning to Paper reopens the file, cursor and panel left there", async (
     configure: secondFile,
   });
   await page.evaluate(() => {
-    window.location.hash = "#/projects/p/paper?paper_file=f2";
+    window.location.hash = "#/projects/p?view=paper&paper_file=f2";
   });
   await page.waitForFunction(
     () => document.querySelector(".paper-path")?.textContent === "second.md",

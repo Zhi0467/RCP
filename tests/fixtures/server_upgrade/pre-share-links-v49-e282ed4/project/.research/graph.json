@@ -1,0 +1,22 @@
+{
+  "ambiguities": {},
+  "belief_transitions": [],
+  "config_revisions": {},
+  "edges": {},
+  "glossary": {},
+  "last_refresh_at": null,
+  "nodes": {},
+  "ontology": {
+    "fields": [],
+    "relations": [],
+    "types": []
+  },
+  "project_truth_scope": [
+    "repo"
+  ],
+  "proposals": {},
+  "replay_failure": null,
+  "replay_status": "complete",
+  "revision": 1,
+  "validation_messages": []
+}

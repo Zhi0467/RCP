@@ -601,9 +601,15 @@ export async function navigateDesktopToTeam(
   await leaveDesktopPage("desktop_navigate_team", { connectionId, projectId });
 }
 
-export async function returnDesktopToPersonal(): Promise<void> {
+export const ADD_TEAM_SPACE_HASH = "#/add-team-space";
+
+export async function returnDesktopToPersonal(
+  options: { addTeamSpace?: boolean } = {},
+): Promise<void> {
   if (!isDesktopRuntime()) return;
-  await leaveDesktopPage("desktop_return_to_personal");
+  await leaveDesktopPage("desktop_return_to_personal", {
+    addTeamSpace: options.addTeamSpace ?? false,
+  });
 }
 
 async function leaveDesktopPage(command: string, args?: object): Promise<void> {
@@ -775,12 +781,37 @@ export async function listenDesktopEvent<T>(
     | "rcp://backend-mismatch"
     | "rcp://update-ready"
     | "rcp://dictation-result"
-    | "rcp://dictation-state",
+    | "rcp://dictation-state"
+    | "rcp://share-link-unpaired",
   handler: (payload: T) => void | Promise<void>,
 ): Promise<() => void> {
   if (!isDesktopRuntime()) return () => undefined;
   const { listen } = await import("@tauri-apps/api/event");
   return listen<T>(name, (event) => void handler(event.payload));
+}
+
+export interface ShareLinkNotice {
+  host: string;
+  state: "unpaired" | "unreachable";
+}
+
+export async function readShareLinkNotice(): Promise<ShareLinkNotice | null> {
+  if (!isDesktopRuntime()) return null;
+  return invokeDesktop<ShareLinkNotice | null>("desktop_share_link_notice");
+}
+
+export function listenShareLinkUnpaired(
+  handler: (notice: ShareLinkNotice | null) => void,
+): Promise<() => void> {
+  return listenDesktopEvent<ShareLinkNotice | null>("rcp://share-link-unpaired", handler);
+}
+
+export async function retryShareLink(): Promise<void> {
+  await invokeDesktop("desktop_retry_share_link");
+}
+
+export async function dismissShareLink(): Promise<void> {
+  await invokeDesktop("desktop_dismiss_share_link");
 }
 
 async function runIdentityCheck(

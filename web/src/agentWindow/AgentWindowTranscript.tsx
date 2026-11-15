@@ -19,6 +19,7 @@ import type {
   TurnOutcome,
 } from "../core/types";
 import type { GlossaryIndex } from "../graph/glossary";
+import { ReplyLinkButton } from "../core/ReplyLinkButton";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { BrowserTurnNotice } from "../core/BrowserControls";
@@ -65,6 +66,8 @@ interface Props {
   /** What the owner ends a line with, such as the cards its turn produced. */
   lineTrail?: (line: TaskTranscriptLine) => ReactNode;
   footer?: ReactNode;
+  /** A project chat's `main` or `branch:<id>`; its replies then offer a share link. */
+  replyLinkGraphTarget?: string;
   showModes?: boolean;
   nodes?: Readonly<Record<string, GraphNode>>;
   glossaryIndex?: GlossaryIndex;
@@ -111,6 +114,7 @@ export function AgentWindowTranscript({
   agentProgress,
   lineTrail,
   footer,
+  replyLinkGraphTarget,
   showModes = true,
   nodes = NO_NODES,
   glossaryIndex,
@@ -409,6 +413,17 @@ export function AgentWindowTranscript({
                 </div>
               )}
               {lineTrail?.(line)}
+              {replyLinkGraphTarget &&
+                endpoints.projectId &&
+                line.role === "agent" &&
+                !line.running &&
+                line.text && (
+                  <ReplyLinkButton
+                    projectId={endpoints.projectId}
+                    graphTarget={replyLinkGraphTarget}
+                    operationId={line.taskId}
+                  />
+                )}
               {shownAt && line.trigger !== "schedule" && (
                 <time className="chat-line-time" dateTime={shownAt.toISOString()}>
                   {localClock(shownAt)}
