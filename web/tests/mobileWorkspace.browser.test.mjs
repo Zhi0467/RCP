@@ -63,6 +63,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/project/graph-refs", (route) =>
         route.fulfill({ json: [] }),
       );
+      await page.route("**/api/projects/*/comment-threads?*", (route) =>
+        route.fulfill({ json: { threads: [] } }),
+      );
       await page.route("**/api/service-connections", (route) =>
         route.fulfill({ json: { dictation: "system", connections: [] } }),
       );

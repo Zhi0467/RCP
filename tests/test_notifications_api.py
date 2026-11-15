@@ -35,6 +35,7 @@ def test_personal_preferences_and_device_registration(manifest, tmp_path) -> Non
         "episode_finished": False,
         "consolidation": True,
         "bulletin_mention": True,
+        "comment_mention": True,
         "agent_thread": True,
     }
     updated = client.patch(
@@ -43,6 +44,7 @@ def test_personal_preferences_and_device_registration(manifest, tmp_path) -> Non
             "proposal": False,
             "episode_finished": True,
             "bulletin_mention": False,
+            "comment_mention": False,
             "agent_thread": False,
         },
     )
@@ -50,6 +52,7 @@ def test_personal_preferences_and_device_registration(manifest, tmp_path) -> Non
     assert updated.json()["proposal"] is False
     assert updated.json()["episode_finished"] is True
     assert updated.json()["bulletin_mention"] is False
+    assert updated.json()["comment_mention"] is False
     assert updated.json()["agent_thread"] is False
     assert client.get(preferences_url).json() == updated.json()
     assert client.patch(preferences_url, json={"unknown": True}).status_code == 422
@@ -78,7 +81,9 @@ def test_team_device_session_ownership_expiry_and_no_delivery_refresh(
     ack_url = f"/api/notifications/devices/{device}/items/absent"
     assert second.get(pending_url).status_code == 404
     assert second.post(ack_url, json={"status": "posted"}).status_code == 404
-    session_id = store.notification_device(device)["session_id"]
+    registered = store.notification_device(device)
+    assert registered is not None
+    session_id = registered["session_id"]
     before = next(
         item for item in store.team_sessions(member.user_id) if item.session_id == session_id
     )
@@ -110,7 +115,9 @@ def test_logout_and_revocation_detach_team_devices(tmp_path) -> None:
         client.post("/api/notifications/devices/desktop", json={}).json()["device_id"]
         for client in (first, second)
     ]
-    second_session = store.notification_device(devices[1])["session_id"]
+    registered = store.notification_device(devices[1])
+    assert registered is not None
+    second_session = registered["session_id"]
     assert first.post(f"/api/team/sessions/{second_session}/revoke", json={}).status_code == 200
     assert store.notification_device(devices[1]) is None
     assert store.notification_device(devices[0]) is not None

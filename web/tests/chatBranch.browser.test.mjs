@@ -33,6 +33,10 @@ async function openFixture(t, viewport, handle) {
   t.after(() => context.close());
   const page = await context.newPage();
   await page.route("**/api/**", handle);
+  await page.route("**/api/projects/*/comment-threads?*", (route) =>
+    route.fulfill({ json: { threads: [] } }),
+  );
+  await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
   await page.goto(
     `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/chatBranch.html`,
   );
@@ -298,6 +302,7 @@ test("The chat menu and Branch this chat work by keyboard; the current branch is
   const menu = page.locator(".chat-header-menu > .icon-button");
   await menu.focus();
   await page.keyboard.press("Enter");
+  await page.locator(".chat-branch-picker .branch-picker-trigger:not(:disabled)").waitFor();
   // The first row takes focus; the arrows, Home, and End move between rows.
   const first = page.getByRole("menuitem").first();
   assert.equal(await isFocused(first), true);

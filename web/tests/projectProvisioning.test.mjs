@@ -10,6 +10,7 @@ import {
   loadProjectProvisioningRequest,
   loadProjectProvisioningRequests,
 } from "../src/core/api.ts";
+import { listedSetupRequests } from "../src/projects/projectSetupModel.ts";
 
 const requestBody = {
   name: "Shared paper project",
@@ -169,4 +170,31 @@ test("repository requests preserve add/connect intent and project identity", asy
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("existing setup requests list open ones and cancelled ones with keys left on GitHub", () => {
+  const cancelled = { cancelled_at: "2026-08-30T00:00:00Z" };
+  const open = { ...projectedResponse, request_id: "open" };
+  const keysLeft = {
+    ...projectedResponse,
+    ...cancelled,
+    request_id: "keys-left",
+    cancellation_disposition: "prepared_state_preserved",
+  };
+  const cleaned = {
+    ...projectedResponse,
+    ...cancelled,
+    request_id: "cleaned",
+    cancellation_disposition: "request_owned_state_removed",
+  };
+  const completed = {
+    ...projectedResponse,
+    request_id: "completed",
+    completed_at: "2026-08-30T00:00:00Z",
+  };
+
+  assert.deepEqual(
+    listedSetupRequests([open, keysLeft, cleaned, completed]).map((item) => item.request_id),
+    ["open", "keys-left"],
+  );
 });

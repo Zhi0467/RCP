@@ -12,7 +12,7 @@ from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import UUID4, BaseModel, ConfigDict, Field, field_validator
+from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
@@ -33,7 +33,6 @@ from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
 from rcp.artifact_comments import (
-    COMMENTABLE_MEDIA_TYPES,
     comment_panel,
     selection_frame_addon,
     supports_comments,
@@ -56,10 +55,12 @@ from rcp.artifacts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
+from rcp.comments.models import COMMENT_MEDIA_TYPES
+from rcp.comments.send import CommentSend, chat_turn_send, thread_send_text
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
-from rcp.limits import STEERING_MESSAGE_MAX_CHARS
+from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
@@ -81,7 +82,12 @@ from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _coach_request_on_base, _resolved_coach_request
 from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.runs.turn_attachments import claim_turn_attachments
-from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
+from rcp.service import (
+    ChatMessage,
+    CoachRequest,
+    ProjectService,
+    RunRequest,
+)
 from rcp.skill_registry import SkillSelection, official_registry
 from rcp.storage import (
     AgentTaskAdmissionConflict,
@@ -124,14 +130,16 @@ class SteerAgentTaskRequest(BaseModel):
     message_id: uuid.UUID
     attempt: int = Field(ge=1, strict=True)
     expected_turn_id: str = Field(min_length=1)
-    message: str = Field(min_length=1, max_length=STEERING_MESSAGE_MAX_CHARS)
+    message: str = Field(default="", max_length=STEERING_MESSAGE_MAX_CHARS)
+    comment_thread_ids: list[str] = Field(
+        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
 
-    @field_validator("message")
-    @classmethod
-    def require_nonblank_message(cls, value: str) -> str:
-        if not value.strip():
+    @model_validator(mode="after")
+    def require_message_or_threads(self) -> SteerAgentTaskRequest:
+        if not self.message.strip() and not self.comment_thread_ids:
             raise ValueError("A steering message must not be blank.")
-        return value
+        return self
 
 
 class TrackedFileLocation(BaseModel):
@@ -199,7 +207,7 @@ def _agent_artifact_response(
         available=available,
         unavailable_reason=unavailable_reason,
         view=artifact_view(descriptor.media_type),
-        can_open=available and artifact_view(descriptor.media_type) not in {"pdf", "file"},
+        can_open=available and artifact_view(descriptor.media_type) != "file",
         can_download=available,
         can_keep=available and not kept and not record.history_only and record.kind != "space_chat",
         can_discuss=can_discuss,
@@ -595,6 +603,22 @@ def start_agent_task(
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
     branch_id: str | None = None,
 ) -> dict[str, object]:
+    body = dict(body)
+    try:
+        thread_ids = TypeAdapter(list[str]).validate_python(
+            body.pop("comment_thread_ids", []), strict=True
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid comment thread ids.") from exc
+    context = body.get("artifact_context")
+    if isinstance(context, dict) and context.get("selections"):
+        raise HTTPException(
+            status_code=422, detail="Send saved comment threads instead of selections."
+        )
+    if thread_ids and kind not in {"node_chat", "project_chat", "paper_coach"}:
+        raise HTTPException(
+            status_code=409, detail="Comment threads require a chat or Paper coach."
+        )
     if body.get("references") and kind not in {"node_chat", "project_chat", "paper_coach"}:
         raise HTTPException(
             status_code=422, detail="Project references require an ordinary chat or Paper coach."
@@ -611,6 +635,36 @@ def start_agent_task(
     authorized_by = identity_access.require_patch_capable_identity(http_request)
     if idempotency_key is not None:
         project_id = catalog.resolve_project_id(project_id)
+    sent: CommentSend | None = None
+    if thread_ids:
+        message = body.get("message", "")
+        if not isinstance(message, str):
+            raise HTTPException(status_code=422, detail="Invalid message.")
+        key = str(idempotency_key) if idempotency_key is not None else ""
+        sent = (
+            thread_send_text(
+                store,
+                project_id,
+                authorized_by.user_id,
+                thread_ids,
+                key,
+                message=message,
+                chat_id=None,
+            )
+            if kind == "paper_coach"
+            else chat_turn_send(
+                store,
+                project_id,
+                authorized_by.user_id,
+                thread_ids,
+                key,
+                message=message,
+                chat_id=str(body.get("chat_id") or ""),
+            )
+        )
+        body["message"] = sent.text
+        if sent.context is not None:
+            body["artifact_context"] = sent.context.model_dump(mode="json")
     try:
         with store.client_request_admission(
             project_id,
@@ -622,6 +676,14 @@ def start_agent_task(
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
+                if sent is not None:
+                    sent.require_replay_of(record)
+                    store.mark_threads_sent(
+                        sent.rendered_through,
+                        record.operation_id,
+                        str(idempotency_key),
+                        authorized_by.user_id,
+                    )
                 return _agent_task_response(store, record, background_tasks)
             record = start_ordinary_task(
                 project_id,
@@ -634,6 +696,13 @@ def start_agent_task(
                 authorized_by=authorized_by,
                 branch_id=branch_id,
             )
+            if sent is not None:
+                store.mark_threads_sent(
+                    sent.rendered_through,
+                    record.operation_id,
+                    str(idempotency_key),
+                    authorized_by.user_id,
+                )
             # A task admitted a moment ago has not run, so it can carry no note yet.
             return _agent_task_response(store, record, background_tasks)
     except ClientRequestConflict as exc:
@@ -768,10 +837,25 @@ def steer_agent_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> ChatMessage:
-    identity_access.require_patch_capable_identity(http_request)
+    author = identity_access.require_patch_capable_identity(http_request)
     record = store.agent_task(operation_id)
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
+    sent = (
+        thread_send_text(
+            store,
+            project_id,
+            author.user_id,
+            body.comment_thread_ids,
+            str(body.message_id),
+            message=body.message,
+            chat_id=None
+            if record.kind == "paper_coach"
+            else str(record.request.get("chat_id") or ""),
+        )
+        if body.comment_thread_ids
+        else None
+    )
     service = cast(ProjectService, task_owner(store, record, catalog=catalog))
     try:
         with project_write_admission(project_id, http_request):
@@ -782,9 +866,18 @@ def steer_agent_task(
                 message_id=str(body.message_id),
                 attempt=body.attempt,
                 expected_turn_id=body.expected_turn_id,
-                text=body.message,
+                text=sent.text if sent is not None else body.message,
             )
-        return finish_chat_steer(service, background_tasks, record, delivery)
+        message = finish_chat_steer(service, background_tasks, record, delivery)
+        if (
+            sent is not None
+            and message.steering is not None
+            and message.steering.status != "refused"
+        ):
+            store.mark_threads_sent(
+                sent.rendered_through, operation_id, str(body.message_id), author.user_id
+            )
+        return message
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, StateUnavailable) as exc:
@@ -999,7 +1092,7 @@ async def _artifact_viewer_response(
         panel=panel,
         live_url=live_url,
         presentation=presentation,
-        selectable=descriptor.media_type in COMMENTABLE_MEDIA_TYPES,
+        selectable=descriptor.media_type in COMMENT_MEDIA_TYPES["whole"],
     )
     return Response(
         b"" if head else document,
@@ -1480,7 +1573,7 @@ def _read_agent_artifact_bytes(
         "download": projected.can_download,
         "keep": projected.can_keep,
     }[action]
-    if action == "open" and projected.view in {"pdf", "file"}:
+    if action == "open" and projected.view == "file":
         raise HTTPException(status_code=404, detail="Artifact has no viewer")
     if not allowed:
         raise HTTPException(

@@ -223,7 +223,7 @@ def test_stored_routes_serve_the_inline_presentation(manifest, tmp_path: Path) -
         assert artifact_theme_css("aqua", "light") in _srcdoc(fallback.text)
 
         text = client.get(f"{base}/{notes.artifact_id}/viewer", params={"presentation": "inline"})
-        assert '"selectable": false' in text.text
+        assert '"selectable": true' in text.text
         assert (
             client.get(
                 f"{base}/{notes.artifact_id}/content", params={"presentation": "sideways"}

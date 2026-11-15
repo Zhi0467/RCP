@@ -72,7 +72,9 @@ _PROVISIONING_TRANSITIONS: dict[ProjectProvisioningStatus, frozenset[ProjectProv
     "operator_action_needed": frozenset(
         {"setup_in_progress", "operator_action_needed", "cancelled"}
     ),
-    "ready_for_review": frozenset({"setup_in_progress", "completed", "cancelled"}),
+    "ready_for_review": frozenset(
+        {"setup_in_progress", "operator_action_needed", "completed", "cancelled"}
+    ),
     "completed": frozenset(),
     "cancelled": frozenset(),
 }

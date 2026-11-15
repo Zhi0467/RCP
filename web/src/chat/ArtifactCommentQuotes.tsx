@@ -29,17 +29,23 @@ export function ArtifactCommentQuotes({
         </button>
       )}
       {lead && <span className="agent-chat-view-text">{lead}</span>}
-      <ol className="chat-artifact-comments">
-        {comments.quotes.map((quote, index) => (
-          <li key={index}>
-            <blockquote>
-              {quote.kind === "box" && <SquareDashed size={12} aria-hidden="true" />}
-              {quote.kind === "box" ? quote.quote || "Selected area" : quote.quote}
-            </blockquote>
-            <span className="agent-chat-view-text">{quote.comment.trim()}</span>
-          </li>
-        ))}
-      </ol>
+      <details className="chat-artifact-comment-send">
+        <summary>
+          Sent {comments.quotes.length} comment{" "}
+          {comments.quotes.length === 1 ? "thread" : "threads"}
+        </summary>
+        <ol className="chat-artifact-comments">
+          {comments.quotes.map((quote, index) => (
+            <li key={index}>
+              <blockquote>
+                {quote.kind === "box" && <SquareDashed size={12} aria-hidden="true" />}
+                {quote.kind === "box" ? quote.quote || "Selected area" : quote.quote}
+              </blockquote>
+              <span className="agent-chat-view-text">{quote.comment.trim()}</span>
+            </li>
+          ))}
+        </ol>
+      </details>
     </>
   );
 }

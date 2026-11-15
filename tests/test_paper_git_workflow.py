@@ -621,3 +621,113 @@ def test_shared_deploy_key_lends_only_a_ready_backend_repository(
     found = git_sync.shared_deploy_key(None, layout, "p", "Owner/Repo")
     assert found == ("e", tmp_path / "p" / "e" / "id_ed25519")
     assert git_sync.shared_deploy_key(None, layout, "p", "owner/none") is None
+
+
+def test_blank_branch_links_the_remote_default_branch(sync):
+    manager, live, remote = sync
+    commit = build_commit(remote, {"paper.md": GitEntry(b"default\n")}, "", "init", "C", "c")
+    _git(remote, ["update-ref", "refs/heads/master", commit])
+    _git(remote, ["update-ref", "refs/heads/gh-pages", commit])
+    _git(remote, ["symbolic-ref", "HEAD", "refs/heads/master"])
+    assert manager.key("p", "owner/repo", "", "member")["branch"] == ""
+    status = manager.link("p")
+    assert (status["state"], status["branch"]) == ("linked", "master")
+    assert saved(live).files[0].text == "default\n"
+
+
+def test_typed_branch_missing_from_remote_is_refused_with_the_branches(sync):
+    from rcp.paper.git_sync import GitError
+
+    manager, live, remote = sync
+    commit = build_commit(remote, {"paper.md": GitEntry(b"x")}, "", "init", "C", "c")
+    names = [f"b{i}" for i in range(7)]
+    for name in names:
+        _git(remote, ["update-ref", "refs/heads/" + name, commit])
+    manager.key("p", "owner/repo", "main", "member")
+    with pytest.raises(GitError) as error:
+        manager.link("p")
+    assert all(name in str(error.value) for name in names[:5])
+    assert not any(name in str(error.value) for name in names[5:])
+    status = manager.status("p")
+    assert (status["state"], status["branch"]) == ("pending", "main")
+    assert status["last_error"] == str(error.value)
+    assert saved(live).files == []
+
+
+def test_empty_repository_links_main_and_the_first_push_creates_it(sync):
+    manager, live, remote = sync
+    manager.key("p", "owner/repo", "", "member")
+    assert manager.link("p")["branch"] == "main"
+    from rcp.paper import PaperOp
+    from tests.paper_helpers import apply
+
+    apply(live, [PaperOp(kind="create", path="paper.md", text="first")])
+    commit = manager.push("p", "first", "Member", "member")
+    assert _git(remote, ["rev-parse", "refs/heads/main"]).decode().strip() == commit
+
+
+def test_unsynced_link_on_a_missing_branch_errors_on_pull(sync):
+    from rcp.paper.git_sync import GitError
+
+    manager, live, remote = sync
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    commit = build_commit(remote, {"paper.md": GitEntry(b"x")}, "", "init", "C", "c")
+    _git(remote, ["update-ref", "refs/heads/master", commit])
+    with pytest.raises(GitError) as error:
+        manager.pull("p")
+    assert "master" in str(error.value)
+    assert manager.status("p")["last_error"] == str(error.value)
+    assert saved(live).files == []
+
+
+def test_key_on_a_linked_paper_refuses_and_keeps_the_link(sync):
+    from rcp.paper.git_sync import GitError
+
+    manager, live, remote = sync
+    first = commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    with pytest.raises(GitError):
+        manager.key("p", "owner/other", "main", "member")
+    link = manager.store.paper_git_link("p")
+    assert (link.state, link.repository, link.synced_commit) == ("linked", "owner/repo", first)
+    assert (manager.directory("p") / "id_ed25519").is_file()
+
+
+def test_failed_first_merge_keeps_the_link_pending(sync, monkeypatch: pytest.MonkeyPatch):
+    from rcp.paper import git_merge
+
+    manager, live, remote = sync
+    head = commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    original = git_merge.merge_trees
+
+    def fail(*args):
+        raise RuntimeError("merge failed")
+
+    monkeypatch.setattr(git_merge, "merge_trees", fail)
+    with pytest.raises(RuntimeError):
+        manager.link("p")
+    link = manager.store.paper_git_link("p")
+    assert (link.state, link.synced_commit, link.last_error) == ("pending", "", "merge failed")
+    monkeypatch.setattr(git_merge, "merge_trees", original)
+    assert manager.link("p")["state"] == "linked"
+    assert manager.store.paper_git_link("p").synced_commit == head
+
+
+def test_reconcile_removes_key_folders_without_a_link(sync, caplog: pytest.LogCaptureFixture):
+    manager, _live, remote = sync
+    commit_remote(remote, {"paper.md": GitEntry(b"base")})
+    manager.key("p", "owner/repo", "main", "member")
+    manager.link("p")
+    orphan = manager.directory("orphan")
+    git_sync.generate_key(orphan, "orphan")
+    (manager.root / ".DS_Store").write_text("")
+    (manager.directory("p") / "id_ed25519").unlink()
+    with caplog.at_level("WARNING"):
+        manager.reconcile()
+    assert not orphan.exists()
+    assert not manager.directory("p").exists()
+    assert manager.store.paper_git_link("p") is None
+    assert any(record.name == git_sync.__name__ for record in caplog.records)

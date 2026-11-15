@@ -100,7 +100,7 @@ test("only artifacts the viewer shows render in place", () => {
   assert.equal(isInlineViewable(artifact("a.svg", "image")), true);
   assert.equal(isInlineViewable(artifact("a.md", "markdown")), true);
   assert.equal(isInlineViewable(artifact("a.csv", "text")), true);
-  assert.equal(isInlineViewable(artifact("a.pdf", "pdf")), false);
+  assert.equal(isInlineViewable(artifact("a.pdf", "pdf")), true);
   assert.equal(isInlineViewable(artifact("a.bin", "file")), false);
   const artifacts = [artifact("breakout.html", "html")];
   const own = (id) => (id === "op-1" ? artifacts : undefined);
