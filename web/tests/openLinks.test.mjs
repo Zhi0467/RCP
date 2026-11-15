@@ -177,6 +177,7 @@ test("the guard opens a same-space share link in place and any other in a tab", 
   assert.equal(leavesApp("https://rcp.lab.example/open#l=abc", here), true);
 
   let onClick;
+  let onCapture;
   const opened = [];
   class Anchor {
     constructor(href) {
@@ -192,6 +193,7 @@ test("the guard opens a same-space share link in place and any other in a tab", 
   globalThis.window = {
     location: { href: here.href },
     open: (href) => opened.push(href),
+    addEventListener: (_name, handler) => (onCapture = handler),
   };
   try {
     installLinkGuard();
@@ -200,11 +202,16 @@ test("the guard opens a same-space share link in place and any other in a tab", 
         defaultPrevented: false,
         button: 0,
         target: { closest: () => new Anchor(href) },
+        stopped: false,
         preventDefault() {
           this.defaultPrevented = true;
         },
+        stopImmediatePropagation() {
+          this.stopped = true;
+        },
       };
-      onClick(event);
+      onCapture(event);
+      if (!event.stopped) onClick(event);
       return event.defaultPrevented;
     };
     assert.equal(click("https://rcp.lab.example/open#l=same"), true);

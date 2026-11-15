@@ -423,7 +423,7 @@ export async function openPaper(
     const id = new URL(socket.url()).pathname.split("/").at(-2);
     (fixture.rooms.get(id) ?? room).connect(socket);
   });
-  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
+  await page.goto(`${origin}/tests/fixtures/paperResource.html#/projects/p?view=paper`);
   await page.locator(".cm-content").waitFor();
   await page.waitForFunction(editorMatches, initialText);
   return { page, context, room, errors, posts, requests, fixture };
@@ -455,7 +455,7 @@ export async function openPaperTab(t, opened, origin) {
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
   });
-  await page.goto(`${origin}/tests/fixtures/paperResource.html`);
+  await page.goto(`${origin}/tests/fixtures/paperResource.html#/projects/p?view=paper`);
   await page.locator(".cm-content").waitFor();
   return { page, errors };
 }
