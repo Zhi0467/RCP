@@ -812,8 +812,8 @@ PAPER_SYNCTEX_MAX_BYTES = 64 * 1024 * 1024
 PAPER_HTML_PREVIEW_MAX_ASSET_BYTES = PAPER_MAX_UPLOAD_BYTES
 PAPER_HTML_PREVIEW_MAX_ASSET_TOTAL_BYTES = 32 * 1024 * 1024
 PAPER_HTML_PREVIEW_MAX_OUTPUT_BYTES = 32 * 1024 * 1024
-# Line pairs a card diff compares after trimming the common head and tail; past it,
-# the changed middle becomes one card instead of a quadratic comparison.
+# Line pairs a turn's diff compares after trimming the common head and tail; past it,
+# the changed middle becomes one hunk instead of a quadratic comparison.
 PAPER_CHANGES_DIFF_MAX_LINE_PAIRS = 1_000_000
 
 # Single-entry agent context and command bounds.

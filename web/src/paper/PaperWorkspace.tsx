@@ -459,6 +459,7 @@ export function PaperWorkspace({
               openPath={shownDiff}
               onOpenDiff={(path) => {
                 setDiffPath(path);
+                setCoachDiff(null);
                 setFilesOpen(false);
                 switchView("write");
               }}
@@ -473,6 +474,7 @@ export function PaperWorkspace({
             selected={file?.file_id ?? null}
             onSelect={(id, existsAt) => {
               setDiffPath(null);
+              setCoachDiff(null);
               setSelected(id, existsAt);
               setFilesOpen(false);
               switchView("write", id);

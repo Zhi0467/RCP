@@ -33,6 +33,7 @@ const turn = {
   updated_at: now,
   active: false,
   attempt: 1,
+  authorized_by: { space_id: "space", user_id: "member", display_name: "Member" },
 };
 const summary = {
   chat_id: "coach-1",
@@ -128,7 +129,11 @@ for (const width of [1280, 390])
     else assert.ok(pane.x + pane.width <= chat.x + 1, "the diff sits beside the chat");
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/coach-${width}.png` });
-    await diff.getByRole("button", { name: "Close diff" }).click();
+    if (width === 1280) {
+      await page.getByTestId("paper-files").getByText("intro.md").click();
+    } else {
+      await diff.getByRole("button", { name: "Close diff" }).click();
+    }
     await diff.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
   });

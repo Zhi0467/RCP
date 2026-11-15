@@ -2054,7 +2054,7 @@ class ProjectService:
         """The project's Paper folder on its base machine, named read-only to every launch."""
         from rcp.runs.paper_turns import paper_folder_path
 
-        project_id = self.history.project_id
+        project_id = self._project_id
         if project_id is None:
             return None
         base = self.machine_cards().get(self.manifest.base_machine)

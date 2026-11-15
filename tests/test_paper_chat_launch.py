@@ -149,9 +149,8 @@ def test_the_first_turn_fixes_the_chat_focus(tmp_path: Path) -> None:
     store = seeded_store(tmp_path)
     store.admit_chat_focus("project", "coach", "paper")
     admitted_launch_task(store, operation_id="first", request=_paper_request("coach"))
-    store.admit_chat_focus("project", "coach", "paper")
-    with pytest.raises(AgentTaskAdmissionConflict):
-        store.admit_chat_focus("project", "coach", None)
+    assert store.admit_chat_focus("project", "coach", "paper") == "paper"
+    assert store.admit_chat_focus("project", "coach", None) == "paper"
     store.set_chat_archived("project", "coach", "alice", archived=False)
     store.admit_chat_focus("project", "coach", "paper")
 
@@ -243,6 +242,24 @@ def test_a_waiting_paper_turn_can_be_cancelled(tmp_path: Path) -> None:
         tasks.shutdown()
 
 
+def test_pausing_a_holder_that_never_launched_starts_the_waiting_turn(tmp_path: Path) -> None:
+    store = seeded_store(tmp_path)
+    gate = _Gate()
+    tasks = BackgroundAgentTasks(store, gate.stream)
+    try:
+        first = _paper_turn(store, gate, "first", "coach-a")
+        second = _paper_turn(store, gate, "second", "coach-b")
+        assert tasks.launch_admitted(second.operation_id).status == "queued"
+        assert tasks.pause(first.operation_id).status == "paused"
+        wait_until(lambda: "second" in gate.started)
+        gate.release["second"].set()
+        wait_for_task(store, "second", expect="succeeded")
+    finally:
+        for event in gate.release.values():
+            event.set()
+        tasks.shutdown()
+
+
 def _work_contract(scope: ProjectWriteScope) -> str:
     from rcp.agents.prompts import PromptFactory
 
@@ -307,3 +324,32 @@ def test_the_chat_inventory_names_a_paper_chat_by_its_focus(tmp_path: Path) -> N
     admitted_launch_task(store, operation_id="plain-turn", request=work_request("plain"))
     focus = {row["chat_id"]: row.get("focus") for row in store.chat_inventory("project")}
     assert focus == {"coach": "paper", "plain": None}
+
+
+def test_a_turn_that_omits_the_focus_continues_the_paper_chat(manifest, tmp_path, monkeypatch):
+    import uuid
+
+    from tests.helpers import create_named_app, fake_launch_admitted, signed_in_client
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    client = signed_in_client(app)
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+
+    def send(**fields: object):
+        return client.post(
+            f"/api/projects/{project_id}/tasks/project_chat",
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={"chat_id": chat_id, "chat_scope": "project", "message": "Edit", **fields},
+        )
+
+    first = send(focus="paper")
+    assert first.status_code == 202, first.text
+    tasks.store.fail_agent_task(first.json()["operation_id"], "stopped")
+    later = send()
+    assert later.status_code == 202, later.text
+    record = tasks.store.agent_task(later.json()["operation_id"])
+    assert record.request["focus"] == "paper" and record.request["mode"] == "work"
+    assert record.dispatch_authority.scope.focus == "paper"

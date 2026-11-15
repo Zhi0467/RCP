@@ -1,8 +1,3 @@
-.paper-coach {
-  flex: 1;
-  min-width: 0;
-  position: relative;
-}
 /* The coach's few tools keep one row. */
 .paper-coach .chat-composer-tools {
   flex-wrap: nowrap;

@@ -413,7 +413,8 @@ host through its new target.
 ### Paper chats
 
 A chat has a `focus`: none, or `paper`. The chat's first turn fixes it through
-`RunRequest.focus`, stored in `chat_display.focus`; a later turn that
+`RunRequest.focus`, stored in `chat_display.focus`. A later turn that names
+no focus keeps the chat's, so the Chats list continues a Paper chat; one that
 names another focus is refused with 409. Requests and dispatch scopes from
 before focus load with none, so recovery keeps it. A Paper chat is the
 [Coach](paper-artifacts-and-result-views.md#coach). Its turns are always Work
@@ -423,7 +424,8 @@ and add the [Paper write root](providers-and-containment.md#paper-write-root).
 A Paper turn launches only while it is the project's oldest queued, running, or
 pausing Paper turn. A later one stays queued with "Waiting for another Paper
 turn", and the member can cancel it. When the holder settles, whether
-completed, interrupted, failed, or recovered, the oldest waiting turn launches.
+completed, interrupted, failed, paused, or recovered, and whether or not it
+ever had a worker, the oldest waiting turn launches.
 A Paper turn ends only after its provider process tree exits or recovery
 settles it.
 **Why:** two agents editing the same files at once would each merge against

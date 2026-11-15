@@ -84,7 +84,7 @@ const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
   { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
-  { id: "paper_coach", label: "Paper coach" },
+  { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
 

@@ -529,10 +529,11 @@ read-only. There is no Undo on a turn; History restore is the undo.
   mid-turn keeps them. `paper_state` also keeps what RCP itself last wrote at
   each path, so after a restart a member's save still merges with the agent's
   next write. The timer watches a turn the previous process left running.
-- **End.** After the provider process tree exits or recovery settles, the
-  editor flushes, the loop scans, and History saves the after version. A file
-  that differs between the two versions joins the list unless RCP wrote its
-  current bytes, which covers writes made while RCP was down. One `paper_turn` receipt records
+- **End.** After the provider process tree exits and before the task settles,
+  or when recovery settles it, the editor flushes, the loop scans, and History
+  saves the after version. A file that differs between the two versions joins
+  the list unless RCP wrote its current bytes, which covers writes made while
+  RCP was down. One `paper_turn` receipt records
   the before and after version ids; the files stay in `paper_turn_files`. A
   turn that failed before it took the Paper has no receipt and lists no files.
 

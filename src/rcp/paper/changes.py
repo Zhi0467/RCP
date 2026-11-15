@@ -3,24 +3,15 @@
 from __future__ import annotations
 
 from difflib import SequenceMatcher
-from typing import Literal, NamedTuple
+from typing import NamedTuple
 
 from rcp.limits import PAPER_CHANGES_DIFF_MAX_LINE_PAIRS
 
-_CARD_MERGE_GAP_LINES = 3
-# Past this share of changed lines, or this many cards, one rewrite card reads better.
-_REWRITE_CHANGED_SHARE = 0.4
-_REWRITE_CARD_COUNT = 12
-
 
 class LineChange(NamedTuple):
-    kind: Literal["edit", "rewrite"]
-    start: int
-    end: int
+    first_line: int
     before: str
     after: str
-    first_line: int
-    last_line: int
 
 
 def _line_opcodes(old: list[str], new: list[str]) -> list[tuple[str, int, int, int, int]]:
@@ -47,42 +38,11 @@ def _line_opcodes(old: list[str], new: list[str]) -> list[tuple[str, int, int, i
     ]
 
 
-def line_changes(before: str, after: str, *, grouped: bool = True) -> list[LineChange]:
-    """Return deterministic offset ranges for review against the saved base.
-
-    Grouped changes join nearby edits and become one rewrite past a share of the
-    file; ungrouped changes are each exact edit, as a line diff shows them.
-    """
+def line_changes(before: str, after: str) -> list[LineChange]:
+    """Each exact edit between two texts, as a line diff shows them."""
     old, new = before.splitlines(keepends=True), after.splitlines(keepends=True)
-    edits = [op for op in _line_opcodes(old, new) if op[0] != "equal"]
-    if not edits:
-        return []
-    regions: list[tuple[int, int, int, int]] = []
-    for _tag, a, b, c, d in edits:
-        if grouped and regions and a - regions[-1][1] <= _CARD_MERGE_GAP_LINES:
-            first = regions.pop()
-            regions.append((first[0], b, first[2], d))
-        else:
-            regions.append((a, b, c, d))
-    changed = max(sum(b - a for _, a, b, _, _ in edits), sum(d - c for _, _, _, c, d in edits))
-    rewrite = grouped and (
-        changed / max(len(old), len(new), 1) > _REWRITE_CHANGED_SHARE
-        or len(regions) > _REWRITE_CARD_COUNT
-    )
-    if rewrite:
-        regions = [(0, len(old), 0, len(new))]
-    offsets = [0]
-    for line in old:
-        offsets.append(offsets[-1] + len(line))
     return [
-        LineChange(
-            "rewrite" if rewrite else "edit",
-            offsets[a],
-            offsets[b],
-            "".join(old[a:b]),
-            "".join(new[c:d]),
-            a + 1,
-            max(a + 1, b),
-        )
-        for a, b, c, d in regions
+        LineChange(a + 1, "".join(old[a:b]), "".join(new[c:d]))
+        for tag, a, b, c, d in _line_opcodes(old, new)
+        if tag != "equal"
     ]

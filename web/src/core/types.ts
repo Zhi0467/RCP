@@ -2028,12 +2028,10 @@ export interface ComputeConnectionProbe {
 export interface AgentPermissions {
   read_graph: boolean;
   read_research_md: boolean;
-  read_introduction: boolean;
   read_repositories: "none" | "run_scope" | "project_scope";
   read_conversations: "none" | "run_scope";
   write_graph_patch: boolean;
   write_project_files: boolean;
-  write_paper: boolean;
 }
 
 /**

@@ -10,11 +10,9 @@ receipt.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.agents.memory_file_io import safe_component
-from rcp.paper.folder_io import paper_root
+from rcp.paper.folder_io import paper_root, safe_component
 from rcp.transport.run_stage import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -37,10 +35,10 @@ def paper_root_for(store: AppStore, project_id: str, remote_stage: RemoteRunStag
 
 def paper_folder_path(store: AppStore, project_id: str, *, remote: bool) -> str:
     """The Paper folder as a read-only pointer names it; nothing is created."""
-    safe_component(project_id)
     if remote:
-        return f"~/.rcp/paper/{project_id}"
-    return str(Path(store.path.parent).expanduser().resolve() / "paper" / project_id)
+        return f"~/.rcp/paper/{safe_component(project_id)}"
+    data_dir = store.path.parent.expanduser().resolve()
+    return str(data_dir / "paper" / safe_component(project_id))
 
 
 def is_paper_turn(record: AgentTaskRecord) -> bool:

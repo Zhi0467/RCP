@@ -168,12 +168,10 @@ AgentExecutionProfile = AgentSurface | Literal["orchestrator"]
 class AgentPermissions(BaseModel):
     read_graph: bool
     read_research_md: bool
-    read_introduction: bool
     read_repositories: Literal["none", "run_scope", "project_scope"]
     read_conversations: Literal["none", "run_scope"]
     write_graph_patch: bool
     write_project_files: bool = False
-    write_paper: bool = False
 
 
 class AgentSurfaceConfig(BaseModel):
@@ -380,24 +378,20 @@ def launches_work_like(surface: AgentExecutionProfile) -> bool:
 _RETIRED_COACH_PERMISSIONS = AgentPermissions(
     read_graph=True,
     read_research_md=True,
-    read_introduction=True,
     read_repositories="project_scope",
     read_conversations="none",
     write_graph_patch=False,
     write_project_files=False,
-    write_paper=False,
 )
 
 
 def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPermissions:
     """Return the immutable authority envelope for one launch capability."""
 
-    if target == "paper_coach":
-        return permissions_for("work_auto").model_copy(update={"write_paper": True})
     capability: AgentCapability
     if target in {"seed", "refresh"}:
         capability = "scratch_patch"
-    elif target in {"node_chat", "project_chat"}:
+    elif target in {"node_chat", "project_chat", "paper_coach"}:
         capability = "work_auto"
     elif target == "discuss":
         capability = "discuss"
@@ -414,34 +408,28 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
         return AgentPermissions(
             read_graph=True,
             read_research_md=True,
-            read_introduction=True,
             read_repositories="run_scope",
             read_conversations="run_scope",
             write_graph_patch=False,
             write_project_files=False,
-            write_paper=False,
         )
     if capability in {"work_auto", "orchestrate"}:
         return AgentPermissions(
             read_graph=True,
             read_research_md=True,
-            read_introduction=True,
             read_repositories="run_scope",
             read_conversations="run_scope",
             write_graph_patch=True,
             write_project_files=True,
-            write_paper=False,
         )
     if capability == "scratch_patch":
         return AgentPermissions(
             read_graph=True,
             read_research_md=True,
-            read_introduction=True,
             read_repositories="run_scope",
             read_conversations="run_scope",
             write_graph_patch=True,
             write_project_files=False,
-            write_paper=False,
         )
     raise ValueError(f"Unknown agent capability: {capability!r}")
 

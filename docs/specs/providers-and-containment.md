@@ -359,8 +359,11 @@ A Paper chat's Work turn carries `ProjectWriteScope.paper_root`, the project's
 other launch carries it. It is handled like a memory root: added to the writable
 roots, part of the scope fingerprint when set, and carved out of the RCP-owned
 deny list the same way for each provider. Both local and remote Paper folders
-are inside `rcp_owned_paths`, so a machine grant cannot admit them. Every other
-launch reads the folder, and its prompt names it as the Paper, read-only.
+are inside `rcp_owned_paths`, so a machine grant cannot admit them. When a grant
+covers the folder's owner, every other launch also protects the folder on its
+own, so a provider that drops the owner's deny to carve out a memory root still
+denies the Paper. Every other launch reads the folder, and its prompt names it
+as the Paper, read-only.
 
 ### Machine writable paths
 

@@ -612,6 +612,17 @@ def resolve_project_write_scope(
         path_semantics=path_semantics,
     )
 
+    if paper_root is None:
+        rcp_protected = [
+            *rcp_protected,
+            *_paper_folder_inside(
+                rcp_protected,
+                project_id=project_id,
+                account_home=account_home,
+                app_data_dir=app_data_dir,
+                path_semantics=path_semantics,
+            ),
+        ]
     base_protected = protected_repository_paths(
         manifest=manifest,
         repository_roots=[item.path for item in repository_roots],
@@ -649,6 +660,32 @@ def resolve_project_write_scope(
             else None
         ),
     )
+
+
+def _paper_folder_inside(
+    covered: list[str],
+    *,
+    project_id: str,
+    account_home: str,
+    app_data_dir: Path | None,
+    path_semantics: _ExecutionPathSemantics,
+) -> list[str]:
+    """The project's Paper folder, protected on its own when a grant covers its owner.
+
+    A provider that drops a protected owner to carve out this launch's memory root
+    still denies the Paper folder inside it to a turn that is not a Paper turn.
+    """
+    from rcp.paper.folder_io import safe_component
+
+    if path_semantics.remote:
+        owner = str(PurePosixPath(account_home) / ".rcp")
+    elif app_data_dir is not None:
+        owner = str(app_data_dir.expanduser().resolve())
+    else:
+        return []
+    if not any(path_semantics.equal(owner, path) for path in covered):
+        return []
+    return [str(PurePosixPath(owner) / "paper" / safe_component(project_id))]
 
 
 def protected_repository_paths(

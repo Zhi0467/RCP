@@ -68,7 +68,6 @@ _MAX_PATCH_CANDIDATES = 8
 _STATE_PATH_FIELDS = (
     "graph_path",
     "research_md_path",
-    "paper_path",
     "glossary_path",
     "facts_dir",
 )

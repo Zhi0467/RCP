@@ -76,9 +76,7 @@ def test_capability_permissions_are_fixed_and_narrow() -> None:
     assert work.write_project_files is True
     assert scratch.write_graph_patch is True
     assert scratch.write_project_files is False
-    assert paper.write_project_files is True
-    assert paper.write_paper is True
-    assert work.write_paper is False
+    assert paper == work
 
 
 def test_orchestrate_is_a_distinct_capability_with_work_permissions() -> None:
@@ -366,8 +364,10 @@ def test_retired_coach_permissions_load_as_the_paper_chat_table(manifest) -> Non
 
 def test_other_chat_permissions_are_still_refused(manifest) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["agent"]["node_chat"]["permissions"] = permissions_for("paper_coach").model_dump(
-        mode="python"
+    payload["agent"]["node_chat"]["permissions"] = (
+        permissions_for("work_auto")
+        .model_copy(update={"read_repositories": "project_scope"})
+        .model_dump(mode="python")
     )
 
     with pytest.raises(ValueError, match="safety contract"):
