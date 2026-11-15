@@ -153,10 +153,13 @@ pub enum Step {
 /// Re-matched on every tick, so a space added after the link arrived opens it.
 pub fn next_step(
     pending: &PendingShare,
-    connections: &[TeamConnectionMetadata],
+    connections: Result<&[TeamConnectionMetadata], &String>,
     established: impl Fn(&str) -> bool,
     backend_ready: bool,
 ) -> Step {
+    let Ok(connections) = connections else {
+        return Step::Wait;
+    };
     let Some(connection) = connections
         .iter()
         .find(|connection| connection.expected_space_id == pending.link.space_id)
@@ -285,23 +288,34 @@ mod tests {
         let matched = connection("c-lab", SPACE);
 
         assert_eq!(
-            next_step(&pending, std::slice::from_ref(&other), |_| true, true),
+            next_step(&pending, Ok(std::slice::from_ref(&other)), |_| true, true),
             Step::Unpaired
         );
         let saved = [other, matched];
         assert_eq!(
-            next_step(&pending, &saved, |id| id == "c-lab", false),
+            next_step(&pending, Ok(&saved), |id| id == "c-lab", false),
             Step::Open("c-lab".into())
         );
-        assert_eq!(next_step(&pending, &saved, |_| false, false), Step::Wait);
         assert_eq!(
-            next_step(&pending, &saved, |_| false, true),
+            next_step(&pending, Ok(&saved), |_| false, false),
+            Step::Wait
+        );
+        assert_eq!(
+            next_step(&pending, Ok(&saved), |_| false, true),
             Step::Reconnect("c-lab".into())
         );
         let attempted = PendingShare {
             reconnect_attempted: true,
             ..pending
         };
-        assert_eq!(next_step(&attempted, &saved, |_| false, true), Step::Wait);
+        assert_eq!(
+            next_step(&attempted, Ok(&saved), |_| false, true),
+            Step::Wait
+        );
+        let unreadable = "unreadable".to_string();
+        assert_eq!(
+            next_step(&attempted, Err(&unreadable), |_| true, true),
+            Step::Wait
+        );
     }
 }

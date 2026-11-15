@@ -172,7 +172,10 @@ fn open_main_popup(app: &AppHandle, url: Url) {
         .map(|status| status.base_url);
     if let Some(base_url) = current_base {
         if is_same_origin_popup(&url, &base_url) {
-            eprintln!("[rcp] dropped popup outside the active space: {url}");
+            eprintln!(
+                "[rcp] dropped popup outside the active space: {}",
+                navigation::loggable(&url)
+            );
             return;
         }
     }
@@ -185,7 +188,10 @@ fn open_main_popup(app: &AppHandle, url: Url) {
                 .any(|connection| is_same_origin_popup(&url, &connection.local_origin))
         })
     {
-        eprintln!("[rcp] dropped popup outside the active space: {url}");
+        eprintln!(
+            "[rcp] dropped popup outside the active space: {}",
+            navigation::loggable(&url)
+        );
         return;
     }
     if navigation::is_external_reference(&url) {
@@ -193,7 +199,10 @@ fn open_main_popup(app: &AppHandle, url: Url) {
             eprintln!("[rcp] could not open reference popup: {error}");
         }
     } else {
-        eprintln!("[rcp] dropped unsupported popup: {url}");
+        eprintln!(
+            "[rcp] dropped unsupported popup: {}",
+            navigation::loggable(&url)
+        );
     }
 }
 
@@ -244,7 +253,11 @@ pub fn recover_then_prepare_show(
         team_status.as_ref().map(|team| team.base_url.as_str()),
         uses_vite_dev_server(),
     )? {
-        eprintln!("[rcp] recovering the main window from {current} to {target}");
+        eprintln!(
+            "[rcp] recovering the main window from {} to {}",
+            navigation::loggable(&current),
+            navigation::loggable(&target)
+        );
         let generation = arm_handshake_fallback(app);
         stage_pending_recovery(PendingRecovery {
             generation,
@@ -448,6 +461,7 @@ fn reopen_navigation_target(
     if navigation::is_rcp_app_document_url(current, personal_base_url, allow_dev)
         || established_team_base_url.is_some_and(|base_url| {
             navigation::is_rcp_app_document_url(current, base_url, allow_dev)
+                || navigation::is_team_share_open_url(current, base_url)
         })
     {
         return Ok(None);
@@ -677,6 +691,31 @@ mod tests {
                 &url(&format!("{team}/api/projects/missing")),
                 personal,
                 Some(team),
+                false,
+            )
+            .unwrap(),
+            Some(url("http://127.0.0.1:18421/")),
+        );
+    }
+
+    #[test]
+    fn reopen_keeps_a_share_link_open_page_on_its_team_only() {
+        let personal = "http://127.0.0.1:18421";
+        let team = "https://rcp-11111111111141118111111111111111.rcp.localhost:19421";
+        let open = url(&format!("{team}/open#l=Token_1"));
+        assert_eq!(
+            reopen_navigation_target(&open, personal, Some(team), false).unwrap(),
+            None,
+        );
+        assert_eq!(
+            reopen_navigation_target(&open, personal, None, false).unwrap(),
+            Some(url("http://127.0.0.1:18421/")),
+        );
+        assert_eq!(
+            reopen_navigation_target(
+                &url("http://127.0.0.1:18421/open#l=Token_1"),
+                personal,
+                None,
                 false,
             )
             .unwrap(),

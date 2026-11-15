@@ -7,22 +7,32 @@ import {
   retryShareLink,
   type ShareLinkNotice as Notice,
 } from "../core/desktopRuntime";
+import { sshTargetForHost } from "./shareLinkNoticeModel";
 
-export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: (host: string) => void }) {
+export function ShareLinkNotice({
+  onAddTeamSpace,
+}: {
+  onAddTeamSpace: (sshTarget: string) => void;
+}) {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   useEffect(() => {
     let stopped = false;
     let unlisten: () => void = () => undefined;
+    let heard = false;
     void listenShareLinkUnpaired((next) => {
+      heard = true;
       if (!stopped) setNotice(next);
-    }).then((stop) => {
-      if (stopped) stop();
-      else unlisten = stop;
-    });
-    void readShareLinkNotice()
-      .then((current) => {
-        if (!stopped) setNotice(current);
+    })
+      .then((stop) => {
+        if (stopped) {
+          stop();
+          return;
+        }
+        unlisten = stop;
+        return readShareLinkNotice().then((current) => {
+          if (!stopped && !heard) setNotice(current);
+        });
       })
       .catch(() => undefined);
     return () => {
@@ -56,7 +66,7 @@ export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: (host: str
         <button
           className="button secondary"
           type="button"
-          onClick={() => onAddTeamSpace(notice.host)}
+          onClick={() => onAddTeamSpace(sshTargetForHost(notice.host))}
         >
           <Plus size={14} /> Add team space
         </button>

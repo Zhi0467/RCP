@@ -405,9 +405,9 @@ fn handle_event(kind: &str, adapter_id: &str, text: &str) {
             let Some(space) = adapter_id.split('|').next().and_then(Space::from_key) else {
                 return;
             };
-            if text.starts_with("#/") && !open(app, &space, text) {
-                // The poller retries until the backend or team is reachable.
-                state.lock().pending = Some(Pending::Click(space, text.to_string()));
+            if text.starts_with("#/") {
+                let opened = open(app, &space, text);
+                record_click(&state, space, text, opened);
                 publish_share_notice(app);
             }
         }
@@ -460,6 +460,12 @@ fn open(app: &AppHandle, space: &Space, path_and_fragment: &str) -> bool {
     true
 }
 
+/// The newest item owns the slot: an opened click drops an older share link,
+/// and one that cannot open yet waits for the poller.
+fn record_click(state: &NotificationState, space: Space, link: &str, opened: bool) {
+    state.lock().pending = (!opened).then(|| Pending::Click(space, link.to_string()));
+}
+
 fn same_origin_target(origin: &Url, path_and_fragment: &str) -> Option<Url> {
     origin
         .join(path_and_fragment)
@@ -487,15 +493,17 @@ pub fn advance_pending(app: &AppHandle) {
 }
 
 fn advance_share(app: &AppHandle, state: &NotificationState, share: PendingShare) {
-    let connections = app
-        .state::<TeamConnectionState>()
-        .list()
-        .unwrap_or_default();
+    let connections = app.state::<TeamConnectionState>().list();
+    if let Err(error) = &connections {
+        eprintln!(
+            "[rcp] a share link waits because saved team connections are unreadable: {error}"
+        );
+    }
     let sessions = app.state::<TeamSessionState>();
     let backend_ready = app.state::<BackendState>().status().is_ok();
     let step = share_links::next_step(
         &share,
-        &connections,
+        connections.as_deref(),
         |id| sessions.established(id).is_ok(),
         backend_ready,
     );
@@ -506,7 +514,11 @@ fn advance_share(app: &AppHandle, state: &NotificationState, share: PendingShare
                 publish_share_notice(app);
             }
         }
-        Step::Unpaired => set_share_notice(app, state, &share.link, Some(NoticeState::Unpaired)),
+        Step::Unpaired => {
+            if share.notice != Some(NoticeState::Unpaired) {
+                set_share_notice(app, state, &share.link, Some(NoticeState::Unpaired));
+            }
+        }
         Step::Wait => {
             if share.notice == Some(NoticeState::Unpaired) {
                 set_share_notice(app, state, &share.link, None);
@@ -594,9 +606,14 @@ pub fn receive_share_link(app: &AppHandle, link: ShareLink) {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(link);
         return;
     };
-    state.lock().pending = Some(Pending::Share(PendingShare::new(link)));
+    state.lock().pending = Some(Pending::Share(PendingShare::new(link.clone())));
     publish_share_notice(app);
     advance_pending(app);
+    let waiting =
+        matches!(&state.lock().pending, Some(Pending::Share(pending)) if pending.link == link);
+    if waiting {
+        crate::verify_then_prepare_show(app.clone(), "share-link");
+    }
 }
 
 /// Call once the state is managed, so a link that launched the app is kept.
@@ -847,6 +864,24 @@ mod tests {
         state.lock().pending = Some(Pending::Share(PendingShare::new(new.clone())));
         update_share(&state, &new, |pending| *pending = None);
         assert!(state.lock().pending.is_none());
+    }
+
+    #[test]
+    fn an_opened_click_drops_an_older_share_link() {
+        let state = NotificationState {
+            inner: Arc::default(),
+            settings_path: PathBuf::new(),
+        };
+        state.lock().pending = Some(Pending::Share(PendingShare::new(share("old"))));
+        record_click(&state, Space::Personal, "#/projects/p", true);
+        assert!(state.lock().pending.is_none());
+
+        state.lock().pending = Some(Pending::Share(PendingShare::new(share("old"))));
+        record_click(&state, Space::Personal, "#/projects/p", false);
+        assert!(matches!(
+            &state.lock().pending,
+            Some(Pending::Click(Space::Personal, link)) if link == "#/projects/p"
+        ));
     }
 
     #[test]
