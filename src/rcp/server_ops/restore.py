@@ -54,8 +54,8 @@ from rcp.storage.models import SpaceMachineRecord
 RESTORE_DIRECTORY_MODE = 0o700
 
 # Every schema era accepted by the immutable server-upgrade harness, plus the
-# current schema. A later schema change must deliberately extend this set before
-# that release can restore its own archives.
+# current schema. A digest on merged main is frozen: a server may hold a backup
+# that carries it. scripts/regenerate_registries.py appends a branch's digests.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         "4404afe8b61ac3bc3ebac1c47344d7351142f3aa52dfac00c335318e44c80885",

@@ -91,7 +91,7 @@ extend-exclude = [
 ]
 
 # Python shipped as source to hosts whose python3 may be 3.9.
-# tests/test_shipped_sources.py derives the set and checks this list.
+# tests/shipped_sources.py derives the set; scripts/regenerate_registries.py writes it.
 [tool.ruff.per-file-target-version]
 "src/rcp/agents/grant_paths.py" = "py39"
 "src/rcp/agents/memory_file_io.py" = "py39"
@@ -105,9 +105,12 @@ extend-exclude = [
 "src/rcp/git_access.py" = "py39"
 "src/rcp/git_identity.py" = "py39"
 "src/rcp/paper/folder_io.py" = "py39"
-"src/rcp/providers/*/remote.py" = "py39"
+"src/rcp/providers/agy/remote.py" = "py39"
+"src/rcp/providers/claude/remote.py" = "py39"
 "src/rcp/providers/codex/homes.py" = "py39"
+"src/rcp/providers/codex/remote.py" = "py39"
 "src/rcp/providers/login_homes.py" = "py39"
+"src/rcp/providers/opencode/remote.py" = "py39"
 "src/rcp/providers/session_format.py" = "py39"
 "src/rcp/providers/turn_fence.py" = "py39"
 "src/rcp/rcp_home.py" = "py39"
@@ -115,7 +118,9 @@ extend-exclude = [
 "src/rcp/regular_tree_reader.py" = "py39"
 "src/rcp/repository_window.py" = "py39"
 "src/rcp/server_ops/provider_cleanup.py" = "py39"
-"src/rcp/server_ops/remote_*.py" = "py39"
+"src/rcp/server_ops/remote_git_credentials.py" = "py39"
+"src/rcp/server_ops/remote_private_exec.py" = "py39"
+"src/rcp/server_ops/remote_project_checkout.py" = "py39"
 "src/rcp/sources/record_parsing.py" = "py39"
 "src/rcp/terminals/git_access.py" = "py39"
 "src/rcp/terminals/profile.py" = "py39"
@@ -123,7 +128,24 @@ extend-exclude = [
 "src/rcp/transport/conversation_worktree.py" = "py39"
 "src/rcp/transport/provider_discovery.py" = "py39"
 "src/rcp/transport/provider_session_delete.py" = "py39"
-"src/rcp/transport/remote_*.py" = "py39"
+"src/rcp/transport/remote_archive_research.py" = "py39"
+"src/rcp/transport/remote_backup_checkout.py" = "py39"
+"src/rcp/transport/remote_backup_inventory.py" = "py39"
+"src/rcp/transport/remote_compute_probe.py" = "py39"
+"src/rcp/transport/remote_job_files.py" = "py39"
+"src/rcp/transport/remote_lock_holder.py" = "py39"
+"src/rcp/transport/remote_read_kept_view.py" = "py39"
+"src/rcp/transport/remote_repository_browser.py" = "py39"
+"src/rcp/transport/remote_ssh_agent.py" = "py39"
+"src/rcp/transport/remote_stage_root.py" = "py39"
+"src/rcp/transport/remote_state_transfer.py" = "py39"
+"src/rcp/transport/remote_terminal.py" = "py39"
+"src/rcp/transport/remote_terminal_probe.py" = "py39"
+"src/rcp/transport/remote_terminate_provider.py" = "py39"
+"src/rcp/transport/remote_transfer_git.py" = "py39"
+"src/rcp/transport/remote_turn_journal.py" = "py39"
+"src/rcp/transport/remote_turn_supervisor.py" = "py39"
+"src/rcp/transport/remote_verify_imported_sources.py" = "py39"
 "src/rcp/transport/watcher_process.py" = "py39"
 
 [tool.ruff.lint]
