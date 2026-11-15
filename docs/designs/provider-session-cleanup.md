@@ -36,15 +36,19 @@ passes it to the provider's own delete command.
   session"); the sweep then counts it gone if no `rollout-*-<id>.jsonl*` exists.
 - **OpenCode** has no pruning. `opencode session delete <id>` works; a missing id
   prints "Session not found", which counts as gone.
-- **Claude** prunes itself (`cleanupPeriodDays`, default 30). The binary skips
-  that when `--setting-sources` excludes user settings and no source sets the
-  value, as the audit said. But setting it in RCP's `--settings`
-  (claude/profile.py:568-611) would not help. The sweep is daily housekeeping
-  started from an interactive session; no print-mode call site was found, and a
-  print-mode probe kept a 44-day-old transcript with and without the setting. It
-  is also account-wide, so a flag value would override a person's own retention.
-  Most launches already use `--setting-sources user` (profile.py:274). See
-  open decision 1.
+- **Claude** prunes itself (`cleanupPeriodDays`, default 30), but setting it in
+  RCP's `--settings` (claude/profile.py:568-611) would not help. That sweep is
+  daily housekeeping started from an interactive session. No print-mode call site
+  was found, and a print-mode probe kept a 44-day-old transcript with and without
+  the setting. It is also account-wide, so a flag value would override a person's
+  own retention. Claude has no delete command, so RCP deletes its own transcripts
+  by exact path: `<config>/projects/<key>/<id>.jsonl` and the folder
+  `<config>/projects/<key>/<id>/` (it holds `subagents`). `<config>` is
+  `CLAUDE_CONFIG_DIR` or `~/.claude` on the execution account. `<key>` is
+  `claude_project_directory(cwd)` (providers/claude/remote.py:48-63). The fork
+  path builds the same path (remote.py:80-82). The cwd is the chat's stage
+  workspace (`_chat_stage_workspace`, agent_tasks.py:2300-2308). Only node and
+  project chats have it; other Claude sessions are kept and counted in the log.
 - **agy** has no delete or retention command in `agy --help`. RCP leaves it
   alone; the spec and each sweep's log say so.
 
@@ -114,22 +118,28 @@ Startup re-prepares the Codex home of every login, removed ones too (api/app.py:
 - Machine removal (api/space_machines.py:944-993) runs this cleanup for the
   machine's logins when reachable. Another backend may share the account's
   `~/.rcp`, so nothing else is removed; stages and hidden-read folders age out
-  via whichever backend still uses it. If unreachable, the response says what was left.
+  via whichever backend still uses it. The route returns only `{"deleted": id}`
+  (space_machines.py:993), with no message to extend. So an unreachable host is
+  logged only: the machine id and the count of leftover login folders.
 
 ## Limits
 
-`limits.py`: `PROVIDER_SESSION_RETENTION_DAYS = 30`, `PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS
-= 86400`, `PROVIDER_SESSION_SWEEP_BATCH = 500` per machine per pass, and
-`PROVIDER_SESSION_DELETE_TIMEOUT_SECONDS = 30` per delete.
+`limits.py`: `PROVIDER_SESSION_RETENTION_DAYS = 30`, `..._SWEEP_INTERVAL_SECONDS = 86400`,
+`..._SWEEP_BATCH = 500` per machine per pass, `..._DELETE_TIMEOUT_SECONDS = 30`.
 
-## Open decisions
+## Branching from a swept chat
 
-1. Claude: drop audit fix 4. Recommended: RCP deletes its own Claude transcripts
-   by exact id (`projects/*/<id>.jsonl` and `projects/*/<id>/`) under the same rule
-   and guard, since Claude has no delete command. The alternative leaves Claude to
-   its interactive sweep, which never runs on a headless server.
-2. Unreachable host at machine removal: a one-line note listing leftover login
-   homes (needs a mockup), or a log line only. Recommended: the note.
+Branching keeps refusing a chat whose session was dropped
+(`_usable_chat_fork_source`, agent_tasks.py:1745-1768). Today that is a dead end.
+The routes return the raw text "The source chat turn has no settled, usable
+native session." (api/chats.py:79-88, 120), shown only as the hover title of a
+failed pick (web/src/chat/ChatBranchPicker.tsx:69, 79). It says neither why nor
+what to do, though a way exists: a new conversation on the branch.
+
+Smallest fix: a dropped session raises the coded refusal `chat_session_expired`;
+both branch routes return `{code, message}`. `TURN_REFUSAL_REASONS`
+(web/src/core/api.ts:387-404) gains one entry: the agent session expired after
+30 idle days; start a new conversation on the branch. No new UI.
 
 ## Checks
 
@@ -138,6 +148,8 @@ Startup re-prepares the Codex home of every login, removed ones too (api/app.py:
 - Guard: fake `codex` and `opencode` on PATH record argv; with an old RCP session
   and a human session in one home, only the RCP id is deleted.
 - Chat: age a chat, sweep, send a turn; it starts fresh with no failed turn.
+  Branching it returns `chat_session_expired`.
+- Claude: the exact transcript and its folder go; a sibling session stays.
 - `classify_terminal_error` returns `stale_session` for the three probed texts.
 - Hidden read: old folders go, touched ones stay, remote sweeps too, and tests
   leave the real `~/.rcp/hidden-read` count unchanged.
