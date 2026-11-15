@@ -346,9 +346,10 @@ the agent row is not offered to them.
 - **Parsing:**
   - Posts parse `<@member:ID>` with a member-only variant of the Bulletin
     `_parse`, which refuses agent tokens.
-  - A mention of a member who cannot read the target is dropped and stays plain
-    text.
-  - The picker lists only members who can read the target.
+  - A post that mentions a member who cannot read the target is refused with
+    `comment_mention_unreadable`, so no token is stored without its Inbox entry.
+  - The picker lists project members; the server's refusal is the readability
+    check.
 - **Agent row:** the picker has one agent row, "the target's agent". Picking it
   saves the post without a token, then sends that thread.
 - **Mention rows:**

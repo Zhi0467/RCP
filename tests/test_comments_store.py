@@ -280,7 +280,7 @@ def test_each_comment_table_invalidates_on_each_mutation(store):
     assert store.get_comment_thread("project", item["thread_id"])["state"] == "open"
 
 
-def test_member_mentions_drop_private_target_nonreaders(store):
+def test_member_mentions_refuse_private_target_nonreaders(store):
     from .test_bulletin_store import other_member
 
     actor = store.local_owner.user_id
@@ -296,15 +296,17 @@ def test_member_mentions_drop_private_target_nonreaders(store):
             "UPDATE graph_runs SET request_json=json_set(request_json,'$.chat_id',?) WHERE operation_id='turn'",
             (chat.thread_id,),
         )
-    item = store.create_comment_thread(
-        "project",
-        target_kind="reply",
-        target_id="turn",
-        anchor={"kind": "whole"},
-        text=f"<@member:{member.user_id}>",
-        user_id=actor,
-    )
-    assert item["posts"][0]["mentions"] == []
+    with pytest.raises(CommentError) as refused:
+        store.create_comment_thread(
+            "project",
+            target_kind="reply",
+            target_id="turn",
+            anchor={"kind": "whole"},
+            text=f"<@member:{member.user_id}>",
+            user_id=actor,
+        )
+    assert refused.value.code == "comment_mention_unreadable"
+    assert store.list_comment_threads("project", "reply", "turn") == []
     assert store.comment_target_route(member.user_id, "reply", "turn", project_id="project") is None
     assert store.open_comment_mentions("project", member.user_id) == []
 

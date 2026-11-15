@@ -284,7 +284,12 @@ def _save_post(
         raise CommentError(
             "comment_agent_mention_invalid", "Use Send to agent instead of an agent mention."
         ) from exc
-    members = {m["id"] for m in mentions if route.readable_by(connection, m["id"])}
+    members = {m["id"] for m in mentions}
+    if not all(route.readable_by(connection, member) for member in members):
+        raise CommentError(
+            "comment_mention_unreadable",
+            "Someone you mentioned can't see this. Remove the mention to post.",
+        )
     connection.execute(
         "INSERT INTO comment_posts VALUES (?,?,?,?,?,?,NULL)",
         (post_id, thread["project_id"], thread["thread_id"], user_id, text, now),
