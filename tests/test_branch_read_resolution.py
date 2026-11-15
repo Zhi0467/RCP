@@ -201,9 +201,7 @@ def test_remote_branch_resolution_and_display_use_pinned_inputs(
     assert pins == 2
 
 
-def test_remote_project_snapshot_reads_published_manifest_and_live_paper_badge(
-    branch_service, monkeypatch, tmp_path
-):
+def test_remote_project_snapshot_reads_published_manifest(branch_service, monkeypatch, tmp_path):
     import shutil
 
     from rcp.transport import SSHStateWorkspace
@@ -218,8 +216,6 @@ def test_remote_project_snapshot_reads_published_manifest_and_live_paper_badge(
     document = document.replace(service.manifest.repositories[0].path, "relative-repository")
     document = document.replace(service.manifest.sources.claude_roots[0], "relative-chats")
     manifest_path.write_text(document)
-    (stage / "paper").mkdir(exist_ok=True)
-    (stage / "paper" / "introduction.md").write_text("Published introduction")
     workspace._generations.publish(stage)
     service.history.workspace = workspace
     service.paper.workspace = workspace
@@ -242,7 +238,6 @@ def test_remote_project_snapshot_reads_published_manifest_and_live_paper_badge(
     assert snapshot["repositories"][0]["path"] == expected_repository
     assert snapshot["name"] == "published"
     assert snapshot["canonical_state"]["remote"] is True
-    assert snapshot["paper"] is False
     assert service.manifest.name != "published"
 
 

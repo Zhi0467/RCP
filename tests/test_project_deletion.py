@@ -610,3 +610,38 @@ def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
     worker.join()
     retried = client.delete(f"/api/projects/{project_id}")
     assert retried.status_code == 200, retried.text
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_catalog_delete_removes_the_paper_folder(manifest, tmp_path, monkeypatch, remote) -> None:
+    import subprocess
+    import sys
+
+    from rcp.paper.folder import paper_folders
+
+    home = tmp_path / "base-home"
+    home.mkdir()
+
+    def ssh(self, arguments, *, input_data=None, **kwargs):
+        return subprocess.run(
+            [sys.executable, "-I", *arguments[1:]],
+            input=input_data,
+            capture_output=True,
+            env={"HOME": str(home)},
+        )
+
+    monkeypatch.setattr(RemoteRunStage, "_ssh_bytes", ssh)
+    data_dir = tmp_path / "app-data"
+    store = AppStore(data_dir / "rcp.sqlite3")
+    catalog = ProjectCatalog(data_dir, store, AgentLauncher())
+    record = catalog.register(str(manifest.path), identity_action="adopted")
+    if remote:
+        machine = store.create_space_machine(name="Base", host="base", os_account="")
+        store.upsert_project(record.model_copy(update={"state_machine_id": machine.machine_id}))
+    paper_folders(store, data_dir)(record.project_id).write("main.tex", b"body", None)
+    folder = (home / ".rcp" if remote else data_dir) / "paper" / record.project_id
+    assert (folder / "main.tex").read_bytes() == b"body"
+
+    catalog.delete(record.project_id)
+
+    assert not folder.exists()

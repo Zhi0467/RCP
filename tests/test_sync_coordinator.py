@@ -220,19 +220,19 @@ def test_remote_display_never_prepares_and_cannot_lag_its_content_token(
                 is not None
             )
             catalog.readiness_snapshot(project_id)
-    before = catalog.content_generations(project_id, ["paper", "graph:main"])
+    before = catalog.content_generations(project_id, ["chats", "graph:main"])
     with workspace.read_snapshot() as root:
         stage = workspace._generations.stage()
         shutil.copytree(root, stage, dirs_exist_ok=True)
-    (stage / "paper").mkdir(exist_ok=True)
-    (stage / "paper" / "introduction.md").write_text("New canonical introduction")
+    (stage / "chat").mkdir(exist_ok=True)
+    (stage / "chat" / "project-11111111-1111-4111-8111-111111111111.jsonl").write_text("{}\n")
     workspace._generations.publish(stage)
     after = catalog.content_generations(project_id, before)
-    assert after["paper"] != before["paper"]
+    assert after["chats"] != before["chats"]
     assert after["graph:main"] == before["graph:main"]
     second = client.get(f"/api/projects/{project_id}")
     assert second.status_code == 200, second.text
-    assert second.json()["paper"] == first.json()["paper"]
+    assert second.json()["name"] == first.json()["name"]
 
 
 def test_execution_reloads_authoritative_manifest_before_resolving_write_scope(

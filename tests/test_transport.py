@@ -193,7 +193,6 @@ def test_history_publishes_only_explicit_canonical_files(manifest) -> None:
     assert "graph.json" in published
     assert "research.md" in published
     assert "manifest.toml" in published
-    assert "paper/introduction.md" not in published
 
 
 def test_coherent_remote_initialization_reuses_refreshed_snapshot_without_publish(
@@ -2667,9 +2666,7 @@ def test_remote_capture_keeps_pinned_readers_off_transfer_and_retains_failed_sna
     assert workspace.sync_health()["last_completed_at"] is not None
 
 
-def test_remote_generations_track_deletion_chat_and_paper_without_graph_head(
-    tmp_path, manifest, monkeypatch
-):
+def test_remote_generations_track_chat_deletion_without_graph_head(tmp_path, manifest, monkeypatch):
     _remote_capture_manifest(manifest)
     workspace = SSHStateWorkspace(tmp_path / "mirror", "research.example", "/srv/project")
     monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
@@ -2681,28 +2678,23 @@ def test_remote_generations_track_deletion_chat_and_paper_without_graph_head(
     )
     chat_id = "11111111-1111-4111-8111-111111111111"
     chat = manifest.research_dir / "chat" / f"project-{chat_id}.jsonl"
-    paper = manifest.research_dir / "paper" / "introduction.md"
     chat.parent.mkdir()
-    paper.parent.mkdir(exist_ok=True)
     chat.write_text('"first"\n')
-    paper.write_text("first")
     workspace.capture()
-    families = ["graph:main", "refs", "chats", f"chat:{chat_id}", "paper", "unknown"]
+    families = ["graph:main", "refs", "chats", f"chat:{chat_id}", "unknown"]
     before = workspace.content_generations(families)
     with workspace.read_snapshot() as old:
         chat.unlink()
-        paper.write_text("second")
         workspace.capture()
         after = workspace.content_generations(families)
         assert before["graph:main"] == after["graph:main"]
         assert before["unknown"] == after["unknown"]
-        assert all(before[key] != after[key] for key in ("chats", f"chat:{chat_id}", "paper"))
+        assert all(before[key] != after[key] for key in ("chats", f"chat:{chat_id}"))
         assert (old / "chat" / chat.name).exists()
 
         def observe():
             with workspace.read_snapshot() as new:
                 assert not (new / "chat" / chat.name).exists()
-                assert (new / "paper/introduction.md").read_text() == "second"
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(observe).result(timeout=5)
@@ -2733,17 +2725,17 @@ def test_capture_and_writer_share_order_but_not_display_lock(tmp_path, manifest,
 
     monkeypatch.setattr(capture_workspace, "_pull_remote_tree", transfer)
     monkeypatch.setattr(writer, "_publish", lambda paths, lease: None)
-    (root / "paper").mkdir(exist_ok=True)
-    (root / "paper/introduction.md").write_text("committed")
+    (root / "facts").mkdir(exist_ok=True)
+    (root / "facts/note.md").write_text("committed")
     with ThreadPoolExecutor(max_workers=2) as pool:
         capture = pool.submit(capture_workspace.capture)
         assert entered.wait(5)
-        publication = pool.submit(writer.publish, ["paper/introduction.md"])
+        publication = pool.submit(writer.publish, ["facts/note.md"])
         release.set()
         capture.result(timeout=5)
         publication.result(timeout=5)
     with capture_workspace.read_snapshot() as snapshot:
-        assert (snapshot / "paper/introduction.md").read_text() == "committed"
+        assert (snapshot / "facts/note.md").read_text() == "committed"
 
 
 def test_cold_display_schedules_without_sync_and_local_reads_do_no_added_work(tmp_path):
@@ -2757,10 +2749,10 @@ def test_cold_display_schedules_without_sync_and_local_reads_do_no_added_work(tm
     with local.read_snapshot() as root:
         assert root == local.root
     assert not root.exists()
-    before = local.content_generations(["paper", "unknown"])
-    local.publish(["paper/introduction.md"])
-    after = local.content_generations(["paper", "unknown"])
-    assert before["paper"] != after["paper"]
+    before = local.content_generations(["settings", "unknown"])
+    local.publish(["manifest.toml"])
+    after = local.content_generations(["settings", "unknown"])
+    assert before["settings"] != after["settings"]
     assert before["unknown"] == after["unknown"]
     assert local.sync_health()["status"] == "local"
 
@@ -2781,8 +2773,8 @@ def test_remote_generation_descriptor_survives_restart_and_nested_reads_stay_pin
     )
     workspace.capture()
     with workspace.read_snapshot() as previous:
-        (manifest.research_dir / "paper").mkdir(exist_ok=True)
-        (manifest.research_dir / "paper/introduction.md").write_text("updated")
+        (manifest.research_dir / "facts").mkdir(exist_ok=True)
+        (manifest.research_dir / "facts/note.md").write_text("updated")
         workspace.capture()
         other = SSHStateWorkspace(workspace.root, workspace.host, str(workspace.remote_repository))
         with other.read_snapshot() as nested:
@@ -2791,7 +2783,7 @@ def test_remote_generation_descriptor_survives_restart_and_nested_reads_stay_pin
     restarted.restore()
     with restarted.pin() as restored:
         assert restored is not None
-        assert (restored / "paper/introduction.md").read_text() == "updated"
+        assert (restored / "facts/note.md").read_text() == "updated"
     assert restarted.completed is not None
     assert restarted.versions == workspace._generations.versions
 
