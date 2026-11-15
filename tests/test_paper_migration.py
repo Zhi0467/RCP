@@ -173,6 +173,8 @@ def test_a_project_without_legacy_paper_owes_nothing(tmp_path):
         folder = LocalPaperFolder(paper_root(tmp_path, "p"))
         assert not migrate_paper(store, "p", folder, lambda: _empty_workspace(tmp_path))
         assert not migrate_paper(store, "p", folder, lambda: pytest.fail("already settled"))
+        assert _files(folder) == {}
+        assert _row(store, "SELECT count(*) FROM paper_migrations WHERE project_id='p'") == (1,)
     finally:
         store.close()
 
@@ -327,6 +329,33 @@ def test_a_paper_published_only_to_the_state_moves_into_its_folder(tmp_path):
         assert asyncio.run(tree()) == {"introduction.md", "a/b.tex"}
         assert _files(folder) == {"introduction.md": b"Published", "a/b.tex": b"B"}
         assert not (workspace.root / "paper").exists()
+    finally:
+        store.close()
+
+
+def test_a_committed_paper_tree_without_paper_rows_is_adopted(tmp_path):
+    import subprocess
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        workspace = _projection(tmp_path, {"introduction.md": "Intro", "fig/a.png": "PNG"})
+        for command in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "paper"]):
+            subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@t", *command],
+                cwd=workspace.root,
+                check=True,
+            )
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+
+        assert _migrate(store, folder, workspace)
+
+        assert _files(folder) == {"introduction.md": b"Intro", "fig/a.png": b"PNG"}
+        assert not (workspace.root / "paper").exists()
+        assert _row(store, "SELECT count(*) FROM paper_migrations WHERE project_id='p'") == (1,)
+        assert _row(
+            store, "SELECT count(DISTINCT file_id) FROM paper_files WHERE project_id='p'"
+        ) == (2,)
+        assert _versions(store) == {}
     finally:
         store.close()
 
