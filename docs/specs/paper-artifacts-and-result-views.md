@@ -141,8 +141,8 @@ An older database or state migrates at startup, once per project, after
 machine cards settle and before recovery. A project whose SSH base misses a
 short probe is left for its first Paper open. A project with neither SQLite Paper
 rows nor a `.research/paper` publication is only marked. Migration writes the
-saved snapshot, else the publication, into a sibling temp folder and renames it
-into place. Paths that differ only by case get distinct names, and paths the
+saved snapshot with each text file's unsaved editor edits applied, else the
+publication, into a sibling temp folder and renames it into place. Paths that differ only by case get distinct names, and paths the
 scan would hide are logged. It folds unsaved editor updates into the cache and
 keeps the old `file_id`s. A legacy draft replaces the published
 `introduction.md` only when it was based on that text. Whatever the folder did

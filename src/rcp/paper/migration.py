@@ -3,8 +3,8 @@
 The steps run in order and each one is idempotent. The `paper_migrations` row
 is written last, so a crash resumes at the first unfinished step:
 
-1. Install the last saved tree, else the `.research/paper` publication with any
-   legacy draft, into the empty folder through a sibling staging directory. A
+1. Install the last saved tree with each text file's newest editor text, else
+   the `.research/paper` publication with any legacy draft, into the empty folder through a sibling staging directory. A
    folder that already holds files was installed.
 2. In one transaction: keep the publication and any draft the folder did not
    take as named History versions; give a published-only tree its `file_id`s;
@@ -158,14 +158,20 @@ def _read_projection(workspace: StateWorkspace) -> dict[str, bytes]:
 
 
 def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Plan:
-    """The saved tree wins; else the publication, whose text a stale draft never replaces."""
+    """The saved tree with its newest editor text wins; else the publication, whose text a stale draft never replaces."""
     with store.connection() as connection:
         saved = None
         if connection.execute(
             "SELECT 1 FROM paper_publication WHERE project_id = ?", (project_id,)
         ).fetchone():
             snapshot = PaperSnapshotReader(connection).legacy_saved_snapshot(project_id)
-            saved = {file.path: snapshot.file_bytes(file) for file in snapshot.files}
+            folded = _folded(connection, project_id)
+            saved = {
+                file.path: folded[file.file_id][2].encode()
+                if file.file_id in folded
+                else snapshot.file_bytes(file)
+                for file in snapshot.files
+            }
         draft = connection.execute(
             "SELECT content, base_hash FROM paper_drafts WHERE project_id = ?", (project_id,)
         ).fetchone()
@@ -297,7 +303,8 @@ def _keep_version(
     )
 
 
-def _fold_updates(connection: sqlite3.Connection, project_id: str) -> None:
+def _folded(connection: sqlite3.Connection, project_id: str) -> dict[str, tuple[bytes, int, str]]:
+    """Each live text file's compacted CRDT state, last folded `seq`, and newest text."""
     file_ids = [
         row[0]
         for row in connection.execute(
@@ -306,6 +313,7 @@ def _fold_updates(connection: sqlite3.Connection, project_id: str) -> None:
             (project_id,),
         )
     ]
+    folded = {}
     for file_id in file_ids:
         cached = connection.execute(
             "SELECT state, through_seq FROM paper_doc_states WHERE project_id = ? AND file_id = ?",
@@ -323,13 +331,18 @@ def _fold_updates(connection: sqlite3.Connection, project_id: str) -> None:
         doc = Doc({"text": Text()}, skip_gc=False)
         doc.apply_update(encoded)
         state = merge_updates(doc.get_update(), get_update(encoded, doc.get_state()))
-        through = tail[-1][0] if tail else through
+        folded[file_id] = (state, tail[-1][0] if tail else through, str(doc["text"]))
+    return folded
+
+
+def _fold_updates(connection: sqlite3.Connection, project_id: str) -> None:
+    for file_id, (state, through, text) in _folded(connection, project_id).items():
         connection.execute(
             "INSERT INTO paper_doc_states(project_id, file_id, state, through_seq, text_sha256) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(project_id, file_id) DO UPDATE SET "
             "state = excluded.state, through_seq = excluded.through_seq, "
             "text_sha256 = excluded.text_sha256",
-            (project_id, file_id, state, through, digest(str(doc["text"]).encode())),
+            (project_id, file_id, state, through, digest(text.encode())),
         )
         connection.execute(
             "DELETE FROM paper_updates WHERE project_id = ? AND file_id = ? AND seq <= ?",

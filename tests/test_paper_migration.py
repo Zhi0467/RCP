@@ -5,6 +5,7 @@ import hashlib
 import json
 
 import pytest
+from pycrdt import Doc, Text
 
 from rcp.paper import PaperLive
 from rcp.paper import migration as paper_migration
@@ -111,6 +112,43 @@ def test_editor_keeps_old_file_ids_and_uses_the_folded_cache(legacy):
 
     asyncio.run(scenario())
     assert not needs_paper_migration(store, "p")
+
+
+def test_edits_newer_than_the_saved_tree_reach_the_folder_and_the_editor(legacy):
+    store, _seeded, folder, workspace = legacy
+    with store.connection() as connection:
+        state, through = connection.execute(
+            "SELECT state, through_seq FROM paper_doc_states WHERE file_id='intro'"
+        ).fetchone()
+        tail = [
+            row[0]
+            for row in connection.execute(
+                "SELECT \"update\" FROM paper_updates WHERE file_id='intro' AND seq > ?",
+                (through,),
+            )
+        ]
+        doc = Doc({"text": Text()}, skip_gc=False)
+        for update in (state, *tail):
+            doc.apply_update(update)
+        before = doc.get_state()
+        doc["text"].insert(len(str(doc["text"])), "!")
+        connection.execute(
+            "INSERT INTO paper_updates VALUES ('p', 'intro', 3, ?, 3, 'human', "
+            "'2026-01-01T00:00:05+00:00')",
+            (doc.get_update(before),),
+        )
+    live = PaperLive(
+        store, lambda _project: folder, prepare=lambda project: _migrate(store, folder, workspace)
+    )
+
+    async def scenario():
+        await live.tree("p")
+        room = await live.connect("p", "intro")
+        assert str(room.doc["text"]) == "Hello world!"
+        await live.close()
+
+    asyncio.run(scenario())
+    assert _files(folder)["sections/intro.md"] == b"Hello world!"
 
 
 @pytest.mark.parametrize("step", ["_settle_database", "remove_projection", "_mark"])
