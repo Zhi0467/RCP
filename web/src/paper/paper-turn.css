@@ -187,14 +187,13 @@
     transform: translateX(12px);
   }
 }
-.paper-coach-body[data-diff] {
-  flex-direction: column-reverse;
+.paper-coach-body[data-diff] > .chat-dock {
+  display: none;
 }
 .paper-coach-body[data-diff] > .paper-turn-diff {
   animation-name: paper-turn-diff-down;
-  border-bottom: 1px solid var(--line, color-mix(in srgb, var(--muted) 30%, transparent));
   border-left: 0;
-  flex: 0 0 55%;
+  flex: 1;
 }
 .paper-editor-box > .paper-turn-diff {
   border-left: 0;
