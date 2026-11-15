@@ -35,7 +35,7 @@ export function ReplyLinkButton({
           }
         }}
       >
-        <Link size={12} /> Link
+        <Link size={12} aria-hidden="true" />
       </button>
       {notice && <span role="alert">{notice}</span>}
     </>

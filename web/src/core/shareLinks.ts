@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api, ApiError } from "./api";
 import type {
   CreateShareLinkRequest,
   GraphTargetRef,
@@ -7,6 +8,7 @@ import type {
 } from "./types";
 
 type Fetcher = (path: string, init: RequestInit) => Promise<Response>;
+type Poster = (path: string, init: RequestInit) => Promise<ShareLinkResponse>;
 
 export function shareLinkGraphTarget(target: GraphTargetRef): string {
   return target.kind === "branch" ? `branch:${target.branch_id}` : "main";
@@ -68,13 +70,7 @@ export function useShareLinks(): boolean {
   return on;
 }
 
-async function createdUrl(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => null)) as
-    (Partial<ShareLinkResponse> & { detail?: unknown }) | null;
-  if (response.ok && body?.url) return body.url;
-  if (response.status === 404) throw new Error("This item cannot be linked.");
-  throw new Error(typeof body?.detail === "string" ? body.detail : "Could not create the link.");
-}
+const postShareLink: Poster = (path, init) => api<ShareLinkResponse>(path, init);
 
 /**
  * Copies an item's share link. WebKit drops a clipboard write made after an
@@ -84,21 +80,26 @@ export async function copyShareLink(
   projectId: string,
   request: CreateShareLinkRequest,
   {
-    fetcher = fetch,
+    post = postShareLink,
     clipboard = navigator.clipboard,
     Item = ClipboardItem,
   }: {
-    fetcher?: Fetcher;
+    post?: Poster;
     clipboard?: Pick<Clipboard, "write">;
     Item?: typeof ClipboardItem;
   } = {},
 ): Promise<void> {
-  const url = fetcher(`/api/projects/${encodeURIComponent(projectId)}/share-links`, {
+  const url = post(`/api/projects/${encodeURIComponent(projectId)}/share-links`, {
     method: "POST",
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
-  }).then(createdUrl);
+  }).then(
+    (body) => body.url,
+    (error: unknown) => {
+      throw error instanceof ApiError && error.status === 404
+        ? new Error("This item cannot be linked.")
+        : error;
+    },
+  );
   const written = clipboard.write([
     new Item({ "text/plain": url.then((value) => new Blob([value], { type: "text/plain" })) }),
   ]);
