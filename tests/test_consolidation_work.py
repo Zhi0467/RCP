@@ -340,6 +340,15 @@ async def test_work_recovery_keeps_current_invocations_outside_replacement_maste
     )
     if resumed_session:
         launcher.native_session_id = request.session_id
+    import rcp.runs.agent_schedules as agent_schedules
+
+    clock = agent_schedules.schedule_clock
+    renders = iter(range(1000))
+    monkeypatch.setattr(
+        agent_schedules,
+        "schedule_clock",
+        lambda zone, now: clock(zone, now + timedelta(minutes=next(renders))),
+    )
 
     frames = [
         frame
