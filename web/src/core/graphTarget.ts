@@ -56,6 +56,8 @@ export function graphTargetFromHash(hash: string): GraphTargetRef {
 
 export interface ProjectHashSelection {
   chatId?: string;
+  /** A reply in that chat to scroll to once. */
+  turnId?: string;
   /** A pinned page to open in Artifacts. */
   pinId?: string;
   /** Exact Auto-research selection on Runs; Experiment routes carry additional identity. */
@@ -72,6 +74,7 @@ export function projectViewHash(
   const params = new URLSearchParams();
   if (view !== null) params.set("view", view === "execution" ? "runs" : view);
   if (selection.chatId !== undefined) params.set("chat", selection.chatId);
+  if (selection.turnId !== undefined) params.set("turn", selection.turnId);
   if (selection.pinId !== undefined) params.set("pin", selection.pinId);
   if (selection.autoResearchEpisodeId !== undefined) {
     params.set("mode", "auto_research");
@@ -87,4 +90,15 @@ export function graphViewHash(
   view: AppView = "dag",
 ): string {
   return projectViewHash(projectId, target, view);
+}
+
+export function turnFromHash(hash: string): string | null {
+  return new URLSearchParams(hash.split("?")[1] ?? "").get("turn");
+}
+
+export function hashWithoutTurn(hash: string): string {
+  const [path, query = ""] = hash.split("?");
+  const params = new URLSearchParams(query);
+  params.delete("turn");
+  return params.size ? `${path}?${params}` : path;
 }

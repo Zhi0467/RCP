@@ -12,6 +12,7 @@ const server = await createServer({
 after(() => server.close());
 const {
   buildNotificationLink,
+  chatNotificationHash,
   commentThreadHash,
   episodeNotificationHash,
   graphNotificationHash,
@@ -19,6 +20,7 @@ const {
   parseNotificationLink,
 } = await server.ssrLoadModule("/src/core/notificationLinks.ts");
 const { parseProjectHash } = await server.ssrLoadModule("/src/experiments/experimentBoardModel.ts");
+const { hashWithoutTurn, turnFromHash } = await server.ssrLoadModule("/src/core/graphTarget.ts");
 
 test("notification links parse exactly and refuse other hashes", () => {
   assert.deepEqual(parseNotificationLink("#/projects/p%201/targets/main/proposal/prop%2Fa"), {
@@ -118,4 +120,24 @@ test("a comment link round-trips and opens its target's view", () => {
   });
   assert.equal(parseProjectHash(artifact).view, "artifacts");
   assert.equal(isNotificationLinkHash(artifact), false);
+});
+
+test("a chat link opens its chat and a reply link its chat at that turn", () => {
+  const chat = parseNotificationLink("#/projects/p/targets/b1/chat/c1");
+  assert.equal(chat.kind, "chat");
+  const chatHash = chatNotificationHash(chat, chat.itemId);
+  assert.equal(parseProjectHash(chatHash).chatId, "c1");
+  assert.equal(new URLSearchParams(chatHash.split("?")[1]).get("branch_id"), "b1");
+  assert.equal(turnFromHash(chatHash), null);
+
+  const reply = parseNotificationLink("#/projects/p/targets/main/reply/op-1");
+  assert.equal(reply.kind, "reply");
+  const replyHash = chatNotificationHash(reply, "c2");
+  assert.equal(parseProjectHash(replyHash).chatId, "c2");
+  assert.equal(turnFromHash(replyHash), "op-1");
+  assert.equal(hashWithoutTurn(replyHash), "#/projects/p?view=chats&chat=c2");
+
+  const unplaced = chatNotificationHash(reply, null);
+  assert.equal(parseProjectHash(unplaced).view, "chats");
+  assert.equal(parseProjectHash(unplaced).chatId, undefined);
 });

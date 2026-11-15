@@ -1357,6 +1357,9 @@ export function AgentChatView({
         {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
         <AgentWindowTranscript
           transcript={transcript}
+          replyLinkGraphTarget={
+            graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main"
+          }
           tasks={relatedTasks}
           questions={questionState.questions}
           endpoints={endpoints}
