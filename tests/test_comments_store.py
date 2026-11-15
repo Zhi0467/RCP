@@ -43,7 +43,7 @@ def test_lifecycle_and_send_replay(store):
     assert store.get_comment_thread("project", tid)["sent_operation_id"] == "op"
     item = store.add_comment_post("project", tid, user_id=actor, text="reply")
     assert item["state"] == "open"
-    assert item["send_key"] is None
+    assert (item["sent_operation_id"], item["send_key"]) == (None, "key")
     store.resolve_comment_thread("project", tid, user_id=actor)
     assert store.reopen_comment_thread("project", tid, user_id=actor)["state"] == "open"
 

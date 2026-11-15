@@ -181,6 +181,26 @@ def test_retry_after_a_reply_during_the_send_replays_the_sent_snapshot(send_app,
     assert "Late" in later[0][0]["rendered"]
 
 
+def test_retry_after_a_reply_reopens_a_sent_thread_replays_the_send(send_app):
+    _, client, store, task = send_app
+    thread = _thread(store, task)
+    key = str(uuid.uuid4())
+    first = _send(client, task, [thread["thread_id"]], key=key)
+    assert first.status_code == 202, first.text
+    store.add_comment_post(
+        task.project_id, thread["thread_id"], user_id=store.local_owner.user_id, text="Late"
+    )
+    replay = _send(client, task, [thread["thread_id"]], key=key)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["operation_id"] == first.json()["operation_id"]
+    saved = store.get_comment_thread(task.project_id, thread["thread_id"])
+    assert saved["state"] == "open"
+    later = store.sendable_threads(
+        task.project_id, store.local_owner.user_id, [thread["thread_id"]], str(uuid.uuid4())
+    )
+    assert "Late" in later[0][0]["rendered"]
+
+
 def test_paper_thread_send_uses_coach_message(send_app):
     _, client, store, task = send_app
     with store.connection() as connection:

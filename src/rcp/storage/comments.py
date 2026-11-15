@@ -304,7 +304,7 @@ def _save_post(
 def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
     connection.execute(
         "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
-        "sent_operation_id=NULL,send_key=NULL,sent_through=NULL WHERE thread_id=?",
+        "sent_operation_id=NULL WHERE thread_id=?",
         (thread_id,),
     )
 

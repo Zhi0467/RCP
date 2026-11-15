@@ -244,11 +244,10 @@ open ──Resolve, or Send admitted──▶ resolved ──Reopen / reply─�
 - Only `open` threads show pins, can be ticked, and are listed or delivered as
   mentions.
 - The rail folds resolved threads under "Resolved · N".
-- Reopening clears `closed_*`, `sent_operation_id`, `send_key`, and
-  `sent_through`. A reply
-  reopens a resolved thread, so a repeat sent after a reply is a new send; its
-  text differs and the replay path answers 409, which the client shows as a
-  failed send.
+- Reopening clears `closed_*` and `sent_operation_id`. It keeps `send_key` and
+  `sent_through`, so a retry of the last send still renders the snapshot it
+  sent and replays, even after a reply reopened the thread. A new send gets a
+  new key and renders every post.
 
 ## Send to agent
 
