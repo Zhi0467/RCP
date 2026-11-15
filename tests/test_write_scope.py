@@ -74,6 +74,7 @@ def _resolve_local(
     repository_inventory: list[RegisteredRepositoryRoot] | None = None,
     machine_writable_paths: list[str] | None = None,
     truth_scope: list[str] | None = None,
+    **roots: object,
 ):
     selected = aliases or ["repo-a"]
     stage = stage_root or tmp_path / "stage"
@@ -98,6 +99,7 @@ def _resolve_local(
             else repository_inventory
         ),
         machine_writable_paths=machine_writable_paths,
+        **roots,  # type: ignore[arg-type]
     )
 
 
@@ -149,6 +151,37 @@ def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
         protected = shared / "app-data" / name
         assert any(protected.is_relative_to(root) for root in scope.protected_write_paths)
     assert scope.fingerprint == _resolve_local(manifest, tmp_path).fingerprint
+
+
+def test_a_grant_over_rcp_data_keeps_the_paper_folder_to_paper_turns(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    from rcp.paper.folder_io import paper_root
+    from rcp.providers.claude.profile import _claude_absolute_pattern, _claude_write_settings
+
+    home = tmp_path / "home"
+    data = home / "app-data"
+    memory = data / "memory" / "project"
+    memory.mkdir(parents=True)
+    paper = str(paper_root(data, "project").resolve())
+    edit = f"Edit({_claude_absolute_pattern(paper)})"
+
+    def settings(**roots: object) -> dict:
+        scope = _resolve_local(
+            manifest,
+            tmp_path,
+            app_data_dir=data,
+            machine_writable_paths=[str(home)],
+            memory_roots=[str(memory.resolve())],
+            **roots,
+        )
+        return _claude_write_settings(scope)["permissions"]
+
+    plain = settings()
+    assert edit in plain["deny"] and edit not in plain["allow"]
+    writing = settings(paper_root=paper)
+    assert edit in writing["allow"]
+    assert not any(paper.startswith(rule[7:].removesuffix("/**")) for rule in writing["deny"])
 
 
 def test_a_grant_keeps_unadmitted_repositories_research_read_only(
