@@ -381,10 +381,10 @@ import {
   initialNotificationLink,
   isNotificationLinkHash,
   parseNotificationLink,
-  type CommentThreadPlace,
   type NotificationLink,
 } from "./core/notificationLinks";
-import { requestCommentThread } from "./core/commentThreadRequest";
+import { requestCommentThread } from "./comments/commentThreadRequest";
+import { createCommentsClient } from "./comments/api";
 import { loadNotificationDevices, reconcileWebPush } from "./desktop/notificationDevicesModel";
 import {
   pickerMergeRequestBody,
@@ -2191,10 +2191,9 @@ function MemberApp({
         ]);
         next = episodeNotificationHash(link, episodes[0] ?? null, entries);
       } else if (link.kind === "comment") {
-        const projectPath = `/api/projects/${encodeURIComponent(link.projectId)}`;
-        const thread = await api<CommentThreadPlace>(
-          `${projectPath}/comment-threads/${encodeURIComponent(link.itemId)}`,
-        ).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
+        const thread = await createCommentsClient(link.projectId, api)
+          .get(link.itemId)
+          .catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
         if (current !== generation) return;
         if (thread instanceof Error) {
           setNotice({ kind: "error", text: thread.message });
@@ -5416,7 +5415,7 @@ function MemberApp({
                       consolidationCount={consolidationCount}
                       onSelectNode={openNode}
                     />
-                    <CommentMentionsInbox key={project.id} projectId={project.id} />
+                    <CommentMentionsInbox projectId={project.id} />
                     <ProposalJudgmentSection
                       proposals={pendingProposals}
                       graph={attentionGraph}

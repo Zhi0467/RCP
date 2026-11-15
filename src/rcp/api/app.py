@@ -272,6 +272,7 @@ from rcp.storage import (
     TeamAuthenticationError,
     WatcherRecord,
 )
+from rcp.storage.comments import CommentError
 from rcp.storage.models import MACHINE_LOGIN_ID
 from rcp.sync_coordinator import SyncCoordinator
 from rcp.terminals import TerminalManager
@@ -2752,6 +2753,13 @@ def create_app(
         return JSONResponse(
             status_code=status,
             content={"detail": [item.model_dump(mode="json") for item in exc.report.messages]},
+        )
+
+    @app.exception_handler(CommentError)
+    async def comment_error(_: Request, exc: CommentError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": {"code": exc.code, "message": str(exc)}},
         )
 
     @app.exception_handler(StateUnavailable)

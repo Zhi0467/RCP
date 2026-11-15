@@ -525,7 +525,7 @@ where the human's text won. A diff line takes a shared comment on the reply
 with an `element` anchor: `path` is the file, `label` the line, and `text` the
 line's text. Send returns it to the agent. Other members'
 saves never appear in a turn's list. `GET …/paper/turns/{op}` and
-`GET …/paper/turns/{op}/files/{path}` serve the list and one file.
+`GET …/paper/turns/{op}/file?path=…` serve the list and one file.
 
 ## Answer and artifacts are independent
 
@@ -775,8 +775,10 @@ version whose bytes are gone gets no crop, and the prompt says so and gives the
 place. PDF areas send the page, place, and text-layer quote, without pixels.
 Animation uses the first frame and labels it. SVG and oversized images carry only positions. Legacy
 viewer areas are never cropped. Both routes number human comments and regions
-identically. Human bubbles name the
-artifact and selected text, elements, or image area. Editable context provides a
+identically. The human message carries each thread's posts; its anchor, quote, and
+context appear once, in the artifact item. Human bubbles name the artifact and fold
+the sent threads under "Sent N comment threads", each under its selected text,
+elements, or image area. Editable context provides a
 URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions

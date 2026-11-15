@@ -12,22 +12,28 @@ import { CommentPins } from "../comments/react/CommentPins";
 import { CommentList } from "../comments/react/CommentRail";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
 import {
-  textOffset,
+  textAnchor,
   flashRect,
   insideElement,
   rangeEnd,
   textRange,
   toRect,
 } from "../comments/react/domText.ts";
-import { MAX_QUOTE_CHARS, surroundingText } from "../comments/react/threadModel.ts";
-import { useComments, type SendThreads } from "../comments/react/useComments";
+import {
+  useComments,
+  type CommentsController,
+  type SendThreads,
+} from "../comments/react/useComments";
 import {
   SelectionCommentButton,
   useSelectionComment,
   firstLine,
   type SelectionCommentOffer,
 } from "../comments/react/useSelectionComment";
-import { takeCommentThreadRequest, useCommentThreadRequest } from "../core/commentThreadRequest";
+import {
+  takeCommentThreadRequest,
+  useCommentThreadRequest,
+} from "../comments/commentThreadRequest";
 import { annotatableAnswerSelectionRange } from "./chatInput";
 import "./replyComments.css";
 
@@ -66,6 +72,7 @@ export function useReplyComments({
   linesRef,
   canPost,
   send,
+  artifacts,
 }: {
   projectId: string;
   chatId: string;
@@ -74,6 +81,8 @@ export function useReplyComments({
   linesRef: RefObject<HTMLElement | null>;
   canPost: boolean;
   send: SendThreads | null;
+  /** The threads on artifacts shown in this chat, listed after the replies'. */
+  artifacts: { comments: CommentsController; locate: (thread: CommentThread) => void };
 }) {
   const [offer, setOffer] = useState<CommentOffer | null>(null);
   const [shown, setShown] = useState<{ threadId: string; point: Point | null } | null>(null);
@@ -108,13 +117,8 @@ export function useReplyComments({
     const operationId = answer?.closest<HTMLElement>(".agent-chat-view-line[data-task-id]")?.dataset
       .taskId;
     if (!range || !answer || !operationId || !replyIds.includes(operationId)) return null;
-    const quote = range.toString().trim().slice(0, MAX_QUOTE_CHARS);
-    if (!quote) return null;
-    const text = answer.textContent ?? "";
-    const at = text.indexOf(
-      quote,
-      Math.max(0, textOffset(answer, range.startContainer, range.startOffset) - 1),
-    );
+    const anchor = textAnchor(answer, range);
+    if (!anchor) return null;
     const rect = range.getBoundingClientRect();
     return {
       rect,
@@ -122,12 +126,7 @@ export function useReplyComments({
       open: () =>
         setOffer({
           target: { kind: "reply", id: operationId },
-          anchor: {
-            kind: "text",
-            text: quote,
-            surrounding_text: at < 0 ? quote : surroundingText(text, at, at + quote.length),
-            comment: "",
-          },
+          anchor,
           drawnVersion: null,
           point: { x: rect.left, y: rect.bottom },
         }),
@@ -171,7 +170,9 @@ export function useReplyComments({
 
   const shownThread =
     shown && comments.threads.find((thread) => thread.thread_id === shown.threadId);
-  const openCount = comments.threads.filter((thread) => thread.state === "open").length;
+  const openCount = [...comments.threads, ...artifacts.comments.threads].filter(
+    (thread) => thread.state === "open",
+  ).length;
   const note = (thread: CommentThread) => {
     const root = linesRef.current;
     return thread.state === "open" &&
@@ -183,7 +184,7 @@ export function useReplyComments({
   };
 
   const headerButton =
-    comments.threads.length > 0 ? (
+    comments.threads.length + artifacts.comments.threads.length > 0 ? (
       <button
         ref={countButton}
         type="button"
@@ -256,6 +257,15 @@ export function useReplyComments({
             onLocate={locate}
             note={note}
           />
+          {artifacts.comments.threads.length > 0 && (
+            <CommentList
+              comments={artifacts.comments}
+              agentLabel="This chat"
+              wholeLabel="Whole artifact"
+              selected={selected}
+              onLocate={artifacts.locate}
+            />
+          )}
         </CommentPopover>
       )}
     </>

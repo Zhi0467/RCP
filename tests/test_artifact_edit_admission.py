@@ -532,7 +532,8 @@ def test_composer_comment_is_a_plain_turn_on_current_settings(edit_origin, monke
         == store.artifact(artifact.artifact_id).current_version
     )
     assert "Rewrite" in admitted.message
-    assert "Original" in admitted.message
+    assert "Original" not in admitted.message
+    assert admitted.artifact_context.selections[0].text == "Original"
 
 
 def test_a_comment_and_project_references_share_one_turn(edit_origin, monkeypatch):

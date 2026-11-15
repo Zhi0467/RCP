@@ -16,6 +16,7 @@ const { blankFrontMatter } = await server.ssrLoadModule("/src/paper/frontMatter.
 const { markdownPaperPath } = await server.ssrLoadModule("/src/paper/typstPreview.ts");
 const { conversationTurnRequest } = await server.ssrLoadModule("/src/chat/chatWorkspace.ts");
 const { findText } = await server.ssrLoadModule("/src/comments/anchors.ts");
+const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 
 const text = (where) => ({ kind: "text", text: "q", surrounding_text: "q", comment: "", where });
 
@@ -48,7 +49,7 @@ test("pdf and box places name pages, area, and the nearby source", () => {
   );
 });
 
-test("a retried thread send keeps its key until it succeeds", () => {
+test("a retried thread send keeps its key until it succeeds or is refused", () => {
   let n = 0;
   const keys = model.sendKeys(() => `k${++n}`);
   assert.equal(keys.key(["b", "a"]), "k1");
@@ -56,6 +57,11 @@ test("a retried thread send keeps its key until it succeeds", () => {
   assert.equal(keys.key(["a"]), "k2");
   keys.done();
   assert.equal(keys.key(["a"]), "k3");
+  keys.failed(new TypeError("Failed to fetch"));
+  keys.failed(new ApiError("Unavailable", 503));
+  assert.equal(keys.key(["a"]), "k3");
+  keys.failed(new ApiError("Refused", 409));
+  assert.equal(keys.key(["a"]), "k4");
 });
 
 test("only the asked targets' threads show, numbered as their pins in drawn order", () => {

@@ -52,7 +52,8 @@ These were decided with the human in chat:
 |---|---|
 | `src/rcp/comments/models.py` | `CommentAnchor`, `CommentTarget`, the API bodies, the media-type sets |
 | `src/rcp/comments/render.py` | `render_anchor(anchor) -> str` and `render_thread(thread) -> str`, the only place a thread becomes agent text |
-| `src/rcp/storage/comments.py` | `migrate_comments`, `CommentStoreMixin`, `comment_target_readable(user_id, kind, id)`, and `mark_threads_sent(ids, operation_id)` |
+| `src/rcp/storage/comments.py` | `migrate_comments`, `CommentStoreMixin`, `comment_target_readable(user_id, kind, id)`, and `mark_threads_sent(rendered_through, operation_id, key, actor)` |
+| `src/rcp/comments/send.py` | the send shapes: `thread_send_text` (steers), `chat_turn_send` (a chat's new turn), `artifact_thread_context` (the viewer) |
 | `src/rcp/api/comments.py` | the comment routes |
 | `web/src/comments/` | the rail, pins, composer, picker, shared box tool, `locateThread`, and the anchor type |
 
@@ -68,6 +69,12 @@ These were decided with the human in chat:
   - Python tests that open a viewer read the built bundle, as the Paper HTML
     preview tests read `artifact-renderer.js`. One test points
     `web_dist_path` at a missing folder to check the error.
+  - The bundle renders the same React rail, pins and composer, with React
+    inside it. The viewer passes the comment client a bare fetch; the app
+    passes its core request, which pins the instance and reports lost sessions.
+  - The same build emits `comment-text.js`, the quote locator from
+    `anchors.ts`. The artifact frame add-on runs it, so the frame, the rails,
+    and Paper re-find a quote the same way: each whitespace run matches any other.
   - The viewer, the inline frames, and Paper therefore run one module. Author
     HTML stays in its opaque nested frame (invariant 10e).
 
@@ -120,13 +127,11 @@ answer 404.
 **Deletion:**
 - Deleting or expiring an artifact hard-deletes its threads, posts, and
   mentions in the same transaction. The artifacts spec says so.
-- Deleting a post deletes that post and its mentions. Deleting the first post
-  deletes the thread.
 - Paper threads stay when their file is deleted, because Paper file ids survive
   delete and restore (CRDT identity). While the file is missing, its threads are
   hidden, its mentions are not listed or delivered, and the delivery check
   treats them as unreadable.
-- Only the author can edit or delete a post.
+- Posts are never edited or deleted.
 
 **Table lists:**
 - All three tables join `_PROJECT_ID_TABLES`, the project purge, the
@@ -298,10 +303,13 @@ paths match it:
    as a refusal.
 4. **Mark sent.** After `background_tasks.start`, or after a steer receipt that
    was accepted, and on the replay branches, call
-   `mark_threads_sent(ids, operation_id, key)`:
-   `UPDATE … SET state='resolved', sent_operation_id=?, send_key=?, closed_by=?, closed_at=? WHERE thread_id IN (…) AND state='open'`.
+   `mark_threads_sent(rendered_through, operation_id, key, actor)`, where
+   `rendered_through` maps each thread to the newest post time the send rendered:
+   `UPDATE … SET state='resolved', sent_operation_id=?, send_key=?, closed_by=?, closed_at=? WHERE thread_id=? AND state='open' AND no post is newer than the rendered one`.
    - The operation id is the new task, or for a steer, the running task.
    - A thread someone closed in the meantime stays as that person left it.
+   - A reply posted while the send was in flight never reached the agent, so
+     its thread stays open and can be sent again.
    - If the process stops between admission and this update, the threads stay
      open and can be sent again. A duplicate only repeats a prompt; nothing
      reaches the graph.
@@ -325,7 +333,6 @@ All routes live in `src/rcp/api/comments.py`.
 | `GET …/comment-threads/{t}` | project read; target readable (used by links) |
 | `POST …/comment-threads {target, anchor, drawn_version, text}` | project write; target readable |
 | `POST …/comment-threads/{t}/posts {text}` | project write; readable |
-| `PATCH` and `DELETE …/comment-posts/{post}` | author only |
 | `POST …/comment-threads/{t}/resolve` and `/reopen` | project write; readable |
 | `GET /api/projects/{p}/comment-mentions` | the caller's mentions |
 
@@ -389,8 +396,9 @@ replies, and the phone sheet.
 - **Rail:**
   - Thread cards with a checkbox, avatar, author, time, and quote.
   - Replies in one flat column under thin rules.
-  - A reply box, Resolve, and Send thread to agent.
-  - A footer reading "Send N to agent".
+  - A reply box with Reply and Send to agent, then Resolve. Send to agent on an
+    empty reply sends the thread as it stands, so each card has one send.
+  - A footer reading "Send N to agent" once a thread is ticked.
   - The same module serves the viewer, expanded inline artifacts, and Paper
     (beside the source and the preview).
 - **Pins:** red numbered pins at the end of each anchor. A selected card

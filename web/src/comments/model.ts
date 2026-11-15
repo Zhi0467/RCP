@@ -11,6 +11,9 @@ export function anchorQuote(anchor: CommentAnchor): string {
   return anchor.text;
 }
 
+/** The most characters one send of threads and typed text may carry. */
+export const MAX_SEND_CHARS = 32000;
+
 export function railState(
   threads: readonly CommentThread[],
   ticks: ReadonlySet<string>,
@@ -30,12 +33,14 @@ export function railState(
         thread.posts.reduce((length, post) => length + post.text.length, 0),
       0,
     );
+  const tooLong = sendLength > MAX_SEND_CHARS;
   return {
     open,
     resolved,
     selected,
     ticked,
     sendLength,
-    canSend: selected.length > 0 && selected.length <= maxSelections && sendLength <= 32000,
+    tooLong,
+    canSend: selected.length > 0 && selected.length <= maxSelections && !tooLong,
   };
 }

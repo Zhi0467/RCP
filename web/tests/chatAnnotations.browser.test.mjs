@@ -181,7 +181,7 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
       return null;
     });
     const pinBox = await pin.boundingBox();
-    assert.ok(Math.abs(pinBox.x + pinBox.width / 2 - quoteEnd) < 2);
+    assert.ok(pinBox.x >= quoteEnd && pinBox.x < quoteEnd + 8);
     assert.deepEqual(listed, ["?target_kind=reply&chat_id=viewport-regression"]);
     await pin.click();
     const popover = page.getByRole("dialog", { name: "Comment" });
@@ -190,7 +190,7 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     await popover.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "1 open comment" }).click();
     const list = page.getByRole("dialog", { name: "Comments" });
-    await list.getByRole("button", { name: "Send thread to agent" }).click();
+    await list.getByRole("button", { name: "Send to agent" }).click();
     await page.waitForFunction(() => window.started?.length === 1);
     const [started] = await page.evaluate(() => window.started);
     assert.equal(started.kind, "project_chat");

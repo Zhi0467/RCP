@@ -1,0 +1,97 @@
+.rcp-pdf {
+  height: 100%;
+  overflow: auto;
+  color: #111;
+  background: #e5e5e5;
+}
+.rcp-pdf-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px;
+  background: var(--paper, #fff);
+}
+.rcp-pdf-pages {
+  margin: 12px auto;
+  width: calc(100% - 24px);
+  max-width: 1000px;
+}
+.rcp-pdf-page {
+  position: relative;
+  width: 100%;
+  margin-bottom: 12px;
+  overflow: hidden;
+  background: white;
+}
+.rcp-pdf-content {
+  transform-origin: top left;
+  position: absolute;
+  inset: 0;
+}
+.rcp-pdf-content canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.rcp-pdf-box {
+  display: none;
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: none;
+}
+.rcp-pdf-area .rcp-pdf-box {
+  display: block;
+}
+.rcp-pdf-page .textLayer {
+  --total-scale-factor: var(--scale-factor);
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 0;
+}
+.rcp-pdf-page .textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+.rcp-pdf-page .textLayer > :not(.markedContent),
+.rcp-pdf-page .textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.rcp-pdf-page .textLayer .markedContent {
+  display: contents;
+}
+.rcp-pdf-page .textLayer span[role="img"] {
+  user-select: none;
+  cursor: default;
+}
+.rcp-pdf-page .textLayer ::selection {
+  background: color-mix(in srgb, var(--cobalt) 28%, transparent);
+  color: transparent;
+}
+.rcp-pdf-page .textLayer br::selection {
+  background: transparent;
+}

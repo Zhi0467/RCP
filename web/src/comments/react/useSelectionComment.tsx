@@ -72,7 +72,7 @@ export function useSelectionComment(
 }
 
 /** Where the offer sits: above the selection's first line, or below it without room. */
-export function offerPoint(
+function offerPoint(
   offer: SelectionCommentOffer,
   button: { width: number; height: number } = BUTTON,
 ): Point {

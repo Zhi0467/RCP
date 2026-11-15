@@ -56,6 +56,7 @@ export function CommentPins({
     const frame = requestAnimationFrame(() => place.current());
     return () => cancelAnimationFrame(frame);
   }, [revision, threads]);
+  if (typeof document === "undefined") return null;
   const numbers = pinNumbers(threads);
   return createPortal(
     <div className="rcp-comment-pins">
