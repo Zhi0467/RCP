@@ -116,6 +116,9 @@ def continuation_session_master(
     restores it into the current one.
     ``values`` are the current stable values: recorded with a new master, and otherwise
     returned as the ones the kept master was rendered with, so the caller sends the change.
+    A later prompt in the same operation, such as a correction, re-sends the bytes this
+    operation already recorded under the key: a re-render can differ, since it states the
+    member's clock, and recorded masters are immutable.
     """
 
     record = execution.store.agent_task(execution.operation_id)
@@ -133,8 +136,14 @@ def continuation_session_master(
         return MasterRef(
             path=path, bootstrap=False, values=recorded_master_values(execution.store, operation_id)
         )
-    content = render()
-    content = graph_read_contract(content, graph_read_prompt, command_client)
+    content = (
+        execution.store.agent_task_contract(execution.operation_id, SESSION_MASTER_ROLE)
+        if execution.store.agent_task_contract(execution.operation_id, SESSION_MASTER_KEY_ROLE)
+        == key
+        else None
+    )
+    if content is None:
+        content = graph_read_contract(render(), graph_read_prompt, command_client)
     record_session_master(execution.store, execution.operation_id, content, key, values)
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, session_master_label(label_prefix, content), content

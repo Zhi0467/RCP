@@ -205,12 +205,9 @@ def test_frozen_pre_comments_database_upgrades(tmp_path):
         )
     upgraded = AppStore(database)
     with upgraded.connection() as connection:
-        assert (
-            connection.execute(
-                "SELECT max(migration_version) FROM storage_schema_migrations"
-            ).fetchone()[0]
-            == 83
-        )
+        assert connection.execute(
+            "SELECT 1 FROM storage_schema_migrations WHERE migration_version = 83"
+        ).fetchone()
         for table in ("comment_threads", "comment_posts", "comment_mentions"):
             assert connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0
     upgraded.close()

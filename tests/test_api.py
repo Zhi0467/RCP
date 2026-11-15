@@ -8876,7 +8876,10 @@ def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, re
     login = store.add_provider_login("codex", BACKEND_MACHINE_ID, added_by="member")
     key = LoginKey("codex", BACKEND_MACHINE_ID, login.login_id)
     if removed:
+        from rcp.runs.provider_login import delete_removed_credential
+
         store.finish_provider_login_removal(key)
+        delete_removed_credential(store, key, defer=True)
     credentials = launcher.credentials
     assert credentials is not None
     home = credentials.account_dir("codex", BACKEND_MACHINE_ID, login.login_id) / "codex-home"
@@ -8903,6 +8906,30 @@ def test_startup_shares_unusable_codex_home_before_recovery(app, monkeypatch, re
     with signed_in_client(app) as client:
         assert client.get("/api/health/details").status_code == 200
         assert observed == [key]
+
+
+def test_startup_leaves_a_finished_removal_home_unprepared(app, monkeypatch):
+    store = app.state.catalog.store
+    launcher = app.state.catalog.launcher
+    active, removed = (
+        LoginKey(
+            "codex",
+            "example-host",
+            store.add_provider_login("codex", "example-host", added_by="m").login_id,
+        )
+        for _ in range(2)
+    )
+    store.finish_provider_login_removal(removed)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE provider_login_states SET detail='Sign-in removed.' WHERE login_id=?",
+            (removed.login_id,),
+        )
+    prepared = []
+    monkeypatch.setattr(launcher, "process_environment", prepared.append)
+    with signed_in_client(app) as client:
+        assert client.get("/api/health/details").status_code == 200
+    assert prepared == [active]
 
 
 def test_startup_codex_home_failure_does_not_prevent_recovery(app, monkeypatch, caplog):
