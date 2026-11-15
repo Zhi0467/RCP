@@ -2101,13 +2101,13 @@ def create_app(
                     app.state.machine_power_started = True
                 await asyncio.to_thread(deploy_key_agent.start)
                 await terminals.start()
-                await asyncio.to_thread(catalog.migrate_papers)
-                await paper_live.start()
-                register_paper_live(store, paper_live)
                 await asyncio.to_thread(paper_git.reconcile)
                 sync_coordinator.start()
                 # Records must name cards by id before recovery reads them.
                 await asyncio.to_thread(fill_space_machines, store, app_data)
+                await asyncio.to_thread(catalog.migrate_papers)
+                await paper_live.start()
+                register_paper_live(store, paper_live)
                 await asyncio.to_thread(project_display_cache.rebuild_retired_local_caches)
                 await asyncio.to_thread(prepare_added_codex_homes)
                 background_tasks.recover_at_startup()

@@ -1072,13 +1072,17 @@ def test_paper_records_carry_a_migrated_old_writer_folder_identity_and_history(
     from rcp.paper.migration import migrate_paper
     from rcp.server_ops import backup_paper
     from rcp.transfer.records import TransferRecordBundle
+    from rcp.transport import LocalStateWorkspace
     from tests.paper_legacy_seed import legacy_tree, seed_legacy_paper
 
     source, project_id, attributions = _store(manifest, tmp_path)
     target = AppStore(tmp_path / "target.sqlite3")
     seed_legacy_paper(source, project_id, None)
     folder = LocalPaperFolder(paper_root(tmp_path / "source-data", project_id))
-    assert migrate_paper(source, project_id, folder, lambda: None)
+    state = tmp_path / "empty-state"
+    state.mkdir()
+    workspace = LocalStateWorkspace(state, str(state))
+    assert migrate_paper(source, project_id, folder, lambda: workspace)
     files = read_paper_folder(folder)
     exported = source.export_project_transfer_records(
         project_id, attributions=attributions, paper_files=files

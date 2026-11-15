@@ -29,7 +29,13 @@ def legacy(tmp_path):
 
 
 def _migrate(store, folder, workspace) -> bool:
-    return migrate_paper(store, "p", folder, workspace.remove_paper_tree)
+    return migrate_paper(store, "p", folder, lambda: workspace)
+
+
+def _empty_workspace(tmp_path):
+    root = tmp_path / "empty-state"
+    root.mkdir(exist_ok=True)
+    return LocalStateWorkspace(root, str(root))
 
 
 def _files(folder) -> dict[str, bytes]:
@@ -117,11 +123,12 @@ def test_a_crash_after_any_step_resumes_to_the_same_result(legacy, monkeypatch, 
     def crash(*args, **kwargs):
         raise RuntimeError("crash")
 
-    if step != "remove_projection":
+    if step == "remove_projection":
+        monkeypatch.setattr(workspace, "remove_paper_tree", crash)
+    else:
         monkeypatch.setattr(paper_migration, step, crash)
-    remove = crash if step == "remove_projection" else workspace.remove_paper_tree
     with pytest.raises(RuntimeError):
-        migrate_paper(store, "p", folder, remove)
+        _migrate(store, folder, workspace)
     monkeypatch.undo()
     assert needs_paper_migration(store, "p")
     assert _files(folder) == legacy_tree()
@@ -153,8 +160,9 @@ def test_a_draft_from_before_the_file_tree_becomes_introduction(tmp_path):
                 "VALUES ('p', 'Draft text', '2026-01-01T00:00:00+00:00')"
             )
         folder = LocalPaperFolder(paper_root(tmp_path, "p"))
-        assert migrate_paper(store, "p", folder, lambda: None)
+        assert migrate_paper(store, "p", folder, lambda: _empty_workspace(tmp_path))
         assert _files(folder) == {"introduction.md": b"Draft text"}
+        assert _row(store, "SELECT count(*) FROM paper_drafts") == (0,)
     finally:
         store.close()
 
@@ -163,7 +171,8 @@ def test_a_project_without_legacy_paper_owes_nothing(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     try:
         folder = LocalPaperFolder(paper_root(tmp_path, "p"))
-        assert not migrate_paper(store, "p", folder, lambda: pytest.fail("nothing to remove"))
+        assert not migrate_paper(store, "p", folder, lambda: _empty_workspace(tmp_path))
+        assert not migrate_paper(store, "p", folder, lambda: pytest.fail("already settled"))
     finally:
         store.close()
 
@@ -194,7 +203,7 @@ def test_an_ssh_paper_installs_on_its_base(tmp_path):
         (tmp_path / "base").mkdir()
         _fake_ssh(stage, tmp_path / "base")
         folder = RemotePaperFolder(stage, "p")
-        assert migrate_paper(store, "p", folder, lambda: None)
+        assert migrate_paper(store, "p", folder, lambda: _empty_workspace(tmp_path))
         assert _files(folder) == legacy_tree()
         assert (tmp_path / "base/.rcp/paper/p/figures/plot.png").exists()
     finally:
@@ -277,3 +286,144 @@ def test_body_collection_keeps_the_saved_tree_of_an_unmigrated_project(legacy):
 
     assert _migrate(store, folder, workspace)
     assert _files(folder) == legacy_tree()
+
+
+def _projection(tmp_path, files: dict[str, str]) -> LocalStateWorkspace:
+    workspace = _empty_workspace(tmp_path)
+    for path, text in files.items():
+        (workspace.root / "paper" / path).parent.mkdir(parents=True, exist_ok=True)
+        (workspace.root / "paper" / path).write_text(text)
+    return workspace
+
+
+def _versions(store) -> dict[str, dict[str, str]]:
+    from rcp.paper.persistence import PaperSnapshotReader
+
+    with store.connection() as connection:
+        reader = PaperSnapshotReader(connection)
+        names = connection.execute(
+            "SELECT name, version_id FROM paper_versions WHERE project_id='p' AND kind='named'"
+        ).fetchall()
+        return {
+            name: {file.path: file.text or "" for file in reader.snapshot("p", version).files}
+            for name, version in names
+        }
+
+
+def test_a_paper_published_only_to_the_state_moves_into_its_folder(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        workspace = _projection(tmp_path, {"introduction.md": "Published", "a/b.tex": "B"})
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+        live = PaperLive(
+            store, lambda _project: folder, prepare=lambda p: _migrate(store, folder, workspace)
+        )
+
+        async def tree():
+            files = (await live.tree("p")).files
+            await live.close()
+            return {file.path for file in files}
+
+        assert asyncio.run(tree()) == {"introduction.md", "a/b.tex"}
+        assert _files(folder) == {"introduction.md": b"Published", "a/b.tex": b"B"}
+        assert not (workspace.root / "paper").exists()
+    finally:
+        store.close()
+
+
+def test_a_draft_behind_the_published_text_never_overwrites_it(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO paper_drafts(project_id, content, base_hash, updated_at) "
+                "VALUES ('p', 'Older draft', 'deadbeef', '2026-01-01T00:00:00+00:00')"
+            )
+        workspace = _projection(tmp_path, {"introduction.md": "Newer published"})
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+        assert _migrate(store, folder, workspace)
+        assert _files(folder) == {"introduction.md": b"Newer published"}
+        assert {"introduction.md": "Older draft"} in _versions(store).values()
+    finally:
+        store.close()
+
+
+def test_a_draft_ahead_of_the_published_text_wins_and_history_keeps_the_published(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        with store.connection() as connection:
+            connection.execute(
+                "INSERT INTO paper_drafts(project_id, content, base_hash, updated_at) "
+                "VALUES ('p', 'Edited draft', ?, '2026-01-01T00:00:00+00:00')",
+                (hashlib.sha256(b"Published").hexdigest(),),
+            )
+        workspace = _projection(tmp_path, {"introduction.md": "Published"})
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+        assert _migrate(store, folder, workspace)
+        assert _files(folder) == {"introduction.md": b"Edited draft"}
+        assert {"introduction.md": "Published"} in _versions(store).values()
+    finally:
+        store.close()
+
+
+def test_a_published_tree_that_differs_from_the_saved_tree_stays_in_history(legacy):
+    store, _seeded, folder, workspace = legacy
+    assert _migrate(store, folder, workspace)
+    assert {"sections/intro.md": "Hello"} in _versions(store).values()
+
+
+def _seed_saved_tree(store, files: dict[str, str]) -> None:
+    import zlib
+
+    manifest = []
+    with store.connection() as connection:
+        for index, (path, text) in enumerate(sorted(files.items())):
+            sha = hashlib.sha256(text.encode()).hexdigest()
+            connection.execute(
+                "INSERT OR IGNORE INTO paper_version_texts VALUES (?, ?)",
+                (sha, zlib.compress(text.encode())),
+            )
+            manifest.append(
+                {"file_id": f"f{index}", "path": path, "kind": "text", "text_sha256": sha}
+            )
+        connection.execute(
+            "INSERT INTO paper_publication VALUES ('p', 1, 1, '2026-01-01T00:00:00+00:00', "
+            "NULL, NULL, '2026-01-01T00:00:00+00:00')"
+        )
+        connection.execute(
+            "INSERT INTO paper_saved_snapshots VALUES ('p', 1, ?)", (json.dumps(manifest),)
+        )
+
+
+def test_case_clashing_saved_paths_both_survive_and_hidden_paths_are_logged(tmp_path, caplog):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    try:
+        _seed_saved_tree(store, {"Notes.md": "upper", "notes.md": "lower", "build/main.aux": "aux"})
+        folder = LocalPaperFolder(paper_root(tmp_path, "p"))
+        with caplog.at_level("WARNING", logger="rcp.paper.migration"):
+            assert migrate_paper(store, "p", folder, lambda: _empty_workspace(tmp_path))
+        files = _files(folder)
+        assert sorted(files.values()) == [b"lower", b"upper"]
+        assert len({path.casefold() for path in files}) == 2
+        assert "build/main.aux" in caplog.text
+    finally:
+        store.close()
+
+
+def test_startup_moves_papers_after_machine_cards_settle_and_before_recovery(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from rcp.api.app import create_app
+    from rcp.projects import ProjectCatalog
+
+    order = []
+    monkeypatch.setattr(
+        "rcp.api.app.fill_space_machines", lambda *args, **kwargs: order.append("cards")
+    )
+    monkeypatch.setattr(ProjectCatalog, "migrate_papers", lambda self: order.append("paper"))
+    app = create_app(data_dir=tmp_path)
+    monkeypatch.setattr(
+        app.state.background_tasks, "recover_at_startup", lambda: order.append("recovery")
+    )
+    with TestClient(app, base_url="http://127.0.0.1:8421"):
+        assert order == ["cards", "paper", "recovery"]

@@ -906,19 +906,19 @@ class ProjectCatalog:
         self._refresh_display_workspaces()
 
     def migrate_paper(self, project_id: str) -> bool:
-        """Move one project's SQLite-held Paper into its folder, if still owed."""
+        """Move one project's SQLite-held or published Paper into its folder, if still owed."""
         return migrate_paper(
             self.store,
             project_id,
             self.paper_folder(project_id),
-            lambda: self._remove_paper_projection(project_id),
+            lambda: self._paper_workspace(project_id),
         )
 
     def migrate_papers(self) -> list[str]:
-        return migrate_papers(self.store, self.paper_folder, self._remove_paper_projection)
+        return migrate_papers(self.store, self.paper_folder, self._paper_workspace)
 
-    def _remove_paper_projection(self, project_id: str) -> None:
-        self._display_workspace_or_refresh(project_id)[1].remove_paper_tree()
+    def _paper_workspace(self, project_id: str) -> StateWorkspace:
+        return self._display_workspace_or_refresh(project_id)[1]
 
     def _refresh_display_workspaces(self) -> None:
         workspaces: dict[str, StateWorkspace] = {}

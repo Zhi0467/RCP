@@ -130,14 +130,21 @@ and nothing else. Text HTML previews inside the agent
 artifact sandbox (see Preview); binary HTML downloads. Paper files never execute as
 same-origin documents.
 
-An older database migrates at startup, once per project with Paper data. It
-writes the saved snapshot into a sibling temp folder and renames it into place,
-folds unsaved editor updates into the cache, and keeps the old `file_id`s. It
-clears legacy draft holds, whose text is already in History. It settles queued
-or running old Coach turns as interrupted and rejects pending change cards, each
-with a notice. Old Coach turns show as static transcript text. It then removes
-`.research/paper` and records `paper_migrations`. A crash resumes at the first
-unfinished step. Paper from before the file tree becomes `introduction.md`.
+An older database or state migrates at startup, once per project, after
+machine cards settle and before recovery. A project with neither SQLite Paper
+rows nor a `.research/paper` publication is only marked. Migration writes the
+saved snapshot, else the publication, into a sibling temp folder and renames it
+into place. Paths that differ only by case get distinct names, and paths the
+scan would hide are logged. It folds unsaved editor updates into the cache and
+keeps the old `file_id`s. A legacy draft replaces the published
+`introduction.md` only when it was based on that text. Whatever the folder did
+not take, the publication or a stale draft, stays as a named History version.
+It clears legacy draft holds and drafts. It settles queued or running old Coach
+turns as interrupted and rejects pending change cards, each with a notice. Old
+Coach turns show as static transcript text. It then removes `.research/paper`
+and records `paper_migrations`. A crash resumes at the first unfinished step.
+Paper from before the file tree becomes `introduction.md`. Until a project
+migrates, body collection keeps the bodies its saved tree names.
 
 History checkpoints editing bursts and explicit requests. Before deletion,
 folder rename, replacement upload, or restore, it also checkpoints a folder state

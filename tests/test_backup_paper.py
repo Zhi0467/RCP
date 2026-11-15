@@ -189,6 +189,7 @@ def test_backup_captures_a_migrated_old_writer_paper_folder(tmp_path):
     )
     from rcp.server_ops.backup_project_files import BackupProjectFileCaptureCoordinator
     from rcp.storage import AppStore
+    from rcp.transport import LocalStateWorkspace
     from tests.paper_legacy_seed import legacy_tree, seed_legacy_paper
     from tests.test_backup_capture import _inventory_for_space, _metadata, _project_inventory
 
@@ -202,7 +203,9 @@ def test_backup_captures_a_migrated_old_writer_paper_folder(tmp_path):
     try:
         seed_legacy_paper(store, project_id, repository / ".research")
         folder = LocalPaperFolder(paper_root(data_dir, project_id))
-        assert migrate_paper(store, project_id, folder, lambda: None)
+        state = repository / ".research"
+        workspace = LocalStateWorkspace(state, str(state))
+        assert migrate_paper(store, project_id, folder, lambda: workspace)
         publication = BackupCaptureCoordinator(
             store, data_dir, _metadata(data_dir)
         ).capture_sqlite()

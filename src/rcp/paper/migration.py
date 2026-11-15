@@ -1,16 +1,20 @@
-"""Move each project's SQLite-held Paper into its folder, once.
+"""Move each project's SQLite-held or published Paper into its folder, once.
 
 The steps run in order and each one is idempotent. The `paper_migrations` row
 is written last, so a crash resumes at the first unfinished step:
 
-1. Install the last saved tree into the empty folder through a sibling
-   staging directory. A folder that already holds files was installed.
-2. In one transaction: fold the editor update tail into the buffer cache with
-   the hash of its text, keeping every `file_id`; clear legacy draft holds;
-   settle unfinished Coach turns as interrupted; reject undecided change cards;
-   render each old Coach turn into static transcript text and make it history.
+1. Install the last saved tree, else the `.research/paper` publication with any
+   legacy draft, into the empty folder through a sibling staging directory. A
+   folder that already holds files was installed.
+2. In one transaction: keep the publication and any draft the folder did not
+   take as named History versions; give a published-only tree its `file_id`s;
+   fold the editor update tail into the buffer cache with the hash of its text,
+   keeping every `file_id`; clear legacy draft holds and drafts; settle
+   unfinished Coach turns as interrupted; reject undecided change cards; render
+   each old Coach turn into static transcript text and make it history.
 3. Remove `.research/paper`, then record the marker.
 
+A project that owes nothing is marked at once, so its publication is read once.
 Old Coach rows are read as raw JSON: the Coach's request model is retired.
 """
 
@@ -20,27 +24,45 @@ import functools
 import json
 import logging
 import sqlite3
+import uuid
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from pycrdt import Doc, Text, get_update, merge_updates
 
 from rcp.keyed_locks import KeyedLocks
-from rcp.paper.models import digest
-from rcp.paper.persistence import PaperSnapshotReader
+from rcp.paper import folder_io
+from rcp.paper.models import PaperFile, PaperSnapshot, digest, paper_file_kind
+from rcp.paper.persistence import PaperSnapshotReader, save_version
 
 if TYPE_CHECKING:
     from rcp.paper.folder import PaperFolder
     from rcp.storage import AppStore
+    from rcp.transport.state import StateWorkspace
 
 INTERRUPTED_COACH_NOTICE = "The Paper Coach is now a Paper chat, so this turn was stopped."
 REJECTED_CARDS_NOTICE = "Paper change cards are retired, so these changes were not applied."
+PUBLISHED_VERSION = "Published Paper"
+DRAFT_VERSION = "Unpublished draft"
+_INTRODUCTION = "introduction.md"
 _TERMINAL = ("succeeded", "failed", "interrupted")
 _LOCKS = KeyedLocks()
 _LOG = logging.getLogger(__name__)
 
 
+@dataclass
+class _Plan:
+    """What the folder receives and what History keeps beside it."""
+
+    files: dict[str, bytes]
+    versions: dict[str, dict[str, bytes]] = field(default_factory=dict)
+    identities: bool = False
+
+
 def needs_paper_migration(store: AppStore, project_id: str) -> bool:
+    """Whether SQLite still holds Paper rows that have not moved into the folder."""
     with store.connection() as connection:
         row = connection.execute(
             "SELECT NOT EXISTS (SELECT 1 FROM paper_migrations WHERE project_id = :p) AND ("
@@ -56,19 +78,33 @@ def migrate_paper(
     store: AppStore,
     project_id: str,
     folder: PaperFolder,
-    remove_projection: Callable[[], None],
+    workspace: Callable[[], StateWorkspace],
 ) -> bool:
     """Run every unfinished step for one project; False when nothing was owed."""
     with _LOCKS(f"{store.path.resolve()}:{project_id}"):
-        if not needs_paper_migration(store, project_id):
+        if _marked(store, project_id):
             return False
-        files = _saved_files(store, project_id)
-        if files:
-            folder.install(files)
-        _settle_database(store, project_id)
-        remove_projection()
+        projection = _read_projection(workspace())
+        if not projection and not needs_paper_migration(store, project_id):
+            _mark(store, project_id)
+            return False
+        plan = _plan(store, project_id, projection)
+        if plan.files:
+            folder.install(plan.files)
+        _settle_database(store, project_id, plan)
+        workspace().remove_paper_tree()
         _mark(store, project_id)
         return True
+
+
+def _marked(store: AppStore, project_id: str) -> bool:
+    with store.connection() as connection:
+        return (
+            connection.execute(
+                "SELECT 1 FROM paper_migrations WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            is not None
+        )
 
 
 def _mark(store: AppStore, project_id: str) -> None:
@@ -82,7 +118,7 @@ def _mark(store: AppStore, project_id: str) -> None:
 def migrate_papers(
     store: AppStore,
     folder_for: Callable[[str], PaperFolder],
-    remove_projection: Callable[[str], None],
+    workspace_for: Callable[[str], StateWorkspace],
 ) -> list[str]:
     """Migrate every project at startup; a failed project is logged and retried later."""
     failed = []
@@ -93,7 +129,7 @@ def migrate_papers(
                 store,
                 project_id,
                 folder_for(project_id),
-                functools.partial(remove_projection, project_id),
+                functools.partial(workspace_for, project_id),
             )
         except Exception:
             _LOG.exception("Paper of project %s could not move into its folder yet", project_id)
@@ -101,28 +137,83 @@ def migrate_papers(
     return failed
 
 
-def _saved_files(store: AppStore, project_id: str) -> dict[str, bytes]:
-    """The last saved tree, or a pre-tree draft as `introduction.md`."""
+def _read_projection(workspace: StateWorkspace) -> dict[str, bytes]:
+    """The `.research/paper` publication, read without following links."""
+    with workspace.read_snapshot() as root:
+        paper = root / "paper"
+        if not paper.is_dir() or paper.is_symlink():
+            return {}
+        paths = [entry.path for entry in folder_io.scan(paper) if entry.kind == "file"]
+        return {
+            path: data for path, data in folder_io.read(paper, paths).items() if data is not None
+        }
+
+
+def _plan(store: AppStore, project_id: str, projection: dict[str, bytes]) -> _Plan:
+    """The saved tree wins; else the publication, whose text a stale draft never replaces."""
     with store.connection() as connection:
+        saved = None
         if connection.execute(
             "SELECT 1 FROM paper_publication WHERE project_id = ?", (project_id,)
         ).fetchone():
             snapshot = PaperSnapshotReader(connection).legacy_saved_snapshot(project_id)
-            return {file.path: snapshot.file_bytes(file) for file in snapshot.files}
+            saved = {file.path: snapshot.file_bytes(file) for file in snapshot.files}
         draft = connection.execute(
-            "SELECT content FROM paper_drafts WHERE project_id = ?", (project_id,)
+            "SELECT content, base_hash FROM paper_drafts WHERE project_id = ?", (project_id,)
         ).fetchone()
-    return {"introduction.md": draft[0].encode()} if draft else {}
+    if saved is not None:
+        plan = _Plan(saved)
+    else:
+        plan = _Plan(dict(projection), identities=True)
+        if draft is not None:
+            text = draft[0].encode()
+            published = projection.get(_INTRODUCTION)
+            if published is None or published == text or draft[1] == digest(published):
+                plan.files[_INTRODUCTION] = text
+            else:
+                plan.versions[DRAFT_VERSION] = {_INTRODUCTION: text}
+    if projection and projection != plan.files:
+        plan.versions[PUBLISHED_VERSION] = projection
+    plan.files = _distinct_paths(plan.files)
+    hidden = sorted(
+        path for path in plan.files if any(folder_io.ignored(part) for part in path.split("/"))
+    )
+    if hidden:
+        _LOG.warning("Paper of project %s keeps files its tree hides: %s", project_id, hidden)
+    return plan
 
 
-def _settle_database(store: AppStore, project_id: str) -> None:
+def _distinct_paths(files: dict[str, bytes]) -> dict[str, bytes]:
+    """Rename paths equal but for case, which a case-insensitive folder would merge."""
+    result: dict[str, bytes] = {}
+    taken: set[str] = set()
+    for path, data in sorted(files.items()):
+        target = path
+        suffix = PurePosixPath(path).suffix
+        stem = path[: len(path) - len(suffix)] if suffix else path
+        number = 2
+        while target.casefold() in taken:
+            target = f"{stem} ({number}){suffix}"
+            number += 1
+        if target != path:
+            _LOG.warning("Paper path %s clashes by case; it moves to %s", path, target)
+        taken.add(target.casefold())
+        result[target] = data
+    return result
+
+
+def _settle_database(store: AppStore, project_id: str, plan: _Plan) -> None:
     now = store.now()
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
+        ids = _identities(connection, project_id, plan, now)
+        for name, files in plan.versions.items():
+            _keep_version(connection, project_id, name, files, ids, now)
         _fold_updates(connection, project_id)
         connection.execute(
             "UPDATE paper_publication SET hold = NULL WHERE project_id = ?", (project_id,)
         )
+        connection.execute("DELETE FROM paper_drafts WHERE project_id = ?", (project_id,))
         coach = connection.execute(
             "SELECT operation_id, status FROM graph_runs "
             "WHERE project_id = ? AND kind = 'paper_coach' ORDER BY created_at, operation_id",
@@ -139,6 +230,63 @@ def _settle_database(store: AppStore, project_id: str) -> None:
         for row in coach:
             _render_transcript(connection, project_id, row[0])
         store.detach_agent_tasks_for_history(connection, [row[0] for row in coach])
+
+
+def _identities(
+    connection: sqlite3.Connection, project_id: str, plan: _Plan, now: str
+) -> dict[str, str]:
+    """Each live path's `file_id`; a published-only tree gets its ids here."""
+    ids = {
+        path: file_id
+        for path, file_id in connection.execute(
+            "SELECT path, file_id FROM paper_files WHERE project_id = ? AND deleted_at IS NULL",
+            (project_id,),
+        )
+    }
+    if plan.identities:
+        for path, data in sorted(plan.files.items()):
+            if path not in ids:
+                ids[path] = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO paper_files(project_id, file_id, path, kind, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (project_id, ids[path], path, paper_file_kind(path, data), now),
+                )
+    return ids
+
+
+def _keep_version(
+    connection: sqlite3.Connection,
+    project_id: str,
+    name: str,
+    files: dict[str, bytes],
+    ids: dict[str, str],
+    now: str,
+) -> None:
+    """A named version the folder did not take; a resumed migration keeps one."""
+    if connection.execute(
+        "SELECT 1 FROM paper_versions WHERE project_id = ? AND kind = 'named' AND name = ?",
+        (project_id, name),
+    ).fetchone():
+        return
+    entries = []
+    blobs = {}
+    for path, data in sorted(files.items()):
+        file_id = ids.get(path) or str(uuid.uuid4())
+        if paper_file_kind(path, data) == "text":
+            entries.append(PaperFile(file_id=file_id, path=path, kind="text", text=data.decode()))
+        else:
+            blobs[digest(data)] = data
+            entries.append(
+                PaperFile(file_id=file_id, path=path, kind="binary", blob_sha256=digest(data))
+            )
+    for sha, data in blobs.items():
+        connection.execute(
+            "INSERT OR IGNORE INTO paper_blobs VALUES (?, ?, ?)", (sha, data, len(data))
+        )
+    save_version(
+        connection, project_id, PaperSnapshot(revision=0, files=entries), "migration", now, name
+    )
 
 
 def _fold_updates(connection: sqlite3.Connection, project_id: str) -> None:
