@@ -104,9 +104,14 @@ def paper_path(value: str) -> str:
     return value
 
 
+def paper_folder_path(data_dir: Path, project_id: str) -> Path:
+    """`<data_dir>/paper/<project_id>`, left as it is."""
+    return data_dir / "paper" / safe_component(project_id)
+
+
 def paper_root(data_dir: Path, project_id: str) -> Path:
     """`<data_dir>/paper/<project_id>`, created as real directories."""
-    root = data_dir / "paper" / safe_component(project_id)
+    root = paper_folder_path(data_dir, project_id)
     for directory in (data_dir, root.parent, root):
         directory.mkdir(mode=0o700, exist_ok=True)
         if not stat.S_ISDIR(directory.lstat().st_mode):

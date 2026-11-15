@@ -24,6 +24,7 @@ from rcp.limits import BACKUP_DIAGNOSTIC_MAX_CHARS, BACKUP_INVENTORY_MAX_ENTRIES
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_upgrade import load_upgraded_manifest, snapshot_cards
 from rcp.paper.folder import PaperFolder, paper_folder_on, read_paper_folder
+from rcp.paper.folder_io import paper_folder_path
 from rcp.server_ops._local_primitives import canonical_uuid4 as _canonical_uuid4
 from rcp.server_ops.backup_capture import (
     BackupCaptureUnavailable,
@@ -609,13 +610,18 @@ class BackupProjectFileCaptureCoordinator:
                     operation_projects=operation_projects,
                 )
             )
-            folder = paper_folder_on(
-                self.data_dir,
-                inventory.project_id,
-                _inventory_state_machine_id(inventory) or BACKEND_MACHINE_ID,
-                lambda card: cards[card].host,
-            )
-            files.extend(capture_paper_folder(folder, project_root, inventory.project_id))
+            paper_machine = _inventory_state_machine_id(inventory) or BACKEND_MACHINE_ID
+            if (
+                paper_machine != BACKEND_MACHINE_ID
+                or paper_folder_path(self.data_dir, inventory.project_id).is_dir()
+            ):
+                folder = paper_folder_on(
+                    self.data_dir,
+                    inventory.project_id,
+                    paper_machine,
+                    lambda card: cards[card].host,
+                )
+                files.extend(capture_paper_folder(folder, project_root, inventory.project_id))
             for fact in fact_backup_sources(source_root):
                 files.append(
                     stable_copy_fact_entry(
