@@ -135,3 +135,23 @@ def test_a_remote_stage_sweep_carries_the_protected_fingerprints(
 def test_a_remote_sweep_refuses_a_malformed_fingerprint() -> None:
     with pytest.raises(ValueError):
         RemoteRunStage("research.example").sweep(protected_hidden_reads=["../stages"])
+
+
+def test_install_touches_its_folder_before_a_sweep_can_age_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rcp.agents.staged_hidden_read import install
+
+    home = tmp_path.resolve() / "home"
+    monkeypatch.setenv("HOME", str(home))
+    name = _fingerprint(1)
+    parent = _hidden_read_folders(home, {name: 30})
+    for path in (home / ".rcp", parent, parent / name):
+        path.chmod(0o700)
+    stamp = time.time() - 30 * 86400
+    os.utime(parent / name, (stamp, stamp))
+
+    install(parent / name, {})
+    remote_stage_root.sweep_hidden_reads(7, set())
+
+    assert (parent / name).is_dir()

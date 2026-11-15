@@ -386,12 +386,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 OR (category='provider_terminal_error'
                     AND json_extract(payload_json,'$.classification')='stale_session')
                 OR (category='continuation_context_unavailable'
-                    AND json_extract(payload_json,'$.retry_required')=1)
-                OR EXISTS (SELECT 1 FROM provider_session_sweeps
-                    WHERE native_session_id=?)) LIMIT 1""",
-                (origin.operation_id, origin.native_session_id),
+                    AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
+                (origin.operation_id,),
             ).fetchone()
-            if unavailable is not None:
+            if unavailable is not None or cast("AppStore", self).provider_session_swept(
+                origin.native_session_id
+            ):
                 raise ValueError("question_origin_session_unavailable")
             self._require_project_accepts_new_work(connection, origin.project_id)
             # The answer is an ordinary turn: any artifact it changes in place
