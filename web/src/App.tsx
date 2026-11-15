@@ -64,6 +64,7 @@ import { ShareLinkNotice } from "./desktop/ShareLinkNotice";
 import { OpenLinkPage } from "./open/OpenLinkPage";
 import {
   chooseOpenHere,
+  offersOpenInApp,
   resolveShareLink,
   setTeamAccessOrigin,
   settleShareLink,
@@ -828,7 +829,7 @@ function MemberApp({
     [],
   );
   const shareLink = useShareLinkRequest();
-  const [teamSpacePrefill, setTeamSpacePrefill] = useState<string | null>(null);
+  const [addTeamSpaceRequested, setAddTeamSpaceRequested] = useState(false);
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);
@@ -2266,6 +2267,11 @@ function MemberApp({
       live = false;
     };
   }, [teamSpace, backendSessionReady]);
+  const openLinkUnavailable = useCallback(() => {
+    window.history.replaceState(null, "", "/");
+    settleShareLink();
+    setNotice({ kind: "error", text: "This link is not available." });
+  }, []);
   useEffect(() => {
     if (!shareLink?.inPlace || !backendSessionReady) return;
     let live = true;
@@ -4367,12 +4373,12 @@ function MemberApp({
       />
       {desktop && (
         <ShareLinkNotice
-          onAddTeamSpace={(sshTarget) => {
+          onAddTeamSpace={() => {
             if (teamSpace) {
               exitTeamSpace();
               return;
             }
-            setTeamSpacePrefill(sshTarget);
+            setAddTeamSpaceRequested(true);
             returnToProjects();
           }}
         />
@@ -4546,6 +4552,7 @@ function MemberApp({
         <OpenLinkPage
           token={shareLink.token}
           desktop={desktop}
+          sessionKnown={backendSessionReady || teamSessionRequired || ownerSessionRequired}
           signedIn={backendSessionReady}
           openHere={shareLink.openHere}
           spaceId={verifiedHealth?.space_id ?? null}
@@ -4554,6 +4561,7 @@ function MemberApp({
           }
           onOpenHere={chooseOpenHere}
           onOpened={settleShareLink}
+          onUnavailable={openLinkUnavailable}
         />
         {updateSurface}
         {acceptanceAgentSurface}
@@ -4654,6 +4662,7 @@ function MemberApp({
             onThemeChoiceChange: appearance.setTheme,
             onColorModeChoiceChange: appearance.setMode,
             openShareLinks: teamSpace && !desktop,
+            openInApp: offersOpenInApp(desktop, navigator.userAgent, navigator.maxTouchPoints),
           }}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
           updateNotice={releaseUpdate}
@@ -4713,8 +4722,8 @@ function MemberApp({
           onRefresh={refreshSpaceHome}
           onOpenSignIns={openSignIns}
           voice={voice}
-          teamSpacePrefill={teamSpacePrefill}
-          onTeamSpacePrefillTaken={() => setTeamSpacePrefill(null)}
+          addTeamSpaceRequested={addTeamSpaceRequested}
+          onAddTeamSpaceTaken={() => setAddTeamSpaceRequested(false)}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>

@@ -12,6 +12,7 @@ const server = await createServer({
 after(() => server.close());
 const { copyShareLink, shareLinkGraphTarget, shareLinkRequest, shareLinksEnabled } =
   await server.ssrLoadModule("/src/core/shareLinks.ts");
+const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 
 class FakeItem {
   constructor(parts) {
@@ -30,7 +31,10 @@ function fakeClipboard() {
 }
 
 function respond(status, body) {
-  return async () => new Response(JSON.stringify(body), { status });
+  return async () => {
+    if (status === 200) return body;
+    throw new ApiError(body?.detail ?? "Request failed", status);
+  };
 }
 
 test("graph targets and references map to share-link requests", () => {
@@ -56,14 +60,14 @@ test("graph targets and references map to share-link requests", () => {
 test("copy posts the item and writes the returned URL inside the click", async () => {
   const calls = [];
   const clipboard = fakeClipboard();
-  const fetcher = async (path, init) => {
+  const post = async (path, init) => {
     calls.push({ path, init });
-    return new Response(JSON.stringify({ url: "https://lab.example/open#l=t1" }), { status: 200 });
+    return { url: "https://lab.example/open#l=t1" };
   };
   const copied = copyShareLink(
     "p 1",
     { kind: "chat", item_id: "c1", graph_target: "main" },
-    { fetcher, clipboard, Item: FakeItem },
+    { post, clipboard, Item: FakeItem },
   );
   assert.equal(calls.length, 1);
   await copied;
@@ -82,13 +86,14 @@ test("a refused link rejects with the server's reason and writes nothing", async
     [409, { detail: "This team space has no access address." }],
     [404, { detail: "Not found" }],
     [500, null],
+    [503, { detail: "Team state is briefly unavailable." }],
   ]) {
     const clipboard = fakeClipboard();
     await assert.rejects(
       copyShareLink(
         "p",
         { kind: "node", item_id: "n", graph_target: "main" },
-        { fetcher: respond(status, body), clipboard, Item: FakeItem },
+        { post: respond(status, body), clipboard, Item: FakeItem },
       ),
       (error) => error instanceof Error && error.message.length > 0,
     );
@@ -102,7 +107,7 @@ test("a blocked clipboard rejects", async () => {
       "p",
       { kind: "node", item_id: "n", graph_target: "main" },
       {
-        fetcher: respond(200, { url: "https://lab.example/open#l=t" }),
+        post: respond(200, { url: "https://lab.example/open#l=t" }),
         clipboard: { write: async () => Promise.reject(new Error("denied")) },
         Item: FakeItem,
       },

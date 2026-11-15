@@ -48,6 +48,10 @@ export function offersOpenInApp(desktop: boolean, userAgent: string, touchPoints
   return !desktop && /Macintosh/.test(userAgent) && touchPoints <= 1;
 }
 
+export function effectiveOpenChoice(choice: OpenChoice, offersApp: boolean): OpenChoice {
+  return choice === "app" && !offersApp ? "ask" : choice;
+}
+
 export type OpenLinkStart = "resolve" | "signin" | "handoff" | "card";
 
 /** The desktop shell and a chosen "Open here" never show the card. */
@@ -56,14 +60,21 @@ export function openLinkStart({
   signedIn,
   openHere,
   choice,
+  offersApp,
 }: {
   desktop: boolean;
   signedIn: boolean;
   openHere: boolean;
   choice: OpenChoice;
+  offersApp: boolean;
 }): OpenLinkStart {
   if (desktop || openHere || choice === "here") return signedIn ? "resolve" : "signin";
-  return choice === "app" ? "handoff" : "card";
+  return effectiveOpenChoice(choice, offersApp) === "app" ? "handoff" : "card";
+}
+
+export function openLinkFailure(desktop: boolean, error: unknown): "card" | "retry" | "notice" {
+  if (error === null) return desktop ? "notice" : "card";
+  return error instanceof ApiError && error.status === 503 ? "retry" : "notice";
 }
 
 const KIND_LABELS: Record<ShareLinkKind, string> = {
@@ -83,6 +94,7 @@ export interface OpenLinkCardView {
   app: boolean;
   here: boolean;
   remember: boolean;
+  retry: boolean;
 }
 
 /**
@@ -92,15 +104,19 @@ export interface OpenLinkCardView {
  */
 export function openLinkCardView({
   start,
+  sessionKnown,
   signedIn,
   resolved,
+  retry,
   fallback,
   offersApp,
   spaceName,
 }: {
   start: OpenLinkStart;
+  sessionKnown: boolean;
   signedIn: boolean;
   resolved: ResolvedShareLink | null | undefined;
+  retry: boolean;
   fallback: boolean;
   offersApp: boolean;
   spaceName: string;
@@ -113,11 +129,13 @@ export function openLinkCardView({
     app: false,
     here: false,
     remember: false,
+    retry: false,
   };
+  if (retry) return { ...card, retry: true };
   if (resolved === null) return { ...card, name: "Not available", unavailable: true };
   if (start === "handoff")
     return fallback ? { ...card, title: "Opening in RCP…", here: true } : null;
-  if (start !== "card") return null;
+  if (start !== "card" || !sessionKnown) return null;
   const actions = { app: offersApp, here: true, remember: true };
   if (!signedIn) return { ...card, ...actions };
   if (!resolved) return null;

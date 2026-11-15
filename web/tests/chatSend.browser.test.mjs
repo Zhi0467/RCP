@@ -280,3 +280,49 @@ test("Retry of a Discuss turn from outside the chat refills its composer", async
     await server.close();
   }
 });
+
+test("a reply link scrolls the long transcript to its reply, flashes it, and stays there", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0, strictPort: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    const address = server.httpServer?.address();
+    assert.ok(address && typeof address === "object");
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1000, height: 900 } });
+    await page.addInitScript(() => {
+      window.flashes = 0;
+      new MutationObserver((records) => {
+        for (const record of records)
+          for (const node of record.addedNodes)
+            if (node instanceof Element && node.classList.contains("rcp-comment-flash"))
+              window.flashes += 1;
+      }).observe(document, { childList: true, subtree: true });
+    });
+    await page.goto(
+      `http://127.0.0.1:${address.port}/tests/fixtures/chatSend.html#/projects/project?turn=old-5`,
+    );
+    await page.getByRole("textbox", { name: "Message", exact: true }).waitFor();
+    await page.waitForFunction(() => !window.location.hash.includes("turn="));
+    await page.waitForTimeout(150);
+    await page.evaluate(() => window.refreshChatFixture());
+    await page.waitForFunction(() => window.flashes > 0);
+    await page.waitForTimeout(800);
+    const inView = await page.evaluate(() => {
+      const lines = document.querySelector(".agent-chat-view-lines").getBoundingClientRect();
+      const reply = [
+        ...document.querySelectorAll('.agent-chat-view-line[data-task-id="old-5"]'),
+      ].at(-1);
+      const rect = reply.getBoundingClientRect();
+      return rect.bottom > lines.top && rect.top < lines.bottom;
+    });
+    assert.equal(inView, true);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

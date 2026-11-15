@@ -19,6 +19,7 @@ delete globalThis.window;
 const { installLinkGuard, leavesApp } = await server.ssrLoadModule("/src/core/linkGuard.ts");
 const { OpenLinkCard } = await server.ssrLoadModule("/src/open/OpenLinkPage.tsx");
 const { AppearancePicker } = await server.ssrLoadModule("/src/ui/AppearancePicker.tsx");
+const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 
 const resolved = {
   project_id: "p",
@@ -30,8 +31,10 @@ const resolved = {
 const cardView = (overrides) =>
   model.openLinkCardView({
     start: "card",
+    sessionKnown: true,
     signedIn: true,
     resolved,
+    retry: false,
     fallback: false,
     offersApp: true,
     spaceName: "Lab",
@@ -45,6 +48,7 @@ const card = (view) =>
       onRemember: () => undefined,
       onOpenInApp: () => undefined,
       onOpenHere: () => undefined,
+      onRetry: () => undefined,
     }),
   );
 const buttons = (html) => (html.match(/<button/g) ?? []).length;
@@ -78,7 +82,7 @@ test("signed out, the card shows no item details and the token waits through sig
   assert.equal(view.name, null);
   assert.ok(!view.title.includes(resolved.project_name));
   assert.equal(view.here, true);
-  const step = { desktop: false, openHere: true, choice: "ask" };
+  const step = { desktop: false, openHere: true, choice: "ask", offersApp: true };
   assert.equal(model.openLinkStart({ ...step, signedIn: false }), "signin");
   assert.equal(model.openLinkStart({ ...step, signedIn: true }), "resolve");
   model.chooseOpenHere();
@@ -101,18 +105,36 @@ test("a link that does not resolve shows Not available with no actions", () => {
 });
 
 test("each remembered choice picks its own start, and the desktop shell never shows the card", () => {
-  const start = (choice, signedIn, desktop = false) =>
-    model.openLinkStart({ desktop, signedIn, openHere: false, choice });
+  const start = (choice, signedIn, desktop = false, offersApp = !desktop) =>
+    model.openLinkStart({ desktop, signedIn, openHere: false, choice, offersApp });
   assert.equal(start("ask", true), "card");
   assert.equal(start("ask", false), "card");
   assert.equal(start("here", true), "resolve");
   assert.equal(start("here", false), "signin");
   assert.equal(start("app", true), "handoff");
   assert.equal(start("app", false), "handoff");
+  assert.equal(start("app", true, false, false), "card");
   for (const choice of model.OPEN_CHOICES) {
     assert.equal(start(choice, true, true), "resolve");
     assert.equal(start(choice, false, true), "signin");
   }
+});
+
+test("the card waits until the session state is known", () => {
+  assert.equal(cardView({ sessionKnown: false, signedIn: false, resolved: undefined }), null);
+});
+
+test("a dead link settles over the app on desktop or on error, and a busy server offers Retry", () => {
+  assert.equal(model.openLinkFailure(false, null), "card");
+  assert.equal(model.openLinkFailure(true, null), "notice");
+  for (const desktop of [false, true]) {
+    assert.equal(model.openLinkFailure(desktop, new ApiError("busy", 503)), "retry");
+    assert.equal(model.openLinkFailure(desktop, new ApiError("boom", 500)), "notice");
+    assert.equal(model.openLinkFailure(desktop, new TypeError("offline")), "notice");
+  }
+  const view = cardView({ retry: true, resolved: undefined });
+  assert.deepEqual([view.app, view.here, view.remember, view.retry], [false, false, false, true]);
+  assert.equal(buttons(card(view)), 1);
 });
 
 test("a skipped hand-off falls back to Open here", () => {
@@ -204,7 +226,7 @@ test("the guard opens a same-space share link in place and any other in a tab", 
 });
 
 test("the Open share links preference row shows only where the card can show", () => {
-  const picker = (openShareLinks) =>
+  const picker = (openShareLinks, openInApp = true) =>
     renderToStaticMarkup(
       React.createElement(AppearancePicker, {
         themeChoice: "system",
@@ -212,9 +234,20 @@ test("the Open share links preference row shows only where the card can show", (
         onThemeChoiceChange: () => undefined,
         onColorModeChoiceChange: () => undefined,
         openShareLinks,
+        openInApp,
       }),
     );
   const groups = (html) => (html.match(/role="group"/g) ?? []).length;
+  const choices = (html) =>
+    (
+      html
+        .split('aria-label="Open share links"')[1]
+        .split("</div>")[0]
+        .match(/<button/g) ?? []
+    ).length;
   assert.equal(groups(picker(true)), groups(picker(false)) + 1);
   assert.match(picker(true), /aria-pressed="true"/);
+  assert.equal(choices(picker(true, false)), choices(picker(true)) - 1);
+  assert.equal(model.effectiveOpenChoice("app", false), "ask");
+  assert.equal(model.effectiveOpenChoice("app", true), "app");
 });
