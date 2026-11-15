@@ -206,7 +206,8 @@ def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
         and os.path.dirname(member) == os.path.join(os.path.dirname(base), "agent-threads")
         and os.path.realpath(parent) == parent
     )
-    legacy = parent == LEGACY_PARENT
+    saved_before_real_home = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
+    legacy = parent in {LEGACY_PARENT, saved_before_real_home}
     if not STAGE_NAME.fullmatch(os.path.basename(root)) or (
         parent != base and not legacy and not thread_stage
     ):

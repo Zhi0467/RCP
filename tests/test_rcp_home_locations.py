@@ -90,6 +90,17 @@ def test_a_remote_home_reached_through_a_link_stages_and_sweeps_at_its_real_path
     assert not root.exists()
 
 
+def test_a_stage_saved_under_a_linked_home_before_it_resolved_still_attaches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real-home"
+    (real / ".rcp" / "stages" / "rcp-run.saved").mkdir(parents=True, mode=0o700)
+    (tmp_path / "home").symlink_to(real)
+    stage = _local_stage(monkeypatch, tmp_path / "home")
+
+    stage.attach(str(tmp_path / "home" / ".rcp" / "stages" / "rcp-run.saved"))
+
+
 def test_a_stage_parent_another_user_owns_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
