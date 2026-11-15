@@ -606,13 +606,25 @@ class BackupManifestRepository(_StrictBackupModel):
         return _absolute_path(value, label="backup manifest repository path")
 
 
+class BackupAgentPermissions(AgentPermissions):
+    """Permissions as captured; fields a later release retired stay so the digest holds."""
+
+    read_introduction: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    write_paper: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class BackupManifestAgentProfile(_StrictBackupModel):
     profile: AgentExecutionProfile
     provider: ProviderId
     runtime: str
     model: str
     reasoning: str
-    permissions: AgentPermissions
+    permissions: BackupAgentPermissions
+
+    @field_validator("permissions", mode="before")
+    @classmethod
+    def capture_permissions(cls, value: object) -> object:
+        return value.model_dump() if type(value) is AgentPermissions else value
 
     @field_validator("runtime")
     @classmethod
@@ -738,8 +750,15 @@ class BackupManifestConfiguration(_StrictBackupModel):
         return self.declared_skill_defaults
 
     def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
-        """Compare human configuration; an older receipt's skill defaults are resolved values."""
-        exclude = {"skill_defaults", "declared_skill_defaults"}
+        """Compare human configuration; an older receipt's skill defaults are resolved values.
+
+        Code fixes each profile's permissions, so a capture from an older release differs there.
+        """
+        exclude = {
+            "skill_defaults": True,
+            "declared_skill_defaults": True,
+            "agent_profiles": {"__all__": {"permissions"}},
+        }
         if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
             return False
         if self.declared_skill_defaults is None:

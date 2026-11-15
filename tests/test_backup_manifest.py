@@ -572,6 +572,34 @@ def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path
     assert configuration.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def test_a_configuration_with_retired_permission_fields_keeps_its_digest_and_matches(
+    tmp_path: Path,
+) -> None:
+    from rcp.projects import _render_restored_manifest
+
+    record, _ = _completed_registration(tmp_path)
+    manifest = load_manifest(record.locator)
+    payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
+    for profile in payload["agent_profiles"]:
+        profile["permissions"] |= {"read_introduction": True, "write_paper": False}
+        if profile["profile"] == "paper_coach":
+            profile["permissions"] |= {
+                "read_repositories": "project_scope",
+                "read_conversations": "none",
+                "write_graph_patch": False,
+                "write_project_files": False,
+            }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    configuration = BackupManifestConfiguration.model_validate_json(encoded)
+
+    assert configuration.model_dump(mode="json") == payload
+    assert configuration.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert configuration.matches_manifest(manifest)
+    paths = {repository.alias: repository.path for repository in configuration.repositories}
+    _render_restored_manifest(configuration, paths)
+
+
 @pytest.mark.parametrize("declared", [{}, {"workflow_ids": []}, {"skill_ids": ["graph-audit"]}])
 def test_backup_manifest_renderers_preserve_only_declared_skill_defaults(
     tmp_path: Path, declared: dict[str, list[str]]
