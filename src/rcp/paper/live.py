@@ -1533,6 +1533,7 @@ class PaperLive:
                     path=file.path,
                     base=current.file_bytes(existing) if existing is not None else None,
                     data=data,
+                    exclusive=existing is None,
                 )
             )
         if not ops:

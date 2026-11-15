@@ -384,6 +384,26 @@ def test_restoring_a_deleted_file_keeps_its_id(paper):
     run(scenario())
 
 
+def test_restoring_a_deleted_file_over_a_new_occupant_is_refused(paper):
+    from rcp.paper.models import PaperPrecondition
+
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "archived")
+        version = await live.create_version("p", "original", "h")
+        await live.apply("p", [PaperOp(kind="delete", file_id=file_id)], "h")
+        occupant = await create(live, "a.md", "occupant")
+        with pytest.raises(PaperPrecondition):
+            await live.restore("p", version["version_id"], [file_id], "h")
+        (file,) = (await live.tree("p")).files
+        assert file.file_id == occupant
+        assert (root / "p/a.md").read_text() == "occupant"
+        await live.close()
+
+    run(scenario())
+
+
 def test_a_poll_waits_for_a_stable_stat_and_reports_unsupported_entries(paper):
     live, _, root = paper
 
