@@ -57,6 +57,8 @@ import type {
 } from "../core/types";
 import { projectCreationPrimaryLabel } from "./projectSetupModel";
 
+const CARDS_HASH = "#/cards";
+
 const AgentHome = lazy(() =>
   import("../agents/AgentHome").then((module) => ({ default: module.AgentHome })),
 );
@@ -401,7 +403,7 @@ export function ProjectLanding({
   }, [homeKey, homeView]);
   const chooseHomeView = (view: "cards" | "agent") => {
     if (homeKey) writePref(homeKey, view);
-    const hash = view === "agent" ? agentThreadHash(null) : "#/cards";
+    const hash = view === "agent" ? agentThreadHash(null) : CARDS_HASH;
     setHomeHash(hash);
     window.location.hash = hash;
   };
@@ -514,9 +516,12 @@ export function ProjectLanding({
   const [addTeamOpen, setAddTeamOpen] = useState(false);
   useEffect(() => {
     if (!addTeamSpaceRequested) return;
+    if (homeKey) writePref(homeKey, "cards");
+    setHomeHash(CARDS_HASH);
+    window.location.hash = CARDS_HASH;
     setAddTeamOpen(true);
     onAddTeamSpaceTaken?.();
-  }, [addTeamSpaceRequested, onAddTeamSpaceTaken]);
+  }, [addTeamSpaceRequested, onAddTeamSpaceTaken, homeKey]);
 
   useEffect(() => {
     try {

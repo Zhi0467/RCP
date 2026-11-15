@@ -11,24 +11,46 @@ export function leavesApp(href: string, here: URL): boolean {
   return target.origin !== here.origin || target.pathname !== here.pathname;
 }
 
-/** A link the page did not handle opens in a new tab instead of stranding the app on a
- * backend URL or a foreign page. A share link to this same space opens in place.
- * Downloads and explicit new-tab links pass through. */
+export type LinkClick = {
+  href: string;
+  target: string;
+  download: boolean;
+  modified: boolean;
+};
+
+/** What a plain click on an unhandled link does: a share link to this same space opens
+ * in place, even from a rendered link that names a target; a link that would unload the
+ * app opens in a new tab. Downloads, modified clicks, and explicit targets pass through. */
+export function linkClickAction(
+  click: LinkClick,
+  here: URL,
+  accessOrigin: string | null,
+): { kind: "share"; token: string } | { kind: "new-tab" } | { kind: "pass" } {
+  if (click.download) return { kind: "pass" };
+  const token = sameSpaceShareToken(click.href, here, accessOrigin);
+  if (token && !click.modified) return { kind: "share", token };
+  if (click.target || !leavesApp(click.href, here)) return { kind: "pass" };
+  return { kind: "new-tab" };
+}
+
 export function installLinkGuard() {
   document.addEventListener("click", (event) => {
     if (event.defaultPrevented || event.button !== 0) return;
     const link = (event.target as Element | null)?.closest?.("a[href]");
-    if (!(link instanceof HTMLAnchorElement) || link.hasAttribute("download") || link.target)
-      return;
-    const here = new URL(window.location.href);
-    const token = sameSpaceShareToken(link.href, here, teamAccessOrigin());
-    if (token) {
-      event.preventDefault();
-      requestShareLinkInPlace(token);
-      return;
-    }
-    if (!leavesApp(link.href, here)) return;
+    if (!(link instanceof HTMLAnchorElement)) return;
+    const action = linkClickAction(
+      {
+        href: link.href,
+        target: link.target,
+        download: link.hasAttribute("download"),
+        modified: event.metaKey || event.ctrlKey || event.shiftKey,
+      },
+      new URL(window.location.href),
+      teamAccessOrigin(),
+    );
+    if (action.kind === "pass") return;
     event.preventDefault();
-    window.open(link.href, "_blank", "noopener,noreferrer");
+    if (action.kind === "share") requestShareLinkInPlace(action.token);
+    else window.open(link.href, "_blank", "noopener,noreferrer");
   });
 }
