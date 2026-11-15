@@ -230,6 +230,7 @@ _EXEMPT_TABLES = {
     "_legacy_campaigns_archive": "legacy",
     "graph_seen_heads": "agent-context",
     "chat_forks": "immutable origin",
+    "share_links": "write-once token; no view lists or polls it",
     "notification_episode_observations": "delivery",
     "notification_graph_markers": "delivery",
     "notification_outbox": "delivery",

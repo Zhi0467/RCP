@@ -19,7 +19,9 @@ export type NotificationItemKind =
   | "node"
   | "paper"
   | "consolidation"
-  | "comment";
+  | "comment"
+  | "chat"
+  | "reply";
 
 export interface NotificationLink {
   projectId: string;
@@ -29,7 +31,7 @@ export interface NotificationLink {
 }
 
 const LINK_PATTERN =
-  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper|consolidation|comment)\/([^/?#]+)$/;
+  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper|consolidation|comment|chat|reply)\/([^/?#]+)$/;
 
 export function buildNotificationLink(link: NotificationLink): string {
   const segment = (value: string) =>
@@ -87,6 +89,21 @@ export function episodeNotificationHash(
     });
   }
   return episodeRunHash(link.projectId, link.itemId, episode, experimentEntries);
+}
+
+/**
+ * A chat opens the Chats view on it; a reply opens its chat and scrolls to it.
+ * A reply whose chat is unknown opens the Chats view alone.
+ */
+export function chatNotificationHash(link: NotificationLink, chatId: string | null): string {
+  const branchId = link.target.replace(/^branch:/, "");
+  const target: GraphTargetRef =
+    branchId === "main" ? MAIN_GRAPH : { kind: "branch", branch_id: branchId };
+  if (!chatId) return projectViewHash(link.projectId, target, "chats");
+  return projectViewHash(link.projectId, target, "chats", {
+    chatId,
+    ...(link.kind === "reply" ? { turnId: link.itemId } : {}),
+  });
 }
 
 /** The fields of `GET …/comment-threads/{t}` that place a thread. */

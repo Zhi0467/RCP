@@ -41,6 +41,19 @@ pub fn is_rcp_app_document_url(url: &Url, base_url: &str, allow_dev: bool) -> bo
             && url.path() == "/")
 }
 
+/// A team's share-link page, which the shell itself opens on that origin.
+pub fn is_team_share_open_url(url: &Url, team_base_url: &str) -> bool {
+    Url::parse(team_base_url).is_ok_and(|base| same_origin(url, &base) && url.path() == "/open")
+}
+
+/// Origin and path only: a fragment or query may carry a share-link token.
+pub fn loggable(url: &Url) -> String {
+    match url.origin() {
+        url::Origin::Tuple(..) => format!("{}{}", url.origin().ascii_serialization(), url.path()),
+        url::Origin::Opaque(_) => url.scheme().to_string(),
+    }
+}
+
 pub fn is_external_reference(url: &Url) -> bool {
     matches!(url.scheme(), "http" | "https")
 }
@@ -58,6 +71,12 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logged_urls_keep_no_fragment_or_query() {
+        let logged = loggable(&Url::parse("https://lab.example:8443/open?x=1#l=Token_1").unwrap());
+        assert_eq!(logged, "https://lab.example:8443/open");
+    }
 
     #[test]
     fn main_window_accepts_only_its_loopback_origins() {

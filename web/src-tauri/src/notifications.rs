@@ -15,12 +15,16 @@ use std::{
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use tokio::sync::oneshot;
 use url::Url;
 
 use crate::{
-    backend::BackendState, team_connections::TeamConnectionState, team_session::TeamSessionState,
+    backend::BackendState,
+    share_links::{self, NoticeState, PendingShare, ShareLink, ShareLinkNotice, Step},
+    team_connections::TeamConnectionState,
+    team_session::TeamSessionState,
+    team_tunnel::TeamTunnelState,
     windows,
 };
 
@@ -32,6 +36,7 @@ const BACKLOG_SUMMARY_LIMIT: usize = 3;
 const SETTINGS_FILENAME: &str = "notifications.json";
 const TEST_ID: &str = "test";
 const AUTHORIZE_ID: &str = "authorize";
+const SHARE_LINK_EVENT: &str = "rcp://share-link-unpaired";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Space {
@@ -75,6 +80,13 @@ struct Device {
     device_id: String,
 }
 
+/// The one item waiting to open: a notification click or a share link.
+#[derive(Clone)]
+enum Pending {
+    Click(Space, String),
+    Share(PendingShare),
+}
+
 /// What one accepted adapter request acknowledges.
 struct Posting {
     space: Space,
@@ -89,7 +101,7 @@ struct Inner {
     launched: HashSet<Space>,
     posting: HashMap<String, Posting>,
     replies: HashMap<String, oneshot::Sender<Result<(), String>>>,
-    pending_click: Option<(Space, String)>,
+    pending: Option<Pending>,
 }
 
 #[derive(Clone)]
@@ -99,6 +111,8 @@ pub struct NotificationState {
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
+/// macOS delivers a launching URL before setup manages the state.
+static EARLY_SHARE_LINK: Mutex<Option<ShareLink>> = Mutex::new(None);
 
 impl NotificationState {
     pub fn for_app(app: &AppHandle) -> Result<Self, String> {
@@ -194,13 +208,7 @@ pub fn start(app: AppHandle) {
 
 async fn poll_all(app: &AppHandle) {
     let state = app.state::<NotificationState>().inner().clone();
-    let pending_click = state.lock().pending_click.take();
-    if let Some((space, link)) = pending_click {
-        // A click that launched the app waits until its space can be reached.
-        if !open(app, &space, &link) {
-            state.lock().pending_click.get_or_insert((space, link));
-        }
-    }
+    advance_pending(app);
     let spaces: Vec<Space> = {
         let inner = state.lock();
         let mut spaces: Vec<Space> = inner
@@ -397,9 +405,10 @@ fn handle_event(kind: &str, adapter_id: &str, text: &str) {
             let Some(space) = adapter_id.split('|').next().and_then(Space::from_key) else {
                 return;
             };
-            if text.starts_with("#/") && !open(app, &space, text) {
-                // The poller retries until the backend or team is reachable.
-                state.lock().pending_click = Some((space, text.to_string()));
+            if text.starts_with("#/") {
+                let opened = open(app, &space, text);
+                record_click(&state, space, text, opened);
+                publish_share_notice(app);
             }
         }
         "posted" | "error" => {
@@ -422,9 +431,9 @@ fn handle_event(kind: &str, adapter_id: &str, text: &str) {
     }
 }
 
-/// Navigate to the item and show the window; false when the space is not
-/// reachable yet, so the caller keeps the click.
-fn open(app: &AppHandle, space: &Space, link: &str) -> bool {
+/// Navigate to `path_and_fragment` on the space's own origin and show the
+/// window; false when the space is not reachable yet, so the caller keeps it.
+fn open(app: &AppHandle, space: &Space, path_and_fragment: &str) -> bool {
     let origin = match space {
         Space::Personal => app
             .state::<BackendState>()
@@ -437,16 +446,217 @@ fn open(app: &AppHandle, space: &Space, link: &str) -> bool {
                 Url::parse(&session.connection.local_origin).map_err(|error| error.to_string())
             }),
     };
-    let (Ok(mut target), Some(window)) = (origin, app.get_webview_window("main")) else {
+    let (Ok(origin), Some(window)) = (origin, app.get_webview_window("main")) else {
         return false;
     };
-    target.set_fragment(Some(link.trim_start_matches('#')));
+    let Some(target) = same_origin_target(&origin, path_and_fragment) else {
+        return false;
+    };
     if let Err(error) = window.navigate(target) {
         eprintln!("[rcp] a notification could not open its item: {error}");
         return false;
     }
     crate::verify_then_prepare_show(app.clone(), "notification");
     true
+}
+
+/// The newest item owns the slot: an opened click drops an older share link,
+/// and one that cannot open yet waits for the poller.
+fn record_click(state: &NotificationState, space: Space, link: &str, opened: bool) {
+    state.lock().pending = (!opened).then(|| Pending::Click(space, link.to_string()));
+}
+
+fn same_origin_target(origin: &Url, path_and_fragment: &str) -> Option<Url> {
+    origin
+        .join(path_and_fragment)
+        .ok()
+        .filter(|target| target.origin() == origin.origin())
+}
+
+pub fn advance_pending(app: &AppHandle) {
+    let state = app.state::<NotificationState>().inner().clone();
+    let pending = state.lock().pending.clone();
+    match pending {
+        None => {}
+        Some(Pending::Click(space, link)) => {
+            // A click that launched the app waits until its space can be reached.
+            if open(app, &space, &link) {
+                let mut inner = state.lock();
+                if matches!(&inner.pending, Some(Pending::Click(s, l)) if *s == space && *l == link)
+                {
+                    inner.pending = None;
+                }
+            }
+        }
+        Some(Pending::Share(share)) => advance_share(app, &state, share),
+    }
+}
+
+fn advance_share(app: &AppHandle, state: &NotificationState, share: PendingShare) {
+    let connections = app.state::<TeamConnectionState>().list();
+    if let Err(error) = &connections {
+        eprintln!(
+            "[rcp] a share link waits because saved team connections are unreadable: {error}"
+        );
+    }
+    let sessions = app.state::<TeamSessionState>();
+    let backend_ready = app.state::<BackendState>().status().is_ok();
+    let step = share_links::next_step(
+        &share,
+        connections.as_deref(),
+        |id| sessions.established(id).is_ok(),
+        backend_ready,
+    );
+    match step {
+        Step::Open(connection_id) => {
+            if open(app, &Space::Team(connection_id), &share.link.open_path()) {
+                update_share(state, &share.link, |pending| *pending = None);
+                publish_share_notice(app);
+            }
+        }
+        Step::Unpaired => {
+            if share.notice != Some(NoticeState::Unpaired) {
+                set_share_notice(app, state, &share.link, Some(NoticeState::Unpaired));
+            }
+        }
+        Step::Wait => {
+            if share.notice == Some(NoticeState::Unpaired) {
+                set_share_notice(app, state, &share.link, None);
+            }
+        }
+        Step::Reconnect(connection_id) => {
+            let mut claimed = false;
+            update_share(state, &share.link, |pending| {
+                if let Some(Pending::Share(pending)) = pending {
+                    claimed = !pending.reconnect_attempted;
+                    pending.reconnect_attempted = true;
+                    pending.notice = None;
+                }
+            });
+            if !claimed {
+                return;
+            }
+            publish_share_notice(app);
+            let app = app.clone();
+            let state = state.clone();
+            tauri::async_runtime::spawn(async move {
+                match reconnect(&app, &connection_id).await {
+                    Ok(()) => advance_pending(&app),
+                    Err(error) => {
+                        eprintln!("[rcp] a share link's team space could not be reached: {error}");
+                        set_share_notice(&app, &state, &share.link, Some(NoticeState::Unreachable));
+                    }
+                }
+            });
+        }
+    }
+}
+
+async fn reconnect(app: &AppHandle, connection_id: &str) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "the RCP window is not open".to_string())?;
+    app.state::<TeamSessionState>()
+        .reconnect(
+            &window,
+            app.state::<TeamConnectionState>().inner(),
+            app.state::<TeamTunnelState>().inner(),
+            app.state::<BackendState>().inner(),
+            connection_id,
+        )
+        .await
+        .map(|_| ())
+}
+
+/// Mutate the slot only while it still holds this link, so a newer link or
+/// click that arrived during a reconnect is kept.
+fn update_share(
+    state: &NotificationState,
+    link: &ShareLink,
+    change: impl FnOnce(&mut Option<Pending>),
+) {
+    let mut inner = state.lock();
+    if matches!(&inner.pending, Some(Pending::Share(pending)) if pending.link == *link) {
+        change(&mut inner.pending);
+    }
+}
+
+fn set_share_notice(
+    app: &AppHandle,
+    state: &NotificationState,
+    link: &ShareLink,
+    notice: Option<NoticeState>,
+) {
+    update_share(state, link, |pending| {
+        if let Some(Pending::Share(pending)) = pending {
+            pending.notice = notice;
+        }
+    });
+    publish_share_notice(app);
+}
+
+fn publish_share_notice(app: &AppHandle) {
+    let _ = app.emit_to("main", SHARE_LINK_EVENT, share_link_notice(app));
+}
+
+pub fn receive_share_link(app: &AppHandle, link: ShareLink) {
+    let Some(state) = app.try_state::<NotificationState>() else {
+        *EARLY_SHARE_LINK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(link);
+        return;
+    };
+    state.lock().pending = Some(Pending::Share(PendingShare::new(link.clone())));
+    publish_share_notice(app);
+    advance_pending(app);
+    let waiting =
+        matches!(&state.lock().pending, Some(Pending::Share(pending)) if pending.link == link);
+    if waiting {
+        crate::verify_then_prepare_show(app.clone(), "share-link");
+    }
+}
+
+/// Call once the state is managed, so a link that launched the app is kept.
+pub fn receive_early_share_link(app: &AppHandle) {
+    let link = EARLY_SHARE_LINK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(link) = link {
+        receive_share_link(app, link);
+    }
+}
+
+pub fn share_link_notice(app: &AppHandle) -> Option<ShareLinkNotice> {
+    match &app.try_state::<NotificationState>()?.lock().pending {
+        Some(Pending::Share(pending)) => pending.shown_notice(),
+        _ => None,
+    }
+}
+
+pub fn retry_share_link(app: &AppHandle) {
+    let Some(state) = app.try_state::<NotificationState>() else {
+        return;
+    };
+    if let Some(Pending::Share(pending)) = &mut state.lock().pending {
+        pending.reconnect_attempted = false;
+        pending.notice = None;
+    }
+    publish_share_notice(app);
+    advance_pending(app);
+}
+
+pub fn dismiss_share_link(app: &AppHandle) {
+    let Some(state) = app.try_state::<NotificationState>() else {
+        return;
+    };
+    {
+        let mut inner = state.lock();
+        if matches!(inner.pending, Some(Pending::Share(_))) {
+            inner.pending = None;
+        }
+    }
+    publish_share_notice(app);
 }
 
 async fn adapter_reply(app: &AppHandle, id: &str, send: impl FnOnce()) -> Result<(), String> {
@@ -623,5 +833,71 @@ mod tests {
             assert_eq!(id.split('|').next().and_then(Space::from_key), Some(space));
         }
         assert_eq!(Space::from_key("other"), None);
+    }
+
+    fn share(token: &str) -> ShareLink {
+        share_links::parse(
+            &Url::parse(&format!(
+                "rcp://open?space=5f0c6b5e-4c1a-4d2e-9f3b-1a2b3c4d5e6f&host=lab&l={token}"
+            ))
+            .unwrap(),
+            "rcp",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_late_reconnect_result_leaves_a_newer_item_alone() {
+        let state = NotificationState {
+            inner: Arc::default(),
+            settings_path: PathBuf::new(),
+        };
+        let (old, new) = (share("old"), share("new"));
+        state.lock().pending = Some(Pending::Share(PendingShare::new(new.clone())));
+        update_share(&state, &old, |pending| *pending = None);
+        assert!(matches!(&state.lock().pending, Some(Pending::Share(p)) if p.link == new));
+
+        state.lock().pending = Some(Pending::Click(Space::Personal, "#/".into()));
+        update_share(&state, &new, |pending| *pending = None);
+        assert!(matches!(state.lock().pending, Some(Pending::Click(..))));
+
+        state.lock().pending = Some(Pending::Share(PendingShare::new(new.clone())));
+        update_share(&state, &new, |pending| *pending = None);
+        assert!(state.lock().pending.is_none());
+    }
+
+    #[test]
+    fn an_opened_click_drops_an_older_share_link() {
+        let state = NotificationState {
+            inner: Arc::default(),
+            settings_path: PathBuf::new(),
+        };
+        state.lock().pending = Some(Pending::Share(PendingShare::new(share("old"))));
+        record_click(&state, Space::Personal, "#/projects/p", true);
+        assert!(state.lock().pending.is_none());
+
+        state.lock().pending = Some(Pending::Share(PendingShare::new(share("old"))));
+        record_click(&state, Space::Personal, "#/projects/p", false);
+        assert!(matches!(
+            &state.lock().pending,
+            Some(Pending::Click(Space::Personal, link)) if link == "#/projects/p"
+        ));
+    }
+
+    #[test]
+    fn opened_paths_stay_on_the_space_origin() {
+        let origin = Url::parse("https://c1.rcp.localhost:9000/").unwrap();
+        assert_eq!(
+            same_origin_target(&origin, "/open#l=abc").unwrap().as_str(),
+            "https://c1.rcp.localhost:9000/open#l=abc"
+        );
+        assert_eq!(
+            same_origin_target(&origin, "#/projects/p")
+                .unwrap()
+                .as_str(),
+            "https://c1.rcp.localhost:9000/#/projects/p"
+        );
+        assert!(same_origin_target(&origin, "https://elsewhere.example/").is_none());
+        assert!(same_origin_target(&origin, "//elsewhere.example/open").is_none());
     }
 }

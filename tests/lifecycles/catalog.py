@@ -1158,6 +1158,7 @@ NOT_LIFECYCLE: dict[str, str] = {
     "resource_deadlines": "resource expiry index",
     "resource_versions": "change counters",
     "resource_watermark_epoch": "singleton counter",
+    "share_links": "write-once token rows, deleted with their project",
     "space_identity": "singleton space identity",
     "space_machines": "machine configuration rows",
     "space_turn_project_bindings": "per-turn binding receipt",

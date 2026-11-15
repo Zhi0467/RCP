@@ -421,23 +421,46 @@ def test_private_cli_forwards_the_requested_update_procedure(tmp_path, monkeypat
     assert calls[0][-1] == (procedure or "graceful")
 
 
-def test_required_ci_matrix_keeps_every_release_and_adds_production_corpus(monkeypatch, capsys):
-    import re
-    import textwrap
+def test_upgrade_sources_keep_newest_per_format_plus_ends_and_pins() -> None:
+    from tests.server_upgrade_harness import select_upgrade_sources
 
-    from tests import server_upgrade_harness
+    keys = {
+        "v1.0.9": "a",
+        "v1.0.10": "a",
+        "v1.0.11": "a",
+        "v1.0.12": "b",
+        "v1.0.13": "b",
+        "v1.0.14": "b",
+        "v1.0.15": "c",
+        "v1.0.16": "c",
+    }
+
+    assert select_upgrade_sources(keys, {"v1.0.12"}) == {
+        "v1.0.9": "v1.0.9",
+        "v1.0.10": "v1.0.11",
+        "v1.0.11": "v1.0.11",
+        "v1.0.12": "v1.0.12",
+        "v1.0.13": "v1.0.14",
+        "v1.0.14": "v1.0.14",
+        "v1.0.15": "v1.0.16",
+        "v1.0.16": "v1.0.16",
+    }
+
+
+def test_required_ci_matrix_runs_selected_releases_and_the_production_corpus(monkeypatch):
+    from tests import server_upgrade_harness as harness
 
     monkeypatch.setattr(
-        server_upgrade_harness, "published_release_tags", lambda: {"v0.4.40", "v0.4.39"}
+        harness, "published_release_tags", lambda: ["v0.4.41", "v0.4.40", "v0.4.39", "v0.4.38"]
     )
-    workflow = (Path(__file__).parents[1] / ".github/workflows/ci.yml").read_text()
-    code = re.search(r"python -c '\n(.*?)\n          ' >>", workflow, re.DOTALL)
-    assert code is not None
-    exec(textwrap.dedent(code.group(1)))
-    cases = json.loads(capsys.readouterr().out.removeprefix("releases="))["include"]
-    assert [case["tag"] for case in cases if not case["corpus"]] == ["v0.4.39", "v0.4.40"]
-    production = [case for case in cases if case["corpus"]]
-    assert production == [
+    monkeypatch.setattr(
+        harness, "release_format_key", {"v0.4.38": 1, "v0.4.39": 2, "v0.4.40": 2, "v0.4.41": 2}.get
+    )
+
+    cases = harness.installed_upgrade_matrix()["include"]
+
+    assert [case["tag"] for case in cases if not case["corpus"]] == ["v0.4.38", "v0.4.41"]
+    assert [case for case in cases if case["corpus"]] == [
         {
             "tag": "v0.4.40",
             "corpus": "terminal-transfer",
@@ -445,6 +468,23 @@ def test_required_ci_matrix_keeps_every_release_and_adds_production_corpus(monke
         }
     ]
     assert len({case["artifact"] for case in cases}) == len(cases)
+
+
+def test_every_release_the_journey_names_always_runs() -> None:
+    import re
+
+    from tests import server_upgrade_harness as harness
+
+    named = set(re.findall(r'tag == "(v[0-9.]+)"', Path(installed.__file__).read_text()))
+
+    assert named <= harness.JOURNEY_SPECIFIC_RELEASES | set(harness.PRODUCTION_CORPORA.values())
+
+
+def test_format_key_sources_name_literals_in_the_current_tree() -> None:
+    from tests import server_upgrade_harness as harness
+
+    for path, name in harness.UPGRADE_FORMAT_SOURCES:
+        harness._literal((harness.REPOSITORY_ROOT / path).read_text(), name)
 
 
 @pytest.mark.parametrize(

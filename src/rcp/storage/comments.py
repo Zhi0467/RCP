@@ -11,11 +11,13 @@ from pydantic import TypeAdapter
 
 from rcp.comments.models import COMMENT_MEDIA_TYPES, COMMENT_TARGET_ANCHOR_KINDS, CommentAnchor
 from rcp.comments.render import render_posts, render_thread, thread_budget_chars
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import COMMENT_POST_MAX_CHARS, COMMENT_THREAD_MAX_CHARS
 from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.artifacts import readable_artifact_in
 from rcp.storage.bulletin import parse_member_mentions
+from rcp.storage.chat_names import chat_title
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord, EpisodeRecord
@@ -46,6 +48,7 @@ class CommentTargetRoute:
     chat_owner: str | None
     graph_target: str
     media_type: str | None = None
+    title: str | None = None
 
     def readable_by(self, connection: sqlite3.Connection, user_id: str) -> bool:
         return live_project_member(connection, self.project_id, user_id) and self.owner in {
@@ -145,6 +148,7 @@ def _artifact_route(
         chat_owner=_chat_owner(connection, chat_id),
         graph_target=_graph_target(reader.agent_task(artifact.origin_operation_id or "")),
         media_type=artifact.media_type,
+        title=artifact.display_title or artifact.source_name,
     )
 
 
@@ -163,6 +167,7 @@ def _reply_route(
         chat_id=chat_id,
         chat_owner=owner,
         graph_target=_graph_target(task),
+        title=chat_title(connection, project_id, chat_id) if chat_id else None,
     )
 
 
@@ -170,17 +175,57 @@ def _paper_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
 ) -> CommentTargetRoute | None:
     row = connection.execute(
-        "SELECT 1 FROM paper_files WHERE project_id=? AND file_id=? AND deleted_at IS NULL",
+        "SELECT path FROM paper_files WHERE project_id=? AND file_id=? AND deleted_at IS NULL",
         (project_id, target_id),
     ).fetchone()
     if row is None:
         return None
     return CommentTargetRoute(
-        project_id=project_id, owner=None, chat_id=None, chat_owner=None, graph_target="main"
+        project_id=project_id,
+        owner=None,
+        chat_id=None,
+        chat_owner=None,
+        graph_target="main",
+        title=str(row[0]),
     )
 
 
-_TARGET_ROUTES = {"artifact": _artifact_route, "reply": _reply_route, "paper": _paper_route}
+def _chat_route(
+    store: AppStore, connection: sqlite3.Connection, project_id: str, target_id: str
+) -> CommentTargetRoute | None:
+    row = connection.execute(
+        "SELECT graph_target_json FROM graph_runs WHERE project_id=? AND visible=1 "
+        "AND kind IN ('node_chat','project_chat') AND json_extract(request_json,'$.chat_id')=? "
+        "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+        (project_id, target_id),
+    ).fetchone()
+    fork = store._chat_fork_record(connection, project_id, target_id) if row is None else None
+    target = (
+        GraphTargetRef.model_validate_json(row[0])
+        if row is not None
+        else fork.graph_target
+        if fork is not None
+        else store._orchestrator_chat_target(connection, project_id, target_id)
+    )
+    if target is None:
+        return None
+    owner = _chat_owner(connection, target_id)
+    return CommentTargetRoute(
+        project_id=project_id,
+        owner=owner,
+        chat_id=target_id,
+        chat_owner=owner,
+        graph_target=target.key,
+        title=chat_title(connection, project_id, target_id),
+    )
+
+
+_TARGET_ROUTES = {
+    "artifact": _artifact_route,
+    "reply": _reply_route,
+    "paper": _paper_route,
+    "chat": _chat_route,
+}
 
 
 def _target_route(

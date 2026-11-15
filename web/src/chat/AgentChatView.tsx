@@ -1298,6 +1298,7 @@ export function AgentChatView({
       {presentation === "workspace" && watcherToggle}
       {replyComments.headerButton}
       <ChatHeaderMenu
+        link={{ projectId: project.id, chatId, graphTarget }}
         actions={[
           ...headerActions,
           ...(!fixedConversation && !readOnly
@@ -1393,6 +1394,9 @@ export function AgentChatView({
         {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
         <AgentWindowTranscript
           transcript={transcript}
+          replyLinkGraphTarget={
+            graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main"
+          }
           tasks={relatedTasks}
           questions={questionState.questions}
           endpoints={endpoints}

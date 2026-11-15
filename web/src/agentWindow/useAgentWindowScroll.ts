@@ -1,9 +1,17 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { chatFarFromBottom, chatFollowsBottom, chatReaderMovedUp } from "../chat/chatLayout";
+import { flashRect, toRect } from "../comments/react/domText";
+import { hashWithoutTurn, turnFromHash } from "../core/graphTarget";
 import { CHAT_SCROLL_BOTTOM_TOLERANCE_PX } from "../core/uiConstants";
 // Where the reader left each chat in this session, kept only while they had
 // scrolled up; a chat without an entry opens at its bottom.
 const chatScrollPositions = new Map<string, number>();
+const TURN_FLASH_DELAY_MS = 350;
+
+function subscribeHash(listener: () => void): () => void {
+  window.addEventListener("hashchange", listener);
+  return () => window.removeEventListener("hashchange", listener);
+}
 
 function chatScrollObservation(element: HTMLElement, previousTop: number) {
   return {
@@ -29,11 +37,41 @@ export function useAgentWindowScroll(
   const lastScrollTopRef = useRef(0);
   const lastChatIdRef = useRef(scrollKey);
   const [farFromBottom, setFarFromBottom] = useState(false);
+  const requestedTurn = useSyncExternalStore(
+    subscribeHash,
+    () => turnFromHash(window.location.hash),
+    () => null,
+  );
+  const pendingTurnRef = useRef<string | null>(null);
+  const flashTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!requestedTurn) return;
+    pendingTurnRef.current = requestedTurn;
+    restoreTopRef.current = null;
+    shouldStickToBottomRef.current = false;
+  }, [requestedTurn]);
+  useEffect(() => () => window.clearTimeout(flashTimerRef.current), []);
   const placeRef = useRef<() => void>(() => undefined);
   placeRef.current = () => {
     const element = chatLinesRef.current;
     if (!element) return;
     const settle = () => setFarFromBottom(chatFarFromBottom(chatScrollObservation(element, 0)));
+    const turn = pendingTurnRef.current;
+    const reply = turn
+      ? [
+          ...element.querySelectorAll(`.agent-chat-view-line[data-task-id="${CSS.escape(turn)}"]`),
+        ].at(-1)
+      : undefined;
+    if (reply) {
+      pendingTurnRef.current = null;
+      window.history.replaceState(window.history.state, "", hashWithoutTurn(window.location.hash));
+      reply.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(
+        () => flashRect(toRect(reply.getBoundingClientRect())),
+        TURN_FLASH_DELAY_MS,
+      );
+    }
     if (restoreTopRef.current !== null) {
       element.scrollTop = restoreTopRef.current;
       lastScrollTopRef.current = element.scrollTop;
@@ -54,12 +92,14 @@ export function useAgentWindowScroll(
   useEffect(() => {
     if (lastChatIdRef.current !== scrollKey) {
       lastChatIdRef.current = scrollKey;
-      restoreTopRef.current = chatScrollPositions.get(scrollKey) ?? null;
-      shouldStickToBottomRef.current = restoreTopRef.current === null;
+      restoreTopRef.current = pendingTurnRef.current
+        ? null
+        : (chatScrollPositions.get(scrollKey) ?? null);
+      shouldStickToBottomRef.current = restoreTopRef.current === null && !pendingTurnRef.current;
     }
     placeRef.current();
     // Question cards load after the transcript and end it, so they move the bottom too.
-  }, [scrollKey, chatLinesRef, transcript, questions]);
+  }, [scrollKey, chatLinesRef, transcript, questions, requestedTurn]);
   useEffect(() => {
     const element = chatLinesRef.current;
     if (!element) return;
@@ -69,8 +109,10 @@ export function useAgentWindowScroll(
       height = element.clientHeight;
       if (height === 0) return;
       if (shown) {
-        restoreTopRef.current = chatScrollPositions.get(lastChatIdRef.current) ?? null;
-        shouldStickToBottomRef.current = restoreTopRef.current === null;
+        restoreTopRef.current = pendingTurnRef.current
+          ? null
+          : (chatScrollPositions.get(lastChatIdRef.current) ?? null);
+        shouldStickToBottomRef.current = restoreTopRef.current === null && !pendingTurnRef.current;
         lastScrollTopRef.current = element.scrollTop;
       }
       placeRef.current();

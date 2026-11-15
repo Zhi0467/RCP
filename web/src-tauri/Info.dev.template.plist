@@ -19,6 +19,17 @@
   <string>generated-at-build-time</string>
   <key>RCPDevUvExecutable</key>
   <string>generated-at-build-time</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>RCP Dev share link</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>rcp-dev</string>
+      </array>
+    </dict>
+  </array>
   <key>NSMicrophoneUsageDescription</key>
   <string>RCP uses the microphone only while you dictate a chat draft or a voice session you opened is running.</string>
   <key>NSSpeechRecognitionUsageDescription</key>

@@ -667,3 +667,16 @@ and state until its target goes. Each mutation of the three tables bumps the
 project's `comments` resource version. Project purge and the legacy-id merge
 cover them. Transfer excludes them. Database backups and restore schema
 fingerprints include them.
+
+## Share link storage
+
+Migration 88 owns the `share_links` table for team
+[share links](api-web-and-desktop-projections.md#share-links). It is
+operational, not graph history. A row maps a random token to one project, kind,
+item id, and graph target, and is unique on those four. Kinds are `artifact`,
+`node`, `paper` (file id), `comment` (thread id), `chat`, and `reply`
+(operation id). The graph target is `main` or `branch:<id>`. Create inserts a
+fresh token and keeps the existing row on conflict, so concurrent copies of one
+item get one URL. Links never expire and grant nothing; every open rechecks
+membership and readability. Project purge deletes the rows. Transfer excludes
+them.

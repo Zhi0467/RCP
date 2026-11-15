@@ -465,7 +465,13 @@ its migration chain. Raising the floor requires explicit review, not fixture age
 CI qualifies published stable releases at or above the floor and frozen
 fixtures, using production installation and update owners, populated old data
 and offline scratch. Failure injection verifies rollback and old-code use before
-retry. Pull requests and main install every one. After the committed update, the candidate's service journal
+retry. Pull requests and main install the same releases: the newest release of
+each persisted format, plus the floor, the newest release and any old writer the
+journey names. A format is the storage migration registry with the transfer,
+backup-manifest, server-config and server-metadata schema versions, read from
+each tag by
+[server_upgrade_harness.py](../../tests/server_upgrade_harness.py). **Why:**
+releases with one format take one upgrade path. After the committed update, the candidate's service journal
 must hold no ERROR line or traceback, and the seeded question follow-up must
 still read as succeeded. The aggregate gate promotes those same bytes. It does not
 prove arbitrary installations, provider authentication, remote-root behavior or

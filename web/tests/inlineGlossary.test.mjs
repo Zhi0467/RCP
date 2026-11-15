@@ -154,6 +154,7 @@ test("node chat passes the prebuilt index into Markdown answers", () => {
     React.createElement(AgentChatView, {
       project,
       glossaryIndex,
+      graphTarget: { kind: "main" },
       tasks: [],
       activeTask: null,
       historyMessages: [

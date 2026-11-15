@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-share-link-notice"
+description = "Enables the desktop_share_link_notice command without any pre-configured scope."
+commands.allow = ["desktop_share_link_notice"]
+
+[[permission]]
+identifier = "deny-desktop-share-link-notice"
+description = "Denies the desktop_share_link_notice command without any pre-configured scope."
+commands.deny = ["desktop_share_link_notice"]

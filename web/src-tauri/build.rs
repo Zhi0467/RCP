@@ -47,6 +47,9 @@ const COMMANDS: &[&str] = &[
     "request_quit",
     "check_for_update",
     "apply_update",
+    "desktop_share_link_notice",
+    "desktop_retry_share_link",
+    "desktop_dismiss_share_link",
 ];
 
 fn main() {
