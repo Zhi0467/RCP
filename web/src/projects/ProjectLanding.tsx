@@ -90,6 +90,9 @@ interface Props {
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
   /** The page's voice session, which a thread's mic binds to that thread. */
   voice: VoiceAgent;
+  /** A share link's team host to add, prefilled in the Add team space dialog. */
+  teamSpacePrefill?: string | null;
+  onTeamSpacePrefillTaken?: () => void;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -369,6 +372,8 @@ export function ProjectLanding({
   onRefresh,
   onOpenSignIns,
   voice,
+  teamSpacePrefill = null,
+  onTeamSpacePrefillTaken,
   palette,
 }: Props) {
   const [refreshing, setRefreshing] = useState(false);
@@ -507,6 +512,13 @@ export function ProjectLanding({
     null,
   );
   const [addTeamOpen, setAddTeamOpen] = useState(false);
+  const [addTeamTarget, setAddTeamTarget] = useState("");
+  useEffect(() => {
+    if (teamSpacePrefill == null) return;
+    setAddTeamTarget(teamSpacePrefill);
+    setAddTeamOpen(true);
+    onTeamSpacePrefillTaken?.();
+  }, [teamSpacePrefill, onTeamSpacePrefillTaken]);
 
   useEffect(() => {
     try {
@@ -910,8 +922,12 @@ export function ProjectLanding({
           {identity?.space_kind === "personal" && (
             <TeamSpaceGroups
               addOpen={addTeamOpen}
+              prefillSshTarget={addTeamTarget}
               onOpenAdd={() => setAddTeamOpen(true)}
-              onCloseAdd={() => setAddTeamOpen(false)}
+              onCloseAdd={() => {
+                setAddTeamOpen(false);
+                setAddTeamTarget("");
+              }}
             />
           )}
 

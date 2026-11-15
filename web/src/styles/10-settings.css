@@ -515,6 +515,77 @@
   margin: 2px 0 0;
   padding: 8px 10px;
 }
+.open-link-card {
+  animation: open-link-in 180ms ease-out;
+}
+@keyframes open-link-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .open-link-card {
+    animation: none;
+  }
+}
+.open-link-kind {
+  background: var(--cobalt-soft);
+  border-radius: 10px;
+  color: var(--cobalt-dark, var(--cobalt));
+  display: inline-grid;
+  height: 40px;
+  margin-bottom: 14px;
+  place-items: center;
+  width: 40px;
+}
+.open-link-kind.unavailable {
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
+}
+.team-login-card .open-link-title {
+  margin-bottom: 8px;
+}
+.open-link-name {
+  font: 600 var(--type-md) var(--ui);
+  margin: 0 0 22px;
+  overflow-wrap: anywhere;
+}
+.open-link-name.unavailable {
+  color: var(--muted);
+  font-weight: 500;
+}
+.open-link-actions {
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 1fr 1fr;
+}
+.open-link-actions.single {
+  grid-template-columns: 1fr;
+}
+.team-login-card .open-link-actions .button {
+  margin-top: 0;
+}
+.team-login-card .open-link-remember {
+  align-items: center;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: var(--type-xs);
+  font-weight: 500;
+  gap: 8px;
+  letter-spacing: 0;
+  margin-top: 14px;
+  min-height: 44px;
+  text-transform: none;
+}
+.team-login-card .open-link-remember input {
+  accent-color: var(--oxblood);
+  height: 16px;
+  margin: 0;
+  min-height: 16px;
+  width: 16px;
+}
 .run-dialog {
   background: var(--surface);
   border: 1px solid var(--line-strong);

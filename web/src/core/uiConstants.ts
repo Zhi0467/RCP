@@ -10,3 +10,5 @@ export const NODE_DETAIL_RESIZE_MIN_WIDTH = 360;
 export const NODE_DETAIL_RESIZE_MIN_HEIGHT = 320;
 /** An idempotent task start unanswered this long is shown unsent, with Resend. */
 export const IDEMPOTENT_TASK_START_TIMEOUT_MS = 60_000;
+/** A remembered "Open in app" offers "Open here" when the app has not taken the link by then. */
+export const OPEN_IN_APP_FALLBACK_MS = 1500;
