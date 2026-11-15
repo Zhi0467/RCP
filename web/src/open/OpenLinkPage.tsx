@@ -7,6 +7,7 @@ import {
   MessageSquare,
   MessageSquareText,
   MessagesSquare,
+  RefreshCw,
   type LucideIcon,
 } from "lucide-react";
 import type { ResolvedShareLink, ShareLinkKind } from "../core/types";
@@ -15,6 +16,7 @@ import {
   appHandoffUrl,
   offersOpenInApp,
   openLinkCardView,
+  openLinkFailure,
   openLinkStart,
   openResolvedHere,
   readOpenChoice,
@@ -36,28 +38,35 @@ const KIND_ICONS: Record<ShareLinkKind, LucideIcon> = {
 export function OpenLinkPage({
   token,
   desktop,
+  sessionKnown,
   signedIn,
   openHere,
   spaceId,
   spaceName,
   onOpenHere,
   onOpened,
+  onUnavailable,
 }: {
   token: string;
   desktop: boolean;
+  sessionKnown: boolean;
   signedIn: boolean;
   openHere: boolean;
   spaceId: string | null;
   spaceName: string | null;
   onOpenHere: () => void;
   onOpened: () => void;
+  onUnavailable: () => void;
 }) {
   const [choice] = useState(readOpenChoice);
   const [resolved, setResolved] = useState<ResolvedShareLink | null | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [fallback, setFallback] = useState(false);
   const [remember, setRemember] = useState(false);
-  const start = openLinkStart({ desktop, signedIn, openHere, choice });
+  const offersApp =
+    offersOpenInApp(desktop, navigator.userAgent, navigator.maxTouchPoints) && !!spaceId;
+  const start = openLinkStart({ desktop, signedIn, openHere, choice, offersApp });
 
   useEffect(() => {
     if (start === "signin") onOpenHere();
@@ -66,20 +75,27 @@ export function OpenLinkPage({
   useEffect(() => {
     if (!signedIn || start === "handoff" || start === "signin") return;
     let live = true;
+    const failed = (error: unknown) => {
+      const failure = openLinkFailure(desktop, error);
+      if (failure === "card") setResolved(null);
+      else if (failure === "retry") setRetry(true);
+      else onUnavailable();
+    };
     resolveShareLink(token).then(
       (link) => {
         if (!live) return;
-        if (link && start === "resolve") {
+        if (!link) failed(null);
+        else if (start === "resolve") {
           openResolvedHere(link.link);
           onOpened();
         } else setResolved(link);
       },
-      (failure: unknown) => live && setError(String(failure)),
+      (error: unknown) => live && failed(error),
     );
     return () => {
       live = false;
     };
-  }, [signedIn, start, token, onOpened]);
+  }, [signedIn, start, token, desktop, attempt, onOpened, onUnavailable]);
 
   useEffect(() => {
     if (start !== "handoff" || !spaceId) return;
@@ -88,25 +104,16 @@ export function OpenLinkPage({
     return () => window.clearTimeout(timer);
   }, [start, spaceId, token]);
 
-  const view = openLinkCardView({
+  const shown = openLinkCardView({
     start,
+    sessionKnown,
     signedIn,
     resolved,
+    retry,
     fallback,
-    offersApp: offersOpenInApp(desktop, navigator.userAgent, navigator.maxTouchPoints) && !!spaceId,
+    offersApp,
     spaceName: spaceName?.trim() || "Team space",
   });
-  const shown: OpenLinkCardView | null = error
-    ? {
-        kind: null,
-        title: spaceName?.trim() || "Team space",
-        name: error,
-        unavailable: true,
-        app: false,
-        here: false,
-        remember: false,
-      }
-    : view;
 
   const openInApp = () => {
     if (!spaceId) return;
@@ -130,6 +137,10 @@ export function OpenLinkPage({
           onRemember={setRemember}
           onOpenInApp={openInApp}
           onOpenHere={openHereNow}
+          onRetry={() => {
+            setRetry(false);
+            setAttempt((count) => count + 1);
+          }}
         />
       )}
     </main>
@@ -142,12 +153,14 @@ export function OpenLinkCard({
   onRemember,
   onOpenInApp,
   onOpenHere,
+  onRetry,
 }: {
   view: OpenLinkCardView;
   remember: boolean;
   onRemember: (remember: boolean) => void;
   onOpenInApp: () => void;
   onOpenHere: () => void;
+  onRetry: () => void;
 }) {
   const Icon = view.kind ? KIND_ICONS[view.kind] : Link2;
   return (
@@ -192,6 +205,18 @@ export function OpenLinkCard({
                 Open here
               </button>
             )}
+          </div>
+        )}
+        {view.retry && (
+          <div className="open-link-actions single">
+            <button
+              className="button primary"
+              type="button"
+              title="The team space is briefly busy"
+              onClick={onRetry}
+            >
+              <RefreshCw size={14} aria-hidden="true" /> Retry
+            </button>
           </div>
         )}
         {view.remember && (

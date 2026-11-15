@@ -7,13 +7,8 @@ import {
   retryShareLink,
   type ShareLinkNotice as Notice,
 } from "../core/desktopRuntime";
-import { sshTargetForHost } from "./shareLinkNoticeModel";
 
-export function ShareLinkNotice({
-  onAddTeamSpace,
-}: {
-  onAddTeamSpace: (sshTarget: string) => void;
-}) {
+export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: () => void }) {
   const [notice, setNotice] = useState<Notice | null>(null);
 
   useEffect(() => {
@@ -63,11 +58,7 @@ export function ShareLinkNotice({
           <RefreshCw size={14} /> Retry
         </button>
       ) : (
-        <button
-          className="button secondary"
-          type="button"
-          onClick={() => onAddTeamSpace(sshTargetForHost(notice.host))}
-        >
+        <button className="button secondary" type="button" onClick={onAddTeamSpace}>
           <Plus size={14} /> Add team space
         </button>
       )}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import {
   OPEN_CHOICES,
+  effectiveOpenChoice,
   readOpenChoice,
   writeOpenChoice,
   type OpenChoice,
@@ -24,6 +25,7 @@ export interface AppearancePickerProps {
   onColorModeChoiceChange: (mode: ColorModeChoice) => void;
   /** A team space's browser shows the /open card, so it offers its remembered choice. */
   openShareLinks?: boolean;
+  openInApp?: boolean;
 }
 
 const OPEN_CHOICE_LABELS: Record<OpenChoice, string> = { app: "In app", here: "Here", ask: "Ask" };
@@ -41,9 +43,11 @@ export function AppearancePicker({
   onThemeChoiceChange,
   onColorModeChoiceChange,
   openShareLinks = false,
+  openInApp = false,
   textScale,
 }: AppearancePickerProps & { textScale?: TextScaleControl }) {
-  const [openChoice, setOpenChoice] = useState(readOpenChoice);
+  const [storedChoice, setOpenChoice] = useState(readOpenChoice);
+  const openChoice = effectiveOpenChoice(storedChoice, openInApp);
   return (
     <section className="appearance-picker" aria-label="Appearance">
       <div className="appearance-picker-row">
@@ -80,7 +84,7 @@ export function AppearancePicker({
         <div className="appearance-picker-row">
           <span>Open share links</span>
           <div className="appearance-picker-options" role="group" aria-label="Open share links">
-            {OPEN_CHOICES.map((choice) => (
+            {OPEN_CHOICES.filter((choice) => openInApp || choice !== "app").map((choice) => (
               <button
                 type="button"
                 aria-pressed={choice === openChoice}
