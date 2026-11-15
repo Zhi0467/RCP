@@ -121,5 +121,5 @@ COMMENT_MEDIA_TYPES: dict[str, frozenset[str]] = {
 COMMENT_TARGET_ANCHOR_KINDS: dict[str, frozenset[str]] = {
     "artifact": frozenset(COMMENT_MEDIA_TYPES),
     "paper": frozenset({"whole", "text", "element", "pdf", "box"}),
-    "reply": frozenset({"whole", "text"}),
+    "reply": frozenset({"whole", "text", "element"}),
 }

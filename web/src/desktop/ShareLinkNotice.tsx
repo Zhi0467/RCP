@@ -1,4 +1,4 @@
-import { Link2, Plus, RefreshCw, WifiOff, X } from "lucide-react";
+import { Link2, Plus, RefreshCw, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   dismissShareLink,
@@ -7,6 +7,7 @@ import {
   retryShareLink,
   type ShareLinkNotice as Notice,
 } from "../core/desktopRuntime";
+import { Banner } from "../ui/Banner";
 
 export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: () => void }) {
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -39,13 +40,17 @@ export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: () => void
   if (!notice) return null;
   const unreachable = notice.state === "unreachable";
   return (
-    <div
-      className={`banner desktop-update-notice release-update-notice share-link-notice${unreachable ? " error" : ""}`}
+    <Banner
+      className={`desktop-update-notice release-update-notice share-link-notice${unreachable ? " error" : ""}`}
       role={unreachable ? "alert" : "status"}
       title={
         unreachable ? "This team space could not be reached" : "This team space is not added here"
       }
       data-state={notice.state}
+      onDismiss={() => {
+        setNotice(null);
+        void dismissShareLink().catch(() => undefined);
+      }}
     >
       {unreachable ? <WifiOff size={16} /> : <Link2 size={16} />}
       <strong>{notice.host}</strong>
@@ -62,17 +67,6 @@ export function ShareLinkNotice({ onAddTeamSpace }: { onAddTeamSpace: () => void
           <Plus size={14} /> Add team space
         </button>
       )}
-      <button
-        className="banner-dismiss"
-        type="button"
-        aria-label="Dismiss"
-        onClick={() => {
-          setNotice(null);
-          void dismissShareLink().catch(() => undefined);
-        }}
-      >
-        <X size={14} aria-hidden="true" />
-      </button>
-    </div>
+    </Banner>
   );
 }

@@ -440,8 +440,8 @@ It then refuses with:
 A rejected push refetches, merges, and tries once more before it reports
 Git's message.
 
-The Changes count is off while the Paper revision equals the synced revision.
-Otherwise it compares the tree a push would send with the synced commit's tree. An edit typed and then undone leaves no count.
+The Changes count compares the tree a push would send with the synced commit's
+tree. An edit typed and then undone leaves no count.
 The Git pill shows only the branch, so unpushed edits never read as an alarm.
 
 **Branches.** The pill opens the repository's branch list, read from GitHub.
@@ -935,8 +935,9 @@ An anchor is the thread's place on its target. Its kinds are whole, text, box,
 element, and pdf. [Comment models](../../src/rcp/comments/models.py) map each kind
 to the media types that admit it. Whole works on every viewable type. Text works
 on HTML, Markdown, plain text, Paper source and preview, and replies. Box works
-on HTML, raster images, and SVG. Element works on HTML. Pdf works on PDFs. Any
-kind may carry a short location string that the browser computes.
+on HTML, raster images, and SVG. Element works on HTML, Paper preview, and the
+diff lines of a Paper turn's reply. Pdf works on PDFs. Any kind may carry a short
+location string that the browser computes.
 
 The browser places a pin for each open thread when the target opens and when
 its version or text changes. Nothing re-finds on the server. A text anchor finds

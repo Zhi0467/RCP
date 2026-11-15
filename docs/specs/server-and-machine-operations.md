@@ -600,8 +600,8 @@ A granted public key requires confirmed revocation or preservation. Deleting the
 private key does not revoke the grant, and RCP holds no GitHub token to revoke
 it. So a request whose GitHub key existed records `prepared_state_preserved`, and
 its ledger links each repository's deploy-key settings with the key label. A
-server-only request records `request_owned_state_removed`. A request with nothing
-to remove records `nothing_to_remove`.
+request without a GitHub key that created a checkout records
+`request_owned_state_removed`; otherwise it records `nothing_to_remove`.
 [Project deletion](projects-spaces-and-operations.md#deletion) leaves central
 checkouts, canonical history and deploy keys for operator disposition.
 

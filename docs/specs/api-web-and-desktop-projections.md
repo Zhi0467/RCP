@@ -2436,7 +2436,7 @@ whoever can read the turn's reply. `GET
 /api/projects/{project_id}/paper/turns/{operation_id}` returns the turn's
 before and after version ids and its changed files, clashes first, each with its
 added and removed line counts. A turn that never took the Paper returns no
-files and null version ids. `GET .../files/{path}` returns one file's turn-start
+files and null version ids. `GET .../file?path=<path>` returns one file's turn-start
 text, the agent's text, and their line hunks; a clash row also carries the
 current text. An unreadable turn, and a file the turn did not change, answer
 404. [Turn models](../../src/rcp/paper/turns.py) own the bodies.

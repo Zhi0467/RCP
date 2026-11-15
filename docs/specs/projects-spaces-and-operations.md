@@ -481,7 +481,8 @@ machine in client string branches.
 `AgentTaskRecord`, before any recovery/Retry/watcher/mail policy parses it.
 Only the explicit per-kind retirement allowlist removes fields (currently legacy
 `auto_research.ending`, and the per-turn compute selection that every
-RunRequest kind froze through 0.4.29). Mappings assembled outside row decoding use the same helper. `RunRequest` drops
+RunRequest kind froze through 0.4.29). Mappings assembled outside row decoding use the same helper.
+A stored watcher continuation drops the same retired compute fields when it parses. `RunRequest` drops
 unknown fields when parsed, so the roundtrip rule below is
 what refuses a stored row that carries one; other live request models are
 `extra="forbid"`. Retire only shipped fields whose removal preserves meaning.

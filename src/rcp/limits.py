@@ -856,7 +856,7 @@ AGENT_SCHEDULE_MAX_COUNT = 10_000
 # Consecutive fires of one schedule, or one-shots on one thread, stay this far apart.
 AGENT_SCHEDULE_MIN_GAP_MINUTES = 15
 
-# Human approval cards expire on read or resolution, with no background sweeper.
+# Human approval cards expire on read, after each watcher poll, and at startup.
 APPROVAL_CARD_TTL_HOURS = 72
 
 # Gregorian leap-day schedules may span eight years across a non-leap century.
