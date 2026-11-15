@@ -209,7 +209,7 @@ export function PaperTurnDiff({
     });
   };
   const shownThread = shown && comments.threads.find((item) => item.thread_id === shown.thread);
-  const binary = file !== null && (file.before === null || file.coach === null);
+  const binary = file !== null && !file.too_large && (file.before === null || file.coach === null);
   return (
     <aside className="paper-turn-diff" aria-label={`Changes to ${path}`}>
       <header className="paper-bar paper-turn-diff-bar">
@@ -238,6 +238,7 @@ export function PaperTurnDiff({
         )}
         {!file && !error && <div className="paper-turn-loading" aria-label="Loading diff" />}
         {binary && <p className="paper-turn-binary">Binary file</p>}
+        {file?.too_large && <p className="paper-turn-binary">Too large to diff</p>}
         {file &&
           side === "current" &&
           textLines(file.current ?? "").map((text, index) => (

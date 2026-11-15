@@ -2,7 +2,9 @@
 
 The `paper_turn` receipt names the before and after versions; `paper_turn_files`
 holds each file's base and the agent's bytes. A row diffs the base, else the
-before version's file, against the agent's last bytes.
+before version's file, against the agent's last bytes. A row whose two sides
+match is not a change and is not listed; a side over the diff limit is shown
+as too large to diff.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from rcp.limits import PAPER_TURN_DIFF_MAX_BYTES
 from rcp.paper.changes import line_changes
 from rcp.paper.models import paper_file_kind
 from rcp.paper.persistence import PaperSnapshotReader
@@ -23,6 +26,7 @@ class PaperTurnRow(BaseModel):
     clash: bool
     added: int | None
     removed: int | None
+    too_large: bool = False
 
 
 class PaperTurn(BaseModel):
@@ -46,6 +50,7 @@ class PaperTurnFile(BaseModel):
     coach: str | None
     current: str | None = None
     hunks: list[PaperTurnHunk]
+    too_large: bool = False
 
 
 def turn_versions(store: AppStore, operation_id: str) -> tuple[str, str] | None:
@@ -77,8 +82,11 @@ def _hunks(before: str, after: str) -> list[PaperTurnHunk]:
 
 def turn_file(
     store: AppStore, project_id: str, before_version_id: str, row: dict[str, Any]
-) -> PaperTurnFile:
-    """One listed file: its turn-start text, the agent's text, and their line hunks."""
+) -> PaperTurnFile | None:
+    """One listed file: its turn-start text, the agent's text, and their line hunks.
+
+    None when the two sides match, since an unchanged file is not part of the turn.
+    """
     path = row["path"]
     with store.connection() as conn:
 
@@ -92,6 +100,18 @@ def turn_file(
             else PaperSnapshotReader(conn).version_file(project_id, before_version_id, path)
         )
         coach = blob(row["coach_sha"]) if row["coach_sha"] else None
+    if base == coach and not row["clash"]:
+        return None
+    if max(len(base or b""), len(coach or b"")) > PAPER_TURN_DIFF_MAX_BYTES:
+        return PaperTurnFile(
+            path=path,
+            kind=row["kind"],
+            clash=row["clash"],
+            before=None,
+            coach=None,
+            hunks=[],
+            too_large=True,
+        )
     before, after = _text(path, base), _text(path, coach)
     textual = row["kind"] != "unsupported" and None not in (before, after)
     return PaperTurnFile(
@@ -107,11 +127,17 @@ def turn_file(
 def turn_rows(
     store: AppStore, project_id: str, before_version_id: str, rows: list[dict[str, Any]]
 ) -> list[PaperTurnRow]:
-    """The turn's files, clashes first, each with its added and removed line counts."""
+    """The turn's changed files, clashes first, each with its added and removed line counts."""
     listed = []
     for row in rows:
         file = turn_file(store, project_id, before_version_id, row)
-        diffable = file.kind != "unsupported" and None not in (file.before, file.coach)
+        if file is None:
+            continue
+        diffable = (
+            file.kind != "unsupported"
+            and not file.too_large
+            and None not in (file.before, file.coach)
+        )
         listed.append(
             PaperTurnRow(
                 path=file.path,
@@ -119,6 +145,7 @@ def turn_rows(
                 clash=file.clash,
                 added=sum(len(hunk.new) for hunk in file.hunks) if diffable else None,
                 removed=sum(len(hunk.old) for hunk in file.hunks) if diffable else None,
+                too_large=file.too_large,
             )
         )
     return sorted(listed, key=lambda row: not row.clash)

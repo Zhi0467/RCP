@@ -68,3 +68,46 @@ def test_a_turn_that_never_held_the_paper_lists_no_files(manifest, tmp_path):
         assert turn.status_code == 200, turn.text
         assert turn.json()["files"] == []
         assert client.get(prefix + "/files/a.md").status_code == 404
+
+
+def test_a_turn_lists_only_changed_files_and_bounds_each_diff(manifest, tmp_path, monkeypatch):
+    import rcp.paper.turns as turns
+
+    monkeypatch.setattr(turns, "PAPER_TURN_DIFF_MAX_BYTES", 64)
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project = app.state.default_project_id
+    store = app.state.background_tasks.store
+    live = app.state.paper_live
+    folder = tmp_path / "data/paper" / project
+    with signed_in_client(app) as client:
+        prefix = f"/api/projects/{project}/paper"
+        live.run_sync(
+            live.apply(project, [PaperOp(kind="write", path="a.md", data=b"a\n")], "human")
+        )
+        (folder / "kept.csv").write_text("x\n" * 100)
+        live.run_sync(live.poll(project, full=True))
+        admitted_launch_task(
+            store,
+            operation_id="turn",
+            request=work_request("coach").model_copy(update={"focus": "paper"}),
+            record_updates={"project_id": project},
+        )
+        live.run_sync(live.begin_turn(project, "turn"))
+        (folder / "a.md").write_text("a\nagent\n")
+        (folder / "big.csv").write_text("y\n" * 100)
+        live.run_sync(live.poll(project, full=True))
+        end_paper_turn(store, live, project, "turn")
+
+        rows = {row["path"]: row for row in client.get(prefix + "/turns/turn").json()["files"]}
+        assert set(rows) == {"a.md", "big.csv"}
+        assert (rows["a.md"]["added"], rows["a.md"]["too_large"]) == (1, False)
+        assert (rows["big.csv"]["added"], rows["big.csv"]["too_large"]) == (None, True)
+        big = client.get(prefix + "/turns/turn/file", params={"path": "big.csv"}).json()
+        assert (big["too_large"], big["before"], big["coach"], big["hunks"]) == (
+            True,
+            None,
+            None,
+            [],
+        )
+        kept = client.get(prefix + "/turns/turn/file", params={"path": "kept.csv"})
+        assert kept.status_code == 404

@@ -543,7 +543,11 @@ is red, sorts first, and shows the agent's version beside the current file,
 where the human's text won. A diff line takes a shared comment on the reply
 with an `element` anchor: `path` is the file, `label` the line, and `text` the
 line's text. Send returns it to the agent. Other members'
-saves never appear in a turn's list. `GET …/paper/turns/{op}` and
+saves never appear in a turn's list. A row whose diff base equals its last
+bytes is no change and is not listed, so an outside-turn write with no open
+buffer, whose base is the turn-start version, drops out. A side over
+`PAPER_TURN_DIFF_MAX_BYTES` lists without counts and shows as too large to
+diff, with no text sent. `GET …/paper/turns/{op}` and
 `GET …/paper/turns/{op}/file?path=…` serve the list and one file.
 
 ## Answer and artifacts are independent

@@ -6,6 +6,7 @@ export interface PaperTurnRow {
   clash: boolean;
   added: number | null;
   removed: number | null;
+  too_large: boolean;
 }
 
 export interface PaperTurn {
@@ -29,6 +30,7 @@ export interface PaperTurnFile {
   coach: string | null;
   current: string | null;
   hunks: PaperTurnHunk[];
+  too_large: boolean;
 }
 
 export type DiffRow =

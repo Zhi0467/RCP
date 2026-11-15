@@ -53,11 +53,13 @@ async def paper_turn_file(
     live = get_paper_live(request)
     files = await asyncio.to_thread(live.turn_files, project_id, operation_id)
     row = next((row for row in files if row["path"] == path), None)
-    if row is None:
-        raise HTTPException(404, "File is not in this Paper turn")
     store = _api_services(request).store
-    file = await asyncio.to_thread(turn_file, store, project_id, before, row)
-    if file.clash:
+    file = (
+        None if row is None else await asyncio.to_thread(turn_file, store, project_id, before, row)
+    )
+    if file is None:
+        raise HTTPException(404, "File is not in this Paper turn")
+    if file.clash and not file.too_large:
         source = await live.source(project_id)
         entry = next((entry for entry in source.entries if entry.path == path), None)
         if entry is not None and entry.kind == "text":
