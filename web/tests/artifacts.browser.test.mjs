@@ -508,6 +508,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
                 provider_readiness: {},
               },
               node: null,
+              graphTarget: { kind: "main" },
               tasks: [task, omitted],
               activeTask: null,
               historyMessages: [],

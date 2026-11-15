@@ -72,6 +72,7 @@ const project = {
 const chatProps = {
   project,
   node: null,
+  graphTarget: { kind: "main" },
   tasks: [],
   activeTask: null,
   chatId: "chat",
