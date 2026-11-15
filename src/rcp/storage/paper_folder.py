@@ -11,6 +11,10 @@ PAPER_TURN_FILE_KINDS = ("write", "delete", "rename", "outside_turn", "unsupport
 def migrate_paper_folder(connection: sqlite3.Connection) -> None:
     from rcp.storage.resource_versions import install_paper_state_versions
 
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'paper_state'"
+    ).fetchone():
+        return
     connection.execute(
         """CREATE TABLE paper_state (
             project_id TEXT PRIMARY KEY,

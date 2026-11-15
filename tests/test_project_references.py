@@ -68,6 +68,7 @@ def test_paper_reference_retains_saved_tree_paths_ids_and_revision(branch_servic
     items = _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
     assert [item.reference.path for item in items] == [
         "figures/a.png",
+        "introduction.md",
         "main.tex",
         "sections/a.tex",
     ]
@@ -143,7 +144,7 @@ def test_whole_paper_subsumes_selected_files_and_stages_once(
     from tests.paper_helpers import create, saved, start_paper
 
     live = start_paper(branch_services[0].paper_live)
-    create(live, "introduction.md", "Saved draft", "project")
+    create(live, "draft.md", "Saved draft", "project")
     create(live, "notes.md", "More", "project")
     snapshot = saved(live, "project")
     selectors = [
