@@ -990,8 +990,41 @@ def delete_space_machine(
                 raise HTTPException(status_code=409, detail="A project started using this machine.")
             for project in projects:
                 detach_project_machine(project_display_cache, project["project_id"], machine_id)
+            leftover = _clean_machine_logins(store, machine_id)
             store.delete_space_machine(machine_id)
+    if leftover:
+        logger.warning(
+            "Removed machine %s left %d login folders on its unreachable host.",
+            machine_id,
+            leftover,
+        )
     return {"deleted": machine_id}
+
+
+def _clean_machine_logins(store: AppStore, machine_id: str) -> int:
+    """Delete each added login's credential and prune its home; count those left unreached.
+
+    Another backend may share the account's `~/.rcp`, so nothing else is removed.
+    After one unreachable login the rest are counted without another attempt.
+    """
+    from rcp.providers import profile_for
+    from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
+
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT provider, login_id FROM provider_login_states "
+            "WHERE machine_id = ? AND login_id != '' ORDER BY provider, login_id",
+            (machine_id,),
+        ).fetchall()
+    logins = [
+        LoginKey(row["provider"], machine_id, row["login_id"])
+        for row in rows
+        if profile_for(row["provider"]).login_credential_files
+    ]
+    for index, login in enumerate(logins):
+        if not cleanup_provider_login_credential(store, login):
+            return len(logins) - index
+    return 0
 
 
 @router.post("/api/space/machines/{machine_id}/directories")

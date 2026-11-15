@@ -407,12 +407,21 @@ async def test_remote_base_stages_snapshot_and_collects_changes(coach, monkeypat
     class RemoteStage(CoachRemoteStage):
         base = tmp_path / "remote-stage"
 
-        def open(self, operation_id, *, reuse=False, protected_roots=(), thread_owner=None):
+        def open(
+            self,
+            operation_id,
+            *,
+            reuse=False,
+            protected_roots=(),
+            protected_hidden_reads=None,
+            thread_owner=None,
+        ):
             assert reuse
             result = super().open(
                 operation_id,
                 reuse=reuse,
                 protected_roots=protected_roots,
+                protected_hidden_reads=protected_hidden_reads,
                 thread_owner=thread_owner,
             )
             stages.append(self)

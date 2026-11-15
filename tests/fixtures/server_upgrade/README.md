@@ -239,3 +239,8 @@ Git link record (migration 82). Exact source
 posts, and mentions (migration 83). Exact source `c2b0f07d7cd8b8b41eff7eeb13e1bc9f32e8e761`
 upgrades a copy of `pre-paper-git-links-v46-42ce9f4` through the existing fixture
 builder. Earlier boundaries remain unchanged.
+
+`pre-provider-session-sweeps-v48-05dfcdb` freezes migration 83 before provider
+session sweep marks (migration 86) and hidden-read fingerprints on task rows
+(migration 87). Exact source `05dfcdb879419991c205d540ea686342f5bb296b` upgrades
+a copy of `pre-comments-v47-c2b0f07` through the existing fixture builder.

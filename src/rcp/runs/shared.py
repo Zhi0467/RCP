@@ -403,6 +403,18 @@ def _protected_run_stage_roots(
         return None
 
 
+def _protected_hidden_reads(store: object | None) -> tuple[str, ...] | None:
+    """Live launches' hidden-read fingerprints, or None to skip that sweep when unread."""
+
+    reader = getattr(store, "protected_hidden_read_fingerprints", None)
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except sqlite3.Error:
+        return None
+
+
 def _swept_stage_root(
     data_dir: Path,
     *,
@@ -973,6 +985,10 @@ async def _stream_agent_events(
         from rcp.agents.provider_environment import unhidden_read_scope
 
         hidden_read_scope = unhidden_read_scope(machine_id=machine_id)
+    if execution is not None:
+        execution.store.record_agent_task_hidden_read(
+            execution.operation_id, hidden_read_scope.fingerprint
+        )
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
         if execution is not None and remote_stage is not None and remote_stage.root

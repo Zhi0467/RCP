@@ -154,7 +154,15 @@ def classify_terminal_error(text: str) -> str:
     # Only the missing-thread half is the evidence: a spawn that failed for some
     # other reason still has its session, and starting clean would throw away a
     # live checkpoint and repeat the work it holds.
-    if "no thread with id" in folded:
+    if any(
+        marker in folded
+        for marker in (
+            "no thread with id",
+            "no rollout found for thread id",
+            "no conversation found with session id",
+            "session not found: ses_",
+        )
+    ):
         return "stale_session"
     return "provider_error"
 

@@ -128,6 +128,15 @@ class ProviderProcessEnvironment:
 LOGIN_HOMES = "provider-homes"
 
 
+def remote_login_home(provider: str, login_id: str) -> str:
+    """An added login's provider home on a remote execution account, under `~`."""
+
+    if not login_id:
+        raise ValueError("The machine sign-in has no added home.")
+    validate_login_id(login_id)
+    return f"~/.rcp/{LOGIN_HOMES}/{quote(provider, safe='')}/{login_id}"
+
+
 def account_directory_name(machine_id: str) -> str:
     """One path-safe directory per space card: `machine-<machine_id>`."""
 

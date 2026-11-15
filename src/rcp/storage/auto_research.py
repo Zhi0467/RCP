@@ -407,7 +407,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
         )
         if binding is None or not binding["native_session_id"] or not binding["stage_root"]:
             raise ValueError("auto_research_session_unavailable")
-        if binding["history_only"]:
+        if binding["history_only"] or store.provider_session_swept(binding["native_session_id"]):
             raise ValueError("auto_research_session_unavailable")
         if (
             connection.execute(

@@ -255,6 +255,7 @@ def install(directory, files):
     for path in (*reversed(target.parents), target):
         if not path.exists():
             path.mkdir(mode=0o700, exist_ok=True)
+    os.utime(target, follow_symlinks=False)
     # `~/.rcp` must not be writable by others; its two private levels are 0700.
     for path, open_bits in ((target.parent.parent, 0o022), (target.parent, 0o077), (target, 0o077)):
         info = path.lstat()

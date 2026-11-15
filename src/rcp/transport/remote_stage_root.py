@@ -24,6 +24,7 @@ STAGE_NAME = re.compile(r"rcp-run\.[A-Za-z0-9._-]+")
 #: Where stages lived before `~/.rcp/stages`; a later release drops it.
 LEGACY_PARENT = "/tmp"
 MEMBER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+HIDDEN_READ_NAME = re.compile(r"[0-9a-f]{64}")
 READ_CONTEXT_INPUT = re.compile(r"(main-graph-|loop-status-watchers-)[0-9a-f]{64}\.json")
 
 
@@ -142,11 +143,16 @@ def remove_tree(path: str) -> None:
     shutil.rmtree(path)
 
 
-def sweep_stages(retain_days: int, protected: set[str]) -> None:
+def sweep_stages(
+    retain_days: int, protected: set[str], hidden_reads: set[str] | None = None
+) -> None:
     """Remove stages older than `retain_days`, in `~/.rcp/stages` and legacy `/tmp`.
 
+    With `hidden_reads`, the protected fingerprints, also age out launch policy folders.
     Best effort: a stage that cannot be removed stays for the next sweep.
     """
+    if hidden_reads is not None:
+        sweep_hidden_reads(retain_days, hidden_reads)
 
     cutoff = time.time() - retain_days * 86400
     base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
@@ -160,6 +166,23 @@ def sweep_stages(retain_days: int, protected: set[str]) -> None:
             with suppress(OSError):
                 if os.path.isdir(target) and os.path.getmtime(target) < cutoff:
                     remove_tree(target)
+
+
+def sweep_hidden_reads(retain_days: int, protected: set[str]) -> None:
+    """Remove `~/.rcp/hidden-read` folders older than `retain_days`, never following links."""
+
+    cutoff = time.time() - retain_days * 86400
+    parent = os.path.join(os.path.realpath(os.path.expanduser("~")), ".rcp", "hidden-read")
+    if os.path.realpath(parent) != parent or not os.path.isdir(parent):
+        return
+    for name in os.listdir(parent):
+        if name in protected or not HIDDEN_READ_NAME.fullmatch(name):
+            continue
+        target = os.path.join(parent, name)
+        with suppress(OSError):
+            info = os.lstat(target)
+            if stat.S_ISDIR(info.st_mode) and info.st_mtime < cutoff:
+                remove_tree(target)
 
 
 def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
@@ -430,8 +453,9 @@ def main(argv: list[str]) -> int:
     try:
         if argv[1:2] == ["legacy"]:
             print(json.dumps(legacy_stage_roots()))
-        elif len(argv) == 4 and argv[1] == "sweep":
-            sweep_stages(int(argv[2]), set(json.loads(argv[3])))
+        elif len(argv) in {4, 5} and argv[1] == "sweep":
+            hidden_reads = set(json.loads(argv[4])) if len(argv) == 5 else None
+            sweep_stages(int(argv[2]), set(json.loads(argv[3])), hidden_reads)
         elif len(argv) == 3 and argv[1] == "check":
             check_stage(argv[2])
         elif len(argv) == 3 and argv[1] == "last-touch":
