@@ -1,5 +1,7 @@
 import { useMemo } from "react";
+import { Link } from "lucide-react";
 import { bulletinTime } from "../../chat/bulletinModel";
+import { copyShareLink, useShareLinks } from "../../core/shareLinks";
 import { commentMentionCandidates, decodeCommentMentions } from "../mentions.ts";
 import { anchorQuote } from "../model.ts";
 import type { CommentMember, CommentPost, CommentThread } from "../types.ts";
@@ -61,6 +63,7 @@ export function CommentThreadCard({
   note?: string;
 }) {
   const open = thread.state === "open";
+  const share = useShareLinks();
   const sendable = open && comments.canSend && thread.can_send;
   const quote =
     anchorQuote(thread.anchor) ||
@@ -86,6 +89,23 @@ export function CommentThreadCard({
         <button type="button" className="rcp-comment-quote" onClick={onLocate}>
           {quote}
         </button>
+        {share && (
+          <button
+            type="button"
+            className="rcp-comment-link"
+            aria-label="Copy link"
+            title="Copy link"
+            onClick={() =>
+              copyShareLink(thread.project_id, {
+                kind: "comment",
+                item_id: thread.thread_id,
+                graph_target: thread.graph_target,
+              }).catch(comments.showError)
+            }
+          >
+            <Link size={14} aria-hidden="true" />
+          </button>
+        )}
       </div>
       {thread.posts.map((post) => (
         <PostRow key={post.post_id} post={post} members={comments.members} />

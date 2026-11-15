@@ -91,6 +91,18 @@
   color: var(--muted, #6b6258);
   flex: 1;
 }
+.rcp-comment-thread-top .rcp-comment-link {
+  flex: none;
+  display: grid;
+  place-items: center;
+  padding: 3px;
+  border: 0;
+  background: none;
+  color: var(--muted, #6b6258);
+}
+.rcp-comment-thread-top .rcp-comment-link:hover {
+  color: var(--ink, inherit);
+}
 .rcp-comment-post {
   border-bottom: 1px solid var(--rule, #d8ccbb);
   padding: 10px 0;
@@ -282,6 +294,11 @@
   }
   .rcp-comments-header {
     padding: 9px 12px;
+  }
+  .rcp-comment-thread-top .rcp-comment-link {
+    width: 32px;
+    height: 32px;
+    margin: -6px -6px 0 0;
   }
   .rcp-comment-composer {
     left: 8px !important;
