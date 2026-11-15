@@ -161,6 +161,7 @@ def sweep_stages(
         sweep_hidden_reads(retain_days, hidden_reads)
 
     cutoff = time.time() - retain_days * 86400
+    protected = protected | {os.path.realpath(root) for root in protected}
     base = os.path.join(rcp_home(), "stages")
     thread_parents = glob.glob(os.path.join(os.path.dirname(base), "agent-threads", "*", "stages"))
     for parent in (base, LEGACY_PARENT, *thread_parents):
