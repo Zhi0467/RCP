@@ -353,6 +353,7 @@ described in [Bulletin channels](#bulletin-channels). Comment mentions use the
 kind `comment` with the thread id ([Comment API](#comment-api)).
 The same pattern names project references with the kinds `artifact`, `node`,
 and `paper` (item id `introduction`); `target` is the node's source target.
+[Share links](#share-links) also use `chat` (chat id) and `reply` (operation id).
 Graph item age starts at its accepted Patch, and terminal episode age starts
 at its latest lifecycle update, so downtime does not renew the 24-hour TTL.
 `POST /api/notifications/devices/{device_id}/items/{notification_id}` accepts
@@ -394,8 +395,11 @@ at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
 opens on its source target, and the paper opens in Paper. A comment link reads
 its thread, opens the artifact, Paper file, or chat reply it sits on, and
-scrolls to its anchor. Copy reference writes the full URL. The chat composer
-turns a same-project reference link into a reference chip.
+scrolls to its anchor. A chat link opens the Chats view on that chat. A reply
+link reads its task, opens its chat with `turn=<operation_id>`, and the
+transcript scrolls to that reply and flashes it. A reply whose chat is unknown
+opens the Chats view alone. Copy reference writes the full URL. The chat
+composer turns a same-project reference link into a reference chip.
 
 ## Phone push delivery
 
@@ -2352,6 +2356,72 @@ member. Delivery keeps it only while the mention row exists, the thread is
 open, and the device's member can read the target. Its link is
 `#/projects/{project_id}/targets/{target}/comment/{thread_id}`, with the
 target's branch key.
+
+## Share links
+
+A share link lets a team member send one `https://` URL for an item. It has the
+form `<access_url>/open#l=<token>`. The token is opaque and holds no names. It
+rides in the fragment and in request bodies, never in a request path.
+[Storage](projects-spaces-and-operations.md#share-link-storage) owns the rows.
+
+[Share-link routes](../../src/rcp/api/share_links.py) answer 404 in a personal
+space.
+
+- `POST /api/projects/{project_id}/share-links` takes `{kind, item_id,
+  graph_target}` and returns `{url}`. It needs membership and a readable item,
+  else 404. With no team access URL it returns 409.
+- `POST /api/share-links/resolve` takes `{token}` and returns `{project_id,
+  project_name, kind, title, link}`. `link` is the
+  [notification link](#desktop-notification-delivery) for the item, with the
+  bare branch id as its target. An unknown token, a non-member, and an
+  unreadable or deleted item all get the same 404 body.
+- `GET /open` serves `index.html` with `no-cache`.
+
+Every create and resolve rechecks readability. The caller must be a live
+project member, and a branch target must still exist. An artifact, Paper file,
+or reply must pass the comment target check. A comment needs its thread and
+then its target to pass. A chat must exist and be unowned or the caller's own.
+A node must be in the target's current graph.
+
+**Copy.** In a team space whose `/api/team/space` has an access URL, Copy
+reference becomes Copy link wherever it appears, with a Link icon. Elsewhere it
+stays Copy reference. The same condition adds Copy link to the Paper file menu,
+the chat header menu, each comment thread card, and a Link button beside the
+time of each finished agent reply in the chat transcript. The clipboard write
+starts inside the click with the URL still pending, because WebKit drops a
+write made after an `await`. Drag keeps the reference URL.
+
+**The /open page.** The token is read once at load, so a team sign-in in
+between keeps it. The page uses the team sign-in card. Signed in, it shows the
+item's kind, project, and title. Signed out, it shows no item details. It offers
+"Open here" and, in a Mac browser, "Open in app", plus Remember (its note on
+hover). "Open here" resolves the link after sign-in and hands it to the
+notification resolver. "Open in app" sets the location to
+`rcp://open?space=<space_id>&host=<host>&l=<token>`. A failed resolve shows
+"Not available" with no buttons. The remembered choice lives in browser
+storage: `app`, `here`, or `ask` (the default). `app` skips the card and, after
+a short wait, shows an "Open here" fallback. `here` skips the card. Space
+Settings' Appearance pane shows an "Open share links" row (In app, Here, Ask)
+that edits the same choice in a team space's browser only. The desktop shell
+never shows the card; it resolves and opens in place.
+
+**In place.** A click on a share link to the current space opens it in place,
+without the card. In a browser that is a same-origin link. In the desktop shell
+it is a link on the space's access origin. A failed in-place open shows a
+notice. Other share links open in a new tab.
+
+**Desktop.** The release app registers the `rcp` URL scheme and RCP Dev
+registers `rcp-dev`, each in its own Info.plist. The shell accepts only
+`<scheme>://open` with `space`, `host`, and `l`, and never logs the token. A
+link waits in the same pending slot as a notification click, so a newer click
+replaces it. A link that launches the app is kept. The shell matches `space`
+to a saved team connection's verified space id and opens that connection's
+`/open#l=<token>`. It never contacts `host`. An unconnected match is
+reconnected once; if that fails, a banner names `host` with Retry and Dismiss.
+With no match, an update-notice-style banner names `host` with "Add team
+space", which opens the add dialog with `host` (without its port) as the SSH
+target. The link stays pending until the space is added or the banner is
+dismissed.
 
 ## Agent thread API
 
