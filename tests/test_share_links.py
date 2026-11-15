@@ -13,6 +13,7 @@ from rcp.storage import AgentTaskRecord
 from rcp.storage.artifact_models import Artifact
 from rcp.team_access import TEAM_ACCESS_URL_ENV
 from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
+from rcp.transport import StateUnavailable
 from tests.helpers import (
     append_fixture_patch,
     create_named_app,
@@ -56,7 +57,9 @@ def _artifact(store, project: str, artifact_id: str = "shared-note") -> Artifact
     )
 
 
-def _chat_turn(store, project: str, chat_id: str, operation_id: str) -> None:
+def _chat_turn(
+    store, project: str, chat_id: str, operation_id: str, target: GraphTargetRef | None = None
+) -> None:
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -68,6 +71,7 @@ def _chat_turn(store, project: str, chat_id: str, operation_id: str) -> None:
             created_at=now,
             updated_at=now,
             status_message="done",
+            graph_target=target or GraphTargetRef(),
         )
     )
 
@@ -90,6 +94,13 @@ def _branch(app, store, project: str) -> str:
                 space_id=store.space_id, user_id=str(uuid.uuid4()), display_name="Member"
             ),
         )
+    )
+    store.create_graph_branch(
+        project_id=project,
+        branch_id=branch_id,
+        owner_episode_id=None,
+        parent_head=base,
+        created_by="member",
     )
     return branch_id
 
@@ -201,6 +212,31 @@ def test_every_unreadable_link_answers_the_same_404(team) -> None:
     assert len({response.content for response in refused}) == 1
     assert _copy(client, project, "chat", member_chat.thread_id).status_code == 404
     assert _copy(client, project, "node", "rq/missing").status_code == 404
+
+
+def test_a_turn_item_links_to_its_own_graph_target(team) -> None:
+    app, client, store, _, _, project = team
+    branch = _branch(app, store, project)
+    _chat_turn(store, project, "chat-b", "turn-b", GraphTargetRef(kind="branch", branch_id=branch))
+    for kind, item_id in (("chat", "chat-b"), ("reply", "turn-b")):
+        body = _resolve(client, _token(_copy(client, project, kind, item_id))).json()
+        assert body["link"] == f"#/projects/{project}/targets/{branch}/{kind}/{item_id}"
+
+
+def test_unavailable_state_answers_503_only_to_members(team, monkeypatch) -> None:
+    app, client, store, people, acting, project = team
+    branch = _branch(app, store, project)
+    node = _token(_copy(client, project, "node", NODE_ID))
+    _chat_turn(store, project, "chat-b", "turn-b", GraphTargetRef(kind="branch", branch_id=branch))
+    reply = _token(_copy(client, project, "reply", "turn-b"))
+
+    def unavailable(*_args, **_kwargs):
+        raise StateUnavailable("offline")
+
+    monkeypatch.setattr(app.state.catalog, "open", unavailable)
+    assert {_resolve(client, token).status_code for token in (node, reply)} == {503}
+    acting[0] = people[2].user_id
+    assert _resolve(client, node).status_code == 404
 
 
 def test_copy_needs_an_access_url(team, monkeypatch: pytest.MonkeyPatch) -> None:

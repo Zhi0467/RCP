@@ -2369,19 +2369,22 @@ space.
 
 - `POST /api/projects/{project_id}/share-links` takes `{kind, item_id,
   graph_target}` and returns `{url}`. It needs membership and a readable item,
-  else 404. With no team access URL it returns 409.
+  else 404. With no team access URL it returns 409. Only a node uses the body's
+  `graph_target`; every other kind takes its item's own target.
 - `POST /api/share-links/resolve` takes `{token}` and returns `{project_id,
   project_name, kind, title, link}`. `link` is the
   [notification link](#desktop-notification-delivery) for the item, with the
   bare branch id as its target. An unknown token, a non-member, and an
-  unreadable or deleted item all get the same 404 body.
+  unreadable or deleted item all get the same 404 body. A member whose project
+  state cannot be read gets 503, and the /open page offers a retry.
 - `GET /open` serves `index.html` with `no-cache`.
 
 Every create and resolve rechecks readability. The caller must be a live
 project member, and a branch target must still exist. An artifact, Paper file,
-or reply must pass the comment target check. A comment needs its thread and
-then its target to pass. A chat must exist and be unowned or the caller's own.
-A node must be in the target's current graph.
+reply, or chat must pass the comment target check, which also gives its graph
+target and title. A chat must exist and be unowned or the caller's own. A
+comment needs its thread and then its target to pass. A node must be in the
+target's current graph.
 
 **Copy.** In a team space whose `/api/team/space` has an access URL, Copy
 reference becomes Copy link wherever it appears, with a Link icon. Elsewhere it

@@ -6,7 +6,6 @@ whether its item exists, moved out of reach, or was never real.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,14 +19,14 @@ from rcp.api.dependencies import (
 )
 from rcp.core.transition_models import GraphTargetRef
 from rcp.digest import deep_link
+from rcp.history.branches import read_branch_metadata
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
-from rcp.storage.chat_names import chat_title
-from rcp.storage.comments import CommentError, readable_comment_target
+from rcp.storage.comments import CommentError, CommentTargetRoute
 from rcp.storage.membership import live_project_member
 from rcp.storage.share_links import ShareLinkKind, ShareLinkRecord
 from rcp.team_access import team_access_url
-from rcp.transport import StateUnavailable
+from rcp.transport import StateMissing, StateUnavailable
 
 router = APIRouter()
 StoreDependency = Annotated[AppStore, Depends(get_store)]
@@ -60,55 +59,49 @@ def _require_team(request: Request) -> None:
         raise _not_available()
 
 
+def _target_ref(graph_target: str) -> GraphTargetRef:
+    if graph_target == "main":
+        return GraphTargetRef()
+    return GraphTargetRef(kind="branch", branch_id=graph_target.removeprefix("branch:"))
+
+
 def _graph_nodes(catalog: ProjectCatalog, project_id: str, graph_target: str) -> dict:
-    target = (
-        GraphTargetRef()
-        if graph_target == "main"
-        else GraphTargetRef(kind="branch", branch_id=graph_target.removeprefix("branch:"))
-    )
     try:
-        service = catalog.open(project_id).for_graph_target(target, initialize=False)
+        service = catalog.open(project_id).for_graph_target(
+            _target_ref(graph_target), initialize=False
+        )
         return service.history.current_materialization().state.nodes
-    except (KeyError, ValueError, OSError, StateUnavailable) as exc:
+    except (KeyError, ValueError, OSError, StateMissing) as exc:
         raise _Unreadable from exc
 
 
-def _item_title(
-    store: AppStore,
-    connection: sqlite3.Connection,
-    user_id: str,
-    project_id: str,
-    kind: str,
-    item_id: str,
-) -> str | None:
+def _require_branch(catalog: ProjectCatalog, project_id: str, graph_target: str) -> None:
+    target = _target_ref(graph_target)
+    if target.branch_id is None:
+        return
+    try:
+        with catalog.open(project_id).history.read_view() as reader:
+            read_branch_metadata(reader, target.branch_id)
+    except (KeyError, ValueError, OSError, StateMissing) as exc:
+        raise _Unreadable from exc
+
+
+def _readable_route(
+    store: AppStore, user_id: str, project_id: str, kind: str, item_id: str
+) -> CommentTargetRoute:
     if kind == "comment":
         try:
             thread = store.get_comment_thread(project_id, item_id)
         except CommentError as exc:
             raise _Unreadable from exc
-        return _item_title(
-            store, connection, user_id, project_id, thread["target_kind"], thread["target_id"]
-        )
-    if kind == "chat":
-        inventory = store.chat_inventory(project_id, item_id)
-        if not inventory or store.private_chat_owner(item_id) not in {None, user_id}:
-            raise _Unreadable
-        return inventory[0]["title"]
-    route = readable_comment_target(store, connection, user_id, project_id, kind, item_id)
+        kind, item_id = thread["target_kind"], thread["target_id"]
+    route = store.comment_target_route(user_id, kind, item_id, project_id=project_id)
     if route is None:
         raise _Unreadable
-    if kind == "artifact":
-        artifact = store.artifact(item_id)
-        return (artifact.display_title or artifact.source_name) if artifact else None
-    if kind == "paper":
-        row = connection.execute(
-            "SELECT path FROM paper_files WHERE project_id=? AND file_id=?", (project_id, item_id)
-        ).fetchone()
-        return str(row[0]) if row else None
-    return chat_title(connection, project_id, route.chat_id) if route.chat_id else None
+    return route
 
 
-def share_link_title(
+def share_link_item(
     store: AppStore,
     catalog: ProjectCatalog,
     user_id: str,
@@ -116,19 +109,26 @@ def share_link_title(
     kind: str,
     item_id: str,
     graph_target: str,
-) -> str | None:
-    """The one readability check for a share link: the item's title, or `_Unreadable`."""
+) -> tuple[str, str | None]:
+    """The one readability check for a share link: its graph target and title.
+
+    Raises `_Unreadable` for a 404, and `StateUnavailable` only to a live member.
+    """
     with store.connection() as connection:
         if not live_project_member(connection, project_id, user_id):
             raise _Unreadable
-        if kind != "node":
-            if graph_target != "main":
-                _graph_nodes(catalog, project_id, graph_target)
-            return _item_title(store, connection, user_id, project_id, kind, item_id)
+    if kind != "node":
+        route = _readable_route(store, user_id, project_id, kind, item_id)
+        _require_branch(catalog, project_id, route.graph_target)
+        return route.graph_target, route.title
     node = _graph_nodes(catalog, project_id, graph_target).get(item_id)
     if node is None:
         raise _Unreadable
-    return node.title
+    return graph_target, node.title
+
+
+def _state_unavailable() -> HTTPException:
+    return HTTPException(status_code=503, detail="Project state is unavailable.")
 
 
 @router.post("/api/projects/{project_id}/share-links")
@@ -142,7 +142,7 @@ def create_share_link(
     _require_team(request)
     user_id = get_identity_access(request).acting_user(request).user_id
     try:
-        share_link_title(
+        graph_target, _ = share_link_item(
             store,
             get_catalog(request),
             user_id,
@@ -153,11 +153,13 @@ def create_share_link(
         )
     except _Unreadable as exc:
         raise _not_available() from exc
+    except StateUnavailable as exc:
+        raise _state_unavailable() from exc
     access_url = team_access_url()
     if access_url is None:
         raise HTTPException(status_code=409, detail="This team space has no access address.")
     token = store.share_link_token(
-        project, body.kind, body.item_id, body.graph_target, created_by=user_id
+        project, body.kind, body.item_id, graph_target, created_by=user_id
     )
     return {"url": f"{access_url}/open#l={token}"}
 
@@ -172,7 +174,7 @@ def resolve_share_link(
     try:
         if link is None:
             raise _Unreadable
-        title = share_link_title(
+        graph_target, title = share_link_item(
             store,
             get_catalog(request),
             user_id,
@@ -186,12 +188,14 @@ def resolve_share_link(
             raise _Unreadable
     except _Unreadable as exc:
         raise _not_available() from exc
+    except StateUnavailable as exc:
+        raise _state_unavailable() from exc
     return {
         "project_id": link.project_id,
         "project_name": project.name,
         "kind": link.kind,
         "title": title,
         "link": deep_link(
-            link.project_id, link.graph_target.removeprefix("branch:"), link.kind, link.item_id
+            link.project_id, graph_target.removeprefix("branch:"), link.kind, link.item_id
         ),
     }
