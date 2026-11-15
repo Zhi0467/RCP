@@ -153,6 +153,34 @@ def test_replay_marks_threads_left_open_after_admission(send_app):
     )
 
 
+def test_retry_after_a_reply_during_the_send_replays_the_sent_snapshot(send_app, monkeypatch):
+    _, client, store, task = send_app
+    thread = _thread(store, task)
+    key = str(uuid.uuid4())
+    mark = store.mark_threads_sent
+
+    def reply_then_mark(*args):
+        store.add_comment_post(
+            task.project_id, thread["thread_id"], user_id=store.local_owner.user_id, text="Late"
+        )
+        monkeypatch.setattr(store, "mark_threads_sent", mark)
+        mark(*args)
+
+    monkeypatch.setattr(store, "mark_threads_sent", reply_then_mark)
+    first = _send(client, task, [thread["thread_id"]], key=key)
+    assert first.status_code == 202, first.text
+    replay = _send(client, task, [thread["thread_id"]], key=key)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["operation_id"] == first.json()["operation_id"]
+    assert "Late" not in store.agent_task(first.json()["operation_id"]).request["message"]
+    saved = store.get_comment_thread(task.project_id, thread["thread_id"])
+    assert (saved["state"], saved["sent_operation_id"]) == ("open", None)
+    later = store.sendable_threads(
+        task.project_id, store.local_owner.user_id, [thread["thread_id"]], str(uuid.uuid4())
+    )
+    assert "Late" in later[0][0]["rendered"]
+
+
 def test_paper_thread_send_uses_coach_message(send_app):
     _, client, store, task = send_app
     with store.connection() as connection:

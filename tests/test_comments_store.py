@@ -56,7 +56,7 @@ def test_reply_posted_during_a_send_keeps_its_thread_open(store):
     store.mark_threads_sent(rendered, "op", "key", actor)
     item = store.get_comment_thread("project", tid)
     assert (item["state"], item["sent_operation_id"]) == ("open", None)
-    store.mark_threads_sent(through(store, tid), "op2", "key2", actor)
+    store.mark_threads_sent(through(store, tid, "key2"), "op2", "key2", actor)
     assert store.get_comment_thread("project", tid)["sent_operation_id"] == "op2"
 
 

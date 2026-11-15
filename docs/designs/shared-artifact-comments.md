@@ -89,7 +89,7 @@ comment_threads(
   target_id, graph_target, drawn_version NULL, anchor_json,
   state ('open'|'resolved'),
   created_by, created_at, closed_by NULL, closed_at NULL,
-  sent_operation_id NULL, send_key NULL)
+  sent_operation_id NULL, send_key NULL, sent_through NULL)
   INDEX (project_id, target_kind, target_id, state)
 comment_posts(
   post_id PK, project_id, thread_id, author_id, text, created_at, edited_at NULL)
@@ -244,7 +244,8 @@ open ──Resolve, or Send admitted──▶ resolved ──Reopen / reply─�
 - Only `open` threads show pins, can be ticked, and are listed or delivered as
   mentions.
 - The rail folds resolved threads under "Resolved · N".
-- Reopening clears `closed_*`, `sent_operation_id`, and `send_key`. A reply
+- Reopening clears `closed_*`, `sent_operation_id`, `send_key`, and
+  `sent_through`. A reply
   reopens a resolved thread, so a repeat sent after a reply is a new send; its
   text differs and the replay path answers 409, which the client shows as a
   failed send.
@@ -277,11 +278,12 @@ added.
 - a steer uses its `message_id`;
 - the viewer route uses a new `Idempotency-Key`, read the same way.
 
-`mark_threads_sent` stores the key in `send_key`. A thread counts as sendable
-when it is `open`, or when it is resolved with `send_key` equal to this request's
-key. When the key matches, `render_thread` renders only the posts created at or
-before `closed_at`, so a repeat produces the same text and the existing replay
-paths match it:
+`mark_threads_sent` stores the key in `send_key` and the newest post the send
+rendered in `sent_through`. A thread counts as sendable when it is `open`, or
+when it is resolved with `send_key` equal to this request's key. When the key
+matches, `render_thread` renders only the posts created at or before
+`sent_through`, so a repeat produces the same text and the existing replay paths
+match it, even when a reply arrived during the send and left the thread open:
 - the `existing is not None` branch of `client_request_admission` for turns;
 - `begin_chat_steer` with `_require_same_steer` for steers.
 
@@ -305,7 +307,8 @@ paths match it:
    was accepted, and on the replay branches, call
    `mark_threads_sent(rendered_through, operation_id, key, actor)`, where
    `rendered_through` maps each thread to the newest post time the send rendered:
-   `UPDATE … SET state='resolved', sent_operation_id=?, send_key=?, closed_by=?, closed_at=? WHERE thread_id=? AND state='open' AND no post is newer than the rendered one`.
+   each open thread records `send_key` and `sent_through`, then
+   `UPDATE … SET state='resolved', sent_operation_id=?, closed_by=?, closed_at=? WHERE thread_id=? AND state='open' AND no post is newer than the rendered one`.
    - The operation id is the new task, or for a steer, the running task.
    - A thread someone closed in the meantime stays as that person left it.
    - A reply posted while the send was in flight never reached the agent, so

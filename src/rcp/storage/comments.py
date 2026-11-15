@@ -60,7 +60,8 @@ def migrate_comments(connection: sqlite3.Connection) -> None:
         "target_kind TEXT NOT NULL CHECK(target_kind IN ('artifact','paper','reply')), "
         "target_id TEXT NOT NULL, graph_target TEXT NOT NULL, drawn_version TEXT, anchor_json TEXT NOT NULL, "
         "state TEXT NOT NULL CHECK(state IN ('open','resolved')), created_by TEXT NOT NULL, "
-        "created_at TEXT NOT NULL, closed_by TEXT, closed_at TEXT, sent_operation_id TEXT, send_key TEXT)"
+        "created_at TEXT NOT NULL, closed_by TEXT, closed_at TEXT, sent_operation_id TEXT, send_key TEXT, "
+        "sent_through TEXT)"
     )
     connection.execute(
         "CREATE INDEX IF NOT EXISTS comment_thread_target "
@@ -303,7 +304,7 @@ def _save_post(
 def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
     connection.execute(
         "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
-        "sent_operation_id=NULL,send_key=NULL WHERE thread_id=?",
+        "sent_operation_id=NULL,send_key=NULL,sent_through=NULL WHERE thread_id=?",
         (thread_id,),
     )
 
@@ -355,7 +356,7 @@ class CommentStoreMixin(StoreMixinBase):
                 )
             now = self.now()
             connection.execute(
-                "INSERT INTO comment_threads VALUES (?,?,?,?,?,?,?,'open',?,?,NULL,NULL,NULL,NULL)",
+                "INSERT INTO comment_threads VALUES (?,?,?,?,?,?,?,'open',?,?,NULL,NULL,NULL,NULL,NULL)",
                 (
                     thread_id,
                     project_id,
@@ -448,16 +449,22 @@ class CommentStoreMixin(StoreMixinBase):
     def mark_threads_sent(
         self, rendered_through: Mapping[str, str], operation_id: str, key: str, actor: str
     ) -> None:
-        """Resolve each sent thread unless a post newer than the one its send rendered
+        """Record each open thread's send as `key` and the last post it rendered, so a
+        retry of `key` renders that same snapshot. Resolve the thread unless a newer post
         arrived meanwhile; that thread stays open so its reply can still be sent."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             for thread_id, through in rendered_through.items():
                 connection.execute(
-                    "UPDATE comment_threads SET state='resolved',sent_operation_id=?,send_key=?,"
+                    "UPDATE comment_threads SET send_key=?,sent_through=? "
+                    "WHERE thread_id=? AND state='open'",
+                    (key, through, thread_id),
+                )
+                connection.execute(
+                    "UPDATE comment_threads SET state='resolved',sent_operation_id=?,"
                     "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
                     "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
-                    (operation_id, key, actor, self.now(), thread_id, thread_id, through),
+                    (operation_id, actor, self.now(), thread_id, thread_id, through),
                 )
 
     def sendable_threads(
@@ -478,7 +485,7 @@ class CommentStoreMixin(StoreMixinBase):
                         "This thread is resolved. Reopen it to send.",
                         409,
                     )
-                until = item["closed_at"] if item["send_key"] == key else None
+                until = item["sent_through"] if item["send_key"] == key else None
                 rendered = {
                     "rendered": render_thread(item, until=until),
                     "rendered_posts": render_posts(item, until=until),
