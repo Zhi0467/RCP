@@ -14,13 +14,24 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+from collections.abc import Collection, Hashable
 from pathlib import Path, PurePosixPath
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "server_upgrade"
 EXACT_BASE_ENV = "RCP_RUN_EXACT_BASE_UPGRADE"
+UPGRADE_FORMAT_SOURCES = (
+    ("src/rcp/storage/base.py", "_STORAGE_SCHEMA_MIGRATIONS"),
+    ("src/rcp/transfer/records.py", "TRANSFER_RECORD_SCHEMA_VERSION"),
+    ("src/rcp/server_ops/backup_models.py", "BACKUP_MANIFEST_SCHEMA_VERSION"),
+    ("src/rcp/server_ops/config.py", "SERVER_CONFIG_SCHEMA_VERSION"),
+    ("src/rcp/server_runtime.py", "SERVER_METADATA_SCHEMA_VERSION"),
+)
+JOURNEY_SPECIFIC_RELEASES = frozenset({"v0.4.36"})
+PRODUCTION_CORPORA = {"terminal-transfer": "v0.4.40"}
 EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
     "pre-artifacts-v15-ff090e1": (
         "ff090e1fa0374d30374449ecc85283733025e416",
@@ -296,16 +307,27 @@ def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
 def update_source_floor() -> str:
     """Read the application's policy before CI has installed its dependencies."""
     source = REPOSITORY_ROOT / "src/rcp/server_ops/deployment.py"
-    for node in ast.parse(source.read_text(encoding="utf-8")).body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "UPDATE_SOURCE_FLOOR"
-            for target in node.targets
-        ):
-            floor = ast.literal_eval(node.value)
-            if isinstance(floor, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", floor):
-                return floor
-            break
+    floor = _literal(source.read_text(encoding="utf-8"), "UPDATE_SOURCE_FLOOR")
+    if isinstance(floor, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", floor):
+        return floor
     raise ValueError("the application must declare a stable UPDATE_SOURCE_FLOOR")
+
+
+def _literal(source: str, name: str) -> object:
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets = [node.target]
+        else:
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            return ast.literal_eval(node.value)
+    raise ValueError(f"no literal {name}")
+
+
+def _version(tag: str) -> tuple[int, ...]:
+    return tuple(map(int, tag[1:].split(".")))
 
 
 def published_release_tags() -> list[str]:
@@ -314,7 +336,6 @@ def published_release_tags() -> list[str]:
     gh release list needs a finite --limit, so the request grows until it is exhausted.
     """
     floor = update_source_floor()
-    floor_version = tuple(map(int, floor.split(".")))
     limit = 100
     while True:
         releases = json.loads(
@@ -343,7 +364,49 @@ def published_release_tags() -> list[str]:
     ]
     if f"v{floor}" not in tags:
         raise ValueError(f"the upgrade gate requires published floor release v{floor}")
-    return [tag for tag in tags if tuple(map(int, tag[1:].split("."))) >= floor_version]
+    return [tag for tag in tags if _version(tag) >= _version(f"v{floor}")]
+
+
+def release_format_key(tag: str) -> tuple[object, ...]:
+    """The persisted formats a published release writes, read from its tag."""
+    return tuple(
+        _literal(_capture(["git", "show", f"{tag}:{path}"], cwd=REPOSITORY_ROOT), name)
+        for path, name in UPGRADE_FORMAT_SOURCES
+    )
+
+
+def select_upgrade_sources(
+    format_keys: dict[str, Hashable], pinned: Collection[str]
+) -> dict[str, str]:
+    """Map each release to the release whose installed journey covers it.
+
+    Releases that write the same persisted formats take the same upgrade path, so
+    the newest of each group runs for all of them. The oldest and newest releases
+    and the pinned ones always run.
+    """
+    ordered = sorted(format_keys, key=_version)
+    newest = {format_keys[tag]: tag for tag in ordered}
+    always = {ordered[0], ordered[-1], *pinned}
+    return {tag: tag if tag in always else newest[format_keys[tag]] for tag in ordered}
+
+
+def installed_upgrade_matrix() -> dict[str, list[dict[str, str]]]:
+    tags = published_release_tags()
+    covered_by = select_upgrade_sources(
+        {tag: release_format_key(tag) for tag in tags}, JOURNEY_SPECIFIC_RELEASES
+    )
+    for tag, source in covered_by.items():
+        print(f"{tag}: " + ("runs" if tag == source else f"covered by {source}"), file=sys.stderr)
+    cases = [
+        {"tag": tag, "corpus": "", "artifact": f"installed-upgrade-{tag}"}
+        for tag, source in covered_by.items()
+        if tag == source
+    ]
+    cases += [
+        {"tag": tag, "corpus": corpus, "artifact": f"installed-upgrade-{tag}-{corpus}"}
+        for corpus, tag in PRODUCTION_CORPORA.items()
+    ]
+    return {"include": cases}
 
 
 def _release_helper(workspace: Path, *arguments: str) -> None:
@@ -602,10 +665,14 @@ def main() -> None:
     candidate.add_argument("--output", type=Path, required=True)
     candidate.add_argument("--run-number", required=True)
     candidate.add_argument("--sha", required=True)
+    commands.add_parser("installed-upgrade-matrix")
     release = commands.add_parser("download-release")
     release.add_argument("--output", type=Path, required=True)
     release.add_argument("--tag", required=True)
     args = parser.parse_args()
+    if args.command == "installed-upgrade-matrix":
+        print("releases=" + json.dumps(installed_upgrade_matrix()))
+        return
     if args.command == "build-candidate":
         receipt = build_installed_candidate(
             args.output.resolve(), run_number=args.run_number, sha=args.sha

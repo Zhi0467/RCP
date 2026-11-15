@@ -47,13 +47,13 @@ jobs:
       - run: uv run python scripts/regenerate_registries.py --check-frozen HEAD^1
 
   python-shard:
-    name: pytest (py${{ matrix.python-version }}, ${{ matrix.shard }}/3)
+    name: pytest (py${{ matrix.python-version }}, ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7
@@ -79,10 +79,16 @@ jobs:
       # so backup encryption was only ever exercised against the stub.
       - run: sudo apt-get update && sudo apt-get install -y age
       # tests/shards.py gives each shard whole files; together the shards run
-      # every collected test exactly once.
-      - run: uv run pytest --durations=50
+      # every collected test exactly once. scripts/update_shard_timings.py
+      # turns the uploaded reports into the per-file weights shards.py reads.
+      - run: uv run pytest --durations=50 --junitxml="$RUNNER_TEMP/junit.xml"
         env:
-          RCP_TEST_SHARD: ${{ matrix.shard }}/3
+          RCP_TEST_SHARD: ${{ matrix.shard }}/4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pytest-timings-py${{ matrix.python-version }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: error
 
   # Source tests cannot prove that runtime resources survive freezing. Run the
   # same packaged-agent journey used by the macOS candidate on PRs too.
@@ -178,20 +184,15 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7.0.1
-      # Pull requests drive every supported release, as main does: a release
-      # skipped on the PR left main red after a green PR. The jobs past the
-      # 20 concurrent ones queue.
+      # Pull requests drive the same releases as main: a release skipped on the
+      # PR left main red after a green PR. Releases that write the same persisted
+      # formats share one journey, run from the newest of them; the log names
+      # each skipped release's representative.
       - id: catalog
-        name: Discover supported published stable releases
+        name: Choose supported published releases by persisted format
         run: |
-          python -c '
-          import json
-          from tests.server_upgrade_harness import published_release_tags
-          tags = sorted(published_release_tags(), key=lambda tag: tuple(map(int, tag[1:].split("."))))
-          cases = [{"tag": tag, "corpus": "", "artifact": "installed-upgrade-" + tag} for tag in tags]
-          cases.append({"tag": "v0.4.40", "corpus": "terminal-transfer", "artifact": "installed-upgrade-v0.4.40-terminal-transfer"})
-          print("releases=" + json.dumps({"include": cases}))
-          ' >> "$GITHUB_OUTPUT"
+          git fetch --no-tags --depth=1 origin 'refs/tags/v*:refs/tags/v*'
+          python -m tests.server_upgrade_harness installed-upgrade-matrix >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
