@@ -794,8 +794,8 @@ question answer and an orchestrator seed start fresh instead of resuming it, and
 branching from that chat is refused as `chat_session_expired`. A turn that resumed
 the session just before its mark fails as a classified stale session, and its Retry
 starts fresh. The probed missing-session texts ("no thread with id", "no rollout
-found for thread id", "No conversation found with session ID", "Session not
-found") classify as `stale_session`, so a session a provider removed costs one
+found for thread id", "No conversation found with session ID", OpenCode's "Session
+not found: ses_…") classify as `stale_session`, so a session a provider removed costs one
 failed turn.
 
 Both tables are in backups but never travel with a project. A restored database may

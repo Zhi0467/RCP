@@ -160,7 +160,7 @@ def classify_terminal_error(text: str) -> str:
             "no thread with id",
             "no rollout found for thread id",
             "no conversation found with session id",
-            "session not found",
+            "session not found: ses_",
         )
     ):
         return "stale_session"
