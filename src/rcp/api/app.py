@@ -130,6 +130,7 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
+    PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -184,6 +185,7 @@ from rcp.runs.experiment_loop import (
     preflight_episode_wake,
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
+from rcp.runs.provider_session_sweep import sweep_provider_sessions
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
@@ -1943,6 +1945,7 @@ def create_app(
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
     artifact_import_tasks: dict[str, asyncio.Task[None]] = {}
+    provider_session_sweep_tasks: list[asyncio.Task[None]] = []
 
     def import_artifact_pass(project_id: str) -> float | None:
         with background_admission_gate.mutation("legacy artifact import"):
@@ -1971,6 +1974,34 @@ def create_app(
             if delay is None or background_admission_gate.closed:
                 return
             await asyncio.sleep(delay)
+
+    def provider_session_sweep_pass() -> None:
+        with background_admission_gate.mutation("provider session sweep"):
+            sweep_provider_sessions(store)
+
+    async def sweep_provider_sessions_periodically() -> None:
+        while not background_admission_gate.closed:
+            work = asyncio.create_task(asyncio.to_thread(provider_session_sweep_pass))
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception("Could not sweep provider sessions")
+            await asyncio.sleep(PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS)
+
+    def schedule_provider_session_sweeps() -> None:
+        if background_admission_gate.closed or any(
+            not task.done() for task in provider_session_sweep_tasks
+        ):
+            return
+        task = asyncio.create_task(sweep_provider_sessions_periodically())
+        provider_session_sweep_tasks[:] = [task]
+        startup_maintenance.append(task)
 
     def schedule_artifact_imports() -> None:
         if background_admission_gate.closed:
@@ -2015,7 +2046,7 @@ def create_app(
         async def wait_for_scheduled_reads() -> None:
             await sync_coordinator.stop()
             await terminals.end_all(reason="server_maintenance")
-            for task in artifact_import_tasks.values():
+            for task in (*artifact_import_tasks.values(), *provider_session_sweep_tasks):
                 task.cancel()
             pending = {task for task in startup_maintenance if not task.done()}
             if pending:
@@ -2042,6 +2073,7 @@ def create_app(
         if loop is not None and not loop.is_closed():
             loop.call_soon_threadsafe(sync_coordinator.start)
             loop.call_soon_threadsafe(schedule_artifact_imports)
+            loop.call_soon_threadsafe(schedule_provider_session_sweeps)
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -2320,6 +2352,7 @@ def create_app(
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
+                schedule_provider_session_sweeps()
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 schedule_artifact_imports()
                 # Episode health is local, so its notification baseline is taken
