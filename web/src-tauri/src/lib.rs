@@ -179,6 +179,7 @@ pub fn run() {
                 )
                 .into());
             }
+            notifications::receive_early_share_link(app.handle());
             start_backend(app.handle().clone());
             notifications::start(app.handle().clone());
             Ok(())

@@ -111,6 +111,8 @@ pub struct NotificationState {
 }
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
+/// macOS delivers a launching URL before setup manages the state.
+static EARLY_SHARE_LINK: Mutex<Option<ShareLink>> = Mutex::new(None);
 
 impl NotificationState {
     pub fn for_app(app: &AppHandle) -> Result<Self, String> {
@@ -587,11 +589,25 @@ fn publish_share_notice(app: &AppHandle) {
 
 pub fn receive_share_link(app: &AppHandle, link: ShareLink) {
     let Some(state) = app.try_state::<NotificationState>() else {
+        *EARLY_SHARE_LINK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(link);
         return;
     };
     state.lock().pending = Some(Pending::Share(PendingShare::new(link)));
     publish_share_notice(app);
     advance_pending(app);
+}
+
+/// Call once the state is managed, so a link that launched the app is kept.
+pub fn receive_early_share_link(app: &AppHandle) {
+    let link = EARLY_SHARE_LINK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
+    if let Some(link) = link {
+        receive_share_link(app, link);
+    }
 }
 
 pub fn share_link_notice(app: &AppHandle) -> Option<ShareLinkNotice> {
