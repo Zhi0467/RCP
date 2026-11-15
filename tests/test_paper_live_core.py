@@ -520,3 +520,120 @@ def test_body_collection_keeps_what_rcp_wrote_in_a_running_turn(paper):
 
     run(second())
     assert (root / "p/a.md").read_text() == "ONE\ntwo\nthree\nmine\n"
+
+
+def test_a_rename_seen_by_timed_polls_keeps_the_file_id(paper):
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "hello\n")
+        await Client(live, file_id).join()
+        await live.poll("p")
+        os.rename(root / "p/a.md", root / "p/b.md")
+        await live.poll("p")
+        await live.poll("p")
+        tree = await live.tree("p")
+        await live.close()
+        return file_id, [(file.path, file.file_id) for file in tree.files]
+
+    file_id, files = run(scenario())
+    assert files == [("b.md", file_id)]
+
+
+def test_a_tracked_file_replaced_by_a_symlink_shows_as_unsupported(paper, tmp_path):
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "base")
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(4, " typed")
+        target = tmp_path / "outside.md"
+        target.write_text("outside")
+        (root / "p/a.md").unlink()
+        (root / "p/a.md").symlink_to(target)
+        await live.poll("p", full=True)
+        tree = await live.tree("p")
+        await live.close()
+        return [(file.path, file.kind) for file in tree.files]
+
+    assert run(scenario()) == [("a.md", "unsupported")]
+    assert (tmp_path / "outside.md").read_text() == "outside"
+
+
+def test_a_failed_idle_save_is_retried(paper, monkeypatch):
+    live, _, root = paper
+    real = folder_write
+    calls = [0]
+
+    def flaky(*args, **kwargs):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise OSError("transient")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("rcp.paper.folder_io.write", flaky)
+    monkeypatch.setattr("rcp.limits.PAPER_SAVE_IDLE_SECONDS", 0.0)
+
+    async def scenario():
+        file_id = await create(live, "a.md", "hello")
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(5, " world")
+        await live.tick()
+        await live.tick()
+        saved = (root / "p/a.md").read_text()
+        await live.close()
+        return saved
+
+    assert run(scenario()) == "hello world"
+
+
+def test_a_delete_that_displaced_foreign_bytes_lists_them_as_a_clash(paper, monkeypatch):
+    live, _, root = paper
+    from rcp.paper import folder_io
+
+    real = folder_io.delete
+
+    def racing(folder_root, path, expect_sha, **settle):
+        (folder_root / path).write_text("agent wrote this")
+        return real(folder_root, path, expect_sha, **settle)
+
+    async def scenario():
+        file_id = await create(live, "a.md", "base")
+        await live.begin_turn("p", "op-1")
+        monkeypatch.setattr("rcp.paper.folder_io.delete", racing)
+        await live.apply("p", [PaperOp(kind="delete", file_id=file_id)], "h")
+        turn = await live.end_turn("p", "op-1")
+        await live.close()
+        return turn
+
+    (row,) = run(scenario())["files"]
+    assert (row["path"], row["clash"], row["coach_sha"]) == (
+        "a.md",
+        True,
+        digest(b"agent wrote this"),
+    )
+
+
+def test_a_multi_file_write_that_keeps_conflicting_reports_what_it_wrote(paper, monkeypatch):
+    from rcp.paper.models import PaperConflict
+
+    live, _, _root = paper
+    real = live._put
+
+    async def contested(project, path, data, room):
+        if path == "b.md":
+            raise PaperConflict("Paper file keeps changing under the editor")
+        return await real(project, path, data, room)
+
+    async def scenario():
+        await create(live, "b.md", "base")
+        monkeypatch.setattr(live, "_put", contested)
+        ops = [PaperOp(kind="write", path=name, data=b"new") for name in ("a.md", "b.md")]
+        with pytest.raises(PaperWriteFailed) as failure:
+            await live.apply("p", ops, "h")
+        await live.close()
+        return failure.value.written
+
+    assert run(scenario()) == ["a.md"]

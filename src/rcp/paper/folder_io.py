@@ -59,6 +59,7 @@ _RESERVED_PARTS = {"", ".", "..", ".git", ".publish"}
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _SWAP_FLAG = {"darwin": 2, "linux": 2}
 _NO_REPLACE_FLAG = {"darwin": 4, "linux": 1}
+_SETTLE_POLL_SECONDS = 0.02
 
 
 class UnsupportedPath(ValueError):
@@ -89,7 +90,7 @@ def safe_component(value: str) -> str:
 
 
 def paper_path(value: str) -> str:
-    """The Paper path rules of `rcp.paper.models.paper_path`, without Pydantic."""
+    """The one Paper path rule, which `rcp.paper.models` re-exports."""
     parts = value.split("/")
     if (
         not value
@@ -146,7 +147,7 @@ def write(
     A different current file still loses its place; its bytes come back for the
     caller to merge. A swapped-out inode is re-read until its mtime is quiet for
     `settle_seconds` (at most `settle_max_seconds`), so a writer still holding it
-    is not lost.
+    is not lost. Displaced bytes equal to `expect_sha` return at once.
     """
     *parents, name = paper_path(path).split("/")
     with _directory(root, parents, create=True) as directory:
@@ -162,7 +163,9 @@ def write(
                     _regular_status(directory, name)
             _rename(directory, temporary, directory, name, _SWAP_FLAG)
             os.fsync(directory)
-            displaced = _settled_read(directory, temporary, settle_seconds, settle_max_seconds)
+            displaced = _settled_read(
+                directory, temporary, settle_seconds, settle_max_seconds, expect_sha
+            )
             return _result(_sha(data), displaced, expect_sha)
         finally:
             _unlink_quietly(directory, temporary)
@@ -188,7 +191,9 @@ def delete(
             return _result(None, None, expect_sha)
         try:
             os.fsync(directory)
-            displaced = _settled_read(directory, temporary, settle_seconds, settle_max_seconds)
+            displaced = _settled_read(
+                directory, temporary, settle_seconds, settle_max_seconds, expect_sha
+            )
             return _result(None, displaced, expect_sha)
         finally:
             _unlink_quietly(directory, temporary)
@@ -211,7 +216,8 @@ def install(root: Path, files: dict[str, bytes]) -> bool:
     """Fill an empty root with a whole tree through a sibling staging directory.
 
     A non-empty root is already installed and stays untouched. A staging
-    directory left by an interrupted install is deleted first.
+    directory left by an interrupted install is deleted first. Two paths that
+    land on one file, as case does on some file systems, refuse the install.
     """
     with os.scandir(root) as entries:
         if any(True for _ in entries):
@@ -223,7 +229,8 @@ def install(root: Path, files: dict[str, bytes]) -> bool:
         shutil.rmtree(staging)
     staging.mkdir(mode=0o700)
     for path, data in sorted(files.items()):
-        write(staging, path, data, None)
+        if write(staging, path, data, None).displaced is not None:
+            raise ValueError(f"Paper path {path} clashes with another path in this folder")
     os.rename(staging, root)
     descriptor = os.open(root.parent, _DIRECTORY_FLAGS)
     try:
@@ -366,13 +373,16 @@ def _signature(status: os.stat_result) -> tuple[int, int, int]:
     return status.st_size, status.st_mtime_ns, status.st_ctime_ns
 
 
-def _settled_read(directory: int, name: str, settle: float, settle_max: float) -> bytes | None:
+def _settled_read(
+    directory: int, name: str, settle: float, settle_max: float, expect_sha: str | None
+) -> bytes | None:
     try:
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except OSError:
         return None
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_nlink > 1:
             return None
         deadline = time.monotonic() + settle_max
         while True:
@@ -381,10 +391,9 @@ def _settled_read(directory: int, name: str, settle: float, settle_max: float) -
             quiet = time.time() - before.st_mtime_ns / 1e9
             stable = _signature(os.fstat(descriptor)) == _signature(before)
             remaining = deadline - time.monotonic()
-            if (stable and quiet >= settle) or remaining <= 0:
+            if (stable and (quiet >= settle or _sha(data) == expect_sha)) or remaining <= 0:
                 return data
-            if stable:
-                time.sleep(min(settle - quiet, remaining))
+            time.sleep(min(settle - quiet if stable else _SETTLE_POLL_SECONDS, remaining))
     finally:
         os.close(descriptor)
 

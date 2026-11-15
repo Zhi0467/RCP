@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from rcp import limits
+from rcp.paper.folder_io import paper_path as paper_path
 
 
 class PaperConflict(ValueError):
@@ -119,20 +120,6 @@ class PaperSource:
     revision: int
     entries: list[PaperEntry]
     read: Callable[[PaperEntry], bytes]
-
-
-def paper_path(value: str) -> str:
-    if (
-        not value
-        or len(value.encode()) > 1024
-        or "\\" in value
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
-        or any(part in {"", ".", "..", ".git", ".publish"} for part in value.split("/"))
-        or any(len(part.encode()) > 255 for part in value.split("/"))
-        or PurePosixPath(value).is_absolute()
-    ):
-        raise ValueError("Invalid Paper path")
-    return value
 
 
 def digest(data: bytes) -> str:

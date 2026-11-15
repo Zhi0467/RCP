@@ -31,9 +31,11 @@ changes move the folder and project deletion removes it, as they do memory.
 stdlib-only, runs in-process locally, and ships over SSH. A scan reads stat data
 only and skips a code-defined ignore list: editor swap files, `.DS_Store`,
 `__pycache__`, and LaTeX and Typst outputs. A symlink, hard link, or special
-file is skipped and reported; the tree shows it as unsupported. Writing an
-existing file swaps a temp file in atomically. When the swapped-out file changes
-after the swap, its bytes merge as a foreign write. A new file is created
+file is skipped and reported; the tree shows it as unsupported, and a tracked
+file that becomes one leaves the editor. Writing an existing file swaps a temp
+file in atomically. When the swapped-out file changes after the swap, its bytes
+merge as a foreign write; swapped-out bytes RCP already knew return at once, and
+a hard-linked one returns nothing. A new file is created
 without replacing anything.
 
 SQLite keeps identity, caches, and history. Losing them loses no content.
@@ -80,7 +82,8 @@ including those for SSH bases. One loop per project in
 - **Delete and rename.** A foreign delete or rename of an open file whose buffer
   changed since its base is a clash. The file is recreated. Otherwise the change
   is accepted. A vanished path and a new path with the same hash in one scan are
-  a rename and keep the `file_id`.
+  a rename and keep the `file_id`. A timed poll reads a new path with the
+  vanished file's inode and size at once, so it sees the rename too.
 - **Outside a turn.** A foreign write still merges with the human winning. The
   next Paper turn lists it as outside a turn, one row per path, and never uses
   it as a merge base.

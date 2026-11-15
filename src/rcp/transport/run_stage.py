@@ -120,7 +120,9 @@ class RemoteRunStage:
             .joinpath("memory_file_io.py")
             .read_text(encoding="utf-8")
         )
-        result = self._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
+        result = self._ssh_bytes(
+            ["python3", "-I", "-c", source], input_data=json.dumps(request).encode()
+        )
         if result.returncode:
             raise _ssh_failure(result, "could not prepare project memory")
         return json.loads(result.stdout)
@@ -132,7 +134,9 @@ class RemoteRunStage:
             .joinpath("folder_io.py")
             .read_text(encoding="utf-8")
         )
-        result = self._ssh_bytes(["python3", "-c", source], input_data=json.dumps(request).encode())
+        result = self._ssh_bytes(
+            ["python3", "-I", "-c", source], input_data=json.dumps(request).encode()
+        )
         if result.returncode:
             raise _ssh_failure(result, "could not reach the Paper folder")
         return json.loads(result.stdout)
@@ -157,6 +161,7 @@ class RemoteRunStage:
         self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "sweep",
@@ -183,6 +188,7 @@ class RemoteRunStage:
         result = self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "create",
@@ -239,14 +245,23 @@ class RemoteRunStage:
     def _directory_probe(self, root: str) -> subprocess.CompletedProcess[str]:
         """Check the saved root itself without following an unsafe replacement."""
 
-        return self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "check", root])
+        return self._ssh(
+            ["python3", "-I", "-c", _remote_script("remote_stage_root.py"), "check", root]
+        )
 
     def absent_paths(self, paths: list[str]) -> list[str]:
         """The paths with nothing behind them on the execution account."""
         from rcp.agents.hidden_read import staged_hidden_read_source
 
         result = self._ssh(
-            ["python3", "-c", staged_hidden_read_source(), "--absent-paths", json.dumps(paths)]
+            [
+                "python3",
+                "-I",
+                "-c",
+                staged_hidden_read_source(),
+                "--absent-paths",
+                json.dumps(paths),
+            ]
         )
         if result.returncode == 255:
             raise _ssh_failure(result, "could not inspect remote protected paths")
@@ -289,6 +304,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         result = self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 script,
                 json.dumps(declared, separators=(",", ":")),
@@ -327,7 +343,9 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         A later release removes this with the legacy stage location.
         """
 
-        result = self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "legacy"])
+        result = self._ssh(
+            ["python3", "-I", "-c", _remote_script("remote_stage_root.py"), "legacy"]
+        )
         if result.returncode:
             raise _ssh_failure(result, "could not list legacy remote run stages")
         try:
@@ -350,7 +368,14 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         if self.root is None:
             raise RuntimeError("remote run stage is not open")
         result = self._ssh(
-            ["python3", "-c", _remote_script("remote_stage_root.py"), "last-touch", str(self.root)]
+            [
+                "python3",
+                "-I",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "last-touch",
+                str(self.root),
+            ]
         )
         if result.returncode == 44:
             raise FileNotFoundError("remote run stage is missing")
@@ -374,7 +399,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         if not _safe_root(root):
             return False
         result = self._ssh(
-            ["python3", "-c", _remote_script("remote_stage_root.py"), "remove", root]
+            ["python3", "-I", "-c", _remote_script("remote_stage_root.py"), "remove", root]
         )
         if result.returncode:
             return False
@@ -461,6 +486,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         result = self._ssh_bytes(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_verify_imported_sources.py"),
                 str(self.root),
@@ -540,7 +566,7 @@ if actual!=expected:
     print('reusable staged input does not match its content label',file=sys.stderr)
     raise SystemExit(47)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root), str(remote), expected])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root), str(remote), expected])
         if result.returncode == 0:
             return True
         if result.returncode == 45:
@@ -597,6 +623,7 @@ if actual!=expected:
             committed = self._ssh(
                 [
                     "python3",
+                    "-I",
                     "-c",
                     _remote_script("remote_stage_root.py"),
                     "commit-inputs",
@@ -678,6 +705,7 @@ if actual!=expected:
         result = self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "prepare-read-context-input",
@@ -745,6 +773,7 @@ finally:
         result = self._ssh_bytes(
             [
                 "python3",
+                "-I",
                 "-c",
                 script,
                 str(self.root),
@@ -812,7 +841,7 @@ finally:
     for item in reversed(fds): os.close(item)
 """
         result = self._ssh_bytes(
-            ["python3", "-c", script, str(self.root), name],
+            ["python3", "-I", "-c", script, str(self.root), name],
             input_data=content.encode("utf-8"),
         )
         if result.returncode == 44:
@@ -853,7 +882,7 @@ try:
 finally:
     for item in reversed(fds): os.close(item)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root)])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root)])
         if result.returncode:
             raise _ssh_failure(result, f"could not list remote run workspace {self.workspace}")
         try:
@@ -889,7 +918,7 @@ try:
 finally:
     for item in reversed(fds): os.close(item)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root)])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root)])
         if result.returncode:
             raise _ssh_failure(result, f"could not list remote run workspace {self.workspace}")
         try:
@@ -958,7 +987,7 @@ finally:
         except OSError: pass
     for item in reversed(fds): os.close(item)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root), name, expected_sha256])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root), name, expected_sha256])
         if result.returncode == 0:
             return True
         if result.returncode in {45, 47}:
@@ -975,6 +1004,7 @@ finally:
         result = self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "prepare-artifacts",
@@ -996,6 +1026,7 @@ finally:
         result = self._ssh(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "artifact-digests",
@@ -1021,6 +1052,7 @@ finally:
         result = self._ssh_bytes(
             [
                 "python3",
+                "-I",
                 "-c",
                 _remote_script("remote_stage_root.py"),
                 "sync-artifact",
@@ -1063,7 +1095,7 @@ except (FileNotFoundError,NotADirectoryError,OSError) as exc:
 finally:
     for item in reversed(fds): os.close(item)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root), scope_id])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root), scope_id])
         if result.returncode:
             if result.returncode == 44:
                 raise FileNotFoundError("remote artifact directory is unavailable")
@@ -1100,6 +1132,7 @@ finally:
         result = self._ssh_bytes(
             [
                 "python3",
+                "-I",
                 "-c",
                 script,
                 str(self.root),
@@ -1133,7 +1166,7 @@ finally:
             encoding="utf-8"
         )
         result = self._ssh_bytes(
-            ["python3", "-c", script, path, str(max_bytes), "tail" if tail else "whole"]
+            ["python3", "-I", "-c", script, path, str(max_bytes), "tail" if tail else "whole"]
         )
         if result.returncode:
             raise _ssh_failure(result, "could not read live artifact source")
@@ -1159,6 +1192,7 @@ finally:
         result = self._ssh_bytes(
             [
                 "python3",
+                "-I",
                 "-c",
                 script,
                 "files",
@@ -1216,7 +1250,7 @@ finally:
     for item in reversed(fds): os.close(item)
 """
         result = self._ssh_bytes(
-            ["python3", "-c", script, str(self.root), scope_id, name, str(max_bytes)]
+            ["python3", "-I", "-c", script, str(self.root), scope_id, name, str(max_bytes)]
         )
         if result.returncode == 44:
             raise FileNotFoundError("remote artifact is unavailable")
@@ -1247,7 +1281,7 @@ except OSError as exc:
 finally:
     if fd is not None: os.close(fd)
 """
-        result = self._ssh(["python3", "-c", script, str(self.root)])
+        result = self._ssh(["python3", "-I", "-c", script, str(self.root)])
         if result.returncode:
             raise _ssh_failure(result, f"could not touch remote run stage {self.root}")
 

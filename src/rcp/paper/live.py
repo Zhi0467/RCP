@@ -545,8 +545,11 @@ class PaperLive:
         vanished = [
             path
             for path, known in state.known.items()
-            if known.kind != "unsupported" and path not in read.entries
+            if known.kind != "unsupported"
+            and path not in read.entries
+            and path not in read.unsupported
         ]
+        await self._read_moved(state, vanished, read, fresh)
         for path in [
             path
             for path, known in state.known.items()
@@ -558,6 +561,8 @@ class PaperLive:
             if known is not None and known.kind == "unsupported":
                 continue
             changed = True
+            if known is not None:
+                await self._unsupported(project, path)
             await self._record(project, path, "unsupported", None, None, False)
         for path in sorted(vanished):
             target = next(
@@ -584,6 +589,34 @@ class PaperLive:
         if changed:
             await self._changed(project)
         return changed
+
+    async def _read_moved(
+        self, state: _Project, vanished: list[str], read: _Read, fresh: dict[str, bytes]
+    ) -> None:
+        """A vanished path's inode under a new, still unread name is read now, as a rename."""
+        unread = {
+            stat[2]: (name, stat[0])
+            for name, stat in read.entries.items()
+            if name not in state.known and name not in fresh
+        }
+        for path in vanished:
+            stat = state.known[path].stat
+            moved = unread.get(stat[2]) if stat is not None else None
+            if stat is None or moved is None or moved[1] != stat[0]:
+                continue
+            body = (await asyncio.to_thread(state.folder.read, [moved[0]])).get(moved[0])
+            if body is not None:
+                state.unstable.pop(moved[0], None)
+                fresh[moved[0]] = body
+
+    async def _unsupported(self, project: str, path: str) -> None:
+        """A tracked file became a link or special file: it leaves the editor, untouched."""
+        state = self.projects[project]
+        known = state.known.pop(path)
+        room = self.rooms.pop((project, known.file_id), None)
+        if room is not None:
+            self._broadcast(room, b"")
+        await asyncio.to_thread(self._forget, project, known.file_id)
 
     async def _edited(self, project: str, room: Room) -> bool:
         base = await self._base(project, room.path, room)
@@ -795,7 +828,6 @@ class PaperLive:
             self._broadcast(room, create_update_message(update))
 
     async def _save(self, project: str, room: Room) -> None:
-        room.edited_at = None
         if room.text != room.base:
             data = room.text.encode()
             if b"\0" in data:
@@ -805,6 +837,7 @@ class PaperLive:
             await self._put(project, room.path, data, room)
             room.base = room.text
             await self._changed(project)
+        room.edited_at = None
         await self._cache_and_ack(project, room)
 
     async def _cache_and_ack(self, project: str, room: Room) -> None:
@@ -1196,7 +1229,9 @@ class PaperLive:
                 try:
                     file_id = await self._perform(project_id, path, op)
                 except (OSError, ValueError) as exc:
-                    if isinstance(exc, PaperConflict) and not isinstance(exc, PaperWriteFailed):
+                    if isinstance(exc, PaperWriteFailed) or (
+                        isinstance(exc, PaperConflict) and not written
+                    ):
                         raise
                     raise PaperWriteFailed(written, path) from exc
                 written.append(path)
@@ -1212,8 +1247,10 @@ class PaperLive:
                 return None
             room = self.rooms.pop((project, known.file_id), None)
             try:
-                await asyncio.to_thread(state.folder.delete, path, known.sha or None)
+                result = await asyncio.to_thread(state.folder.delete, path, known.sha or None)
                 del state.known[path]
+                if result.conflict and result.displaced is not None:
+                    await self._record(project, path, "delete", None, result.displaced, True)
                 await self._wrote(project, {path: None})
                 await asyncio.to_thread(self._forget, project, known.file_id)
             finally:

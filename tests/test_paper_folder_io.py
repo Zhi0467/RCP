@@ -204,9 +204,9 @@ def test_remote_stage_ships_the_stdlib_only_module(tmp_path, monkeypatch):
     stage = RemoteRunStage("example.invalid")
 
     def remote(arguments, *, input_data=None, **kwargs):
-        assert arguments[0] == "python3"
+        assert arguments[:2] == ["python3", "-I"]
         return subprocess.run(
-            [sys.executable, "-I", *arguments[1:]],
+            [sys.executable, *arguments[1:]],
             input=input_data,
             capture_output=True,
             env={"HOME": str(tmp_path)},
@@ -240,3 +240,47 @@ def test_remote_stage_ships_the_stdlib_only_module(tmp_path, monkeypatch):
     deleted = call({"op": "delete", "path": "b/a.md", "expect_sha": sha(b"")})
     assert deleted["displaced"] == "" and not deleted["conflict"]
     assert call({"op": "scan"})["entries"] == []
+
+
+def test_a_swap_that_displaced_the_expected_bytes_does_not_wait_to_settle(root):
+    (root / "a.md").write_bytes(b"known")
+    started = time.monotonic()
+    result = folder_io.write(
+        root, "a.md", b"new", sha(b"known"), settle_seconds=2.0, settle_max_seconds=2.0
+    )
+    assert time.monotonic() - started < 1.0
+    assert not result.conflict
+
+
+def test_a_hard_link_raced_in_before_the_swap_never_leaks_its_bytes(root, tmp_path, monkeypatch):
+    secret = tmp_path / "secret"
+    secret.write_bytes(b"HIDDEN")
+    (root / "a.md").write_bytes(b"paper")
+    (root / "b.md").write_bytes(b"paper")
+    real = folder_io._regular_status
+
+    def racing(directory, name):
+        status = real(directory, name)
+        if status is not None:
+            os.unlink(root / name)
+            os.link(secret, root / name)
+        return status
+
+    monkeypatch.setattr(folder_io, "_regular_status", racing)
+    assert folder_io.write(root, "a.md", b"new", None).displaced is None
+    assert folder_io.delete(root, "b.md", None).displaced is None
+
+
+def test_install_refuses_paths_that_land_on_one_file(root, monkeypatch):
+    real = folder_io.write
+
+    def clashing(directory, path, data, expect_sha, **settle):
+        result = real(directory, path, data, expect_sha, **settle)
+        if path == "b.md":
+            return folder_io.WriteResult(result.sha, b"a", sha(b"a"), True)
+        return result
+
+    monkeypatch.setattr(folder_io, "write", clashing)
+    with pytest.raises(ValueError):
+        folder_io.install(root, {"a.md": b"a", "b.md": b"b"})
+    assert list(root.iterdir()) == []

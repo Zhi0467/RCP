@@ -2080,7 +2080,7 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     assert len(rsync_calls) == 1
     assert rsync_calls[0][0:2] == ["/verified/bin/rsync", "-a"]
     assert len(ssh_calls) == 1
-    assert ssh_calls[0][0:2] == ["python3", "-c"]
+    assert ssh_calls[0][0:2] == ["python3", "-I"]
     _root, _batch, labels, transferred, _reusable = ssh_calls[0][
         ssh_calls[0].index("commit-inputs") + 1 :
     ]
@@ -2314,7 +2314,7 @@ def test_remote_stage_workspace_mailbox_round_trip_is_atomic(
         assert immutable_input.read_text(encoding="utf-8") == "input stays immutable"
         assert immutable_input.stat().st_mode & 0o777 == 0o400
         assert not any(path.name.startswith(".rcp-write-") for path in workspace.iterdir())
-        assert "os.replace" in calls[0][0][2]
+        assert "os.replace" in calls[0][0][3]
         assert calls[0][1] == response.encode("utf-8")
 
         call_count = len(calls)
