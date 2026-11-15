@@ -82,7 +82,8 @@ including those for SSH bases. One loop per project in
   is accepted. A vanished path and a new path with the same hash in one scan are
   a rename and keep the `file_id`.
 - **Outside a turn.** A foreign write still merges with the human winning. The
-  next Paper turn lists it as outside a turn.
+  next Paper turn lists it as outside a turn, one row per path, and never uses
+  it as a merge base.
 
 **Multi-file writes** are tree actions, upload, rename, History restore, and
 Paper Git apply. They write through the save in path order, so only agents make
@@ -518,10 +519,13 @@ read-only. There is no Undo on a turn; History restore is the undo.
 - **During.** Each foreign write adds a `paper_turn_files` row: path, base
   hash, the agent's hash, clash, and kind (`write`, `delete`, `rename`,
   `outside_turn`, `unsupported`). Bytes go into the History blobs, so a restart
-  mid-turn keeps them.
+  mid-turn keeps them. `paper_state` also keeps what RCP itself last wrote at
+  each path, so after a restart a member's save still merges with the agent's
+  next write. The timer watches a turn the previous process left running.
 - **End.** After the provider process tree exits or recovery settles, the
-  editor flushes, the loop scans, and History saves the after version. A
-  changed file nobody had open joins the list. One `paper_turn` receipt records
+  editor flushes, the loop scans, and History saves the after version. A file
+  that differs between the two versions joins the list unless RCP wrote its
+  current bytes, which covers writes made while RCP was down. One `paper_turn` receipt records
   the before and after version ids; the files stay in `paper_turn_files`. A
   turn that failed before it took the Paper has no receipt and lists no files.
 

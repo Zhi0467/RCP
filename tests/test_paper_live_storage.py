@@ -132,7 +132,8 @@ def test_pruning_keeps_the_running_turns_before_version(tmp_path, monkeypatch):
                 [(f"v{index}", index, f"2026-01-0{index}") for index in (1, 2, 3)],
             )
             connection.execute(
-                "INSERT INTO paper_state VALUES ('p', 3, 'op', 'v1')",
+                "INSERT INTO paper_state(project_id, revision, turn_operation_id, turn_version_id) "
+                "VALUES ('p', 3, 'op', 'v1')",
             )
             prune(connection, "p")
             assert [

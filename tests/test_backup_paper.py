@@ -86,7 +86,7 @@ def _folder_paper(connection, project_id="p"):
     connection.execute(
         "INSERT INTO paper_version_texts VALUES (?, ?)", (_sha(previous), zlib.compress(previous))
     )
-    connection.execute("INSERT INTO paper_state VALUES (?, 7, NULL, NULL)", (project_id,))
+    connection.execute("INSERT INTO paper_state(project_id, revision) VALUES (?, 7)", (project_id,))
     connection.execute(
         "INSERT INTO paper_doc_states (project_id,file_id,state,through_seq) "
         "VALUES (?, 'text', x'00', 0)",

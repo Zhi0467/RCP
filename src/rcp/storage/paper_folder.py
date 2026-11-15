@@ -1,5 +1,5 @@
-"""SQLite caches beside the Paper folder: revision counter, buffer hashes, turn writes,
-and the marker of each project whose SQLite-held Paper moved into its folder."""
+"""SQLite caches beside the Paper folder: revision counter, the running turn and the
+hash RCP last wrote at each path during it, buffer hashes, turn writes, and the marker of each project whose SQLite-held Paper moved into its folder."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ def migrate_paper_folder(connection: sqlite3.Connection) -> None:
             project_id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
             turn_operation_id TEXT,
-            turn_version_id TEXT)"""
+            turn_version_id TEXT,
+            turn_written TEXT NOT NULL DEFAULT '{}')"""
     )
     connection.execute(
         "INSERT INTO paper_state(project_id, revision) "

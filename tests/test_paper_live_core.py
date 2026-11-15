@@ -372,3 +372,151 @@ def test_a_poll_waits_for_a_stable_stat_and_reports_unsupported_entries(paper):
         await live.close()
 
     run(scenario())
+
+
+def _restarted(store, root):
+    from rcp.paper import PaperLive
+    from rcp.paper.folder import LocalPaperFolder
+
+    return PaperLive(store, lambda project: LocalPaperFolder(root / project))
+
+
+def test_a_human_edit_saved_in_a_turn_survives_an_agent_write_after_a_restart(paper):
+    live, store, root = paper
+
+    async def first():
+        file_id = await create(live, "a.md", "one\ntwo\nthree\n")
+        await live.begin_turn("p", "op-1")
+        client = Client(live, file_id)
+        await client.join()
+        await client.type(0, "HUMAN ")
+        await live.leave("p", file_id, client.queue)
+        await live.close()
+
+    async def second():
+        again = _restarted(store, root)
+        await again.tree("p")
+        foreign(root / "p", "a.md", "one\ntwo\nTHREE\n")
+        await again.poll("p", full=True)
+        await again.close()
+
+    run(first())
+    run(second())
+    assert (root / "p/a.md").read_text() == "HUMAN one\ntwo\nTHREE\n"
+
+
+def test_agent_writes_made_while_rcp_was_down_join_the_turn_list(paper):
+    live, store, root = paper
+
+    async def first():
+        await create(live, "a.md", "one\n")
+        await create(live, "b.md", "human\n")
+        await live.begin_turn("p", "op-1")
+        await live.apply("p", [PaperOp(kind="write", path="b.md", data=b"human saved\n")], "h")
+        foreign(root / "p", "a.md", "one\nagent\n")
+        await live.close()
+
+    async def second():
+        again = _restarted(store, root)
+        turn = await again.end_turn("p", "op-1")
+        await again.close()
+        return turn
+
+    run(first())
+    turn = run(second())
+    assert [(row["path"], row["kind"]) for row in turn["files"]] == [("a.md", "write")]
+    assert turn["files"][0]["coach_sha"] == digest(b"one\nagent\n")
+
+
+def test_the_timer_watches_a_turn_the_previous_process_left_running(paper):
+    live, store, root = paper
+
+    async def first():
+        await create(live, "a.md", "one\n")
+        await live.begin_turn("p", "op-1")
+        await live.close()
+
+    async def second():
+        again = _restarted(store, root)
+        await again.tick()
+        loaded = "p" in again.projects
+        await again.close()
+        return loaded
+
+    run(first())
+    assert run(second())
+
+
+def test_an_outside_turn_write_is_never_the_next_turns_merge_base(paper):
+    live, _, root = paper
+
+    async def scenario():
+        file_id = await create(live, "a.md", "l1\nl2\nl3\n")
+        foreign(root / "p", "a.md", "l1\nl2\nl3\nl4\n")
+        await live.poll("p", full=True)
+        client = Client(live, file_id)
+        await client.join()
+        client.drain()
+        start = client.text.index("l2\n")
+        before = client.doc.get_state()
+        del client.doc["text"][start : start + 3]
+        await live.receive(
+            "p", file_id, create_update_message(client.doc.get_update(before)), "h", client.queue
+        )
+        await live.flush("p")
+        await live.begin_turn("p", "op-1")
+        foreign(root / "p", "a.md", "L1\nl3\nl4\n")
+        await live.poll("p", full=True)
+        await live.close()
+
+    run(scenario())
+    assert (root / "p/a.md").read_text() == "L1\nl3\nl4\n"
+
+
+def test_outside_turn_writes_keep_one_row_per_path(paper):
+    live, store, root = paper
+
+    async def scenario():
+        await create(live, "a.md", "zero\n")
+        for text in ("one\n", "two\n", "three\n"):
+            foreign(root / "p", "a.md", text)
+            await live.poll("p", full=True)
+        await live.begin_turn("p", "op-1")
+        turn = await live.end_turn("p", "op-1")
+        await live.close()
+        return turn
+
+    turn = run(scenario())
+    with store.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM paper_turn_files").fetchone()[0] == 1
+    (row,) = turn["files"]
+    assert (row["kind"], row["coach_sha"]) == ("outside_turn", digest(b"three\n"))
+
+
+def test_body_collection_keeps_what_rcp_wrote_in_a_running_turn(paper):
+    from rcp.paper.persistence import collect_bodies
+
+    live, store, root = paper
+
+    async def first():
+        await create(live, "a.md", "one\ntwo\nthree\n")
+        await live.begin_turn("p", "op-1")
+        await live.apply(
+            "p", [PaperOp(kind="write", path="a.md", data=b"one\ntwo\nthree\nmine\n")], "h"
+        )
+        await live.close()
+
+    run(first())
+    with store.connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        collect_bodies(conn)
+
+    async def second():
+        again = _restarted(store, root)
+        await again.tree("p")
+        foreign(root / "p", "a.md", "ONE\ntwo\nthree\n")
+        await again.poll("p", full=True)
+        await again.close()
+
+    run(second())
+    assert (root / "p/a.md").read_text() == "ONE\ntwo\nthree\nmine\n"

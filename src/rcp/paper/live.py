@@ -206,7 +206,7 @@ class _Project:
     revision: int
     turn: _Turn | None
     unstable: dict[str, tuple[int, int, int]] = field(default_factory=dict)
-    written: dict[str, bytes] = field(default_factory=dict)
+    written: dict[str, bytes | None] = field(default_factory=dict)
     polled_at: float = 0.0
     changed_at: float = 0.0
     burst_at: float | None = None
@@ -377,8 +377,8 @@ class PaperLive:
                 "INSERT OR IGNORE INTO paper_state(project_id, revision) VALUES (?, 0)", (project,)
             )
             row = conn.execute(
-                "SELECT revision, turn_operation_id, turn_version_id FROM paper_state "
-                "WHERE project_id=?",
+                "SELECT revision, turn_operation_id, turn_version_id, turn_written "
+                "FROM paper_state WHERE project_id=?",
                 (project,),
             ).fetchone()
             identities = {
@@ -397,7 +397,7 @@ class PaperLive:
                 ).fetchall()
             )
         turn = _Turn(row[1], row[2]) if row[1] else None
-        state = _Project(folder, {}, int(row[0]), turn)
+        state = _Project(folder, {}, int(row[0]), turn, written=self._load_written(row[3]))
         read = self._read_folder(state, full=True)
         vanished = {
             path: file_id
@@ -432,6 +432,51 @@ class PaperLive:
         for path in read.unsupported:
             state.known[path] = Known(f"unsupported:{path}", "unsupported", "", 0)
         return state
+
+    def _load_written(self, encoded: str) -> dict[str, bytes | None]:
+        """What RCP last wrote at each path in the running turn; None is its delete."""
+        written: dict[str, bytes | None] = {}
+        with self.store.connection() as conn:
+            for path, sha in json.loads(encoded).items():
+                if sha is None:
+                    written[path] = None
+                    continue
+                row = conn.execute(
+                    "SELECT bytes FROM paper_blobs WHERE sha256=?", (sha,)
+                ).fetchone()
+                if row is not None:
+                    written[path] = bytes(row[0])
+        return written
+
+    async def _wrote(self, project: str, changes: dict[str, bytes | None]) -> None:
+        """Remember RCP's own turn writes, so a restart still merges against them."""
+        state = self.projects[project]
+        if state.turn is None:
+            return
+        state.written.update(changes)
+        await asyncio.to_thread(self._persist_written, project, state.written)
+
+    def _persist_written(self, project: str, written: dict[str, bytes | None]) -> None:
+        with self.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for data in written.values():
+                if data is not None:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)",
+                        (digest(data), data, len(data)),
+                    )
+            conn.execute(
+                "UPDATE paper_state SET turn_written=? WHERE project_id=?",
+                (
+                    json.dumps(
+                        {
+                            path: None if data is None else digest(data)
+                            for path, data in written.items()
+                        }
+                    ),
+                    project,
+                ),
+            )
 
     @staticmethod
     def _identity(conn, project: str, file_id: str, path: str, kind: str, now: str) -> None:
@@ -567,7 +612,8 @@ class PaperLive:
             await self._record(project, path, "delete", base, None, True)
             return
         del state.known[path]
-        state.written.pop(path, None)
+        if state.written.pop(path, None) is not None:
+            await self._wrote(project, {})
         if room is not None:
             self._broadcast(self.rooms.pop((project, known.file_id)), b"")
         await asyncio.to_thread(self._forget, project, known.file_id)
@@ -624,7 +670,7 @@ class PaperLive:
             row = conn.execute(
                 "SELECT b.bytes FROM paper_turn_files f JOIN paper_blobs b ON b.sha256=f.coach_sha "
                 "WHERE f.project_id=? AND f.operation_id=? AND f.path=? "
-                "ORDER BY f.rowid DESC LIMIT 1",
+                "AND f.kind<>'outside_turn' ORDER BY f.rowid DESC LIMIT 1",
                 (project, turn.operation_id, path),
             ).fetchone()
             if row is not None:
@@ -661,6 +707,21 @@ class PaperLive:
                         "INSERT OR IGNORE INTO paper_blobs VALUES(?,?,?)",
                         (digest(data), data, len(data)),
                     )
+            if (
+                operation_id is None
+                and conn.execute(
+                    "UPDATE paper_turn_files SET coach_sha=?, clash=MAX(clash,?), created_at=? "
+                    "WHERE project_id=? AND operation_id IS NULL AND path=?",
+                    (
+                        digest(coach) if coach is not None else None,
+                        int(clash),
+                        self.store.now(),
+                        project,
+                        path,
+                    ),
+                ).rowcount
+            ):
+                return
             conn.execute(
                 "INSERT INTO paper_turn_files(project_id,operation_id,path,base_sha,coach_sha,"
                 "clash,kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -709,8 +770,7 @@ class PaperLive:
             result = await asyncio.to_thread(state.folder.write, path, data, expect)
             if known is not None:
                 known.sha, known.size, known.stat = digest(data), len(data), None
-            if state.turn is not None:
-                state.written[path] = data
+            await self._wrote(project, {path: data})
             if not result.conflict or result.displaced is None:
                 return
             theirs = result.displaced
@@ -1154,7 +1214,7 @@ class PaperLive:
             try:
                 await asyncio.to_thread(state.folder.delete, path, known.sha or None)
                 del state.known[path]
-                state.written.pop(path, None)
+                await self._wrote(project, {path: None})
                 await asyncio.to_thread(self._forget, project, known.file_id)
             finally:
                 if room is not None:
@@ -1168,7 +1228,7 @@ class PaperLive:
             known.stat = None
             state.known[path] = known
             if source in state.written:
-                state.written[path] = state.written.pop(source)
+                await self._wrote(project, {path: state.written.pop(source)})
             room = self.rooms.get((project, known.file_id))
             if room is not None:
                 room.path = path
@@ -1256,7 +1316,8 @@ class PaperLive:
         with self.store.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "UPDATE paper_state SET turn_operation_id=?, turn_version_id=? WHERE project_id=?",
+                "UPDATE paper_state SET turn_operation_id=?, turn_version_id=?, turn_written='{}' "
+                "WHERE project_id=?",
                 (operation_id, version_id, project),
             )
             conn.execute(
@@ -1274,6 +1335,9 @@ class PaperLive:
                 raise KeyError(operation_id)
             before = state.turn.version_id
             after = await self._save_version(project_id, "automatic", None)
+            await asyncio.to_thread(
+                self._list_unseen, project_id, operation_id, before, after, dict(state.written)
+            )
             await asyncio.to_thread(self._finish_turn, project_id)
             state.turn = None
             state.written = {}
@@ -1283,11 +1347,47 @@ class PaperLive:
             "files": await asyncio.to_thread(self.turn_files, project_id, operation_id),
         }
 
+    def _list_unseen(
+        self,
+        project: str,
+        operation_id: str,
+        before: str,
+        after: str,
+        written: dict[str, bytes | None],
+    ) -> None:
+        """Add a turn's changes no poll saw, such as writes made while RCP was down.
+
+        A path whose current bytes RCP wrote itself is a member's save, never the agent's.
+        """
+        listed = {row["path"] for row in self.turn_files(project, operation_id)}
+        with self.store.connection() as conn:
+            reader = PaperSnapshotReader(conn)
+            old = {entry.path: entry.sha256 for entry in reader.entries(project, before)[1]}
+            new = {entry.path: entry.sha256 for entry in reader.entries(project, after)[1]}
+            changes = []
+            for path in sorted(old.keys() | new.keys()):
+                if path in listed or old.get(path) == new.get(path):
+                    continue
+                if path in written:
+                    ours = written[path]
+                    if (None if ours is None else digest(ours)) == new.get(path):
+                        continue
+                changes.append(
+                    (
+                        path,
+                        reader.version_file(project, before, path),
+                        reader.version_file(project, after, path),
+                    )
+                )
+        for path, base, coach in changes:
+            kind = "write" if coach is not None else "delete"
+            self._insert_turn_file(project, operation_id, path, kind, base, coach, False)
+
     def _finish_turn(self, project: str) -> None:
         with self.store.connection() as conn:
             conn.execute(
-                "UPDATE paper_state SET turn_operation_id=NULL, turn_version_id=NULL "
-                "WHERE project_id=?",
+                "UPDATE paper_state SET turn_operation_id=NULL, turn_version_id=NULL, "
+                "turn_written='{}' WHERE project_id=?",
                 (project,),
             )
 
@@ -1400,6 +1500,7 @@ class PaperLive:
     @_owned
     async def tick(self) -> None:
         """Save idle buffers, poll watched folders, and take automatic versions."""
+        await self._load_turn_holders()
         for project in list(self.projects):
             if self._fenced or project in self._paused or project in self._disposed:
                 continue
@@ -1412,6 +1513,25 @@ class PaperLive:
         if time.monotonic() - self._last_collection >= limits.PAPER_HISTORY_MAX_SECONDS:
             self._last_collection = time.monotonic()
             await asyncio.to_thread(self._collect_bodies)
+
+    async def _load_turn_holders(self) -> None:
+        """A turn the previous process left running is watched before anyone opens it."""
+        rows = await asyncio.to_thread(
+            self._sql, "SELECT project_id FROM paper_state WHERE turn_operation_id IS NOT NULL"
+        )
+        for (project,) in rows:
+            if (
+                project in self.projects
+                or self._fenced
+                or project in self._paused
+                or project in self._disposed
+            ):
+                continue
+            try:
+                async with self._lock(project):
+                    await self._ensure(project)
+            except Exception:
+                _LOG.exception("Paper turn of project %s could not be watched yet", project)
 
     async def _tick_project(self, project: str) -> None:
         state = self.projects[project]

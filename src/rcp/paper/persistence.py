@@ -233,7 +233,7 @@ def collect_bodies(connection: sqlite3.Connection) -> None:
     """Rare global maintenance, separate from each project's history pruning.
 
     A project not yet moved into its folder still needs the bodies its saved
-    tree and live file rows name.
+    tree and live file rows name, and a running turn the bytes RCP wrote in it.
     """
     unmigrated = "project_id NOT IN (SELECT project_id FROM paper_migrations)"
     for table, column, extra in (
@@ -245,6 +245,7 @@ def collect_bodies(connection: sqlite3.Connection) -> None:
                 "SELECT base_sha FROM paper_turn_files",
                 "SELECT coach_sha FROM paper_turn_files",
                 f"SELECT blob_sha256 FROM paper_files WHERE {unmigrated}",
+                "SELECT value FROM paper_state, json_each(turn_written)",
             ),
         ),
     ):
