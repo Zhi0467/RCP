@@ -123,10 +123,15 @@ for (const width of [1280, 390])
       ["reply", "turn-1", "element", "sections/method.md", "new line 20", "a link"],
     );
 
-    const chat = await page.locator(".paper-coach-body > .chat-dock").boundingBox();
+    const dock = page.locator(".paper-coach-body > .chat-dock");
     const pane = await diff.boundingBox();
-    if (width === 390) assert.ok(pane.y + pane.height <= chat.y + 1, "the diff stacks above");
-    else assert.ok(pane.x + pane.width <= chat.x + 1, "the diff sits beside the chat");
+    if (width === 390) {
+      assert.equal(await dock.isVisible(), false, "the diff takes the chat's place");
+      assert.equal(Math.round(pane.width), width);
+    } else {
+      const chat = await dock.boundingBox();
+      assert.ok(pane.x + pane.width <= chat.x + 1, "the diff sits beside the chat");
+    }
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/coach-${width}.png` });
     if (width === 1280) {
@@ -135,5 +140,6 @@ for (const width of [1280, 390])
       await diff.getByRole("button", { name: "Close diff" }).click();
     }
     await diff.waitFor({ state: "detached" });
+    await dock.waitFor({ state: "visible" });
     assert.deepEqual(errors, []);
   });
