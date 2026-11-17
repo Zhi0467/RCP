@@ -869,7 +869,12 @@ def validate_set_project_truth_scope(op: SetProjectTruthScopeOperation, ctx: OpC
                 ctx.revision,
             )
         else:
-            if machine and ctx.machines is not None and machine not in ctx.machines:
+            if (
+                ctx.mode == "admission"
+                and machine
+                and ctx.machines is not None
+                and machine not in ctx.machines
+            ):
                 ctx.report.reject(
                     "unknown-repository-machine",
                     f"Repository {alias!r} uses unknown machine {machine!r}.",

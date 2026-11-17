@@ -1455,3 +1455,32 @@ def test_main_replay_rejects_a_transition_for_a_different_target(manifest) -> No
     assert replay.replay_failure.revision == 1
     assert replay.revision == 0
     assert "rq/main-target" not in replay.nodes
+
+
+def test_replay_keeps_a_repository_whose_machine_was_since_renamed(manifest, tmp_path) -> None:
+    history = _seeded_history(manifest)
+    history.add_machine("gpu")
+    history.append(
+        _approval_patch(
+            [
+                {
+                    "op": "set_project_truth_scope",
+                    "truth_scope": ["repo-a", "repo-b", "repo-c"],
+                    "repository": {
+                        "alias": "repo-c",
+                        "machine": "gpu",
+                        "path": str(tmp_path / "repo-c"),
+                    },
+                }
+            ]
+        )
+    )
+    text = manifest.path.read_text(encoding="utf-8")
+    manifest.path.write_text(text.replace('"gpu"', '"gpu-card-id"'), encoding="utf-8")
+
+    state = HistoryManager(
+        load_manifest(manifest.path), write_authority=unchecked_write_authority()
+    ).state()
+
+    assert state.replay_failure is None
+    assert state.project_truth_scope == ["repo-a", "repo-b", "repo-c"]
