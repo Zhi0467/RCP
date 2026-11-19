@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from unittest.mock import Mock
+from uuid import uuid4
 
+from rcp.api import agent_threads
 from rcp.storage import AppStore
 from tests import test_api_questions as api_fixtures
 from tests.test_api_questions import _question
@@ -33,6 +36,7 @@ def _child(
     *,
     started_from: str | None,
     continues: str | None = None,
+    mode: str = "experiment_loop",
 ) -> str:
     root = f"{episode_id}-root"
     store.create_agent_task(
@@ -45,7 +49,13 @@ def _child(
         )
     )
     store.create_episode(
-        _episode(store, episode_id, project_id=project_id, control_node_id=episode_id)
+        _episode(
+            store,
+            episode_id,
+            project_id=project_id,
+            mode=mode,
+            control_node_id=episode_id if mode == "experiment_loop" else None,
+        )
     )
     with store.connection() as connection:
         connection.execute(
@@ -121,3 +131,64 @@ def test_dock_buckets_are_disjoint_and_space_skips_what_a_thread_shows(questions
     hidden = _other_member_thread(store, project_id)
     refused = client.get(f"/api/projects/{project_id}/chats/{hidden.thread_id}/cards")
     assert refused.status_code == 404
+
+
+def test_dock_serializes_branch_owning_child(questions_api) -> None:
+    _app, client, store, project_id = questions_api
+    thread_id = _project_thread(client)["thread_id"]
+    _chat_turn(store, project_id, thread_id, "thread-turn")
+    episode_id = _child(
+        store, project_id, str(uuid4()), started_from="thread-turn", mode="auto_research"
+    )
+    assert store.branch_owner(project_id, episode_id) == episode_id
+    response = client.get("/api/agent-threads/cards", params={"thread_id": thread_id})
+    assert response.status_code == 200, response.text
+    episode = response.json()["episodes"][0]["episode"]
+    assert episode["episode_id"] == episode_id
+    assert episode["graph_target"]["branch_id"] == episode_id
+
+
+def test_dock_batches_archives_and_skips_unrelated_continuations(
+    questions_api, monkeypatch
+) -> None:
+    _app, client, store, project_id = questions_api
+    thread_id = _project_thread(client)["thread_id"]
+    _chat_turn(store, project_id, thread_id, "thread-turn")
+    _chat_turn(store, project_id, "elsewhere", "elsewhere-turn")
+    for child in ("first", "second"):
+        _child(store, project_id, child, started_from="thread-turn")
+    _child(store, project_id, "other", started_from="elsewhere-turn")
+    unrelated = _question(store, project_id, owner_kind="episode", owner_id="other")
+    archives = Mock(wraps=store.episode_archive_states)
+    newest = Mock(wraps=agent_threads._newest_episode)
+    monkeypatch.setattr(store, "episode_archive_states", archives)
+    monkeypatch.setattr(agent_threads, "_newest_episode", newest)
+    children = agent_threads._chat_children(store, project_id, thread_id, [unrelated])
+    assert len(children) == 2
+    newest.assert_not_called()
+    response = client.get("/api/agent-threads/cards", params={"thread_id": thread_id})
+    assert response.status_code == 200, response.text
+    archives.assert_called_once_with(project_id)
+
+
+def test_dock_reports_next_expiry_and_expires_at_boundary(questions_api, monkeypatch) -> None:
+    _app, client, store, project_id = questions_api
+    thread_id = _project_thread(client)["thread_id"]
+    now = datetime.fromisoformat(store.now())
+    monkeypatch.setattr(store, "now", lambda: now.isoformat())
+    _chat_turn(store, project_id, thread_id, "thread-turn")
+    for child in ("live", "recent", "older"):
+        _child(store, project_id, child, started_from="thread-turn")
+    _end(store, "recent", ago=timedelta(hours=1))
+    _end(store, "older", ago=timedelta(hours=2))
+    url = f"/api/agent-threads/cards?thread_id={thread_id}"
+    first = client.get(url).json()
+    assert first["next_expiry_at"] == (now + timedelta(hours=22)).isoformat()
+    now += timedelta(hours=22)
+    second = client.get(url).json()
+    assert {row["episode"]["episode_id"] for row in second["episodes"]} == {"live", "recent"}
+    assert second["next_expiry_at"] == (now + timedelta(hours=1)).isoformat()
+    now += timedelta(hours=1)
+    last = client.get(url).json()
+    assert [row["episode"]["episode_id"] for row in last["episodes"]] == ["live"]
+    assert last["next_expiry_at"] is None

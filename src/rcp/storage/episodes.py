@@ -206,7 +206,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         self, project_id: str, chat_id: str, *, ended_since: str
     ) -> list[EpisodeRecord]:
         """The newest member of each continuation chain this chat started that is still
-        open or ended at or after ``ended_since``, newest first."""
+        open or ended after ``ended_since``, newest first."""
 
         with self.connection() as connection:
             candidates = [
@@ -222,7 +222,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                       AND (
                           episode.status NOT IN ('completed', 'stopped', 'failed')
                           OR julianday(COALESCE(episode.ended_at, episode.updated_at))
-                             >= julianday(?)
+                             > julianday(?)
                       )
                     ORDER BY episode.created_at DESC, episode.episode_id DESC
                     """,
