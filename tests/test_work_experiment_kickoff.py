@@ -20,6 +20,7 @@ from rcp.runs.experiment_admission import WorkExperimentStart
 from rcp.runs.questions import work_command_handler
 from rcp.runs.shared import _sse
 from rcp.runs.work_episode_controls import intent_sha256, turn_keyed_id
+from rcp.runs.work_experiment_commands import raise_pending_experiment_cards
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
 from rcp.storage.notifications import question_recipients
@@ -184,6 +185,41 @@ def _plan_card(plan, chat_id="shared-chat", *, key="first", **turn):
     _land(plan, execution)
     (card,) = [row for row in _cards(plan, chat_id) if row["operation_id"] == f"turn-{key}"]
     return card
+
+
+def _crash_before_card(plan, key):
+    """A turn that asked for a card and succeeded, then lost the process before the hook."""
+    execution, call = _turn(plan, f"turn-{key}", chat_id="shared-chat")
+    assert call(_kickoff(key)).result["disposition"] == "card_pending"
+    plan.store.complete_agent_task(
+        execution.operation_id, applied_revision=None, result={"messages": []}
+    )
+
+
+def _startup_pass(plan):
+    background = plan.app.state.background_tasks
+    raise_pending_experiment_cards(plan.store, background.recorded_execution)
+
+
+def test_startup_raises_a_card_a_crash_lost_once(plan):
+    _crash_before_card(plan, "lost")
+    assert _cards(plan, "shared-chat") == []
+
+    _startup_pass(plan)
+    _startup_pass(plan)
+
+    (card,) = _cards(plan, "shared-chat")
+    assert (card["operation_id"], card["card"]["state"]) == ("turn-lost", "pending")
+
+
+def test_a_lost_older_card_never_replaces_a_later_turns_card(plan):
+    _crash_before_card(plan, "older")
+    newer = _plan_card(plan, key="newer")
+
+    _startup_pass(plan)
+
+    (card,) = _cards(plan, "shared-chat")
+    assert (card["question_id"], card["card"]["state"]) == (newer["question_id"], "pending")
 
 
 def _start(plan, card, **overrides):

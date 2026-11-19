@@ -2737,7 +2737,7 @@ class BackgroundAgentTasks:
             self._thread_queue_timer = timer
         timer.start()
 
-    def _recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
+    def recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
         continuation = self.store.agent_task_continuation_cause(record.operation_id) or "fresh"
         if continuation not in _AGENT_TASK_CONTINUATIONS:
             continuation = "fresh"
@@ -2823,7 +2823,7 @@ class BackgroundAgentTasks:
                         record = self._require_operation(operation_id)
                         if record.phase != "awaiting_remote_result":
                             continue
-                        owner = self.resume_command_mailbox(self._recorded_execution(record))
+                        owner = self.resume_command_mailbox(self.recorded_execution(record))
                     except (ValueError, KeyError, TypeError):
                         # Corrupt private state cannot grant authority. Isolate
                         # the refusal so other detached passes still reconcile.
@@ -2906,7 +2906,7 @@ class BackgroundAgentTasks:
                 with self._controls_lock:
                     mailbox = self._detached_mailboxes.get(operation_id)
                 execution = (
-                    mailbox.execution if mailbox is not None else self._recorded_execution(record)
+                    mailbox.execution if mailbox is not None else self.recorded_execution(record)
                 )
                 assert execution is not None
                 # No admission or handler may race Apply or watcher settlement.

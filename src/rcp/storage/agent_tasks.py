@@ -4174,6 +4174,22 @@ class AgentTaskStoreMixin(StoreMixinBase):
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def pending_experiment_card_tasks(self) -> list[AgentTaskRecord]:
+        """Succeeded Work turns with a requested plan card not yet raised, oldest first."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT run.* FROM graph_runs run WHERE run.status='succeeded' "
+                "AND EXISTS (SELECT 1 FROM graph_run_receipts k "
+                "WHERE k.operation_id=run.operation_id AND k.category='work_experiment_kickoff' "
+                "AND json_extract(k.payload_json,'$.phase')='card_pending' "
+                "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
+                "WHERE r.operation_id=run.operation_id AND r.category='work_experiment_card_raised' "
+                "AND json_extract(r.payload_json,'$.kickoff_id')="
+                "json_extract(k.payload_json,'$.kickoff_id'))) "
+                "ORDER BY run.created_at, run.operation_id"
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
     def pending_merge_effect_tasks(self, project_id: str | None = None) -> list[AgentTaskRecord]:
         """Uncapped recovery inventory, including succeeded/no-change deliveries."""
         with self.connection() as connection:

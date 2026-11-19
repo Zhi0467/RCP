@@ -213,7 +213,10 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
-from rcp.runs.work_experiment_commands import raise_experiment_plan_cards
+from rcp.runs.work_experiment_commands import (
+    raise_experiment_plan_cards,
+    raise_pending_experiment_cards,
+)
 from rcp.server_ops.backup import BackupArchiveReceipt, latest_protected_backup_receipt
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
@@ -2308,6 +2311,11 @@ def create_app(
                     claimed_before=process_started_at,
                 )
                 await asyncio.to_thread(store.expire_approval_cards)
+                await asyncio.to_thread(
+                    raise_pending_experiment_cards,
+                    store,
+                    background_tasks.recorded_execution,
+                )
                 await asyncio.to_thread(reconcile_question_answers)
                 # Work parked on a login that is now unusable resolves to whichever
                 # signed-in login the queue picks, without waiting for a sign-in event.

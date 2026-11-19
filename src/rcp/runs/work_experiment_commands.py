@@ -40,14 +40,17 @@ from rcp.runs.work_episode_controls import (
 from rcp.service import ProjectService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from rcp.background import AgentTaskExecution
     from rcp.projects import ProjectCatalog
-    from rcp.storage import AppStore, EpisodeRecord
+    from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
     from rcp.storage.question_models import QuestionRecord
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
 _RECEIPT = "work_experiment_kickoff"
 _RESUME_RECEIPT = "work_experiment_resume"
+_RAISED_RECEIPT = "work_experiment_card_raised"
 
 
 def work_experiment_allowed(execution: AgentTaskExecution | None) -> bool:
@@ -328,10 +331,17 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
     task = store.agent_task(execution.operation_id)
     if task is None or task.status != "succeeded":
         return
+    raised = {
+        receipt.payload["kickoff_id"]
+        for receipt in store.agent_task_receipts_by_category(
+            execution.operation_id, _RAISED_RECEIPT
+        )
+    }
     requests = {
         str(receipt.payload["kickoff_id"]): receipt.payload
         for receipt in store.agent_task_receipts_by_category(execution.operation_id, _RECEIPT)
         if receipt.payload.get("phase") == "card_pending"
+        and receipt.payload["kickoff_id"] not in raised
     }
     if not requests:
         return
@@ -345,12 +355,15 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
     for kickoff_id, payload in requests.items():
         node_id = str(payload["node_id"])
         node = experiment_node(state, node_id)
-        if node is None:
+        if node is None or _newer_card_for(store, task, origin.owner_id, node_id):
             store.record_agent_task_event(
                 execution.operation_id,
-                f"No plan card for {node_id}: it is not an Experiment on this chat's graph.",
+                f"No plan card for {node_id}: it is not an Experiment on this chat's graph."
+                if node is None
+                else f"No plan card for {node_id}: a later turn already proposed it.",
                 level="warning",
             )
+            _mark_raised(store, execution.operation_id, kickoff_id)
             continue
         action = ExperimentStartAction.model_validate(
             {
@@ -377,9 +390,44 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
             },
         )
         _settle_replaced_cards(store, question, node_id)
+        _mark_raised(store, execution.operation_id, kickoff_id)
         store.record_agent_task_event(
             execution.operation_id, f"Plan card raised for Experiment {node_id}."
         )
+
+
+def _mark_raised(store: AppStore, operation_id: str, kickoff_id: str) -> None:
+    store.record_agent_task_receipt(
+        operation_id, _RAISED_RECEIPT, {"kickoff_id": kickoff_id}, tier="diagnostic"
+    )
+
+
+def _newer_card_for(store: AppStore, task: AgentTaskRecord, chat_id: str, node_id: str) -> bool:
+    """Whether a later turn of this chat already raised a card for the node."""
+    for question in store.list_questions(
+        project_id=task.project_id, owner_kind="chat", owner_id=chat_id
+    ):
+        card = store.approval_cards([question.question_id]).get(question.question_id)
+        raiser = store.agent_task(question.origin.operation_id)
+        if (
+            card is not None
+            and card["kind"] == "experiment_start"
+            and card["action"]["node_id"] == node_id
+            and raiser is not None
+            and raiser.created_at > task.created_at
+        ):
+            return True
+    return False
+
+
+def raise_pending_experiment_cards(
+    store: AppStore, execution_for: Callable[[AgentTaskRecord], AgentTaskExecution]
+) -> None:
+    """Raise the plan cards a crash or a failed hook left behind, oldest turn first."""
+    for task in store.pending_experiment_card_tasks():
+        execution = execution_for(task)
+        if execution.experiment_card_raiser is not None:
+            execution.experiment_card_raiser(execution)
 
 
 def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, node_id: str) -> None:
