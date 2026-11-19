@@ -101,7 +101,7 @@ import {
   type StackCard,
 } from "./ApprovalCardStack";
 import { RunningPopover } from "./RunningPopover";
-import { ExperimentPlanCard } from "./ExperimentPlanCard";
+import { EpisodePlanCard } from "./EpisodePlanCard";
 import { isPlanCardQuestion } from "./experimentPlanModel";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText, stoppedByMember } from "./agentTasks";
@@ -1522,7 +1522,7 @@ export function AgentThreadView({
           questions={questions}
           renderQuestion={renderQuestion}
           renderPlanCard={(question) => (
-            <ExperimentPlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
+            <EpisodePlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
           )}
           shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (

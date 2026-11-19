@@ -1,4 +1,4 @@
-import { FlaskConical, Pencil } from "lucide-react";
+import { FlaskConical, Pencil, Telescope } from "lucide-react";
 import { useState } from "react";
 import {
   AgentConfigChip,
@@ -15,6 +15,15 @@ import type {
   ApprovalCardResult,
   ProjectSnapshot,
 } from "../core/types";
+import { AutoResearchFields, AutoResearchWorktree } from "../experiments/AutoResearchControls";
+import { worktreeRepositoryChoices, chosenWorktreeRepository } from "../chat/worktreeRepositories";
+import {
+  autoResearchInputsReady,
+  autoResearchStartDecision,
+  initialAutoResearchInputs,
+  type AutoResearchAction,
+  type AutoResearchInputs,
+} from "./experimentPlanModel";
 import { SYNC_BEFORE_START } from "../experiments/experimentStart";
 import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
 import type { GlossaryIndex } from "../graph/glossary";
@@ -35,19 +44,13 @@ import {
   type PlanInputs,
 } from "./experimentPlanModel";
 
-interface CardProps {
+export interface CardProps {
   question: AgentQuestion;
   glossaryIndex?: GlossaryIndex;
-  /** Opens a node in place; given only where the surface shows the card's own graph. */
   onOpenNode?: (nodeId: string) => void;
   onSettled: (result: ApprovalCardResult | null) => void;
 }
-
-/**
- * An Experiment plan the agent raised. It reads the node live from the card's own
- * graph, so a later Patch or Sync shows here, and Start sends the revision it showed.
- */
-export function ExperimentPlanCard({
+export function EpisodePlanCard({
   question,
   actorId,
   ...props
@@ -58,7 +61,7 @@ export function ExperimentPlanCard({
   const graph = useResource(`experiment-plan:${question.question_id}`, profile);
   const { store } = useRefreshRuntime();
   return (
-    <ExperimentPlanCardView
+    <EpisodePlanCardView
       {...props}
       question={question}
       snapshot={graph.value ?? null}
@@ -68,7 +71,7 @@ export function ExperimentPlanCard({
   );
 }
 
-export function ExperimentPlanCardView({
+function ExperimentPlanCardView({
   question,
   snapshot,
   staged,
@@ -82,7 +85,6 @@ export function ExperimentPlanCardView({
     ProjectSnapshot,
     "graph" | "agent_profiles" | "run_on" | "provider_readiness"
   > | null;
-  /** Whether the member has staged graph changes on the card's graph, read at each render and at Start. */
   staged: () => boolean;
   onPlanChanged: () => void;
   resolve?: Parameters<typeof tapPlanCard>[2];
@@ -285,6 +287,155 @@ export function ExperimentPlanCardView({
       approveLabel="Start"
       declineLabel="Don't run this now"
       approveDisabled={locked || isStaged || !providerReady || !planInputsReady(inputs, node, cap)}
+      declineDisabled={!question.can_answer}
+      error={error}
+      busy={busy}
+      running={busy !== null || card.state === "running"}
+      onApprove={() => void tap("approve")}
+      onDecline={() => void tap("decline")}
+    />
+  );
+}
+
+type ViewProps = Parameters<typeof ExperimentPlanCardView>[0];
+
+export function EpisodePlanCardView(
+  props: ViewProps & {
+    snapshot:
+      | (ViewProps["snapshot"] &
+          Partial<Pick<ProjectSnapshot, "repositories" | "project_truth_scope">>)
+      | null;
+  },
+) {
+  return props.question.card?.action.kind === "auto_research" ? (
+    <AutoResearchPlanCardView {...props} />
+  ) : (
+    <ExperimentPlanCardView {...props} />
+  );
+}
+
+function AutoResearchPlanCardView({
+  question,
+  snapshot,
+  onSettled,
+  resolve,
+}: Parameters<typeof EpisodePlanCardView>[0]) {
+  const card = question.card as ApprovalCard;
+  const action = card.action as AutoResearchAction;
+  const profile = snapshot?.agent_profiles.orchestrator;
+  const fallback = profile && snapshot ? profileRunConfig(profile, snapshot.run_on) : null;
+  const [edits, setEdits] = useState<Partial<AutoResearchInputs>>({});
+  const inputs = { ...initialAutoResearchInputs(action, fallback), ...edits };
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [busy, setBusy] = useState<Busy>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { pending, state, stateLabel } = askedCardState(question, card);
+  const locked = !question.can_answer || busy !== null || card.state === "running";
+  const repositories =
+    snapshot?.repositories && snapshot.project_truth_scope && inputs.config
+      ? worktreeRepositoryChoices(
+          {
+            repositories: snapshot.repositories,
+            project_truth_scope: snapshot.project_truth_scope,
+          },
+          inputs.config.run_on,
+        )
+      : null;
+  const repository = repositories
+    ? chosenWorktreeRepository(repositories, inputs.worktreeRepository, null)
+    : null;
+  const unavailable = repositories !== null && repository === null;
+  const codeWorktree = inputs.codeWorktree && !unavailable;
+  const effectiveModel =
+    profile && inputs.config?.provider === profile.provider ? profile.effective_model : "";
+  const providerReady =
+    snapshot &&
+    inputs.config &&
+    launchProviderReady(snapshot, inputs.config, profile?.work_like_capable);
+  const tap = async (decision: "approve" | "decline") => {
+    setBusy(decision);
+    setError(null);
+    const outcome = await tapPlanCard(
+      question.question_id,
+      decision === "approve"
+        ? autoResearchStartDecision(card, {
+            ...inputs,
+            codeWorktree,
+            worktreeRepository: repository,
+          })
+        : { decision, pinned_sha256: card.pinned_sha256 },
+      resolve,
+    );
+    setBusy(null);
+    if (outcome.kind === "pending") setError(outcome.reason);
+    onSettled(outcome.kind === "settled" ? outcome.result : null);
+  };
+  const body = (
+    <div className="approval-details plan-body">
+      <div className="campaign-dialog-fields">
+        <AutoResearchFields
+          instructionRequired
+          budget={Number.isFinite(inputs.invocationCeiling) ? String(inputs.invocationCeiling) : ""}
+          instruction={inputs.instruction}
+          branch={inputs.branch}
+          busy={locked}
+          setBudget={(value) =>
+            setEdits({ ...edits, invocationCeiling: value === "" ? NaN : Number(value) })
+          }
+          setInstruction={(instruction) => setEdits({ ...edits, instruction })}
+          setBranch={(branch) => setEdits({ ...edits, branch })}
+        />
+        <div className="agent-config-options campaign-isolation">
+          <AutoResearchWorktree
+            worktreeUnavailable={unavailable}
+            runOn={inputs.config?.run_on}
+            codeWorktreeOn={codeWorktree}
+            busy={locked}
+            worktreeRepositories={repositories}
+            worktreeRepository={repository}
+            setCodeWorktree={(codeWorktree) => setEdits({ ...edits, codeWorktree })}
+            setWorktreePick={(worktreeRepository) => setEdits({ ...edits, worktreeRepository })}
+          />
+        </div>
+      </div>
+      {snapshot && inputs.config && (
+        <AgentConfigChip
+          project={snapshot}
+          value={inputs.config}
+          effectiveModel={effectiveModel}
+          open={agentOpen}
+          disabled={locked}
+          label="Orchestrator agent"
+          workLike={profile?.work_like_capable}
+          onToggle={() => setAgentOpen(!agentOpen)}
+        />
+      )}
+      {agentOpen && snapshot && inputs.config && (
+        <AgentConfigControls
+          project={snapshot}
+          value={inputs.config}
+          onChange={(config) => setEdits({ ...edits, config })}
+          effectiveModel={effectiveModel}
+          workLikeCapable={profile?.work_like_capable}
+          locked={locked}
+          compact
+        />
+      )}
+    </div>
+  );
+  return (
+    <ApprovalCardShell
+      icon={Telescope}
+      title={approvalCardTitle(card)}
+      className="plan"
+      state={state}
+      stateLabel={stateLabel}
+      project={null}
+      askedAt={question.created_at}
+      body={pending ? body : undefined}
+      approveLabel="Start"
+      declineLabel="Don't run this now"
+      approveDisabled={locked || !providerReady || !autoResearchInputsReady(inputs)}
       declineDisabled={!question.can_answer}
       error={error}
       busy={busy}

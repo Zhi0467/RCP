@@ -153,7 +153,21 @@ def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, act
     monkeypatch.setattr(store, "require_project_accepts_new_work", fenced)
     response = client.post(
         f"/api/approval-cards/{question.question_id}",
-        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
+        json={
+            "decision": "approve",
+            "pinned_sha256": card["pinned_sha256"],
+            **(
+                {
+                    "start": {
+                        "kind": "auto_research",
+                        "starting_instruction": "Explore",
+                        "invocation_ceiling": 1,
+                    }
+                }
+                if action["kind"] == "auto_research"
+                else {}
+            ),
+        },
     )
     assert response.status_code == 409
     assert calls == []
@@ -785,26 +799,22 @@ def test_merge_episode_card_rechecks_heads_under_admission(
     assert harness.store.get_question(question.question_id).answer == "stale"
 
 
-@pytest.mark.parametrize(
-    "kind,handler", [("auto_research", "start_episode"), ("merge_branch", "merge_graph_branch")]
-)
-def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler):
+def test_merge_card_forwards_persisted_uuid4(questions_api, monkeypatch):
     from uuid import UUID
 
     from rcp.api import approval_cards, episode_routes
 
     app, client, store, project_id = questions_api
-    action = {"kind": kind, "project_id": project_id}
-    action.update({"invocation_ceiling": 1} if kind == "auto_research" else {"branch_id": "branch"})
-    question, card = api_card(questions_api, action)
+    question, card = api_card(
+        questions_api, {"kind": "merge_branch", "project_id": project_id, "branch_id": "branch"}
+    )
     seen = []
 
     def execute(*args, **kwargs):
-        key = kwargs["idempotency_key"] if kind == "auto_research" else args[2].request_id
-        seen.append(key)
+        seen.append(args[2].request_id)
         return {}
 
-    monkeypatch.setattr(episode_routes, handler, execute)
+    monkeypatch.setattr(episode_routes, "merge_graph_branch", execute)
     monkeypatch.setattr(
         approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
     )
@@ -1654,3 +1664,47 @@ def test_a_main_proposal_action_stores_what_it_stored_before_branches():
 
     action = ProposalAction(kind="proposal", project_id="p", proposal_id="x", decision="approved")
     assert "branch_id" not in action.model_dump(mode="json")
+
+
+def test_plan_start_overrides_are_discriminated():
+    from rcp.api.approval_cards import ResolveApprovalBody
+
+    body = ResolveApprovalBody.model_validate(
+        {
+            "decision": "approve",
+            "pinned_sha256": "pin",
+            "start": {
+                "kind": "auto_research",
+                "starting_instruction": "Explore",
+                "invocation_ceiling": 2,
+            },
+        }
+    )
+    assert body.start is not None
+    assert body.start.kind == "auto_research"
+    with pytest.raises(ValidationError):
+        ResolveApprovalBody.model_validate(
+            {
+                "decision": "approve",
+                "pinned_sha256": "pin",
+                "start": {
+                    "kind": "experiment_start",
+                    "starting_instruction": "Explore",
+                    "invocation_ceiling": 2,
+                },
+            }
+        )
+
+
+def test_plan_card_ids_preserve_experiment_and_encode_branch_uuid():
+    from uuid import NAMESPACE_URL, UUID, uuid5
+
+    from rcp.runs.approval_cards import plan_card_episode_id
+
+    assert plan_card_episode_id("request", "experiment_start") == str(
+        uuid5(NAMESPACE_URL, "rcp:experiment-card:request")
+    )
+    branch = plan_card_episode_id("request", "auto_research")
+    assert UUID(branch).version == 4
+    assert branch == plan_card_episode_id("request", "auto_research")
+    assert branch != plan_card_episode_id("another", "auto_research")

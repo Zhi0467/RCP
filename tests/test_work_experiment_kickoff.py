@@ -15,7 +15,7 @@ from rcp.agents.command_protocol import EpisodeCommandRequest, ExperimentKickoff
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Patch
 from rcp.loop_status import episode_loop_metadata
-from rcp.runs.approval_cards import experiment_card_episode_id, settle_interrupted_approval_cards
+from rcp.runs.approval_cards import plan_card_episode_id, settle_interrupted_approval_cards
 from rcp.runs.experiment_admission import WorkExperimentStart
 from rcp.runs.questions import work_command_handler
 from rcp.runs.shared import _sse
@@ -235,7 +235,7 @@ def _start(plan, card, **overrides):
         json={
             "decision": "approve",
             "pinned_sha256": card["card"]["pinned_sha256"],
-            "experiment_start": body,
+            "start": {"kind": "experiment_start", **body},
         },
     )
 
@@ -389,7 +389,7 @@ def test_start_in_a_private_chat_runs_the_members_edited_plan(plan):
     assert started.status_code == 200, started.text
     assert started.json()["outcome"] == "approved"
     request_id = plan.store.approval_card(card["question_id"])["request_id"]
-    episode = plan.store.episode(experiment_card_episode_id(request_id))
+    episode = plan.store.episode(plan_card_episode_id(request_id, "experiment_start"))
     assert episode is not None and episode.invocation_ceiling == 2
     assert episode.authorized_by == plan.human
     root = plan.store.agent_task(episode.root_operation_id or "")
@@ -435,7 +435,9 @@ def test_start_in_a_shared_chat_takes_a_write_member(plan, monkeypatch):
 
 
 def started_episode(plan, card):
-    return experiment_card_episode_id(plan.store.approval_card(card["question_id"])["request_id"])
+    return plan_card_episode_id(
+        plan.store.approval_card(card["question_id"])["request_id"], "experiment_start"
+    )
 
 
 def test_a_refused_start_settles_failed_with_its_reason(plan):
@@ -491,3 +493,187 @@ def test_dont_run_this_now_declines_and_reaches_the_agent(plan):
     assert plan.store.get_question(card["question_id"]).answer == "declined"
     plan.app.state.reconcile_question_answers.assert_called_with(plan.project_id)
     assert _experiment_loops(plan) == []
+
+
+def _auto_start_directly(plan, source, episode_id, *, authorizer=None):
+    from rcp.api.work_episodes import start_work_auto_research
+    from rcp.runs.work_episode_controls import WorkAutoResearchStart
+
+    return start_work_auto_research(
+        plan.app.state.catalog,
+        plan.app.state.background_tasks,
+        plan.app.state.services.experiment_operation_lock,
+        WorkAutoResearchStart(
+            source_operation_id=source,
+            episode_id=episode_id,
+            goal="Explore warmup.",
+            invocation_ceiling=2,
+            code_worktree=False,
+            worktree_repository=None,
+            branch_name="warmup-exploration",
+            provider=None,
+            model=None,
+            reasoning=None,
+        ),
+        authorized_by=authorizer or plan.human,
+    )
+
+
+def test_auto_research_start_uses_tapping_member_and_replays_once(plan, monkeypatch):
+    _turn(plan, WORK_TURN, chat_id="shared-chat", authorized_by=fabricated_authorizer("Raiser"))
+    monkeypatch.setattr(
+        "rcp.api.work_episodes.require_auto_research_provider_ready", lambda *_args, **_kw: None
+    )
+    episode_id = str(uuid.uuid4())
+    episode = _auto_start_directly(plan, WORK_TURN, episode_id)
+    assert episode.authorized_by == plan.human
+    assert episode.invocation_ceiling == 2
+    root = plan.store.agent_task(episode.root_operation_id)
+    assert root.request["started_from_operation_id"] == WORK_TURN
+    assert (
+        plan.store.auto_research_state(episode.episode_id).starting_instruction == "Explore warmup."
+    )
+    assert _auto_start_directly(plan, WORK_TURN, episode_id).episode_id == episode_id
+    assert len(plan.store.episodes(plan.project_id, limit=None)) == 1
+    wait_for_task(plan.store, root.operation_id)
+
+
+def _auto_plan_card(plan, *, chat_id="shared-chat", key="auto", land=True):
+    execution, call = _turn(
+        plan, f"turn-{key}", chat_id=chat_id, authorized_by=fabricated_authorizer("Raiser")
+    )
+    command = EpisodeCommandRequest.model_validate(
+        {
+            "mailbox_id": "a" * 32,
+            "request_id": uuid.uuid4().hex,
+            "credential": "b" * 64,
+            "verb": "episode",
+            "idempotency_key": key,
+            "arguments": {
+                "action": "kick_off_auto_research",
+                "goal_file": "goal.md",
+                "invocation_limit": 3,
+            },
+        }
+    )
+    receipt = call(command)
+    assert receipt.status == "ok", receipt.message
+    assert receipt.result["disposition"] == "card_pending"
+    assert plan.store.episodes(plan.project_id, limit=None) == []
+    if land:
+        _land(plan, execution)
+    else:
+        plan.store.complete_agent_task(
+            execution.operation_id, applied_revision=None, result={"messages": []}
+        )
+        _startup_pass(plan)
+        _startup_pass(plan)
+    listed = plan.client.get(f"/api/projects/{plan.project_id}/chats/{chat_id}/questions")
+    assert listed.status_code == 200, listed.text
+    (card,) = [row for row in listed.json() if row["card"]["kind"] == "auto_research"]
+    return card
+
+
+def _start_auto_card(plan, card, **overrides):
+    return plan.client.post(
+        f"/api/approval-cards/{card['question_id']}",
+        json={
+            "decision": "approve",
+            "pinned_sha256": card["card"]["pinned_sha256"],
+            "start": {
+                "kind": "auto_research",
+                "starting_instruction": "Explore the edited warmup plan.",
+                "invocation_ceiling": 2,
+                "branch_name": "edited-warmup",
+                "code_worktree": False,
+                **overrides,
+            },
+        },
+    )
+
+
+def test_auto_research_card_starts_edited_plan_and_repeated_tap_starts_nothing(plan, monkeypatch):
+    card = _auto_plan_card(plan, land=False)
+    monkeypatch.setattr(
+        "rcp.api.work_episodes.require_auto_research_provider_ready", lambda *_args, **_kw: None
+    )
+    started = _start_auto_card(plan, card)
+    assert started.status_code == 200, started.text
+    assert started.json()["outcome"] == "approved"
+    (episode,) = plan.store.episodes(plan.project_id, limit=None)
+    assert episode.authorized_by == plan.human
+    assert episode.invocation_ceiling == 2
+    assert uuid.UUID(episode.episode_id).version == 4
+    root = plan.store.agent_task(episode.root_operation_id)
+    assert (
+        plan.store.auto_research_state(episode.episode_id).starting_instruction
+        == "Explore the edited warmup plan."
+    )
+    assert root.request["started_from_operation_id"] == card["operation_id"]
+    assert root.request["code_worktree"] is False
+    assert _start_auto_card(plan, card).json()["detail"] == {"code": "card_taken"}
+    assert len(plan.store.episodes(plan.project_id, limit=None)) == 1
+    wait_for_task(plan.store, root.operation_id)
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["provider_not_ready", "machine_not_found", "auto_research_profile_unavailable"],
+)
+def test_auto_research_fixable_readiness_refusal_keeps_card_pending(plan, monkeypatch, code):
+    card = _auto_plan_card(plan)
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError(code)
+
+    monkeypatch.setattr("rcp.api.work_episodes.require_auto_research_provider_ready", refuse)
+    response = _start_auto_card(plan, card)
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == code
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+    assert plan.store.episodes(plan.project_id, limit=None) == []
+
+
+def test_plan_card_refuses_mismatched_start_kind_without_consuming_it(plan):
+    card = _plan_card(plan)
+    response = _start_auto_card(plan, card)
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["code"] == "start_kind_mismatch"
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+
+
+def test_auto_research_branch_name_refusal_can_be_fixed_on_the_same_card(plan, monkeypatch):
+    card = _auto_plan_card(plan)
+    monkeypatch.setattr(
+        "rcp.api.work_episodes.require_auto_research_provider_ready", lambda *_args, **_kw: None
+    )
+    invalid = _start_auto_card(plan, card, branch_name="main")
+    assert invalid.status_code == 409, invalid.text
+    assert invalid.json()["detail"]["code"] == "branch_name_invalid"
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+    fixed = _start_auto_card(plan, card)
+    assert fixed.status_code == 200, fixed.text
+    assert fixed.json()["outcome"] == "approved"
+    (episode,) = plan.store.episodes(plan.project_id, limit=None)
+    assert episode.root_operation_id is not None
+    wait_for_task(plan.store, episode.root_operation_id)
+
+
+def test_interrupted_auto_research_start_settles_from_its_episode(plan, monkeypatch):
+    card = _auto_plan_card(plan)
+    monkeypatch.setattr(
+        "rcp.api.work_episodes.require_auto_research_provider_ready", lambda *_args, **_kw: None
+    )
+    stored = plan.store.approval_card(card["question_id"])
+    episode_id = plan_card_episode_id(stored["request_id"], "auto_research")
+    assert plan.store.claim_approval_card(card["question_id"])
+    episode = _auto_start_directly(plan, card["operation_id"], episode_id)
+    settle_interrupted_approval_cards(
+        plan.store, service_for=plan.app.state.catalog.open, claimed_before=plan.store.now()
+    )
+    settled = plan.store.approval_card(card["question_id"])
+    assert settled["result"]["outcome"] == "approved"
+    assert settled["result"]["result"] == {"episode_id": episode_id}
+    assert len(plan.store.episodes(plan.project_id, limit=None)) == 1
+    assert episode.root_operation_id is not None
+    wait_for_task(plan.store, episode.root_operation_id)

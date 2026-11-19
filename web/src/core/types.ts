@@ -4251,6 +4251,7 @@ export interface ApprovalCard {
 }
 
 export interface ExperimentStartOverrides {
+  kind: "experiment_start";
   goal: string;
   invocation_ceiling: number;
   provider?: ProviderId | null;
@@ -4260,11 +4261,22 @@ export interface ExperimentStartOverrides {
   node_rev: number;
 }
 
+export interface AutoResearchStartOverrides {
+  kind: "auto_research";
+  starting_instruction: string;
+  invocation_ceiling: number;
+  branch_name: string | null;
+  code_worktree: boolean;
+  worktree_repository: string | null;
+  provider?: ProviderId | null;
+  model?: string | null;
+  reasoning?: string | null;
+}
+
 export interface ApprovalCardDecision {
   decision: "approve" | "decline";
   pinned_sha256: string;
-  /** Only on an `experiment_start` approve: the human's own Start inputs. */
-  experiment_start?: ExperimentStartOverrides;
+  start?: ExperimentStartOverrides | AutoResearchStartOverrides;
 }
 
 export interface ApprovalCardResult {

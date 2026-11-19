@@ -13,7 +13,7 @@ import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
-import { ExperimentPlanCard } from "../agents/ExperimentPlanCard";
+import { EpisodePlanCard } from "../agents/EpisodePlanCard";
 import { planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
@@ -1420,11 +1420,12 @@ export function AgentChatView({
           renderPlanCard={(question) => {
             const action = planCardAction(question.card)!;
             const here =
+              action.kind === "experiment_start" &&
               onOpenNode &&
               sameGraphTarget(planGraphTarget(action), graphTarget) &&
               Boolean(nodes[action.node_id]);
             return (
-              <ExperimentPlanCard
+              <EpisodePlanCard
                 question={question}
                 actorId={actorId}
                 glossaryIndex={glossaryIndex}

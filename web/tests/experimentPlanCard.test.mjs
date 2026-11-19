@@ -13,7 +13,9 @@ const server = await createServer({
 });
 after(() => server.close());
 const model = await server.ssrLoadModule("/src/agents/experimentPlanModel.ts");
-const { ExperimentPlanCardView } = await server.ssrLoadModule("/src/agents/ExperimentPlanCard.tsx");
+const { EpisodePlanCardView: ExperimentPlanCardView } = await server.ssrLoadModule(
+  "/src/agents/EpisodePlanCard.tsx",
+);
 const { approvalCardTitle } = await server.ssrLoadModule("/src/agents/agentThreadModel.ts");
 const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
 
@@ -155,7 +157,8 @@ test("Start sends the human's inputs and the node revision the card showed", () 
   assert.deepEqual(model.planStartDecision(card(), inputs, node), {
     decision: "approve",
     pinned_sha256: "sha",
-    experiment_start: {
+    start: {
+      kind: "experiment_start",
       goal: "Edited goal",
       invocation_ceiling: 12,
       provider: "claude",
@@ -213,7 +216,7 @@ test("a moved plan keeps the card pending; a taken card settles from the refresh
   assert.deepEqual(sent.at(-1), { questionId: "q1", decision });
 });
 
-test("only experiment_start cards are plan cards, and a branch card targets its branch", () => {
+test("episode kickoff cards are plan cards, and a branch card targets its branch", () => {
   assert.equal(model.isPlanCardQuestion(question()), true);
   assert.equal(
     model.isPlanCardQuestion(question({ card: { ...card(), action: { kind: "merge_branch" } } })),
@@ -265,4 +268,85 @@ test("an Edit node request is taken once, by the drawer showing that exact node"
   assert.equal(takeNodeEditRequest("p", main, "exp/b"), false);
   assert.equal(takeNodeEditRequest("p", main, "exp/a"), true);
   assert.equal(takeNodeEditRequest("p", main, "exp/a"), false);
+});
+
+test("Auto-research cards use main and send edited launch inputs", () => {
+  const auto = { kind: "auto_research", project_id: "p", invocation_ceiling: 4 };
+  const own = card({ kind: "auto_research", action: auto });
+  assert.equal(model.isPlanCardQuestion(question({ card: own })), true);
+  assert.deepEqual(model.planGraphTarget(auto), { kind: "main" });
+  const inputs = model.initialAutoResearchInputs(auto, null);
+  assert.equal(inputs.invocationCeiling, 4);
+  const edited = {
+    ...inputs,
+    instruction: "  Explore  ",
+    branch: "study",
+    codeWorktree: false,
+    worktreeRepository: null,
+    invocationCeiling: 7,
+  };
+  assert.equal(model.autoResearchInputsReady(edited), true);
+  assert.equal(model.autoResearchInputsReady({ ...edited, instruction: "  " }), false);
+  assert.equal(model.autoResearchInputsReady({ ...edited, invocationCeiling: 0 }), false);
+  assert.equal(model.autoResearchInputsReady({ ...edited, invocationCeiling: 1.5 }), false);
+  assert.equal(model.autoResearchInputsReady({ ...edited, branch: "main" }), false);
+  assert.deepEqual(model.autoResearchStartDecision(own, edited).start, {
+    kind: "auto_research",
+    starting_instruction: "Explore",
+    branch_name: "study",
+    code_worktree: false,
+    worktree_repository: null,
+    invocation_ceiling: 7,
+    provider: null,
+    model: null,
+    reasoning: null,
+  });
+});
+
+test("Auto-research needs a ready orchestrator and settled cards have no inputs", () => {
+  const own = card({
+    kind: "auto_research",
+    action: {
+      kind: "auto_research",
+      project_id: "p",
+      invocation_ceiling: 4,
+      starting_instruction: "Explore",
+    },
+  });
+  const autoSnapshot = {
+    ...snapshot,
+    agent_profiles: { ...snapshot.agent_profiles, orchestrator: snapshot.agent_profiles.node_chat },
+    repositories: [],
+    project_truth_scope: [],
+  };
+  assert.doesNotMatch(
+    startButton(render({ question: question({ card: own }), snapshot: autoSnapshot })),
+    /disabled/,
+  );
+  assert.match(
+    startButton(render({ question: question({ card: own }), snapshot: null })),
+    /disabled/,
+  );
+  const settled = render({
+    question: question({ state: "answered", card: { ...own, result: { outcome: "approved" } } }),
+    snapshot: autoSnapshot,
+  });
+  assert.doesNotMatch(settled, /<(input|textarea|button)[ >]/);
+});
+
+test("both card kinds preserve explicit model and reasoning with the profile provider", () => {
+  const fallback = { provider: "claude", model: "default", reasoning: "low", run_on: "m1" };
+  const explicit = { provider: null, model: "chosen", reasoning: "high" };
+  assert.deepEqual(model.initialPlanInputs(action(explicit), fallback).config, {
+    ...fallback,
+    model: "chosen",
+    reasoning: "high",
+  });
+  assert.deepEqual(
+    model.initialAutoResearchInputs(
+      { kind: "auto_research", invocation_ceiling: 3, ...explicit },
+      fallback,
+    ).config,
+    { ...fallback, model: "chosen", reasoning: "high" },
+  );
 });

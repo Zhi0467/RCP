@@ -214,8 +214,8 @@ from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, st
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.runs.work_experiment_commands import (
-    raise_experiment_plan_cards,
     raise_pending_experiment_cards,
+    raise_plan_cards,
 )
 from rcp.server_ops.backup import BackupArchiveReceipt, latest_protected_backup_receipt
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
@@ -1248,7 +1248,7 @@ def create_app(
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
     def raise_experiment_cards_from_work(execution: AgentTaskExecution) -> None:
-        raise_experiment_plan_cards(execution, catalog)
+        raise_plan_cards(execution, catalog)
 
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)

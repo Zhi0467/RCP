@@ -100,8 +100,8 @@ spec, and executable test, not this registry.
    truth membership, authorize episodes, or dispatch branch merges. A member's own page,
    including an agent the member runs there, counts as that human
    ([why](docs/specs/conversations-episodes-and-watchers.md#native-chat-context)).
-   So does their Work chat starting Auto-research and steering, extending, or stopping an
-   episode they asked for. A fresh Experiment needs a human's Start on its plan card
+   So does their Work chat steering, extending, answering, or stopping an episode it
+   started. Any fresh episode it proposes needs a human's Start on its plan card
    ([why](docs/specs/conversations-episodes-and-watchers.md#work-started-episodes)).
    The Auto-research orchestrator is the one explicit exception: on its branch and the
    forks its lineage owns it may choose Decisions, set ordinary belief standing, and

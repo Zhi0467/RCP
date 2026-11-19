@@ -17,7 +17,7 @@ from rcp.agents.staged_command_client import (
     episode_control_usage,
     experiment_kickoff_usage,
 )
-from rcp.approval_actions import ExperimentStartAction
+from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
 from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
 from rcp.runs.experiment_admission import (
@@ -26,6 +26,7 @@ from rcp.runs.experiment_admission import (
     experiment_node,
 )
 from rcp.runs.work_episode_controls import (
+    _AUTO_RESEARCH_RECEIPT,
     chat_started_episode,
     control_own_turn,
     handle_work_auto_research_kickoff,
@@ -320,11 +321,11 @@ def _handle_work_experiment_kickoff(
     )
 
 
-def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
+def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
     """Raise the plan cards a finished Work turn's kickoffs asked for, from the settled graph.
 
-    Only a succeeded turn raises them. A node that is missing or not an Experiment gets a
-    task event instead, and a new card for a node replaces this chat's older pending one.
+    Only a succeeded turn raises them. A new card replaces this chat's older pending
+    card for the same node, or its older Auto-research plan.
     """
 
     store = execution.store
@@ -338,8 +339,12 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
         )
     }
     requests = {
-        str(receipt.payload["kickoff_id"]): receipt.payload
-        for receipt in store.agent_task_receipts_by_category(execution.operation_id, _RECEIPT)
+        str(receipt.payload["kickoff_id"]): (kind, receipt.payload)
+        for category, kind in (
+            (_RECEIPT, "experiment_start"),
+            (_AUTO_RESEARCH_RECEIPT, "auto_research"),
+        )
+        for receipt in store.agent_task_receipts_by_category(execution.operation_id, category)
         if receipt.payload.get("phase") == "card_pending"
         and receipt.payload["kickoff_id"] not in raised
     }
@@ -352,48 +357,74 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
     service = task_owner(store, task, catalog=catalog)
     assert isinstance(service, ProjectService) and task.authorized_by is not None
     state = service.history.state()
-    for kickoff_id, payload in requests.items():
-        node_id = str(payload["node_id"])
-        node = experiment_node(state, node_id)
-        if node is None or _newer_card_for(store, task, origin.owner_id, node_id):
+    for kickoff_id, (kind, payload) in requests.items():
+        subject = str(payload["node_id"]) if kind == "experiment_start" else "auto_research"
+        if _newer_card_for(store, task, origin.owner_id, subject):
             store.record_agent_task_event(
                 execution.operation_id,
-                f"No plan card for {node_id}: it is not an Experiment on this chat's graph."
-                if node is None
-                else f"No plan card for {node_id}: a later turn already proposed it.",
+                f"No plan card for {subject}: a later turn already proposed it.",
                 level="warning",
             )
             _mark_raised(store, execution.operation_id, kickoff_id)
             continue
-        action = ExperimentStartAction.model_validate(
-            {
-                "kind": "experiment_start",
-                "project_id": task.project_id,
-                "node_id": node_id,
-                "branch_id": task.graph_target.branch_id,
-                "goal": payload["goal"],
-                "invocation_ceiling": payload["invocation_limit"] or node.invocation_ceiling,
-                "provider": payload["provider"],
-                "model": payload["model"],
-                "reasoning": payload["reasoning"],
-                "run_truth_scope": task.request.get("run_truth_scope"),
-            }
-        )
+        if kind == "auto_research":
+            action = AutoResearchAction.model_validate(
+                {
+                    "kind": kind,
+                    "project_id": task.project_id,
+                    **{
+                        key: value
+                        for key, value in payload.items()
+                        if key not in {"phase", "kickoff_id", "intent_sha256"}
+                    },
+                }
+            )
+            title = "Auto-research"
+        else:
+            node = experiment_node(state, subject)
+            if node is None:
+                store.record_agent_task_event(
+                    execution.operation_id,
+                    f"No plan card for {subject}: it is not an Experiment on this chat's graph.",
+                    level="warning",
+                )
+                _mark_raised(store, execution.operation_id, kickoff_id)
+                continue
+            action = ExperimentStartAction.model_validate(
+                {
+                    "kind": kind,
+                    "project_id": task.project_id,
+                    "node_id": subject,
+                    "branch_id": task.graph_target.branch_id,
+                    "goal": payload["goal"],
+                    "invocation_ceiling": payload["invocation_limit"] or node.invocation_ceiling,
+                    "provider": payload["provider"],
+                    "model": payload["model"],
+                    "reasoning": payload["reasoning"],
+                    "run_truth_scope": task.request.get("run_truth_scope"),
+                }
+            )
+            title = node.title
+        key_prefix = "experiment-start" if kind == "experiment_start" else "auto-research"
         question = store.create_or_get_question(
             origin=origin,
-            key=f"experiment-start:{kickoff_id}",
-            question=f"Start {node.title}?",
+            key=f"{key_prefix}:{kickoff_id}",
+            question=f"Start {title}?",
             choices=["Approve", "Decline"],
             card={
                 "action": action.model_dump(mode="json"),
                 "pinned": approval_pins(service, store, action, task.authorized_by, state=state),
             },
         )
-        _settle_replaced_cards(store, question, node_id)
+        _settle_replaced_cards(store, question, subject)
         _mark_raised(store, execution.operation_id, kickoff_id)
-        store.record_agent_task_event(
-            execution.operation_id, f"Plan card raised for Experiment {node_id}."
-        )
+        store.record_agent_task_event(execution.operation_id, f"Plan card raised for {subject}.")
+
+
+def _card_subject(action: dict[str, object]) -> str | None:
+    if action["kind"] == "auto_research":
+        return "auto_research"
+    return str(action["node_id"]) if action["kind"] == "experiment_start" else None
 
 
 def _mark_raised(store: AppStore, operation_id: str, kickoff_id: str) -> None:
@@ -402,22 +433,23 @@ def _mark_raised(store: AppStore, operation_id: str, kickoff_id: str) -> None:
     )
 
 
-def _newer_card_for(store: AppStore, task: AgentTaskRecord, chat_id: str, node_id: str) -> bool:
-    """Whether a later turn of this chat already raised a card for the node."""
-    for question in store.list_questions(
-        project_id=task.project_id, owner_kind="chat", owner_id=chat_id
-    ):
-        card = store.approval_cards([question.question_id]).get(question.question_id)
-        raiser = store.agent_task(question.origin.operation_id)
-        if (
-            card is not None
-            and card["kind"] == "experiment_start"
-            and card["action"]["node_id"] == node_id
-            and raiser is not None
-            and raiser.created_at > task.created_at
-        ):
-            return True
-    return False
+def _newer_card_for(store: AppStore, task: AgentTaskRecord, chat_id: str, subject: str) -> bool:
+    """Whether a later turn already raised a card for this node or Auto-research."""
+    with store.connection() as connection:
+        return (
+            connection.execute(
+                "SELECT 1 FROM questions q "
+                "JOIN approval_cards c ON c.question_id=q.question_id "
+                "JOIN graph_runs r ON r.operation_id=json_extract(q.origin_json,'$.operation_id') "
+                "WHERE q.project_id=? AND q.owner_kind='chat' AND q.owner_id=? "
+                "AND r.created_at>? AND ("
+                "(json_extract(c.action_json,'$.kind')='auto_research' AND ?='auto_research') "
+                "OR (json_extract(c.action_json,'$.kind')='experiment_start' "
+                "AND json_extract(c.action_json,'$.node_id')=?)) LIMIT 1",
+                (task.project_id, chat_id, task.created_at, subject, subject),
+            ).fetchone()
+            is not None
+        )
 
 
 def raise_pending_experiment_cards(
@@ -430,7 +462,7 @@ def raise_pending_experiment_cards(
             execution.experiment_card_raiser(execution)
 
 
-def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, node_id: str) -> None:
+def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, subject: str) -> None:
     origin = newest.origin
     older = [
         item.question_id
@@ -440,11 +472,7 @@ def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, node_id: str
         if item.question_id != newest.question_id and item.state == "pending"
     ]
     for question_id, card in store.approval_cards(older).items():
-        if (
-            card["kind"] == "experiment_start"
-            and card["action"]["node_id"] == node_id
-            and store.claim_approval_card(question_id)
-        ):
+        if _card_subject(card["action"]) == subject and store.claim_approval_card(question_id):
             store.settle_approval_card(question_id, {"outcome": "stale"})
 
 

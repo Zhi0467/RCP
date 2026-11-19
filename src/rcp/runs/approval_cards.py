@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Callable
 from typing import Any, Literal, get_args, get_origin
@@ -103,10 +104,8 @@ def approval_card_member(store: AppStore, task: AgentTaskRecord) -> AuthorizedHu
     return task.authorized_by if thread is not None and thread.closed_at is None else None
 
 
-def experiment_card_actor(
-    store: AppStore, question: QuestionRecord, identity: AuthorizedHuman
-) -> bool:
-    """Whether `identity`, a Patch-capable member, may tap this Experiment plan card.
+def plan_card_actor(store: AppStore, question: QuestionRecord, identity: AuthorizedHuman) -> bool:
+    """Whether `identity`, a Patch-capable member, may tap this episode plan card.
 
     A private chat's card is its owner's; a shared or node chat's card is any project
     member's, since the Start takes the project's write admission itself.
@@ -117,9 +116,14 @@ def experiment_card_actor(
     return store.is_project_member(question.origin.project_id, identity.user_id)
 
 
-def experiment_card_episode_id(request_id: str) -> str:
-    """The episode a plan card's Start creates, named again by a repeated or resumed tap."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:experiment-card:{request_id}"))
+def plan_card_episode_id(request_id: str, kind: str) -> str:
+    """The stable episode id for repeated taps and interrupted-start recovery."""
+    if kind == "experiment_start":
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:experiment-card:{request_id}"))
+    if kind != "auto_research":
+        raise ValueError("start_kind_mismatch")
+    digest = hashlib.sha256(f"rcp:auto-research-card:{request_id}".encode()).digest()
+    return str(uuid.UUID(bytes=digest[:16], version=4))
 
 
 _ACTION_MODELS: tuple[type[BaseModel], ...] = get_args(get_args(ApprovalAction)[0])
@@ -298,9 +302,12 @@ def _request_receipt(store: AppStore, card: dict[str, Any]) -> dict[str, Any] | 
 
     action, request_id = card["action"], card["request_id"]
     project_id = action["project_id"]
-    if action["kind"] == "experiment_start":
-        episode = store.episode(experiment_card_episode_id(request_id))
-        return {"episode_id": episode.episode_id} if episode is not None else None
+    if action["kind"] in {"experiment_start", "auto_research"}:
+        episode = store.episode(plan_card_episode_id(request_id, action["kind"]))
+        if episode is not None:
+            return {"episode_id": episode.episode_id}
+        if action["kind"] == "experiment_start":
+            return None
     if action["kind"] == "auto_research":
         admitted = store.client_request(project_id, request_id)
         return {"episode_id": admitted.episode_id} if admitted and admitted.episode_id else None
@@ -383,7 +390,7 @@ def approval_card_usage(client: str) -> str:
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
         "Proposal this thread did not raise. Start Auto-research with the episode command, "
-        f"never a card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. An Experiment "
+        f"which raises its plan card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. An Experiment "
         "plan card comes only from the episode kickoff; asking for one is refused with "
         f"{EXPERIMENT_START_USES_EPISODE}. "
         "The question snapshot shows each card's action and result."
@@ -471,19 +478,7 @@ def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> 
 def _auto_research_pins(
     service: ProjectService, store: AppStore, action: AutoResearchAction
 ) -> dict[str, Any]:
-    from rcp.api.episode_routes import _resolved_auto_research_start_request
-    from rcp.api.episodes import StartEpisodeBody
-
-    body = StartEpisodeBody.model_validate(
-        {"mode": "auto_research", **action.model_dump(exclude={"kind", "project_id"})}
-    )
-    profile = _resolved_auto_research_start_request(
-        service, body, store=store, project_id=action.project_id
-    )
-    if profile.provider is None or profile.run_on is None:
-        raise ValueError("auto_research_profile_unavailable")
-    # Readiness is checked at ask and again by the launch itself, never pinned.
-    return {"profile": profile.model_dump(mode="json")}
+    return {"graph_target": GraphTargetRef().model_dump(mode="json")}
 
 
 def _merge_pins(

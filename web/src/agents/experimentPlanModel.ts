@@ -1,3 +1,4 @@
+import { branchNameRequest, branchNameValid } from "../graph/BranchNameField";
 import { ApiError } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -13,6 +14,9 @@ import type {
 } from "../core/types";
 import { resolveApprovalCard } from "./agentThreadsApi";
 
+export type AutoResearchAction = Extract<ApprovalCardAction, { kind: "auto_research" }>;
+export type PlanAction = ExperimentStartAction | AutoResearchAction;
+
 export type ExperimentStartAction = Extract<ApprovalCardAction, { kind: "experiment_start" }>;
 
 /** The human's Start inputs, seeded from the card and edited in place. */
@@ -22,10 +26,10 @@ export interface PlanInputs {
   config: AgentRunConfig | null;
 }
 
-export function planCardAction(
-  card: ApprovalCard | null | undefined,
-): ExperimentStartAction | null {
-  return card?.action.kind === "experiment_start" ? card.action : null;
+export function planCardAction(card: ApprovalCard | null | undefined): PlanAction | null {
+  return card?.action.kind === "experiment_start" || card?.action.kind === "auto_research"
+    ? card.action
+    : null;
 }
 
 /** Plan cards render in their turn's line; every other card keeps its usual place. */
@@ -33,8 +37,10 @@ export function isPlanCardQuestion(question: AgentQuestion): boolean {
   return planCardAction(question.card) !== null;
 }
 
-export function planGraphTarget(action: ExperimentStartAction): GraphTargetRef {
-  return action.branch_id ? { kind: "branch", branch_id: action.branch_id } : MAIN_GRAPH;
+export function planGraphTarget(action: PlanAction): GraphTargetRef {
+  return action.kind === "experiment_start" && action.branch_id
+    ? { kind: "branch", branch_id: action.branch_id }
+    : MAIN_GRAPH;
 }
 
 /** The highest turn limit a Start may ask for: the node's own limit. */
@@ -50,14 +56,7 @@ export function initialPlanInputs(
   return {
     goal: action.goal,
     invocationCeiling: action.invocation_ceiling,
-    config: action.provider
-      ? {
-          provider: action.provider,
-          model: action.model ?? "",
-          reasoning: action.reasoning ?? "",
-          run_on: fallback?.run_on ?? "",
-        }
-      : fallback,
+    config: initialPlanConfig(action, fallback),
   };
 }
 
@@ -82,7 +81,8 @@ export function planStartDecision(
   return {
     decision: "approve",
     pinned_sha256: card.pinned_sha256,
-    experiment_start: {
+    start: {
+      kind: "experiment_start",
       goal: inputs.goal.trim(),
       invocation_ceiling: inputs.invocationCeiling,
       provider: inputs.config?.provider ?? null,
@@ -120,4 +120,73 @@ export async function tapPlanCard(
       };
     return { kind: "pending", reason: errorMessage(failure), planChanged: false };
   }
+}
+
+export interface AutoResearchInputs {
+  instruction: string;
+  branch: string;
+  codeWorktree: boolean;
+  worktreeRepository: string | null;
+  invocationCeiling: number;
+  config: AgentRunConfig | null;
+}
+
+export function initialAutoResearchInputs(
+  action: AutoResearchAction,
+  fallback: AgentRunConfig | null,
+): AutoResearchInputs {
+  return {
+    instruction: action.starting_instruction ?? "",
+    branch: action.branch_name ?? "",
+    codeWorktree: action.code_worktree ?? true,
+    worktreeRepository: action.worktree_repository ?? null,
+    invocationCeiling: action.invocation_ceiling,
+    config: initialPlanConfig(action, fallback),
+  };
+}
+
+export function autoResearchInputsReady(inputs: AutoResearchInputs): boolean {
+  return (
+    Boolean(inputs.instruction.trim()) &&
+    Number.isSafeInteger(inputs.invocationCeiling) &&
+    inputs.invocationCeiling >= 1 &&
+    branchNameValid(inputs.branch)
+  );
+}
+
+export function autoResearchStartDecision(
+  card: ApprovalCard,
+  inputs: AutoResearchInputs,
+): ApprovalCardDecision {
+  return {
+    decision: "approve",
+    pinned_sha256: card.pinned_sha256,
+    start: {
+      kind: "auto_research",
+      starting_instruction: inputs.instruction.trim(),
+      invocation_ceiling: inputs.invocationCeiling,
+      branch_name: branchNameRequest(inputs.branch),
+      code_worktree: inputs.codeWorktree,
+      worktree_repository: inputs.codeWorktree ? inputs.worktreeRepository : null,
+      provider: inputs.config?.provider ?? null,
+      model: inputs.config?.model || null,
+      reasoning: inputs.config?.reasoning || null,
+    },
+  };
+}
+
+function initialPlanConfig(
+  action: PlanAction,
+  fallback: AgentRunConfig | null,
+): AgentRunConfig | null {
+  const config = action.provider
+    ? { provider: action.provider, model: "", reasoning: "", run_on: fallback?.run_on ?? "" }
+    : fallback;
+  return config
+    ? {
+        ...config,
+        model: action.model ?? config.model,
+        reasoning: action.reasoning ?? config.reasoning,
+      }
+    : null;
 }

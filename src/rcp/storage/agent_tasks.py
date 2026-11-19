@@ -4180,7 +4180,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
             rows = connection.execute(
                 "SELECT run.* FROM graph_runs run WHERE run.status='succeeded' "
                 "AND EXISTS (SELECT 1 FROM graph_run_receipts k "
-                "WHERE k.operation_id=run.operation_id AND k.category='work_experiment_kickoff' "
+                "WHERE k.operation_id=run.operation_id "
+                "AND k.category IN ('work_experiment_kickoff', 'work_auto_research_kickoff') "
                 "AND json_extract(k.payload_json,'$.phase')='card_pending' "
                 "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
                 "WHERE r.operation_id=run.operation_id AND r.category='work_experiment_card_raised' "

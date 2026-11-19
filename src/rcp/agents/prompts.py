@@ -591,6 +591,12 @@ tooling of any size, and short one-shot checks, such as a smoke test, a pilot
 that decides whether a study is worth planning, or a quick measurement that
 answers the human's question. Launch it, arm a watch, and report."""
 
+_AUTO_RESEARCH_ROUTING = """Suggest Auto-research when the human wants open-ended exploration, or a
+research question pursued over several Experiments where each next step
+depends on the last result. It runs on its own branch with a budget, and its
+orchestrator explores, plans, runs and merges back what it learns. A single
+designed study is one Experiment."""
+
 _CURRENT_OPERATIONAL_INSTRUCTIONS = """These current execution and watcher instructions replace earlier launch and external-watcher
 instructions. They grant no authority beyond the current task contract. Preserve the objective and
 completed work."""
@@ -1627,6 +1633,8 @@ Operational authority:
 {execution_rules}
 
 {_EXPERIMENT_ROUTING}
+
+{_AUTO_RESEARCH_ROUTING}
 
 {REPLY_STYLE}
 

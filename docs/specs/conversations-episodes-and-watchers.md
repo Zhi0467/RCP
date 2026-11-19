@@ -901,15 +901,15 @@ effects or reopen an old episode.
 
 ### Work-started episodes
 
-A member's ordinary Work chat, including its wakes, may start Auto-research, raise
-Experiment plan cards, and steer, extend and stop the episodes that member asks for, as the
+A member's ordinary Work chat, including its wakes, may raise episode plan cards
+and steer, extend and stop the episodes it started, as the
 member's own Runs controls would. The turn's authorizer authorizes each act.
 Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
 **Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
-<file>` raises a [plan card](authority-and-proposals.md#experiment-plan-cards)
+<file>` raises a [plan card](authority-and-proposals.md#episode-plan-cards)
 on the chat's own graph target instead of starting. The card appears when the
 turn's Patch lands, so the agent writes and fixes the node in the same turn.
 `--invocation-limit` may shorten the episode but never exceed the node's limit,
@@ -925,22 +925,22 @@ and tooling of any size, and short one-shot checks, stay in the chat with a
 launch and a watch. This is guidance; nothing caps a direct launch.
 
 **Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
---invocation-limit <n>` starts a new episode on a new branch from main, through
-the same start function as **Start** in Runs. It takes the fields the retired
-Auto-research card carried: the goal as the starting instruction, the turn
-budget, `--code-worktree on|off`, `--worktree-repository`, `--branch-name`, and
-the orchestrator's provider, model and effort. It first checks the orchestrator
-provider's readiness for the member, as the card's ask did, and refuses with the
-same codes (`provider_not_ready`, `machine_not_found`,
-`auto_research_profile_unavailable`, `branch_name_taken`, `branch_name_invalid`).
-Any other invalid start, such as one from a Space thread, is refused with
-`auto_research_not_started`. A chat on a graph branch is refused with
-`auto_research_starts_from_main`.
+--invocation-limit <n>` records a request and answers `card_pending`. The card
+appears after the Work turn succeeds; only the human's Start creates the episode
+on its own branch from main. A branch chat is refused early with
+`auto_research_starts_from_main`; a turn without the member Work and ask grants
+is refused with `auto_research_card_unavailable`. The human may edit the starting
+instruction, budget, branch name, code worktree and repository, and orchestrator
+provider, model and effort. Readiness is checked at Start, with correction and
+settlement rules owned by the [plan card spec](authority-and-proposals.md#episode-plan-cards).
+Open-ended exploration and questions pursued across several dependent Experiments
+route to Auto-research; a single designed study routes to Experiment.
 
-Both starts derive the episode id from the turn's oldest attempt and the command
-key, so Resume or Retry replays the same episode, and record a receipt on the
-turn. The episode's root request names the starting turn, so Runs shows
-**Started from** that chat.
+Both kickoffs persist receipts on the turn. Resume or Retry recovers the same
+card; an older Auto-research receipt whose episode already exists answers
+`existing`. The card request determines the episode id. The tapping member
+authorizes the start, and the episode's root names the raising turn, so Runs
+shows **Started from** that chat.
 
 **Controls.** The chat controls only an episode it started: its root names a
 turn of this chat as **Started from**, directly or through the episode it

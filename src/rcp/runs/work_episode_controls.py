@@ -400,77 +400,101 @@ def handle_work_auto_research_kickoff(
     request: EpisodeCommandRequest,
     arguments: AutoResearchKickoffArguments,
 ) -> CommandResponse:
-    """Start one Auto-research episode on a new branch, or answer a replay of the same key."""
+    """Record an Auto-research plan card, preserving old direct-start receipt replays."""
 
-    controls = execution.episode_controls
-    if mailbox is None or controls is None:
-        return _unavailable(request, "Auto-research kickoff is unavailable for this turn.")
+    from rcp.runs.questions import work_ask_authorized
+    from rcp.runs.work_experiment_commands import member_work_chat_turn
+
+    if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
+        return _refuse(
+            request,
+            "This turn cannot raise an Auto-research plan card.",
+            "auto_research_card_unavailable",
+        )
+    task = execution.store.agent_task(execution.operation_id)
+    assert task is not None
+    if task.graph_target.kind != "main":
+        return _refuse(
+            request,
+            "Auto-research branches from main; propose it from a chat on main.",
+            "auto_research_starts_from_main",
+        )
+    if mailbox is None or execution.experiment_card_raiser is None:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="unavailable",
+            message="Auto-research plan cards are unavailable for this turn.",
+            result={"code": "auto_research_card_unavailable"},
+        )
     try:
         goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
     except ValueError as exc:
-        return _refuse(request, str(exc), None)
+        return _refuse(request, str(exc), "auto_research_goal_invalid")
     store = execution.store
     lineage = turn_lineage(execution)
-    episode_id = turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
+    kickoff_id = turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
     intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
-    previous = previous_receipt(store, lineage, _AUTO_RESEARCH_RECEIPT, episode_id=episode_id)
+    episode = store.episode(kickoff_id)
+    previous = previous_receipt(
+        store,
+        lineage,
+        _AUTO_RESEARCH_RECEIPT,
+        **({"episode_id": kickoff_id} if episode is not None else {"kickoff_id": kickoff_id}),
+    )
     if previous is not None and previous.get("intent_sha256") != intent:
         return _refuse(
-            request, "This key already started a different Auto-research; use a new key.", None
+            request,
+            "This key already proposed a different Auto-research; use a new key.",
+            "auto_research_key_conflict",
         )
-    episode = store.episode(episode_id)
-    disposition = "existing"
-    if episode is None:
-        start = WorkAutoResearchStart(
-            source_operation_id=execution.operation_id,
-            episode_id=episode_id,
-            goal=goal,
-            invocation_ceiling=arguments.invocation_limit,
-            code_worktree=arguments.code_worktree,
-            worktree_repository=arguments.worktree_repository,
-            branch_name=arguments.branch_name,
-            provider=arguments.provider,
-            model=arguments.model,
-            reasoning=arguments.reasoning,
+    if episode is not None:
+        return _ok(
+            request,
+            disposition="existing",
+            episode_id=episode.episode_id,
+            branch_id=episode.graph_target.branch_id,
+            status=episode.status,
+            invocation_limit=episode.invocation_ceiling,
         )
-        try:
-            controls.start_auto_research(start)
-        except EpisodeRefused as exc:
-            return _refuse(request, str(exc), exc.code)
-        except ValueError as exc:
-            return _refuse(request, str(exc), "auto_research_not_started")
+    if (
+        previous_receipt(
+            store, (execution.operation_id,), _AUTO_RESEARCH_RECEIPT, kickoff_id=kickoff_id
+        )
+        is None
+    ):
         store.record_agent_task_receipt(
             execution.operation_id,
             _AUTO_RESEARCH_RECEIPT,
-            {"episode_id": episode_id, "intent_sha256": intent},
+            {
+                "phase": "card_pending",
+                "kickoff_id": kickoff_id,
+                "intent_sha256": intent,
+                "starting_instruction": goal,
+                "invocation_ceiling": arguments.invocation_limit,
+                "code_worktree": arguments.code_worktree,
+                "worktree_repository": arguments.worktree_repository,
+                "branch_name": arguments.branch_name,
+                "provider": arguments.provider,
+                "model": arguments.model,
+                "reasoning": arguments.reasoning,
+            },
             tier="diagnostic",
         )
-        episode = store.episode(episode_id)
-        assert episode is not None
-        disposition = "created"
-    store.record_agent_task_event(
-        execution.operation_id, f"Auto-research {disposition}: episode {episode_id}."
-    )
-    return _ok(
-        request,
-        disposition=disposition,
-        episode_id=episode_id,
-        branch_id=episode.graph_target.branch_id,
-        status=episode.status,
-        invocation_limit=episode.invocation_ceiling,
-    )
+    return _ok(request, disposition="card_pending")
 
 
 def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
     """The Auto-research kickoff and shared episode-control usage of a Work turn."""
+
+    from rcp.runs.approval_cards import APPROVAL_OUTCOMES
 
     add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
     message = episode_control_usage(
         EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(KICKOFF_LIMIT,)
     )
     return (
-        "Auto-research kickoff starts a new episode on a new graph branch, only when the "
-        "human asks you to start Auto-research: "
+        "Auto-research plan card: propose a new episode for the human to review, edit, and Start, "
+        "only when the human asks for Auto-research: "
         f"`{client} {auto_research_kickoff_usage()}`. Write the goal file first, as for an "
         "Experiment goal: what the human asked the orchestrator to pursue, with the specifics "
         "from this chat. The limit is the orchestrator's turn budget. --code-worktree on gives "
@@ -478,7 +502,13 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         "--branch-name names the branch. Omit any of these, and the provider, model, and "
         "effort, for Settings. Ready orchestrator profiles:\n"
         f"{orchestrator_profiles}\n"
-        "Afterwards tell the human what you started (goal, limit, branch).\n"
+        "A successful command returns card_pending; finish your turn so RCP raises the card "
+        "after your Patch lands. Nothing starts until the human taps Start. The question "
+        "snapshot shows the card outcome: "
+        + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
+        + " To revise the plan after the human comments, "
+        "use a new key; the new card replaces the old one. Once approved, tell the human "
+        "what started (goal, limit, branch).\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other.\n"
         f"- `{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
