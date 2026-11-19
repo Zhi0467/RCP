@@ -10,6 +10,7 @@ import type {
   GraphWatcherRecord,
   GraphNode,
   GraphTargetRef,
+  ProviderId,
   WatcherRecord,
 } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
@@ -347,11 +348,12 @@ export function experimentRunConfig(
   baseMachine: string,
 ): AgentRunConfig | null {
   const request = (run.currentTask ?? run.taskGroup?.latest)?.request;
-  if (!request?.provider) return null;
+  const agent = request?.provider ? request : run.control.operational.session;
+  if (!agent.provider) return null;
   return {
-    provider: request.provider,
-    model: request.model ?? "",
-    reasoning: request.reasoning ?? "",
+    provider: agent.provider as ProviderId,
+    model: agent.model ?? "",
+    reasoning: agent.reasoning ?? "",
     run_on: baseMachine,
   };
 }

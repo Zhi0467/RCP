@@ -750,4 +750,18 @@ test("the next episode keeps the agent the latest episode ran on", () => {
     experimentRunConfig(buildExperimentRun(node, control({}, {}), [], []), "backend"),
     null,
   );
+
+  const aged = control({ episode_id: episodeId }, {});
+  aged.operational.session = {
+    ...aged.operational.session,
+    provider: "claude",
+    model: "opus",
+    reasoning: "medium",
+  };
+  assert.deepEqual(experimentRunConfig(buildExperimentRun(node, aged, [], []), "backend"), {
+    provider: "claude",
+    model: "opus",
+    reasoning: "medium",
+    run_on: "backend",
+  });
 });
