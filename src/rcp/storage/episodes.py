@@ -47,6 +47,7 @@ from rcp.storage.models import (
     _required_timestamp,
 )
 from rcp.storage.rows import _agent_task_control_flags
+from rcp.storage.wake_inputs import queue_wake_input
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -189,8 +190,28 @@ class EpisodeStoreMixin(StoreMixinBase):
                             "question": row["question"],
                         }
                     )
+            held: dict[str, dict[str, int]] = {key: {} for key in statuses}
+            for row in connection.execute(
+                f"SELECT mail.episode_id,mail.delivery_diagnostic,COUNT(*) "
+                f"FROM auto_research_messages AS mail "
+                f"LEFT JOIN graph_runs AS run ON run.operation_id=mail.delivery_operation_id "
+                f"WHERE mail.recipient_kind='chat' AND mail.recipient_chat_id=? "
+                f"AND mail.delivery_diagnostic IS NOT NULL "
+                f"AND (mail.delivered_at IS NULL OR run.status='queued') "
+                f"AND mail.episode_id IN ({placeholders}) "
+                f"GROUP BY mail.episode_id,mail.delivery_diagnostic",
+                (chat_id, *chains),
+            ):
+                chain_id = chains[row[0]]
+                if chain_id in held:
+                    held[chain_id][row[1]] = held[chain_id].get(row[1], 0) + row[2]
             for chain_id, status in statuses.items():
                 status["open_questions"] = questions[chain_id]
+                if held[chain_id]:
+                    status["undelivered_mail"] = [
+                        {"code": code, "items": count}
+                        for code, count in sorted(held[chain_id].items())
+                    ]
             return list(statuses.values())
 
     def episode_started_from_chat(self, episode_id: str) -> EpisodeStartedFromChat | None:
@@ -3607,10 +3628,10 @@ def append_episode_parent_mail(
     parent = EpisodeStoreMixin._episode_started_from_chats(connection, [episode_id]).get(episode_id)
     if parent is None:
         return
-    mode = connection.execute(
-        "SELECT mode FROM episodes WHERE episode_id=?", (episode_id,)
-    ).fetchone()[0]
-    connection.execute(
+    mode, project_id = connection.execute(
+        "SELECT mode,project_id FROM episodes WHERE episode_id=?", (episode_id,)
+    ).fetchone()
+    inserted = connection.execute(
         """INSERT OR IGNORE INTO auto_research_messages
         (message_id,episode_id,sender_role,sender_task_id,recipient_kind,recipient_chat_id,
          item_kind,source_ref,body,created_at)
@@ -3626,4 +3647,6 @@ def append_episode_parent_mail(
             body,
             created_at,
         ),
-    )
+    ).rowcount
+    if inserted:
+        queue_wake_input(connection, project_id, "chat_mail", parent.chat_id)

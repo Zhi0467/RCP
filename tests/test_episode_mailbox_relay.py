@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -171,3 +172,62 @@ def test_experiment_mail_waits_for_the_next_invocation_and_an_ended_chain_refuse
     with pytest.raises(EpisodeNotRunning):
         mail("late")
     assert store.auto_research_message("late") is None
+
+
+def _settled(member: _Member) -> None:
+    workers = list(member.background._workers.values())
+    wait_until(lambda: not any(worker.is_alive() for worker in workers))
+
+
+def _chat_wakes(store, chat_id: str) -> list[dict]:
+    with store.connection() as connection:
+        return [
+            {"operation_id": row[0], "item_ids": json.loads(row[1])}
+            for row in connection.execute(
+                "SELECT operation_id,json_extract(request_json,'$.chat_wake.item_ids') "
+                "FROM graph_runs WHERE json_extract(request_json,'$.chat_id')=? "
+                "AND json_extract(request_json,'$.chat_wake') IS NOT NULL",
+                (chat_id,),
+            )
+        ]
+
+
+def test_a_child_question_wakes_the_idle_parent_chat_once(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    member = _Member(manifest, tmp_path, monkeypatch)
+    store = member.store
+    member.provider_ready()
+    member.settling_orchestrator()
+    episode_id = _started(member)
+    root_id = store.episode(episode_id).root_operation_id  # type: ignore[union-attr]
+    assert root_id is not None
+    wait_for_task(store, root_id, expect="succeeded")
+    _settled(member)
+
+    question = _orchestrator_question(member, episode_id, root_id, "dataset")
+    item_id = f"episode:{episode_id}:question:{question.question_id}"
+    wait_until(lambda: _chat_wakes(store, THREAD_CHAT))
+    [wake] = _chat_wakes(store, THREAD_CHAT)
+    assert wake["item_ids"] == [item_id]
+    assert store.pending_episode_mail("chat", THREAD_CHAT) == []
+    _orchestrator_question(member, episode_id, root_id, "dataset")
+    assert len(_chat_wakes(store, THREAD_CHAT)) == 1
+
+
+def test_a_child_pause_wakes_the_idle_parent_chat(manifest, tmp_path: Path, monkeypatch) -> None:
+    member = _Member(manifest, tmp_path, monkeypatch)
+    store = member.store
+    member.provider_ready()
+    member.settling_orchestrator()
+    episode_id = _started(member)
+    root_id = store.episode(episode_id).root_operation_id  # type: ignore[union-attr]
+    assert root_id is not None
+    wait_for_task(store, root_id, expect="succeeded")
+    _settled(member)
+    assert _chat_wakes(store, THREAD_CHAT) == []
+
+    store.end_episode_without_report(episode_id, ending="human_pause")
+    wait_until(lambda: _chat_wakes(store, THREAD_CHAT))
+    [wake] = _chat_wakes(store, THREAD_CHAT)
+    assert wake["item_ids"] == [f"episode:{episode_id}:pause:{episode_id}"]

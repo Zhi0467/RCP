@@ -654,8 +654,14 @@ class BackgroundAgentTasks:
             and task.status == "queued"
             and self.store.agent_task_dispatch_was_proven_not_started(operation_id)
         }
+        chat_wakes = [
+            task.operation_id
+            for task in self.store.pending_chat_wakes()
+            if self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+        ]
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
+                *chat_wakes,
                 *consolidation_dispatches,
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],

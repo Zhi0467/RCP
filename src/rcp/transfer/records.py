@@ -126,6 +126,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "bulletin_mention_observations",
         "bulletin_actor_reads",
         "bulletin_deltas",
+        "bulletin_mention_wakes",
         "comment_threads",
         "comment_posts",
         "comment_mentions",

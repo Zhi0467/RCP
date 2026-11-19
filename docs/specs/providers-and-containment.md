@@ -2027,6 +2027,16 @@ turns of the same actor to manage their own posts. Receipts make all three
 mutations replay-safe within each turn; fresh mutations share the existing
 transactional Stop fence.
 
+A new or edited post that mentions an idle Work chat or Auto-research
+orchestrator wakes it once per post (`bulletin_mention_wakes`, keyed by post and
+actor), after the post commits. A chat wakes through the shared chat wake
+admission with cause `bulletin_mention`; an orchestrator receives one lifecycle
+notice and wakes through the Auto-research lifecycle path. Only open mentions
+wake: never a post from a wake-caused turn, nor one the actor already answered
+in its thread. Each actor wakes at most once per `BULLETIN_WAKE_MIN_SECONDS`; a
+refused wake arms one later pass. Experiment loops and workers see mentions in
+their next delta.
+
 Launch deltas and `bulletin --read` include a mentions section first, newest
 first within the render budget, followed by member ids and names, agents/roster,
 and posts. Budget is allocated to mentions, posts, members, then agents. Agents
