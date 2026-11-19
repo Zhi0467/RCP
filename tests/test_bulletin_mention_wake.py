@@ -103,3 +103,26 @@ def test_a_mention_of_a_running_orchestrator_becomes_one_lifecycle_notice(tmp_pa
         "bulletin_wake_ineligible",
         "bulletin_wake_cooldown",
     }
+
+
+def test_a_bulletin_off_orchestrator_gets_no_mention_wake(tmp_path, monkeypatch):
+    store, episode, _root = _mailbox(tmp_path)
+    woken = []
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_delivery.reconcile_pending_auto_research_lifecycle",
+        lambda _background, *, episode_id: woken.append(episode_id),
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status='running',bulletin_enabled=0 WHERE episode_id=?",
+            (episode.episode_id,),
+        )
+    actor = f"episode:{episode.episode_id}"
+    post = _post(store, f"<@agent:{actor}> the shared data moved", "off")
+    background = _Background(store)
+    assert wake_bulletin_mentions(background, "project", post)[actor] == "bulletin_wake_ineligible"
+    assert woken == []
+    with store.connection() as connection:
+        assert not connection.execute(
+            "SELECT 1 FROM bulletin_mention_wakes WHERE actor_id=?", (actor,)
+        ).fetchall()

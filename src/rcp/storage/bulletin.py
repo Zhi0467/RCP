@@ -759,7 +759,7 @@ class BulletinStoreMixin(StoreMixinBase):
                 JOIN episodes AS episode ON episode.episode_id=chain.episode_id
                 WHERE episode.project_id=? AND episode.mode='auto_research'
                   AND episode.status='running' AND episode.stop_requested_at IS NULL
-                  AND episode.ending IS NULL LIMIT 1""",
+                  AND episode.ending IS NULL AND episode.bulletin_enabled=1 LIMIT 1""",
                 (actor_id.removeprefix("episode:"), project_id),
             ).fetchone()
             if live is None:
