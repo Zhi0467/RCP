@@ -334,7 +334,29 @@ class QuestionStoreMixin(StoreMixinBase):
                 "SELECT * FROM questions WHERE question_id=?", (question_id,)
             ).fetchone()
             append_question_attention(connection, updated, self.now())
+            if record.origin.owner_kind == "episode":
+                self._withdraw_relayed_copies(connection, record)
             return _question_record(updated)
+
+    def _withdraw_relayed_copies(
+        self, connection: sqlite3.Connection, record: QuestionRecord
+    ) -> None:
+        """Retire what a parent chat asked while woken by only this child question."""
+        item_id = f"episode:{record.origin.owner_id}:question:{record.question_id}"
+        rows = connection.execute(
+            """UPDATE questions SET withdrawn_readonly=1
+            WHERE project_id=? AND owner_kind='chat' AND state='pending'
+            AND withdrawn_readonly=0
+            AND json_extract(origin_json,'$.operation_id') IN (
+                SELECT operation_id FROM graph_runs
+                WHERE project_id=? AND json_extract(request_json,'$.chat_wake') IS NOT NULL
+                AND json_array_length(request_json,'$.chat_wake.item_ids')=1
+                AND json_extract(request_json,'$.chat_wake.item_ids[0]')=?
+            ) RETURNING *""",
+            (record.origin.project_id, record.origin.project_id, item_id),
+        ).fetchall()
+        for row in rows:
+            append_question_attention(connection, row, self.now())
 
     def reopen_unclaimed_answer(self, question_id: str, answer_revision: int) -> bool:
         """Return an answer to pending when the continuation it started failed.

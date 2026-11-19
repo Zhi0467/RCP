@@ -100,8 +100,17 @@ export type StackMemory = {
   held?: boolean;
 };
 
-/** The front card's place: the remembered card while it is listed, else the nearest one. */
-export function stackIndex(memory: StackMemory, order: readonly string[]): number {
+/**
+ * The front card's place: a card that newly asks the human, else the remembered card while
+ * it is listed, else the nearest one.
+ */
+export function stackIndex(
+  memory: StackMemory,
+  order: readonly string[],
+  asking: ReadonlySet<string> = new Set(),
+): number {
+  const arrived = order.findIndex((key) => asking.has(key) && !memory.order.includes(key));
+  if (arrived >= 0) return arrived;
   const kept = memory.front === undefined ? -1 : order.indexOf(memory.front);
   return kept >= 0 ? kept : Math.min(memory.index, Math.max(order.length - 1, 0));
 }
@@ -266,7 +275,8 @@ export function ApprovalCardStack({
     memory.order,
     keys.filter((key) => !putAway.includes(key)),
   );
-  const index = stackIndex(memory, order);
+  const asking = new Set(open.filter((card) => card.kind !== "run").map((card) => card.key));
+  const index = stackIndex(memory, order, asking);
   const folded = order.length === 0 && putAway.length > 0;
   const held = Boolean(memory.held) || order.length > 1;
   const shown: StackMemory = { order, index, front: order[index], later: putAway, held };

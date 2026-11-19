@@ -522,6 +522,9 @@ test("a refetch keeps the front card by key and falls back to the nearest when i
   assert.equal(stackIndex(memory, stackOrder(memory.order, ["a", "b", "c", "d"])), 1);
   assert.equal(stackIndex(memory, stackOrder(memory.order, ["a", "c", "d"])), 1);
   assert.equal(stackIndex(memory, stackOrder(memory.order, ["a"])), 0);
+  const asking = stackOrder(memory.order, ["a", "b", "c", "plan"]);
+  assert.equal(stackIndex(memory, asking, new Set(["plan"])), 3);
+  assert.equal(stackIndex({ ...memory, order: asking }, asking, new Set(["plan"])), 1);
 });
 
 test("Later on the last open card leaves every card put away, and a decided card drops out", () => {

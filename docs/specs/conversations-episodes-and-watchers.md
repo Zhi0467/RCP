@@ -1029,6 +1029,9 @@ cards require the human (`question_needs_human`). If answering the chain's last
 open question would need continuation turns, the parent receives
 `question_needs_continuation`; it does not allocate a new child budget. The human
 can answer and add turns through the existing question controls.
+When anyone resolves a child question, a pending question the parent asked in a
+wake turn caused by that question alone becomes withdrawn and read-only, so the
+human never answers a stale copy.
 
 `episode --message <id> --body-file <file>` also accepts a running Experiment
 chain. Its mail waits for the next invocation, which claims it in the episode's

@@ -231,3 +231,48 @@ def test_a_child_pause_wakes_the_idle_parent_chat(manifest, tmp_path: Path, monk
     wait_until(lambda: _chat_wakes(store, THREAD_CHAT))
     [wake] = _chat_wakes(store, THREAD_CHAT)
     assert wake["item_ids"] == [f"episode:{episode_id}:pause:{episode_id}"]
+
+
+def test_a_human_answer_to_the_child_withdraws_the_parents_relayed_copy(
+    manifest, tmp_path: Path, monkeypatch
+) -> None:
+    member = _Member(manifest, tmp_path, monkeypatch)
+    store = member.store
+    member.provider_ready()
+    member.settling_orchestrator()
+    episode_id = _started(member)
+    root_id = store.episode(episode_id).root_operation_id  # type: ignore[union-attr]
+    assert root_id is not None
+    wait_for_task(store, root_id, expect="succeeded")
+    _settled(member)
+    question = _orchestrator_question(member, episode_id, root_id, "dataset")
+    wait_until(lambda: _chat_wakes(store, THREAD_CHAT))
+    [wake] = _chat_wakes(store, THREAD_CHAT)
+    child_origin = question.origin
+    relayed = store.create_or_get_question(
+        origin=child_origin.model_copy(
+            update={
+                "owner_kind": "chat",
+                "owner_id": THREAD_CHAT,
+                "operation_id": wake["operation_id"],
+            }
+        ),
+        key="relay",
+        question="Which dataset?",
+    )
+    unrelated = store.create_or_get_question(
+        origin=child_origin.model_copy(
+            update={"owner_kind": "chat", "owner_id": THREAD_CHAT, "operation_id": root_id}
+        ),
+        key="other",
+        question="Anything else?",
+    )
+
+    answered = signed_in_client(member.app).post(
+        f"/api/projects/{member.project_id}/questions/{question.question_id}/answer",
+        json={"answer": "The small one"},
+    )
+
+    assert answered.status_code == 200, answered.text
+    assert store.get_question(relayed.question_id).withdrawn_readonly  # type: ignore[union-attr]
+    assert not store.get_question(unrelated.question_id).withdrawn_readonly  # type: ignore[union-attr]
