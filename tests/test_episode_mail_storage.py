@@ -187,3 +187,56 @@ def test_auto_research_children_report_only_to_their_orchestrator(tmp_path):
         "ending",
         "orchestrator",
     )
+
+
+def test_experiment_mail_reaches_the_continuation_and_stops_at_its_fence(tmp_path):
+    from rcp.storage import EpisodeRecord
+    from tests.test_auto_research_children_storage import _identity
+
+    store = AppStore(tmp_path / "store.sqlite3")
+    _answered(store)
+    human = _identity(store)
+
+    def episode(episode_id, continues=None, node="node-1"):
+        now = store.now()
+        return store.create_episode(
+            EpisodeRecord(
+                episode_id=episode_id,
+                project_id="project",
+                mode="experiment_loop",
+                control_node_id=node,
+                status="queued",
+                invocation_ceiling=2,
+                authorized_by=human,
+                created_at=now,
+                updated_at=now,
+                continues_episode_id=continues,
+                continuation_request_id="more" if continues else None,
+            )
+        )
+
+    first = episode("first")
+    store.record_episode_message(
+        AutoResearchMessageRecord(
+            message_id="late",
+            episode_id=first.episode_id,
+            sender_role="human",
+            authorized_by=human,
+            recipient_kind="episode",
+            body="Use the smaller batch.",
+            created_at=store.now(),
+        )
+    )
+    store.end_episode_without_report("first", ending="exhausted")
+    second = episode("second", continues="first")
+    store.request_episode_stop(second.episode_id)
+    assert store.claim_episode_mail("episode", "second", ["fenced"]) == []
+    third = episode("third", node="node-2")
+    assert store.claim_episode_mail("episode", "third", ["other"]) == []
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET stop_requested_at=NULL,status='running' WHERE episode_id='second'"
+        )
+    [claimed] = store.claim_episode_mail("episode", "second", ["invocation"])
+    assert (claimed.message_id, claimed.delivery_operation_id) == ("late", "invocation")
+    assert third.episode_id == "third"

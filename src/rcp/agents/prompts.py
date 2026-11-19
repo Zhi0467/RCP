@@ -4,6 +4,7 @@ import json
 import re
 import shlex
 import textwrap
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal
@@ -125,14 +126,29 @@ def _group_read_refs_line(context: GroupContext) -> str:
 
 
 EPISODE_MAILBOX_RULES = (
-    "Runs you started write to you here: their questions, pauses, and endings. "
+    "Runs you started write to you here: their questions, pauses, and endings. A run "
+    "asks you with its own `ask`; when a goal you write needs an answer from you, tell "
+    "the run to ask, and never forbid it to ask the human. "
     "Answer a question yourself when it does not need the human. Leave "
     "consequential decisions to the human: experiment design, upstream decisions, "
     "and starting runs that use significant compute. Ask the human in your reply "
     "and pass their answer down. Never invent an answer the human did not give."
 )
 
-EPISODE_MAILBOX_CHILD_RULE = "Your questions and your ending also reach the agent that started you."
+
+def episode_mailbox_child_rule(allowed_verbs: Iterable[str], *, parent_chat: bool) -> str:
+    """How a child started from a chat reaches that chat; empty for any other episode."""
+
+    if not parent_chat:
+        return ""
+    if "ask" not in allowed_verbs:
+        return "Your ending also reaches the agent that started you."
+    return (
+        f"The agent that started you reads your questions first: `{COMMAND_CLIENT} ask` "
+        "reaches it, and it answers you or asks the human for you. Use `ask` for any "
+        "question to the agent that started you or to the human; no other command reaches "
+        "them. Your ending also reaches the agent that started you."
+    )
 
 
 REPOSITORIES_READ_RULE = (

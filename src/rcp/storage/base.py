@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -51,9 +52,12 @@ from rcp.storage.resource_versions import (
     migrate_episode_report_deletion,
     migrate_resource_versions,
 )
+from rcp.storage.wake_inputs import WakeInputKind, take_wake_inputs
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+
+logger = logging.getLogger(__name__)
 
 
 def _weak_changed(store: AppStoreBase) -> Callable[[str, bool], None]:
@@ -69,6 +73,8 @@ def _weak_changed(store: AppStoreBase) -> Callable[[str, bool], None]:
 
 class AppStoreBase:
     """Connection ownership, schema initialization, and the clock every mixin shares."""
+
+    on_wake_input: Callable[[str, WakeInputKind, str], None] | None = None
 
     _STORAGE_SCHEMA_MIGRATIONS: ClassVar[tuple[tuple[int, str], ...]] = (
         (1, "episode_lineage_v1"),
@@ -443,18 +449,22 @@ class AppStoreBase:
             cached = cache.acquire(self.path, self._connect)
         connection = cached[1] if cached is not None else self._connect()
         discard = False
+        committed: list[tuple[str, WakeInputKind, str]] = []
         try:
             connection.rollback()
+            take_wake_inputs(connection)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA legacy_alter_table = OFF")
             connection.row_factory = sqlite3.Row
             yield connection
             connection.commit()
+            committed = take_wake_inputs(connection)
             # Bound instrumentation callbacks must not retain a dropped store.
             connection.set_trace_callback(None)
             connection.set_authorizer(None)
         except BaseException:
             discard = True
+            take_wake_inputs(connection)
             with suppress(sqlite3.Error):
                 connection.rollback()
             raise
@@ -463,6 +473,17 @@ class AppStoreBase:
                 connection.close()
             else:
                 cache.release(cached[0], discard=discard)
+        for project_id, kind, ref in committed:
+            self._wake_input_committed(project_id, kind, ref)
+
+    def _wake_input_committed(self, project_id: str, kind: WakeInputKind, ref: str) -> None:
+        hook = self.on_wake_input
+        if hook is None:
+            return
+        try:
+            hook(project_id, kind, ref)
+        except Exception:
+            logger.exception("Could not hand %s %s to its wake owner", kind, ref)
 
     def online_snapshot(self, destination: Path) -> None:
         """Copy this live store with SQLite's online backup API and no app-wide lock."""
@@ -2932,6 +2953,7 @@ class AppStoreBase:
             ("recipient_chat_id", "TEXT"),
             ("item_kind", "TEXT NOT NULL DEFAULT 'message'"),
             ("source_ref", "TEXT"),
+            ("delivery_diagnostic", "TEXT"),
         ):
             self._ensure_column(connection, "auto_research_messages", column, definition)
         schema = [
@@ -2946,9 +2968,11 @@ class AppStoreBase:
             for kind, _name, _table, sql in schema:
                 if kind in {"index", "trigger"}:
                     connection.execute(sql)
+        connection.execute("DROP INDEX IF EXISTS episode_mail_pending")
         connection.execute(
-            "CREATE INDEX IF NOT EXISTS episode_mail_pending "
-            "ON auto_research_messages(recipient_kind, recipient_chat_id, delivered_at, created_at)"
+            "CREATE INDEX episode_mail_pending ON auto_research_messages"
+            "(recipient_kind, recipient_chat_id, created_at, message_id) "
+            "WHERE delivered_at IS NULL"
         )
 
     @classmethod

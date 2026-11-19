@@ -991,11 +991,32 @@ An idle parent receives one ordinary Work wake for a bounded mail batch. Storage
 atomically selects the latest settled usable chat session and stage, inserts the
 wake and claims the items. An occupied chat claims pending mail during its next
 turn's staging. Wakes use a deterministic operation id, a cooldown and a per-child
-chain cap equal to the child's invocation ceiling. Resolved questions alone do
-not wake a chat, and items originating from a wake-caused turn cannot wake it.
-Items held back by the cap or by their cause wait for the chat's next turn.
-Startup and task settlement reconcile pending items and admitted but unlaunched
-wakes through the ordinary task launcher; a cooldown refusal arms one later pass.
+chain cap equal to the child's invocation ceiling. An item never wakes the chat
+when its question is already resolved, when a wake-caused turn wrote it (a chat
+wake or an Auto-research wake), or when the parent itself caused it: an ending
+names the parent turn that sent `episode --stop` as its sender. Such items, and
+items held back by the cap, wait for the chat's next ordinary turn; wake
+selection reads pending items in keyset pages, so they never hide a newer
+wake-eligible item.
+
+Every committed mail item asks for its chat's reconciliation once its write
+commits, so a child's question, pause or ending wakes the idle parent at once.
+Task settlement reconciles only the settled turn's chat. Startup preserves
+admitted wakes proven not started, launches them, and visits every chat with
+pending mail, longest-waiting first. A cooldown refusal arms one later pass for
+that chat. Any other refusal or launch failure stays on the held-back items as
+a structured code, and the parent's child status lists it as `undelivered_mail`
+(code and item count) while the items wait.
+
+Mail to an Experiment belongs to its chain. A message accepted during an
+episode's final invocation reaches the first invocation of its human-authorized
+continuation; a Stop-fenced episode claims no new mail.
+
+A child started from a chat is told that `ask` reaches that chat first, and
+that the chat answers or asks the human; the rule renders only when the
+episode was started from a chat, and names `ask` only when the turn holds it.
+The parent's usage says a child asks with its own `ask`. A refused verb names
+the verbs the turn holds (`verb_not_granted`, `allowed_verbs`).
 Mail remains in durable storage; a recovery attempt stages the items its lineage
 claimed in `episode-mail.json`, and the prompt points to it with item and
 question counts. The read context of every chat that started episodes lists

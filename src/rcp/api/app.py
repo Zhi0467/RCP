@@ -174,7 +174,12 @@ from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
-from rcp.runs.episode_mailbox import reconcile_pending_chat_mail
+from rcp.runs.episode_mailbox import (
+    reconcile_chat_mail_recipient,
+    reconcile_pending_chat_mail,
+    reconcile_settled_chat_mail,
+    wake_bulletin_mentions,
+)
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
@@ -1563,13 +1568,29 @@ def create_app(
                         )
             finally:
                 try:
-                    reconcile_pending_chat_mail(background_tasks)
+                    reconcile_settled_chat_mail(background_tasks, execution.operation_id)
                 except Exception:
                     logger.exception("Could not reconcile chat mailbox after task settlement")
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
 
     background_tasks.on_task_settled = after_task_settled
+
+    def wake_input_committed(project_id: str, kind: str, ref: str) -> None:
+        if kind == "chat_mail":
+            background_tasks.schedule_deferred_pass(
+                f"chat_mail:{project_id}:{ref}",
+                0,
+                lambda: reconcile_chat_mail_recipient(background_tasks, project_id, ref),
+            )
+        else:
+            background_tasks.schedule_deferred_pass(
+                f"bulletin_post:{project_id}:{ref}",
+                0,
+                lambda: wake_bulletin_mentions(background_tasks, project_id, ref),
+            )
+
+    store.on_wake_input = wake_input_committed
     background_tasks.on_auto_research_admission_exhausted = lambda episode: (
         reconcile_auto_research_episode(
             episode.episode_id,

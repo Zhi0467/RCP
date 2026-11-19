@@ -416,7 +416,7 @@ class WorkCommandHandler:
         if request.verb not in self.allowed_verbs:
             if request.verb in _CARD_ROUTES and self.approval_card_member is not None:
                 return _refuse(request, _CARD_ROUTES[request.verb], "approval_card_required")
-            return _not_granted(request, graph_history)
+            return _not_granted(request, graph_history, self.allowed_verbs)
         if request.verb == "projects":
             return self._projects(request, identity)
         if graph_history:
@@ -617,9 +617,13 @@ _CARD_ROUTES: dict[str, str] = {
 }
 
 
-def _not_granted(request: CommandRequest, graph_history: bool) -> CommandResponse:
-    code = "graph_history_verb_not_granted" if graph_history else None
-    return _refuse(request, "This turn does not authorize that command.", code)
+def _not_granted(
+    request: CommandRequest, graph_history: bool, allowed_verbs: frozenset[str]
+) -> CommandResponse:
+    code = "graph_history_verb_not_granted" if graph_history else "verb_not_granted"
+    refused = _refuse(request, "This turn does not authorize that command.", code)
+    refused.result["allowed_verbs"] = sorted(allowed_verbs)
+    return refused
 
 
 def _refuse(request: CommandRequest, message: str, code: str | None = None) -> CommandResponse:
