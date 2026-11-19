@@ -1003,7 +1003,7 @@ def test_codex_exec_message_is_in_between_once_codex_acts_and_the_last_one_answe
         return [
             (event.event, event.text, event.status.message if event.status else None)
             for event in step.events
-            if event.event != "raw"
+            if event.event != "raw" or event.status is not None
         ]
 
     def message(text: str) -> dict:
@@ -1011,7 +1011,7 @@ def test_codex_exec_message_is_in_between_once_codex_acts_and_the_last_one_answe
 
     assert said(message("Checking.")) == []
     started = {"type": "item.started", "item": {"type": "command_execution", "command": "ls"}}
-    assert said(started) == [("message", "Checking.", "Checking.")]
+    assert said(started) == [("raw", "", "Checking.")]
     assert said(message("Because X.")) == []
     assert said({"type": "turn.completed"}) == [("answer", "Because X.", None)]
 

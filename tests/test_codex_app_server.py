@@ -772,7 +772,7 @@ def test_app_server_commentary_is_an_in_between_message_and_never_the_answer(tmp
     commentary = {"type": "agentMessage", "id": "m1", "text": "Checking.", "phase": "commentary"}
     assert _said(turn.receive_line(_root_item("item/completed", commentary))) == []
     released = turn.receive_line(_root_item("item/started", {"type": "commandExecution"}))
-    assert _said(released) == [("message", "Checking.", "Checking.")]
+    assert _said(released) == [("raw", "", "Checking.")]
     final = {"type": "agentMessage", "id": "m2", "text": "Because X.", "phase": "final_answer"}
     assert _said(turn.receive_line(_root_item("item/completed", final))) == [
         ("answer", "Because X.", None)

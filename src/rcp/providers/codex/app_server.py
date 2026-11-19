@@ -494,9 +494,7 @@ class _CodexAppServerTurn(ProviderTurn):
         if method == "item/started" and self._held_commentary is not None:
             text, self._held_commentary = self._held_commentary, None
             step = self._notification(method, params)
-            released = ProviderStreamEvent(
-                event="message", text=text, status=AgentStatusDelta(message=text)
-            )
+            released = ProviderStreamEvent(event="raw", status=AgentStatusDelta(message=text))
             return replace(step, events=(released, *step.events))
         if method in {"item/started", "item/completed"}:
             item = params.get("item")

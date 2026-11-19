@@ -628,11 +628,7 @@ class _CodexExecTurn(_JsonlProviderTurn):
         events: list[ProviderStreamEvent] = []
         if kind == "item.started" and self._held_answer is not None:
             text, self._held_answer = self._held_answer, None
-            events.append(
-                ProviderStreamEvent(
-                    event="message", text=text, status=AgentStatusDelta(message=text)
-                )
-            )
+            events.append(ProviderStreamEvent(event="raw", status=AgentStatusDelta(message=text)))
         for event in step.events:
             if event.event == "answer" and kind == "item.completed":
                 self._held_answer = event.text
