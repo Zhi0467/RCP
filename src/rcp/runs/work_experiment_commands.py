@@ -253,7 +253,7 @@ def _handle_work_experiment_kickoff(
             "A Work turn starts the Experiment on its own graph; omit the branch options."
         )
     if arguments.goal_file is None:
-        return refuse("Experiment kickoff from Work requires --goal-file.")
+        return refuse("An Experiment plan card from Work requires --goal-file.")
     if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
         return refuse(
             "This turn cannot raise an Experiment plan card.", "experiment_card_unavailable"
@@ -262,7 +262,7 @@ def _handle_work_experiment_kickoff(
         return CommandResponse(
             request_id=request.request_id,
             status="unavailable",
-            message="Experiment kickoff is unavailable for this turn.",
+            message="Experiment plan cards are unavailable for this turn.",
         )
     try:
         goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
@@ -400,7 +400,7 @@ def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, node_id: str
 
 
 def work_experiment_command_usage(client: str, profile_choices: str) -> str:
-    """The Experiment kickoff and human-pause resume usage of a Work turn granted ``episode``."""
+    """The Experiment plan card and human-pause resume usage of a Work turn granted ``episode``."""
 
     closed = json.dumps(sorted(CLOSED_EXPERIMENT_STATUSES))
     return (
@@ -412,12 +412,13 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "episode_id. Never tell the human to press a button for it: the episode resumes its "
         "own session with its unused turns once this reply ends, after your Patch lands. Say "
         "so in your reply. To change an Experiment and run it again, stop it, fix the "
-        "Experiment in your Patch, and start a new episode in a later turn once the loop "
-        "status shows it stopped.\n"
-        "Experiment kickoff raises a plan card for a new episode: only when the human asks you "
+        "Experiment in your Patch, and propose it again on a new plan card in a later turn once "
+        "the loop status shows it stopped.\n"
+        "Experiment plan card: propose a new episode for the human to review, edit, and Start. "
+        "Propose one only when the human asks you "
         "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
         "paused episode should resume instead. Otherwise suggest one in your reply. "
-        "Before kickoff, audit the Experiment and every node one edge away (its Hypotheses, "
+        "Before proposing, audit the Experiment and every node one edge away (its Hypotheses, "
         "Decisions, Blockers, and Evidence). Write or fix the Experiment and its neighbors in "
         "this same turn's Patch: graph edits land when the turn ends, and the card appears "
         "then, drawn from the settled graph. A node that is missing or not an Experiment by "
@@ -432,13 +433,13 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "the Experiment's own invocation limit; it defaults to that limit. Pick the provider, "
         "model, and effort that fit the work, or omit them for Settings. Ready profiles:\n"
         f"{profile_choices}\n"
-        "Kickoff answers card_pending and starts nothing. The run starts only when a human "
+        "The command only proposes: it answers card_pending and starts nothing. The run starts only when a human "
         "presses Start on the card, after reviewing and possibly editing the goal, limit, and "
         "profile. The same key and arguments replay the same request after a Resume or Retry. "
         "Tell the human the plan card will appear when this reply ends. The question snapshot "
         "shows the card's outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
-        + " To raise a card again, kick off again with a new key. Once the card is approved, "
+        + " To revise the plan after the human comments, run the command again with a new key; the new card replaces the old one. Once the card is approved, "
         "tell the human what started (node, goal, limit, profile) and arm a "
         f'watch.json graph item {{"node_id":"<node-id>","status_in":{closed}}} so this chat '
         "resumes when the Experiment closes."
