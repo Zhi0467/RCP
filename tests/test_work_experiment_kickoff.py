@@ -187,9 +187,9 @@ def _plan_card(plan, chat_id="shared-chat", *, key="first", **turn):
     return card
 
 
-def _crash_before_card(plan, key):
+def _crash_before_card(plan, key, chat_id="shared-chat"):
     """A turn that asked for a card and succeeded, then lost the process before the hook."""
-    execution, call = _turn(plan, f"turn-{key}", chat_id="shared-chat")
+    execution, call = _turn(plan, f"turn-{key}", chat_id=chat_id)
     assert call(_kickoff(key)).result["disposition"] == "card_pending"
     plan.store.complete_agent_task(
         execution.operation_id, applied_revision=None, result={"messages": []}
@@ -720,22 +720,29 @@ def test_auto_research_oversized_edit_keeps_card_pending(plan):
     assert plan.store.episodes(plan.project_id, limit=None) == []
 
 
-def test_startup_card_failure_does_not_abort_other_tasks_or_repeat(plan):
+def test_startup_card_failure_does_not_abort_other_tasks_and_retries_next_startup(plan):
     _crash_before_card(plan, "broken")
-    _crash_before_card(plan, "healthy")
+    _crash_before_card(plan, "healthy", chat_id="other-chat")
     background = plan.app.state.background_tasks
+    failing = {"turn-broken"}
 
     def execution_for(task):
-        if task.operation_id == "turn-broken":
-            raise ValueError("broken task")
+        if task.operation_id in failing:
+            raise ValueError("transient failure")
         return background.recorded_execution(task)
 
     raise_pending_experiment_cards(plan.store, execution_for)
-    assert plan.store.pending_experiment_card_tasks() == []
+    assert [task.operation_id for task in plan.store.pending_experiment_card_tasks()] == [
+        "turn-broken"
+    ]
     assert any(event.level == "warning" for event in plan.store.agent_task_events("turn-broken"))
-    assert len(_cards(plan, "shared-chat")) == 1
+    assert len(_cards(plan, "other-chat")) == 1
+    assert _cards(plan, "shared-chat") == []
+    failing.clear()
     raise_pending_experiment_cards(plan.store, execution_for)
+    assert plan.store.pending_experiment_card_tasks() == []
     assert len(_cards(plan, "shared-chat")) == 1
+    assert len(_cards(plan, "other-chat")) == 1
 
 
 def test_auto_research_invalid_worktree_edit_can_be_corrected(plan, monkeypatch):

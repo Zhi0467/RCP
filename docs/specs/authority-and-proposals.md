@@ -484,6 +484,6 @@ replays before any provider readiness probe.
 
 Startup card recovery reads at most 1,000 succeeded tasks from pending kickoff
 receipts per pass. A task failure is logged and recorded as
-`plan_card_raise_failed` in its task events, and its kickoffs are marked raised;
-other tasks continue. Both kickoff kinds share receipt recording, while the
+`plan_card_raise_failed` in its task events; its kickoffs stay pending, so the
+next startup retries them, and other tasks continue. Both kickoff kinds share receipt recording, while the
 raiser accepts older receipt field names.

@@ -504,7 +504,10 @@ def _newer_card_for(store: AppStore, task: AgentTaskRecord, chat_id: str, subjec
 def raise_pending_experiment_cards(
     store: AppStore, execution_for: Callable[[AgentTaskRecord], AgentTaskExecution]
 ) -> None:
-    """Raise the plan cards a crash or a failed hook left behind, oldest turn first."""
+    """Raise the plan cards a crash or a failed hook left behind, oldest turn first.
+
+    A failure leaves the card pending for the next startup and records why.
+    """
     for task in store.pending_experiment_card_tasks():
         try:
             execution = execution_for(task)
@@ -517,10 +520,6 @@ def raise_pending_experiment_cards(
                 f"plan_card_raise_failed: {exc}",
                 level="warning",
             )
-            for category in (_RECEIPT, _AUTO_RESEARCH_RECEIPT):
-                for receipt in store.agent_task_receipts_by_category(task.operation_id, category):
-                    if receipt.payload.get("phase") == "card_pending":
-                        _mark_raised(store, task.operation_id, str(receipt.payload["kickoff_id"]))
 
 
 def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, subject: str) -> None:
