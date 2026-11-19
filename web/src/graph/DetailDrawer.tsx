@@ -1,6 +1,7 @@
 import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
 import { chosenWorktreeRepository, worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
   canStartExperiment,
@@ -955,7 +956,7 @@ export function DetailDrawer({
                     {presentation.context.map((item) => (
                       <div key={item.key}>
                         <dt>{item.label}</dt>
-                        <dd>{formatValue(item.value, glossaryIndex)}</dd>
+                        <dd>{formatContextValue(item.value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -1233,6 +1234,15 @@ function nodeEditFieldError(field: NodeEditField, value: string): string | null 
       : `Enter a number of at least ${field.min}.`;
   }
   return null;
+}
+
+function formatContextValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {
+  if (typeof value !== "string") return formatValue(value, glossaryIndex);
+  return (
+    <div className="chat-markdown">
+      <MarkdownAnswer text={value} glossaryIndex={glossaryIndex} />
+    </div>
+  );
 }
 
 function formatValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {

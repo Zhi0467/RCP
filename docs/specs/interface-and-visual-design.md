@@ -148,6 +148,7 @@ link waiting in the desktop app, passes that owner's dismiss action instead of a
 **Why:** separate banner implementations developed inconsistent dismiss controls.
 Some had none, and the gaps recurred.
 
+Node context fields render as markdown, with headings at body size.
 Glossary definitions are inline, without a destination. Cached projects paint
 immediately and reconcile in the background.
 Mutation availability and cache boundaries follow
