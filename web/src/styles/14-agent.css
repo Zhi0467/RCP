@@ -980,6 +980,17 @@
 .approval-card.plan .approval-actions .button.secondary:hover:not(:disabled) {
   color: var(--ink);
 }
+.episode-run-card .approval-title a {
+  color: inherit;
+  text-decoration: none;
+}
+.episode-run-card .approval-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.episode-run-card .campaign-reauthorize input {
+  width: 64px;
+}
 .approval-card:not([data-state="pending"]) .question-state {
   flex: 0 1 auto;
   max-width: 50%;
@@ -1397,6 +1408,13 @@
   .approval-card[data-state="pending"] .question-state,
   .approval-dock .question-card .question-state {
     display: none;
+  }
+  .approval-card.episode-run-card .question-state {
+    display: inline;
+  }
+  .episode-run-card .campaign-reauthorize input {
+    font-size: 16px;
+    min-height: 44px;
   }
   .approval-actions {
     flex-wrap: wrap;

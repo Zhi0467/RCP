@@ -101,7 +101,13 @@ adds verbs:
   ended episode's answer still offers Add turns.
 
 Each Project Agent uses the same dock, limited to that project's shared chats
-and episodes, and also docks its own open approval cards. Its plain questions
+and episodes, and also docks its own open approval cards, pending plan cards,
+and its direct child episodes: each episode its turns started, with the
+episode's open questions, its Runs controls (Pause, Resume or Retry, Add turns,
+Stop), and once ended its report, for a day after it ends. Shared and node
+chats show the same dock for their own plan cards and children. A question a
+child asks shows only under that child, so the Space dock leaves out the ones
+a member's Project Agent dock lists. Its plain questions
 stay inline, and a card shows inline only after it leaves the dock, so nothing
 appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
@@ -940,7 +946,7 @@ Both kickoffs persist receipts on the turn. Resume or Retry recovers the same
 card; an older Auto-research receipt whose episode already exists answers
 `existing`. The card request determines the episode id. The tapping member
 authorizes the start, and the episode's root names the raising turn, so Runs
-shows **Started from** that chat.
+shows **Started from** that chat, for each continuation too.
 
 **Controls.** The chat controls only an episode it started: its root names a
 turn of this chat as **Started from**, directly or through the episode it

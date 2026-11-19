@@ -562,9 +562,9 @@ project chat, selected reply text starts a
 just past the quote's end opens it, the header count lists the chat's reply and
 inline-artifact threads, and Send
 to agent carries threads through the composer's own send, a steer while a turn runs.
-An Experiment plan card is never stacked. It sits open inside its raising
-turn's answer, so reply comments anchor on its text, in threads, shared chats
-and node chats alike. Top to bottom: the node, Design (markdown), Done when,
+A pending Experiment plan card sits in the chat's dock, in threads, shared
+chats and node chats alike; once settled it stays inside its raising turn's
+answer. Top to bottom: the node, Design (markdown), Done when,
 This run (editable), the agent and turn-limit chips, then Don't run this now
 and Start. Design and Done when open the node's Edit node. Start waits while
 the member has staged changes on the card's graph target.
@@ -596,8 +596,12 @@ hover and leaves at the next good read. The Space thread docks one stack above i
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
-dock for its own open Proposal and asked cards, then that project's relayed
-questions, without project chips; its plain questions stay inline. A decided card
+dock for its own open Proposal and asked cards, then its pending plan cards,
+then each child episode's questions followed by the run's own card, then that
+project's relayed questions, without project chips; its plain questions stay
+inline. A run card names the run, linked to Runs, with its Runs state, its
+report once ended, and the same controls Runs shows. Shared and node chats
+dock their plan cards, children and relayed questions the same way. A decided card
 leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval

@@ -1,17 +1,37 @@
-import { ChevronDown, ChevronLeft, ChevronRight, Files } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FlaskConical,
+  Files,
+  Telescope,
+} from "lucide-react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import type {
   AgentCardList,
   AgentQuestion,
   ApprovalCardResult,
   AskedApprovalCardView,
+  DockEpisode,
   ProposalCardView,
   RelayedQuestion,
 } from "../core/types";
-import { QuestionCard } from "../chat/QuestionCard";
+import { AskedTime, QuestionCard } from "../chat/QuestionCard";
 import { retryBackoffMs } from "../core/resourceStore";
+import { episodeProjection, episodeReportPreviewUrl } from "../experiments/campaigns";
+import { EpisodeControls } from "../experiments/EpisodeControls";
+import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
+import { useEpisodeActions } from "../experiments/episodeActions";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
-import { readAgentCards } from "./agentThreadsApi";
+import { readAgentCards, readChatCards } from "./agentThreadsApi";
 import { isPlanCardQuestion } from "./experimentPlanModel";
 import { useAgentCardsVersion } from "./useAgentThreads";
 
@@ -26,7 +46,9 @@ export type StackCard =
       showProject: boolean;
     }
   | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null }
-  | { kind: "question"; key: string; question: RelayedQuestion };
+  | { kind: "question"; key: string; question: RelayedQuestion }
+  | { kind: "plan"; key: string; question: AgentQuestion }
+  | { kind: "run"; key: string; run: DockEpisode };
 
 /**
  * Where a stack stands: its shown card order, the front card, the cards Later put
@@ -44,6 +66,41 @@ export function askedCardKey(question: AgentQuestion): string {
 
 export function questionCardKey(question: RelayedQuestion): string {
   return `question:${question.question_id}`;
+}
+
+function planCardKey(question: AgentQuestion): string {
+  return `plan:${question.question_id}`;
+}
+
+function runCardKey(run: DockEpisode): string {
+  return `run:${run.episode.episode_id}`;
+}
+
+/**
+ * A chat's dock cards after its Proposal and asked cards: pending plan cards, each
+ * child episode's open questions followed by the run itself, then other relayed questions.
+ */
+export function dockStackCards(
+  plans: readonly AgentQuestion[],
+  episodes: readonly DockEpisode[],
+  questions: readonly RelayedQuestion[],
+): StackCard[] {
+  return [
+    ...plans.map((question): StackCard => ({ kind: "plan", key: planCardKey(question), question })),
+    ...episodes.flatMap((run): StackCard[] => [
+      ...run.questions.map((question): StackCard => ({
+        kind: "question",
+        key: questionCardKey(question),
+        question,
+      })),
+      { kind: "run", key: runCardKey(run), run },
+    ]),
+    ...questions.map((question): StackCard => ({
+      kind: "question",
+      key: questionCardKey(question),
+      question,
+    })),
+  ];
 }
 
 /** Surviving cards keep their order, new cards join at the back, settled ones drop. */
@@ -78,6 +135,7 @@ const FRESH: StackMemory = { order: [], index: 0, later: [] };
 
 function cardIsOpen(card: StackCard): boolean {
   if (card.kind === "proposal") return card.decided === null;
+  if (card.kind === "run") return true;
   const { question } = card;
   return (
     question.state !== "answered" &&
@@ -97,6 +155,7 @@ export function ApprovalCardStack({
   onResolved,
   onAnswered,
   onChanged,
+  renderPlanCard,
 }: {
   stackKey: string;
   cards: StackCard[];
@@ -104,6 +163,8 @@ export function ApprovalCardStack({
   onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
   onAnswered: (question: RelayedQuestion) => void;
   onChanged: () => void;
+  /** Draws a plan card; the view that owns the stack supplies it. */
+  renderPlanCard?: (question: AgentQuestion) => ReactNode;
 }) {
   const [, redraw] = useReducer((count: number) => count + 1, 0);
   const frontRef = useRef<HTMLDivElement>(null);
@@ -139,7 +200,11 @@ export function ApprovalCardStack({
   };
   const front = open.find((card) => card.key === order[index]);
   const render = (card: StackCard, onLater?: () => void) =>
-    card.kind === "question" ? (
+    card.kind === "plan" ? (
+      <Fragment key={card.key}>{renderPlanCard?.(card.question)}</Fragment>
+    ) : card.kind === "run" ? (
+      <EpisodeRunCard key={card.key} run={card.run} onChanged={onChanged} onLater={onLater} />
+    ) : card.kind === "question" ? (
       <QuestionCard
         key={card.key}
         question={card.question}
@@ -244,24 +309,128 @@ export function ApprovalCardStack({
   );
 }
 
+/** One child episode in a chat's dock: its state, its run controls, and its report once ended. */
+function EpisodeRunCard({
+  run,
+  onChanged,
+  onLater,
+}: {
+  run: DockEpisode;
+  onChanged: () => void;
+  onLater?: () => void;
+}) {
+  const { episode } = run;
+  const actions = useEpisodeActions(episode.project_id);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [taskActionId, setTaskActionId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const projection = episodeProjection(episode);
+  const Icon = episode.mode === "auto_research" ? Telescope : FlaskConical;
+  const busy = async (
+    set: (key: string | null) => void,
+    key: string,
+    act: () => Promise<unknown>,
+  ) => {
+    set(key);
+    try {
+      await act();
+    } finally {
+      set(null);
+      onChanged();
+    }
+  };
+  return (
+    <section
+      className="approval-card open episode-run-card"
+      tabIndex={-1}
+      data-state="pending"
+      data-health={projection.health}
+      aria-label={run.title}
+    >
+      <div className="approval-head">
+        <span className="approval-icon" aria-hidden="true">
+          <Icon size={16} />
+        </span>
+        <div className="approval-title">
+          <a href={run.link}>
+            <strong>{run.title}</strong>
+          </a>
+        </div>
+        <span className="question-state">{projection.healthLabel}</span>
+        <AskedTime at={episode.ended_at ?? episode.created_at} />
+      </div>
+      {error && (
+        <p className="approval-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="approval-actions">
+        {episode.report && (
+          <EpisodeReportLink
+            className="approval-see"
+            projectId={episode.project_id}
+            graphTarget={episode.graph_target}
+            episodeId={episode.episode_id}
+            href={episodeReportPreviewUrl(episode.project_id, episode.episode_id)}
+            onOpenError={setError}
+          >
+            Report
+          </EpisodeReportLink>
+        )}
+        {onLater && (
+          <button className="approval-later" type="button" onClick={onLater}>
+            Later
+          </button>
+        )}
+        <EpisodeControls
+          episode={episode}
+          taskControl={projection.taskControl}
+          busyAction={busyAction}
+          taskActionId={taskActionId}
+          onOperateTask={(task, action) =>
+            busy(setTaskActionId, task.operation_id, () => actions.operateTask(task, action))
+          }
+          onContinue={(episodeId, turns) =>
+            busy(setBusyAction, `continue:${episodeId}`, () => actions.addTurns(episodeId, turns))
+          }
+          onStop={(episodeId) =>
+            busy(setBusyAction, `stop:${episodeId}`, () => actions.stop(episodeId, episode.tasks))
+          }
+          onError={setError}
+        />
+      </div>
+    </section>
+  );
+}
+
 type Kept = { changes: number } & (
   | { kind: "proposal"; view: ProposalCardView; status: Decision }
   | { kind: "asked"; question: AskedApprovalCardView }
 );
 
+/** Whose cards a dock reads; null reads none. */
+export type CardSource = { threadId: string | null } | { projectId: string; chatId: string } | null;
+
 /**
- * The member's open cards for one project thread, or for every thread when
- * `threadId` is null. They reload when the open-card version or the thread
+ * The member's open cards for one project thread, for every thread when `threadId`
+ * is null, or for one shared or node chat. They reload when the open-card version or the thread
  * revision moves, and after each tap. A card decided here keeps its settled line
  * through the open-card version change its own tap causes, and drops at a fetch
  * after a later change that no longer lists it. Only the newest fetch's answer counts.
  * A failed read hides the cards and backs off before reading again. An answered
  * question leaves at once and stays gone until a read no longer lists it.
  */
-export function useAgentCards(threadId: string | null, revision: string | null) {
+export function useAgentCards(source: CardSource, revision: string | null) {
   const version = useAgentCardsVersion();
-  const scope = threadId ?? "";
-  const [loaded, setLoaded] = useState<{ scope: string; list: AgentCardList | null } | null>(null);
+  const threadId = source && "threadId" in source ? source.threadId : null;
+  const chatProject = source && "chatId" in source ? source.projectId : null;
+  const chatId = source && "chatId" in source ? source.chatId : null;
+  const scope =
+    source === null ? null : chatId ? `chat:${chatProject}:${chatId}` : (threadId ?? "");
+  const [loaded, setLoaded] = useState<{
+    scope: string | null;
+    list: AgentCardList | null;
+  } | null>(null);
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const latest = useRef(0);
@@ -271,9 +440,13 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const [retryTick, setRetryTick] = useState(0);
   const refetch = useCallback(async () => {
     window.clearTimeout(retry.current);
+    if (scope === null) return;
     const mine = ++latest.current;
     const changes = versionChanges.current;
-    const list = await readAgentCards(scope || undefined);
+    const list =
+      chatProject && chatId
+        ? await readChatCards(chatProject, chatId)
+        : await readAgentCards(threadId ?? undefined);
     if (mine !== latest.current) return;
     failures.current = list ? 0 : failures.current + 1;
     if (!list) {
@@ -294,13 +467,17 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
       return next.size === known.size ? known : next;
     });
     if (list) {
-      const listed = new Set((list.questions ?? []).map((question) => question.question_id));
+      const listed = new Set(
+        [...(list.questions ?? []), ...(list.episodes ?? []).flatMap((run) => run.questions)].map(
+          (question) => question.question_id,
+        ),
+      );
       setAnswered((known) => {
         const next = new Set([...known].filter((id) => listed.has(id)));
         return next.size === known.size ? known : next;
       });
     }
-  }, [scope]);
+  }, [chatId, chatProject, scope, threadId]);
   const shownVersion = useRef(version);
   useEffect(() => {
     versionChanges.current += 1;
@@ -355,6 +532,7 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         : [],
     ),
   ];
+  const plans = (list?.asked_cards ?? []).filter(isPlanCardQuestion);
   const servedAsked = (list?.asked_cards ?? []).filter((question) => !isPlanCardQuestion(question));
   const askedKeys = new Set(servedAsked.map(askedCardKey));
   const keptAsked = (key: string) => {
@@ -372,6 +550,10 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const questions = (list?.questions ?? []).filter(
     (question) => !answered.has(question.question_id),
   );
+  const episodes = (list?.episodes ?? []).map((run) => ({
+    ...run,
+    questions: run.questions.filter((question) => !answered.has(question.question_id)),
+  }));
   const markAnswered = useCallback((question: RelayedQuestion) => {
     setAnswered((known) => new Set(known).add(question.question_id));
   }, []);
@@ -382,8 +564,10 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   return {
     proposals,
     asked,
+    plans,
+    episodes,
     questions,
-    loading: loaded?.scope !== scope,
+    loading: scope !== null && loaded?.scope !== scope,
     unavailable: loaded?.scope === scope && loaded.list === null,
     decisionOf,
     markDecided,

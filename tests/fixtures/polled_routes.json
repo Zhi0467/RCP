@@ -9,6 +9,7 @@
     {"method": "GET", "path": "/api/agent-threads/{thread_id}/schedules"},
     {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}"},
     {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}/questions"},
+    {"method": "GET", "path": "/api/projects/{project_id}/chats/{chat_id}/cards"},
     {"method": "GET", "path": "/api/projects/{project_id}/tasks/{operation_id}"},
     {"method": "GET", "path": "/api/projects/{project_id}/episodes"},
     {"method": "GET", "path": "/api/projects/{project_id}/machines/{machine_id}/browser"},
