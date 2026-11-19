@@ -4297,6 +4297,9 @@ button.agent-provider-label {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sign-in-device a.button {
+  flex-shrink: 0;
+}
 .sign-in-device code {
   flex: none;
   border: 1px solid var(--line-strong);

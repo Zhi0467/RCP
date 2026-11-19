@@ -1,3 +1,4 @@
+import { isDesktopRuntime } from "./desktopRuntime";
 import {
   requestShareLinkInPlace,
   sameSpaceShareToken,
@@ -49,7 +50,9 @@ function linkClick(event: MouseEvent): { link: HTMLAnchorElement; click: LinkCli
 }
 
 /** Share links are taken in the capture phase: the desktop shell's own handler cancels
- * every targeted link click before a bubbling listener could see it. */
+ * every `_blank` link click and then fails to open it. In the desktop app a `_blank`
+ * link therefore loses its target for this one click, so that handler skips it and
+ * the bubbling listener opens it through the window the shell routes. */
 export function installLinkGuard() {
   window.addEventListener(
     "click",
@@ -61,10 +64,16 @@ export function installLinkGuard() {
         new URL(window.location.href),
         teamAccessOrigin(),
       );
-      if (action.kind !== "share") return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      requestShareLinkInPlace(action.token);
+      if (action.kind === "share") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        requestShareLinkInPlace(action.token);
+        return;
+      }
+      if (isDesktopRuntime() && found.link.target === "_blank" && !found.click.download) {
+        found.link.removeAttribute("target");
+        setTimeout(() => found.link.setAttribute("target", "_blank"));
+      }
     },
     true,
   );

@@ -3,8 +3,17 @@
   <body>
     <a id="share" href="/open#l=shared-token" target="_blank">Shared item</a>
     <a id="outside" href="https://example.com/paper" target="_blank">Outside</a>
+    <a id="handled" href="https://example.com/handled" target="_blank">Handled</a>
     <script>
       window.invoked = [];
+      window.opened = [];
+      window.open = (url) => {
+        window.opened.push(url);
+        return null;
+      };
+      document
+        .getElementById("handled")
+        .addEventListener("click", (event) => event.preventDefault());
       window.__TAURI_INTERNALS__ = {
         invoke: async (command, args) => {
           window.invoked.push({ command, path: args?.path ?? null });

@@ -1905,7 +1905,9 @@ No link strands the app on a page it does not serve. Rendered Markdown keeps
 node, repository-file and in-app `#/` links; external `http(s)` and `mailto`
 links open a new tab, and any other link renders as plain text. A link the page
 did not handle that would leave the app document opens a new tab instead, and a
-page navigation to a path the server does not serve redirects to the app.
+page navigation to a path the server does not serve redirects to the app. In the
+desktop app a link that names a new window opens the same way, because the shell
+plugin's own handler for such links fails without opening anything.
 
 A source-mode frontend rebuild preserves content-hashed assets from the prior
 build so an already-open window can keep lazy-loading its coherent bundle until

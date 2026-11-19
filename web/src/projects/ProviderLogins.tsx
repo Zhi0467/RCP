@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   ArrowUpDown,
+  ExternalLink,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -699,11 +700,13 @@ export function SignInCard({
         }}
       >
         <a
+          className="button compact"
           href={signIn.verification_url!}
           target="_blank"
           rel="noreferrer"
           title={signIn.verification_url!}
         >
+          <ExternalLink size={14} />
           Open Google sign-in
         </a>
         <input

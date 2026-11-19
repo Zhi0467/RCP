@@ -2135,6 +2135,7 @@ class ProjectService:
                 if machine_id in cards and cards[machine_id].host
             },
             "providers": readiness_by_machine[manifest.base_machine],
+            "run_on": manifest.base_machine,
         }
 
     def clear_rebuildable_caches(self) -> dict[str, object]:
