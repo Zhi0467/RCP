@@ -951,9 +951,17 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
     def codex(payload: dict) -> AgentEvent:
         return _decoded_event("codex", json.dumps(payload))
 
-    reply = codex(
-        {"type": "item.completed", "item": {"type": "agent_message", "text": "Because X."}}
+    turn = _codex_exec_turn()
+    turn.receive_line(
+        json.dumps(
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "Because X."}}
+        )
     )
+    (reply,) = [
+        event
+        for event in turn.receive_line(json.dumps({"type": "turn.completed"})).events
+        if event.event != "raw"
+    ]
     assert (reply.event, reply.text) == ("answer", "Because X.")
 
     for item_type in ("reasoning", "command_execution", "todo_list"):
@@ -965,6 +973,87 @@ def test_only_the_final_assistant_message_is_an_answer() -> None:
 
     claude = _decoded_event("claude", json.dumps({"type": "result", "result": "Because X."}))
     assert (claude.event, claude.text) == ("answer", "Because X.")
+
+
+def _codex_exec_turn():
+    profile = profile_for("codex")
+    return profile.runtime(profile.legacy_runtime_id).turn(
+        ProviderTurnRequest(
+            prompt="",
+            binary="codex",
+            cwd=Path("/project/.research"),
+            model=None,
+            reasoning=None,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="scratch_patch",
+            provider_version=None,
+            legacy_command=["codex"],
+        )
+    )
+
+
+def test_codex_exec_message_is_in_between_once_codex_acts_and_the_last_one_answers() -> None:
+    turn = _codex_exec_turn()
+
+    def said(value: dict) -> list[tuple[str, str, str | None]]:
+        step = turn.receive_line(json.dumps(value))
+        return [
+            (event.event, event.text, event.status.message if event.status else None)
+            for event in step.events
+            if event.event != "raw" or event.status is not None
+        ]
+
+    def message(text: str) -> dict:
+        return {"type": "item.completed", "item": {"type": "agent_message", "text": text}}
+
+    assert said(message("Checking.")) == []
+    started = {"type": "item.started", "item": {"type": "command_execution", "command": "ls"}}
+    assert said(started) == [("raw", "", "Checking.")]
+    assert said(message("Because X.")) == []
+    assert said({"type": "turn.completed"}) == [("answer", "Because X.", None)]
+
+
+def test_claude_text_becomes_an_in_between_message_only_once_the_agent_acts_after_it() -> None:
+    profile = profile_for("claude")
+    turn = profile.runtime(profile.legacy_runtime_id).turn(
+        ProviderTurnRequest(
+            prompt="",
+            binary="claude",
+            cwd=Path("/project/.research"),
+            model=None,
+            reasoning=None,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            capability="scratch_patch",
+            provider_version=None,
+            legacy_command=["claude"],
+        )
+    )
+
+    def assistant(*blocks: dict, parent: str | None = None) -> list[str | None]:
+        line = {"type": "assistant", "parent_tool_use_id": parent, "message": {"content": blocks}}
+        step = turn.receive_line(json.dumps(line))
+        return [event.status.message if event.status else None for event in step.events]
+
+    def text(value: str) -> dict:
+        return {"type": "text", "text": value}
+
+    tool = {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}
+    assert assistant(text("Checking the config."), {"type": "thinking", "thinking": "hm"}) == [None]
+    assert assistant(text("Inside a subagent."), parent="t") == [None]
+    assert assistant(tool) == ["Checking the config."]
+    assert assistant(text("Because X.")) == [None]
+
+    def result(value: str) -> list[str | None]:
+        step = turn.receive_line(json.dumps({"type": "result", "result": value}))
+        return [event.status.message if event.status else None for event in step.events]
+
+    assert result("Because X.") == [None]
 
 
 def test_claude_session_limit_result_is_a_terminal_error() -> None:

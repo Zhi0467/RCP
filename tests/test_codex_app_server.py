@@ -739,6 +739,67 @@ def test_app_server_reports_live_status_for_display(tmp_path: Path):
     ]
 
 
+def _completed_turn() -> str:
+    return json.dumps(
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "accounting-thread",
+                "turn": {"id": "active-turn", "status": "completed"},
+            },
+        }
+    )
+
+
+def _root_item(method: str, item: dict) -> str:
+    params = {"threadId": "accounting-thread", "turnId": "active-turn", "item": item}
+    return json.dumps({"method": method, "params": params})
+
+
+def _said(step) -> list[tuple[str, str, str | None]]:
+    return [
+        (event.event, event.text, event.status.message if event.status else None)
+        for event in step.events
+        if event.event != "raw" or event.status is not None
+    ]
+
+
+def test_app_server_commentary_is_an_in_between_message_and_never_the_answer(tmp_path: Path):
+    """Codex 0.167.0 tags agentMessage items with `phase` (probed 2026-11-18)."""
+
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    commentary = {"type": "agentMessage", "id": "m1", "text": "Checking.", "phase": "commentary"}
+    assert _said(turn.receive_line(_root_item("item/completed", commentary))) == []
+    released = turn.receive_line(_root_item("item/started", {"type": "commandExecution"}))
+    assert _said(released) == [("raw", "", "Checking.")]
+    final = {"type": "agentMessage", "id": "m2", "text": "Because X.", "phase": "final_answer"}
+    assert _said(turn.receive_line(_root_item("item/completed", final))) == [
+        ("answer", "Because X.", None)
+    ]
+    assert _said(turn.receive_line(_completed_turn())) == []
+
+
+@pytest.mark.parametrize("phase", [None, "partial_answer"])
+def test_app_server_message_without_commentary_phase_stays_the_answer(tmp_path: Path, phase):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    item = {"type": "agentMessage", "id": "m1", "text": "Because X.", "phase": phase}
+    assert _said(turn.receive_line(_root_item("item/completed", item))) == [
+        ("answer", "Because X.", None)
+    ]
+
+
+def test_app_server_commentary_only_turn_answers_with_its_last_commentary(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    commentary = {"type": "agentMessage", "id": "m1", "text": "All done.", "phase": "commentary"}
+    turn.receive_line(_root_item("item/completed", commentary))
+    ending = turn.receive_line(_completed_turn())
+    assert ending.complete
+    assert _said(ending) == [("answer", "All done.", None)]
+
+
 def test_interactive_request_retains_observed_usage(tmp_path: Path):
     turn = _accounting_turn(tmp_path, resumed=False)
     turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))

@@ -37,6 +37,7 @@ import {
 import { loadProjectReadiness, loadSpaceMachines, loadSpaceSkills } from "../core/api";
 import { useSkillPicker, type SkillSource } from "../core/SkillPicker";
 import { browserReason } from "../core/browserStatus";
+import { MarkdownAnswer } from "../core/chatMarkdown";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
@@ -113,8 +114,8 @@ import {
   scheduleInstant,
   scheduleLimits,
   scheduleWhen,
-  turnCommands,
-  turnCommandsSummary,
+  turnSteps,
+  turnStepsSummary,
   upcomingSchedules,
   watcherFacts,
   watcherWake,
@@ -432,23 +433,34 @@ export function FreshSessionMarker({
   );
 }
 
-function TurnProgress({ task }: { task: AgentTask }) {
-  const commands = turnCommands(task);
-  if (!commands.length) return null;
+/** A turn's steps: open while it runs, folded under one line once it settles. */
+function TurnProgress({ task, live = false }: { task: AgentTask; live?: boolean }) {
+  const steps = turnSteps(task);
+  if (!steps.length) return null;
+  const list = (
+    <ol>
+      {steps.map((step) =>
+        step.kind === "message" ? (
+          <li key={step.id} className="turn-message">
+            <MarkdownAnswer text={step.text} />
+          </li>
+        ) : (
+          <li key={step.id}>
+            {step.text}
+            {step.seconds !== null && <span>{step.seconds}s</span>}
+          </li>
+        ),
+      )}
+    </ol>
+  );
+  if (live) return <div className="chat-progress live">{list}</div>;
   return (
     <details className="chat-progress">
       <summary>
         <ChevronRight className="chev" size={12} aria-hidden="true" />
-        {turnCommandsSummary(commands)}
+        {turnStepsSummary(steps)}
       </summary>
-      <ol>
-        {commands.map((command) => (
-          <li key={command.id}>
-            {command.text}
-            {command.seconds !== null && <span>{command.seconds}s</span>}
-          </li>
-        ))}
-      </ol>
+      {list}
     </details>
   );
 }
@@ -1596,7 +1608,7 @@ export function AgentThreadView({
         />
         {latest?.active && (
           <div className="agent-chat-view-line agent">
-            <TurnProgress task={latest} />
+            <TurnProgress task={latest} live />
             <span className="agent-turn-live" role="status">
               <LoaderCircle className="spin" size={12} aria-hidden="true" />
               {latest.status_message}

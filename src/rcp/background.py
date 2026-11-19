@@ -3741,14 +3741,15 @@ class _LiveStatusWriter:
         self._trailing: asyncio.TimerHandle | None = None
 
     def observe(self, delta: AgentStatusDelta) -> None:
-        self._status = fold_agent_status(self._status, delta)
+        self._status = fold_agent_status(self._status, delta, observed_at=self._store.now())
         self._pending = True
-        # A compaction or subagent change is an event the panel shows at once;
-        # token counts only move a meter and wait for the throttle.
+        # A compaction, subagent change or message is an event the panel shows at
+        # once; token counts only move a meter and wait for the throttle.
         urgent = (
             delta.compaction is not None
             or delta.subagent is not None
             or delta.compacting is not None
+            or delta.message is not None
         )
         due = (
             self._written_at is None

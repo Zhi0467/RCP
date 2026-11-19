@@ -114,6 +114,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         self._generated: set[str] = {self._turn_id}
         self._outstanding: set[str] = set()
         self._model: str | None = None
+        self._held_text: tuple[object, str] | None = None
 
     @staticmethod
     def _user_input(message_id: str, text: str) -> bytes:
@@ -193,6 +194,8 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                 return ProviderRuntimeStep()
             if value.get("type") == "user" and value.get("isReplay") is True:
                 return ProviderRuntimeStep()
+            if value.get("type") == "assistant" and value.get("parent_tool_use_id") is None:
+                return self._hold_text(value, super().receive_line(line))
             if value.get("subtype") == "init" and isinstance(value.get("model"), str):
                 self._model = str(value["model"])
             if value.get("type") == "result":
@@ -210,6 +213,8 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                             ),
                         )
                     )
+                if event.event == "answer":
+                    self._held_text = None
                 # A failing result ends the invocation even with a follow-up
                 # accepted: the task engine stops at the first error anyway, so
                 # continuing would only run a turn whose task has already
@@ -231,6 +236,46 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                     steer_receipts=receipts,
                 )
         return super().receive_line(line)
+
+    def _hold_text(
+        self, value: dict[str, object], step: ProviderRuntimeStep
+    ) -> ProviderRuntimeStep:
+        """Text is an in-between message once the agent acts after it; held text answers.
+
+        Claude sends one line per content block, so blocks of one message join.
+        """
+
+        message = value.get("message")
+        message = message if isinstance(message, dict) else {}
+        blocks = message.get("content")
+        blocks = blocks if isinstance(blocks, list) else []
+        message_id = message.get("id")
+        held = self._held_text
+        released: list[str] = []
+        if held is not None and (message_id is None or message_id != held[0]):
+            released.append(held[1])
+            held = None
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text")
+            if block.get("type") == "text" and isinstance(text, str) and text.strip():
+                held = (message_id, f"{held[1]}\n\n{text}" if held else text)
+            elif block.get("type") == "tool_use" and held is not None:
+                released.append(held[1])
+                held = None
+        self._held_text = held
+        if not released:
+            return step
+        text = "\n\n".join(released)
+        events = tuple(
+            replace(
+                event,
+                status=(event.status or AgentStatusDelta()).model_copy(update={"message": text}),
+            )
+            for event in step.events
+        ) or (ProviderStreamEvent(event="raw", status=AgentStatusDelta(message=text)),)
+        return replace(step, events=events)
 
 
 class _ClaudeStreamRuntime(ProviderRuntime):
