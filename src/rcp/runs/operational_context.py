@@ -175,9 +175,19 @@ def stage_episode_mail_pointer(
     else:
         workspace = None
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=remote_stage)
+    chain: list[str] = []
+    ancestor = execution.store.episode(recipient_id) if recipient_kind == "episode" else None
+    while ancestor is not None and ancestor.episode_id not in chain:
+        chain.append(ancestor.episode_id)
+        ancestor = (
+            execution.store.episode(ancestor.continues_episode_id)
+            if ancestor.continues_episode_id
+            else None
+        )
     delivery = EpisodeMailDelivery(
         recipient_kind=recipient_kind,
         recipient_id=recipient_id,
+        chain_episode_ids=chain,
         delivery_operation_id=records[0].delivery_operation_id or execution.operation_id,
         messages=[
             AutoResearchMailMessage.model_validate(record.model_dump()) for record in records

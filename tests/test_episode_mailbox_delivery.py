@@ -199,3 +199,21 @@ def test_restart_preserves_and_launches_an_admitted_wake_past_the_first_page(tmp
     background = _Background(engine.store)
     reconcile_pending_chat_mail(background)
     assert wake.operation_id in background.launched
+
+
+def test_a_withdrawn_child_question_never_wakes_the_parent(tmp_path):
+    from tests.test_api_questions import _question
+
+    store, episode, root = _mailbox(tmp_path)
+    question = _question(
+        store, "project", owner_kind="episode", owner_id=episode.episode_id, key="seed"
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE questions SET withdrawn_readonly=1 WHERE question_id=?",
+            (question.question_id,),
+        )
+    _mail(store, episode, root, "withdrawn", item_kind="question", source_ref=question.question_id)
+    background = _Background(store)
+    reconcile_chat_mail_recipient(background, "project", "chat")
+    assert background.launched == []

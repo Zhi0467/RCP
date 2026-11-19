@@ -103,3 +103,26 @@ def test_an_ungranted_verb_refusal_names_the_verbs_this_turn_has():
     )
     assert refused.status == "invalid"
     assert refused.result == {"code": "verb_not_granted", "allowed_verbs": ["ask", "bulletin"]}
+
+
+def test_episode_mail_accepts_messages_from_its_continuation_chain_only():
+    def delivery(episode_id):
+        return EpisodeMailDelivery(
+            recipient_kind="episode",
+            recipient_id="continuation",
+            chain_episode_ids=["continuation", "first"],
+            delivery_operation_id="parent-turn",
+            messages=[
+                AutoResearchMailMessage.model_validate(
+                    _message(
+                        recipient_kind="episode",
+                        recipient_chat_id=None,
+                        episode_id=episode_id,
+                    )
+                )
+            ],
+        )
+
+    assert delivery("first").messages[0].episode_id == "first"
+    with pytest.raises(ValidationError):
+        delivery("unrelated")

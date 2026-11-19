@@ -511,7 +511,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             found[0]
             for found in connection.execute(
                 f"SELECT question_id FROM questions WHERE question_id IN "
-                f"({','.join('?' for _ in refs)}) AND state='pending'",
+                f"({','.join('?' for _ in refs)}) AND state='pending' AND withdrawn_readonly=0",
                 tuple(refs),
             )
         }

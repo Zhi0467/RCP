@@ -204,6 +204,7 @@ class EpisodeMailDelivery(BaseModel):
     version: Literal[1] = 1
     recipient_kind: Literal["chat", "episode"]
     recipient_id: str = Field(min_length=1)
+    chain_episode_ids: list[str] = Field(default_factory=list)
     delivery_operation_id: str = Field(min_length=1)
     graph_authority: Literal["none"] = "none"
     epistemic_status: Literal["hearsay"] = "hearsay"
@@ -212,6 +213,7 @@ class EpisodeMailDelivery(BaseModel):
     @model_validator(mode="after")
     def messages_match_recipient_and_claim(self) -> EpisodeMailDelivery:
         message_ids: set[str] = set()
+        chain = {self.recipient_id, *self.chain_episode_ids}
         for message in self.messages:
             if message.message_id in message_ids:
                 raise ValueError("episode mail contains a duplicate item")
@@ -219,7 +221,12 @@ class EpisodeMailDelivery(BaseModel):
             recipient_id = (
                 message.recipient_chat_id if self.recipient_kind == "chat" else message.episode_id
             )
-            if message.recipient_kind != self.recipient_kind or recipient_id != self.recipient_id:
+            addressed = (
+                recipient_id in chain
+                if self.recipient_kind == "episode"
+                else recipient_id == self.recipient_id
+            )
+            if message.recipient_kind != self.recipient_kind or not addressed:
                 raise ValueError("episode mail crosses recipients")
             if message.delivery_operation_id != self.delivery_operation_id:
                 raise ValueError("episode mail crosses claimed operations")
