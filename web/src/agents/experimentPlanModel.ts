@@ -1,4 +1,4 @@
-import { branchNameRequest, branchNameValid } from "../graph/BranchNameField";
+import { branchNameRefusal, branchNameRequest, branchNameValid } from "../graph/BranchNameField";
 import { ApiError } from "../core/api";
 import { errorMessage } from "../core/errors";
 import { MAIN_GRAPH } from "../core/graphTarget";
@@ -99,7 +99,7 @@ export type PlanTapOutcome =
   /** Settled, or taken by another tap whose outcome arrives with the refresh. */
   | { kind: "settled"; result: ApprovalCardResult | null }
   /** Refused before the card was claimed; it stays open with the reason. */
-  | { kind: "pending"; reason: string; planChanged: boolean };
+  | { kind: "pending"; reason: string; planChanged: boolean; branchRefusal?: string };
 
 /** One tap on a plan card. A moved plan or any refusal keeps the card open. */
 export async function tapPlanCard(
@@ -118,7 +118,13 @@ export async function tapPlanCard(
         reason: typeof failure.detail?.message === "string" ? failure.detail.message : PLAN_CHANGED,
         planChanged: true,
       };
-    return { kind: "pending", reason: errorMessage(failure), planChanged: false };
+    const branchRefusal = branchNameRefusal(failure);
+    return {
+      kind: "pending",
+      reason: errorMessage(failure),
+      planChanged: false,
+      ...(branchRefusal ? { branchRefusal } : {}),
+    };
   }
 }
 

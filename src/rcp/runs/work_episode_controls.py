@@ -61,11 +61,7 @@ class WorkEpisodeAct:
 
 @dataclass(frozen=True)
 class WorkAutoResearchStart:
-    """A Work turn's Auto-research kickoff, resolved by its command handler.
-
-    ``episode_id`` derives from the turn and the command key, so a replay names
-    the same episode.
-    """
+    """A human-authorized plan card start with a stable episode id for tap recovery."""
 
     source_operation_id: str
     episode_id: str
@@ -81,8 +77,6 @@ class WorkAutoResearchStart:
 
 class WorkEpisodeControls(Protocol):
     """The member's episode controls, each raising `EpisodeRefused` or ValueError."""
-
-    def start_auto_research(self, start: WorkAutoResearchStart) -> EpisodeRecord: ...
 
     def stop(self, act: WorkEpisodeAct) -> None: ...
 
@@ -144,7 +138,12 @@ def turn_keyed_id(lineage: tuple[str, ...], scope: str, key: str | None) -> str:
 def turn_keyed_branch_id(lineage: tuple[str, ...], scope: str, key: str | None) -> str:
     """`turn_keyed_id` in the canonical UUIDv4 form a graph branch id requires."""
 
-    digest = hashlib.sha256(f"rcp:work:{lineage[-1]}:{scope}:{key}".encode()).digest()
+    return sha256_uuid4(f"rcp:work:{lineage[-1]}:{scope}:{key}")
+
+
+def sha256_uuid4(value: str) -> str:
+    """Encode a stable identity as the UUIDv4 required for graph branches."""
+    digest = hashlib.sha256(value.encode()).digest()
     return str(uuid.UUID(bytes=digest[:16], version=4))
 
 
@@ -402,85 +401,16 @@ def handle_work_auto_research_kickoff(
 ) -> CommandResponse:
     """Record an Auto-research plan card, preserving old direct-start receipt replays."""
 
-    from rcp.runs.questions import work_ask_authorized
-    from rcp.runs.work_experiment_commands import member_work_chat_turn
+    from rcp.runs.work_experiment_commands import record_plan_card_request
 
-    if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
-        return _refuse(
-            request,
-            "This turn cannot raise an Auto-research plan card.",
-            "auto_research_card_unavailable",
-        )
     task = execution.store.agent_task(execution.operation_id)
-    assert task is not None
-    if task.graph_target.kind != "main":
+    if task is not None and task.graph_target.kind != "main":
         return _refuse(
             request,
             "Auto-research branches from main; propose it from a chat on main.",
             "auto_research_starts_from_main",
         )
-    if mailbox is None or execution.experiment_card_raiser is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="Auto-research plan cards are unavailable for this turn.",
-            result={"code": "auto_research_card_unavailable"},
-        )
-    try:
-        goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
-    except ValueError as exc:
-        return _refuse(request, str(exc), "auto_research_goal_invalid")
-    store = execution.store
-    lineage = turn_lineage(execution)
-    kickoff_id = turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
-    intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
-    episode = store.episode(kickoff_id)
-    previous = previous_receipt(
-        store,
-        lineage,
-        _AUTO_RESEARCH_RECEIPT,
-        **({"episode_id": kickoff_id} if episode is not None else {"kickoff_id": kickoff_id}),
-    )
-    if previous is not None and previous.get("intent_sha256") != intent:
-        return _refuse(
-            request,
-            "This key already proposed a different Auto-research; use a new key.",
-            "auto_research_key_conflict",
-        )
-    if episode is not None:
-        return _ok(
-            request,
-            disposition="existing",
-            episode_id=episode.episode_id,
-            branch_id=episode.graph_target.branch_id,
-            status=episode.status,
-            invocation_limit=episode.invocation_ceiling,
-        )
-    if (
-        previous_receipt(
-            store, (execution.operation_id,), _AUTO_RESEARCH_RECEIPT, kickoff_id=kickoff_id
-        )
-        is None
-    ):
-        store.record_agent_task_receipt(
-            execution.operation_id,
-            _AUTO_RESEARCH_RECEIPT,
-            {
-                "phase": "card_pending",
-                "kickoff_id": kickoff_id,
-                "intent_sha256": intent,
-                "starting_instruction": goal,
-                "invocation_ceiling": arguments.invocation_limit,
-                "code_worktree": arguments.code_worktree,
-                "worktree_repository": arguments.worktree_repository,
-                "branch_name": arguments.branch_name,
-                "provider": arguments.provider,
-                "model": arguments.model,
-                "reasoning": arguments.reasoning,
-            },
-            tier="diagnostic",
-        )
-    return _ok(request, disposition="card_pending")
+    return record_plan_card_request(execution, mailbox, request, arguments)
 
 
 def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:

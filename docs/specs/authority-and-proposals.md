@@ -337,9 +337,9 @@ it on that graph branch (`proposal_graph`). A stored action from before
 `branch_id` existed reads as main. The model also keeps Auto-research
 authorization, which no thread kind may newly ask: a new ask is refused with
 `auto_research_uses_episode_verb` because the member's Work chat raises its plan card
-with the `episode` verb. Stored Auto-research cards still render,
-settle on a tap through the human Start, and settle after a restart from their
-request receipt. Plain question answers never authorize these actions. A
+with the `episode` verb. Stored Auto-research cards from the old ask path still
+render and settle `stale` on a tap because their old pins differ from the plan
+card pins. Plain question answers never authorize these actions. A
 `merge` command from a thread holding this grant is refused with
 `approval_card_required`, whose message names the merge card, so the agent asks
 instead of telling the member to merge by hand.
@@ -471,7 +471,19 @@ override; a mismatch returns `start_kind_mismatch`. Auto-research uses a stable
 UUIDv4 episode and branch id, while Experiment retains its existing derivation.
 
 `branch_name_invalid`, `branch_name_taken`, `provider_not_ready`,
-`machine_not_found`, and `auto_research_profile_unavailable` leave the
+`machine_not_found`, `auto_research_profile_unavailable`, and
+`auto_research_start_invalid` leave the
 Auto-research card pending for correction. Other start refusals settle it
 `failed`. Atomic card claims prevent concurrent taps; restart recovery checks
 the durable episode before request receipts and never starts a second episode.
+
+Auto-research Start overrides and kickoff goals share the episode instruction
+length limit. Start validates the human's edits before execution; invalid edits
+leave the card pending. Refusals carry a code and message. An existing episode
+replays before any provider readiness probe.
+
+Startup card recovery reads at most 1,000 succeeded tasks from pending kickoff
+receipts per pass. A task failure is logged and recorded as
+`plan_card_raise_failed` in its task events, and its kickoffs are marked raised;
+other tasks continue. Both kickoff kinds share receipt recording, while the
+raiser accepts older receipt field names.

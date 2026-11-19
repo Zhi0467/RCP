@@ -353,7 +353,12 @@ def test_auto_research_old_direct_start_receipt_still_replays(
         },
         tier="diagnostic",
     )
-    episode = member.background.episode_controls.start_auto_research(
+    from rcp.api.work_episodes import start_work_auto_research
+
+    episode = start_work_auto_research(
+        member.app.state.catalog,
+        member.background,
+        member.app.state.services.experiment_operation_lock,
         WorkAutoResearchStart(
             source_operation_id="old-writer",
             episode_id=episode_id,
@@ -365,7 +370,8 @@ def test_auto_research_old_direct_start_receipt_still_replays(
             provider=None,
             model=None,
             reasoning=None,
-        )
+        ),
+        authorized_by=member.human,
     )
     replayed = call("old", KICKOFF)
     assert replayed.status == "ok"
@@ -378,6 +384,7 @@ def test_auto_research_old_direct_start_receipt_still_replays(
     member.background.experiment_card_raiser(member.executions["old-writer"])
     assert member.store.list_questions(project_id=member.project_id) == []
     assert len(member.store.episodes(member.project_id, limit=None)) == 1
+    assert episode.root_operation_id is not None
     wait_for_task(member.store, episode.root_operation_id)
 
 
@@ -412,3 +419,20 @@ def test_auto_research_card_requires_an_authorized_work_turn_on_main(
         member.store.agent_task_receipts_by_category("gated-turn", "work_auto_research_kickoff")
         == []
     )
+
+
+def test_auto_research_goal_length_refusal_records_no_card(manifest, tmp_path, monkeypatch):
+    from rcp.limits import EPISODE_TEXT_MAX_LENGTH
+
+    member = _Member(manifest, tmp_path, monkeypatch)
+    call = member.turn("long-goal")
+    (member.workspace / "goal.md").write_text("x" * (EPISODE_TEXT_MAX_LENGTH + 1))
+    refused = call("long", KICKOFF)
+    assert refused.status == "invalid"
+    assert refused.result == {"code": "auto_research_goal_invalid"}
+    assert (
+        member.store.agent_task_receipts_by_category("long-goal", "work_auto_research_kickoff")
+        == []
+    )
+    (member.workspace / "goal.md").write_text("x" * EPISODE_TEXT_MAX_LENGTH)
+    assert call("long", KICKOFF).result["disposition"] == "card_pending"

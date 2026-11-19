@@ -17,22 +17,20 @@ import type {
 } from "../core/types";
 import { AutoResearchFields, AutoResearchWorktree } from "../experiments/AutoResearchControls";
 import { worktreeRepositoryChoices, chosenWorktreeRepository } from "../chat/worktreeRepositories";
+import { SYNC_BEFORE_START } from "../experiments/experimentStart";
+import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
+import type { GlossaryIndex } from "../graph/glossary";
+import { graphProfile, refsProfile } from "../graph/graphResources";
+import { requestNodeEdit } from "../graph/nodeEditRequest";
+import { hasStagedHumanDraft } from "../graph/projectSession";
+import { ApprovalCardShell, askedCardState, type Busy } from "./ApprovalCard";
+import { approvalCardTitle } from "./agentThreadModel";
 import {
   autoResearchInputsReady,
   autoResearchStartDecision,
   initialAutoResearchInputs,
   type AutoResearchAction,
   type AutoResearchInputs,
-} from "./experimentPlanModel";
-import { SYNC_BEFORE_START } from "../experiments/experimentStart";
-import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
-import type { GlossaryIndex } from "../graph/glossary";
-import { graphProfile } from "../graph/graphResources";
-import { requestNodeEdit } from "../graph/nodeEditRequest";
-import { hasStagedHumanDraft } from "../graph/projectSession";
-import { ApprovalCardShell, askedCardState, type Busy } from "./ApprovalCard";
-import { approvalCardTitle } from "./agentThreadModel";
-import {
   initialPlanInputs,
   planCardAction,
   planGraphTarget,
@@ -49,6 +47,7 @@ export interface CardProps {
   glossaryIndex?: GlossaryIndex;
   onOpenNode?: (nodeId: string) => void;
   onSettled: (result: ApprovalCardResult | null) => void;
+  branchNamesInUse?: readonly string[];
 }
 export function EpisodePlanCard({
   question,
@@ -59,12 +58,17 @@ export function EpisodePlanCard({
   const target = planGraphTarget(action);
   const profile = graphProfile(action.project_id, target);
   const graph = useResource(`experiment-plan:${question.question_id}`, profile);
+  const refs = useResource(
+    `plan-branches:${question.question_id}`,
+    action.kind === "auto_research" ? refsProfile(action.project_id) : null,
+  );
   const { store } = useRefreshRuntime();
   return (
     <EpisodePlanCardView
       {...props}
       question={question}
       snapshot={graph.value ?? null}
+      branchNamesInUse={(refs.value ?? []).map((ref) => ref.name)}
       staged={() => hasStagedHumanDraft(localStorage, actorId, action.project_id, target)}
       onPlanChanged={() => store.invalidate(resourceKeyId(profile.key))}
     />
@@ -319,6 +323,7 @@ function AutoResearchPlanCardView({
   snapshot,
   onSettled,
   resolve,
+  branchNamesInUse,
 }: Parameters<typeof EpisodePlanCardView>[0]) {
   const card = question.card as ApprovalCard;
   const action = card.action as AutoResearchAction;
@@ -328,6 +333,7 @@ function AutoResearchPlanCardView({
   const inputs = { ...initialAutoResearchInputs(action, fallback), ...edits };
   const [agentOpen, setAgentOpen] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
+  const [branchRefusal, setBranchRefusal] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { pending, state, stateLabel } = askedCardState(question, card);
   const locked = !question.can_answer || busy !== null || card.state === "running";
@@ -355,6 +361,7 @@ function AutoResearchPlanCardView({
   const tap = async (decision: "approve" | "decline") => {
     setBusy(decision);
     setError(null);
+    setBranchRefusal(null);
     const outcome = await tapPlanCard(
       question.question_id,
       decision === "approve"
@@ -367,13 +374,18 @@ function AutoResearchPlanCardView({
       resolve,
     );
     setBusy(null);
-    if (outcome.kind === "pending") setError(outcome.reason);
+    if (outcome.kind === "pending") {
+      setBranchRefusal(outcome.branchRefusal ?? null);
+      if (!outcome.branchRefusal) setError(outcome.reason);
+    }
     onSettled(outcome.kind === "settled" ? outcome.result : null);
   };
   const body = (
     <div className="approval-details plan-body">
       <div className="campaign-dialog-fields">
         <AutoResearchFields
+          branchNamesInUse={branchNamesInUse}
+          branchNameRefusal={branchRefusal}
           instructionRequired
           budget={Number.isFinite(inputs.invocationCeiling) ? String(inputs.invocationCeiling) : ""}
           instruction={inputs.instruction}

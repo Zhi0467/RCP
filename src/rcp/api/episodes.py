@@ -26,6 +26,7 @@ from rcp.episode_health import (
     operational_episode_tasks,
     project_episode_health,
 )
+from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 from rcp.loop_status import EpisodeLoopMetadata, episode_loop_metadata
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
@@ -69,7 +70,6 @@ _STOPPABLE_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset({"queued", "ru
 _TERMINAL_EPISODE_STATUSES: frozenset[EpisodeStatus] = frozenset(
     {"completed", "failed", "needs_action", "stopped"}
 )
-_EPISODE_TEXT_MAX_LENGTH = 16_000
 
 
 @dataclass(frozen=True)
@@ -93,7 +93,7 @@ class StartEpisodeBody(BaseModel):
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(
         default=None,
-        max_length=_EPISODE_TEXT_MAX_LENGTH,
+        max_length=EPISODE_TEXT_MAX_LENGTH,
     )
     # The human's pick for this episode; unset fields follow the orchestrator
     # profile. Spawned Experiments still take the node-chat profile.
@@ -134,7 +134,7 @@ class EpisodeMessageBody(BaseModel):
     invocation_ceiling: int | None = Field(default=None, ge=1)
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=120)
 
-    body: str = Field(min_length=1, max_length=_EPISODE_TEXT_MAX_LENGTH)
+    body: str = Field(min_length=1, max_length=EPISODE_TEXT_MAX_LENGTH)
 
     @field_validator("body", mode="before")
     @classmethod

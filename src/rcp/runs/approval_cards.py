@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import uuid
 from collections.abc import Callable
 from typing import Any, Literal, get_args, get_origin
@@ -30,6 +29,7 @@ from rcp.history import ReplayHalted
 from rcp.limits import ASK_MAX_ATTEMPTS, COMMAND_CLIENT_WAIT_SECONDS
 from rcp.runs.experiment_admission import experiment_node
 from rcp.runs.shared import turn_first_attempt
+from rcp.runs.work_episode_controls import sha256_uuid4
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
@@ -117,14 +117,13 @@ def plan_card_actor(store: AppStore, question: QuestionRecord, identity: Authori
     return store.is_project_member(question.origin.project_id, identity.user_id)
 
 
-def plan_card_episode_id(request_id: str, kind: str) -> str:
+def plan_card_episode_id(
+    request_id: str, kind: Literal["experiment_start", "auto_research"]
+) -> str:
     """The stable episode id for repeated taps and interrupted-start recovery."""
     if kind == "experiment_start":
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:experiment-card:{request_id}"))
-    if kind != "auto_research":
-        raise ValueError("start_kind_mismatch")
-    digest = hashlib.sha256(f"rcp:auto-research-card:{request_id}".encode()).digest()
-    return str(uuid.UUID(bytes=digest[:16], version=4))
+    return sha256_uuid4(f"rcp:auto-research-card:{request_id}")
 
 
 _ACTION_MODELS: tuple[type[BaseModel], ...] = get_args(get_args(ApprovalAction)[0])

@@ -350,3 +350,15 @@ test("both card kinds preserve explicit model and reasoning with the profile pro
     { ...fallback, model: "chosen", reasoning: "high" },
   );
 });
+
+test("a taken branch maps the Start refusal to the editable branch field", async () => {
+  const outcome = await model.tapPlanCard(
+    "q1",
+    { decision: "approve", pinned_sha256: "sha" },
+    async () => {
+      throw new ApiError("", 409, { code: "branch_name_taken" });
+    },
+  );
+  assert.equal(outcome.kind, "pending");
+  assert.equal(outcome.branchRefusal, "branch_name_taken");
+});

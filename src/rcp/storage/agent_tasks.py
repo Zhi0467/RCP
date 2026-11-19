@@ -50,6 +50,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
     PATCH_OUTPUT_RETENTION_DAYS,
+    PLAN_CARD_RECOVERY_BATCH_LIMIT,
     RUN_TRACE_RETENTION_DAYS,
     SPACE_PROJECT_RESULTS_MAX_COUNT,
     WRITING_SESSION_RETENTION_DAYS,
@@ -4178,16 +4179,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """Succeeded Work turns with a requested plan card not yet raised, oldest first."""
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT run.* FROM graph_runs run WHERE run.status='succeeded' "
-                "AND EXISTS (SELECT 1 FROM graph_run_receipts k "
-                "WHERE k.operation_id=run.operation_id "
-                "AND k.category IN ('work_experiment_kickoff', 'work_auto_research_kickoff') "
+                "SELECT DISTINCT run.* FROM graph_run_receipts k "
+                "JOIN graph_runs run ON run.operation_id=k.operation_id "
+                "WHERE k.category IN ('work_experiment_kickoff', 'work_auto_research_kickoff') "
                 "AND json_extract(k.payload_json,'$.phase')='card_pending' "
+                "AND run.status='succeeded' "
                 "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
-                "WHERE r.operation_id=run.operation_id AND r.category='work_experiment_card_raised' "
+                "WHERE r.operation_id=k.operation_id AND r.category='work_experiment_card_raised' "
                 "AND json_extract(r.payload_json,'$.kickoff_id')="
-                "json_extract(k.payload_json,'$.kickoff_id'))) "
-                "ORDER BY run.created_at, run.operation_id"
+                "json_extract(k.payload_json,'$.kickoff_id')) "
+                "ORDER BY run.created_at, run.operation_id LIMIT ?",
+                (PLAN_CARD_RECOVERY_BATCH_LIMIT,),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

@@ -696,3 +696,113 @@ def test_interrupted_auto_research_start_settles_from_its_episode(plan, monkeypa
     assert len(plan.store.episodes(plan.project_id, limit=None)) == 1
     assert episode.root_operation_id is not None
     wait_for_task(plan.store, episode.root_operation_id)
+
+
+def test_auto_research_replay_skips_provider_probe(plan, monkeypatch):
+    _turn(plan, WORK_TURN, chat_id="shared-chat")
+    probe = Mock()
+    monkeypatch.setattr("rcp.api.work_episodes.require_auto_research_provider_ready", probe)
+    episode = _auto_start_directly(plan, WORK_TURN, str(uuid.uuid4()))
+    probe.side_effect = ValueError("provider_not_ready")
+    assert (
+        _auto_start_directly(plan, WORK_TURN, episode.episode_id).episode_id == episode.episode_id
+    )
+    assert probe.call_count == 1
+    assert episode.root_operation_id is not None
+    wait_for_task(plan.store, episode.root_operation_id)
+
+
+def test_auto_research_oversized_edit_keeps_card_pending(plan):
+    card = _auto_plan_card(plan)
+    response = _start_auto_card(plan, card, starting_instruction="x" * 16_001)
+    assert response.status_code == 422
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+    assert plan.store.episodes(plan.project_id, limit=None) == []
+
+
+def test_startup_card_failure_does_not_abort_other_tasks_or_repeat(plan):
+    _crash_before_card(plan, "broken")
+    _crash_before_card(plan, "healthy")
+    background = plan.app.state.background_tasks
+
+    def execution_for(task):
+        if task.operation_id == "turn-broken":
+            raise ValueError("broken task")
+        return background.recorded_execution(task)
+
+    raise_pending_experiment_cards(plan.store, execution_for)
+    assert plan.store.pending_experiment_card_tasks() == []
+    assert any(event.level == "warning" for event in plan.store.agent_task_events("turn-broken"))
+    assert len(_cards(plan, "shared-chat")) == 1
+    raise_pending_experiment_cards(plan.store, execution_for)
+    assert len(_cards(plan, "shared-chat")) == 1
+
+
+def test_auto_research_invalid_worktree_edit_can_be_corrected(plan, monkeypatch):
+    card = _auto_plan_card(plan)
+    response = _start_auto_card(plan, card, code_worktree=False, worktree_repository="repo-a")
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "auto_research_start_invalid"
+    assert response.json()["detail"]["message"]
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+    monkeypatch.setattr(
+        "rcp.api.work_episodes.require_auto_research_provider_ready", lambda *_args, **_kw: None
+    )
+    assert _start_auto_card(plan, card).json()["outcome"] == "approved"
+    (episode,) = plan.store.episodes(plan.project_id, limit=None)
+    assert episode.root_operation_id is not None
+    wait_for_task(plan.store, episode.root_operation_id)
+
+
+@pytest.mark.parametrize("kind", ["experiment", "auto_research"])
+def test_old_pending_receipts_recover_after_database_reopen(plan, kind):
+    import json
+
+    from rcp.storage import AppStore
+
+    execution, call = _turn(plan, "old-pending", chat_id="shared-chat")
+    if kind == "experiment":
+        command = _kickoff("old")
+        category = "work_experiment_kickoff"
+    else:
+        command = EpisodeCommandRequest.model_validate(
+            {
+                **_kickoff("old").model_dump(mode="json"),
+                "arguments": {
+                    "action": "kick_off_auto_research",
+                    "goal_file": "goal.md",
+                    "invocation_limit": 3,
+                },
+            }
+        )
+        category = "work_auto_research_kickoff"
+    assert call(command).result["disposition"] == "card_pending"
+    (receipt,) = plan.store.agent_task_receipts_by_category(execution.operation_id, category)
+    payload = dict(receipt.payload)
+    if kind == "experiment":
+        payload["invocation_limit"] = payload.pop("invocation_ceiling")
+    else:
+        payload["starting_instruction"] = payload.pop("goal")
+    with plan.store.connection() as connection:
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=90")
+        connection.execute("DROP INDEX graph_run_receipts_plan_cards")
+        connection.execute(
+            "UPDATE graph_run_receipts SET payload_json=? WHERE operation_id=? AND category=?",
+            (json.dumps(payload), execution.operation_id, category),
+        )
+    plan.store.complete_agent_task(
+        execution.operation_id, applied_revision=None, result={"messages": []}
+    )
+    reopened = AppStore(plan.store.path)
+    assert [task.operation_id for task in reopened.pending_experiment_card_tasks()] == [
+        execution.operation_id
+    ]
+    _startup_pass(plan)
+    (question,) = plan.store.list_questions(project_id=plan.project_id)
+    card = plan.store.approval_card(question.question_id)
+    assert card["state"] == "pending"
+    assert card["action"]["invocation_ceiling"] == 3
+    assert reopened.pending_experiment_card_tasks() == []
+    assert any(
+        event.level == "info" for event in reopened.agent_task_events(execution.operation_id)
+    )

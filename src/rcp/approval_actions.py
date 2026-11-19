@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 from rcp.providers import ProviderId
 
 
@@ -106,7 +107,7 @@ class ExperimentStartOverrides(BaseModel):
 class AutoResearchStartOverrides(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: Literal["auto_research"]
-    starting_instruction: str = Field(min_length=1)
+    starting_instruction: str = Field(min_length=1, max_length=EPISODE_TEXT_MAX_LENGTH)
     invocation_ceiling: int = Field(ge=1)
     branch_name: str | None = None
     code_worktree: bool | None = None

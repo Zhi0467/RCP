@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import (
@@ -19,6 +20,7 @@ from rcp.agents.staged_command_client import (
 )
 from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
+from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
@@ -35,6 +37,7 @@ from rcp.runs.work_episode_controls import (
     previous_receipt,
     read_workspace_text,
     stop_own_episode,
+    turn_keyed_branch_id,
     turn_keyed_id,
     turn_lineage,
 )
@@ -48,6 +51,8 @@ if TYPE_CHECKING:
     from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
     from rcp.storage.question_models import QuestionRecord
     from rcp.transport.workspace_mailbox import RunStageMailbox
+
+logger = logging.getLogger(__name__)
 
 _RECEIPT = "work_experiment_kickoff"
 _RESUME_RECEIPT = "work_experiment_resume"
@@ -243,81 +248,121 @@ def _handle_work_experiment_kickoff(
     A key that started an episode before plan cards still answers with that episode.
     """
 
+    if arguments.at is not None or arguments.target is not None or arguments.seed_file is not None:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message="A Work turn starts the Experiment on its own graph; omit the branch options.",
+        )
+    if arguments.goal_file is None:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message="An Experiment plan card from Work requires --goal-file.",
+        )
+    return record_plan_card_request(execution, mailbox, request, arguments)
+
+
+def record_plan_card_request(
+    execution: AgentTaskExecution,
+    mailbox: RunStageMailbox | None,
+    request: EpisodeCommandRequest,
+    arguments: ExperimentKickoffArguments | AutoResearchKickoffArguments,
+) -> CommandResponse:
+    """Record either plan request, preserving legacy direct-start identities and receipts."""
     from rcp.runs.questions import work_ask_authorized
 
-    def refuse(message: str, code: str | None = None) -> CommandResponse:
+    auto = isinstance(arguments, AutoResearchKickoffArguments)
+    category = _AUTO_RESEARCH_RECEIPT if auto else _RECEIPT
+    prefix = "auto_research_" if auto else "experiment_"
+
+    def refuse(message: str, suffix: str) -> CommandResponse:
         return CommandResponse(
             request_id=request.request_id,
             status="invalid",
             message=message,
-            result={"code": code} if code else {},
+            result={"code": f"{prefix}{suffix}"},
         )
 
-    if arguments.at is not None or arguments.target is not None or arguments.seed_file is not None:
-        return refuse(
-            "A Work turn starts the Experiment on its own graph; omit the branch options."
-        )
-    if arguments.goal_file is None:
-        return refuse("An Experiment plan card from Work requires --goal-file.")
     if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
-        return refuse(
-            "This turn cannot raise an Experiment plan card.", "experiment_card_unavailable"
-        )
+        return refuse("This turn cannot raise a plan card.", "card_unavailable")
     if mailbox is None or execution.experiment_card_raiser is None:
         return CommandResponse(
             request_id=request.request_id,
             status="unavailable",
-            message="Experiment plan cards are unavailable for this turn.",
+            message="Plan cards are unavailable for this turn.",
+            result={"code": f"{prefix}card_unavailable"},
         )
+    assert arguments.goal_file is not None
     try:
         goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
+        if auto and len(goal) > EPISODE_TEXT_MAX_LENGTH:
+            raise ValueError(f"Goal exceeds {EPISODE_TEXT_MAX_LENGTH} characters.")
     except ValueError as exc:
-        return refuse(str(exc))
-
+        return refuse(str(exc), "goal_invalid")
     store = execution.store
     lineage = turn_lineage(execution)
-    kickoff_id = turn_keyed_id(lineage, "episode", request.idempotency_key)
+    kickoff_id = (
+        turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
+        if auto
+        else turn_keyed_id(lineage, "episode", request.idempotency_key)
+    )
     intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
     episode = store.episode(kickoff_id)
+    previous = previous_receipt(
+        store,
+        lineage,
+        category,
+        **({"episode_id": kickoff_id} if episode is not None else {"kickoff_id": kickoff_id}),
+    )
+    if previous is not None and previous.get("intent_sha256") != intent:
+        return refuse("This key already proposed a different plan; use a new key.", "key_conflict")
+    subject = (
+        {"node_id": arguments.node_id} if isinstance(arguments, ExperimentKickoffArguments) else {}
+    )
     if episode is not None:
-        started = previous_receipt(store, lineage, _RECEIPT, episode_id=kickoff_id)
-        if started is not None and started.get("intent_sha256") != intent:
-            return refuse("This key already started a different Experiment; use a new key.")
         return CommandResponse(
             request_id=request.request_id,
             status="ok",
             result={
                 "disposition": "existing",
                 "episode_id": kickoff_id,
-                "node_id": arguments.node_id,
+                **subject,
+                **({"branch_id": episode.graph_target.branch_id} if auto else {}),
                 "status": episode.status,
                 "invocation_limit": episode.invocation_ceiling,
             },
         )
-    previous = previous_receipt(store, lineage, _RECEIPT, kickoff_id=kickoff_id)
-    if previous is not None and previous.get("intent_sha256") != intent:
-        return refuse("This key already raised a different plan card; use a new key.")
-    if previous_receipt(store, (execution.operation_id,), _RECEIPT, kickoff_id=kickoff_id) is None:
+    if previous_receipt(store, (execution.operation_id,), category, kickoff_id=kickoff_id) is None:
+        options = (
+            {
+                "code_worktree": arguments.code_worktree,
+                "worktree_repository": arguments.worktree_repository,
+                "branch_name": arguments.branch_name,
+            }
+            if isinstance(arguments, AutoResearchKickoffArguments)
+            else subject
+        )
         store.record_agent_task_receipt(
             execution.operation_id,
-            _RECEIPT,
+            category,
             {
                 "phase": "card_pending",
                 "kickoff_id": kickoff_id,
                 "intent_sha256": intent,
-                "node_id": arguments.node_id,
                 "goal": goal,
-                "invocation_limit": arguments.invocation_limit,
+                "invocation_ceiling": arguments.invocation_limit,
                 "provider": arguments.provider,
                 "model": arguments.model,
                 "reasoning": arguments.reasoning,
+                **options,
             },
             tier="diagnostic",
         )
     return CommandResponse(
         request_id=request.request_id,
         status="ok",
-        result={"disposition": "card_pending", "node_id": arguments.node_id},
+        result={"disposition": "card_pending", **subject},
     )
 
 
@@ -372,10 +417,13 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                 {
                     "kind": kind,
                     "project_id": task.project_id,
+                    "starting_instruction": payload.get(
+                        "goal", payload.get("starting_instruction")
+                    ),
                     **{
                         key: value
                         for key, value in payload.items()
-                        if key not in {"phase", "kickoff_id", "intent_sha256"}
+                        if key not in {"phase", "kickoff_id", "intent_sha256", "goal"}
                     },
                 }
             )
@@ -397,7 +445,10 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                     "node_id": subject,
                     "branch_id": task.graph_target.branch_id,
                     "goal": payload["goal"],
-                    "invocation_ceiling": payload["invocation_limit"] or node.invocation_ceiling,
+                    "invocation_ceiling": payload.get(
+                        "invocation_ceiling", payload.get("invocation_limit")
+                    )
+                    or node.invocation_ceiling,
                     "provider": payload["provider"],
                     "model": payload["model"],
                     "reasoning": payload["reasoning"],
@@ -457,9 +508,21 @@ def raise_pending_experiment_cards(
 ) -> None:
     """Raise the plan cards a crash or a failed hook left behind, oldest turn first."""
     for task in store.pending_experiment_card_tasks():
-        execution = execution_for(task)
-        if execution.experiment_card_raiser is not None:
-            execution.experiment_card_raiser(execution)
+        try:
+            execution = execution_for(task)
+            if execution.experiment_card_raiser is not None:
+                execution.experiment_card_raiser(execution)
+        except Exception as exc:
+            logger.exception("Plan card recovery failed for %s", task.operation_id)
+            store.record_agent_task_event(
+                task.operation_id,
+                f"plan_card_raise_failed: {exc}",
+                level="warning",
+            )
+            for category in (_RECEIPT, _AUTO_RESEARCH_RECEIPT):
+                for receipt in store.agent_task_receipts_by_category(task.operation_id, category):
+                    if receipt.payload.get("phase") == "card_pending":
+                        _mark_raised(store, task.operation_id, str(receipt.payload["kickoff_id"]))
 
 
 def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, subject: str) -> None:

@@ -271,7 +271,9 @@ def _start_auto_research(
             authorized_by=human,
         )
     except EpisodeRefused as exc:
-        detail = {"code": exc.code}
+        detail = {"code": exc.code, "message": str(exc)}
+        if exc.code == "auto_research_start_invalid":
+            raise _NotNow(422, detail) from exc
         if exc.code in {
             "branch_name_invalid",
             "branch_name_taken",
@@ -325,13 +327,11 @@ def _resolve(
     """Stale only when live pins differ; outages raise `_NotNow` before any write."""
     if body.pinned_sha256 != card["pinned_sha256"]:
         return {"outcome": "stale"}
-    if body.decision == "decline":
-        return {"outcome": "declined"}
     action = TypeAdapter(ApprovalAction).validate_python(card["action"])
+    if body.decision == "decline" and action.kind != "auto_research":
+        return {"outcome": "declined"}
     if body.start is not None and body.start.kind != action.kind:
         raise _NotNow(422, {"code": "start_kind_mismatch"})
-    if action.kind == "auto_research" and body.start is None:
-        raise _NotNow(422, {"code": "auto_research_start_required"})
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
         try:
@@ -350,9 +350,24 @@ def _resolve(
             raise _NotNow(503, str(exc)) from exc
         if card_sha256(card["action"], pinned) != card["pinned_sha256"]:
             return {"outcome": "stale"}
+        if body.decision == "decline":
+            return {"outcome": "declined"}
+        if action.kind == "auto_research" and body.start is None:
+            raise _NotNow(422, {"code": "auto_research_start_required"})
         if action.kind == "experiment_start":
             assert body.start is None or isinstance(body.start, ExperimentStartOverrides)
             _require_seen_plan(state, action, body.start)
+        if isinstance(body.start, AutoResearchStartOverrides):
+            from rcp.api.episodes import StartEpisodeBody
+
+            try:
+                StartEpisodeBody.model_validate(
+                    {"mode": "auto_research", **body.start.model_dump(exclude={"kind"})}
+                )
+            except ValueError as exc:
+                raise _NotNow(
+                    422, {"code": "auto_research_start_invalid", "message": str(exc)}
+                ) from exc
         return _run(
             lambda: _execute(
                 action,

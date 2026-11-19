@@ -160,6 +160,7 @@ class AppStoreBase:
         (87, "hidden_read_fingerprints_v1"),
         (88, "share_links_v1"),
         (89, "shared_chat_card_versions_v1"),
+        (90, "plan_card_receipt_index_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1160,6 +1161,12 @@ class AppStoreBase:
             version=89,
             name="shared_chat_card_versions_v1",
             migration=migrate_shared_chat_card_versions,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=90,
+            name="plan_card_receipt_index_v1",
+            migration=self._migrate_plan_card_receipt_index,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3372,6 +3379,14 @@ class AppStoreBase:
             "CREATE INDEX IF NOT EXISTS graph_runs_chat_turn "
             "ON graph_runs(project_id, json_extract(request_json, '$.chat_id'), "
             "created_at, operation_id)"
+        )
+
+    @staticmethod
+    def _migrate_plan_card_receipt_index(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_run_receipts_plan_cards "
+            "ON graph_run_receipts(category, operation_id) "
+            "WHERE json_extract(payload_json,'$.phase')='card_pending'"
         )
 
     @staticmethod

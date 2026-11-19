@@ -67,6 +67,9 @@ def start_work_auto_research(
     source = store.agent_task(start.source_operation_id)
     if source is None:
         raise EpisodeRefused("authorizer_unavailable", "The raising Work turn no longer exists.")
+    existing = store.episode(start.episode_id)
+    if existing is not None:
+        return existing
     authorizer = authorized_by
     if source.graph_target.kind != "main":
         raise EpisodeRefused(
@@ -101,7 +104,7 @@ def start_work_auto_research(
     except BranchNameInvalid as exc:
         raise EpisodeRefused("branch_name_invalid", str(exc)) from exc
     except ValueError as exc:
-        raise EpisodeRefused("auto_research_not_started", str(exc)) from exc
+        raise EpisodeRefused("auto_research_start_invalid", str(exc)) from exc
     try:
         require_auto_research_provider_ready(service, resolved, member_id=authorizer.user_id)
     except ValueError as exc:
@@ -135,10 +138,8 @@ def start_work_auto_research(
 class MemberEpisodeControls:
     """Each control is the human route's function, authorized by the Work turn's member.
 
-    Writes hold the project's write admission, as the routes' dependency does. A
-    start probes provider readiness before taking it, since an uncached probe
-    runs the provider CLI. ``tasks`` is late-bound: the engine is built with these
-    controls.
+    Writes hold the project's write admission, as the routes' dependency does.
+    ``tasks`` is late-bound: the engine is built with these controls.
     """
 
     catalog: ProjectCatalog
@@ -192,12 +193,6 @@ class MemberEpisodeControls:
                 f"This episode's current turn cannot {offered} now.",
             )
         return task
-
-    def start_auto_research(self, start: WorkAutoResearchStart) -> EpisodeRecord:
-        _, authorizer = self._source(start.source_operation_id)
-        return start_work_auto_research(
-            self.catalog, self.tasks(), self.operation_lock, start, authorized_by=authorizer
-        )
 
     def stop(self, act: WorkEpisodeAct) -> None:
         episode, _ = self._episode(act)

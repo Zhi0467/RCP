@@ -1708,3 +1708,27 @@ def test_plan_card_ids_preserve_experiment_and_encode_branch_uuid():
     assert UUID(branch).version == 4
     assert branch == plan_card_episode_id("request", "auto_research")
     assert branch != plan_card_episode_id("another", "auto_research")
+
+
+@pytest.mark.parametrize("decision", ["approve", "decline"])
+def test_old_auto_research_card_pins_settle_stale_without_start_inputs(questions_api, decision):
+    import json
+
+    _app, client, store, project_id = questions_api
+    action = {"kind": "auto_research", "project_id": project_id, "invocation_ceiling": 2}
+    question, card = api_card(questions_api, action)
+    old_pins = {**card["pinned"], "provider": "codex"}
+    digest = card_sha256(card["action"], old_pins)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET pinned_json=?, pinned_sha256=? WHERE question_id=?",
+            (json.dumps(old_pins), digest, question.question_id),
+        )
+    response = client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": decision, "pinned_sha256": digest},
+    )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "stale"
+    assert store.get_question(question.question_id).state == "answered"
+    assert store.episodes(project_id, limit=None) == []
