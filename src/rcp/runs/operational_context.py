@@ -110,6 +110,82 @@ def stage_operational_context_pointer(
                 project_memory_pointer(execution, remote_stage),
                 member_memory_pointer(execution, remote_stage),
                 stage_bulletin_pointer(execution, local_stage, remote_stage),
+                stage_episode_mail_pointer(execution, local_stage, remote_stage),
             ),
         )
+    )
+
+
+def chat_child_episode_status(execution: AgentTaskExecution | None) -> list[dict[str, object]]:
+    if execution is None:
+        return []
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None or task.episode_id is not None:
+        return []
+    chat_id = task.request.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id:
+        return []
+    return execution.store.chat_child_episode_status(chat_id, task.project_id)
+
+
+def stage_episode_mail_pointer(
+    execution: AgentTaskExecution | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+) -> str:
+    from rcp.runs.auto_research_mail import AutoResearchMailMessage, EpisodeMailDelivery
+    from rcp.transport.workspace_mailbox import RunStageMailbox
+
+    if execution is None:
+        return ""
+    task = execution.store.agent_task(execution.operation_id)
+    if task is None:
+        return ""
+    if task.episode_id is not None:
+        episode = execution.store.episode(task.episode_id)
+        if episode is None or episode.mode != "experiment_loop":
+            return ""
+        recipient_kind = "experiment"
+        recipient_id = episode.episode_id
+    else:
+        recipient_kind = "chat"
+        recipient_id = task.request.get("chat_id")
+        if not isinstance(recipient_id, str) or not recipient_id:
+            return ""
+    from rcp.limits import EPISODE_MAIL_LINEAGE_MAX
+
+    lineage = [task.operation_id]
+    link = task
+    while (
+        link is not None
+        and link.attempt > 1
+        and link.parent_operation_id
+        and len(lineage) < EPISODE_MAIL_LINEAGE_MAX
+    ):
+        lineage.append(link.parent_operation_id)
+        link = execution.store.agent_task(link.parent_operation_id)
+    records = execution.store.claim_episode_mail(recipient_kind, recipient_id, lineage)
+    if not records:
+        return ""
+    if remote_stage is None:
+        if local_stage is None:
+            raise ValueError("Episode mail requires a launch stage.")
+        workspace = local_stage / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+    else:
+        workspace = None
+    mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=remote_stage)
+    delivery = EpisodeMailDelivery(
+        recipient_kind=recipient_kind,
+        recipient_id=recipient_id,
+        delivery_operation_id=records[0].delivery_operation_id or execution.operation_id,
+        messages=[
+            AutoResearchMailMessage.model_validate(record.model_dump()) for record in records
+        ],
+    )
+    mailbox.write_text("episode-mail.json", delivery.model_dump_json() + "\n")
+    questions = sum(item.item_kind == "question" for item in records)
+    return (
+        f"Episode mailbox: `{mailbox.workspace / 'episode-mail.json'}` "
+        f"({len(records)} items, {questions} questions)."
     )

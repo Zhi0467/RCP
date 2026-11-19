@@ -160,6 +160,7 @@ class AppStoreBase:
         (87, "hidden_read_fingerprints_v1"),
         (88, "share_links_v1"),
         (89, "shared_chat_card_versions_v1"),
+        (90, "episode_mailbox_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1160,6 +1161,12 @@ class AppStoreBase:
             version=89,
             name="shared_chat_card_versions_v1",
             migration=migrate_shared_chat_card_versions,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=90,
+            name="episode_mailbox_v1",
+            migration=self._migrate_episode_mailbox,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2903,6 +2910,32 @@ class AppStoreBase:
                 owner.created_at,
                 owner.updated_at,
             ),
+        )
+
+    def _migrate_episode_mailbox(self, connection: sqlite3.Connection) -> None:
+        """Address mail to an actor, a chat, or an Experiment; old rows stay actor messages."""
+        for column, definition in (
+            ("recipient_kind", "TEXT NOT NULL DEFAULT 'actor'"),
+            ("recipient_chat_id", "TEXT"),
+            ("item_kind", "TEXT NOT NULL DEFAULT 'message'"),
+            ("source_ref", "TEXT"),
+        ):
+            self._ensure_column(connection, "auto_research_messages", column, definition)
+        schema = [
+            row for row in self._storage_schema(connection) if row[2] == "auto_research_messages"
+        ]
+        create_sql = next(row[3] for row in schema if row[0] == "table")
+        nullable_sql = create_sql.replace(
+            "recipient_task_id TEXT NOT NULL", "recipient_task_id TEXT", 1
+        )
+        if nullable_sql != create_sql:
+            self._rebuild_storage_table(connection, "auto_research_messages", nullable_sql)
+            for kind, _name, _table, sql in schema:
+                if kind in {"index", "trigger"}:
+                    connection.execute(sql)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episode_mail_pending "
+            "ON auto_research_messages(recipient_kind, recipient_chat_id, delivered_at, created_at)"
         )
 
     @classmethod

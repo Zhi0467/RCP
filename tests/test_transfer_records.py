@@ -656,6 +656,16 @@ def test_finished_auto_research_corpus_exports_all_terminal_record_groups(
     with pytest.raises(ValueError):
         type(bundle).model_validate(invalid)
 
+    old_archive = bundle.model_dump(mode="json")
+    for old_episode in old_archive["episodes"]:
+        if old_episode["experiment"] is not None:
+            old_episode["experiment"].pop("messages", None)
+        if old_episode["auto_research"] is not None:
+            for old_message in old_episode["auto_research"]["messages"]:
+                for field in ("recipient_kind", "recipient_chat_id", "item_kind", "source_ref"):
+                    old_message.pop(field, None)
+    bundle = type(bundle).model_validate_json(json.dumps(old_archive))
+
     target = AppStore(tmp_path / "imported.sqlite3")
     project = store.project(project_id)
     assert project is not None
@@ -1109,3 +1119,66 @@ def test_paper_records_carry_a_migrated_old_writer_folder_identity_and_history(
             "SELECT name FROM paper_versions WHERE project_id=?", (project_id,)
         ).fetchall()
         assert [tuple(row) for row in names] == [("Legacy canonical",)]
+
+
+@pytest.mark.parametrize("recipient_kind", ["chat", "experiment"])
+def test_experiment_mail_transfer_roundtrip_stays_inert(manifest, tmp_path, recipient_kind):
+    from rcp.storage import AutoResearchMessageRecord, EpisodeRecord
+
+    store, project_id, attributions = _store(manifest, tmp_path)
+    actor = authorized_human(store)
+    now = store.now()
+    episode_id = str(uuid.uuid4())
+    store.create_episode(
+        EpisodeRecord(
+            episode_id=episode_id,
+            project_id=project_id,
+            mode="experiment_loop",
+            control_node_id="node-1",
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=actor,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO experiment_episode_state (episode_id,created_at,updated_at) VALUES (?,?,?)",
+            (episode_id, now, now),
+        )
+    store.end_episode_without_report(episode_id, ending="failed")
+    message = AutoResearchMessageRecord(
+        message_id=str(uuid.uuid4()),
+        episode_id=episode_id,
+        sender_role="human",
+        authorized_by=actor,
+        recipient_kind=recipient_kind,
+        recipient_chat_id="parent-chat" if recipient_kind == "chat" else None,
+        item_kind="message",
+        source_ref="source",
+        body="Retained history",
+        created_at=now,
+        delivered_at=now,
+    )
+    with store.connection() as connection:
+        store._insert_auto_research_message(connection, message)
+    bundle = store.export_project_transfer_records(project_id, attributions=attributions)
+    target = AppStore(tmp_path / "mail-import.sqlite3")
+    target.upsert_project(store.project(project_id))
+    with target.connection() as connection:
+        target._insert_transfer_episodes(
+            connection, bundle, {item.archive_actor_id: item for item in attributions}
+        )
+    imported = target.auto_research_message(message.message_id)
+    assert imported is not None
+    assert imported.recipient_kind == recipient_kind
+    assert imported.recipient_chat_id == message.recipient_chat_id
+    assert imported.source_ref == "source"
+    assert (
+        target.pending_episode_mail(recipient_kind, message.recipient_chat_id or episode_id) == []
+    )
+    assert (
+        target.export_project_transfer_records(project_id, attributions=attributions).episodes
+        == bundle.episodes
+    )

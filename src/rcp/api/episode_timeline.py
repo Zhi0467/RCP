@@ -475,7 +475,7 @@ def _communications(
                     from_actor_id=human(member, message.authorized_by)
                     if message.sender_role == "human"
                     else task_actors.get(message.sender_task_id),
-                    to_actor_id=task_actors.get(message.recipient_task_id),
+                    to_actor_id=task_actors.get(message.recipient_task_id or ""),
                     sent_at=message.created_at,
                     sent_span_id=_span(message.sender_task_id),
                     delivered_at=message.delivered_at,

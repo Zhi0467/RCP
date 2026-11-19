@@ -12,6 +12,8 @@ from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     AGENT_NAME_INSTRUCTION,
     BULLETIN_RULES,
+    EPISODE_MAILBOX_CHILD_RULE,
+    EPISODE_MAILBOX_RULES,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
@@ -592,6 +594,10 @@ Worker coordination:
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
+
+{EPISODE_MAILBOX_RULES}
+
+{EPISODE_MAILBOX_CHILD_RULE}
 {_orchestrator_stale_guidance(allowed_verbs)}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
 {REPLY_STYLE}
@@ -745,6 +751,10 @@ for this continuation.
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
+
+{EPISODE_MAILBOX_RULES}
+
+{EPISODE_MAILBOX_CHILD_RULE}
 {_orchestrator_stale_guidance(allowed_verbs)}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation. If RCP returns `resume_unavailable` for a worker, use fresh `spawn`. For a
 child Experiment, Stop your own child, wait for settlement, then kick off a fresh episode with a

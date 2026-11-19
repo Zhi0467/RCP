@@ -107,8 +107,17 @@ EPISODE_RESUME = ("resume", "--resume", "<episode-id>")
 EPISODE_PAUSE = ("pause", "--pause", "<episode-id>")
 EPISODE_ADD_TURNS = ("add_turns", "--add-turns", "<episode-id>")
 EPISODE_MESSAGE = ("message", "--message", "<episode-id>")
+EPISODE_ANSWER = ("answer", "--answer", "<question-id>")
+EPISODE_ANSWER_FILE = ("answer_file", "--answer-file", "<filename>")
 EPISODE_BODY = ("body_file", "--body-file", "<filename>")
-EPISODE_CONTROLS = (EPISODE_STOP, EPISODE_RESUME, EPISODE_PAUSE, EPISODE_ADD_TURNS, EPISODE_MESSAGE)
+EPISODE_CONTROLS = (
+    EPISODE_STOP,
+    EPISODE_RESUME,
+    EPISODE_PAUSE,
+    EPISODE_ADD_TURNS,
+    EPISODE_MESSAGE,
+    EPISODE_ANSWER,
+)
 WATCHER_LIST = ("list", "--list", None)
 WATCHER_STOP = ("stop", "--stop", "<watcher-id>")
 WATCHER_CANCEL = ("cancel", "--cancel", "<watcher-id>")
@@ -513,8 +522,9 @@ def _parser():
     episode.add_argument(KICKOFF_NODE[1])
     episode.add_argument(KICKOFF_GOAL[1])
     episode.add_argument(KICKOFF_LIMIT[1], type=int)
-    for dest, flag, value in (*AUTO_RESEARCH_OPTIONS, EPISODE_BODY):
+    for dest, flag, value in (*AUTO_RESEARCH_OPTIONS, EPISODE_BODY, EPISODE_ANSWER_FILE):
         episode.add_argument(flag, dest=dest, metavar=value)
+    episode.add_argument("--choice", action="append", default=[])
     _add_profile_pick_arguments(episode)
     _add_child_target_arguments(episode)
 
@@ -816,6 +826,8 @@ def _request_arguments(namespace, workspace):
         kickoff = namespace.kick_off_auto_research or namespace.kick_off_experiment
         if kickoff and namespace.body_file is not None:
             raise ClientInputError("--body-file is available only for --message")
+        if not namespace.answer and (namespace.answer_file is not None or namespace.choice):
+            raise ClientInputError("--answer-file and --choice require --answer")
         if namespace.kick_off_auto_research:
             if namespace.node is not None:
                 raise ClientInputError("--node is available only for Experiment kickoff")
@@ -889,16 +901,28 @@ def _request_arguments(namespace, workspace):
             body_file = namespace.body_file
             if (action == "message") != (body_file is not None):
                 raise ClientInputError("--body-file goes with --message, and --message needs it")
-            arguments = {
-                "action": action,
-                "episode_id": _nonblank(getattr(namespace, action), "episode id"),
-                **({} if invocation_limit is None else {"invocation_limit": invocation_limit}),
-                **(
-                    {}
-                    if body_file is None
-                    else {"body_file": _keyed_command_file(workspace, body_file, "body file")}
-                ),
-            }
+            if action == "answer":
+                if namespace.answer_file is None:
+                    raise ClientInputError("--answer requires --answer-file")
+                arguments = {
+                    "action": action,
+                    "question_id": _nonblank(namespace.answer, "question id"),
+                    "answer_file": _keyed_command_file(
+                        workspace, namespace.answer_file, "answer file"
+                    ),
+                    "choices": [_nonblank(choice, "choice") for choice in namespace.choice],
+                }
+            else:
+                arguments = {
+                    "action": action,
+                    "episode_id": _nonblank(getattr(namespace, action), "episode id"),
+                    **({} if invocation_limit is None else {"invocation_limit": invocation_limit}),
+                    **(
+                        {}
+                        if body_file is None
+                        else {"body_file": _keyed_command_file(workspace, body_file, "body file")}
+                    ),
+                }
     elif verb == "inbox":
         if namespace.harvest:
             action = "harvest"

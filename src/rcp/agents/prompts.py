@@ -28,6 +28,7 @@ from rcp.agents.project_repositories import sibling_repository_paths
 from rcp.agents.write_scope import ProjectWriteScope, ProviderWriteScope
 
 if TYPE_CHECKING:
+    from rcp.background import AgentTaskExecution
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
     from rcp.storage import AppStore
 from rcp.comments.models import CommentAnchor
@@ -48,10 +49,21 @@ from rcp.providers import ProviderSkillReference, profile_for
 from rcp.turn_outcomes import work_turn_outcome_contract
 
 
-def render_chat_read_context(context: ChatContext) -> str:
+def render_chat_read_context(
+    context: ChatContext, execution: AgentTaskExecution | None = None
+) -> str:
     """Inline turn evidence, even when an unchanged master is only pointed to."""
 
+    from rcp.runs.operational_context import chat_child_episode_status
+
     parts = []
+    children = chat_child_episode_status(execution)
+    if children:
+        parts.append(
+            "Direct child episodes (read-only):\n```json\n"
+            + json.dumps({"child_episodes": children}, ensure_ascii=False)
+            + "\n```"
+        )
     status = context.loop_status
     if status is not None:
         parts.append(
@@ -110,6 +122,17 @@ def _group_read_refs_line(context: GroupContext) -> str:
         + ", ".join(f"`{ref}`" for ref in refs)
         + ".\n"
     )
+
+
+EPISODE_MAILBOX_RULES = (
+    "Runs you started write to you here: their questions, pauses, and endings. "
+    "Answer a question yourself when it does not need the human. Leave "
+    "consequential decisions to the human: experiment design, upstream decisions, "
+    "and starting runs that use significant compute. Ask the human in your reply "
+    "and pass their answer down. Never invent an answer the human did not give."
+)
+
+EPISODE_MAILBOX_CHILD_RULE = "Your questions and your ending also reach the agent that started you."
 
 
 REPOSITORIES_READ_RULE = (

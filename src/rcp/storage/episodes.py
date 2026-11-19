@@ -128,6 +128,71 @@ class EpisodeStoreMixin(StoreMixinBase):
                 snapshots[episode_id].started_from = started_from
         return snapshots
 
+    def chat_child_episode_status(self, chat_id: str, project_id: str) -> list[dict[str, object]]:
+        from rcp.limits import CHAT_CHILD_EPISODE_CONTEXT_LIMIT
+
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                """
+                WITH RECURSIVE roots AS (
+                    SELECT episode.* FROM episodes AS episode
+                    JOIN graph_runs AS root ON root.operation_id=episode.root_operation_id
+                    JOIN graph_runs AS source ON source.operation_id=
+                        json_extract(root.request_json,'$.started_from_operation_id')
+                    WHERE source.project_id=?
+                      AND json_extract(source.request_json,'$.chat_id')=?
+                      AND episode.continues_episode_id IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM auto_research_child_experiments AS child
+                          WHERE child.child_episode_id=episode.episode_id)
+                    ORDER BY episode.created_at DESC,episode.episode_id
+                    LIMIT ?
+                ), chains AS (
+                    SELECT episode_id,episode_id AS chain_id FROM roots
+                    UNION
+                    SELECT next.episode_id,chains.chain_id FROM episodes AS next
+                    JOIN chains ON next.continues_episode_id=chains.episode_id
+                )
+                SELECT episode.episode_id,episode.status,episode.ending,chains.chain_id,
+                       NOT EXISTS (SELECT 1 FROM episodes AS next
+                           WHERE next.continues_episode_id=episode.episode_id) AS latest
+                FROM chains JOIN episodes AS episode ON episode.episode_id=chains.episode_id
+                """,
+                (project_id, chat_id, CHAT_CHILD_EPISODE_CONTEXT_LIMIT),
+            ).fetchall()
+            if not rows:
+                return []
+            chains = {row["episode_id"]: row["chain_id"] for row in rows}
+            statuses: dict[str, dict[str, object]] = {
+                row["chain_id"]: {
+                    "episode_id": row["episode_id"],
+                    "status": row["status"],
+                    "ending": row["ending"],
+                    "open_questions": [],
+                }
+                for row in rows
+                if row["latest"]
+            }
+            questions: dict[str, list[dict[str, object]]] = {key: [] for key in statuses}
+            placeholders = ",".join("?" for _ in chains)
+            for row in connection.execute(
+                f"SELECT question_id,owner_id,question FROM questions "
+                f"WHERE owner_kind='episode' AND state='pending' "
+                f"AND owner_id IN ({placeholders}) ORDER BY created_at,question_id LIMIT ?",
+                (*chains, CHAT_CHILD_EPISODE_CONTEXT_LIMIT),
+            ):
+                chain_id = chains[row["owner_id"]]
+                if chain_id in questions:
+                    questions[chain_id].append(
+                        {
+                            "question_id": row["question_id"],
+                            "question": row["question"],
+                        }
+                    )
+            for chain_id, status in statuses.items():
+                status["open_questions"] = questions[chain_id]
+            return list(statuses.values())
+
     def episode_started_from_chat(self, episode_id: str) -> EpisodeStartedFromChat | None:
         with self.connection() as connection:
             return self._episode_started_from_chats(connection, [episode_id]).get(episode_id)
@@ -145,10 +210,19 @@ class EpisodeStoreMixin(StoreMixinBase):
             )
             for row in connection.execute(
                 f"""
-                SELECT episode.episode_id,
+                WITH RECURSIVE ancestors(requested_id, episode_id, continues_episode_id) AS (
+                    SELECT episode_id, episode_id, continues_episode_id FROM episodes
+                    WHERE episode_id IN ({placeholders})
+                    UNION
+                    SELECT ancestors.requested_id, episode.episode_id, episode.continues_episode_id
+                    FROM episodes AS episode JOIN ancestors
+                      ON episode.episode_id=ancestors.continues_episode_id
+                )
+                SELECT ancestors.requested_id AS episode_id,
                        json_extract(source.request_json, '$.chat_id') AS chat_id,
                        display.title AS chat_name
-                FROM episodes AS episode
+                FROM ancestors
+                JOIN episodes AS episode ON episode.episode_id=ancestors.episode_id
                 JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
                 JOIN graph_runs AS source
                   ON source.operation_id = json_extract(
@@ -157,7 +231,9 @@ class EpisodeStoreMixin(StoreMixinBase):
                 LEFT JOIN chat_display AS display
                   ON display.project_id = source.project_id
                  AND display.chat_id = json_extract(source.request_json, '$.chat_id')
-                WHERE episode.episode_id IN ({placeholders})
+                WHERE ancestors.continues_episode_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM auto_research_child_experiments
+                                  WHERE child_episode_id=episode.episode_id)
                   AND json_extract(source.request_json, '$.chat_id') IS NOT NULL
                 """,
                 list(episode_ids),
@@ -3472,3 +3548,37 @@ def report_sha256(html: str) -> str:
     """Return the canonical digest for an immutable report artifact."""
 
     return hashlib.sha256(html.encode("utf-8")).hexdigest()
+
+
+def append_episode_parent_mail(
+    connection: sqlite3.Connection,
+    episode_id: str,
+    item_kind: str,
+    source_ref: str,
+    body: str,
+    created_at: str,
+    sender_task_id: str | None = None,
+) -> None:
+    parent = EpisodeStoreMixin._episode_started_from_chats(connection, [episode_id]).get(episode_id)
+    if parent is None:
+        return
+    mode = connection.execute(
+        "SELECT mode FROM episodes WHERE episode_id=?", (episode_id,)
+    ).fetchone()[0]
+    connection.execute(
+        """INSERT OR IGNORE INTO auto_research_messages
+        (message_id,episode_id,sender_role,sender_task_id,recipient_kind,recipient_chat_id,
+         item_kind,source_ref,body,created_at)
+        VALUES (?,?,?,?, 'chat',?,?,?,?,?)""",
+        (
+            f"episode:{episode_id}:{item_kind}:{source_ref}",
+            episode_id,
+            "orchestrator" if mode == "auto_research" else "worker",
+            sender_task_id,
+            parent.chat_id,
+            item_kind,
+            source_ref,
+            body,
+            created_at,
+        ),
+    )

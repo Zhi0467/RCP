@@ -489,11 +489,21 @@ class WorkEpisodeControlArguments(_EpisodeTargetArguments):
         return self
 
 
+class EpisodeAnswerArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["answer"]
+    question_id: str = Field(min_length=1)
+    answer_file: str = Field(min_length=1, max_length=255, pattern=_SAFE_WORKSPACE_FILENAME)
+    choices: list[str] = Field(default_factory=list)
+
+
 EpisodeArguments: TypeAlias = Annotated[
     ExperimentKickoffArguments
     | AutoResearchKickoffArguments
     | EpisodeControlArguments
-    | WorkEpisodeControlArguments,
+    | WorkEpisodeControlArguments
+    | EpisodeAnswerArguments,
     Field(discriminator="action"),
 ]
 

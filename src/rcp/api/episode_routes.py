@@ -1089,14 +1089,13 @@ def send_episode_message_as(
     catalog: ProjectCatalog,
     background_tasks: BackgroundAgentTasks,
 ) -> AutoResearchMessageRecord:
-    """Mail the newest orchestrator of an Auto-research chain, continuing an ended one.
+    """Mail the newest member of a chain: a running Experiment's next invocation, or the
+    orchestrator of an Auto-research chain, continuing an ended one.
 
     The caller holds the project's write admission. Raises the HTTP refusal.
     """
 
     store = background_tasks.store
-    if episode.mode != "auto_research":
-        raise HTTPException(status_code=409, detail="This episode has no Auto-research mail.")
     message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:{episode.project_id}:{body.request_id}"))
     saved = store.auto_research_message(message_id)
     if saved is not None:
@@ -1120,6 +1119,27 @@ def send_episode_message_as(
             )
         return saved
     episode = _newest_chain_member(store, episode)
+    if episode.mode == "experiment_loop":
+        try:
+            return store.record_episode_message(
+                AutoResearchMessageRecord(
+                    message_id=message_id,
+                    episode_id=episode.episode_id,
+                    sender_role="human",
+                    authorized_by=authorized_by,
+                    recipient_kind="experiment",
+                    body=body.body,
+                    created_at=store.now(),
+                )
+            )
+        except EpisodeNotRunning as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "episode_not_running",
+                    "message": "This Experiment has ended. Add turns to continue it.",
+                },
+            ) from exc
     refusal = auto_research_message_refusal(store, episode)
     if refusal is not None:
         raise HTTPException(
@@ -1175,7 +1195,7 @@ def send_episode_message_as(
             background_tasks,
             episode_id=episode.episode_id,
         )
-        if started is None:
+        if started is None and saved.recipient_task_id is not None:
             deliver_pending_auto_research_mail(
                 background_tasks,
                 episode_id=episode.episode_id,

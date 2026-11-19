@@ -1228,7 +1228,7 @@ async def stream_discuss_run(
                                     skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
                                 )
                             ),
-                            render_chat_read_context(context),
+                            render_chat_read_context(context, execution),
                             stage_operational_context_pointer(execution, local_stage, remote_stage),
                             question_part,
                         ],
@@ -1260,7 +1260,7 @@ async def stream_discuss_run(
                         execution=execution,
                         role="discuss_retry_base",
                     )
-                    prompt += "\n\n" + render_chat_read_context(context)
+                    prompt += "\n\n" + render_chat_read_context(context, execution)
                     invocation = _invoked_package_section(
                         invoked_package_pointers(
                             skill_pointers, workflow_ids=workflow_ids, skill_ids=skill_ids
@@ -1324,7 +1324,7 @@ async def stream_discuss_run(
                     master_context=master_context,
                     stable_values=stable_prompt_values,
                     question_part=question_part,
-                    read_context=render_chat_read_context(context),
+                    read_context=render_chat_read_context(context, execution),
                     browser_grant=browser_grant,
                     skill_pointers=skill_pointers,
                     invoked_skill_pointers=invoked_package_pointers(

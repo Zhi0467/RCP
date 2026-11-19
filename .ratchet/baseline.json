@@ -317,7 +317,7 @@
   "src/rcp/storage/restore_detachment.py": {"comment": 7},
   "src/rcp/storage/rows.py": {"comment": 3},
   "src/rcp/storage/spaces.py": {"comment": 7},
-  "src/rcp/storage/transfer.py": {"comment": 11},
+  "src/rcp/storage/transfer.py": {"comment": 7},
   "src/rcp/storage/watchers.py": {"comment": 19},
   "src/rcp/sync_coordinator.py": {"comment": 1},
   "src/rcp/terminals/backends.py": {"comment": 8},
