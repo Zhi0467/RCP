@@ -539,7 +539,10 @@ Enable unless it is a one-shot whose time passed; a refused Enable shows the
 backend's reason. Row actions are icons. A wake shows its trigger: Handoff and
 Watcher as text chips, and a schedule as a calendar chip with its fire time,
 the note on hover, leading its message. Until a wake has text, only the live row
-shows it. A handoff result is one row with its Handoff
+shows it. A running turn's live row lists its in-between messages and RCP
+commands in order, open, above the spinner. When the turn settles, the reply
+shows and the same list folds under one line that counts its messages and
+commands; settling never reorders it. A handoff result is one row with its Handoff
 chip, the agent that ran it, and how it ended; the answer stays in that agent's thread.
 Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and

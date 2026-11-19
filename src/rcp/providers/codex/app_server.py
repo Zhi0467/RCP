@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -82,6 +83,8 @@ class _CodexAppServerTurn(ProviderTurn):
         self._usage: ProviderUsage | None = None
         self._usage_baseline: dict[str, object] = {}
         self._steers: dict[str, tuple[str, str]] = {}
+        self._held_commentary: str | None = None
+        self._answered = False
         self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
 
@@ -488,6 +491,11 @@ class _CodexAppServerTurn(ProviderTurn):
                     )
                 )
             return ProviderRuntimeStep()
+        if method == "item/started" and self._held_commentary is not None:
+            text, self._held_commentary = self._held_commentary, None
+            step = self._notification(method, params)
+            released = ProviderStreamEvent(event="raw", status=AgentStatusDelta(message=text))
+            return replace(step, events=(released, *step.events))
         if method in {"item/started", "item/completed"}:
             item = params.get("item")
             if not isinstance(item, dict):
@@ -510,6 +518,10 @@ class _CodexAppServerTurn(ProviderTurn):
                 return ProviderRuntimeStep()
             text = item.get("text")
             if item_type == "agentMessage" and isinstance(text, str) and text:
+                if item.get("phase") == "commentary":
+                    self._held_commentary = text
+                    return ProviderRuntimeStep()
+                self._answered = True
                 return ProviderRuntimeStep(events=(ProviderStreamEvent(event="answer", text=text),))
             if item_type == "plan" and isinstance(text, str) and text:
                 return ProviderRuntimeStep(
@@ -537,6 +549,8 @@ class _CodexAppServerTurn(ProviderTurn):
             if self._usage is not None
             else ()
         )
+        if self._held_commentary is not None and not self._answered:
+            events = (ProviderStreamEvent(event="answer", text=self._held_commentary), *events)
         self._phase = "completed"
         return ProviderRuntimeStep(
             events=events,

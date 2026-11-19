@@ -748,19 +748,30 @@ def agent_tasks(
         ).items()
     }
     return [
-        _agent_task_response(
-            store,
-            record,
-            background_tasks,
-            degradations,
-            discoveries,
-            chat_sessions,
-            edit_outcomes,
-            session_resolutions,
-            followup_question_ids,
+        _without_turn_messages(
+            _agent_task_response(
+                store,
+                record,
+                background_tasks,
+                degradations,
+                discoveries,
+                chat_sessions,
+                edit_outcomes,
+                session_resolutions,
+                followup_question_ids,
+            )
         )
         for record in records
     ]
+
+
+def _without_turn_messages(response: dict[str, object]) -> dict[str, object]:
+    """A turn's in-between messages travel only with its task detail."""
+
+    status = response.get("agent_status")
+    if isinstance(status, dict):
+        response["agent_status"] = {**status, "messages": []}
+    return response
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")

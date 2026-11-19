@@ -21,6 +21,8 @@ import {
   threadTimeLabel,
   turnCommands,
   turnCommandsSummary,
+  turnSteps,
+  turnStepsSummary,
   upcomingSchedules,
   watcherFacts,
   watcherWake,
@@ -131,6 +133,39 @@ test("a turn's commands pair start with exit, and the total waits for every exit
   const running = turnCommands({ events: [event("c", "start", 0)] });
   assert.equal(running[0].seconds, null);
   assert.doesNotMatch(turnCommandsSummary(running), /s$/);
+});
+
+test("a turn's messages and commands read in the order they happened", () => {
+  const at = (second) => new Date(Date.UTC(2026, 10, 1, 9, 0, second)).toISOString();
+  const command = (id, phase, second) => ({
+    event_id: second,
+    event_kind: "command",
+    command_id: id,
+    command_phase: phase,
+    created_at: at(second),
+    message: id,
+  });
+  const message = (text, second) => ({ text, at: at(second) });
+  const steps = turnSteps({
+    events: [command("b", "start", 5), command("b", "exit", 6)],
+    agent_status: { messages: [message("first", 1), message("tie", 5), message("last", 9)] },
+  });
+  assert.deepEqual(
+    steps.map((step) => step.text),
+    ["first", "tie", "b", "last"],
+  );
+  assert.deepEqual(turnSteps({ events: [], agent_status: null }), []);
+  const onlyMessages = turnSteps({ agent_status: { messages: [message("m", 1)] } });
+  const onlyCommands = turnSteps({ events: [command("c", "start", 0), command("c", "exit", 2)] });
+  assert.notEqual(turnStepsSummary(onlyMessages), turnStepsSummary(steps));
+  assert.equal(
+    turnStepsSummary(onlyCommands),
+    turnCommandsSummary(
+      turnCommands({
+        events: [command("c", "start", 0), command("c", "exit", 2)],
+      }),
+    ),
+  );
 });
 
 test("Upcoming keeps schedules that can still run and reads common cron times", () => {

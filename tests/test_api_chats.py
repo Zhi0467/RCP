@@ -661,7 +661,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
             "UPDATE graph_runs SET result_json = ?, agent_status_json = ? WHERE operation_id = ?",
             (
                 json.dumps({"messages": ["First findings."]}),
-                json.dumps({"context_tokens": 120}),
+                json.dumps({"context_tokens": 120, "messages": [{"text": "Checking.", "at": "t"}]}),
                 root_task.operation_id,
             ),
         )
@@ -752,9 +752,8 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
         ("assistant", None, "Followed up."),
     ]
     assert branch.json()["conversation_kind"] == "auto_research"
-    assert [message["agent_status"] for message in branch.json()["messages"]][1][
-        "context_tokens"
-    ] == 120
+    joined = [message["agent_status"] for message in branch.json()["messages"]][1]
+    assert (joined["context_tokens"], joined["messages"]) == (120, [])
     assert client.get(f"{url}/{root.episode_id}").status_code == 404
 
 

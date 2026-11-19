@@ -637,10 +637,32 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.chat-progress ol li span {
+.chat-progress ol li > span {
   color: var(--faint);
   float: right;
   margin-left: 10px;
+}
+.chat-progress ol li.turn-message {
+  color: var(--ink);
+  font: var(--type-sm) / 1.55 var(--ui);
+  margin: 3px 0 6px;
+  overflow: visible;
+  white-space: normal;
+}
+.chat-progress ol li.turn-message p {
+  margin: 0 0 6px;
+}
+.chat-progress ol li.turn-message p:last-child {
+  margin-bottom: 0;
+}
+.chat-progress.live ol {
+  border-left: 0;
+  margin: 0 0 8px;
+  padding: 0;
+}
+.chat-progress.live ol li.turn-message {
+  font-size: var(--type-base);
+  margin: 0 0 8px;
 }
 
 /* App links in a reply read as chips; they open only when the member clicks. */

@@ -8,8 +8,20 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from rcp.limits import AGENT_STATUS_COMPACTION_LIMIT, AGENT_STATUS_SUBAGENT_LIMIT
+from rcp.limits import (
+    AGENT_STATUS_COMPACTION_LIMIT,
+    AGENT_STATUS_MESSAGE_LIMIT,
+    AGENT_STATUS_MESSAGE_MAX_CHARS,
+    AGENT_STATUS_SUBAGENT_LIMIT,
+)
 from rcp.providers.base import AgentCompaction, AgentStatusDelta, AgentSubagent
+
+
+class AgentTurnMessage(BaseModel):
+    """A finished assistant message the agent acted after, stamped when RCP saw it."""
+
+    text: str
+    at: str
 
 
 class AgentStatus(BaseModel):
@@ -19,9 +31,12 @@ class AgentStatus(BaseModel):
     compacting: bool = False
     compactions: list[AgentCompaction] = Field(default_factory=list)
     subagents: list[AgentSubagent] = Field(default_factory=list)
+    messages: list[AgentTurnMessage] = Field(default_factory=list)
 
 
-def fold_agent_status(current: AgentStatus | None, delta: AgentStatusDelta) -> AgentStatus:
+def fold_agent_status(
+    current: AgentStatus | None, delta: AgentStatusDelta, *, observed_at: str = ""
+) -> AgentStatus:
     status = current.model_copy(deep=True) if current is not None else AgentStatus()
     last = status.compactions[-1] if status.compactions else None
     if delta.context_tokens is not None and last is not None and last.after_tokens is None:
@@ -41,6 +56,12 @@ def fold_agent_status(current: AgentStatus | None, delta: AgentStatusDelta) -> A
             status.context_tokens = compaction.after_tokens
     if delta.subagent is not None:
         status.subagents = _upsert(status.subagents, delta.subagent)
+    if delta.message is not None and delta.message.strip():
+        text = delta.message.strip()
+        if len(text) > AGENT_STATUS_MESSAGE_MAX_CHARS:
+            text = text[: AGENT_STATUS_MESSAGE_MAX_CHARS - 1].rstrip() + "…"
+        message = AgentTurnMessage(text=text, at=observed_at)
+        status.messages = [*status.messages, message][-AGENT_STATUS_MESSAGE_LIMIT:]
     return status
 
 
