@@ -84,7 +84,7 @@ def reconcile_pending_chat_mail(background: BackgroundAgentTasks) -> dict[str, s
     woken never hides a later one.
     """
     statuses: dict[str, str] = {}
-    for task in background.store.pending_chat_wakes():
+    for task in background.store.every_pending_chat_wake():
         try:
             statuses[task.operation_id] = _launch(background, task.operation_id)
         except (KeyError, ValueError, RuntimeError, OSError) as exc:

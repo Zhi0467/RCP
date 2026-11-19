@@ -656,7 +656,7 @@ class BackgroundAgentTasks:
         }
         chat_wakes = [
             task.operation_id
-            for task in self.store.pending_chat_wakes()
+            for task in self.store.every_pending_chat_wake()
             if self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
         ]
         self.store.interrupt_active_agent_tasks(

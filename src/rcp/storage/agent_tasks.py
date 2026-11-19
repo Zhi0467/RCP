@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -760,9 +760,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return self.agent_task(operation_id)
 
     def pending_chat_wakes(
-        self, project_id: str | None = None, chat_id: str | None = None
+        self,
+        project_id: str | None = None,
+        chat_id: str | None = None,
+        after: tuple[str, str] = ("", ""),
     ) -> list[AgentTaskRecord]:
-        """Committed chat wakes not yet launched, oldest first, optionally for one chat."""
+        """One page of committed chat wakes not yet launched, oldest first, after a keyset."""
         from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
 
         with self.connection() as connection:
@@ -771,10 +774,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 "AND json_extract(request_json,'$.chat_wake.kind') IS NOT NULL "
                 "AND kind IN ('node_chat','project_chat') "
                 "AND (? IS NULL OR (project_id=? AND json_extract(request_json,'$.chat_id')=?)) "
-                "ORDER BY created_at LIMIT ?",
-                (chat_id, project_id, chat_id, CHAT_MAIL_RECONCILE_LIMIT),
+                "AND (created_at,operation_id) > (?,?) "
+                "ORDER BY created_at,operation_id LIMIT ?",
+                (chat_id, project_id, chat_id, *after, CHAT_MAIL_RECONCILE_LIMIT),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
+
+    def every_pending_chat_wake(self) -> Iterator[AgentTaskRecord]:
+        """Every committed chat wake not yet launched, read in bounded keyset pages."""
+        after = ("", "")
+        while page := self.pending_chat_wakes(after=after):
+            yield from page
+            after = (page[-1].created_at, page[-1].operation_id)
 
     def question_for_followup(self, operation_id: str) -> QuestionRecord | None:
         """Keep an answer's binding through recovery children as well as its first turn."""

@@ -173,3 +173,29 @@ def test_restart_preserves_an_admitted_wake_before_its_first_dispatch(tmp_path, 
     assert [item.message_id for item in engine.store.claimed_episode_mail(wake.operation_id)] == [
         "mail"
     ]
+
+
+def test_restart_preserves_and_launches_an_admitted_wake_past_the_first_page(tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
+
+    monkeypatch.setattr("rcp.limits.CHAT_MAIL_RECONCILE_LIMIT", 1)
+    store, episode, root = _mailbox(tmp_path)
+    _mail(store, episode, root)
+    wake = store.admit_chat_wake("project", "chat", "episode_mail", ["mail"])
+    with store.connection() as connection:
+        connection.execute(
+            "CREATE TEMP TABLE older AS SELECT * FROM graph_runs WHERE operation_id=?",
+            (wake.operation_id,),
+        )
+        connection.execute(
+            "UPDATE older SET operation_id='older',created_at='2000-01-01T00:00:00+00:00',"
+            "native_session_id=NULL,request_json=json_set(request_json,'$.chat_id','elsewhere')"
+        )
+        connection.execute("INSERT INTO graph_runs SELECT * FROM older")
+    engine = BackgroundAgentTasks(AppStore(store.path), lambda *args: None)
+    monkeypatch.setattr(engine, "_schedule_remote_reconciliation", lambda **kwargs: None)
+    engine.recover_at_startup()
+    assert engine.store.agent_task(wake.operation_id).status == "queued"
+    background = _Background(engine.store)
+    reconcile_pending_chat_mail(background)
+    assert wake.operation_id in background.launched
