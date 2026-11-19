@@ -306,6 +306,7 @@ and is remembered per paper in this browser, since checking its own figures is
 part of coaching.
 
 Episode options sit inside the agent picker below the provider fields.
+An Experiment's picker starts at its latest episode's agent, else the Node chat profile.
 The chip matches Start's height and counts enabled options.
 Auto-research's branch name stays outside. Browser use has no caption.
 Affected turns show unavailable or lost access with its reason, server detail,

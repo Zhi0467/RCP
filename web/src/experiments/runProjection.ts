@@ -1,4 +1,5 @@
 import type {
+  AgentRunConfig,
   AgentTask,
   Episode,
   ExternalWatcherRecord,
@@ -339,4 +340,18 @@ function compareTaskAscending(left: AgentTask, right: AgentTask): number {
     left.created_at.localeCompare(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)
   );
+}
+
+export function experimentRunConfig(
+  run: ExperimentRun,
+  baseMachine: string,
+): AgentRunConfig | null {
+  const request = (run.currentTask ?? run.taskGroup?.latest)?.request;
+  if (!request?.provider) return null;
+  return {
+    provider: request.provider,
+    model: request.model ?? "",
+    reasoning: request.reasoning ?? "",
+    run_on: request.run_on || baseMachine,
+  };
 }
