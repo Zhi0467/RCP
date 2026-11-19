@@ -2483,6 +2483,12 @@ export interface AgentSubagent {
 }
 
 /** A running turn's context, compactions and subagents, as its provider reports them. */
+/** A finished assistant message the agent acted after; only a task's detail carries them. */
+export interface AgentTurnMessage {
+  text: string;
+  at: string;
+}
+
 export interface AgentStatus {
   context_tokens: number | null;
   context_window: number | null;
@@ -2490,6 +2496,7 @@ export interface AgentStatus {
   compacting: boolean;
   compactions: AgentCompaction[];
   subagents: AgentSubagent[];
+  messages: AgentTurnMessage[];
 }
 
 export interface AgentTask {

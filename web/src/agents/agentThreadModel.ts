@@ -136,7 +136,7 @@ export function parseAgentHash(hash: string): { threadId: string | null } | null
   }
 }
 
-export type TurnCommand = { id: string; text: string; seconds: number | null };
+export type TurnCommand = { id: string; text: string; seconds: number | null; at: number };
 
 /** One turn's RCP commands, paired start to exit, for its "Ran 4 commands" line. */
 export function turnCommands(task: Pick<AgentTask, "events">): TurnCommand[] {
@@ -157,11 +157,39 @@ export function turnCommands(task: Pick<AgentTask, "events">): TurnCommand[] {
   return [...commands.entries()].map(([id, { text, start, end }]) => ({
     id,
     text,
+    at: start,
     seconds:
       end !== null && Number.isFinite(start) && Number.isFinite(end)
         ? Math.max(0, Math.round((end - start) / 1000))
         : null,
   }));
+}
+
+export type TurnStep =
+  { kind: "message"; id: string; text: string; at: number } | ({ kind: "command" } & TurnCommand);
+
+/** One turn's in-between messages and RCP commands, in the order they happened. */
+export function turnSteps(task: Pick<AgentTask, "events" | "agent_status">): TurnStep[] {
+  const messages: TurnStep[] = (task.agent_status?.messages ?? []).map((message, index) => ({
+    kind: "message",
+    id: `message:${index}`,
+    text: message.text,
+    at: Date.parse(message.at),
+  }));
+  const commands: TurnStep[] = turnCommands(task).map((item) => ({ kind: "command", ...item }));
+  return [...messages, ...commands].sort((a, b) => (a.at || 0) - (b.at || 0));
+}
+
+/** The folded line names the parts a turn has: "2 messages · Ran 4 commands · 12s". */
+export function turnStepsSummary(steps: readonly TurnStep[]): string {
+  const messages = steps.filter((step) => step.kind === "message").length;
+  const commands = steps.flatMap((step) => (step.kind === "command" ? [step] : []));
+  return [
+    messages ? `${messages} ${messages === 1 ? "message" : "messages"}` : "",
+    commands.length ? turnCommandsSummary(commands) : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /** The folded line: "Ran 4 commands · 12s", with the total only when every command ended. */

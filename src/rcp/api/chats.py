@@ -642,7 +642,11 @@ def chat(
             message.browser_status = store.browser_turn_status(message.operation_id).public()
             task = tasks.get(message.operation_id)
             if message.role == "assistant":
-                message.agent_status = task.agent_status if task is not None else None
+                message.agent_status = (
+                    task.agent_status.model_copy(update={"messages": []})
+                    if task is not None and task.agent_status is not None
+                    else None
+                )
             elif task is not None and message.steering is None:
                 message.artifact_comments = _artifact_comments(store, task.request)
     stamp_shown_at(store, transcript.messages, tasks)

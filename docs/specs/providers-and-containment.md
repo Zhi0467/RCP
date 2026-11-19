@@ -1097,6 +1097,29 @@ compactions as `contextCompaction` items, and subagents as
 no context. When the machine card's auto-compact value is a token count, the
 launcher adds it to the snapshot.
 
+The snapshot also keeps the turn's in-between messages: finished assistant text
+the agent acted after. The provider runtime holds the latest top-level assistant
+text; the agent's next top-level item releases it as `AgentStatusDelta.message`,
+and text still held when the agent answers is the answer. Claude holds the text
+blocks of one top-level message (subagent text and thinking never count) and
+releases them on its next line; an answering result clears them. Codex app-server
+holds an `agentMessage` with `phase: "commentary"` and releases it on the next
+`item/started`. Commentary is never part of the answer, unless a turn completes
+with nothing else, when the last commentary is the answer. Other phases, and a
+missing one, are the answer. Codex exec items carry no phase, so it holds every
+`agent_message`, releases it on the next `item.started`, and answers with the one
+still held at `turn.completed`. OpenCode and agy report none. The
+fold keeps the newest `AGENT_STATUS_MESSAGE_LIMIT`, cuts each at
+`AGENT_STATUS_MESSAGE_MAX_CHARS` with an ellipsis, stamps each when the
+background task sees it, and writes at once. Recovered turns replay their
+deltas together, so their messages order by arrival. A requeued operation starts
+its snapshot afresh, so after Stop and Continue only the resumed run's messages
+remain.
+
+**Why:** the hold rule is structural, so no answer is matched by text and a
+steered or corrected turn never shows its reply twice. The snapshot owns these
+messages because it is display only and never exported or replayed.
+
 **Why:** the snapshot is display only. It never enters a prompt, Patch, answer,
 turn outcome, or usage accounting (invariant 4b), so a decoder gap degrades the
 panel and nothing else.

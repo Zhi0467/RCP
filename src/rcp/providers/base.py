@@ -139,6 +139,7 @@ class AgentStatusDelta(BaseModel):
     compacting: bool | None = None
     compaction: AgentCompaction | None = None
     subagent: AgentSubagent | None = None
+    message: str | None = None
 
 
 @dataclass(frozen=True)

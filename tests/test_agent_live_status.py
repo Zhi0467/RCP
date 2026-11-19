@@ -8,7 +8,11 @@ import pytest
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.background import AgentTaskExecution, TaskFailed
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import AGENT_STATUS_WRITE_SECONDS
+from rcp.limits import (
+    AGENT_STATUS_MESSAGE_LIMIT,
+    AGENT_STATUS_MESSAGE_MAX_CHARS,
+    AGENT_STATUS_WRITE_SECONDS,
+)
 from rcp.providers.base import AgentCompaction, AgentStatusDelta, AgentSubagent
 from rcp.providers.live_status import AgentStatus
 from rcp.runs.shared import _sse
@@ -125,3 +129,53 @@ def test_an_ended_turn_leaves_nothing_running(manifest, tmp_path, fails: bool) -
     status = tasks.store.agent_task("turn").agent_status
     assert not status.compacting
     assert [item.state for item in status.subagents] == ["failed" if fails else "completed"]
+
+
+def test_in_between_messages_are_written_at_once_and_only_the_task_detail_carries_them(
+    manifest, tmp_path
+) -> None:
+    app, request = _running_turn(manifest, tmp_path)
+    tasks = app.state.background_tasks
+    store = tasks.store
+    project_id = app.state.default_project_id
+
+    def texts() -> list[str]:
+        status = store.agent_task("turn").agent_status
+        return [item.text for item in status.messages] if status else []
+
+    async def frames():
+        yield _sse(AgentEvent(event="raw", status=AgentStatusDelta(context_tokens=10)))
+        yield _sse(AgentEvent(event="raw", status=AgentStatusDelta(message="Checking.")))
+        assert texts() == ["Checking."]
+        yield _sse(AgentEvent(event="raw", status=AgentStatusDelta(message="Found it.")))
+        assert texts() == ["Checking.", "Found it."]
+
+    execution = AgentTaskExecution(operation_id="turn", store=store, control=AgentProcessControl())
+    asyncio.run(tasks._consume(project_id, "project_chat", request, execution, source=frames()))
+
+    assert texts() == ["Checking.", "Found it."]
+    assert all(item.at for item in store.agent_task("turn").agent_status.messages)
+    client = signed_in_client(app)
+    detail = client.get(f"/api/projects/{project_id}/tasks/turn").json()
+    assert [item["text"] for item in detail["agent_status"]["messages"]] == texts()
+    (row,) = [
+        row
+        for row in client.get(f"/api/projects/{project_id}/tasks").json()
+        if row["operation_id"] == "turn"
+    ]
+    assert row["agent_status"]["messages"] == []
+    assert row["agent_status"]["context_tokens"] == 10
+
+
+def test_the_newest_messages_are_kept_and_a_long_one_is_cut() -> None:
+    from rcp.providers.live_status import fold_agent_status
+
+    status = None
+    for index in range(AGENT_STATUS_MESSAGE_LIMIT + 2):
+        status = fold_agent_status(status, AgentStatusDelta(message=f"m{index}"), observed_at="t")
+    status = fold_agent_status(
+        status, AgentStatusDelta(message="x" * (AGENT_STATUS_MESSAGE_MAX_CHARS + 50))
+    )
+    assert len(status.messages) == AGENT_STATUS_MESSAGE_LIMIT
+    assert status.messages[0].text == "m3"
+    assert len(status.messages[-1].text) == AGENT_STATUS_MESSAGE_MAX_CHARS

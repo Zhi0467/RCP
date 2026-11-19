@@ -11,11 +11,13 @@ from typing import TYPE_CHECKING
 from rcp.limits import CODEX_DENY_GLOB_SCAN_MAX_DEPTH
 from rcp.providers.base import (
     AgentCapability,
+    AgentStatusDelta,
     ModelChoice,
     ProviderNativeUpdate,
     ProviderProfile,
     ProviderRuntime,
     ProviderRuntimeChoice,
+    ProviderRuntimeStep,
     ProviderSkill,
     ProviderSkillProbe,
     ProviderStreamEvent,
@@ -23,6 +25,7 @@ from rcp.providers.base import (
     ProviderTurnRequest,
     ProviderUsage,
     _JsonlProviderRuntime,
+    _JsonlProviderTurn,
     _optional_usage_int,
     _require_project_write_scope,
     _usage_dedupe_key,
@@ -605,7 +608,44 @@ class _CodexExecRuntime(_JsonlProviderRuntime):
                 autocompact=request.autocompact,
             )
             request = replace(request, legacy_command=command)
-        return super().turn(request)
+        return _CodexExecTurn(self._profile, request)
+
+
+class _CodexExecTurn(_JsonlProviderTurn):
+    """An agent message is in-between once Codex acts after it; the one still held answers."""
+
+    def __init__(self, profile: ProviderProfile, request: ProviderTurnRequest) -> None:
+        super().__init__(profile, request)
+        self._held_answer: str | None = None
+
+    def receive_line(self, line: str) -> ProviderRuntimeStep:
+        step = super().receive_line(line)
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            return step
+        kind = value.get("type") if isinstance(value, dict) else None
+        events: list[ProviderStreamEvent] = []
+        if kind == "item.started" and self._held_answer is not None:
+            text, self._held_answer = self._held_answer, None
+            events.append(
+                ProviderStreamEvent(
+                    event="message", text=text, status=AgentStatusDelta(message=text)
+                )
+            )
+        for event in step.events:
+            if event.event == "answer" and kind == "item.completed":
+                self._held_answer = event.text
+                if event.usage is not None or event.status is not None:
+                    events.append(
+                        ProviderStreamEvent(event="raw", usage=event.usage, status=event.status)
+                    )
+                continue
+            events.append(event)
+        if kind == "turn.completed" and self._held_answer is not None:
+            events.insert(0, ProviderStreamEvent(event="answer", text=self._held_answer))
+            self._held_answer = None
+        return replace(step, events=tuple(events))
 
 
 def __getattr__(name: str) -> object:
