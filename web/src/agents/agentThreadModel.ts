@@ -194,6 +194,8 @@ export function approvalCardTitle(card: ApprovalCard): string {
       return action.writable
         ? `Let agents write to ${action.alias}?`
         : `Make ${action.alias} read-only?`;
+    case "experiment_start":
+      return "Experiment plan";
     case "auto_research":
       return `Start Auto-research for up to ${action.invocation_ceiling} turns?`;
     case "merge_branch":

@@ -57,7 +57,7 @@ import {
 } from "./experiments/episodeResources";
 import { paperFileRequest, paperProfile } from "./paper/paperResources";
 import type { PaperEditorState } from "./paper/PaperWorkspace";
-import { canStartExperiment } from "./experiments/experimentStart";
+import { SYNC_BEFORE_START, canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
 import { ShareLinkNotice } from "./desktop/ShareLinkNotice";
@@ -3322,7 +3322,7 @@ function MemberApp({
       }
       if (mutationsDisabled) throw new Error("Graph mutations are currently disabled.");
       if (experimentStartRequiresSync) {
-        throw new Error("Sync staged graph changes before starting an episode.");
+        throw new Error(SYNC_BEFORE_START);
       }
       const control = project.experiment_control?.[node.id];
       if (!canStartExperiment(control, graphTarget, isolation?.graph_isolation)) {

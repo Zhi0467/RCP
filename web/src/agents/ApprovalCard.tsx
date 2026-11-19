@@ -1,6 +1,7 @@
 import {
   ChevronRight,
   Files,
+  FlaskConical,
   GitMerge,
   Lightbulb,
   LoaderCircle,
@@ -26,12 +27,13 @@ import { decideProposalCard, resolveApprovalCard } from "./agentThreadsApi";
 const ICONS: Record<ApprovalCardKind, LucideIcon> = {
   proposal: Lightbulb,
   truth_scope: LockKeyhole,
+  experiment_start: FlaskConical,
   auto_research: Rocket,
   merge_branch: GitMerge,
   merge_episode: GitMerge,
 };
 
-type Busy = "approve" | "decline" | null;
+export type Busy = "approve" | "decline" | null;
 
 type SettledResult = NonNullable<ApprovalCard["result"]>;
 
@@ -45,7 +47,8 @@ function settledLabel(result: SettledResult): string {
 
 /**
  * One approval card as the member sees it: open with its buttons, or settled to one
- * line. It decides nothing itself; its adapter runs each tap.
+ * line. It decides nothing itself; its adapter runs each tap. A card with a `body`
+ * shows it always, in place of See details, and names its own chip and buttons.
  */
 export function ApprovalCardShell({
   icon: Icon,
@@ -53,8 +56,15 @@ export function ApprovalCardShell({
   state,
   stateLabel,
   project,
+  chip,
   askedAt,
   details,
+  body,
+  className,
+  approveLabel = "Approve",
+  declineLabel = "Decline",
+  approveDisabled = false,
+  declineDisabled = false,
   error,
   busy,
   running,
@@ -69,7 +79,15 @@ export function ApprovalCardShell({
   state: string;
   stateLabel: string;
   project: { id: string; name: string } | null;
-  details: ReactNode;
+  /** Shown under the title whether open or settled, in place of the project chip. */
+  chip?: ReactNode;
+  details?: ReactNode;
+  body?: ReactNode;
+  className?: string;
+  approveLabel?: string;
+  declineLabel?: string;
+  approveDisabled?: boolean;
+  declineDisabled?: boolean;
   error: string | null;
   busy: Busy;
   running: boolean;
@@ -77,11 +95,12 @@ export function ApprovalCardShell({
   onDecline: () => void;
   onLater?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [toggled, setOpen] = useState(false);
+  const open = toggled || body !== undefined;
   const pending = state === "pending";
   return (
     <section
-      className={`approval-card${open ? " open" : ""}`}
+      className={`approval-card${open ? " open" : ""}${className ? ` ${className}` : ""}`}
       tabIndex={-1}
       data-state={state}
       aria-label={title}
@@ -92,7 +111,8 @@ export function ApprovalCardShell({
         </span>
         <div className="approval-title">
           <strong>{title}</strong>
-          {project && pending && (
+          {chip}
+          {!chip && project && pending && (
             <a
               className="entity-chip project"
               href={`#/projects/${encodeURIComponent(project.id)}`}
@@ -107,7 +127,7 @@ export function ApprovalCardShell({
         </span>
         <AskedTime at={askedAt} />
       </div>
-      {open && <div className="approval-details">{details}</div>}
+      {body ?? (open && <div className="approval-details">{details}</div>)}
       {error && (
         <p className="approval-error" role="alert">
           {error}
@@ -115,34 +135,64 @@ export function ApprovalCardShell({
       )}
       {pending && (
         <div className="approval-actions">
-          <button
-            className="approval-see"
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen(!open)}
-          >
-            See details
-            <ChevronRight size={14} aria-hidden="true" />
-          </button>
+          {body === undefined && (
+            <button
+              className="approval-see"
+              type="button"
+              aria-expanded={open}
+              onClick={() => setOpen(!open)}
+            >
+              See details
+              <ChevronRight size={14} aria-hidden="true" />
+            </button>
+          )}
           {onLater && (
             <button className="approval-later" type="button" onClick={onLater}>
               Later
             </button>
           )}
-          <button className="button secondary" type="button" disabled={running} onClick={onDecline}>
+          <button
+            className="button secondary"
+            type="button"
+            disabled={running || declineDisabled}
+            onClick={onDecline}
+          >
             {busy === "decline" && <LoaderCircle className="spin" size={14} />}
-            Decline
+            {declineLabel}
           </button>
-          <button className="button primary" type="button" disabled={running} onClick={onApprove}>
+          <button
+            className="button primary"
+            type="button"
+            disabled={running || approveDisabled}
+            onClick={onApprove}
+          >
             {(busy === "approve" || (running && busy === null)) && (
               <LoaderCircle className="spin" size={14} />
             )}
-            Approve
+            {approveLabel}
           </button>
         </div>
       )}
     </section>
   );
+}
+
+/** Where an asked card stands: open, settled with its outcome, or expired by the server. */
+export function askedCardState(
+  question: AgentQuestion,
+  card: ApprovalCard,
+): { pending: boolean; state: string; stateLabel: string } {
+  const answered = question.state === "answered" || question.state === "dismissed";
+  // The server settles expiry; a device clock never decides it.
+  const expired = !answered && card.state === "expired";
+  const pending = !answered && !expired;
+  const answer = answered && card.result ? settledLabel(card.result) : (question.answer ?? "");
+  const state = answered
+    ? (card.result?.outcome ?? question.answer?.split(":")[0] ?? "answered")
+    : expired
+      ? "expired"
+      : "pending";
+  return { pending, state, stateLabel: pending ? "Needs you" : answered ? answer : "Expired" };
 }
 
 /**
@@ -164,16 +214,7 @@ export function AskedApprovalCard({
 }) {
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
-  const answered = question.state === "answered" || question.state === "dismissed";
-  // The server settles expiry; a device clock never decides it.
-  const expired = !answered && card.state === "expired";
-  const pending = !answered && !expired;
-  const answer = answered && card.result ? settledLabel(card.result) : (question.answer ?? "");
-  const state = answered
-    ? (card.result?.outcome ?? question.answer?.split(":")[0] ?? "answered")
-    : expired
-      ? "expired"
-      : "pending";
+  const { state, stateLabel } = askedCardState(question, card);
   const decide = async (decision: "approve" | "decline") => {
     setBusy(decision);
     setError(null);
@@ -197,7 +238,7 @@ export function AskedApprovalCard({
       icon={ICONS[card.kind]}
       title={approvalCardTitle(card)}
       state={state}
-      stateLabel={pending ? "Needs you" : answered ? answer : "Expired"}
+      stateLabel={stateLabel}
       project={projectName ? { id: card.action.project_id, name: projectName } : null}
       askedAt={question.created_at}
       details={

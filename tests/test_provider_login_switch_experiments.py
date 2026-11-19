@@ -1,34 +1,32 @@
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
-from rcp.agents import AgentProcessControl
-from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.background import AgentTaskExecution
 from rcp.machine_cards import BACKEND_MACHINE_ID
+from rcp.runs.experiment_admission import WorkExperimentStart
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
-from rcp.runs.questions import work_command_handler
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
-from rcp.transport.workspace_mailbox import RunStageMailbox
 
 from .helpers import append_fixture_patch, authorized_human, seed_patch, wait_for_task
 from .helpers import create_named_app as create_app
 from .provider_login_switch_helpers import switch_background
 from .test_experiment_questions import _ready_answer
 from .test_provider_login_resolver import _login
-from .test_work_experiment_kickoff import WORK_TURN, _experiment_patch, _kickoff
+from .test_work_experiment_kickoff import EXPERIMENT_ID, WORK_TURN, _experiment_patch
 
 
 @pytest.mark.parametrize("direction", ["personal_to_team", "team_to_personal"])
-@pytest.mark.parametrize("operation", ["work_kickoff", "experiment_answer_wake"])
+@pytest.mark.parametrize("operation", ["work_card_start", "experiment_answer_wake"])
 def test_experiment_entry_point_resolves_usable_login(manifest, tmp_path, direction, operation):
     selected = []
     stage = tmp_path / "stage"
     stage.mkdir()
-    if operation == "work_kickoff":
+    if operation == "work_card_start":
         app = create_app(str(manifest.path), data_dir=tmp_path / "data")
         append_fixture_patch(app.state.service, seed_patch())
         append_fixture_patch(app.state.service, _experiment_patch())
@@ -78,27 +76,31 @@ def test_experiment_entry_point_resolves_usable_login(manifest, tmp_path, direct
     store.mark_provider_login_signed_out(
         old, member_id=member.user_id, source="restore", detail="expired"
     )
-    if operation == "work_kickoff":
-        (stage / "goal.md").write_text("Run the comparison.", encoding="utf-8")
-        execution = AgentTaskExecution(
-            operation_id=WORK_TURN,
-            store=store,
-            control=AgentProcessControl(),
-            experiment_starter=tasks.experiment_starter,
-        )
-        result = work_command_handler(execution, None, mailbox=RunStageMailbox(stage, None))(
-            _kickoff("switched"),
-            CommandTurnIdentity(
-                episode_id=None, task_id=WORK_TURN, turn_id="turn", authority="broker"
+    if operation == "work_card_start":
+        from rcp.api.experiments import start_work_experiment
+
+        root = start_work_experiment(
+            app.state.catalog,
+            tasks,
+            app.state.services.experiment_operation_lock,
+            WorkExperimentStart(
+                source_operation_id=WORK_TURN,
+                episode_id=str(uuid.uuid4()),
+                node_id=EXPERIMENT_ID,
+                goal="Run the comparison.",
+                invocation_limit=None,
+                provider=None,
+                model=None,
+                reasoning=None,
+                authorized_by=member,
             ),
         )
-        assert result.status == "ok", result.message
-        operation_id = store.episode(result.result["episode_id"]).root_operation_id
+        operation_id = root.operation_id
     else:
         reconcile_experiment_question_answers(tasks)
         operation_id = store.get_question(question.question_id).followup_operation_id
     assert operation_id is not None
     finished = wait_for_task(store, operation_id, expect="succeeded")
     assert finished.login_id == new.login_id
-    assert selected == [(new, None if operation == "work_kickoff" else "native-session", None)]
+    assert selected == [(new, None if operation == "work_card_start" else "native-session", None)]
     assert store.agent_task(previous).login_id == old.login_id

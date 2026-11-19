@@ -583,6 +583,14 @@ _EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a wa
 - After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.
   Do not wait in a polling loop. A completed check is not proof of scientific success."""
 
+_EXPERIMENT_ROUTING = """Start an Experiment for work that answers a research question and needs
+more than one shot: runs that iterate, need debugging, take hours, or could
+change what the project believes. The Experiment agent carries it from start
+to finish. Do everything else yourself in this chat: infrastructure and
+tooling of any size, and short one-shot checks, such as a smoke test, a pilot
+that decides whether a study is worth planning, or a quick measurement that
+answers the human's question. Launch it, arm a watch, and report."""
+
 _CURRENT_OPERATIONAL_INSTRUCTIONS = """These current execution and watcher instructions replace earlier launch and external-watcher
 instructions. They grant no authority beyond the current task contract. Preserve the objective and
 completed work."""
@@ -1006,7 +1014,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v16"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v33"
+WORK_POLICY_VERSION = "work-v35"
 
 
 class PromptFactory:
@@ -1617,6 +1625,8 @@ Operational authority:
   Patch. The operational result and graph reflection are independent.
 {paper_writing}
 {execution_rules}
+
+{_EXPERIMENT_ROUTING}
 
 {REPLY_STYLE}
 

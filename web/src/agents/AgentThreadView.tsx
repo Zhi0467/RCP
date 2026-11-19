@@ -100,6 +100,8 @@ import {
   type StackCard,
 } from "./ApprovalCardStack";
 import { RunningPopover } from "./RunningPopover";
+import { ExperimentPlanCard } from "./ExperimentPlanCard";
+import { isPlanCardQuestion } from "./experimentPlanModel";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText, stoppedByMember } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -1303,7 +1305,9 @@ export function AgentThreadView({
     ...cards.asked.map((question) => question.question_id),
     ...(cards.loading
       ? questions.flatMap((question) =>
-          question.card && question.state === "pending" ? [question.question_id] : [],
+          question.card && question.state === "pending" && !isPlanCardQuestion(question)
+            ? [question.question_id]
+            : [],
         )
       : []),
   ]);
@@ -1505,6 +1509,9 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
+          renderPlanCard={(question) => (
+            <ExperimentPlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
+          )}
           shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (
             <ApprovalCardStack

@@ -18,7 +18,7 @@ from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ExperimentLoop
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, AWAITING_HUMAN_AGENT_TASK_STATUSES
 
 if TYPE_CHECKING:
-    from rcp.background import BackgroundAgentTasks
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 
 
 def experiment_control(
@@ -202,11 +202,11 @@ def fresh_experiment_run_request(
 
 @dataclass(frozen=True)
 class WorkExperimentStart:
-    """One Work turn's Experiment kickoff, resolved by its command handler."""
+    """One Start a member pressed on a Work chat's Experiment plan card."""
 
-    #: The Work task that issued the command; it supplies project, target and authorizer.
+    #: The Work turn that raised the card; it supplies project, target and run scope.
     source_operation_id: str
-    #: Derived from the turn and the command key, so a replay names the same episode.
+    #: Derived from the card's request, so a repeated or resumed Start names the same episode.
     episode_id: str
     node_id: str
     goal: str
@@ -214,9 +214,10 @@ class WorkExperimentStart:
     provider: str | None
     model: str | None
     reasoning: str | None
+    authorized_by: AuthorizedHuman
 
 
-WorkExperimentStarter = Callable[[WorkExperimentStart], AgentTaskRecord]
+WorkExperimentCardRaiser = Callable[["AgentTaskExecution"], None]
 
 
 @dataclass(frozen=True)

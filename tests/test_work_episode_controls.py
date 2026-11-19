@@ -88,7 +88,7 @@ class _Member:
             operation_id=operation_id,
             store=self.store,
             control=AgentProcessControl(),
-            experiment_starter=self.background.experiment_starter,
+            experiment_card_raiser=self.background.experiment_card_raiser,
             episode_controls=self.background.episode_controls,
         )
         handler = work_command_handler(

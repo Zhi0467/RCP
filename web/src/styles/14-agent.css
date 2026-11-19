@@ -838,6 +838,122 @@
   font-weight: 600;
   margin-right: 6px;
 }
+
+/* ---------- Experiment plan card: inline in its turn's answer, always open ---------- */
+.chat-markdown .approval-card.plan {
+  margin: 12px 0 4px;
+}
+.approval-card.plan button.entity-chip {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: var(--type-2xs);
+  justify-self: start;
+  max-width: 100%;
+}
+.approval-card.plan .approval-title {
+  grid-template-columns: minmax(0, 1fr);
+}
+.approval-card.plan button.entity-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.plan-body {
+  gap: 12px;
+}
+.chat-markdown .plan-body h4 {
+  font-size: var(--type-md);
+  font-weight: 650;
+  line-height: 1.35;
+  margin: 0;
+}
+.plan-section {
+  border-left: 2px solid var(--line);
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 1px 0 1px 12px;
+}
+.plan-section.run {
+  border-left-color: color-mix(in srgb, var(--cobalt) 60%, var(--line));
+}
+.approval-details .plan-section dt {
+  align-items: center;
+  display: flex;
+  font-size: var(--type-3xs);
+  font-weight: 750;
+  gap: 6px;
+  letter-spacing: 0.08em;
+  min-height: 22px;
+  text-transform: uppercase;
+}
+.approval-details .plan-section dd {
+  font: inherit;
+  line-height: 1.55;
+  text-align: left;
+}
+.chat-markdown .plan-section :is(p, ul) {
+  margin: 0;
+}
+.plan-goal {
+  white-space: pre-wrap;
+}
+.plan-edit {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  display: inline-flex;
+  height: 22px;
+  justify-content: center;
+  opacity: 0.7;
+  transition: opacity 0.14s ease;
+  width: 22px;
+}
+.plan-edit:hover,
+.plan-edit:focus-visible {
+  color: var(--ink);
+  opacity: 1;
+}
+.plan-goal-input {
+  font: inherit;
+  line-height: 1.55;
+  resize: vertical;
+  width: 100%;
+}
+.plan-launch {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plan-turns {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 6px;
+}
+.plan-turns input {
+  font: inherit;
+  color: var(--ink);
+  width: 5.5em;
+}
+.plan-note {
+  color: var(--muted);
+}
+.approval-card.plan .approval-actions {
+  justify-content: flex-end;
+}
+.approval-card.plan .approval-actions .button.secondary {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  min-width: 0;
+}
+.approval-card.plan .approval-actions .button.secondary:hover:not(:disabled) {
+  color: var(--ink);
+}
 .approval-card:not([data-state="pending"]) .question-state {
   flex: 0 1 auto;
   max-width: 50%;
@@ -1261,6 +1377,22 @@
   }
   .approval-see {
     flex-basis: 100%;
+    min-height: 44px;
+  }
+  .plan-edit {
+    height: 44px;
+    margin: -11px 0;
+    width: 44px;
+  }
+  .plan-turns input,
+  .plan-goal-input,
+  .approval-card.plan .agent-config-fields select {
+    font-size: 16px;
+  }
+  .plan-turns input {
+    min-height: 44px;
+  }
+  .approval-card.plan .agent-config-chip {
     min-height: 44px;
   }
   .upcoming-button {

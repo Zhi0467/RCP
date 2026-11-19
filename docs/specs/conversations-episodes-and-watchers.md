@@ -901,23 +901,28 @@ effects or reopen an old episode.
 
 ### Work-started episodes
 
-A member's ordinary Work chat, including its wakes, may start, steer, extend and
-stop the Experiments and Auto-research episodes that member asks for, as the
+A member's ordinary Work chat, including its wakes, may start Auto-research, raise
+Experiment plan cards, and steer, extend and stop the episodes that member asks for, as the
 member's own Runs controls would. The turn's authorizer authorizes each act.
 Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
 **Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
-<file>` runs on the chat's own graph target. A human Run, this command and an
-orchestrator kickoff share one readiness rule, so the node must already be on the
-graph and ready. `--invocation-limit` may shorten the episode but never exceed
-the node's limit, and the goal file is required. Provider, model and effort are
-the agent's pick from the ready profiles, otherwise Settings. The prompt starts
-one only when the member asks, after auditing the Experiment and its neighbors.
-When the audit finds something to fix, the agent writes the fix and does not
-start, because its Patch lands only after the turn. After a start it arms a
-node-status watcher on the Experiment's closed statuses.
+<file>` raises a [plan card](authority-and-proposals.md#experiment-plan-cards)
+on the chat's own graph target instead of starting. The card appears when the
+turn's Patch lands, so the agent writes and fixes the node in the same turn.
+`--invocation-limit` may shorten the episode but never exceed the node's limit,
+and the goal file is required. Provider, model and effort are the agent's pick
+from the ready profiles, otherwise Settings; the human may change all three on
+the card. Readiness is checked at Start. After the card is approved the agent
+arms a node-status watcher on the Experiment's closed statuses.
+
+**Choosing the route.** The Work prompt sends work that answers a research
+question and needs more than one shot (iteration, debugging, hours of compute,
+or results that could change project beliefs) to an Experiment. Infrastructure
+and tooling of any size, and short one-shot checks, stay in the chat with a
+launch and a watch. This is guidance; nothing caps a direct launch.
 
 **Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
 --invocation-limit <n>` starts a new episode on a new branch from main, through

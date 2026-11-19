@@ -62,10 +62,7 @@ from rcp.api.episodes import (
     serialize_episode,
 )
 from rcp.api.experiment_controls import _experiment_control_response
-from rcp.api.experiments import (
-    resume_work_experiment,
-    start_work_experiment,
-)
+from rcp.api.experiments import resume_work_experiment
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
@@ -180,7 +177,6 @@ from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
-    WorkExperimentStart,
     reconcile_reserved_experiment_branch_roots,
 )
 from rcp.runs.experiment_loop import (
@@ -217,6 +213,7 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.work_experiment_commands import raise_experiment_plan_cards
 from rcp.server_ops.backup import BackupArchiveReceipt, latest_protected_backup_receipt
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
@@ -1247,8 +1244,8 @@ def create_app(
             )
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
-    def start_experiment_from_work(start: WorkExperimentStart) -> AgentTaskRecord:
-        return start_work_experiment(catalog, background_tasks, experiment_operation_lock, start)
+    def raise_experiment_cards_from_work(execution: AgentTaskExecution) -> None:
+        raise_experiment_plan_cards(execution, catalog)
 
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
@@ -1271,7 +1268,7 @@ def create_app(
         recorded_stream=background_recorded_task_stream,
         resume_command_mailbox=background_resume_command_mailbox,
         dependency_checker=dependency_checker,
-        experiment_starter=start_experiment_from_work,
+        experiment_card_raiser=raise_experiment_cards_from_work,
         experiment_resumer=resume_experiment_from_work,
         episode_controls=MemberEpisodeControls(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission

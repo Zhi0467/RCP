@@ -17,11 +17,12 @@ from rcp.agents.staged_command_client import (
     episode_control_usage,
     experiment_kickoff_usage,
 )
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
+from rcp.approval_actions import ExperimentStartAction
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment
+from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentResumer,
-    WorkExperimentStart,
 )
 from rcp.runs.work_episode_controls import (
     chat_started_episode,
@@ -35,10 +36,13 @@ from rcp.runs.work_episode_controls import (
     turn_keyed_id,
     turn_lineage,
 )
+from rcp.service import ProjectService
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
+    from rcp.projects import ProjectCatalog
     from rcp.storage import AppStore, EpisodeRecord
+    from rcp.storage.question_models import QuestionRecord
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
 _RECEIPT = "work_experiment_kickoff"
@@ -46,11 +50,11 @@ _RESUME_RECEIPT = "work_experiment_resume"
 
 
 def work_experiment_allowed(execution: AgentTaskExecution | None) -> bool:
-    """Only a human's ordinary Work chat, or a wake in it, may start an Experiment."""
+    """Only a human's ordinary Work chat, or a wake in it, may raise an Experiment plan card."""
 
     return (
         execution is not None
-        and execution.experiment_starter is not None
+        and execution.experiment_card_raiser is not None
         and member_work_chat_turn(execution)
     )
 
@@ -229,10 +233,20 @@ def _handle_work_experiment_kickoff(
     request: EpisodeCommandRequest,
     arguments: ExperimentKickoffArguments,
 ) -> CommandResponse:
-    """Start one Experiment episode, or answer a replay of the same key with it."""
+    """Record a plan card request for when this turn lands, or replay the same key.
 
-    def refuse(message: str) -> CommandResponse:
-        return CommandResponse(request_id=request.request_id, status="invalid", message=message)
+    A key that started an episode before plan cards still answers with that episode.
+    """
+
+    from rcp.runs.questions import work_ask_authorized
+
+    def refuse(message: str, code: str | None = None) -> CommandResponse:
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message=message,
+            result={"code": code} if code else {},
+        )
 
     if arguments.at is not None or arguments.target is not None or arguments.seed_file is not None:
         return refuse(
@@ -240,7 +254,11 @@ def _handle_work_experiment_kickoff(
         )
     if arguments.goal_file is None:
         return refuse("Experiment kickoff from Work requires --goal-file.")
-    if mailbox is None or execution.experiment_starter is None:
+    if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
+        return refuse(
+            "This turn cannot raise an Experiment plan card.", "experiment_card_unavailable"
+        )
+    if mailbox is None or execution.experiment_card_raiser is None:
         return CommandResponse(
             request_id=request.request_id,
             status="unavailable",
@@ -253,60 +271,132 @@ def _handle_work_experiment_kickoff(
 
     store = execution.store
     lineage = turn_lineage(execution)
-    episode_id = turn_keyed_id(lineage, "episode", request.idempotency_key)
+    kickoff_id = turn_keyed_id(lineage, "episode", request.idempotency_key)
     intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
-    previous = previous_receipt(store, lineage, _RECEIPT, episode_id=episode_id)
+    episode = store.episode(kickoff_id)
+    if episode is not None:
+        started = previous_receipt(store, lineage, _RECEIPT, episode_id=kickoff_id)
+        if started is not None and started.get("intent_sha256") != intent:
+            return refuse("This key already started a different Experiment; use a new key.")
+        return CommandResponse(
+            request_id=request.request_id,
+            status="ok",
+            result={
+                "disposition": "existing",
+                "episode_id": kickoff_id,
+                "node_id": arguments.node_id,
+                "status": episode.status,
+                "invocation_limit": episode.invocation_ceiling,
+            },
+        )
+    previous = previous_receipt(store, lineage, _RECEIPT, kickoff_id=kickoff_id)
     if previous is not None and previous.get("intent_sha256") != intent:
-        return refuse("This key already started a different Experiment; use a new key.")
-    episode = store.episode(episode_id)
-    if episode is None:
-        if previous is None:
-            store.record_agent_task_receipt(
-                execution.operation_id,
-                _RECEIPT,
-                {"episode_id": episode_id, "intent_sha256": intent},
-                tier="diagnostic",
-            )
-        try:
-            execution.experiment_starter(
-                WorkExperimentStart(
-                    source_operation_id=execution.operation_id,
-                    episode_id=episode_id,
-                    node_id=arguments.node_id,
-                    goal=goal,
-                    invocation_limit=arguments.invocation_limit,
-                    provider=arguments.provider,
-                    model=arguments.model,
-                    reasoning=arguments.reasoning,
-                )
-            )
-        except ValueError as exc:
-            return refuse(str(exc))
-        except Exception as exc:
-            return CommandResponse(
-                request_id=request.request_id, status="unavailable", message=str(exc)
-            )
-        episode = store.episode(episode_id)
-        # Admission commits the episode with its first task before returning.
-        assert episode is not None
-        disposition = "created"
-    else:
-        disposition = "existing"
-    store.record_agent_task_event(
-        execution.operation_id,
-        f"Experiment {arguments.node_id} {disposition}: episode {episode_id}.",
-    )
+        return refuse("This key already raised a different plan card; use a new key.")
+    if previous_receipt(store, (execution.operation_id,), _RECEIPT, kickoff_id=kickoff_id) is None:
+        store.record_agent_task_receipt(
+            execution.operation_id,
+            _RECEIPT,
+            {
+                "phase": "card_pending",
+                "kickoff_id": kickoff_id,
+                "intent_sha256": intent,
+                "node_id": arguments.node_id,
+                "goal": goal,
+                "invocation_limit": arguments.invocation_limit,
+                "provider": arguments.provider,
+                "model": arguments.model,
+                "reasoning": arguments.reasoning,
+            },
+            tier="diagnostic",
+        )
     return CommandResponse(
         request_id=request.request_id,
         status="ok",
-        result={
-            "disposition": disposition,
-            "episode_id": episode_id,
-            "node_id": arguments.node_id,
-            "status": episode.status,
-            "invocation_limit": episode.invocation_ceiling,
-        },
+        result={"disposition": "card_pending", "node_id": arguments.node_id},
     )
+
+
+def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
+    """Raise the plan cards a finished Work turn's kickoffs asked for, from the settled graph.
+
+    Only a succeeded turn raises them. A node that is missing or not an Experiment gets a
+    task event instead, and a new card for a node replaces this chat's older pending one.
+    """
+
+    store = execution.store
+    task = store.agent_task(execution.operation_id)
+    if task is None or task.status != "succeeded":
+        return
+    requests = {
+        str(receipt.payload["kickoff_id"]): receipt.payload
+        for receipt in store.agent_task_receipts_by_category(execution.operation_id, _RECEIPT)
+        if receipt.payload.get("phase") == "card_pending"
+    }
+    if not requests:
+        return
+    from rcp.runs.agent_threads import task_owner
+    from rcp.runs.questions import question_origin
+
+    origin = question_origin(execution)
+    service = task_owner(store, task, catalog=catalog)
+    assert isinstance(service, ProjectService) and task.authorized_by is not None
+    state = service.history.state()
+    for kickoff_id, payload in requests.items():
+        node_id = str(payload["node_id"])
+        node = state.nodes.get(node_id)
+        if not isinstance(node, Experiment):
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"No plan card for {node_id}: it is not an Experiment on this chat's graph.",
+                level="warning",
+            )
+            continue
+        action = ExperimentStartAction.model_validate(
+            {
+                "kind": "experiment_start",
+                "project_id": task.project_id,
+                "node_id": node_id,
+                "branch_id": task.graph_target.branch_id,
+                "goal": payload["goal"],
+                "invocation_ceiling": payload["invocation_limit"] or node.invocation_ceiling,
+                "provider": payload["provider"],
+                "model": payload["model"],
+                "reasoning": payload["reasoning"],
+                "run_truth_scope": task.request.get("run_truth_scope"),
+            }
+        )
+        question = store.create_or_get_question(
+            origin=origin,
+            key=f"experiment-start:{kickoff_id}",
+            question=f"Start {node.title}?",
+            choices=["Approve", "Decline"],
+            card={
+                "action": action.model_dump(mode="json"),
+                "pinned": approval_pins(service, store, action, task.authorized_by, state=state),
+            },
+        )
+        _settle_replaced_cards(store, question, node_id)
+        store.record_agent_task_event(
+            execution.operation_id, f"Plan card raised for Experiment {node_id}."
+        )
+
+
+def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, node_id: str) -> None:
+    origin = newest.origin
+    older = [
+        item.question_id
+        for item in store.list_questions(
+            project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
+        )
+        if item.question_id != newest.question_id and item.state == "pending"
+    ]
+    for question_id, card in store.approval_cards(older).items():
+        if (
+            card["kind"] == "experiment_start"
+            and card["action"]["node_id"] == node_id
+            and store.claim_approval_card(question_id)
+        ):
+            store.settle_approval_card(question_id, {"outcome": "stale"})
 
 
 def work_experiment_command_usage(client: str, profile_choices: str) -> str:
@@ -324,24 +414,32 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "so in your reply. To change an Experiment and run it again, stop it, fix the "
         "Experiment in your Patch, and start a new episode in a later turn once the loop "
         "status shows it stopped.\n"
-        "Experiment kickoff starts a new episode: only when the human asks you to run or start "
-        "an Experiment (in a chat on that Experiment, 'run it' counts) and no paused episode "
-        "should resume instead. Otherwise suggest one in your reply. "
-        "Before starting, audit the Experiment and every node one edge away (its Hypotheses, "
-        "Decisions, Blockers, and Evidence). If anything is wrong or missing, fix it in this "
-        "turn's Patch, do not start, and say so: graph edits land when the turn ends, so the "
-        "human's next message starts it on the fixed graph. Only an Experiment already on the "
-        "graph and ready can start.\n"
+        "Experiment kickoff raises a plan card for a new episode: only when the human asks you "
+        "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
+        "paused episode should resume instead. Otherwise suggest one in your reply. "
+        "Before kickoff, audit the Experiment and every node one edge away (its Hypotheses, "
+        "Decisions, Blockers, and Evidence). Write or fix the Experiment and its neighbors in "
+        "this same turn's Patch: graph edits land when the turn ends, and the card appears "
+        "then, drawn from the settled graph. A node that is missing or not an Experiment by "
+        "then gets no card and a task event.\n"
         f"`{client} episode --key <key> "
         f"{experiment_kickoff_usage(goal_required=True, child_targets=False)}`\n"
         "Write the goal first as a direct regular UTF-8 file in this run workspace, beside "
         "the Patch, never a nested path or symlink: what the human asked to run and the "
-        "specifics from this chat (settings, data, what to compare). The limit may not exceed "
-        "the Experiment's own invocation limit; it defaults to that limit. Pick the provider, "
-        "model, and effort that fit the work, or omit them for Settings. Ready profiles:\n"
+        "specifics from this chat (settings, data, what to compare). The design and "
+        "completion criteria belong in the Experiment's own fields, not the goal. The limit "
+        "may not exceed the Experiment's own invocation limit; it defaults to that limit. "
+        "Pick the provider, model, and effort that fit the work, or omit them for Settings. "
+        "Ready profiles:\n"
         f"{profile_choices}\n"
-        "The same key and arguments replay the same episode after a Resume or Retry. After it "
-        "starts, tell the human what you started (node, goal, limit, profile) and arm a "
+        "Kickoff answers card_pending and starts nothing. The run starts only when a human "
+        "presses Start on the card, after reviewing and possibly editing the goal, limit, and "
+        "profile. The same key and arguments replay the same request after a Resume or Retry. "
+        "Tell the human the plan card will appear when this reply ends. The question snapshot "
+        "shows the card's outcome: "
+        + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
+        + " To raise a card again, kick off again with a new key. Once the card is approved, "
+        "tell the human what started (node, goal, limit, profile) and arm a "
         f'watch.json graph item {{"node_id":"<node-id>","status_in":{closed}}} so this chat '
         "resumes when the Experiment closes."
     )

@@ -4191,6 +4191,19 @@ export type ApprovalCardAction =
     }
   | { kind: "truth_scope"; project_id: string; alias: string; writable: boolean }
   | {
+      kind: "experiment_start";
+      project_id: string;
+      node_id: string;
+      /** The graph branch the Experiment is on; absent or null for main. */
+      branch_id?: string | null;
+      goal: string;
+      invocation_ceiling: number;
+      provider?: ProviderId | null;
+      model?: string | null;
+      reasoning?: string | null;
+      run_truth_scope?: string[] | null;
+    }
+  | {
       kind: "auto_research";
       project_id: string;
       invocation_ceiling: number;
@@ -4230,9 +4243,21 @@ export interface ApprovalCard {
   result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
 }
 
+export interface ExperimentStartOverrides {
+  goal: string;
+  invocation_ceiling: number;
+  provider?: ProviderId | null;
+  model?: string | null;
+  reasoning?: string | null;
+  /** The node `updated_rev` the card showed; a moved node answers `plan_changed`. */
+  node_rev: number;
+}
+
 export interface ApprovalCardDecision {
   decision: "approve" | "decline";
   pinned_sha256: string;
+  /** Only on an `experiment_start` approve: the human's own Start inputs. */
+  experiment_start?: ExperimentStartOverrides;
 }
 
 export interface ApprovalCardResult {

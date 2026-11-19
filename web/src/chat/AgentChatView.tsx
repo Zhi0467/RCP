@@ -12,7 +12,9 @@ import { ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
-import { MAIN_GRAPH } from "../core/graphTarget";
+import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
+import { ExperimentPlanCard } from "../agents/ExperimentPlanCard";
+import { planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
@@ -1415,6 +1417,22 @@ export function AgentChatView({
               onResolved={questionState.refresh}
             />
           )}
+          renderPlanCard={(question) => {
+            const action = planCardAction(question.card)!;
+            const here =
+              onOpenNode &&
+              sameGraphTarget(planGraphTarget(action), graphTarget) &&
+              Boolean(nodes[action.node_id]);
+            return (
+              <ExperimentPlanCard
+                question={question}
+                actorId={actorId}
+                glossaryIndex={glossaryIndex}
+                onOpenNode={here ? onOpenNode : undefined}
+                onSettled={questionState.refresh}
+              />
+            );
+          }}
           nodes={nodes}
           glossaryIndex={glossaryIndex}
           onOpenNode={onOpenNode}

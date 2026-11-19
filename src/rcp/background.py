@@ -60,8 +60,8 @@ from rcp.runs.auto_research_recovery import (
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_admission import (
+    WorkExperimentCardRaiser,
     WorkExperimentResumer,
-    WorkExperimentStarter,
 )
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
@@ -306,9 +306,9 @@ class AgentTaskExecution:
     #: This process's work admission. A question waits for the human only while
     #: it is open; maintenance closes it and locks the human out.
     admission: RuntimeAdmissionGate | None = field(default=None, repr=False)
-    #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
-    #: the app provides it, a bare engine (tests) leaves the verb unavailable.
-    experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
+    #: Raises the plan cards a Work turn's ``episode --kick-off-experiment`` asked for once
+    #: it lands; the app provides it, a bare engine (tests) leaves the verb unavailable.
+    experiment_card_raiser: WorkExperimentCardRaiser | None = field(default=None, repr=False)
     episode_controls: WorkEpisodeControls | None = field(default=None, repr=False)
     watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
@@ -448,7 +448,7 @@ class BackgroundAgentTasks:
         resume_command_mailbox: Callable[[AgentTaskExecution], TaskCommandMailbox | None]
         | None = None,
         dependency_checker: DependencyChecker | None = None,
-        experiment_starter: WorkExperimentStarter | None = None,
+        experiment_card_raiser: WorkExperimentCardRaiser | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         watcher_canceller: WatcherCanceller | None = None,
@@ -456,7 +456,7 @@ class BackgroundAgentTasks:
     ) -> None:
         self.store = store
         self.paper_live = paper_live
-        self.experiment_starter = experiment_starter
+        self.experiment_card_raiser = experiment_card_raiser
         self.episode_controls = episode_controls
         self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
@@ -2359,7 +2359,7 @@ class BackgroundAgentTasks:
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
             admission=self.runtime_admission_gate,
-            experiment_starter=self.experiment_starter,
+            experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
@@ -2762,7 +2762,7 @@ class BackgroundAgentTasks:
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
-            experiment_starter=self.experiment_starter,
+            experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
@@ -3308,6 +3308,17 @@ class BackgroundAgentTasks:
                     self.store.record_agent_task_receipt(
                         execution.operation_id,
                         "experiment_resume_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
+        if self.experiment_card_raiser is not None:
+            try:
+                self.experiment_card_raiser(execution)
+            except Exception as exc:
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "experiment_card_failed",
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )

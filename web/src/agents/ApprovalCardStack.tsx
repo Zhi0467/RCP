@@ -12,6 +12,7 @@ import { QuestionCard } from "../chat/QuestionCard";
 import { retryBackoffMs } from "../core/resourceStore";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
 import { readAgentCards } from "./agentThreadsApi";
+import { isPlanCardQuestion } from "./experimentPlanModel";
 import { useAgentCardsVersion } from "./useAgentThreads";
 
 type Decision = "approved" | "rejected";
@@ -354,7 +355,7 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         : [],
     ),
   ];
-  const servedAsked = list?.asked_cards ?? [];
+  const servedAsked = (list?.asked_cards ?? []).filter((question) => !isPlanCardQuestion(question));
   const askedKeys = new Set(servedAsked.map(askedCardKey));
   const keptAsked = (key: string) => {
     const entry = kept.get(key);

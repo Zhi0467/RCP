@@ -563,6 +563,22 @@ export function persistProjectHumanDraft(
   }
 }
 
+/** Whether this member keeps staged graph changes on that target; a draft is stored only while it has some. */
+export function hasStagedHumanDraft(
+  storage: Pick<Storage, "getItem">,
+  actorId: string | null,
+  projectId: string,
+  graphTarget: GraphTargetRef = MAIN_GRAPH,
+): boolean {
+  const key = humanDraftStorageKey(actorId, projectId, graphTarget);
+  if (!key) return false;
+  try {
+    return storage.getItem(key) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function sameProjectSlice(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

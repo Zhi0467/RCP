@@ -286,7 +286,7 @@ Patches through the transition manager and Apply gate.
 
 A member's private agent threads act for that member. Ordinary acts run without
 a tap: Patches, compute, Bulletin posts, schedules and handoffs, starting the
-Experiments and Auto-research the member asks for, and the
+Auto-research the member asks for, and the
 [episode controls](conversations-episodes-and-watchers.md#work-started-episodes)
 and watcher stops for what the thread started. Each records its turn's operation and authorizer as any Work turn
 does. Projections derive
@@ -434,3 +434,29 @@ answer it with approved, declined, stale or a failure reason, reusing ordinary q
 to steer or wake the thread. Both plain questions and cards in private threads
 have owner-only list, answer, dismiss and Needs-you notification delivery.
 The approval endpoint is a member control, not a voice or WebMCP tool.
+
+### Experiment plan cards
+
+A fresh Experiment from any agent chat starts only on a human's **Start** on its
+plan card. The chat's `episode --kick-off-experiment` records the request and
+answers `card_pending`. When the turn succeeds and its Patch lands, RCP creates
+one `experiment_start` card on the raising turn from the settled graph, so the
+agent may write the node in the same turn. A failed turn, or a node that is
+missing or not an Experiment, gets no card and a task event. A newer card for
+the node in the same chat settles the older one `stale`. Kickoff is the only
+creator: `ask` refuses this kind with `experiment_start_uses_episode`.
+
+The card follows its chat. Anyone who can read the chat sees it. In a private
+chat only its owner acts; in a shared or node chat any Patch-capable member with
+write admission acts (`experiment_card_actor` in
+[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py)). Its pins are
+the node, its type and the graph target, never the node's revision, so the card
+shows later edits live.
+
+**Start** goes through the card's tap route with the human's own goal, limit,
+profile and the node revision the card showed. A moved revision answers
+`plan_changed` and keeps the card pending. The episode id derives from the
+card's request, the tapping member authorizes it, and its root names the raising
+turn, so that chat may later resume, extend or stop it. **Don't run this now**
+settles `declined`. Outcomes reach the agent through ordinary answer delivery.
+The Auto-research orchestrator starts its own children without cards.

@@ -243,7 +243,7 @@
   "src/rcp/runs/tasks/work_apply_again.py": {"comment": 14},
   "src/rcp/runs/tasks/work_turn_runtime.py": {"comment": 35},
   "src/rcp/runs/watcher_admission.py": {"comment": 4},
-  "src/rcp/runs/work_experiment_commands.py": {"comment": 2},
+  "src/rcp/runs/work_experiment_commands.py": {"comment": 1},
   "src/rcp/server_ops/_local_primitives.py": {"comment": 1},
   "src/rcp/server_ops/application_validation.py": {"comment": 41},
   "src/rcp/server_ops/backup.py": {"comment": 3},

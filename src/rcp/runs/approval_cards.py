@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from typing import Any, Literal, get_args, get_origin
 
@@ -13,13 +14,14 @@ from rcp.approval_actions import (
     ApprovalAction,
     ApprovalOutcome,
     AutoResearchAction,
+    ExperimentStartAction,
     MergeBranchAction,
     MergeEpisodeAction,
     ProposalAction,
     TruthScopeAction,
 )
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import AuthorizedHuman, GraphState, Proposal
+from rcp.core.models import AuthorizedHuman, Experiment, GraphState, Proposal
 from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
@@ -29,12 +31,13 @@ from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.models import ProjectRecord
-from rcp.storage.question_models import QuestionOrigin
+from rcp.storage.question_models import QuestionOrigin, QuestionRecord
 from rcp.transport.state import StateUnavailable
 
 PROPOSAL_CARD_SHOWN = "proposal_card_shown"
 AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
 """A new Auto-research ask's refusal; stored Auto-research cards still render and settle."""
+EXPERIMENT_START_USES_EPISODE = "experiment_start_uses_episode"
 
 
 class ProposalCardView(BaseModel):
@@ -99,6 +102,25 @@ def approval_card_member(store: AppStore, task: AgentTaskRecord) -> AuthorizedHu
     return task.authorized_by if thread is not None and thread.closed_at is None else None
 
 
+def experiment_card_actor(
+    store: AppStore, question: QuestionRecord, identity: AuthorizedHuman
+) -> bool:
+    """Whether `identity`, a Patch-capable member, may tap this Experiment plan card.
+
+    A private chat's card is its owner's; a shared or node chat's card is any project
+    member's, since the Start takes the project's write admission itself.
+    """
+    owner = store.private_chat_owner(question.origin.owner_id)
+    if owner is not None:
+        return owner == identity.user_id
+    return store.is_project_member(question.origin.project_id, identity.user_id)
+
+
+def experiment_card_episode_id(request_id: str) -> str:
+    """The episode a plan card's Start creates, named again by a repeated or resumed tap."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:experiment-card:{request_id}"))
+
+
 _ACTION_MODELS: tuple[type[BaseModel], ...] = get_args(get_args(ApprovalAction)[0])
 
 
@@ -107,7 +129,8 @@ def _action_kind(model: type[BaseModel]) -> str:
 
 
 THREAD_CARD_KINDS: dict[str, frozenset[str]] = {
-    "project": frozenset(_action_kind(model) for model in _ACTION_MODELS) - {"auto_research"},
+    "project": frozenset(_action_kind(model) for model in _ACTION_MODELS)
+    - {"auto_research", "experiment_start"},
     "space": frozenset({"proposal", "truth_scope", "merge_branch", "merge_episode"}),
 }
 
@@ -139,8 +162,10 @@ def _proposal_card_drawn(
     return raiser.user_id == asker.user_id and draws_proposal_cards(store, raiser)
 
 
-def proposal_graph(service: ProjectService, action: ProposalAction) -> ProjectService:
-    """The graph a Proposal action decides on: live main, or the graph branch it names."""
+def action_graph(
+    service: ProjectService, action: ProposalAction | ExperimentStartAction
+) -> ProjectService:
+    """The graph a Proposal or plan card acts on: live main, or the graph branch it names."""
     if action.branch_id is None:
         return service
     try:
@@ -199,6 +224,8 @@ def approval_card_for_ask(
     existing = store.approval_card(previous.question_id) if previous else None
     if existing is None and action.kind == "auto_research":
         raise ValueError(AUTO_RESEARCH_USES_EPISODE)
+    if action.kind == "experiment_start":
+        raise ValueError(EXPERIMENT_START_USES_EPISODE)
     thread = _asking_thread(store, origin, member, action, replay=existing is not None)
     if service is None or member is None or thread is None:
         raise ValueError("approval_requires_own_thread")
@@ -255,7 +282,7 @@ def _graph_receipt(service: ProjectService, action: dict[str, Any]) -> dict[str,
     if action["kind"] == "proposal":
         decision = ProposalAction.model_validate(action)
         try:
-            graph = proposal_graph(service, decision)
+            graph = action_graph(service, decision)
         except ValueError:
             return None
         proposal = graph.history.state().proposals.get(decision.proposal_id)
@@ -270,6 +297,9 @@ def _request_receipt(store: AppStore, card: dict[str, Any]) -> dict[str, Any] | 
 
     action, request_id = card["action"], card["request_id"]
     project_id = action["project_id"]
+    if action["kind"] == "experiment_start":
+        episode = store.episode(experiment_card_episode_id(request_id))
+        return {"episode_id": episode.episode_id} if episode is not None else None
     if action["kind"] == "auto_research":
         admitted = store.client_request(project_id, request_id)
         return {"episode_id": admitted.episode_id} if admitted and admitted.episode_id else None
@@ -305,11 +335,12 @@ APPROVAL_OUTCOMES: dict[ApprovalOutcome, str] = {
     "declined": "the member said no; do not ask again unless they change their mind. "
     "Declining a card that approves a Proposal also tries to reject that Proposal; read "
     "its status from graph state.",
-    "stale": "the pinned facts changed before the tap; recheck and ask again with a new key.",
-    "expired": "nobody tapped in time or the thread closed; ask again with a new key if "
+    "stale": "the pinned facts changed before the tap, or a newer card replaced it; recheck "
+    "and raise it again with a new key.",
+    "expired": "nobody tapped in time or the thread closed; raise it again with a new key if "
     "it still matters.",
     "failed": "the action was refused or interrupted; the answer carries the reason. "
-    "Fix the cause and ask again with a new key.",
+    "Fix the cause and raise it again with a new key.",
 }
 
 
@@ -351,7 +382,9 @@ def approval_card_usage(client: str) -> str:
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
         "Proposal this thread did not raise. Start Auto-research with the episode command, "
-        f"never a card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. "
+        f"never a card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. An Experiment "
+        "plan card comes only from the episode kickoff; asking for one is refused with "
+        f"{EXPERIMENT_START_USES_EPISODE}. "
         "The question snapshot shows each card's action and result."
     )
 
@@ -390,11 +423,15 @@ def approval_pins(
     a Proposal's state is its `proposal_graph`.
     """
     if action.kind == "proposal":
-        return _proposal_pins(state or proposal_graph(service, action).history.state(), action)
+        return _proposal_pins(state or action_graph(service, action).history.state(), action)
     if action.kind == "truth_scope":
         return _truth_scope_pins(service, state or service.history.state(), action)
     if action.kind == "auto_research":
         return _auto_research_pins(service, store, action)
+    if action.kind == "experiment_start":
+        return _experiment_start_pins(
+            state or action_graph(service, action).history.state(), action
+        )
     return _merge_pins(service, store, action, human)
 
 
@@ -415,6 +452,18 @@ def _truth_scope_pins(
     if writable == action.writable:
         raise ValueError("truth_scope_unchanged")
     return {"repository": repository.model_dump(mode="json"), "writable": writable}
+
+
+def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> dict[str, Any]:
+    """The node and where it lives, never its revision, so later edits show live."""
+    if not isinstance(state.nodes.get(action.node_id), Experiment):
+        raise ValueError("experiment_not_found")
+    target = GraphTargetRef(kind="branch", branch_id=action.branch_id) if action.branch_id else None
+    return {
+        "node_id": action.node_id,
+        "type": "experiment",
+        "graph_target": (target or GraphTargetRef()).model_dump(mode="json"),
+    }
 
 
 def _auto_research_pins(

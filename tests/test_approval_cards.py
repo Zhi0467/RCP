@@ -850,6 +850,7 @@ def test_usage_names_every_action_field_and_outcome():
         if kind in THREAD_CARD_KINDS["project"]:
             assert all(name in usage for name in model.model_fields)
     assert "auto_research" not in THREAD_CARD_KINDS["project"]
+    assert "experiment_start" not in THREAD_CARD_KINDS["project"]
     assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
 
 
@@ -938,6 +939,31 @@ def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(ques
     with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_EPISODE):
         ask("new")
     assert ask("card")["pinned"] == stored["pinned"]
+
+
+def test_an_experiment_start_ask_is_refused(questions_api):
+    from rcp.runs.approval_cards import EXPERIMENT_START_USES_EPISODE, approval_card_for_ask
+    from tests.helpers import authorized_human
+    from tests.test_ask_protocol import ask_request
+
+    app, _client, store, project_id = questions_api
+    question, _card = api_card(questions_api)
+    action = {
+        "kind": "experiment_start",
+        "project_id": project_id,
+        "node_id": "exp/any",
+        "goal": "Run it.",
+        "invocation_ceiling": 1,
+    }
+    request = ask_request(idempotency_key="start", arguments={"question": "Go?", "action": action})
+    with pytest.raises(ValueError, match=EXPERIMENT_START_USES_EPISODE):
+        approval_card_for_ask(
+            store,
+            request,
+            question.origin,
+            app.state.catalog.open(project_id),
+            authorized_human(app),
+        )
 
 
 def test_request_receipts_need_their_durable_row(store):

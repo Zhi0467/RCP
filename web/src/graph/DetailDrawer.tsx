@@ -37,7 +37,8 @@ import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
 import { DraggableWindow } from "../ui/DraggableWindow";
-import { GlossaryText } from "./GlossaryText";
+import { GlossaryText, formatNodeValue } from "./GlossaryText";
+import { takeNodeEditRequest, useNodeEditRequest } from "./nodeEditRequest";
 import {
   changedNodeFields,
   editableNodeFields,
@@ -365,6 +366,13 @@ export function DetailDrawer({
     setDraft(nodeEditDraft(node, ontology));
     setEditing(true);
   };
+  const editRequest = useNodeEditRequest();
+  useEffect(() => {
+    if (!projectId || nodeMutationDisabled || !takeNodeEditRequest(projectId, graphTarget, node.id))
+      return;
+    if (!editing) beginEditing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequest, projectId, graphTarget, node.id, nodeMutationDisabled]);
   const cancelEditing = () => {
     if (standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
       onStanding(standingBeforeEdit.current, !stagedNewNode);
@@ -685,7 +693,7 @@ export function DetailDrawer({
                   </div>
                   <fieldset disabled={decisionChoiceDisabled}>
                     <legend id={`decision-question-${node.id}`}>
-                      {formatValue(presentation.value, glossaryIndex)}
+                      {formatNodeValue(presentation.value, glossaryIndex)}
                     </legend>
                     <div className="decision-choice-options">
                       {decisionOptions.map((option) => {
@@ -731,7 +739,7 @@ export function DetailDrawer({
               ) : (
                 <section className="node-lead">
                   <span className="eyebrow">{presentation.label}</span>
-                  <p>{formatValue(presentation.value, glossaryIndex)}</p>
+                  <p>{formatNodeValue(presentation.value, glossaryIndex)}</p>
                 </section>
               )}
 
@@ -952,7 +960,7 @@ export function DetailDrawer({
                     {presentation.context.map((item) => (
                       <div key={item.key}>
                         <dt>{item.label}</dt>
-                        <dd>{formatValue(item.value, glossaryIndex)}</dd>
+                        <dd>{formatNodeValue(item.value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -996,7 +1004,7 @@ export function DetailDrawer({
                     {Object.entries(node.extension_fields).map(([key, value]) => (
                       <div key={key}>
                         <dt>{humanize(key)}</dt>
-                        <dd>{formatValue(value, glossaryIndex)}</dd>
+                        <dd>{formatNodeValue(value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -1026,7 +1034,7 @@ export function DetailDrawer({
                     {details.map(([key, value]) => (
                       <div key={key}>
                         <dt>{humanFieldLabels[key] ?? humanize(key)}</dt>
-                        <dd>{formatValue(value, glossaryIndex)}</dd>
+                        <dd>{formatNodeValue(value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -1230,18 +1238,4 @@ function nodeEditFieldError(field: NodeEditField, value: string): string | null 
       : `Enter a number of at least ${field.min}.`;
   }
   return null;
-}
-
-function formatValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {
-  if (Array.isArray(value))
-    return (
-      <ul>
-        {value.map((item, index) => (
-          <li key={index}>{formatValue(item, glossaryIndex)}</li>
-        ))}
-      </ul>
-    );
-  if (typeof value === "object" && value !== null)
-    return <pre>{JSON.stringify(value, null, 2)}</pre>;
-  return <GlossaryText text={String(value)} glossaryIndex={glossaryIndex} />;
 }

@@ -199,17 +199,18 @@ def start_work_experiment(
     operation_lock: KeyedLocks,
     start: WorkExperimentStart,
 ) -> AgentTaskRecord:
-    """Start the Experiment a Work turn's command names, as its human's Run would.
+    """Start the Experiment a Work chat's plan card names, as the tapping member's Run would.
 
-    The turn's authorizer and graph target stand in for the Run button's member
-    and page, under the same project admission fence. The agent may shorten the
-    episode but never exceed the node's limit.
+    The raising turn's graph target and run scope stand in for the Run button's
+    page, under the same project admission fence. The member may shorten the
+    episode but never exceed the node's limit. A repeated Start names the same
+    episode and returns its first task.
     """
 
     store = tasks.store
     source = store.agent_task(start.source_operation_id)
-    if source is None or source.authorized_by is None:
-        raise ValueError("The Work turn that sent this command has no human authorizer.")
+    if source is None:
+        raise ValueError("The Work turn that raised this plan card no longer exists.")
     project_id = source.project_id
     target = source.graph_target
     try:
@@ -218,19 +219,24 @@ def start_work_experiment(
             raise ValueError("Space threads must hand off Experiment starts")
     except HTTPException as exc:
         raise ValueError(str(exc.detail)) from exc
+    authorizer = start.authorized_by
     # An uncached pick probes its provider CLI, so it is checked outside the lock.
     reasoning = require_auto_research_child_profile_pick(
         service,
         provider=start.provider,
         model=start.model,
         reasoning=start.reasoning,
-        member_id=source.authorized_by.user_id,
+        member_id=authorizer.user_id,
     )
-    authorizer = source.authorized_by
     with operation_lock(project_id):
+        existing = store.episode(start.episode_id)
+        if existing is not None:
+            root = store.agent_task(existing.root_operation_id or "")
+            assert root is not None
+            return root
         store.require_project_accepts_new_work(project_id)
         if not store.is_project_member(project_id, authorizer.user_id):
-            raise ValueError("The human who sent this Work turn is no longer a project member.")
+            raise ValueError("The member who pressed Start is no longer a project member.")
         try:
             require_graph_edit_admission(store, project_id, target)
         except HTTPException as exc:

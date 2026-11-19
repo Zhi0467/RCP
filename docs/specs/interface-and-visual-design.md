@@ -557,6 +557,13 @@ project chat, selected reply text starts a
 just past the quote's end opens it, the header count lists the chat's reply and
 inline-artifact threads, and Send
 to agent carries threads through the composer's own send, a steer while a turn runs.
+An Experiment plan card is never stacked. It sits open inside its raising
+turn's answer, so reply comments anchor on its text, in threads, shared chats
+and node chats alike. Top to bottom: the node, Design (markdown), Done when,
+This run (editable), the agent and turn-limit chips, then Don't run this now
+and Start. Design and Done when open the node's Edit node. Start waits while
+the member has staged changes on the card's graph target.
+
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve
 on the right. Their outcome replaces the need for a separate member answer
