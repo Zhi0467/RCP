@@ -5,15 +5,18 @@ import {
   FlaskConical,
   Files,
   Telescope,
+  SquareStack,
 } from "lucide-react";
 import {
   Fragment,
   useCallback,
   useEffect,
+  useId,
   useReducer,
   useRef,
   useState,
   type ReactNode,
+  type ComponentProps,
 } from "react";
 import type {
   AgentCardList,
@@ -21,6 +24,8 @@ import type {
   ApprovalCardResult,
   AskedApprovalCardView,
   DockEpisode,
+  Episode,
+  AgentTask,
   ProposalCardView,
   RelayedQuestion,
 } from "../core/types";
@@ -29,11 +34,43 @@ import { retryBackoffMs } from "../core/resourceStore";
 import { episodeProjection, episodeReportPreviewUrl } from "../experiments/campaigns";
 import { EpisodeControls } from "../experiments/EpisodeControls";
 import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
+import { EpisodePlanDraftProvider } from "./EpisodePlanCard";
 import { useEpisodeActions } from "../experiments/episodeActions";
+import { experimentIndexProfile } from "../experiments/episodeResources";
+import { useResource } from "../core/useResource";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
 import { readAgentCards, readChatCards } from "./agentThreadsApi";
 import { isPlanCardQuestion } from "./experimentPlanModel";
 import { useAgentCardsVersion } from "./useAgentThreads";
+
+export function AgentCardsUnavailable() {
+  return (
+    <span
+      className="agent-cards-unavailable"
+      role="img"
+      aria-label="Approval cards couldn't load. Retrying."
+      title="Approval cards couldn't load. Retrying."
+    >
+      <SquareStack size={16} />
+    </span>
+  );
+}
+
+type RunState = {
+  busyAction: string | null;
+  taskActionId: string | null;
+  error: string | null;
+  additionalTurns: string;
+  updated?: { source: Episode; episode: Episode };
+};
+const EMPTY_RUN: RunState = {
+  busyAction: null,
+  taskActionId: null,
+  error: null,
+  additionalTurns: "",
+};
+
+const EXPIRY_GRACE_MS = 1000;
 
 type Decision = "approved" | "rejected";
 
@@ -51,10 +88,23 @@ export type StackCard =
   | { kind: "run"; key: string; run: DockEpisode };
 
 /**
- * Where a stack stands: its shown card order, the front card, the cards Later put
- * away, and whether it ever held more than one card, so its space stays put as it empties.
+ * Where a stack stands: its shown card order, the front card's place and key, the cards
+ * Later put away, and whether it ever held more than one card, so its space stays put as
+ * it empties.
  */
-export type StackMemory = { order: string[]; index: number; later: string[]; held?: boolean };
+export type StackMemory = {
+  order: string[];
+  index: number;
+  front?: string;
+  later: string[];
+  held?: boolean;
+};
+
+/** The front card's place: the remembered card while it is listed, else the nearest one. */
+export function stackIndex(memory: StackMemory, order: readonly string[]): number {
+  const kept = memory.front === undefined ? -1 : order.indexOf(memory.front);
+  return kept >= 0 ? kept : Math.min(memory.index, Math.max(order.length - 1, 0));
+}
 
 export function proposalCardKey(view: ProposalCardView): string {
   return `proposal:${view.project_id}:${view.proposal.id}`;
@@ -77,29 +127,28 @@ function runCardKey(run: DockEpisode): string {
 }
 
 /**
- * A chat's dock cards after its Proposal and asked cards: pending plan cards, each
- * child episode's open questions followed by the run itself, then other relayed questions.
+ * A chat's dock cards after its Proposal and asked cards, decisions first: pending plan
+ * cards, each child episode's open questions, other relayed questions, the runs that
+ * need action, then the runs that only report their state.
  */
 export function dockStackCards(
   plans: readonly AgentQuestion[],
   episodes: readonly DockEpisode[],
   questions: readonly RelayedQuestion[],
 ): StackCard[] {
+  const runs = (needsAction: boolean) =>
+    episodes
+      .filter((run) => (run.episode.health === "needs_action") === needsAction)
+      .map((run): StackCard => ({ kind: "run", key: runCardKey(run), run }));
   return [
     ...plans.map((question): StackCard => ({ kind: "plan", key: planCardKey(question), question })),
-    ...episodes.flatMap((run): StackCard[] => [
-      ...run.questions.map((question): StackCard => ({
-        kind: "question",
-        key: questionCardKey(question),
-        question,
-      })),
-      { kind: "run", key: runCardKey(run), run },
-    ]),
-    ...questions.map((question): StackCard => ({
+    ...[...episodes.flatMap((run) => run.questions), ...questions].map((question): StackCard => ({
       kind: "question",
       key: questionCardKey(question),
       question,
     })),
+    ...runs(true),
+    ...runs(false),
   ];
 }
 
@@ -162,10 +211,48 @@ export function ApprovalCardStack({
   onDecided: (view: ProposalCardView, status: Decision) => void;
   onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
   onAnswered: (question: RelayedQuestion) => void;
-  onChanged: () => void;
+  onChanged: () => void | Promise<unknown>;
   /** Draws a plan card; the view that owns the stack supplies it. */
   renderPlanCard?: (question: AgentQuestion) => ReactNode;
 }) {
+  const actions = useEpisodeActions(
+    cards.find((card) => card.kind === "run")?.run.episode.project_id ?? null,
+  );
+  const [runStates, setRunStates] = useState<Record<string, RunState>>({});
+  const pending = useRef(new Set<string>());
+  const updateRun = (id: string, patch: Partial<RunState>) =>
+    setRunStates((states) => ({ ...states, [id]: { ...(states[id] ?? EMPTY_RUN), ...patch } }));
+  const perform = async (
+    run: DockEpisode,
+    field: "busyAction" | "taskActionId",
+    key: string,
+    act: () => Promise<Episode | AgentTask>,
+  ) => {
+    const id = run.episode.episode_id;
+    if (pending.current.has(id)) return;
+    pending.current.add(id);
+    updateRun(id, { [field]: key, error: null });
+    try {
+      const result = await act();
+      const episode: Episode =
+        "operation_id" in result
+          ? {
+              ...run.episode,
+              tasks: run.episode.tasks.map((task) =>
+                task.operation_id === result.operation_id ? { ...task, ...result } : task,
+              ),
+            }
+          : result;
+      updateRun(id, { updated: { source: run.episode, episode } });
+    } finally {
+      try {
+        await onChanged();
+      } finally {
+        pending.current.delete(id);
+        updateRun(id, { [field]: null });
+      }
+    }
+  };
   const [, redraw] = useReducer((count: number) => count + 1, 0);
   const frontRef = useRef<HTMLDivElement>(null);
   const foldRef = useRef<HTMLButtonElement>(null);
@@ -179,14 +266,13 @@ export function ApprovalCardStack({
     memory.order,
     keys.filter((key) => !putAway.includes(key)),
   );
-  const index = Math.min(memory.index, Math.max(order.length - 1, 0));
+  const index = stackIndex(memory, order);
   const folded = order.length === 0 && putAway.length > 0;
   const held = Boolean(memory.held) || order.length > 1;
-  const shown: StackMemory = { order, index, later: putAway, held };
+  const shown: StackMemory = { order, index, front: order[index], later: putAway, held };
   useEffect(() => {
     memories.set(stackKey, shown);
   });
-  useEffect(() => () => void memories.delete(stackKey), [stackKey]);
   useEffect(() => {
     const target =
       focusNext.current === "fold" ? foldRef.current : frontRef.current?.firstElementChild;
@@ -194,7 +280,7 @@ export function ApprovalCardStack({
     focusNext.current = null;
   });
   const remember = (next: StackMemory, focus: "front" | "fold") => {
-    memories.set(stackKey, next);
+    memories.set(stackKey, { ...next, front: next.order[next.index] });
     focusNext.current = focus;
     redraw();
   };
@@ -203,7 +289,26 @@ export function ApprovalCardStack({
     card.kind === "plan" ? (
       <Fragment key={card.key}>{renderPlanCard?.(card.question)}</Fragment>
     ) : card.kind === "run" ? (
-      <EpisodeRunCard key={card.key} run={card.run} onChanged={onChanged} onLater={onLater} />
+      <EpisodeRunCard
+        key={card.key}
+        run={card.run}
+        onLater={onLater}
+        state={runStates[card.run.episode.episode_id] ?? EMPTY_RUN}
+        onState={(patch) => updateRun(card.run.episode.episode_id, patch)}
+        onOperateTask={(task, action) =>
+          perform(card.run, "taskActionId", task.operation_id, () =>
+            actions.operateTask(task, action),
+          )
+        }
+        onContinue={(id, turns) =>
+          perform(card.run, "busyAction", `continue:${id}`, () => actions.addTurns(id, turns))
+        }
+        onStop={(id) =>
+          perform(card.run, "busyAction", `stop:${id}`, () =>
+            actions.stop(id, card.run.episode.tasks),
+          )
+        }
+      />
     ) : card.kind === "question" ? (
       <QuestionCard
         key={card.key}
@@ -264,7 +369,12 @@ export function ApprovalCardStack({
   const step = (by: number) =>
     remember({ ...shown, index: (index + by + order.length) % order.length }, "front");
   return (
-    <>
+    <EpisodePlanDraftProvider
+      key={stackKey}
+      questionIds={open.flatMap((card) =>
+        card.kind === "plan" ? [card.question.question_id] : [],
+      )}
+    >
       {settled.map((card) => render(card))}
       {folded ? (
         <button
@@ -305,40 +415,41 @@ export function ApprovalCardStack({
           </div>
         )
       )}
-    </>
+    </EpisodePlanDraftProvider>
   );
 }
 
 /** One child episode in a chat's dock: its state, its run controls, and its report once ended. */
 function EpisodeRunCard({
   run,
-  onChanged,
+  state,
+  onState,
+  onOperateTask,
+  onContinue,
+  onStop,
   onLater,
 }: {
   run: DockEpisode;
-  onChanged: () => void;
+  state: RunState;
+  onState: (patch: Partial<RunState>) => void;
+  onOperateTask: ComponentProps<typeof EpisodeControls>["onOperateTask"];
+  onContinue: ComponentProps<typeof EpisodeControls>["onContinue"];
+  onStop: ComponentProps<typeof EpisodeControls>["onStop"];
   onLater?: () => void;
 }) {
-  const { episode } = run;
-  const actions = useEpisodeActions(episode.project_id);
-  const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [taskActionId, setTaskActionId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const episode = state.updated?.source === run.episode ? state.updated.episode : run.episode;
+  const owner = useId();
+  const experimentIndex = useResource(
+    owner,
+    episode.mode === "experiment_loop" ? experimentIndexProfile(episode.project_id) : null,
+  );
+  const experimentControl =
+    experimentIndex.value?.entries.find((entry) => entry.episode.episode_id === episode.episode_id)
+      ?.control ?? null;
+  const { busyAction, taskActionId, error } = state;
+  const setError = (error: string | null) => onState({ error });
   const projection = episodeProjection(episode);
   const Icon = episode.mode === "auto_research" ? Telescope : FlaskConical;
-  const busy = async (
-    set: (key: string | null) => void,
-    key: string,
-    act: () => Promise<unknown>,
-  ) => {
-    set(key);
-    try {
-      await act();
-    } finally {
-      set(null);
-      onChanged();
-    }
-  };
   return (
     <section
       className="approval-card open episode-run-card"
@@ -387,15 +498,12 @@ function EpisodeRunCard({
           taskControl={projection.taskControl}
           busyAction={busyAction}
           taskActionId={taskActionId}
-          onOperateTask={(task, action) =>
-            busy(setTaskActionId, task.operation_id, () => actions.operateTask(task, action))
-          }
-          onContinue={(episodeId, turns) =>
-            busy(setBusyAction, `continue:${episodeId}`, () => actions.addTurns(episodeId, turns))
-          }
-          onStop={(episodeId) =>
-            busy(setBusyAction, `stop:${episodeId}`, () => actions.stop(episodeId, episode.tasks))
-          }
+          additionalTurns={state.additionalTurns}
+          onAdditionalTurnsChange={(additionalTurns) => onState({ additionalTurns })}
+          experimentControl={experimentControl}
+          onOperateTask={onOperateTask}
+          onContinue={onContinue}
+          onStop={onStop}
           onError={setError}
         />
       </div>
@@ -414,7 +522,7 @@ export type CardSource = { threadId: string | null } | { projectId: string; chat
 /**
  * The member's open cards for one project thread, for every thread when `threadId`
  * is null, or for one shared or node chat. They reload when the open-card version or the thread
- * revision moves, and after each tap. A card decided here keeps its settled line
+ * revision moves, when the next ended child leaves the dock, and after each tap. A card decided here keeps its settled line
  * through the open-card version change its own tap causes, and drops at a fetch
  * after a later change that no longer lists it. Only the newest fetch's answer counts.
  * A failed read hides the cards and backs off before reading again. An answered
@@ -504,6 +612,15 @@ export function useAgentCards(source: CardSource, revision: string | null) {
     [keep],
   );
   const list = loaded?.scope === scope ? loaded.list : null;
+  const nextExpiry = list?.next_expiry_at ?? null;
+  useEffect(() => {
+    if (!nextExpiry) return;
+    const timer = window.setTimeout(
+      () => setRetryTick((tick) => tick + 1),
+      Math.max(0, Date.parse(nextExpiry) - Date.now()) + EXPIRY_GRACE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [nextExpiry]);
   const markResolved = (question: AgentQuestion, result: ApprovalCardResult) => {
     const served = list?.asked_cards.find((item) => item.question_id === question.question_id);
     if (!served?.card) return;

@@ -15,7 +15,12 @@ import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import { EpisodePlanCard } from "../agents/EpisodePlanCard";
 import { isPlanCardQuestion, planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
-import { ApprovalCardStack, dockStackCards, useAgentCards } from "../agents/ApprovalCardStack";
+import {
+  AgentCardsUnavailable,
+  ApprovalCardStack,
+  dockStackCards,
+  useAgentCards,
+} from "../agents/ApprovalCardStack";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
@@ -473,8 +478,8 @@ export function AgentChatView({
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
   const cards = useAgentCards(questionEpisodeId ? null : { projectId: project.id, chatId }, null);
-  const cardsChanged = () => {
-    void cards.refetch();
+  const cardsChanged = async () => {
+    await cards.refetch();
     questionState.refresh();
   };
   const dockedPlans = new Set([
@@ -1496,8 +1501,9 @@ export function AgentChatView({
           ))}
         {submitError && <div className="agent-chat-view-line error">{submitError}</div>}
       </AgentWindowLines>
-      {dockCards.length > 0 && (
+      {(dockCards.length > 0 || cards.unavailable) && (
         <div className="approval-dock">
+          {cards.unavailable && <AgentCardsUnavailable />}
           <ApprovalCardStack
             stackKey={`${project.id}:${chatId}:dock`}
             cards={dockCards}

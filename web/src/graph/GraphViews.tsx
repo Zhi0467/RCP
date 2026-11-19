@@ -1160,7 +1160,6 @@ interface ExecutionProps {
   watcherCheckBusyId: string | null;
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
-  providerLabels?: Record<string, string>;
   /** Offers the Experiment agent picker on each Run row. */
   project?: ProjectSnapshot;
   providerLogins?: ProjectLoginNotice[];
@@ -1225,7 +1224,6 @@ export function ExecutionView({
   watcherCheckBusyId,
   taskActionId,
   selectedExperimentConversation,
-  providerLabels = {},
   project,
   providerLogins = [],
   viewerUserId = null,
@@ -1682,7 +1680,6 @@ export function ExecutionView({
         indexedEntry={indexedEntry}
         watchedByParentAutoResearch={watchedByParentAutoResearch}
         exactBranchEntry={indexedEntry?.graph_target.kind === "branch" ? indexedEntry : null}
-        providerLabels={providerLabels}
         experimentStartsDisabled={experimentStartsDisabled}
         mutationsDisabled={
           mutationsDisabled ||
@@ -1738,7 +1735,6 @@ function ExperimentEpisodeCard({
   indexedEntry,
   watchedByParentAutoResearch,
   exactBranchEntry,
-  providerLabels,
   experimentStartsDisabled,
   mutationsDisabled,
   project,
@@ -1771,7 +1767,6 @@ function ExperimentEpisodeCard({
   indexedEntry: ExperimentLoopIndexEntry | null;
   watchedByParentAutoResearch: boolean;
   exactBranchEntry: ExperimentLoopIndexEntry | null;
-  providerLabels: Record<string, string>;
   experimentStartsDisabled: boolean;
   mutationsDisabled: boolean;
   project?: ProjectSnapshot;
@@ -1870,7 +1865,6 @@ function ExperimentEpisodeCard({
             stopBusy={stopBusy}
             recoveryBusy={Boolean(run.currentTask && taskActionId === run.currentTask.operation_id)}
             watcherCheckBusyId={watcherCheckBusyId}
-            providerLabel={experimentProviderLabel(run, providerLabels)}
             conversation={experimentConversation}
             ownedByAutoResearch={Boolean(indexedEntry?.parent_episode_id)}
             watchedByParentAutoResearch={watchedByParentAutoResearch}
@@ -1918,15 +1912,6 @@ function formatEpisodeTimestamp(value: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(parsed);
-}
-
-function experimentProviderLabel(
-  experiment: ExperimentRun,
-  providerLabels: Record<string, string>,
-): string | undefined {
-  const provider =
-    experiment.currentTask?.request.provider || experiment.control?.operational?.session.provider;
-  return provider ? providerLabels[provider] || provider : undefined;
 }
 
 interface AttentionOverviewProps {

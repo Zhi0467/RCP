@@ -933,17 +933,21 @@ function renderDock(cards) {
   );
 }
 
-test("a chat dock orders plans, then each child's questions before its run, then relays", () => {
+test("a chat dock puts decisions first: plans, questions, runs needing action, then other runs", () => {
   const relayed = (id) => ({ question_id: id, project_id: "p", state: "pending" });
-  const run = (id, questions) => ({
-    episode: { ...episode, episode_id: id },
+  const run = (id, questions, health = "active") => ({
+    episode: { ...episode, episode_id: id, health },
     title: id,
     link: `#/${id}`,
     questions: questions.map(relayed),
   });
   const cards = dockStackCards(
     [{ question_id: "plan" }],
-    [run("first", ["asked-1", "asked-2"]), run("second", [])],
+    [
+      run("first", ["asked-1", "asked-2"]),
+      run("second", [], "needs_action"),
+      run("third", ["asked-3"], "completed"),
+    ],
     [relayed("other")],
   );
   assert.deepEqual(
@@ -952,9 +956,11 @@ test("a chat dock orders plans, then each child's questions before its run, then
       ["plan", "plan:plan"],
       ["question", "question:asked-1"],
       ["question", "question:asked-2"],
-      ["run", "run:first"],
-      ["run", "run:second"],
+      ["question", "question:asked-3"],
       ["question", "question:other"],
+      ["run", "run:second"],
+      ["run", "run:first"],
+      ["run", "run:third"],
     ],
   );
   assert.equal(new Set(cards.map((card) => card.key)).size, cards.length);

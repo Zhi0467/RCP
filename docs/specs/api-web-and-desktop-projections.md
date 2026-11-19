@@ -2512,7 +2512,10 @@ title, the Runs link, and the chain's relayed question rows. The buckets are
 disjoint by question id: the chat's own questions stay inline, its children's
 questions appear only under `episodes`, and `questions` holds the rest of the
 project's relayed questions for a Project Agent thread only; a shared or node
-chat's `questions` is empty.
+chat's `questions` is empty. `next_expiry_at` is the instant the next listed
+ended child leaves `episodes`, or null when none will; the Web reads the dock
+again then. Entries serialize without graph branch summaries, so a
+branch-owning child lists like any other.
 
 `GET /api/agent-threads/running` returns `{rows, needs, total}` for the
 acting member ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).

@@ -241,6 +241,11 @@ test("a served exhausted card settles from wrapping up to a visible report failu
       })
       .waitFor();
     assert.equal(await page.getByText("Let auto-research continue", { exact: true }).count(), 0);
+    const continuationTurns = page.locator(".campaign-reauthorize input");
+    await continuationTurns.fill("7");
+    await page.locator(".campaign-run-toggle").click();
+    await page.locator(".campaign-run-toggle").click();
+    assert.equal(await continuationTurns.inputValue(), "7");
     assert.equal(polls, 2);
     assert.deepEqual(errors, []);
   } finally {

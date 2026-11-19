@@ -1,7 +1,7 @@
 import { LoaderCircle, Pause, Play, RotateCcw, Square } from "lucide-react";
-import { useState } from "react";
-import type { AgentTask, Episode } from "../core/types";
+import type { AgentTask, Episode, ExperimentControlState } from "../core/types";
 import type { EpisodeProjection } from "./campaigns";
+import { authorizedInvocationCount, episodeControlProjection } from "./runProjection";
 import type { EpisodeTaskAction } from "./episodeActions";
 
 /**
@@ -18,29 +18,40 @@ export function EpisodeControls({
   onContinue,
   onStop,
   onError,
+  additionalTurns,
+  onAdditionalTurnsChange,
+  experimentControl,
+  disabled = false,
+  continuationDisabled = false,
 }: {
-  episode: Episode;
+  episode: Episode | null;
+  experimentControl?: ExperimentControlState | null;
+  additionalTurns: string;
+  onAdditionalTurnsChange: (value: string) => void;
+  disabled?: boolean;
+  continuationDisabled?: boolean;
   taskControl: EpisodeProjection["taskControl"];
   /** The episode action in flight, as `stop:<episode id>` or `continue:<episode id>`. */
   busyAction: string | null;
   taskActionId: string | null;
   onOperateTask: (task: AgentTask, action: EpisodeTaskAction) => Promise<void>;
   onSwitchProvider?: (task: AgentTask) => void;
-  onContinue: (episodeId: string, invocationCeiling: number) => Promise<void>;
+  onContinue?: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onStop: (episodeId: string) => Promise<void>;
   onError: (message: string | null) => void;
 }) {
-  const [additionalTurns, setAdditionalTurns] = useState("");
-  const parsedAdditionalTurns = Number(additionalTurns);
-  const continuationIsValid =
-    additionalTurns.trim().length > 0 &&
-    Number.isSafeInteger(parsedAdditionalTurns) &&
-    parsedAdditionalTurns >= 1;
-  const stopBusy = busyAction === `stop:${episode.episode_id}`;
-  const continueBusy = busyAction === `continue:${episode.episode_id}`;
+  const controls = episodeControlProjection(episode, taskControl, experimentControl);
+  taskControl = controls.taskControl;
+  const episodeId = episode?.episode_id ?? experimentControl?.episode_id ?? "";
+  const parsedAdditionalTurns = authorizedInvocationCount(additionalTurns);
+  const turns = controls.resumeTurns ?? parsedAdditionalTurns;
+  const stopBusy = busyAction === `stop:${episodeId}`;
+  const continueBusy = busyAction === `continue:${episodeId}`;
   const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
-  const anotherActionBusy = busyAction !== null || taskActionId !== null;
-  const showStop = episode.can_stop || stopBusy;
+  const anotherActionBusy = disabled || busyAction !== null || taskActionId !== null;
+  const continuationBlocked =
+    anotherActionBusy || continuationDisabled || !controls.continuationReady;
+  const showStop = controls.canStop || stopBusy;
   const report = (run: () => Promise<void>) => {
     onError(null);
     return run().catch((error: unknown) =>
@@ -49,10 +60,10 @@ export function EpisodeControls({
   };
 
   const submitContinuation = async () => {
-    if (!continuationIsValid || anotherActionBusy) return;
+    if (turns === null || continuationBlocked || !onContinue) return;
     await report(async () => {
-      await onContinue(episode.episode_id, parsedAdditionalTurns);
-      setAdditionalTurns("");
+      await onContinue(episodeId, turns);
+      onAdditionalTurnsChange("");
     });
   };
 
@@ -60,9 +71,14 @@ export function EpisodeControls({
     <>
       {taskControl && (
         <button
-          className={`button compact ${taskControl.kind === "resume" ? "primary" : "secondary"}`}
+          className={
+            experimentControl
+              ? "button primary compact experiment-recovery-button"
+              : `button compact ${taskControl.kind === "resume" ? "primary" : "secondary"}`
+          }
           type="button"
           disabled={anotherActionBusy}
+          aria-busy={controlTaskBusy}
           onClick={() => {
             if (!anotherActionBusy)
               void report(() => onOperateTask(taskControl.task, taskControl.kind));
@@ -82,7 +98,7 @@ export function EpisodeControls({
             : episodeActionLabel(taskControl.kind)}
         </button>
       )}
-      {onSwitchProvider && taskControl?.kind === "retry" && taskControl.canSwitchProvider && (
+      {onSwitchProvider && taskControl?.canSwitchProvider && (
         <button
           className="button compact"
           type="button"
@@ -92,7 +108,7 @@ export function EpisodeControls({
           Switch provider…
         </button>
       )}
-      {episode.can_continue && (
+      {controls.continuationVisible && onContinue && (
         <form
           className="campaign-reauthorize"
           onSubmit={(event) => {
@@ -100,36 +116,44 @@ export function EpisodeControls({
             void submitContinuation();
           }}
         >
-          <input
-            type="number"
-            min={1}
-            step={1}
-            inputMode="numeric"
-            aria-label="Turns to add"
-            value={additionalTurns}
-            disabled={anotherActionBusy}
-            onChange={(event) => setAdditionalTurns(event.target.value)}
-          />
+          {controls.resumeTurns === null && (
+            <input
+              type="number"
+              min={1}
+              step={1}
+              inputMode="numeric"
+              aria-label="Turns to add"
+              value={additionalTurns}
+              disabled={continuationBlocked}
+              onChange={(event) => onAdditionalTurnsChange(event.target.value)}
+            />
+          )}
           <button
-            className="button primary compact"
+            className="button primary compact experiment-continue-button"
             type="submit"
-            disabled={!continuationIsValid || anotherActionBusy}
+            disabled={turns === null || continuationBlocked}
           >
             {continueBusy && <LoaderCircle className="spin" size={12} />}
             {continueBusy
               ? "Adding turns…"
-              : continuationIsValid
-                ? `Add ${parsedAdditionalTurns} turns`
-                : "Add turns"}
+              : controls.resumeTurns !== null
+                ? `Resume · ${controls.resumeTurns} ${controls.resumeTurns === 1 ? "turn" : "turns"}`
+                : parsedAdditionalTurns !== null
+                  ? `Add ${parsedAdditionalTurns} turns`
+                  : "Add turns"}
           </button>
         </form>
       )}
       {showStop && (
         <button
-          className="button secondary compact campaign-stop"
           type="button"
-          disabled={anotherActionBusy}
-          onClick={() => void report(() => onStop(episode.episode_id))}
+          className={
+            experimentControl
+              ? "button compact experiment-stop-loop"
+              : "button secondary compact campaign-stop"
+          }
+          disabled={anotherActionBusy || controls.stopPending}
+          onClick={() => void report(() => onStop(episodeId))}
         >
           {stopBusy ? <LoaderCircle className="spin" size={12} /> : <Square size={12} />}
           {stopBusy ? "Stopping…" : "Stop"}

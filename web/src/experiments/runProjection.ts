@@ -14,7 +14,7 @@ import type {
   WatcherRecord,
 } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
-import { blockedReasonLead } from "./campaigns.ts";
+import { blockedReasonLead, type EpisodeTaskControl } from "./campaigns.ts";
 import { isControlNode } from "../graph/researchType.ts";
 
 /** Unused turns an episode that paused for its human resumes with; null when it cannot. */
@@ -22,6 +22,38 @@ export function pausedResumeTurns(episode: Episode | null | undefined): number |
   if (!episode?.can_continue || episode.ending !== "human_pause") return null;
   const turns = episode.budget.invocations_remaining;
   return turns > 0 ? turns : null;
+}
+
+export function episodeControlProjection(
+  episode: Episode | null,
+  taskControl: EpisodeTaskControl | null,
+  experimentControl?: ExperimentControlState | null,
+) {
+  const experiment = episode?.mode === "experiment_loop" || Boolean(experimentControl);
+  const continuationVisible = Boolean(
+    episode?.can_continue && (!experiment || !experimentControl?.node_closed),
+  );
+  return {
+    taskControl: experiment
+      ? taskControl && experimentControl?.task_control
+        ? {
+            ...taskControl,
+            kind: experimentControl.task_control,
+            canSwitchProvider: experimentControl.can_switch_provider,
+          }
+        : null
+      : taskControl && {
+          ...taskControl,
+          canSwitchProvider: taskControl.canSwitchProvider && taskControl.kind === "retry",
+        },
+    canStop: experiment ? Boolean(experimentControl?.can_stop) : Boolean(episode?.can_stop),
+    stopPending: Boolean(experimentControl?.stop_pending),
+    continuationVisible,
+    continuationReady:
+      continuationVisible &&
+      (!experiment || Boolean(experimentControl?.can_start && !experimentControl.stop_pending)),
+    resumeTurns: continuationVisible ? pausedResumeTurns(episode) : null,
+  };
 }
 
 export interface AgentTaskGroup {

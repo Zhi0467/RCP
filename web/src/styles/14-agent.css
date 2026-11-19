@@ -1423,6 +1423,15 @@
     flex-basis: 100%;
     min-height: 44px;
   }
+  .episode-run-card .approval-see {
+    flex-basis: auto;
+  }
+  .episode-run-card .campaign-reauthorize {
+    display: flex;
+  }
+  .episode-run-card .campaign-reauthorize input {
+    width: 64px;
+  }
   .plan-edit {
     height: 44px;
     margin: -11px 0;

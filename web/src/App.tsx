@@ -5676,12 +5676,6 @@ function MemberApp({
                     watcherCheckBusyId={watcherCheckId}
                     taskActionId={taskActionId}
                     selectedExperimentConversation={selectedExperimentConversation}
-                    providerLabels={Object.fromEntries(
-                      Object.entries(project.providers).map(([id, provider]) => [
-                        id,
-                        provider.label || id,
-                      ]),
-                    )}
                     mutationsDisabled={mutationsDisabled}
                     experimentStartsDisabled={experimentStartRequiresSync}
                     onInspectTask={selectTaskInspector}
