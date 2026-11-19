@@ -2033,8 +2033,9 @@ actor), after the post commits. A chat wakes through the shared chat wake
 admission with cause `bulletin_mention`; an orchestrator receives one lifecycle
 notice and wakes through the Auto-research lifecycle path, unless its episode has
 the Bulletin off; that check shares the notice transaction. Only open mentions
-wake: never a post from a wake-caused turn, nor one the actor already answered
-in its thread. Each actor wakes at most once per `BULLETIN_WAKE_MIN_SECONDS`; a
+wake: never a mention a wake-caused turn wrote, whether in a new post or in an
+edit that added it, nor one the actor already answered in its thread. An edit
+records which turn added each new mention; the post keeps its original author. Each actor wakes at most once per `BULLETIN_WAKE_MIN_SECONDS`; a
 refused wake arms one later pass. Experiment loops and workers see mentions in
 their next delta.
 

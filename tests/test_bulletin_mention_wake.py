@@ -126,3 +126,49 @@ def test_a_bulletin_off_orchestrator_gets_no_mention_wake(tmp_path, monkeypatch)
         assert not connection.execute(
             "SELECT 1 FROM bulletin_mention_wakes WHERE actor_id=?", (actor,)
         ).fetchall()
+
+
+def test_a_mention_a_woken_turn_adds_by_editing_an_older_post_wakes_nobody(tmp_path, monkeypatch):
+    store, episode, _root = _mailbox(tmp_path)
+    woken = []
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_delivery.reconcile_pending_auto_research_lifecycle",
+        lambda _background, *, episode_id: woken.append(episode_id),
+    )
+    store.seat_project_member("project", _identity(store).user_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET status='running' WHERE episode_id=?", (episode.episode_id,)
+        )
+        connection.execute(
+            "CREATE TEMP TABLE editor AS SELECT * FROM graph_runs WHERE operation_id='origin'"
+        )
+        connection.execute(
+            "UPDATE editor SET operation_id='editor',native_session_id=NULL,"
+            "request_json=json_set(request_json,'$.wake_cause','message')"
+        )
+        connection.execute("INSERT INTO graph_runs SELECT * FROM editor")
+    post = store.execute_bulletin_command(
+        "project", "origin", "post", key="plain", text="Data moved"
+    )["post"]
+    actor = f"episode:{episode.episode_id}"
+    edited = store.execute_bulletin_command(
+        "project",
+        "editor",
+        "edit",
+        key="edit",
+        post_id=post["post_id"],
+        text=f"<@agent:{actor}> data moved",
+    )
+    assert "error" not in edited, edited
+    background = _Background(store)
+    assert wake_bulletin_mentions(background, "project", post["post_id"]) == {
+        actor: "bulletin_wake_ineligible"
+    }
+    assert woken == []
+    [record] = [
+        item
+        for item in store.open_bulletin_mentions("project", actor)
+        if item["post_id"] == post["post_id"]
+    ]
+    assert record["author"]["operation_id"] == "origin"

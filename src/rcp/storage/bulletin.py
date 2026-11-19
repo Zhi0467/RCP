@@ -100,6 +100,12 @@ def migrate_bulletin_deltas(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS bulletin_mention_wakes_actor "
         "ON bulletin_mention_wakes(project_id,actor_id,created_at)"
     )
+    if "mention_operations_json" not in {
+        row[1] for row in connection.execute("PRAGMA table_info(bulletin_posts)")
+    }:
+        connection.execute(
+            "ALTER TABLE bulletin_posts ADD COLUMN mention_operations_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _linked_artifact_ids(text: str) -> list[str]:
@@ -449,6 +455,7 @@ def _post(
         ).fetchone()
         if parent is None or parent["reply_to"] is not None or parent["deleted_at"] is not None:
             error = "bulletin_reply_invalid"
+    existing = None
     if action != "post":
         existing = connection.execute(
             "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
@@ -471,9 +478,23 @@ def _post(
             ([], []) if action == "delete" else _parse(connection, project_id, text or "")
         )
         if action == "edit":
+            assert existing is not None
+            kept = {mention["id"] for mention in json.loads(existing["mentions_json"])}
+            writers = {
+                identity: operation
+                for identity, operation in json.loads(existing["mention_operations_json"]).items()
+                if identity in {mention["id"] for mention in mentions}
+            }
+            if author.get("operation_id"):
+                writers.update(
+                    (mention["id"], author["operation_id"])
+                    for mention in mentions
+                    if mention["kind"] == "agent" and mention["id"] not in kept
+                )
             connection.execute(
-                "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,edited_at=? WHERE post_id=?",
-                (text, json.dumps(refs), json.dumps(mentions), now, post_id),
+                "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,"
+                "mention_operations_json=?,edited_at=? WHERE post_id=?",
+                (text, json.dumps(refs), json.dumps(mentions), json.dumps(writers), now, post_id),
             )
         elif action == "delete":
             connection.execute(
@@ -584,14 +605,16 @@ def bulletin_wake_posts(
     """Open mentions of an actor that may still wake it, newest first and bounded.
 
     A post wakes each mentioned actor at most once, never when a wake-caused turn
-    wrote it, and never after the actor replied in its thread.
+    wrote the mention (the post, or the edit that added it), and never after the
+    actor replied in its thread.
     """
     only = "" if post_ids is None else f"AND p.post_id IN ({','.join('?' for _ in post_ids)}) "
     return [
         row[0]
         for row in connection.execute(
             "SELECT p.post_id FROM bulletin_posts AS p "
-            "LEFT JOIN graph_runs AS author ON author.operation_id=p.operation_id "
+            "LEFT JOIN graph_runs AS author ON author.operation_id="
+            "COALESCE(json_extract(p.mention_operations_json,?),p.operation_id) "
             "WHERE p.project_id=? AND p.deleted_at IS NULL AND p.author_actor_id IS NOT ? "
             + only
             + "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) AS m "
@@ -604,6 +627,7 @@ def bulletin_wake_posts(
             "AND r.sequence>p.sequence AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
             "ORDER BY p.sequence DESC LIMIT ?",
             (
+                f'$."{actor_id}"',
                 project_id,
                 actor_id,
                 *(post_ids or ()),
