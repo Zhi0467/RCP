@@ -183,6 +183,8 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
       if (path.endsWith("/chat-reads"))
         return { json: { baseline: "", reads: {}, latest_finished: {}, archived: [] } };
       if (/\/chats\/[^/]+\/questions$/.test(path)) return { json: [] };
+      if (/\/chats\/[^/]+\/cards$/.test(path))
+        return { json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } };
       if (/\/chats\/[^/]+\/browser$/.test(path)) return { json: { browser_requested: false } };
       if (path === "/api/service-connections") return { json: { dictation: "", connections: [] } };
       if (/\/chats\/[^/]+\/worktree$/.test(path))
