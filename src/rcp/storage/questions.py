@@ -118,12 +118,21 @@ class QuestionStoreMixin(StoreMixinBase):
         choices: list[str] | None = None,
         multiple: bool = False,
         card: dict[str, Any] | None = None,
+        relays: str | None = None,
     ) -> QuestionRecord:
-        """Reuse owner+key across turns; never replace the first origin binding."""
+        """Reuse owner+key across turns; never replace the first origin binding.
+
+        A relay copy names the child question it repeats; it can be created only
+        while that question is pending, and the child's resolution withdraws it.
+        """
         arguments = {"question": question, "choices": choices or [], "multiple": multiple}
         argument_hash = hashlib.sha256(
             json.dumps(
-                {**arguments, **({"action": card["action"]} if card else {})},
+                {
+                    **arguments,
+                    **({"action": card["action"]} if card else {}),
+                    **({"relays": relays} if relays else {}),
+                },
                 sort_keys=True,
                 ensure_ascii=False,
             ).encode()
@@ -133,6 +142,7 @@ class QuestionStoreMixin(StoreMixinBase):
             origin=origin,
             key=key,
             argument_hash=argument_hash,
+            relays_question_id=relays,
             created_at=self.now(),
             **arguments,
         )
@@ -146,11 +156,20 @@ class QuestionStoreMixin(StoreMixinBase):
                 if row["argument_hash"] != argument_hash:
                     raise QuestionArgumentConflict("question key already names different arguments")
                 return _question_record(row)
+            if relays is not None and (
+                connection.execute(
+                    "SELECT 1 FROM questions WHERE question_id=? AND owner_kind='episode' "
+                    "AND state='pending' AND withdrawn_readonly=0",
+                    (relays,),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("The relayed question is no longer pending.")
             connection.execute(
                 """INSERT INTO questions
                 (question_id,project_id,owner_kind,owner_id,key,origin_json,argument_hash,
-                 question,choices_json,multiple,state,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 question,choices_json,multiple,state,relays_question_id,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.question_id,
                     origin.project_id,
@@ -163,6 +182,7 @@ class QuestionStoreMixin(StoreMixinBase):
                     json.dumps(record.choices),
                     multiple,
                     record.state,
+                    relays,
                     record.created_at,
                 ),
             )
@@ -341,19 +361,12 @@ class QuestionStoreMixin(StoreMixinBase):
     def _withdraw_relayed_copies(
         self, connection: sqlite3.Connection, record: QuestionRecord
     ) -> None:
-        """Retire what a parent chat asked while woken by only this child question."""
-        item_id = f"episode:{record.origin.owner_id}:question:{record.question_id}"
+        """Retire the parent chat's pending relay copies of this child question."""
         rows = connection.execute(
             """UPDATE questions SET withdrawn_readonly=1
-            WHERE project_id=? AND owner_kind='chat' AND state='pending'
-            AND withdrawn_readonly=0
-            AND json_extract(origin_json,'$.operation_id') IN (
-                SELECT operation_id FROM graph_runs
-                WHERE project_id=? AND json_extract(request_json,'$.chat_wake') IS NOT NULL
-                AND json_array_length(request_json,'$.chat_wake.item_ids')=1
-                AND json_extract(request_json,'$.chat_wake.item_ids[0]')=?
-            ) RETURNING *""",
-            (record.origin.project_id, record.origin.project_id, item_id),
+            WHERE relays_question_id=? AND state='pending' AND withdrawn_readonly=0
+            RETURNING *""",
+            (record.question_id,),
         ).fetchall()
         for row in rows:
             append_question_attention(connection, row, self.now())

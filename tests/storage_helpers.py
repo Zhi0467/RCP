@@ -50,6 +50,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
             "ALTER TABLE projects ADD COLUMN state_remote INTEGER NOT NULL DEFAULT 0"
         )
     if any(
+        row[1] == "relays_question_id" for row in connection.execute("PRAGMA table_info(questions)")
+    ):
+        connection.execute("DROP INDEX questions_relays")
+        connection.execute("ALTER TABLE questions DROP COLUMN relays_question_id")
+    if any(
         row[1] == "origin_flag_id"
         for row in connection.execute("PRAGMA table_info(evidence_flags)")
     ):

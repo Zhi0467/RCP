@@ -2956,6 +2956,11 @@ class AppStoreBase:
             ("delivery_diagnostic", "TEXT"),
         ):
             self._ensure_column(connection, "auto_research_messages", column, definition)
+        self._ensure_column(connection, "questions", "relays_question_id", "TEXT")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS questions_relays ON questions(relays_question_id) "
+            "WHERE relays_question_id IS NOT NULL"
+        )
         schema = [
             row for row in self._storage_schema(connection) if row[2] == "auto_research_messages"
         ]

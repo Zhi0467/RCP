@@ -1038,9 +1038,12 @@ cards require the human (`question_needs_human`). If answering the chain's last
 open question would need continuation turns, the parent receives
 `question_needs_continuation`; it does not allocate a new child budget. The human
 can answer and add turns through the existing question controls.
-When anyone resolves a child question, a pending question the parent asked in a
-wake turn caused by that question alone becomes withdrawn and read-only, so the
-human never answers a stale copy.
+A parent that asks the human a child question names it with
+`ask --relays <question_id>`. RCP accepts the link only while that question is
+pending and comes from a child chain this chat started, and never on an approval
+card. When anyone resolves the child question, each pending copy linked to it
+becomes withdrawn and read-only, so the human never answers a stale copy. Other
+questions and cards from the same turn stay open.
 
 `episode --message <id> --body-file <file>` also accepts a running Experiment
 chain. Its mail waits for the next invocation, which claims it in the episode's

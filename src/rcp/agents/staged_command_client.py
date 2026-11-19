@@ -110,6 +110,7 @@ EPISODE_MESSAGE = ("message", "--message", "<episode-id>")
 EPISODE_ANSWER = ("answer", "--answer", "<question-id>")
 EPISODE_ANSWER_FILE = ("answer_file", "--answer-file", "<filename>")
 EPISODE_BODY = ("body_file", "--body-file", "<filename>")
+ASK_RELAYS = ("relays", "--relays", "<question-id>")
 EPISODE_CONTROLS = (
     EPISODE_STOP,
     EPISODE_RESUME,
@@ -136,6 +137,10 @@ def projects_usages():
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
+
+
+def ask_relay_usage():
+    return _option_usage(ASK_RELAYS)
 
 
 def episode_control_usage(option, *, required=(), optional=()):
@@ -458,6 +463,7 @@ def _parser():
     ask.add_argument("--choice", action="append", default=[])
     ask.add_argument("--multiple", action="store_true")
     ask.add_argument("--action", help="Approval action JSON; private project threads only")
+    ask.add_argument(ASK_RELAYS[1], dest=ASK_RELAYS[0], metavar=ASK_RELAYS[2])
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
@@ -773,6 +779,10 @@ def _request_arguments(namespace, workspace):
             if not isinstance(action, dict):
                 raise ClientInputError("--action must be a JSON object")
             arguments["action"] = action
+        if namespace.relays is not None:
+            if namespace.action is not None:
+                raise ClientInputError("--relays cannot be combined with --action")
+            arguments["relays"] = _nonblank(namespace.relays, "relayed question id")
     elif verb == "apply":
         patch_file = _keyed_command_file(
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"

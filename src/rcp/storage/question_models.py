@@ -86,6 +86,7 @@ class QuestionRecord(BaseModel):
     followup_claimed_at: str | None = None
     dismissal_delivered_at: str | None = None
     withdrawn_readonly: bool = False
+    relays_question_id: str | None = None
     created_at: str
 
     @model_validator(mode="after")

@@ -545,11 +545,14 @@ class AskArguments(BaseModel):
     )
     multiple: bool = False
     action: ApprovalAction | None = None
+    relays: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def valid_choices(self) -> AskArguments:
         if self.action is not None and (self.choices or self.multiple):
             raise ValueError("approval actions cannot supply choices or multiple")
+        if self.action is not None and self.relays is not None:
+            raise ValueError("approval actions cannot relay a question")
         if not self.question.strip() or any(not choice.strip() for choice in self.choices):
             raise ValueError("question and choices must not be blank")
         if len(set(self.choices)) != len(self.choices):
