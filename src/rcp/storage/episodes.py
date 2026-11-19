@@ -178,7 +178,7 @@ class EpisodeStoreMixin(StoreMixinBase):
             placeholders = ",".join("?" for _ in chains)
             for row in connection.execute(
                 f"SELECT question_id,owner_id,question FROM questions "
-                f"WHERE owner_kind='episode' AND state='pending' "
+                f"WHERE owner_kind='episode' AND state='pending' AND withdrawn_readonly=0 "
                 f"AND owner_id IN ({placeholders}) ORDER BY created_at,question_id LIMIT ?",
                 (*chains, CHAT_CHILD_EPISODE_CONTEXT_LIMIT),
             ):

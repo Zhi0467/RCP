@@ -77,6 +77,15 @@ def test_orchestrator_question_relays_once_and_the_first_answer_wins(
     assert [open_["question_id"] for open_ in child["open_questions"]] == [  # type: ignore[union-attr]
         question.question_id
     ]
+    stale = _orchestrator_question(member, episode_id, root_id, "stale")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE questions SET withdrawn_readonly=1 WHERE question_id=?", (stale.question_id,)
+        )
+    [child] = store.chat_child_episode_status(THREAD_CHAT, member.project_id)
+    assert [open_["question_id"] for open_ in child["open_questions"]] == [  # type: ignore[union-attr]
+        question.question_id
+    ]
 
     answered = act(
         "answer",
