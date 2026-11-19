@@ -717,7 +717,7 @@ def test_local_question_origin_repair_requires_asking_task_provenance(
             expected_origin["stage_machine_id"] = BACKEND
         assert json.loads(after.pop("origin_json")) == expected_origin
         before.pop("origin_json")
-        assert after == before
+        assert after == {**before, "relays_question_id": None}
         from rcp.machine_upgrade import migrate_local_question_origins
 
         snapshot = connection.execute("SELECT origin_json FROM questions").fetchone()[0]

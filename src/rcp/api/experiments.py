@@ -24,7 +24,7 @@ from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.control import ExperimentControlState
+from rcp.control import ExperimentControlState, governing_decision_bundle
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import canonical_branch_id
@@ -246,7 +246,10 @@ def start_work_experiment(
         node = state.nodes.get(start.node_id)
         if not isinstance(node, Experiment):
             raise ValueError(f"Node {start.node_id!r} is not an Experiment on this graph.")
-        if node.updated_rev != start.node_rev:
+        if node.updated_rev != start.node_rev or start.governing != tuple(
+            (pin.decision_id, pin.selected_option)
+            for pin in governing_decision_bundle(state, start.node_id)
+        ):
             raise PlanChanged(start.node_id)
         if start.invocation_limit is not None and start.invocation_limit > node.invocation_ceiling:
             raise ValueError(

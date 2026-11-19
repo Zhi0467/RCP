@@ -143,7 +143,14 @@ def _execute(
     if action.kind == "experiment_start":
         assert isinstance(overrides, ExperimentStartOverrides)
         return _start_experiment(
-            action, overrides, request_id, request, catalog, human, source_operation_id
+            action,
+            overrides,
+            request_id,
+            request,
+            catalog,
+            human,
+            source_operation_id,
+            tuple((decision, option) for decision, option in pinned["governing"]),
         )
     if action.kind == "proposal":
         return _sync_proposal(
@@ -201,6 +208,7 @@ def _start_experiment(
     catalog: ProjectCatalog,
     human: AuthorizedHuman,
     source_operation_id: str,
+    governing: tuple[tuple[str, str], ...],
 ):
     """Start the plan as the tapping member, from the raising turn, under the card's id."""
     from rcp.api.dependencies import get_background_tasks, get_experiment_operation_lock
@@ -222,6 +230,7 @@ def _start_experiment(
                 episode_id=plan_card_episode_id(request_id, "experiment_start"),
                 node_id=action.node_id,
                 node_rev=overrides.node_rev,
+                governing=governing,
                 goal=overrides.goal,
                 invocation_limit=overrides.invocation_ceiling,
                 provider=overrides.provider,

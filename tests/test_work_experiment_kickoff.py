@@ -362,7 +362,17 @@ def _node_rev(plan):
     return plan.app.state.service.history.state().nodes[EXPERIMENT_ID].updated_rev
 
 
-def _start_directly(plan, source, episode_id, goal, node_rev=None):
+def _live_governing(plan):
+    from rcp.control import governing_decision_bundle
+
+    state = plan.app.state.service.history.state()
+    return tuple(
+        (pin.decision_id, pin.selected_option)
+        for pin in governing_decision_bundle(state, EXPERIMENT_ID)
+    )
+
+
+def _start_directly(plan, source, episode_id, goal, node_rev=None, governing=None):
     from rcp.api.experiments import start_work_experiment
 
     return start_work_experiment(
@@ -374,6 +384,7 @@ def _start_directly(plan, source, episode_id, goal, node_rev=None):
             episode_id=episode_id,
             node_id=EXPERIMENT_ID,
             node_rev=_node_rev(plan) if node_rev is None else node_rev,
+            governing=_live_governing(plan) if governing is None else governing,
             goal=goal,
             invocation_limit=2,
             provider=None,
@@ -478,6 +489,14 @@ def test_a_plan_edited_before_the_start_lock_is_refused(plan):
     with pytest.raises(PlanChanged):
         _start_directly(
             plan, card["operation_id"], started_episode(plan, card), "Goal.", _node_rev(plan) - 1
+        )
+    with pytest.raises(PlanChanged):
+        _start_directly(
+            plan,
+            card["operation_id"],
+            started_episode(plan, card),
+            "Goal.",
+            governing=(*_live_governing(plan), ("decision-changed-since", "other")),
         )
     assert _experiment_loops(plan) == []
 
