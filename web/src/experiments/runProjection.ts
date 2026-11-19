@@ -1,4 +1,5 @@
 import type {
+  AgentRunConfig,
   AgentTask,
   Episode,
   ExternalWatcherRecord,
@@ -9,6 +10,7 @@ import type {
   GraphWatcherRecord,
   GraphNode,
   GraphTargetRef,
+  ProviderId,
   WatcherRecord,
 } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
@@ -339,4 +341,19 @@ function compareTaskAscending(left: AgentTask, right: AgentTask): number {
     left.created_at.localeCompare(right.created_at) ||
     left.operation_id.localeCompare(right.operation_id)
   );
+}
+
+export function experimentRunConfig(
+  run: ExperimentRun,
+  baseMachine: string,
+): AgentRunConfig | null {
+  const request = (run.currentTask ?? run.taskGroup?.latest)?.request;
+  const agent = request?.provider ? request : run.control.operational.session;
+  if (!agent.provider) return null;
+  return {
+    provider: agent.provider as ProviderId,
+    model: agent.model ?? "",
+    reasoning: agent.reasoning ?? "",
+    run_on: baseMachine,
+  };
 }

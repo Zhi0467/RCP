@@ -32,7 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { pausedResumeTurns } from "../experiments/runProjection";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
@@ -99,6 +99,7 @@ interface Props {
   behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
+  experimentAgent?: AgentRunConfig | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
   experimentUnavailableLoops?: UnavailableExperimentLoop[];
   /** Whether the project's loop inventory is known yet, for the overlap list. */
@@ -192,6 +193,7 @@ export function DetailDrawer({
   behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
+  experimentAgent = null,
   experimentEntries = [],
   experimentUnavailableLoops = [],
   experimentEntriesStatus = "loaded",
@@ -239,6 +241,7 @@ export function DetailDrawer({
   }, [node.id]);
   const launchConfig =
     pickedConfig ??
+    experimentAgent ??
     (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   const launchReady =
     !project ||
@@ -952,7 +955,7 @@ export function DetailDrawer({
                     {presentation.context.map((item) => (
                       <div key={item.key}>
                         <dt>{item.label}</dt>
-                        <dd>{formatValue(item.value, glossaryIndex)}</dd>
+                        <dd>{formatContextValue(item.value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>
@@ -1230,6 +1233,21 @@ function nodeEditFieldError(field: NodeEditField, value: string): string | null 
       : `Enter a number of at least ${field.min}.`;
   }
   return null;
+}
+
+const MarkdownAnswer = lazy(() =>
+  import("../core/chatMarkdown").then((module) => ({ default: module.MarkdownAnswer })),
+);
+
+function formatContextValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {
+  if (typeof value !== "string") return formatValue(value, glossaryIndex);
+  return (
+    <div className="chat-markdown">
+      <Suspense fallback={formatValue(value, glossaryIndex)}>
+        <MarkdownAnswer text={value} glossaryIndex={glossaryIndex} />
+      </Suspense>
+    </div>
+  );
 }
 
 function formatValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {

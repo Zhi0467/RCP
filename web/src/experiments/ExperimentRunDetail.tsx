@@ -23,6 +23,7 @@ import {
   type ExperimentWatcherItem,
   authorizedInvocationCount,
   experimentRecommendation,
+  experimentRunConfig,
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isExternalWatcherRecord,
@@ -92,7 +93,7 @@ interface Props {
   watchedByParentAutoResearch?: boolean;
   allowStart?: boolean;
   startDisabled?: boolean;
-  /** Offers the Experiment agent picker, defaulting from the Node chat profile. */
+  /** Offers the Experiment agent picker, defaulting to the latest episode's agent, else the Node chat profile. */
   project?: ProjectSnapshot;
   onInspectTask?: (operationId: string) => void;
   onRun: (
@@ -153,7 +154,10 @@ export function ExperimentRunDetail({
   }, [run.node.id]);
   const launchConfig =
     pickedConfig ??
-    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
+    (project
+      ? (experimentRunConfig(run, project.run_on) ??
+        (launchProfile ? profileRunConfig(launchProfile, project.run_on) : undefined))
+      : undefined);
   const launchReady =
     !project ||
     !launchConfig ||

@@ -266,6 +266,7 @@ import { ProjectDock } from "./projects/ProjectDock";
 import { PhoneProjectBar, ProjectMenu, PhoneTabBar } from "./projects/PhoneProjectChrome";
 import { TABLET_MAX_WIDTH_PX, useNarrowViewport } from "./ui/useNarrowViewport";
 import { RunDialog } from "./experiments/RunDialog";
+import { buildExperimentRun, experimentRunConfig } from "./experiments/runProjection";
 import { initialOwnerCode } from "./desktop/pairingLink";
 import { ProjectLocatorBoundary } from "./projects/ProjectLocatorBoundary";
 import { TeamLoginBoundary } from "./desktop/TeamLoginBoundary";
@@ -5983,6 +5984,13 @@ function MemberApp({
             behind={draftNodeIsBehind(humanDraft?.nodes[node.id], graph.nodes[node.id])}
             canonicalStanding={graph.nodes[node.id]?.standing ?? node.standing}
             experimentControl={experimentControl}
+            experimentAgent={
+              experimentControl &&
+              experimentRunConfig(
+                buildExperimentRun(node, experimentControl, tasks, []),
+                project.run_on,
+              )
+            }
             experimentEntries={experimentLoops}
             experimentUnavailableLoops={experimentLoopsUnavailableRows}
             experimentEntriesStatus={
