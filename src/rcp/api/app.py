@@ -175,6 +175,7 @@ from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episode_mailbox import (
+    reconcile_bulletin_mentions,
     reconcile_chat_mail_recipient,
     reconcile_pending_chat_mail,
     reconcile_settled_chat_mail,
@@ -2240,6 +2241,10 @@ def create_app(
                     await asyncio.to_thread(reconcile_pending_chat_mail, background_tasks)
                 except Exception:
                     logger.exception("Could not reconcile chat mailbox at startup")
+                try:
+                    await asyncio.to_thread(reconcile_bulletin_mentions, background_tasks)
+                except Exception:
+                    logger.exception("Could not reconcile Bulletin mentions at startup")
                 for project in store.projects():
                     for episode in store.episodes(project.project_id, limit=None):
                         state = store.episode_isolation_state(

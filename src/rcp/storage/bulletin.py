@@ -100,6 +100,13 @@ def migrate_bulletin_deltas(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS bulletin_mention_wakes_actor "
         "ON bulletin_mention_wakes(project_id,actor_id,created_at)"
     )
+    connection.execute(
+        "INSERT OR IGNORE INTO bulletin_mention_wakes"
+        "(project_id,post_id,actor_id,operation_id,notice_id,created_at) "
+        "SELECT p.project_id,p.post_id,json_extract(m.value,'$.id'),NULL,NULL,p.created_at "
+        "FROM bulletin_posts AS p, json_each(p.mentions_json) AS m "
+        "WHERE json_extract(m.value,'$.kind')='agent'"
+    )
     if "mention_operations_json" not in {
         row[1] for row in connection.execute("PRAGMA table_info(bulletin_posts)")
     }:
@@ -759,6 +766,42 @@ class BulletinStoreMixin(StoreMixinBase):
                 ):
                     actors.append(identity)
             return actors
+
+    def unwoken_bulletin_mentions(self, after: tuple[int, int]) -> list[tuple[int, int, str, str]]:
+        """One page of agent mentions no wake has handled yet, by post and mention order."""
+        from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
+
+        with self.connection() as connection:
+            return [
+                (row[0], row[1], row[2], row[3])
+                for row in connection.execute(
+                    "SELECT p.sequence,m.key,p.project_id,json_extract(m.value,'$.id') "
+                    "FROM bulletin_posts AS p, json_each(p.mentions_json) AS m "
+                    "WHERE (p.sequence,m.key)>(?,?) AND p.deleted_at IS NULL "
+                    "AND json_extract(m.value,'$.kind')='agent' "
+                    "AND NOT EXISTS(SELECT 1 FROM bulletin_mention_wakes AS w "
+                    "WHERE w.post_id=p.post_id AND w.actor_id=json_extract(m.value,'$.id')) "
+                    "ORDER BY p.sequence,m.key LIMIT ?",
+                    (*after, CHAT_MAIL_RECONCILE_LIMIT),
+                )
+            ]
+
+    def bulletin_wake_cooldown_left(self, project_id: str, actor_id: str) -> float:
+        """Seconds until this actor's next mention wake may start."""
+        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS
+
+        with self.connection() as connection:
+            last = connection.execute(
+                "SELECT MAX(created_at) FROM bulletin_mention_wakes "
+                "WHERE project_id=? AND actor_id=?",
+                (project_id, actor_id),
+            ).fetchone()[0]
+        if last is None:
+            return 0.0
+        elapsed = (
+            datetime.fromisoformat(self.now()) - datetime.fromisoformat(last)
+        ).total_seconds()
+        return max(0.0, BULLETIN_WAKE_MIN_SECONDS - elapsed)
 
     def bulletin_wake_candidates(self, project_id: str, actor_id: str) -> list[str]:
         with self.connection() as connection:

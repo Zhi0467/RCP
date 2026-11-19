@@ -4,7 +4,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from rcp.limits import BULLETIN_WAKE_MIN_SECONDS, CHAT_WAKE_MIN_SECONDS
+from rcp.limits import CHAT_WAKE_MIN_SECONDS
 from rcp.storage.models import AgentTaskAdmissionConflict
 
 if TYPE_CHECKING:
@@ -143,12 +143,31 @@ def wake_bulletin_actor(background: BackgroundAgentTasks, project_id: str, actor
         if code in _RETRIED_LATER:
             background.schedule_deferred_pass(
                 f"bulletin:{project_id}:{actor_id}",
-                BULLETIN_WAKE_MIN_SECONDS
+                max(1.0, store.bulletin_wake_cooldown_left(project_id, actor_id))
                 if code == "bulletin_wake_cooldown"
                 else CHAT_WAKE_MIN_SECONDS,
                 lambda: wake_bulletin_actor(background, project_id, actor_id),
             )
         return code
+
+
+def reconcile_bulletin_mentions(background: BackgroundAgentTasks) -> dict[str, str]:
+    """Retry, once per actor, every mention no wake has handled, after a restart.
+
+    A refused wake's later pass lives only in memory, so startup rebuilds it from
+    the durable posts, in keyset pages.
+    """
+    statuses: dict[str, str] = {}
+    seen: set[tuple[str, str]] = set()
+    after = (0, -1)
+    while page := background.store.unwoken_bulletin_mentions(after):
+        for sequence, index, project_id, actor_id in page:
+            after = (sequence, index)
+            if (project_id, actor_id) in seen or not actor_id.startswith(("chat:", "episode:")):
+                continue
+            seen.add((project_id, actor_id))
+            statuses[actor_id] = wake_bulletin_actor(background, project_id, actor_id)
+    return statuses
 
 
 def wake_bulletin_mentions(

@@ -172,3 +172,39 @@ def test_a_mention_a_woken_turn_adds_by_editing_an_older_post_wakes_nobody(tmp_p
         if item["post_id"] == post["post_id"]
     ]
     assert record["author"]["operation_id"] == "origin"
+
+
+def test_restart_rearms_a_cooled_down_mention_for_its_remaining_cooldown(tmp_path, monkeypatch):
+    from rcp.runs.episode_mailbox import reconcile_bulletin_mentions
+
+    store, _episode, _root = _mailbox(tmp_path)
+    background = _Background(store)
+    first = _post(store, "<@agent:chat:chat> the data moved", "first")
+    wake_bulletin_mentions(background, "project", first)
+    store.complete_agent_task(background.launched[0], applied_revision=None, result={})
+    _later(store, monkeypatch, 100)
+    second = _post(store, "<@agent:chat:chat> and the config too", "second")
+    assert wake_bulletin_mentions(background, "project", second) == {
+        "chat:chat": "bulletin_wake_cooldown"
+    }
+
+    restarted = _Background(store)
+    assert reconcile_bulletin_mentions(restarted) == {"chat:chat": "bulletin_wake_cooldown"}
+    [(delay, later_pass)] = restarted.deferred.values()
+    assert 0 < delay <= 200
+    _later(store, monkeypatch, 400)
+    later_pass()  # type: ignore[operator]
+    assert store.agent_task(restarted.launched[-1]).request["chat_wake"]["item_ids"] == [second]
+
+
+def test_mentions_older_than_mention_wakes_never_wake_at_startup(tmp_path):
+    from rcp.runs.episode_mailbox import reconcile_bulletin_mentions
+    from rcp.storage.bulletin import migrate_bulletin_deltas
+
+    store, _episode, _root = _mailbox(tmp_path)
+    _post(store, "<@agent:chat:chat> an old note", "old")
+    with store.connection() as connection:
+        migrate_bulletin_deltas(connection)
+    background = _Background(store)
+    assert reconcile_bulletin_mentions(background) == {}
+    assert background.launched == []
