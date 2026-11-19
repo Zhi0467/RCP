@@ -346,17 +346,19 @@ def test_legacy_add_returns_current_row_without_reconstructing_original_count(sc
 
 
 @pytest.mark.parametrize(
-    "trigger,source,followup,every_minute_ok",
+    "trigger,source,followup,wake,every_minute_ok",
     [
-        ("human", None, False, True),
-        ("human", "voice", False, True),
-        ("schedule", None, False, False),
-        ("watcher", None, False, False),
-        ("human", None, True, False),
+        ("human", None, False, None, True),
+        ("human", "voice", False, None, True),
+        ("schedule", None, False, None, False),
+        ("watcher", None, False, None, False),
+        ("human", None, True, None, False),
+        ("human", None, False, "episode_mail", False),
+        ("human", None, False, "bulletin_mention", False),
     ],
 )
 def test_any_thread_turn_adds_but_only_member_turns_schedule_often(
-    schedule_store, monkeypatch, trigger, source, followup, every_minute_ok
+    schedule_store, monkeypatch, trigger, source, followup, wake, every_minute_ok
 ):
     import json
 
@@ -365,6 +367,8 @@ def test_any_thread_turn_adds_but_only_member_turns_schedule_often(
     with schedule_store.connection() as connection:
         request = dict(schedule_store.agent_task("origin").request)
         request.update(trigger=trigger, source=source, timezone="Europe/Berlin")
+        if wake:
+            request["chat_wake"] = {"kind": wake, "item_ids": ["item"], "chains": []}
         connection.execute(
             "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
             (json.dumps(request), "origin"),

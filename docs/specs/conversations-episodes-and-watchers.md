@@ -193,7 +193,10 @@ A thread wakes on a member message from the composer, voice, a queue or a handof
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
 project thread also wakes on its own watch file through conversation watchers
 and on a resolved approval card through question answer delivery. The Space
-thread also wakes on a settled handoff. There is no wake limit.
+thread also wakes on a settled handoff. A project thread also wakes on its
+[episode mailbox](#work-started-episodes) and on Bulletin mentions; only those
+wakes have cooldowns and a chain cap. Mailbox and mention wakes are not member
+messages.
 
 The admission owner seeds names from `DEFAULT_AGENT_NAMES`, choosing the first
 unused name and then numbered suffixes. These seeded names cannot be changed by
@@ -999,11 +1002,12 @@ the parent never invents a human answer. The human may answer any time.
 An idle parent receives one ordinary Work wake for a bounded mail batch. Storage
 atomically selects the latest settled usable chat session and stage, inserts the
 wake and claims the items. An occupied chat claims pending mail during its next
-turn's staging. Wakes use a deterministic operation id, a cooldown and a per-child
-chain cap equal to the child's invocation ceiling. An item never wakes the chat
-when its question is already resolved, when a wake-caused turn wrote it (a chat
-wake or an Auto-research wake), or when the parent itself caused it: an ending
-names the parent turn that sent `episode --stop` as its sender. Such items, and
+turn's staging. Wakes use a deterministic operation id, a cooldown and a per-chain cap
+equal to the chain root's invocation ceiling. An item never wakes the chat
+when its question is already resolved or withdrawn, when a wake-caused turn
+wrote it (a chat wake or an Auto-research wake), or when any turn of the
+recipient chat sent it, such as an ending whose sender is the parent turn that
+sent `episode --stop`. Such items, and
 items held back by the cap, wait for the chat's next ordinary turn; wake
 selection reads pending items in keyset pages, so they never hide a newer
 wake-eligible item.
@@ -1013,8 +1017,9 @@ commits, so a child's question, pause or ending wakes the idle parent at once.
 Task settlement reconciles only the settled turn's chat. Startup preserves
 admitted wakes proven not started, launches them, and visits every chat with
 pending mail, longest-waiting first. A cooldown refusal arms one later pass for
-that chat. Any other refusal or launch failure stays on the held-back items as
-a structured code, and the parent's child status lists it as `undelivered_mail`
+that chat, and a busy chat claims its mail at its next settlement. The chain cap
+and any other refusal or launch failure stay on the held-back items as a
+structured code, and the parent's child status lists it as `undelivered_mail`
 (code and item count) while the items wait.
 
 Mail to an Experiment belongs to its chain. A message accepted during an
@@ -1037,8 +1042,8 @@ startup, so the next turn or wake delivers it; delivery is at least once.
 only a question from a child started here, using the human route's first-answer
 arbitration. A later answer is `question_already_answered`. Approval and plan
 cards require the human (`question_needs_human`). If answering the chain's last
-open question would need continuation turns, the parent receives
-`question_needs_continuation`; it does not allocate a new child budget. The human
+open question would need continuation turns, or the episode is still ending,
+the parent receives `question_needs_continuation`; it does not allocate a new child budget. The human
 can answer and add turns through the existing question controls.
 A parent that asks the human a child question names it with
 `ask --relays <question_id>`. RCP accepts the link only while that question is
@@ -1050,7 +1055,7 @@ questions and cards from the same turn stay open.
 `episode --message <id> --body-file <file>` also accepts a running Experiment
 chain. Its mail waits for the next invocation, which claims it in the episode's
 saved session and stage under the Stop fence. It never steers an active provider
-invocation. An ended Experiment refuses with `episode_not_running`.
+invocation. An ended or stopping Experiment refuses with `episode_not_running`.
 
 Add-turns and message requests derive their request ids from the turn and key,
 so a replay returns the same continuation or message. Pause and resume record a

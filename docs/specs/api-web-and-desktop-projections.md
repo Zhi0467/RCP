@@ -513,7 +513,8 @@ to their owner. Reads use
 include predecessor questions without changing their origin. Each question
 publishes its id, owner and asking operation, origin capability, text, choices,
 multiple-selection flag, state, answer, chosen choices, human resolver and time,
-creation time, `withdrawn_readonly`, the server's `can_answer` offer,
+creation time, `withdrawn_readonly`, `relays_question_id` (the child question a
+relay copy relays), the server's `can_answer` offer,
 `answer_continues`, and `agent_waiting`. `answer_continues` is `turns` on the last
 open card of an episode that ended other than by Stop, `ending` while that
 episode still settles, and otherwise null. The latter is true for an open, non-withdrawn question whose last
@@ -545,9 +546,11 @@ card only, and never wakes an owner.
 Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
 expires_at, state, result}`, where state is pending, running or expired, and
 `result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss
-return `409 approval_card` for these questions. The owner resolves through
+return `409 approval_card` for these questions. The owner, or for a shared-chat
+plan card any member `plan_card_actor` admits, resolves through
 `POST /api/approval-cards/{question_id}` with
-`{decision: "approve" | "decline", pinned_sha256}`. The response is
+`{decision: "approve" | "decline", pinned_sha256, start?}`; approving a plan card
+requires `start`. The response is
 `{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`;
 a second tap returns `409 card_taken`. A declined card that approves a
 Proposal adds `rejected` (and `reason` when false) unless the Proposal was
@@ -570,7 +573,8 @@ matching the asking turn's capability: Work, or Discuss for a question a
 historical Discuss turn asked.
 Experiment and Auto-research detail show the same cards; a `turns` card adds an
 **Add turns** field beside Answer, and cards a Stop withdrew retain their history
-with an **Episode ended** state. Chat and episode views select
+with an **Episode ended** state. A relay copy withdrawn because its child
+question resolved shows **Answered on the run**. Chat and episode views select
 questions from the shared project resource, refreshed by its watermark,
 including an episode's status or ending change, and invalidated by question
 commands. Fresh pending rounds show a cobalt **Agent is waiting**
@@ -2476,7 +2480,7 @@ table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
 thread. A test holds every grantable verb to a line.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
-`{proposal_cards, asked_cards, questions, episodes}` for the member's open project threads in their
+`{proposal_cards, asked_cards, questions, episodes, next_expiry_at}` for the member's open project threads in their
 projects: not closed, not archived, and never ensured by this read. A named
 thread must be the member's own; a Space thread yields an empty response.
 `proposal_cards` are `ProposalCardView`s (project, thread, the raising turn's

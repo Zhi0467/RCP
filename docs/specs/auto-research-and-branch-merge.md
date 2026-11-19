@@ -186,7 +186,10 @@ files. Human Merge coordinates code and graph delivery through the isolation own
 
 ## Mail and lifecycle notices
 
-Mail is Markdown hearsay in a star connecting the root to workers. It grants no
+Mail is Markdown hearsay in a star connecting the root to workers. The same
+table carries the
+[parent/child mailbox](conversations-episodes-and-watchers.md#work-started-episodes)
+to the chat that started an episode. Mail grants no
 graph authority and is not live injection.
 [Human steering](providers-and-containment.md#live-human-steering) remains a
 separate ordinary-chat channel.
@@ -211,8 +214,9 @@ unavailability, a provider or machine change, or a dropped session. Add turns
 refuses during such a turn. Viewer Send continues it as Work.
 
 Lifecycle notices are deduplicated RCP facts committed with source transitions.
-They cover child settlement and recovery, Experiment attention and ending, and
-graph readiness. Busy actors receive them after their turn. Sleeping delivery
+They cover child settlement and recovery, Experiment attention and ending,
+graph readiness, and
+[Bulletin mentions](providers-and-containment.md#bulletin-commands-and-context). Busy actors receive them after their turn. Sleeping delivery
 atomically claims a bounded batch and one invocation from B. Root graph wakes
 also claim pending input, with a short grace window to batch notices. Running
 roots harvest mail and notices transactionally with turn attribution. Responses
