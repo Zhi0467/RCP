@@ -201,6 +201,25 @@ def _startup_pass(plan):
     raise_pending_experiment_cards(plan.store, background.recorded_execution)
 
 
+def test_a_changed_governing_choice_makes_the_card_stale(plan, monkeypatch):
+    from rcp.core.models import ExperimentDecisionPin
+    from rcp.runs import approval_cards
+
+    card = _plan_card(plan)
+    monkeypatch.setattr(
+        approval_cards,
+        "governing_decision_bundle",
+        lambda _state, _node_id: [
+            ExperimentDecisionPin(
+                decision_id="dec/schedule", decision_revision=9, selected_option="cosine"
+            )
+        ],
+    )
+
+    assert _start(plan, card).json()["outcome"] == "stale"
+    assert _experiment_loops(plan) == []
+
+
 def test_startup_raises_a_card_a_crash_lost_once(plan):
     _crash_before_card(plan, "lost")
     assert _cards(plan, "shared-chat") == []

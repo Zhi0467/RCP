@@ -21,6 +21,7 @@ from rcp.approval_actions import (
     ProposalAction,
     TruthScopeAction,
 )
+from rcp.control import governing_decision_bundle
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import AuthorizedHuman, GraphState, Proposal
 from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
@@ -463,7 +464,11 @@ def _truth_scope_pins(
 
 
 def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> dict[str, Any]:
-    """The node and where it lives, never its revision, so later edits show live."""
+    """The node, where it lives, and its governing choices, never the node's revision.
+
+    Node edits show live on the card; a governing Decision the card does not show
+    changing its choice makes the card stale, so Start never runs under it unseen.
+    """
     node = experiment_node(state, action.node_id)
     if node is None:
         raise ValueError("experiment_not_found")
@@ -472,6 +477,10 @@ def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> 
         "node_id": action.node_id,
         "type": node.type,
         "graph_target": (target or GraphTargetRef()).model_dump(mode="json"),
+        "governing": [
+            [pin.decision_id, pin.selected_option]
+            for pin in governing_decision_bundle(state, action.node_id)
+        ],
     }
 
 
