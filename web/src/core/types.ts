@@ -4320,6 +4320,8 @@ export interface DockEpisode {
 
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
 export interface AgentCardList {
+  /** When the next ended child leaves the dock; null when none will. */
+  next_expiry_at: string | null;
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
   questions?: RelayedQuestion[];

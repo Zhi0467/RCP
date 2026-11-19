@@ -81,6 +81,7 @@ export function AutoResearchEpisodeCard({
   const detailId = useId();
   const chain = episode.chain;
   const [expanded, setExpanded] = useState(initiallyExpanded);
+  const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
   const [messageTurns, setMessageTurns] = useState("3");
   const messageRequest = useRef<{
@@ -269,6 +270,8 @@ export function AutoResearchEpisodeCard({
             )}
             <EpisodeControls
               episode={episode}
+              additionalTurns={additionalTurns}
+              onAdditionalTurnsChange={setAdditionalTurns}
               taskControl={taskControl}
               busyAction={busyAction}
               taskActionId={taskActionId}

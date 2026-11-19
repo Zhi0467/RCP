@@ -14,7 +14,6 @@ import {
   RotateCcw,
   Send,
   Square,
-  SquareStack,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -94,6 +93,7 @@ import type {
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import {
   ApprovalCardStack,
+  AgentCardsUnavailable,
   askedCardKey,
   dockStackCards,
   proposalCardKey,
@@ -1324,9 +1324,9 @@ export function AgentThreadView({
         )
       : []),
   ]);
-  const cardsChanged = () => {
-    void cards.refetch();
-    if (thread.kind === "project") void refresh();
+  const cardsChanged = async () => {
+    await cards.refetch();
+    if (thread.kind === "project") await refresh();
   };
   const proposalStackCard = (view: ProposalCardView, showProject: boolean): StackCard => ({
     kind: "proposal",
@@ -1697,16 +1697,7 @@ export function AgentThreadView({
         tools={null}
         actions={
           <>
-            {cards.unavailable && (
-              <span
-                className="agent-cards-unavailable"
-                role="img"
-                aria-label="Approval cards couldn't load. Retrying."
-                title="Approval cards couldn't load. Retrying."
-              >
-                <SquareStack size={16} />
-              </span>
-            )}
+            {cards.unavailable && <AgentCardsUnavailable />}
             {voice && (
               <button
                 className={`icon-button chat-voice-button${voiceHere ? " active" : ""}`}

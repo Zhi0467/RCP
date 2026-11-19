@@ -1,5 +1,5 @@
-import { FlaskConical, Pencil, Telescope } from "lucide-react";
-import { useState } from "react";
+import { FlaskConical, GitBranch, Pencil, Telescope } from "lucide-react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import {
   AgentConfigChip,
   AgentConfigControls,
@@ -11,11 +11,13 @@ import { useRefreshRuntime, useResource } from "../core/useResource";
 import { buildNotificationLink } from "../core/notificationLinks";
 import type {
   AgentQuestion,
+  AgentRunConfig,
   ApprovalCard,
   ApprovalCardResult,
   ProjectSnapshot,
 } from "../core/types";
-import { AutoResearchFields, AutoResearchWorktree } from "../experiments/AutoResearchControls";
+import { AutoResearchWorktree } from "../experiments/AutoResearchControls";
+import { BranchNameField } from "../graph/BranchNameField";
 import { worktreeRepositoryChoices, chosenWorktreeRepository } from "../chat/worktreeRepositories";
 import { SYNC_BEFORE_START } from "../experiments/experimentStart";
 import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
@@ -41,6 +43,188 @@ import {
   type ExperimentStartAction,
   type PlanInputs,
 } from "./experimentPlanModel";
+
+type PlanDraft = Partial<PlanInputs & AutoResearchInputs>;
+const PlanDrafts = createContext<{
+  drafts: ReadonlyMap<string, PlanDraft>;
+  set: (questionId: string, draft: PlanDraft) => void;
+} | null>(null);
+
+export function EpisodePlanDraftProvider({
+  questionIds,
+  children,
+}: {
+  questionIds: readonly string[];
+  children: ReactNode;
+}) {
+  const [drafts, setDrafts] = useState<ReadonlyMap<string, PlanDraft>>(() => new Map());
+  const active = questionIds.join("\n");
+  useEffect(() => {
+    const open = new Set(active.split("\n"));
+    setDrafts((known) => {
+      const next = new Map([...known].filter(([id]) => open.has(id)));
+      return next.size === known.size ? known : next;
+    });
+  }, [active]);
+  return (
+    <PlanDrafts.Provider
+      value={{
+        drafts,
+        set: (id, draft) => setDrafts((known) => new Map(known).set(id, draft)),
+      }}
+    >
+      {children}
+    </PlanDrafts.Provider>
+  );
+}
+
+function usePlanDraft(questionId: string): [PlanDraft, (draft: PlanDraft) => void] {
+  const shared = useContext(PlanDrafts);
+  const [local, setLocal] = useState<PlanDraft>({});
+  return shared
+    ? [shared.drafts.get(questionId) ?? {}, (draft) => shared.set(questionId, draft)]
+    : [local, setLocal];
+}
+
+type PlanSnapshot = Pick<
+  ProjectSnapshot,
+  "graph" | "agent_profiles" | "run_on" | "provider_readiness"
+>;
+
+function PlanRun({
+  label,
+  inputLabel,
+  value,
+  canEdit,
+  locked,
+  open,
+  onChange,
+  children,
+}: {
+  label: string;
+  inputLabel: string;
+  value: string;
+  canEdit: boolean;
+  locked: boolean;
+  open?: boolean;
+  onChange: (value: string) => void;
+  children?: ReactNode;
+}) {
+  const [editing, setEditing] = useState(false);
+  const shown = editing || Boolean(open);
+  return (
+    <dl className="plan-section run">
+      <dt>
+        This run
+        {canEdit && !shown && (
+          <button
+            type="button"
+            className="plan-edit"
+            aria-label={label}
+            title={label}
+            disabled={locked}
+            onClick={() => setEditing(true)}
+          >
+            <Pencil size={12} aria-hidden="true" />
+          </button>
+        )}
+      </dt>
+      <dd
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setEditing(false);
+        }}
+      >
+        {shown ? (
+          <>
+            <textarea
+              className="plan-goal-input"
+              aria-label={inputLabel}
+              value={value}
+              disabled={locked}
+              rows={Math.min(12, Math.max(3, value.split("\n").length + 1))}
+              autoFocus={editing}
+              onChange={(event) => onChange(event.target.value)}
+            />
+            {children}
+          </>
+        ) : (
+          <p className="plan-goal">{value}</p>
+        )}
+      </dd>
+    </dl>
+  );
+}
+
+function PlanLaunch({
+  snapshot,
+  profile,
+  config,
+  agentLabel,
+  turns,
+  cap,
+  locked,
+  onTurns,
+  onConfig,
+  children,
+}: {
+  snapshot: PlanSnapshot | null;
+  profile: ProjectSnapshot["agent_profiles"]["node_chat"] | undefined;
+  config: AgentRunConfig | null;
+  agentLabel: string;
+  turns: number;
+  cap?: number;
+  locked: boolean;
+  onTurns: (turns: number) => void;
+  onConfig: (config: AgentRunConfig) => void;
+  children?: ReactNode;
+}) {
+  const [agentOpen, setAgentOpen] = useState(false);
+  const effectiveModel =
+    profile && config?.provider === profile.provider ? profile.effective_model : "";
+  return (
+    <>
+      <div className="plan-launch">
+        {snapshot && config && (
+          <AgentConfigChip
+            project={snapshot}
+            value={config}
+            effectiveModel={effectiveModel}
+            open={agentOpen}
+            disabled={locked}
+            label={agentLabel}
+            workLike={profile?.work_like_capable}
+            onToggle={() => setAgentOpen(!agentOpen)}
+          />
+        )}
+        <label className="plan-turns" title={cap ? `At most ${cap}` : undefined}>
+          <input
+            type="number"
+            min={1}
+            max={cap}
+            step={1}
+            value={Number.isFinite(turns) ? turns : ""}
+            disabled={locked}
+            aria-label="Turn limit"
+            onChange={(event) => onTurns(event.target.valueAsNumber)}
+          />
+          turns
+        </label>
+        {children}
+      </div>
+      {agentOpen && snapshot && config && (
+        <AgentConfigControls
+          project={snapshot}
+          value={config}
+          onChange={onConfig}
+          effectiveModel={effectiveModel}
+          workLikeCapable={profile?.work_like_capable}
+          locked={locked}
+          compact
+        />
+      )}
+    </>
+  );
+}
 
 export interface CardProps {
   question: AgentQuestion;
@@ -85,10 +269,7 @@ function ExperimentPlanCardView({
   onSettled,
   resolve,
 }: CardProps & {
-  snapshot: Pick<
-    ProjectSnapshot,
-    "graph" | "agent_profiles" | "run_on" | "provider_readiness"
-  > | null;
+  snapshot: PlanSnapshot | null;
   staged: () => boolean;
   onPlanChanged: () => void;
   resolve?: Parameters<typeof tapPlanCard>[2];
@@ -99,10 +280,8 @@ function ExperimentPlanCardView({
   const launchProfile = snapshot?.agent_profiles.node_chat;
   const fallback =
     launchProfile && snapshot ? profileRunConfig(launchProfile, snapshot.run_on) : null;
-  const [edits, setEdits] = useState<Partial<PlanInputs>>({});
+  const [edits, setEdits] = usePlanDraft(question.question_id);
   const inputs: PlanInputs = { ...initialPlanInputs(action, fallback), ...edits };
-  const [editingGoal, setEditingGoal] = useState(false);
-  const [agentOpen, setAgentOpen] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const { pending, state, stateLabel } = askedCardState(question, card);
@@ -189,87 +368,25 @@ function ExperimentPlanCardView({
             : null}
         </dd>
       </dl>
-      <dl className="plan-section run">
-        <dt>
-          This run
-          {question.can_answer && !editingGoal && (
-            <button
-              type="button"
-              className="plan-edit"
-              aria-label="Edit goal"
-              title="Edit goal"
-              disabled={locked}
-              onClick={() => setEditingGoal(true)}
-            >
-              <Pencil size={12} aria-hidden="true" />
-            </button>
-          )}
-        </dt>
-        <dd>
-          {editingGoal ? (
-            <textarea
-              className="plan-goal-input"
-              aria-label="Goal"
-              value={inputs.goal}
-              disabled={locked}
-              rows={Math.min(12, Math.max(3, inputs.goal.split("\n").length + 1))}
-              autoFocus
-              onChange={(event) => setEdits({ ...edits, goal: event.target.value })}
-              onBlur={() => setEditingGoal(false)}
-            />
-          ) : (
-            <p className="plan-goal">{inputs.goal}</p>
-          )}
-        </dd>
-      </dl>
-      <div className="plan-launch">
-        {snapshot && inputs.config && (
-          <AgentConfigChip
-            project={snapshot}
-            value={inputs.config}
-            effectiveModel={
-              launchProfile && inputs.config.provider === launchProfile.provider
-                ? launchProfile.effective_model
-                : ""
-            }
-            open={agentOpen}
-            disabled={locked}
-            label="Experiment agent"
-            workLike={workLike}
-            onToggle={() => setAgentOpen(!agentOpen)}
-          />
-        )}
-        <label className="plan-turns" title={`At most ${cap}`}>
-          <input
-            type="number"
-            min={1}
-            max={cap}
-            step={1}
-            value={Number.isFinite(inputs.invocationCeiling) ? inputs.invocationCeiling : ""}
-            disabled={locked}
-            aria-label="Turn limit"
-            onChange={(event) =>
-              setEdits({ ...edits, invocationCeiling: event.target.valueAsNumber })
-            }
-          />
-          turns
-        </label>
-      </div>
-      {agentOpen && snapshot && inputs.config && (
-        <AgentConfigControls
-          project={snapshot}
-          value={inputs.config}
-          onChange={(config) => setEdits({ ...edits, config })}
-          effectiveModel={
-            launchProfile && inputs.config.provider === launchProfile.provider
-              ? launchProfile.effective_model
-              : ""
-          }
-          workLikeCapable={workLike}
-          locked={locked}
-          compact
-        />
-      )}
+      <PlanRun
+        label="Edit goal"
+        inputLabel="Goal"
+        value={inputs.goal}
+        canEdit={question.can_answer}
+        locked={locked}
+        onChange={(goal) => setEdits({ ...edits, goal })}
+      />
+      <PlanLaunch
+        snapshot={snapshot}
+        profile={launchProfile}
+        config={inputs.config}
+        agentLabel="Experiment agent"
+        turns={inputs.invocationCeiling}
+        cap={cap}
+        locked={locked}
+        onTurns={(invocationCeiling) => setEdits({ ...edits, invocationCeiling })}
+        onConfig={(config) => setEdits({ ...edits, config })}
+      />
       {isStaged && (
         <p className="plan-note" role="status">
           {SYNC_BEFORE_START}
@@ -329,9 +446,8 @@ function AutoResearchPlanCardView({
   const action = card.action as AutoResearchAction;
   const profile = snapshot?.agent_profiles.orchestrator;
   const fallback = profile && snapshot ? profileRunConfig(profile, snapshot.run_on) : null;
-  const [edits, setEdits] = useState<Partial<AutoResearchInputs>>({});
+  const [edits, setEdits] = usePlanDraft(question.question_id);
   const inputs = { ...initialAutoResearchInputs(action, fallback), ...edits };
-  const [agentOpen, setAgentOpen] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [branchRefusal, setBranchRefusal] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -352,8 +468,6 @@ function AutoResearchPlanCardView({
     : null;
   const unavailable = repositories !== null && repository === null;
   const codeWorktree = inputs.codeWorktree && !unavailable;
-  const effectiveModel =
-    profile && inputs.config?.provider === profile.provider ? profile.effective_model : "";
   const providerReady =
     snapshot &&
     inputs.config &&
@@ -382,22 +496,37 @@ function AutoResearchPlanCardView({
   };
   const body = (
     <div className="approval-details plan-body">
-      <div className="campaign-dialog-fields">
-        <AutoResearchFields
-          branchNamesInUse={branchNamesInUse}
-          branchNameRefusal={branchRefusal}
-          instructionRequired
-          budget={Number.isFinite(inputs.invocationCeiling) ? String(inputs.invocationCeiling) : ""}
-          instruction={inputs.instruction}
-          branch={inputs.branch}
-          busy={locked}
-          setBudget={(value) =>
-            setEdits({ ...edits, invocationCeiling: value === "" ? NaN : Number(value) })
-          }
-          setInstruction={(instruction) => setEdits({ ...edits, instruction })}
-          setBranch={(branch) => setEdits({ ...edits, branch })}
-        />
-        <div className="agent-config-options campaign-isolation">
+      <PlanRun
+        label="Edit instruction"
+        inputLabel="Starting instruction"
+        value={inputs.instruction}
+        canEdit={question.can_answer}
+        locked={locked}
+        open={branchRefusal !== null}
+        onChange={(instruction) => setEdits({ ...edits, instruction })}
+      >
+        <div className="campaign-isolation">
+          <BranchNameField
+            mode="auto_research"
+            value={inputs.branch}
+            disabled={locked}
+            refusal={branchRefusal}
+            namesInUse={branchNamesInUse}
+            onChange={(branch) => setEdits({ ...edits, branch })}
+          />
+        </div>
+      </PlanRun>
+      <PlanLaunch
+        snapshot={snapshot}
+        profile={profile}
+        config={inputs.config}
+        agentLabel="Orchestrator agent"
+        turns={inputs.invocationCeiling}
+        locked={locked}
+        onTurns={(invocationCeiling) => setEdits({ ...edits, invocationCeiling })}
+        onConfig={(config) => setEdits({ ...edits, config })}
+      >
+        <span className="campaign-isolation">
           <AutoResearchWorktree
             worktreeUnavailable={unavailable}
             runOn={inputs.config?.run_on}
@@ -408,31 +537,8 @@ function AutoResearchPlanCardView({
             setCodeWorktree={(codeWorktree) => setEdits({ ...edits, codeWorktree })}
             setWorktreePick={(worktreeRepository) => setEdits({ ...edits, worktreeRepository })}
           />
-        </div>
-      </div>
-      {snapshot && inputs.config && (
-        <AgentConfigChip
-          project={snapshot}
-          value={inputs.config}
-          effectiveModel={effectiveModel}
-          open={agentOpen}
-          disabled={locked}
-          label="Orchestrator agent"
-          workLike={profile?.work_like_capable}
-          onToggle={() => setAgentOpen(!agentOpen)}
-        />
-      )}
-      {agentOpen && snapshot && inputs.config && (
-        <AgentConfigControls
-          project={snapshot}
-          value={inputs.config}
-          onChange={(config) => setEdits({ ...edits, config })}
-          effectiveModel={effectiveModel}
-          workLikeCapable={profile?.work_like_capable}
-          locked={locked}
-          compact
-        />
-      )}
+        </span>
+      </PlanLaunch>
     </div>
   );
   return (
@@ -443,6 +549,14 @@ function AutoResearchPlanCardView({
       state={state}
       stateLabel={stateLabel}
       project={null}
+      chip={
+        inputs.branch.trim() ? (
+          <span className="entity-chip">
+            <GitBranch size={11} aria-hidden="true" />
+            <span>{inputs.branch.trim()}</span>
+          </span>
+        ) : undefined
+      }
       askedAt={question.created_at}
       body={pending ? body : undefined}
       approveLabel="Start"

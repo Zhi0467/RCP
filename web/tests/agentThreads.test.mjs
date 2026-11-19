@@ -440,7 +440,7 @@ const renderServer = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
-const { stackLater, stackOrder } = await renderServer.ssrLoadModule(
+const { stackIndex, stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );
 const { AskedApprovalCard } = await renderServer.ssrLoadModule("/src/agents/ApprovalCard.tsx");
@@ -514,6 +514,14 @@ test("Later puts the front card away, and a refetch keeps survivors' order and a
   const last = stackLater({ order: ["a", "b"], index: 1, later: [] }, ["a", "b"]);
   assert.deepEqual(last.order, ["a"]);
   assert.equal(last.index, 0);
+});
+
+test("a refetch keeps the front card by key and falls back to the nearest when it leaves", () => {
+  const memory = { order: ["a", "b", "c"], index: 1, front: "b", later: [] };
+  assert.equal(stackIndex(memory, stackOrder(memory.order, ["b", "c", "d"])), 0);
+  assert.equal(stackIndex(memory, stackOrder(memory.order, ["a", "b", "c", "d"])), 1);
+  assert.equal(stackIndex(memory, stackOrder(memory.order, ["a", "c", "d"])), 1);
+  assert.equal(stackIndex(memory, stackOrder(memory.order, ["a"])), 0);
 });
 
 test("Later on the last open card leaves every card put away, and a decided card drops out", () => {
