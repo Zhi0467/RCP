@@ -371,7 +371,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         .first()
         .click();
       const recovery = page.locator(".experiment-run-actions").getByRole("button", {
-        name: action === "retry" ? "Retry Claude" : "Resume Claude",
+        name: action === "retry" ? "Retry" : "Resume",
         exact: true,
       });
       await recovery.waitFor({ timeout: 10000 });
@@ -386,7 +386,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         await recovery.click();
       }
       const busyRecovery = page.locator(".experiment-run-actions").getByRole("button", {
-        name: action === "resume" ? "Resuming Claude…" : "Retrying Claude…",
+        name: action === "resume" ? "Resume…" : "Retry…",
         exact: true,
       });
       await busyRecovery.waitFor();

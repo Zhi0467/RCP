@@ -62,10 +62,7 @@ from rcp.api.episodes import (
     serialize_episode,
 )
 from rcp.api.experiment_controls import _experiment_control_response
-from rcp.api.experiments import (
-    resume_work_experiment,
-    start_work_experiment,
-)
+from rcp.api.experiments import resume_work_experiment
 from rcp.api.experiments import router as experiments_router
 from rcp.api.health import router as health_router
 from rcp.api.history import router as history_router
@@ -177,10 +174,16 @@ from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.episode_mailbox import (
+    reconcile_bulletin_mentions,
+    reconcile_chat_mail_recipient,
+    reconcile_pending_chat_mail,
+    reconcile_settled_chat_mail,
+    wake_bulletin_mentions,
+)
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
-    WorkExperimentStart,
     reconcile_reserved_experiment_branch_roots,
 )
 from rcp.runs.experiment_loop import (
@@ -217,6 +220,10 @@ from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.work_experiment_commands import (
+    raise_pending_experiment_cards,
+    raise_plan_cards,
+)
 from rcp.server_ops.backup import BackupArchiveReceipt, latest_protected_backup_receipt
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.control import (
@@ -1247,8 +1254,8 @@ def create_app(
             )
         return resume_recorded_command_mailbox(service_for_validation, execution)
 
-    def start_experiment_from_work(start: WorkExperimentStart) -> AgentTaskRecord:
-        return start_work_experiment(catalog, background_tasks, experiment_operation_lock, start)
+    def raise_experiment_cards_from_work(execution: AgentTaskExecution) -> None:
+        raise_plan_cards(execution, catalog)
 
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
@@ -1271,7 +1278,7 @@ def create_app(
         recorded_stream=background_recorded_task_stream,
         resume_command_mailbox=background_resume_command_mailbox,
         dependency_checker=dependency_checker,
-        experiment_starter=start_experiment_from_work,
+        experiment_card_raiser=raise_experiment_cards_from_work,
         experiment_resumer=resume_experiment_from_work,
         episode_controls=MemberEpisodeControls(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
@@ -1561,10 +1568,30 @@ def create_app(
                             operation_id=execution.operation_id,
                         )
             finally:
+                try:
+                    reconcile_settled_chat_mail(background_tasks, execution.operation_id)
+                except Exception:
+                    logger.exception("Could not reconcile chat mailbox after task settlement")
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
 
     background_tasks.on_task_settled = after_task_settled
+
+    def wake_input_committed(project_id: str, kind: str, ref: str) -> None:
+        if kind == "chat_mail":
+            background_tasks.schedule_deferred_pass(
+                f"chat_mail:{project_id}:{ref}",
+                0,
+                lambda: reconcile_chat_mail_recipient(background_tasks, project_id, ref),
+            )
+        else:
+            background_tasks.schedule_deferred_pass(
+                f"bulletin_post:{project_id}:{ref}",
+                0,
+                lambda: wake_bulletin_mentions(background_tasks, project_id, ref),
+            )
+
+    store.on_wake_input = wake_input_committed
     background_tasks.on_auto_research_admission_exhausted = lambda episode: (
         reconcile_auto_research_episode(
             episode.episode_id,
@@ -2210,6 +2237,14 @@ def create_app(
                         logger.warning(
                             "Could not recover fork merge %s: %s", task.operation_id, exc
                         )
+                try:
+                    await asyncio.to_thread(reconcile_pending_chat_mail, background_tasks)
+                except Exception:
+                    logger.exception("Could not reconcile chat mailbox at startup")
+                try:
+                    await asyncio.to_thread(reconcile_bulletin_mentions, background_tasks)
+                except Exception:
+                    logger.exception("Could not reconcile Bulletin mentions at startup")
                 for project in store.projects():
                     for episode in store.episodes(project.project_id, limit=None):
                         state = store.episode_isolation_state(
@@ -2311,6 +2346,11 @@ def create_app(
                     claimed_before=process_started_at,
                 )
                 await asyncio.to_thread(store.expire_approval_cards)
+                await asyncio.to_thread(
+                    raise_pending_experiment_cards,
+                    store,
+                    background_tasks.recorded_execution,
+                )
                 await asyncio.to_thread(reconcile_question_answers)
                 # Work parked on a login that is now unusable resolves to whichever
                 # signed-in login the queue picks, without waiting for a sign-in event.

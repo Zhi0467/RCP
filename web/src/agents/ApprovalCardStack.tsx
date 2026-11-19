@@ -1,18 +1,76 @@
-import { ChevronDown, ChevronLeft, ChevronRight, Files } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  FlaskConical,
+  Files,
+  Telescope,
+  SquareStack,
+} from "lucide-react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+  type ComponentProps,
+} from "react";
 import type {
   AgentCardList,
   AgentQuestion,
   ApprovalCardResult,
   AskedApprovalCardView,
+  DockEpisode,
+  Episode,
+  AgentTask,
   ProposalCardView,
   RelayedQuestion,
 } from "../core/types";
-import { QuestionCard } from "../chat/QuestionCard";
+import { AskedTime, QuestionCard } from "../chat/QuestionCard";
 import { retryBackoffMs } from "../core/resourceStore";
+import { episodeProjection, episodeReportPreviewUrl } from "../experiments/campaigns";
+import { EpisodeControls } from "../experiments/EpisodeControls";
+import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
+import { EpisodePlanDraftProvider } from "./EpisodePlanCard";
+import { useEpisodeActions } from "../experiments/episodeActions";
+import { experimentIndexProfile } from "../experiments/episodeResources";
+import { useResource } from "../core/useResource";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
-import { readAgentCards } from "./agentThreadsApi";
+import { readAgentCards, readChatCards } from "./agentThreadsApi";
+import { isPlanCardQuestion } from "./experimentPlanModel";
 import { useAgentCardsVersion } from "./useAgentThreads";
+
+export function AgentCardsUnavailable() {
+  return (
+    <span
+      className="agent-cards-unavailable"
+      role="img"
+      aria-label="Approval cards couldn't load. Retrying."
+      title="Approval cards couldn't load. Retrying."
+    >
+      <SquareStack size={16} />
+    </span>
+  );
+}
+
+type RunState = {
+  busyAction: string | null;
+  taskActionId: string | null;
+  error: string | null;
+  additionalTurns: string;
+  updated?: { source: Episode; episode: Episode };
+};
+const EMPTY_RUN: RunState = {
+  busyAction: null,
+  taskActionId: null,
+  error: null,
+  additionalTurns: "",
+};
+
+const EXPIRY_GRACE_MS = 1000;
 
 type Decision = "approved" | "rejected";
 
@@ -25,13 +83,37 @@ export type StackCard =
       showProject: boolean;
     }
   | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null }
-  | { kind: "question"; key: string; question: RelayedQuestion };
+  | { kind: "question"; key: string; question: RelayedQuestion }
+  | { kind: "plan"; key: string; question: AgentQuestion }
+  | { kind: "run"; key: string; run: DockEpisode };
 
 /**
- * Where a stack stands: its shown card order, the front card, the cards Later put
- * away, and whether it ever held more than one card, so its space stays put as it empties.
+ * Where a stack stands: its shown card order, the front card's place and key, the cards
+ * Later put away, and whether it ever held more than one card, so its space stays put as
+ * it empties.
  */
-export type StackMemory = { order: string[]; index: number; later: string[]; held?: boolean };
+export type StackMemory = {
+  order: string[];
+  index: number;
+  front?: string;
+  later: string[];
+  held?: boolean;
+};
+
+/**
+ * The front card's place: a card that newly asks the human, else the remembered card while
+ * it is listed, else the nearest one.
+ */
+export function stackIndex(
+  memory: StackMemory,
+  order: readonly string[],
+  asking: ReadonlySet<string> = new Set(),
+): number {
+  const arrived = order.findIndex((key) => asking.has(key) && !memory.order.includes(key));
+  if (arrived >= 0) return arrived;
+  const kept = memory.front === undefined ? -1 : order.indexOf(memory.front);
+  return kept >= 0 ? kept : Math.min(memory.index, Math.max(order.length - 1, 0));
+}
 
 export function proposalCardKey(view: ProposalCardView): string {
   return `proposal:${view.project_id}:${view.proposal.id}`;
@@ -43,6 +125,40 @@ export function askedCardKey(question: AgentQuestion): string {
 
 export function questionCardKey(question: RelayedQuestion): string {
   return `question:${question.question_id}`;
+}
+
+function planCardKey(question: AgentQuestion): string {
+  return `plan:${question.question_id}`;
+}
+
+function runCardKey(run: DockEpisode): string {
+  return `run:${run.episode.episode_id}`;
+}
+
+/**
+ * A chat's dock cards after its Proposal and asked cards, decisions first: pending plan
+ * cards, each child episode's open questions, other relayed questions, the runs that
+ * need action, then the runs that only report their state.
+ */
+export function dockStackCards(
+  plans: readonly AgentQuestion[],
+  episodes: readonly DockEpisode[],
+  questions: readonly RelayedQuestion[],
+): StackCard[] {
+  const runs = (needsAction: boolean) =>
+    episodes
+      .filter((run) => (run.episode.health === "needs_action") === needsAction)
+      .map((run): StackCard => ({ kind: "run", key: runCardKey(run), run }));
+  return [
+    ...plans.map((question): StackCard => ({ kind: "plan", key: planCardKey(question), question })),
+    ...[...episodes.flatMap((run) => run.questions), ...questions].map((question): StackCard => ({
+      kind: "question",
+      key: questionCardKey(question),
+      question,
+    })),
+    ...runs(true),
+    ...runs(false),
+  ];
 }
 
 /** Surviving cards keep their order, new cards join at the back, settled ones drop. */
@@ -77,6 +193,7 @@ const FRESH: StackMemory = { order: [], index: 0, later: [] };
 
 function cardIsOpen(card: StackCard): boolean {
   if (card.kind === "proposal") return card.decided === null;
+  if (card.kind === "run") return true;
   const { question } = card;
   return (
     question.state !== "answered" &&
@@ -96,14 +213,55 @@ export function ApprovalCardStack({
   onResolved,
   onAnswered,
   onChanged,
+  renderPlanCard,
 }: {
   stackKey: string;
   cards: StackCard[];
   onDecided: (view: ProposalCardView, status: Decision) => void;
   onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
   onAnswered: (question: RelayedQuestion) => void;
-  onChanged: () => void;
+  onChanged: () => void | Promise<unknown>;
+  /** Draws a plan card; the view that owns the stack supplies it. */
+  renderPlanCard?: (question: AgentQuestion) => ReactNode;
 }) {
+  const actions = useEpisodeActions(
+    cards.find((card) => card.kind === "run")?.run.episode.project_id ?? null,
+  );
+  const [runStates, setRunStates] = useState<Record<string, RunState>>({});
+  const pending = useRef(new Set<string>());
+  const updateRun = (id: string, patch: Partial<RunState>) =>
+    setRunStates((states) => ({ ...states, [id]: { ...(states[id] ?? EMPTY_RUN), ...patch } }));
+  const perform = async (
+    run: DockEpisode,
+    field: "busyAction" | "taskActionId",
+    key: string,
+    act: () => Promise<Episode | AgentTask>,
+  ) => {
+    const id = run.episode.episode_id;
+    if (pending.current.has(id)) return;
+    pending.current.add(id);
+    updateRun(id, { [field]: key, error: null });
+    try {
+      const result = await act();
+      const episode: Episode =
+        "operation_id" in result
+          ? {
+              ...run.episode,
+              tasks: run.episode.tasks.map((task) =>
+                task.operation_id === result.operation_id ? { ...task, ...result } : task,
+              ),
+            }
+          : result;
+      updateRun(id, { updated: { source: run.episode, episode } });
+    } finally {
+      try {
+        await onChanged();
+      } finally {
+        pending.current.delete(id);
+        updateRun(id, { [field]: null });
+      }
+    }
+  };
   const [, redraw] = useReducer((count: number) => count + 1, 0);
   const frontRef = useRef<HTMLDivElement>(null);
   const foldRef = useRef<HTMLButtonElement>(null);
@@ -117,14 +275,14 @@ export function ApprovalCardStack({
     memory.order,
     keys.filter((key) => !putAway.includes(key)),
   );
-  const index = Math.min(memory.index, Math.max(order.length - 1, 0));
+  const asking = new Set(open.filter((card) => card.kind !== "run").map((card) => card.key));
+  const index = stackIndex(memory, order, asking);
   const folded = order.length === 0 && putAway.length > 0;
   const held = Boolean(memory.held) || order.length > 1;
-  const shown: StackMemory = { order, index, later: putAway, held };
+  const shown: StackMemory = { order, index, front: order[index], later: putAway, held };
   useEffect(() => {
     memories.set(stackKey, shown);
   });
-  useEffect(() => () => void memories.delete(stackKey), [stackKey]);
   useEffect(() => {
     const target =
       focusNext.current === "fold" ? foldRef.current : frontRef.current?.firstElementChild;
@@ -132,13 +290,36 @@ export function ApprovalCardStack({
     focusNext.current = null;
   });
   const remember = (next: StackMemory, focus: "front" | "fold") => {
-    memories.set(stackKey, next);
+    memories.set(stackKey, { ...next, front: next.order[next.index] });
     focusNext.current = focus;
     redraw();
   };
   const front = open.find((card) => card.key === order[index]);
   const render = (card: StackCard, onLater?: () => void) =>
-    card.kind === "question" ? (
+    card.kind === "plan" ? (
+      <Fragment key={card.key}>{renderPlanCard?.(card.question)}</Fragment>
+    ) : card.kind === "run" ? (
+      <EpisodeRunCard
+        key={card.key}
+        run={card.run}
+        onLater={onLater}
+        state={runStates[card.run.episode.episode_id] ?? EMPTY_RUN}
+        onState={(patch) => updateRun(card.run.episode.episode_id, patch)}
+        onOperateTask={(task, action) =>
+          perform(card.run, "taskActionId", task.operation_id, () =>
+            actions.operateTask(task, action),
+          )
+        }
+        onContinue={(id, turns) =>
+          perform(card.run, "busyAction", `continue:${id}`, () => actions.addTurns(id, turns))
+        }
+        onStop={(id) =>
+          perform(card.run, "busyAction", `stop:${id}`, () =>
+            actions.stop(id, card.run.episode.tasks),
+          )
+        }
+      />
+    ) : card.kind === "question" ? (
       <QuestionCard
         key={card.key}
         question={card.question}
@@ -198,7 +379,12 @@ export function ApprovalCardStack({
   const step = (by: number) =>
     remember({ ...shown, index: (index + by + order.length) % order.length }, "front");
   return (
-    <>
+    <EpisodePlanDraftProvider
+      key={stackKey}
+      questionIds={open.flatMap((card) =>
+        card.kind === "plan" ? [card.question.question_id] : [],
+      )}
+    >
       {settled.map((card) => render(card))}
       {folded ? (
         <button
@@ -239,7 +425,99 @@ export function ApprovalCardStack({
           </div>
         )
       )}
-    </>
+    </EpisodePlanDraftProvider>
+  );
+}
+
+/** One child episode in a chat's dock: its state, its run controls, and its report once ended. */
+function EpisodeRunCard({
+  run,
+  state,
+  onState,
+  onOperateTask,
+  onContinue,
+  onStop,
+  onLater,
+}: {
+  run: DockEpisode;
+  state: RunState;
+  onState: (patch: Partial<RunState>) => void;
+  onOperateTask: ComponentProps<typeof EpisodeControls>["onOperateTask"];
+  onContinue: ComponentProps<typeof EpisodeControls>["onContinue"];
+  onStop: ComponentProps<typeof EpisodeControls>["onStop"];
+  onLater?: () => void;
+}) {
+  const episode = state.updated?.source === run.episode ? state.updated.episode : run.episode;
+  const owner = useId();
+  const experimentIndex = useResource(
+    owner,
+    episode.mode === "experiment_loop" ? experimentIndexProfile(episode.project_id) : null,
+  );
+  const experimentControl =
+    experimentIndex.value?.entries.find((entry) => entry.episode.episode_id === episode.episode_id)
+      ?.control ?? null;
+  const { busyAction, taskActionId, error } = state;
+  const setError = (error: string | null) => onState({ error });
+  const projection = episodeProjection(episode);
+  const Icon = episode.mode === "auto_research" ? Telescope : FlaskConical;
+  return (
+    <section
+      className="approval-card open episode-run-card"
+      tabIndex={-1}
+      data-state="pending"
+      data-health={projection.health}
+      aria-label={run.title}
+    >
+      <div className="approval-head">
+        <span className="approval-icon" aria-hidden="true">
+          <Icon size={16} />
+        </span>
+        <div className="approval-title">
+          <a href={run.link}>
+            <strong>{run.title}</strong>
+          </a>
+        </div>
+        <span className="question-state">{projection.healthLabel}</span>
+        <AskedTime at={episode.ended_at ?? episode.created_at} />
+      </div>
+      {error && (
+        <p className="approval-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="approval-actions">
+        {episode.report && (
+          <EpisodeReportLink
+            className="approval-see"
+            projectId={episode.project_id}
+            graphTarget={episode.graph_target}
+            episodeId={episode.episode_id}
+            href={episodeReportPreviewUrl(episode.project_id, episode.episode_id)}
+            onOpenError={setError}
+          >
+            Report
+          </EpisodeReportLink>
+        )}
+        {onLater && (
+          <button className="approval-later" type="button" onClick={onLater}>
+            Later
+          </button>
+        )}
+        <EpisodeControls
+          episode={episode}
+          taskControl={projection.taskControl}
+          busyAction={busyAction}
+          taskActionId={taskActionId}
+          additionalTurns={state.additionalTurns}
+          onAdditionalTurnsChange={(additionalTurns) => onState({ additionalTurns })}
+          experimentControl={experimentControl}
+          onOperateTask={onOperateTask}
+          onContinue={onContinue}
+          onStop={onStop}
+          onError={setError}
+        />
+      </div>
+    </section>
   );
 }
 
@@ -248,19 +526,29 @@ type Kept = { changes: number } & (
   | { kind: "asked"; question: AskedApprovalCardView }
 );
 
+/** Whose cards a dock reads; null reads none. */
+export type CardSource = { threadId: string | null } | { projectId: string; chatId: string } | null;
+
 /**
- * The member's open cards for one project thread, or for every thread when
- * `threadId` is null. They reload when the open-card version or the thread
- * revision moves, and after each tap. A card decided here keeps its settled line
+ * The member's open cards for one project thread, for every thread when `threadId`
+ * is null, or for one shared or node chat. They reload when the open-card version or the thread
+ * revision moves, when the next ended child leaves the dock, and after each tap. A card decided here keeps its settled line
  * through the open-card version change its own tap causes, and drops at a fetch
  * after a later change that no longer lists it. Only the newest fetch's answer counts.
  * A failed read hides the cards and backs off before reading again. An answered
  * question leaves at once and stays gone until a read no longer lists it.
  */
-export function useAgentCards(threadId: string | null, revision: string | null) {
+export function useAgentCards(source: CardSource, revision: string | null) {
   const version = useAgentCardsVersion();
-  const scope = threadId ?? "";
-  const [loaded, setLoaded] = useState<{ scope: string; list: AgentCardList | null } | null>(null);
+  const threadId = source && "threadId" in source ? source.threadId : null;
+  const chatProject = source && "chatId" in source ? source.projectId : null;
+  const chatId = source && "chatId" in source ? source.chatId : null;
+  const scope =
+    source === null ? null : chatId ? `chat:${chatProject}:${chatId}` : (threadId ?? "");
+  const [loaded, setLoaded] = useState<{
+    scope: string | null;
+    list: AgentCardList | null;
+  } | null>(null);
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const latest = useRef(0);
@@ -270,9 +558,13 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const [retryTick, setRetryTick] = useState(0);
   const refetch = useCallback(async () => {
     window.clearTimeout(retry.current);
+    if (scope === null) return;
     const mine = ++latest.current;
     const changes = versionChanges.current;
-    const list = await readAgentCards(scope || undefined);
+    const list =
+      chatProject && chatId
+        ? await readChatCards(chatProject, chatId)
+        : await readAgentCards(threadId ?? undefined);
     if (mine !== latest.current) return;
     failures.current = list ? 0 : failures.current + 1;
     if (!list) {
@@ -293,13 +585,17 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
       return next.size === known.size ? known : next;
     });
     if (list) {
-      const listed = new Set((list.questions ?? []).map((question) => question.question_id));
+      const listed = new Set(
+        [...(list.questions ?? []), ...(list.episodes ?? []).flatMap((run) => run.questions)].map(
+          (question) => question.question_id,
+        ),
+      );
       setAnswered((known) => {
         const next = new Set([...known].filter((id) => listed.has(id)));
         return next.size === known.size ? known : next;
       });
     }
-  }, [scope]);
+  }, [chatId, chatProject, scope, threadId]);
   const shownVersion = useRef(version);
   useEffect(() => {
     versionChanges.current += 1;
@@ -326,6 +622,15 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
     [keep],
   );
   const list = loaded?.scope === scope ? loaded.list : null;
+  const nextExpiry = list?.next_expiry_at ?? null;
+  useEffect(() => {
+    if (!nextExpiry) return;
+    const timer = window.setTimeout(
+      () => setRetryTick((tick) => tick + 1),
+      Math.max(0, Date.parse(nextExpiry) - Date.now()) + EXPIRY_GRACE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [nextExpiry]);
   const markResolved = (question: AgentQuestion, result: ApprovalCardResult) => {
     const served = list?.asked_cards.find((item) => item.question_id === question.question_id);
     if (!served?.card) return;
@@ -354,7 +659,8 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
         : [],
     ),
   ];
-  const servedAsked = list?.asked_cards ?? [];
+  const plans = (list?.asked_cards ?? []).filter(isPlanCardQuestion);
+  const servedAsked = (list?.asked_cards ?? []).filter((question) => !isPlanCardQuestion(question));
   const askedKeys = new Set(servedAsked.map(askedCardKey));
   const keptAsked = (key: string) => {
     const entry = kept.get(key);
@@ -371,6 +677,10 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   const questions = (list?.questions ?? []).filter(
     (question) => !answered.has(question.question_id),
   );
+  const episodes = (list?.episodes ?? []).map((run) => ({
+    ...run,
+    questions: run.questions.filter((question) => !answered.has(question.question_id)),
+  }));
   const markAnswered = useCallback((question: RelayedQuestion) => {
     setAnswered((known) => new Set(known).add(question.question_id));
   }, []);
@@ -381,8 +691,10 @@ export function useAgentCards(threadId: string | null, revision: string | null) 
   return {
     proposals,
     asked,
+    plans,
+    episodes,
     questions,
-    loading: loaded?.scope !== scope,
+    loading: scope !== null && loaded?.scope !== scope,
     unavailable: loaded?.scope === scope && loaded.list === null,
     decisionOf,
     markDecided,

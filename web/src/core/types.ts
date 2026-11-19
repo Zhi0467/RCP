@@ -3920,6 +3920,8 @@ export interface AgentQuestion {
   resolved_by: AuthorizedHuman | null;
   resolved_at: string | null;
   withdrawn_readonly: boolean;
+  /** The child question this relays; answering that one withdraws this copy. */
+  relays_question_id?: string | null;
   can_answer: boolean;
   created_at: string;
   /** Set on an approval card's question; its outcome is the answer. */
@@ -4198,6 +4200,19 @@ export type ApprovalCardAction =
     }
   | { kind: "truth_scope"; project_id: string; alias: string; writable: boolean }
   | {
+      kind: "experiment_start";
+      project_id: string;
+      node_id: string;
+      /** The graph branch the Experiment is on; absent or null for main. */
+      branch_id?: string | null;
+      goal: string;
+      invocation_ceiling: number;
+      provider?: ProviderId | null;
+      model?: string | null;
+      reasoning?: string | null;
+      run_truth_scope?: string[] | null;
+    }
+  | {
       kind: "auto_research";
       project_id: string;
       invocation_ceiling: number;
@@ -4237,9 +4252,33 @@ export interface ApprovalCard {
   result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
 }
 
+export interface ExperimentStartOverrides {
+  kind: "experiment_start";
+  goal: string;
+  invocation_ceiling: number;
+  provider?: ProviderId | null;
+  model?: string | null;
+  reasoning?: string | null;
+  /** The node `updated_rev` the card showed; a moved node answers `plan_changed`. */
+  node_rev: number;
+}
+
+export interface AutoResearchStartOverrides {
+  kind: "auto_research";
+  starting_instruction: string;
+  invocation_ceiling: number;
+  branch_name: string | null;
+  code_worktree: boolean;
+  worktree_repository: string | null;
+  provider?: ProviderId | null;
+  model?: string | null;
+  reasoning?: string | null;
+}
+
 export interface ApprovalCardDecision {
   decision: "approve" | "decline";
   pinned_sha256: string;
+  start?: ExperimentStartOverrides | AutoResearchStartOverrides;
 }
 
 export interface ApprovalCardResult {
@@ -4272,11 +4311,24 @@ export type RelayedQuestion = AgentQuestion & {
   source_label: string | null;
 };
 
+/** A direct child episode of a chat, with the open questions its chain asked. */
+export interface DockEpisode {
+  episode: Episode;
+  title: string;
+  /** The app hash that opens the episode on Runs. */
+  link: string;
+  questions: RelayedQuestion[];
+}
+
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
 export interface AgentCardList {
+  /** When the next ended child leaves the dock; null when none will. */
+  next_expiry_at: string | null;
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
   questions?: RelayedQuestion[];
+  /** The named chat's child episodes, newest first. */
+  episodes?: DockEpisode[];
 }
 
 export type RunningRowKind = "experiment_loop" | "auto_research" | "thread";

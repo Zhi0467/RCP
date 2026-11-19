@@ -332,6 +332,7 @@ class Proposals:
         insert_approval_card,
         QuestionStoreMixin.create_or_get_question,
         QuestionStoreMixin._resolve_question,
+        QuestionStoreMixin._withdraw_relayed_copies,
         QuestionStoreMixin.claim_question_followup,
         QuestionStoreMixin.mark_question_answer_projected,
         QuestionStoreMixin.mark_question_dismissal_delivered,
@@ -356,6 +357,9 @@ class Proposals:
     unreached_writers = {
         QuestionStoreMixin._resolve_question: (
             "a card is answered only by its tap; the route refuses a plain answer or dismissal"
+        ),
+        QuestionStoreMixin._withdraw_relayed_copies: (
+            "a relay copy is a chat question, never a card; the mailbox relay tests drive it"
         ),
         QuestionStoreMixin.claim_question_followup: _DELIVERY,
         QuestionStoreMixin.mark_question_answer_projected: _DELIVERY,

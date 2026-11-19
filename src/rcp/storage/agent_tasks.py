@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -50,6 +50,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
     PATCH_OUTPUT_RETENTION_DAYS,
+    PLAN_CARD_RECOVERY_BATCH_LIMIT,
     RUN_TRACE_RETENTION_DAYS,
     SPACE_PROJECT_RESULTS_MAX_COUNT,
     WRITING_SESSION_RETENTION_DAYS,
@@ -100,6 +101,7 @@ from rcp.storage.models import (
     _retention_reference_time,
 )
 from rcp.storage.question_models import QuestionRecord
+from rcp.storage.wake_inputs import wake_caused_sql
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
@@ -234,6 +236,14 @@ class _RunStageLifecycleAggregate:
     owner_refs: set[str]
     must_exist: bool = False
     protect_from_cleanup: bool = False
+
+
+def _within_seconds(earlier: str | None, now: str, seconds: float) -> bool:
+    return (
+        earlier is not None
+        and (datetime.fromisoformat(now) - datetime.fromisoformat(earlier)).total_seconds()
+        < seconds
+    )
 
 
 class AgentTaskStoreMixin(StoreMixinBase):
@@ -373,28 +383,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or classify_terminal_error(task.error or "") == "stale_session"
             ):
                 raise ValueError("question_origin_binding_unavailable")
-            if self._has_resumable_paused_chat_task(
-                connection, origin.project_id, task.kind, origin.owner_id
-            ):
-                raise AgentTaskAdmissionConflict("question_session_paused")
-            if origin.stage_machine_id and self._unresolved_remote_provider_passes(
-                connection, origin.stage_machine_id, origin.stage_root
-            ):
-                raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
-            unavailable = connection.execute(
-                """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
-                category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
-                OR (category='provider_terminal_error'
-                    AND json_extract(payload_json,'$.classification')='stale_session')
-                OR (category='continuation_context_unavailable'
-                    AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
-                (origin.operation_id,),
-            ).fetchone()
-            if unavailable is not None or cast("AppStore", self).provider_session_swept(
-                origin.native_session_id
-            ):
-                raise ValueError("question_origin_session_unavailable")
-            self._require_project_accepts_new_work(connection, origin.project_id)
+            self._require_chat_wake_binding(connection, task)
             # The answer is an ordinary turn: any artifact it changes in place
             # becomes that artifact's next version, as session tracking finds it.
             request = RunRequest.model_validate(
@@ -407,6 +396,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "session_id": origin.native_session_id,
                     "message": question.answer or "\n".join(question.chosen_choices),
                     "trigger": "human",
+                    "chat_wake": None,
                     "attachments": [],
                     "references": [],
                     "attachment_batch_id": None,
@@ -450,6 +440,352 @@ class AgentTaskStoreMixin(StoreMixinBase):
             # still checks current project, graph, session and stage constraints.
             self._insert_agent_task(connection, followup, continuation_cause="message_wake")
         return self.agent_task(operation_id)
+
+    def _require_chat_wake_binding(
+        self, connection: sqlite3.Connection, task: AgentTaskRecord
+    ) -> None:
+        chat_id = task.request.get("chat_id")
+        if (
+            task.status not in {"succeeded", "failed"}
+            or task.history_only
+            or task.authorized_by is None
+            or task.kind not in {"node_chat", "project_chat"}
+            or task.episode_id is not None
+            or not isinstance(chat_id, str)
+            or not task.native_session_id
+            or not task.stage_root
+            or task.dispatch_authority is None
+            or classify_terminal_error(task.error or "") == "stale_session"
+        ):
+            raise ValueError("question_origin_binding_unavailable")
+        if self._has_resumable_paused_chat_task(connection, task.project_id, task.kind, chat_id):
+            raise AgentTaskAdmissionConflict("question_session_paused")
+        if task.stage_machine_id and self._unresolved_remote_provider_passes(
+            connection, task.stage_machine_id, task.stage_root
+        ):
+            raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
+        unavailable = connection.execute(
+            """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
+            category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
+            OR (category='provider_terminal_error'
+                AND json_extract(payload_json,'$.classification')='stale_session')
+            OR (category='continuation_context_unavailable'
+                AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
+            (task.operation_id,),
+        ).fetchone()
+        if unavailable is not None or cast("AppStore", self).provider_session_swept(
+            task.native_session_id
+        ):
+            raise ValueError("question_origin_session_unavailable")
+        cast("AppStore", self)._require_project_accepts_new_work(connection, task.project_id)
+
+    def _chat_mail_suppression(
+        self,
+        connection: sqlite3.Connection,
+        project_id: str,
+        chat_id: str,
+        rows: Sequence[sqlite3.Row],
+        chains: dict[str, str],
+        spent: dict[str, bool],
+    ) -> dict[str, str]:
+        """Why each item cannot wake its chat; an item absent from the result may.
+
+        A wake-caused sender, the recipient chat's own turn, a child chain that used
+        its wake budget, and an already resolved question never wake the chat; the
+        item still rides along in the chat's next ordinary turn.
+        """
+        senders = sorted({row["sender_task_id"] for row in rows} - {None})
+        caused = {
+            found[0]
+            for found in connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE operation_id IN "
+                f"({','.join('?' for _ in senders)}) AND ({wake_caused_sql('graph_runs')} "
+                "OR (project_id=? AND episode_id IS NULL "
+                "AND kind IN ('node_chat','project_chat') "
+                "AND json_extract(request_json,'$.chat_id')=?))",
+                (*senders, project_id, chat_id),
+            )
+        }
+        refs = [row["source_ref"] for row in rows if row["item_kind"] == "question"]
+        open_questions = {
+            found[0]
+            for found in connection.execute(
+                f"SELECT question_id FROM questions WHERE question_id IN "
+                f"({','.join('?' for _ in refs)}) AND state='pending' AND withdrawn_readonly=0",
+                tuple(refs),
+            )
+        }
+        reasons: dict[str, str] = {}
+        for row in rows:
+            episode_id = row["episode_id"]
+            if episode_id not in chains:
+                chains[episode_id] = _chain_root(connection, project_id, episode_id)
+            chain_id = chains[episode_id]
+            if chain_id not in spent:
+                ceiling = connection.execute(
+                    "SELECT invocation_ceiling FROM episodes WHERE episode_id=?", (chain_id,)
+                ).fetchone()[0]
+                used = connection.execute(
+                    "SELECT COUNT(*) FROM graph_runs, "
+                    "json_each(request_json,'$.chat_wake.chains') "
+                    "WHERE project_id=? AND json_extract(request_json,'$.chat_id')=? "
+                    "AND json_each.value=?",
+                    (project_id, chat_id, chain_id),
+                ).fetchone()[0]
+                spent[chain_id] = used >= ceiling
+            if row["sender_task_id"] in caused:
+                reasons[row["message_id"]] = "chat_wake_self_caused"
+            elif spent[chain_id]:
+                reasons[row["message_id"]] = "chat_wake_chain_limit"
+            elif row["item_kind"] == "question" and row["source_ref"] not in open_questions:
+                reasons[row["message_id"]] = "chat_wake_question_resolved"
+        return reasons
+
+    def wake_eligible_chat_mail(
+        self, project_id: str, chat_id: str
+    ) -> tuple[list[str], dict[str, str]]:
+        """The oldest pending items that may wake the chat, and suppressed ones seen.
+
+        Pending items are read in keyset pages, so suppressed items never hide a
+        newer wake-eligible one.
+        """
+        from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES
+
+        eligible: list[str] = []
+        suppressed: dict[str, str] = {}
+        chains: dict[str, str] = {}
+        spent: dict[str, bool] = {}
+        after = ("", "")
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            while len(eligible) < AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+                rows = connection.execute(
+                    "SELECT mail.* FROM auto_research_messages AS mail "
+                    "JOIN episodes AS episode ON episode.episode_id=mail.episode_id "
+                    "WHERE mail.recipient_kind='chat' AND mail.recipient_chat_id=? "
+                    "AND mail.delivered_at IS NULL AND episode.project_id=? "
+                    "AND (mail.created_at,mail.message_id)>(?,?) "
+                    "ORDER BY mail.created_at,mail.message_id LIMIT ?",
+                    (chat_id, project_id, *after, AUTO_RESEARCH_MAIL_MAX_MESSAGES),
+                ).fetchall()
+                if not rows:
+                    break
+                reasons = self._chat_mail_suppression(
+                    connection, project_id, chat_id, rows, chains, spent
+                )
+                eligible += [row["message_id"] for row in rows if row["message_id"] not in reasons]
+                for message_id, reason in reasons.items():
+                    if len(suppressed) < AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+                        suppressed[message_id] = reason
+                after = (rows[-1]["created_at"], rows[-1]["message_id"])
+        return eligible[:AUTO_RESEARCH_MAIL_MAX_MESSAGES], suppressed
+
+    def admit_chat_wake(
+        self, project_id: str, chat_id: str, cause: str, item_ids: Sequence[str]
+    ) -> AgentTaskRecord | None:
+        """Atomically bind a bounded cause batch to one idle chat turn.
+
+        ``episode_mail`` claims mailbox items; ``bulletin_mention`` records each
+        post's one wake of this chat. Items a wake-caused turn wrote, and items of a
+        child chain that used its wake budget, stay pending for the chat's next
+        ordinary turn.
+        """
+        from rcp.limits import (
+            AUTO_RESEARCH_MAIL_MAX_MESSAGES,
+            BULLETIN_WAKE_MIN_SECONDS,
+            CHAT_WAKE_MIN_SECONDS,
+        )
+        from rcp.service import RunRequest
+        from rcp.storage.bulletin import bulletin_wake_posts
+
+        if (
+            cause not in {"episode_mail", "bulletin_mention"}
+            or not item_ids
+            or len(set(item_ids)) != len(item_ids)
+        ):
+            raise ValueError("chat_wake_items_invalid")
+        if len(item_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+            raise ValueError("chat_wake_batch_limit")
+        operation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                json.dumps(
+                    ["chat-wake", project_id, chat_id, cause, sorted(item_ids)],
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if existing is not None:
+                return self._agent_task_record(existing)
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? "
+                "AND kind IN ('node_chat','project_chat') AND episode_id IS NULL "
+                "ORDER BY created_at DESC,operation_id DESC LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("chat_wake_binding_unavailable")
+            task = self._agent_task_record(row)
+            if self._has_active_chat_overlap(connection, task):
+                raise AgentTaskAdmissionConflict("chat_wake_busy")
+            self._require_chat_wake_binding(connection, task)
+            if (
+                task.request.get("mode", "work") != "work"
+                or task.request.get("patch_kind", "work") != "work"
+            ):
+                raise ValueError("chat_wake_binding_unavailable")
+            now = self.now()
+            last = connection.execute(
+                "SELECT created_at FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? "
+                "AND json_extract(request_json,'$.chat_wake') IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if _within_seconds(last and last[0], now, CHAT_WAKE_MIN_SECONDS):
+                raise AgentTaskAdmissionConflict("chat_wake_cooldown")
+            chains: dict[str, str] = {}
+            item_chains: dict[str, str] = {}
+            actor_id = f"chat:{chat_id}"
+            if cause == "bulletin_mention":
+                last = connection.execute(
+                    "SELECT MAX(created_at) FROM bulletin_mention_wakes "
+                    "WHERE project_id=? AND actor_id=?",
+                    (project_id, actor_id),
+                ).fetchone()
+                if _within_seconds(last[0], now, BULLETIN_WAKE_MIN_SECONDS):
+                    raise AgentTaskAdmissionConflict("bulletin_wake_cooldown")
+                claimed = bulletin_wake_posts(connection, project_id, actor_id, item_ids)
+                if not claimed:
+                    return None
+            else:
+                placeholders = ",".join("?" for _ in item_ids)
+                items = connection.execute(
+                    "SELECT mail.* FROM auto_research_messages AS mail "
+                    "JOIN episodes AS episode ON episode.episode_id=mail.episode_id "
+                    f"WHERE mail.message_id IN ({placeholders}) AND episode.project_id=? "
+                    "ORDER BY mail.created_at,mail.message_id",
+                    (*item_ids, project_id),
+                ).fetchall()
+                if len(items) != len(item_ids) or any(
+                    item["recipient_kind"] != "chat"
+                    or item["recipient_chat_id"] != chat_id
+                    or item["delivered_at"] is not None
+                    for item in items
+                ):
+                    raise ValueError("chat_wake_items_unavailable")
+                reasons = self._chat_mail_suppression(
+                    connection, project_id, chat_id, items, chains, {}
+                )
+                items = [item for item in items if item["message_id"] not in reasons]
+                if not items:
+                    for code in ("chat_wake_self_caused", "chat_wake_chain_limit"):
+                        if code in reasons.values():
+                            raise AgentTaskAdmissionConflict(code)
+                    return None
+                items = cast("AppStore", self).episode_mail_claim_prefix(
+                    items, "chat", chat_id, operation_id, now
+                )
+                claimed = [item["message_id"] for item in items]
+                item_chains = {item["message_id"]: chains[item["episode_id"]] for item in items}
+            request = RunRequest.model_validate(
+                {**task.request, "artifact_context": None, "artifact_edit": None}
+            ).model_copy(
+                update={
+                    "browser_requested": cast("AppStore", self)._chat_browser_requested(
+                        connection, project_id, chat_id
+                    ),
+                    "session_id": task.native_session_id,
+                    "message": "Read the episode mailbox."
+                    if cause == "episode_mail"
+                    else "Read your open Bulletin mentions.",
+                    "trigger": "human",
+                    "attachments": [],
+                    "references": [],
+                    "attachment_batch_id": None,
+                    "attachment_set_id": None,
+                    "attachment_client_id": None,
+                    "watcher_ids": [],
+                    "invoked_workflow_ids": [],
+                    "invoked_skill_ids": [],
+                    "invoked_provider_skill_names": [],
+                    "resolved_provider_skills": [],
+                    "chat_wake": {
+                        "kind": cause,
+                        "item_ids": claimed,
+                        "chains": sorted({item_chains[item_id] for item_id in item_chains}),
+                    },
+                }
+            )
+            wake = AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind=task.kind,
+                status="queued",
+                request=request.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Queued mailbox wake"
+                if cause == "episode_mail"
+                else "Queued Bulletin mention wake",
+                native_session_id=task.native_session_id,
+                stage_machine_id=task.stage_machine_id,
+                stage_root=task.stage_root,
+                graph_target=task.graph_target,
+                authorized_by=task.authorized_by,
+                dispatch_authority=task.dispatch_authority,
+                runtime_id=task.runtime_id,
+            )
+            self._insert_agent_task(connection, wake, continuation_cause="message_wake")
+            if cause == "episode_mail":
+                connection.execute(
+                    "UPDATE auto_research_messages SET delivered_at=?,delivery_operation_id=?,"
+                    "delivery_diagnostic=NULL "
+                    f"WHERE message_id IN ({','.join('?' for _ in claimed)})",
+                    (now, operation_id, *claimed),
+                )
+            else:
+                connection.executemany(
+                    "INSERT INTO bulletin_mention_wakes"
+                    "(project_id,post_id,actor_id,operation_id,notice_id,created_at) "
+                    "VALUES(?,?,?,?,NULL,?)",
+                    [(project_id, post_id, actor_id, operation_id, now) for post_id in claimed],
+                )
+        return self.agent_task(operation_id)
+
+    def pending_chat_wakes(
+        self,
+        project_id: str | None = None,
+        chat_id: str | None = None,
+        after: tuple[str, str] = ("", ""),
+    ) -> list[AgentTaskRecord]:
+        """One page of committed chat wakes not yet launched, oldest first, after a keyset."""
+        from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM graph_runs WHERE status='queued' AND history_only=0 "
+                "AND json_extract(request_json,'$.chat_wake.kind') IS NOT NULL "
+                "AND kind IN ('node_chat','project_chat') "
+                "AND (? IS NULL OR (project_id=? AND json_extract(request_json,'$.chat_id')=?)) "
+                "AND (created_at,operation_id) > (?,?) "
+                "ORDER BY created_at,operation_id LIMIT ?",
+                (chat_id, project_id, chat_id, *after, CHAT_MAIL_RECONCILE_LIMIT),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def every_pending_chat_wake(self) -> Iterator[AgentTaskRecord]:
+        """Every committed chat wake not yet launched, read in bounded keyset pages."""
+        after = ("", "")
+        while page := self.pending_chat_wakes(after=after):
+            yield from page
+            after = (page[-1].created_at, page[-1].operation_id)
 
     def question_for_followup(self, operation_id: str) -> QuestionRecord | None:
         """Keep an answer's binding through recovery children as well as its first turn."""
@@ -1358,6 +1694,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         )
         record_client_request(self, connection, record)
         record_evidence_flag_address(self, connection, record)
+        from rcp.storage.bulletin import bulletin_delta_operation
+
+        bulletin_operation_id = record.operation_id
+        if continuation_cause in {"retry", "resume"} and record.parent_operation_id:
+            bulletin_operation_id = bulletin_delta_operation(connection, record.parent_operation_id)
         self._insert_agent_task_receipt(
             connection,
             record.operation_id,
@@ -1368,6 +1709,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attempt": record.attempt,
                     "parent_operation_id": record.parent_operation_id,
                     "continuation_cause": continuation_cause,
+                    "bulletin_operation_id": bulletin_operation_id,
                     "admission_committed": True,
                 }
             ),
@@ -4174,6 +4516,24 @@ class AgentTaskStoreMixin(StoreMixinBase):
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def pending_experiment_card_tasks(self) -> list[AgentTaskRecord]:
+        """Succeeded Work turns with a requested plan card not yet raised, oldest first."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT run.* FROM graph_run_receipts k "
+                "JOIN graph_runs run ON run.operation_id=k.operation_id "
+                "WHERE k.category IN ('work_experiment_kickoff', 'work_auto_research_kickoff') "
+                "AND json_extract(k.payload_json,'$.phase')='card_pending' "
+                "AND run.status='succeeded' "
+                "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
+                "WHERE r.operation_id=k.operation_id AND r.category='work_experiment_card_raised' "
+                "AND json_extract(r.payload_json,'$.kickoff_id')="
+                "json_extract(k.payload_json,'$.kickoff_id')) "
+                "ORDER BY run.created_at, run.operation_id LIMIT ?",
+                (PLAN_CARD_RECOVERY_BATCH_LIMIT,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
     def pending_merge_effect_tasks(self, project_id: str | None = None) -> list[AgentTaskRecord]:
         """Uncapped recovery inventory, including succeeded/no-change deliveries."""
         with self.connection() as connection:
@@ -4499,6 +4859,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("The agent task admission intent is malformed.") from exc
         if not isinstance(payload, dict):
             raise ValueError("The agent task admission intent is malformed.")
+        if not legacy and "bulletin_operation_id" in payload:
+            bulletin_operation_id = payload.pop("bulletin_operation_id")
+            if not isinstance(bulletin_operation_id, str) or not bulletin_operation_id:
+                raise ValueError("The agent task admission intent is malformed.")
         kind = payload.get("kind")
         attempt = payload.get("attempt")
         cause = payload.get("continuation_cause")

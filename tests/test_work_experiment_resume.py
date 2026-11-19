@@ -79,7 +79,7 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
             operation_id=operation_id,
             store=store,
             control=AgentProcessControl(),
-            experiment_starter=tasks.experiment_starter,
+            experiment_card_raiser=tasks.experiment_card_raiser,
         )
         handler = work_command_handler(execution, None)
         assert "episode" in handler.allowed_verbs

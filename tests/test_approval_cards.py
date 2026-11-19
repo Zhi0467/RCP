@@ -153,7 +153,21 @@ def test_each_action_rechecks_transfer_admission(questions_api, monkeypatch, act
     monkeypatch.setattr(store, "require_project_accepts_new_work", fenced)
     response = client.post(
         f"/api/approval-cards/{question.question_id}",
-        json={"decision": "approve", "pinned_sha256": card["pinned_sha256"]},
+        json={
+            "decision": "approve",
+            "pinned_sha256": card["pinned_sha256"],
+            **(
+                {
+                    "start": {
+                        "kind": "auto_research",
+                        "starting_instruction": "Explore",
+                        "invocation_ceiling": 1,
+                    }
+                }
+                if action["kind"] == "auto_research"
+                else {}
+            ),
+        },
     )
     assert response.status_code == 409
     assert calls == []
@@ -785,26 +799,22 @@ def test_merge_episode_card_rechecks_heads_under_admission(
     assert harness.store.get_question(question.question_id).answer == "stale"
 
 
-@pytest.mark.parametrize(
-    "kind,handler", [("auto_research", "start_episode"), ("merge_branch", "merge_graph_branch")]
-)
-def test_card_forwards_persisted_uuid4(questions_api, monkeypatch, kind, handler):
+def test_merge_card_forwards_persisted_uuid4(questions_api, monkeypatch):
     from uuid import UUID
 
     from rcp.api import approval_cards, episode_routes
 
     app, client, store, project_id = questions_api
-    action = {"kind": kind, "project_id": project_id}
-    action.update({"invocation_ceiling": 1} if kind == "auto_research" else {"branch_id": "branch"})
-    question, card = api_card(questions_api, action)
+    question, card = api_card(
+        questions_api, {"kind": "merge_branch", "project_id": project_id, "branch_id": "branch"}
+    )
     seen = []
 
     def execute(*args, **kwargs):
-        key = kwargs["idempotency_key"] if kind == "auto_research" else args[2].request_id
-        seen.append(key)
+        seen.append(args[2].request_id)
         return {}
 
-    monkeypatch.setattr(episode_routes, handler, execute)
+    monkeypatch.setattr(episode_routes, "merge_graph_branch", execute)
     monkeypatch.setattr(
         approval_cards, "approval_pins", lambda *args, **kwargs: {"head": "original"}
     )
@@ -850,6 +860,7 @@ def test_usage_names_every_action_field_and_outcome():
         if kind in THREAD_CARD_KINDS["project"]:
             assert all(name in usage for name in model.model_fields)
     assert "auto_research" not in THREAD_CARD_KINDS["project"]
+    assert "experiment_start" not in THREAD_CARD_KINDS["project"]
     assert all(outcome in usage for outcome in get_args(ApprovalOutcome))
 
 
@@ -938,6 +949,31 @@ def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(ques
     with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_EPISODE):
         ask("new")
     assert ask("card")["pinned"] == stored["pinned"]
+
+
+def test_an_experiment_start_ask_is_refused(questions_api):
+    from rcp.runs.approval_cards import EXPERIMENT_START_USES_EPISODE, approval_card_for_ask
+    from tests.helpers import authorized_human
+    from tests.test_ask_protocol import ask_request
+
+    app, _client, store, project_id = questions_api
+    question, _card = api_card(questions_api)
+    action = {
+        "kind": "experiment_start",
+        "project_id": project_id,
+        "node_id": "exp/any",
+        "goal": "Run it.",
+        "invocation_ceiling": 1,
+    }
+    request = ask_request(idempotency_key="start", arguments={"question": "Go?", "action": action})
+    with pytest.raises(ValueError, match=EXPERIMENT_START_USES_EPISODE):
+        approval_card_for_ask(
+            store,
+            request,
+            question.origin,
+            app.state.catalog.open(project_id),
+            authorized_human(app),
+        )
 
 
 def test_request_receipts_need_their_durable_row(store):
@@ -1161,7 +1197,13 @@ def test_space_closed_and_archived_threads_have_no_cards(questions_api):
         )
         if thread.kind == "space"
     )
-    empty = {"proposal_cards": [], "asked_cards": [], "questions": []}
+    empty = {
+        "proposal_cards": [],
+        "asked_cards": [],
+        "questions": [],
+        "episodes": [],
+        "next_expiry_at": None,
+    }
     assert client.get(f"/api/agent-threads/cards?thread_id={space.thread_id}").json() == empty
     store.set_chat_archived(project_id, "private", store.local_owner.user_id, archived=True)
     assert client.get("/api/agent-threads/cards?thread_id=private").json() == empty
@@ -1628,3 +1670,84 @@ def test_a_main_proposal_action_stores_what_it_stored_before_branches():
 
     action = ProposalAction(kind="proposal", project_id="p", proposal_id="x", decision="approved")
     assert "branch_id" not in action.model_dump(mode="json")
+
+
+def test_plan_start_overrides_are_discriminated():
+    from rcp.api.approval_cards import ResolveApprovalBody
+
+    body = ResolveApprovalBody.model_validate(
+        {
+            "decision": "approve",
+            "pinned_sha256": "pin",
+            "start": {
+                "kind": "auto_research",
+                "starting_instruction": "Explore",
+                "invocation_ceiling": 2,
+            },
+        }
+    )
+    assert body.start is not None
+    assert body.start.kind == "auto_research"
+    with pytest.raises(ValidationError):
+        ResolveApprovalBody.model_validate(
+            {
+                "decision": "approve",
+                "pinned_sha256": "pin",
+                "start": {
+                    "kind": "experiment_start",
+                    "starting_instruction": "Explore",
+                    "invocation_ceiling": 2,
+                },
+            }
+        )
+
+
+def test_plan_card_ids_preserve_experiment_and_encode_branch_uuid():
+    from uuid import NAMESPACE_URL, UUID, uuid5
+
+    from rcp.runs.approval_cards import plan_card_episode_id
+
+    assert plan_card_episode_id("request", "experiment_start") == str(
+        uuid5(NAMESPACE_URL, "rcp:experiment-card:request")
+    )
+    branch = plan_card_episode_id("request", "auto_research")
+    assert UUID(branch).version == 4
+    assert branch == plan_card_episode_id("request", "auto_research")
+    assert branch != plan_card_episode_id("another", "auto_research")
+
+
+@pytest.mark.parametrize("decision", ["approve", "decline"])
+def test_old_auto_research_card_pins_settle_stale_without_start_inputs(questions_api, decision):
+    import json
+
+    _app, client, store, project_id = questions_api
+    action = {"kind": "auto_research", "project_id": project_id, "invocation_ceiling": 2}
+    question, card = api_card(questions_api, action)
+    old_pins = {**card["pinned"], "provider": "codex"}
+    digest = card_sha256(card["action"], old_pins)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET pinned_json=?, pinned_sha256=? WHERE question_id=?",
+            (json.dumps(old_pins), digest, question.question_id),
+        )
+    response = client.post(
+        f"/api/approval-cards/{question.question_id}",
+        json={"decision": decision, "pinned_sha256": digest},
+    )
+    assert response.status_code == 200
+    assert response.json()["outcome"] == "stale"
+    assert store.get_question(question.question_id).state == "answered"
+    assert store.episodes(project_id, limit=None) == []
+
+
+def test_plan_start_overrides_refuse_budgets_past_the_json_safe_range() -> None:
+    from rcp.approval_actions import AutoResearchStartOverrides, ExperimentStartOverrides
+    from rcp.limits import JSON_SAFE_INTEGER_MAX
+
+    for kind, model, fields in (
+        ("experiment_start", ExperimentStartOverrides, {"goal": "g", "node_rev": 1}),
+        ("auto_research", AutoResearchStartOverrides, {"starting_instruction": "g"}),
+    ):
+        model(kind=kind, invocation_ceiling=JSON_SAFE_INTEGER_MAX, **fields)
+        with pytest.raises(ValidationError):
+            model(kind=kind, invocation_ceiling=JSON_SAFE_INTEGER_MAX + 1, **fields)

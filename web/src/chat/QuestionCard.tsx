@@ -87,7 +87,9 @@ export function QuestionCard({
       <header className="question-header">
         <span className="question-state">
           {question.withdrawn_readonly
-            ? "Episode ended"
+            ? question.relays_question_id
+              ? "Answered on the run"
+              : "Episode ended"
             : open
               ? question.agent_waiting
                 ? "Agent is waiting"

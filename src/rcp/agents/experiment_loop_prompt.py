@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v21"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v22"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -185,6 +185,7 @@ def experiment_loop_task_contract(
     skill_pointers: list[dict[str, object]] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
+    mailbox_child_rule: str = "",
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
@@ -236,6 +237,8 @@ Operate one already-authorized invocation of the bounded loop for Experiment
 `{focused_experiment_id}`. Inspect the current scientific and operational state, do the useful work
 this invocation permits, and decide whether to continue through watchers, pause for human authority,
 or finish. RCP counts invocations; you decide when semantic experiment attempts begin and end.
+
+{mailbox_child_rule}
 
 Project: {project_name}
 

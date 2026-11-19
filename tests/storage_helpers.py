@@ -50,6 +50,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
             "ALTER TABLE projects ADD COLUMN state_remote INTEGER NOT NULL DEFAULT 0"
         )
     if any(
+        row[1] == "relays_question_id" for row in connection.execute("PRAGMA table_info(questions)")
+    ):
+        connection.execute("DROP INDEX questions_relays")
+        connection.execute("ALTER TABLE questions DROP COLUMN relays_question_id")
+    if any(
         row[1] == "origin_flag_id"
         for row in connection.execute("PRAGMA table_info(evidence_flags)")
     ):
@@ -96,6 +101,13 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute(
             "CREATE UNIQUE INDEX evidence_flags_live ON evidence_flags(project_id,evidence_id,kind) WHERE state IN ('open','addressing')"
         )
+    if any(
+        row[1] == "recipient_kind"
+        for row in connection.execute("PRAGMA table_info(auto_research_messages)")
+    ):
+        connection.execute("DELETE FROM auto_research_messages WHERE recipient_kind <> 'actor'")
+        connection.execute("DROP INDEX IF EXISTS episode_mail_pending")
+        _restore_legacy_table_shapes(connection, {"auto_research_messages"})
     if any(row[1] == "self_named" for row in connection.execute("PRAGMA table_info(chat_display)")):
         connection.execute("ALTER TABLE chat_display DROP COLUMN self_named")
     if any(row[1] == "focus" for row in connection.execute("PRAGMA table_info(chat_display)")):

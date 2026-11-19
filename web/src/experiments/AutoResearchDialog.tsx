@@ -1,4 +1,4 @@
-import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
+import { AutoResearchFields, AutoResearchWorktree } from "./AutoResearchControls";
 import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { BrowserToggle } from "../core/BrowserControls";
 import {
@@ -9,7 +9,7 @@ import {
 } from "../core/AgentConfigControls";
 import { BranchTag } from "../core/BranchTag";
 import type { AgentRunConfig, Episode, GraphRef, ProjectSnapshot } from "../core/types";
-import { BranchNameField, branchNameRequest, branchNameValid } from "../graph/BranchNameField";
+import { branchNameRequest, branchNameValid } from "../graph/BranchNameField";
 import { ExperimentCheckout } from "./ExperimentCheckout";
 import { AUTO_RESEARCH_ROUTE_PREFIX, experimentBoardHref } from "./experimentBoardModel";
 import { GitBranch, LoaderCircle, Telescope, X } from "lucide-react";
@@ -371,38 +371,18 @@ export function AutoResearchDialog({
                   </ul>
                 </div>
               )}
-              <label className="campaign-budget-field">
-                <span>Operational invocation ceiling</span>
-                <input
-                  ref={budgetInput}
-                  type="number"
-                  min={1}
-                  step={1}
-                  inputMode="numeric"
-                  value={budget}
-                  disabled={busy}
-                  onChange={(event) => setBudget(event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Starting instruction (optional)</span>
-                <textarea
-                  rows={5}
-                  value={instruction}
-                  disabled={busy}
-                  onChange={(event) => setInstruction(event.target.value)}
-                />
-              </label>
-              <div className="campaign-isolation" role="group" aria-label="Isolation">
-                <BranchNameField
-                  mode="auto_research"
-                  value={branch}
-                  disabled={busy}
-                  refusal={branchNameRefusal}
-                  namesInUse={branchNamesInUse}
-                  onChange={setBranch}
-                />
-              </div>
+              <AutoResearchFields
+                budgetInput={budgetInput}
+                budget={budget}
+                instruction={instruction}
+                branch={branch}
+                busy={busy}
+                branchNameRefusal={branchNameRefusal}
+                branchNamesInUse={branchNamesInUse}
+                setBudget={setBudget}
+                setInstruction={setInstruction}
+                setBranch={setBranch}
+              />
             </>
           )}
           {!continued && launchOpen && project && launchProfile && launchConfig && (
@@ -431,31 +411,16 @@ export function AutoResearchDialog({
                   disabled={busy}
                   onChange={setBrowserRequested}
                 />
-                <span className="code-worktree-choice">
-                  <label
-                    title={
-                      worktreeUnavailable
-                        ? `No repository the project's agents can write is on ${launchConfig?.run_on}.`
-                        : undefined
-                    }
-                  >
-                    <input
-                      type="checkbox"
-                      checked={codeWorktreeOn}
-                      disabled={busy || worktreeUnavailable}
-                      onChange={(event) => setCodeWorktree(event.target.checked)}
-                    />
-                    Code worktree
-                  </label>
-                  {codeWorktreeOn && worktreeRepositories && (
-                    <WorktreeRepositoryPicker
-                      repositories={worktreeRepositories}
-                      value={worktreeRepository}
-                      disabled={busy}
-                      onChange={setWorktreePick}
-                    />
-                  )}
-                </span>
+                <AutoResearchWorktree
+                  worktreeUnavailable={worktreeUnavailable}
+                  runOn={launchConfig.run_on}
+                  codeWorktreeOn={codeWorktreeOn}
+                  busy={busy}
+                  setCodeWorktree={setCodeWorktree}
+                  worktreeRepositories={worktreeRepositories}
+                  worktreeRepository={worktreeRepository}
+                  setWorktreePick={setWorktreePick}
+                />
               </div>
             </AgentConfigControls>
           )}

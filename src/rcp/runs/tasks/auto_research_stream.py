@@ -1453,8 +1453,8 @@ def _stage_claimed_mail(
     messages = _claimed_messages(execution, turn)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
     if messages:
-        recipient = messages[0].recipient_task_id
-        if recipient != turn.binding.actor_operation_id:
+        recipient = turn.binding.actor_operation_id
+        if messages[0].recipient_task_id != recipient:
             raise ValueError("Claimed auto_research mail targets another auto_research actor.")
 
         def build(batch: list[AutoResearchMessageRecord]):
@@ -1714,6 +1714,10 @@ def _orchestrator_prompt(
         {"path": snapshot_path, "dismissal_ids": dismissal_ids},
     )
     question_part = f"Read the fresh question snapshot: `{snapshot_path}`. Answers are human mail, not authority."
+    parent_chat = (
+        turn.task.episode_id is not None
+        and execution.store.episode_started_from_chat(turn.task.episode_id) is not None
+    )
 
     def render_master() -> str:
         instruction_path = None
@@ -1746,6 +1750,7 @@ def _orchestrator_prompt(
             child_profiles=child_profiles,
             compute_profiles=compute_profiles,
             paper_path=context.paper_path,
+            parent_chat=parent_chat,
         )
 
     def start_contract() -> str:
@@ -1777,6 +1782,7 @@ def _orchestrator_prompt(
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
             graph_read_prompt=graph_prompt,
+            parent_chat=parent_chat,
         )
 
     def continuation_parts() -> list[str]:

@@ -1,4 +1,5 @@
 import { sameGraphTarget } from "../core/graphTarget";
+import { SYNC_BEFORE_START } from "../experiments/experimentStart";
 import { isControlNode } from "../graph/researchType";
 import type {
   AgentTask,
@@ -107,7 +108,7 @@ function pageStartRefusal(
   startRequiresSync: boolean,
 ): string | null {
   if (mutationsDisabled) return "Graph mutations are currently disabled.";
-  if (startRequiresSync) return "Sync staged graph changes before starting an episode.";
+  if (startRequiresSync) return SYNC_BEFORE_START;
   if (taskStartPending) return "Another task start is already being submitted.";
   return null;
 }

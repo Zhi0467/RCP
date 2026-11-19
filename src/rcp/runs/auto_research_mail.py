@@ -32,7 +32,11 @@ class AutoResearchMailMessage(BaseModel):
     sender_role: AutoResearchMessageRole
     sender_task_id: str | None = Field(default=None, min_length=1)
     authorized_by: AuthorizedHuman | None = None
-    recipient_task_id: str = Field(min_length=1)
+    recipient_kind: Literal["actor", "chat", "episode"] = "actor"
+    recipient_task_id: str | None = Field(default=None, min_length=1)
+    recipient_chat_id: str | None = Field(default=None, min_length=1)
+    item_kind: Literal["message", "question", "answer", "pause", "ending"] = "message"
+    source_ref: str | None = None
     control_node_id: str | None = Field(default=None, min_length=1)
     body: str = Field(min_length=1, max_length=AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH)
     created_at: str = Field(min_length=1)
@@ -48,6 +52,10 @@ class AutoResearchMailMessage(BaseModel):
 
     @model_validator(mode="after")
     def sender_metadata_is_explicit(self) -> AutoResearchMailMessage:
+        if (self.recipient_task_id is not None) != (self.recipient_kind == "actor"):
+            raise ValueError("only actor mail names a recipient task")
+        if (self.recipient_chat_id is not None) != (self.recipient_kind == "chat"):
+            raise ValueError("only chat mail names a recipient chat")
         if self.sender_role == "human":
             if self.sender_task_id is not None:
                 raise ValueError("human auto_research mail cannot claim an agent task sender")
@@ -86,7 +94,10 @@ class AutoResearchMailDelivery(BaseModel):
             message_ids.add(message.message_id)
             if message.episode_id != self.episode_id:
                 raise ValueError("auto_research mail delivery crosses auto_researchs")
-            if message.recipient_task_id != self.recipient_task_id:
+            if (
+                message.recipient_kind != "actor"
+                or message.recipient_task_id != self.recipient_task_id
+            ):
                 raise ValueError("auto_research mail delivery crosses recipients")
             if message.delivery_operation_id != self.delivery_operation_id:
                 raise ValueError("auto_research mail delivery crosses claimed wake operations")
@@ -183,3 +194,42 @@ def stage_auto_research_mail_delivery(
 
     validated = AutoResearchMailDelivery.model_validate(delivery.model_dump(mode="python"))
     mailbox.write_text(AUTO_RESEARCH_MAIL_HANDOFF_FILE, validated.model_dump_json() + "\n")
+
+
+class EpisodeMailDelivery(BaseModel):
+    """A bounded chat or Experiment inbox, claimed by one durable invocation."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    version: Literal[1] = 1
+    recipient_kind: Literal["chat", "episode"]
+    recipient_id: str = Field(min_length=1)
+    chain_episode_ids: list[str] = Field(default_factory=list)
+    delivery_operation_id: str = Field(min_length=1)
+    graph_authority: Literal["none"] = "none"
+    epistemic_status: Literal["hearsay"] = "hearsay"
+    messages: list[AutoResearchMailMessage] = Field(max_length=AUTO_RESEARCH_MAIL_MAX_MESSAGES)
+
+    @model_validator(mode="after")
+    def messages_match_recipient_and_claim(self) -> EpisodeMailDelivery:
+        message_ids: set[str] = set()
+        chain = {self.recipient_id, *self.chain_episode_ids}
+        for message in self.messages:
+            if message.message_id in message_ids:
+                raise ValueError("episode mail contains a duplicate item")
+            message_ids.add(message.message_id)
+            recipient_id = (
+                message.recipient_chat_id if self.recipient_kind == "chat" else message.episode_id
+            )
+            addressed = (
+                recipient_id in chain
+                if self.recipient_kind == "episode"
+                else recipient_id == self.recipient_id
+            )
+            if message.recipient_kind != self.recipient_kind or not addressed:
+                raise ValueError("episode mail crosses recipients")
+            if message.delivery_operation_id != self.delivery_operation_id:
+                raise ValueError("episode mail crosses claimed operations")
+        if _auto_research_mail_wire_size(self) > AUTO_RESEARCH_MAIL_MAX_BYTES:
+            raise ValueError("episode mail exceeds its byte limit")
+        return self

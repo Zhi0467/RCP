@@ -562,6 +562,17 @@ project chat, selected reply text starts a
 just past the quote's end opens it, the header count lists the chat's reply and
 inline-artifact threads, and Send
 to agent carries threads through the composer's own send, a steer while a turn runs.
+A pending Experiment or Auto-research plan card sits in the chat's dock, in
+threads, shared chats and node chats alike; once settled it stays inside its
+raising turn's answer. Both share one body. An Experiment plan shows the node,
+Design (markdown), Done when, This run (the goal), then one row with the agent
+chip and turn limit, then Don't run this now and Start. Design and Done when
+open the node's Edit node. An Auto-research plan shows its branch name as a
+chip, This run (the starting instruction, whose pencil also opens the branch
+name), then the same row with the Code worktree choice. Start waits while the
+member has staged changes on the card's graph target. Edits to a plan card
+last while its stack is shown, across Next and Back.
+
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve
 on the right. Their outcome replaces the need for a separate member answer
@@ -574,8 +585,9 @@ edge. Later puts the front card away for as long as the stack is shown; once
 every open card is away the stack folds to "N card(s) waiting", which brings
 them back on a tap. Later, the arrows and the
 fold move keyboard focus to the new front card or the fold line. Order and fold
-last while the stack is shown; a refetch keeps surviving cards in order, appends
-new ones and drops settled ones, and a reload restores server order. A stack that
+last while the stack is shown; a refetch keeps surviving cards in order and the
+same front card, appends new ones and drops settled ones, and a reload restores
+server order. When the front card leaves, the card now at its place comes forward. A stack that
 has shown several cards keeps its reserved space as it empties, so the
 transcript does not jump. A decision keeps its stack in place and moves focus
 to the next front card. A tapped card shows its result, including a failure
@@ -589,8 +601,19 @@ hover and leaves at the next good read. The Space thread docks one stack above i
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
-dock for its own open Proposal and asked cards, then that project's relayed
-questions, without project chips; its plain questions stay inline. A decided card
+dock for its own open Proposal and asked cards, then its pending plan cards,
+then its child episodes' questions, then that project's relayed questions,
+then the child runs that need action, then the other child runs, without
+project chips; its plain questions stay inline. A run card names the run,
+linked to Runs, with its Runs state, its report once ended, and the controls
+Runs shows from the same projection: an Experiment's controls follow its Runs
+control state, including node readiness and Resume with the turns a pause left
+unused. A run card's busy state and typed turn count last across Next and
+Back; its controls stay disabled until the dock has re-read after an action.
+At phone width its report link, Later and controls share one row where they
+fit. An ended child leaves the dock when its window closes, without waiting
+for another change. Shared and node chats
+dock their plan cards, children and relayed questions the same way. A decided card
 leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval

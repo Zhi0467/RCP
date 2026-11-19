@@ -22,6 +22,9 @@ test("a pointer selection on a reply offers Comment, keeps the selection copyabl
       route.fulfill({ json: { threads: [] } }),
     );
     await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/*/chats/*/cards", (route) =>
+      route.fulfill({ json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } }),
+    );
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const answer = page.locator(".chat-annotatable-answer");
     await answer.waitFor({ state: "visible" });
@@ -160,6 +163,9 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
       return route.fulfill({ json: { threads: [thread] } });
     });
     await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/*/chats/*/cards", (route) =>
+      route.fulfill({ json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } }),
+    );
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const pin = page.getByRole("button", { name: "Comment 1" });
     await pin.waitFor();

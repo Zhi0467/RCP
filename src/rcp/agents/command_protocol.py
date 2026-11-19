@@ -489,11 +489,21 @@ class WorkEpisodeControlArguments(_EpisodeTargetArguments):
         return self
 
 
+class EpisodeAnswerArguments(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action: Literal["answer"]
+    question_id: str = Field(min_length=1)
+    answer_file: str = Field(min_length=1, max_length=255, pattern=_SAFE_WORKSPACE_FILENAME)
+    choices: list[str] = Field(default_factory=list)
+
+
 EpisodeArguments: TypeAlias = Annotated[
     ExperimentKickoffArguments
     | AutoResearchKickoffArguments
     | EpisodeControlArguments
-    | WorkEpisodeControlArguments,
+    | WorkEpisodeControlArguments
+    | EpisodeAnswerArguments,
     Field(discriminator="action"),
 ]
 
@@ -535,11 +545,14 @@ class AskArguments(BaseModel):
     )
     multiple: bool = False
     action: ApprovalAction | None = None
+    relays: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def valid_choices(self) -> AskArguments:
         if self.action is not None and (self.choices or self.multiple):
             raise ValueError("approval actions cannot supply choices or multiple")
+        if self.action is not None and self.relays is not None:
+            raise ValueError("approval actions cannot relay a question")
         if not self.question.strip() or any(not choice.strip() for choice in self.choices):
             raise ValueError("question and choices must not be blank")
         if len(set(self.choices)) != len(self.choices):
@@ -638,7 +651,7 @@ class AskResult(BaseModel):
     receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     attempt: int | None = Field(default=None, ge=1)
     max_attempts: int | None = Field(default=None, ge=1)
-    state: Literal["pending", "answered", "dismissed", "parked"]
+    state: Literal["pending", "answered", "dismissed", "parked", "withdrawn"]
     question_id: str = Field(min_length=1)
     answer: str | None = Field(default=None, max_length=ASK_ANSWER_MAX_LENGTH)
     choices: list[Annotated[str, Field(min_length=1, max_length=ASK_CHOICE_MAX_LENGTH)]] = Field(

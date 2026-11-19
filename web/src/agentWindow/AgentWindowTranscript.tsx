@@ -29,6 +29,7 @@ import { SentAttachments } from "../chat/SentAttachments";
 import { CompactionDivider } from "../chat/AgentStatusStrip";
 import { compactionAnchors } from "../chat/agentStatusModel";
 import { questionTranscript } from "../chat/questions";
+import { isPlanCardQuestion } from "../agents/experimentPlanModel";
 import { turnOutcomeChip } from "../chat/turnOutcome";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
 import type { useAgentWindowArtifacts } from "./useAgentWindowArtifacts";
@@ -52,6 +53,8 @@ interface Props {
   shownElsewhere?: ReadonlySet<string>;
   /** Shows each position's cards as one unit; without it each asked card uses `renderQuestion`. */
   renderCards?: (entry: AgentWindowCardsEntry) => ReactNode;
+  /** An Experiment plan card, drawn inside its turn's answer so reply comments reach its text. */
+  renderPlanCard?: (question: AgentQuestion) => ReactNode;
   lineLead?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
   lineClassName?: (line: TaskTranscriptLine) => string;
   humanLead?: (line: TaskTranscriptLine) => ReactNode;
@@ -89,6 +92,7 @@ interface Props {
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 const NO_ERRORS = new Map<string, string>();
 const NONE_ELSEWHERE: ReadonlySet<string> = new Set();
+const NO_PLANS: ReadonlyMap<string, AgentQuestion[]> = new Map();
 
 /** Shared turn bodies; owners supply their questions, progress, and controls. */
 export function AgentWindowTranscript({
@@ -104,6 +108,7 @@ export function AgentWindowTranscript({
   renderQuestion,
   shownElsewhere = NONE_ELSEWHERE,
   renderCards,
+  renderPlanCard,
   lineLead,
   lineClassName,
   humanLead,
@@ -155,7 +160,16 @@ export function AgentWindowTranscript({
     const timer = window.setInterval(() => setExpiryClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, [transcript]);
-  const entries = agentWindowEntries(transcript, questions, shownElsewhere);
+  const plansByLine = renderPlanCard
+    ? planCardPlacement(transcript, questions, shownElsewhere)
+    : NO_PLANS;
+  const entries = agentWindowEntries(
+    transcript,
+    questions,
+    plansByLine.size
+      ? new Set([...shownElsewhere, ...[...plansByLine.values()].flat().map((q) => q.question_id)])
+      : shownElsewhere,
+  );
   const dividers = timeDividers(entries);
   const now = new Date();
   const toggleTime = (lineId: string, target: EventTarget) => {
@@ -170,14 +184,23 @@ export function AgentWindowTranscript({
   return (
     <>
       {entries.map((entry) => {
-        if (entry.kind === "cards")
-          return renderCards ? (
-            <Fragment key={entry.key}>{renderCards(entry)}</Fragment>
-          ) : (
-            entry.asked.map((question) => (
-              <Fragment key={question.question_id}>{renderQuestion?.(question)}</Fragment>
-            ))
+        if (entry.kind === "cards") {
+          const plans = renderPlanCard ? entry.asked.filter(isPlanCardQuestion) : [];
+          const asked = entry.asked.filter((question) => !plans.includes(question));
+          return (
+            <Fragment key={entry.key}>
+              {asked.length > 0 &&
+                (renderCards
+                  ? renderCards({ ...entry, asked })
+                  : asked.map((question) => (
+                      <Fragment key={question.question_id}>{renderQuestion?.(question)}</Fragment>
+                    )))}
+              {plans.map((question) => (
+                <Fragment key={question.question_id}>{renderPlanCard?.(question)}</Fragment>
+              ))}
+            </Fragment>
           );
+        }
         if (entry.kind === "question")
           return (
             <Fragment key={entry.question.question_id}>{renderQuestion?.(entry.question)}</Fragment>
@@ -212,6 +235,7 @@ export function AgentWindowTranscript({
           : null;
         const compaction = compactionByLine.get(line.lineId);
         const ownBody = line.role === "agent" ? agentBody?.(line) : undefined;
+        const plans = plansByLine.get(line.lineId) ?? [];
         const divider = dividers.get(line.lineId);
         const shownAt = lineTime(line);
         return (
@@ -256,22 +280,29 @@ export function AgentWindowTranscript({
                     activeLineTask && <InlineTaskProgress task={activeLineTask} />
                   )
                 ) : (
-                  line.text && (
+                  (line.text || plans.length > 0) && (
                     <>
                       {agentProgress?.(line, task)}
                       <div className="chat-markdown chat-annotatable-answer">
-                        <MarkdownAnswer
-                          text={line.text}
-                          nodes={nodes}
-                          glossaryIndex={glossaryIndex}
-                          onOpenNode={onOpenNode}
-                          onOpenRepositoryFileLink={(href) =>
-                            void artifacts.openRepositoryFile(messageId, line.taskId, href)
-                          }
-                          renderEmbed={(src, alt) =>
-                            artifacts.renderInlineArtifact(line.taskId, line.artifacts, src, alt)
-                          }
-                        />
+                        {line.text && (
+                          <MarkdownAnswer
+                            text={line.text}
+                            nodes={nodes}
+                            glossaryIndex={glossaryIndex}
+                            onOpenNode={onOpenNode}
+                            onOpenRepositoryFileLink={(href) =>
+                              void artifacts.openRepositoryFile(messageId, line.taskId, href)
+                            }
+                            renderEmbed={(src, alt) =>
+                              artifacts.renderInlineArtifact(line.taskId, line.artifacts, src, alt)
+                            }
+                          />
+                        )}
+                        {plans.map((question) => (
+                          <Fragment key={question.question_id}>
+                            {renderPlanCard?.(question)}
+                          </Fragment>
+                        ))}
                       </div>
                       {/* Outside the annotatable wrapper: a selection clamp or the
                         keyboard flow must never stage this diagnostic as answer text. */}
@@ -477,7 +508,7 @@ export function timeDividers(entries: ReturnType<typeof agentWindowEntries>): Ma
 }
 
 const TAP_IGNORED =
-  'a, button, input, textarea, select, summary, label, [role="button"], [class*="chip"], .chat-input-reference';
+  'a, button, input, textarea, select, summary, label, [role="button"], [class*="chip"], .chat-input-reference, .approval-card';
 
 /** A tap on a line shows its time, unless it lands on a link, control or chip, or selects text. */
 export function lineTapShowsTime(
@@ -486,6 +517,34 @@ export function lineTapShowsTime(
 ): boolean {
   if (target.closest(TAP_IGNORED)) return false;
   return !selection || selection.isCollapsed || !selection.toString();
+}
+
+/**
+ * Plan cards by the line that shows them: the last finished answer of the turn that
+ * raised each. A card whose turn has no answer here keeps the ordinary card place,
+ * still drawn as a plan card.
+ */
+export function planCardPlacement(
+  lines: TaskTranscriptLine[],
+  questions: AgentQuestion[],
+  shownElsewhere: ReadonlySet<string> = NONE_ELSEWHERE,
+): Map<string, AgentQuestion[]> {
+  const placed = new Map<string, AgentQuestion[]>();
+  const byAge = [...questions].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  for (const question of byAge) {
+    if (!isPlanCardQuestion(question) || shownElsewhere.has(question.question_id)) continue;
+    const owner = lines
+      .filter(
+        (line) =>
+          line.taskId === question.operation_id &&
+          line.role === "agent" &&
+          line.source !== "voice" &&
+          !line.running,
+      )
+      .at(-1);
+    if (owner) placed.set(owner.lineId, [...(placed.get(owner.lineId) ?? []), question]);
+  }
+  return placed;
 }
 
 /** The cards that share one transcript position; an owner may show them as one stack. */

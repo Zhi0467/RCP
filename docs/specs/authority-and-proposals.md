@@ -285,15 +285,14 @@ Patches through the transition manager and Apply gate.
 ## Private-thread approval cards
 
 A member's private agent threads act for that member. Ordinary acts run without
-a tap: Patches, compute, Bulletin posts, schedules and handoffs, starting the
-Experiments and Auto-research the member asks for, and the
+a tap: Patches, compute, Bulletin posts, schedules and handoffs, and the
 [episode controls](conversations-episodes-and-watchers.md#work-started-episodes)
 and watcher stops for what the thread started. Each records its turn's operation and authorizer as any Work turn
 does. Projections derive
 [`via_agent`](api-web-and-desktop-projections.md#agent-thread-api) from the
 origin operation's thread; nothing new enters a Patch, so replay is unchanged.
-Protected acts wait for the member through a card. There are two kinds: a
-derived Proposal card and an asked card.
+Protected acts wait for the member through a card: a derived Proposal card, an
+asked card, or an [episode plan card](#episode-plan-cards).
 
 **Proposal cards are derived, never stored.** Each pending Proposal on live main
 whose `created_by_operation_id` names a turn of the member's open project thread
@@ -324,7 +323,7 @@ action kinds and projects a thread may ask is one rule: `THREAD_CARD_KINDS` and
 `card_project_allowed` in
 [`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py), and the usage
 renders the same set. A project thread's action names its own project and may
-be any kind but an Auto-research start. The Space thread's names any project the member belongs to and may
+be any kind but an episode start. The Space thread's names any project the member belongs to and may
 be a Proposal judgment, truth membership, a branch merge or an episode merge:
 everything an Inbox, branch view or Settings decision takes, so the member never
 has to open the project to decide. An Auto-research start is the project thread's
@@ -337,18 +336,18 @@ judgment names an optional `branch_id`: without it the Proposal is on main, with
 it on that graph branch (`proposal_graph`). A stored action from before
 `branch_id` existed reads as main. The model also keeps Auto-research
 authorization, which no thread kind may newly ask: a new ask is refused with
-`auto_research_uses_episode_verb` because the member's Work chat starts
-Auto-research with its `episode` verb. Stored Auto-research cards still render,
-settle on a tap through the human Start, and settle after a restart from their
-request receipt. Plain question answers never authorize these actions. A
+`auto_research_uses_episode_verb` because the member's Work chat raises its plan card
+with the `episode` verb. Stored Auto-research cards from the old ask path still
+render and settle `stale` on a tap because their old pins differ from the plan
+card pins. Plain question answers never authorize these actions. A
 `merge` command from a thread holding this grant is refused with
 `approval_card_required`, whose message names the merge card, so the agent asks
 instead of telling the member to merge by hand.
 
 The question and its slim `approval_cards` row are committed together. The row
 pins the action and live facts under one SHA-256: pending non-stale Proposal
-content, repository identity and current membership, the resolved Auto-research
-profile, or the merge source head and preview. The preview already pins main's
+content, repository identity and current membership, the Auto-research graph
+target, or the merge source head and preview. The preview already pins main's
 value of every field the source changed, and the merge plans against live main,
 so an unrelated main commit leaves a merge card current. Ask refuses an action
 whose target does not exist or no longer applies (for example `branch_not_found`,
@@ -434,3 +433,57 @@ answer it with approved, declined, stale or a failure reason, reusing ordinary q
 to steer or wake the thread. Both plain questions and cards in private threads
 have owner-only list, answer, dismiss and Needs-you notification delivery.
 The approval endpoint is a member control, not a voice or WebMCP tool.
+
+### Episode plan cards
+
+A fresh Experiment or Auto-research from any agent chat starts only on a human's
+**Start** on its plan card. The chat's `episode --kick-off-experiment` records
+the request and
+answers `card_pending`. When the turn succeeds and its Patch lands, RCP creates
+one `experiment_start` card on the raising turn from the settled graph, so the
+agent may write the node in the same turn. A failed turn, or a node that is
+missing or not an Experiment, gets no card and a task event. A newer card for
+the node in the same chat settles the older one `stale`. Kickoff is the only
+creator: `ask` refuses this kind with `experiment_start_uses_episode`.
+
+The card follows its chat. Anyone who can read the chat sees it. In a private
+chat only its owner acts; in a shared or node chat any Patch-capable member with
+write admission acts (`plan_card_actor` in
+[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py)). An Experiment card pins
+the node, its type and the graph target, never the node's revision, so the card
+shows later edits live.
+
+**Start** goes through the card's tap route with the human's own goal, limit,
+profile and the node revision the card showed. A moved revision answers
+`plan_changed` and keeps the card pending. The episode id derives from the
+card's request, the tapping member authorizes it, and its root names the raising
+turn, so that chat may later resume, extend or stop it. **Don't run this now**
+settles `declined`. Outcomes reach the agent through ordinary answer delivery.
+The Auto-research orchestrator starts its own children without cards.
+
+Auto-research kickoff records the same `card_pending` receipt and raises an
+`auto_research` card after the turn succeeds. One pending Auto-research card per
+chat is kept; a newer one settles the older one `stale`. Only the main graph
+target is pinned, so Settings edits do not stale it. Start rechecks readiness
+and accepts the human's instruction, branch name, code worktree and repository,
+orchestrator profile, and turn budget. Both kinds use one discriminated `start`
+override; a mismatch returns `start_kind_mismatch`. Auto-research uses a stable
+UUIDv4 episode and branch id, while Experiment retains its existing derivation.
+
+`branch_name_invalid`, `branch_name_taken`, `provider_not_ready`,
+`machine_not_found`, `auto_research_profile_unavailable`, and
+`auto_research_start_invalid` leave the
+Auto-research card pending for correction. Other start refusals settle it
+`failed`. Atomic card claims prevent concurrent taps; restart recovery checks
+the durable episode before request receipts and never starts a second episode.
+
+Auto-research Start overrides and kickoff goals share the episode instruction
+length limit. Start validates the human's edits before execution; invalid edits
+leave the card pending. Refusals carry a code and message. An existing episode
+replays before any provider readiness probe.
+
+Startup card recovery reads at most 1,000 succeeded tasks from pending kickoff
+receipts per pass. A task failure is logged and recorded as
+`plan_card_raise_failed` in its task events; its kickoffs stay pending, so the
+next startup retries them, and other tasks continue. Both kickoff kinds share receipt recording, while the
+raiser accepts older receipt field names.

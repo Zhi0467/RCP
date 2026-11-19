@@ -18,7 +18,7 @@ from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ExperimentLoop
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES, AWAITING_HUMAN_AGENT_TASK_STATUSES
 
 if TYPE_CHECKING:
-    from rcp.background import BackgroundAgentTasks
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 
 
 def experiment_control(
@@ -202,21 +202,24 @@ def fresh_experiment_run_request(
 
 @dataclass(frozen=True)
 class WorkExperimentStart:
-    """One Work turn's Experiment kickoff, resolved by its command handler."""
+    """One Start a member pressed on a Work chat's Experiment plan card."""
 
-    #: The Work task that issued the command; it supplies project, target and authorizer.
+    #: The Work turn that raised the card; it supplies project, target and run scope.
     source_operation_id: str
-    #: Derived from the turn and the command key, so a replay names the same episode.
+    #: Derived from the card's request, so a repeated or resumed Start names the same episode.
     episode_id: str
     node_id: str
+    node_rev: int
+    governing: tuple[tuple[str, str | None], ...]
     goal: str
     invocation_limit: int | None
     provider: str | None
     model: str | None
     reasoning: str | None
+    authorized_by: AuthorizedHuman
 
 
-WorkExperimentStarter = Callable[[WorkExperimentStart], AgentTaskRecord]
+WorkExperimentCardRaiser = Callable[["AgentTaskExecution"], None]
 
 
 @dataclass(frozen=True)
@@ -233,8 +236,18 @@ class WorkExperimentResume:
 WorkExperimentResumer = Callable[[WorkExperimentResume], EpisodeRecord]
 
 
+def experiment_node(state: GraphState, node_id: str) -> Experiment | None:
+    """The node `node_id` names when it is an Experiment on this graph."""
+    node = state.nodes.get(node_id)
+    return node if isinstance(node, Experiment) else None
+
+
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
+
+
+class PlanChanged(Exception):
+    """The Experiment changed after the member read its plan card."""
 
 
 def ready_experiment_control(

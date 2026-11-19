@@ -22,13 +22,30 @@ from rcp.api.dependencies import (
     require_project_membership,
 )
 from rcp.api.identity import IdentityAccess
-from rcp.approval_actions import ApprovalAction, MergeEpisodeBody, ProposalAction
-from rcp.core.models import AuthorizedHuman
+from rcp.approval_actions import (
+    ApprovalAction,
+    AutoResearchAction,
+    AutoResearchStartOverrides,
+    ExperimentStartAction,
+    ExperimentStartOverrides,
+    MergeEpisodeBody,
+    PlanStartOverrides,
+    ProposalAction,
+)
+from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import PatchRejected, ReplayHalted
+from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 from rcp.projects import ProjectCatalog
-from rcp.runs.approval_cards import approval_pins, approved_receipt, proposal_graph
+from rcp.runs.approval_cards import (
+    action_graph,
+    approval_pins,
+    approved_receipt,
+    plan_card_actor,
+    plan_card_episode_id,
+)
+from rcp.runs.experiment_admission import experiment_node
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
@@ -55,6 +72,7 @@ class ResolveApprovalBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     decision: Literal["approve", "decline"]
     pinned_sha256: str
+    start: PlanStartOverrides | None = None
 
 
 def _sync_proposal(
@@ -89,7 +107,7 @@ def _sync_proposal(
             watcher_delivery=get_watcher_delivery(request),
         )
     except HTTPException as exc:
-        graph = proposal_graph(service, action)
+        graph = action_graph(service, action)
         if exc.status_code == 409 and graph.history.state().revision != pinned_revision:
             raise _NotNow(409, {"code": "graph_changed"}) from exc
         raise
@@ -105,6 +123,9 @@ def _execute(
     pinned: dict[str, Any],
     service: ProjectService,
     pinned_revision: int,
+    human: AuthorizedHuman,
+    source_operation_id: str,
+    overrides: PlanStartOverrides | None,
 ):
     """Run the action through its human handler.
 
@@ -115,12 +136,22 @@ def _execute(
         MergeBranchBody,
         _merge_episode_branch,
         merge_graph_branch,
-        start_episode,
     )
-    from rcp.api.episodes import StartEpisodeBody
     from rcp.api.project_state import RepositoryWritableRequest, set_repository_writable
 
     project_id = action.project_id
+    if action.kind == "experiment_start":
+        assert isinstance(overrides, ExperimentStartOverrides)
+        return _start_experiment(
+            action,
+            overrides,
+            request_id,
+            request,
+            catalog,
+            human,
+            source_operation_id,
+            tuple((decision, option) for decision, option in pinned["governing"]),
+        )
     if action.kind == "proposal":
         return _sync_proposal(
             action, request, store, catalog, identity_access, service, pinned_revision
@@ -135,17 +166,9 @@ def _execute(
             project_display_cache=get_project_display_cache(request),
         )
     if action.kind == "auto_research":
-        return start_episode(
-            project_id,
-            StartEpisodeBody.model_validate(
-                {"mode": "auto_research", **action.model_dump(exclude={"kind", "project_id"})}
-            ),
-            request,
-            catalog=catalog,
-            store=store,
-            identity_access=identity_access,
-            background_tasks=request.app.state.background_tasks,
-            idempotency_key=UUID(request_id),
+        assert isinstance(overrides, AutoResearchStartOverrides)
+        return _start_auto_research(
+            action, overrides, request_id, request, catalog, human, source_operation_id
         )
     if action.kind == "merge_branch":
         return merge_graph_branch(
@@ -177,6 +200,117 @@ def _execute(
     )
 
 
+def _start_experiment(
+    action: ExperimentStartAction,
+    overrides: ExperimentStartOverrides,
+    request_id: str,
+    request: Request,
+    catalog: ProjectCatalog,
+    human: AuthorizedHuman,
+    source_operation_id: str,
+    governing: tuple[tuple[str, str | None], ...],
+):
+    """Start the plan as the tapping member, from the raising turn, under the card's id."""
+    from rcp.api.dependencies import get_background_tasks, get_experiment_operation_lock
+    from rcp.api.experiments import start_work_experiment
+    from rcp.runs.experiment_admission import (
+        ExperimentNotReady,
+        PlanChanged,
+        WorkExperimentStart,
+    )
+    from rcp.storage import AgentTaskAdmissionConflict
+
+    try:
+        return start_work_experiment(
+            catalog,
+            get_background_tasks(request),
+            get_experiment_operation_lock(request),
+            WorkExperimentStart(
+                source_operation_id=source_operation_id,
+                episode_id=plan_card_episode_id(request_id, "experiment_start"),
+                node_id=action.node_id,
+                node_rev=overrides.node_rev,
+                governing=governing,
+                goal=overrides.goal,
+                invocation_limit=overrides.invocation_ceiling,
+                provider=overrides.provider,
+                model=overrides.model,
+                reasoning=overrides.reasoning,
+                authorized_by=human,
+            ),
+        )
+    except PlanChanged as exc:
+        raise _NotNow(409, {"code": "plan_changed"}) from exc
+    except (ExperimentNotReady, AgentTaskAdmissionConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _start_auto_research(
+    action: AutoResearchAction,
+    overrides: AutoResearchStartOverrides,
+    request_id: str,
+    request: Request,
+    catalog: ProjectCatalog,
+    human: AuthorizedHuman,
+    source_operation_id: str,
+):
+    from rcp.api.dependencies import get_background_tasks, get_experiment_operation_lock
+    from rcp.api.work_episodes import start_work_auto_research
+    from rcp.runs.work_episode_controls import EpisodeRefused, WorkAutoResearchStart
+
+    try:
+        return start_work_auto_research(
+            catalog,
+            get_background_tasks(request),
+            get_experiment_operation_lock(request),
+            WorkAutoResearchStart(
+                source_operation_id=source_operation_id,
+                episode_id=plan_card_episode_id(request_id, action.kind),
+                goal=overrides.starting_instruction,
+                invocation_ceiling=overrides.invocation_ceiling,
+                code_worktree=overrides.code_worktree,
+                worktree_repository=overrides.worktree_repository,
+                branch_name=overrides.branch_name,
+                provider=overrides.provider,
+                model=overrides.model,
+                reasoning=overrides.reasoning,
+            ),
+            authorized_by=human,
+        )
+    except EpisodeRefused as exc:
+        detail = {"code": exc.code, "message": str(exc)}
+        if exc.code == "auto_research_start_invalid":
+            raise _NotNow(422, detail) from exc
+        if exc.code in {
+            "branch_name_invalid",
+            "branch_name_taken",
+            "provider_not_ready",
+            "machine_not_found",
+            "auto_research_profile_unavailable",
+        }:
+            raise _NotNow(409, detail) from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
+
+
+def _require_seen_plan(
+    state: GraphState, action: ExperimentStartAction, overrides: ExperimentStartOverrides | None
+) -> None:
+    """Refuse a Start the member did not see or could not mean; the card stays pending."""
+    node = experiment_node(state, action.node_id)
+    assert node is not None
+    if overrides is None:
+        raise _NotNow(422, {"code": "experiment_start_required"})
+    if overrides.node_rev != node.updated_rev:
+        raise _NotNow(409, {"code": "plan_changed"})
+    if overrides.invocation_ceiling > node.invocation_ceiling:
+        raise _NotNow(422, {"code": "invocation_ceiling_above_node"})
+    goal = overrides.goal
+    if not goal.strip() or len(goal.encode()) > AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES:
+        raise _NotNow(422, {"code": "goal_invalid"})
+
+
 class _NotNow(Exception):
     def __init__(self, status_code: int, detail: Any) -> None:
         super().__init__(detail)
@@ -191,6 +325,7 @@ def _reason(detail: Any) -> str:
 
 def _resolve(
     card: dict[str, Any],
+    question: QuestionRecord,
     body: ResolveApprovalBody,
     request: Request,
     store: AppStore,
@@ -201,13 +336,19 @@ def _resolve(
     """Stale only when live pins differ; outages raise `_NotNow` before any write."""
     if body.pinned_sha256 != card["pinned_sha256"]:
         return {"outcome": "stale"}
-    if body.decision == "decline":
-        return {"outcome": "declined"}
     action = TypeAdapter(ApprovalAction).validate_python(card["action"])
+    if body.decision == "decline" and action.kind != "auto_research":
+        return {"outcome": "declined"}
+    if body.start is not None and body.start.kind != action.kind:
+        raise _NotNow(422, {"code": "start_kind_mismatch"})
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
         try:
-            graph = proposal_graph(service, action) if action.kind == "proposal" else service
+            graph = (
+                action_graph(service, action)
+                if action.kind in {"proposal", "experiment_start"}
+                else service
+            )
             state = graph.history.state()
             pinned_revision = state.revision
             pinned = approval_pins(service, store, action, human, state=state)
@@ -218,6 +359,24 @@ def _resolve(
             raise _NotNow(503, str(exc)) from exc
         if card_sha256(card["action"], pinned) != card["pinned_sha256"]:
             return {"outcome": "stale"}
+        if body.decision == "decline":
+            return {"outcome": "declined"}
+        if action.kind == "auto_research" and body.start is None:
+            raise _NotNow(422, {"code": "auto_research_start_required"})
+        if action.kind == "experiment_start":
+            assert body.start is None or isinstance(body.start, ExperimentStartOverrides)
+            _require_seen_plan(state, action, body.start)
+        if isinstance(body.start, AutoResearchStartOverrides):
+            from rcp.api.episodes import StartEpisodeBody
+
+            try:
+                StartEpisodeBody.model_validate(
+                    {"mode": "auto_research", **body.start.model_dump(exclude={"kind"})}
+                )
+            except ValueError as exc:
+                raise _NotNow(
+                    422, {"code": "auto_research_start_invalid", "message": str(exc)}
+                ) from exc
         return _run(
             lambda: _execute(
                 action,
@@ -229,6 +388,9 @@ def _resolve(
                 pinned,
                 service,
                 pinned_revision,
+                human,
+                question.origin.operation_id,
+                body.start,
             ),
             card["request_id"],
         )
@@ -244,9 +406,9 @@ def _admit(
     """Open the project's write admission and writer, or raise `_NotNow`."""
     try:
         store.require_project_accepts_new_work(action.project_id)
-        # Direct calls skip FastAPI dependencies. Proposal and episode merge
-        # handlers acquire this non-reentrant fence themselves.
-        if action.kind not in {"proposal", "merge_episode"}:
+        # Direct calls skip FastAPI dependencies. Proposal, episode merge and
+        # Experiment start handlers acquire this non-reentrant fence themselves.
+        if action.kind not in {"proposal", "merge_episode", "experiment_start", "auto_research"}:
             admission.enter_context(project_write_admission(action.project_id, request))
         return get_project_writer(catalog, action.project_id)
     except ValueError as exc:
@@ -333,7 +495,7 @@ def _decidable_revision(
     """The Proposal's graph and the revision a card decision appends at, once the Proposal
     is pending and fresh there."""
     try:
-        graph = proposal_graph(service, action)
+        graph = action_graph(service, action)
         state = graph.history.state()
     except ValueError as exc:
         raise _NotNow(404, "Proposal not found") from exc
@@ -370,7 +532,7 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
         if exc.detail != {"code": "proposal_not_pending"}:
             return {"rejected": False, "reason": _reason(exc.detail)}
         catalog = get_catalog(request)
-        graph = proposal_graph(catalog.open(action.project_id), action)
+        graph = action_graph(catalog.open(action.project_id), action)
         if _still_pending(graph, action.proposal_id):
             return {
                 "rejected": False,
@@ -383,14 +545,25 @@ def _declined_rejection(request: Request, card: dict[str, Any]) -> dict[str, Any
 def _owned_card(
     store: AppStore, question_id: str, request: Request, human: AuthorizedHuman
 ) -> tuple[QuestionRecord, dict[str, Any]]:
-    """The member's own thread's card. Membership is checked on the action's project: a
-    project thread's card names its own project, and a Space thread's any of the member's."""
+    """The card this member may tap. Membership is checked on the action's project: a
+    project thread's card names its own project, and a Space thread's any of the member's.
+
+    A private thread's card is its owner's. In a shared or node chat only an episode
+    plan card exists, and `plan_card_actor` decides who taps it.
+    """
     question = store.get_question(question_id)
-    if (
-        question is None
-        or question.origin.owner_kind != "chat"
-        or store.private_chat_owner(question.origin.owner_id) != human.user_id
-    ):
+    if question is None or question.origin.owner_kind != "chat":
+        raise HTTPException(status_code=404, detail="Question not found")
+    if (owner := store.private_chat_owner(question.origin.owner_id)) is not None:
+        allowed = owner == human.user_id
+    else:
+        shared = store.approval_card(question_id)
+        allowed = (
+            shared is not None
+            and shared["kind"] in {"experiment_start", "auto_research"}
+            and plan_card_actor(store, question, human)
+        )
+    if not allowed:
         raise HTTPException(status_code=404, detail="Question not found")
     if refusal := store.chat_turn_refusal(question.origin.project_id, question.origin.owner_id):
         raise HTTPException(status_code=409, detail={"code": refusal})
@@ -419,7 +592,7 @@ def resolve_approval_card(
             return {"outcome": "expired"}
         raise HTTPException(status_code=409, detail={"code": "card_taken"})
     try:
-        result = _resolve(card, body, request, store, catalog, identity_access, human)
+        result = _resolve(card, question, body, request, store, catalog, identity_access, human)
     except _NotNow as exc:
         # An outage or closed admission is not the member's answer; keep the card open.
         store.release_approval_card(question_id)

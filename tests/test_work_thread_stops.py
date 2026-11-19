@@ -81,7 +81,7 @@ def _work_turn(loop: Loop, operation_id: str, chat_id: str, *, mode: str = "work
         operation_id=operation_id,
         store=store,
         control=AgentProcessControl(),
-        experiment_starter=background.experiment_starter,
+        experiment_card_raiser=background.experiment_card_raiser,
         episode_controls=background.episode_controls,
         watcher_canceller=background.watcher_canceller,
     )

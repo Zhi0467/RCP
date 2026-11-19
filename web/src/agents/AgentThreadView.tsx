@@ -14,7 +14,6 @@ import {
   RotateCcw,
   Send,
   Square,
-  SquareStack,
   TriangleAlert,
   X,
 } from "lucide-react";
@@ -94,13 +93,15 @@ import type {
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import {
   ApprovalCardStack,
+  AgentCardsUnavailable,
   askedCardKey,
+  dockStackCards,
   proposalCardKey,
-  questionCardKey,
   useAgentCards,
   type StackCard,
 } from "./ApprovalCardStack";
 import { RunningPopover } from "./RunningPopover";
+import { EpisodePlanCard } from "./EpisodePlanCard";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText, stoppedByMember } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -1310,18 +1311,22 @@ export function AgentThreadView({
     run().catch((failure: unknown) => setNotice({ threadId, text: errorMessage(failure) }));
   };
 
-  const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cards = useAgentCards(
+    { threadId: thread.kind === "project" ? thread.thread_id : null },
+    revision,
+  );
   const cardsElsewhere = new Set([
     ...cards.asked.map((question) => question.question_id),
+    ...cards.plans.map((question) => question.question_id),
     ...(cards.loading
       ? questions.flatMap((question) =>
           question.card && question.state === "pending" ? [question.question_id] : [],
         )
       : []),
   ]);
-  const cardsChanged = () => {
-    void cards.refetch();
-    if (thread.kind === "project") void refresh();
+  const cardsChanged = async () => {
+    await cards.refetch();
+    if (thread.kind === "project") await refresh();
   };
   const proposalStackCard = (view: ProposalCardView, showProject: boolean): StackCard => ({
     kind: "proposal",
@@ -1344,12 +1349,11 @@ export function AgentThreadView({
     ...cards.asked.map((question) =>
       askedStackCard(question, relayed ? question.project_name : null),
     ),
-    ...cards.questions.map((question): StackCard => ({
-      kind: "question",
-      key: questionCardKey(question),
-      question,
-    })),
+    ...dockStackCards(cards.plans, cards.episodes, cards.questions),
   ];
+  const renderPlanCard = (question: AgentQuestion) => (
+    <EpisodePlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
+  );
 
   const renderQuestion = (question: AgentQuestion) =>
     endpoints.questionsApiBase ? (
@@ -1517,6 +1521,7 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
+          renderPlanCard={renderPlanCard}
           shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (
             <ApprovalCardStack
@@ -1660,6 +1665,7 @@ export function AgentThreadView({
             onResolved={cards.markResolved}
             onAnswered={cards.markAnswered}
             onChanged={cardsChanged}
+            renderPlanCard={renderPlanCard}
           />
         </div>
       )}
@@ -1691,16 +1697,7 @@ export function AgentThreadView({
         tools={null}
         actions={
           <>
-            {cards.unavailable && (
-              <span
-                className="agent-cards-unavailable"
-                role="img"
-                aria-label="Approval cards couldn't load. Retrying."
-                title="Approval cards couldn't load. Retrying."
-              >
-                <SquareStack size={16} />
-              </span>
-            )}
+            {cards.unavailable && <AgentCardsUnavailable />}
             {voice && (
               <button
                 className={`icon-button chat-voice-button${voiceHere ? " active" : ""}`}

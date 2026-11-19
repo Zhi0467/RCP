@@ -20,6 +20,7 @@ from rcp.api.dependencies import (
 from rcp.api.episode_routes import continue_ended_episode
 from rcp.api.episodes import _episode_for_http
 from rcp.api.identity import IdentityAccess
+from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research_delivery import deliver_pending_auto_research_mail
@@ -65,6 +66,7 @@ class QuestionResponse(BaseModel):
     resolved_by: AuthorizedHuman | None
     resolved_at: str | None
     withdrawn_readonly: bool
+    relays_question_id: str | None = None
     can_answer: bool
     agent_waiting: bool
     # "turns": answering continues the ended episode and names its turns;
@@ -252,6 +254,129 @@ def _question_for_http(
     return question
 
 
+def deliver_question_answer(
+    current: QuestionRecord,
+    body: AnswerQuestionBody,
+    *,
+    human: AuthorizedHuman,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    parent: bool = False,
+) -> tuple[QuestionRecord, bool]:
+    """Arbitrate an answer once, then retry its independently idempotent delivery."""
+
+    question_id = current.question_id
+    project_id = current.origin.project_id
+    if store.approval_card(question_id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "question_needs_human", "message": "Only a human answers this card."},
+        )
+    # A stored answer would later wake the quiet conversation.
+    if current.origin.owner_kind == "chat" and (
+        refusal := store.chat_turn_refusal(project_id, current.origin.owner_id)
+    ):
+        raise HTTPException(status_code=409, detail=refusal)
+    newest = _newest_episode(store, current)
+    continues = _answer_continues(store, current, newest)
+    if current.resolved_at is not None and not (
+        # A resolved card replays its answer. It adds turns only when the
+        # retry names them and no continuation has begun since it was
+        # answered, which is a continuation that failed to start.
+        continues == "turns"
+        and body.invocation_ceiling is not None
+        and body.request_id is not None
+        and newest is not None
+        and datetime.fromisoformat(newest.created_at) <= datetime.fromisoformat(current.resolved_at)
+    ):
+        continues = None
+    if parent and continues is not None and current.state == "pending":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "question_needs_continuation",
+                "message": "The episode has ended. The human answers with Add turns.",
+            },
+        )
+    if continues == "ending":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "episode_still_ending",
+                "message": "The episode is still ending. Answer once it settles.",
+            },
+        )
+    if continues == "turns" and (body.invocation_ceiling is None or body.request_id is None):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "question_continuation_required",
+                "message": "This episode has ended. Choose how many turns the answer adds.",
+            },
+        )
+    try:
+        question = store.answer_question(
+            question_id,
+            answer=body.answer,
+            choices=body.choices,
+            resolved_by=human,
+        )
+    except QuestionStateConflict as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "question_already_answered", "message": str(exc)}
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if continues == "turns":
+        assert newest is not None
+        assert body.invocation_ceiling is not None and body.request_id is not None
+        # The continuation's first turn claims every held answer of the
+        # chain; any later Add turns does the same if this one fails.
+        try:
+            continue_ended_episode(
+                newest,
+                invocation_ceiling=body.invocation_ceiling,
+                request_id=body.request_id,
+                authorized_by=human,
+                catalog=catalog,
+                store=store,
+                background_tasks=background_tasks,
+            )
+        except HTTPException:
+            # The card stays open with its turns and the reason, so the
+            # human can fix the cause and answer again.
+            store.reopen_unclaimed_answer(question_id, question.answer_revision)
+            raise
+    # Retry delivery even when the answer was already committed: an earlier
+    # owner call may have failed. Owner delivery is independently idempotent.
+    reconcile = False
+    try:
+        episode = (
+            store.episode(question.origin.owner_id)
+            if question.origin.owner_kind == "episode"
+            else None
+        )
+        if episode is not None and episode.mode == "auto_research":
+            # A continuation already claimed this answer for its first turn.
+            mail = (
+                None
+                if continues == "turns"
+                else record_auto_research_question_answer(store, question_id)
+            )
+            if mail is not None and mail.recipient_task_id is not None:
+                deliver_pending_auto_research_mail(
+                    background_tasks,
+                    episode_id=mail.episode_id,
+                    recipient_task_id=mail.recipient_task_id,
+                )
+        else:
+            reconcile = True
+    except Exception:
+        logger.exception("Question %s committed; immediate delivery failed", question_id)
+    return store.get_question(question_id) or question, reconcile
+
+
 @router.post("/api/projects/{project_id}/questions/{question_id}/answer")
 def answer_question(
     project_id: str,
@@ -268,95 +393,14 @@ def answer_question(
     with project_write_admission(project_id, request):
         current = _question_for_http(store, project_id, question_id, human.user_id)
         _refuse_private_or_card(store, current, human.user_id)
-        # A stored answer would later wake the quiet conversation.
-        if current.origin.owner_kind == "chat" and (
-            refusal := store.chat_turn_refusal(project_id, current.origin.owner_id)
-        ):
-            raise HTTPException(status_code=409, detail=refusal)
-        newest = _newest_episode(store, current)
-        continues = _answer_continues(store, current, newest)
-        if current.resolved_at is not None and not (
-            # A resolved card replays its answer. It adds turns only when the
-            # retry names them and no continuation has begun since it was
-            # answered, which is a continuation that failed to start.
-            continues == "turns"
-            and body.invocation_ceiling is not None
-            and body.request_id is not None
-            and newest is not None
-            and datetime.fromisoformat(newest.created_at)
-            <= datetime.fromisoformat(current.resolved_at)
-        ):
-            continues = None
-        if continues == "ending":
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "episode_still_ending",
-                    "message": "The episode is still ending. Answer once it settles.",
-                },
-            )
-        if continues == "turns" and (body.invocation_ceiling is None or body.request_id is None):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "question_continuation_required",
-                    "message": "This episode has ended. Choose how many turns the answer adds.",
-                },
-            )
-        try:
-            question = store.answer_question(
-                question_id, answer=body.answer, choices=body.choices, resolved_by=human
-            )
-        except QuestionStateConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if continues == "turns":
-            assert newest is not None
-            assert body.invocation_ceiling is not None and body.request_id is not None
-            # The continuation's first turn claims every held answer of the
-            # chain; any later Add turns does the same if this one fails.
-            try:
-                continue_ended_episode(
-                    newest,
-                    invocation_ceiling=body.invocation_ceiling,
-                    request_id=body.request_id,
-                    authorized_by=human,
-                    catalog=catalog,
-                    store=store,
-                    background_tasks=request.app.state.background_tasks,
-                )
-            except HTTPException:
-                # The card stays open with its turns and the reason, so the
-                # human can fix the cause and answer again.
-                store.reopen_unclaimed_answer(question_id, question.answer_revision)
-                raise
-        # Retry delivery even when the answer was already committed: an earlier
-        # owner call may have failed. Owner delivery is independently idempotent.
-        reconcile = False
-        try:
-            episode = (
-                store.episode(question.origin.owner_id)
-                if question.origin.owner_kind == "episode"
-                else None
-            )
-            if episode is not None and episode.mode == "auto_research":
-                # A continuation already claimed this answer for its first turn.
-                mail = (
-                    None
-                    if continues == "turns"
-                    else record_auto_research_question_answer(store, question_id)
-                )
-                if mail is not None:
-                    deliver_pending_auto_research_mail(
-                        request.app.state.background_tasks,
-                        episode_id=mail.episode_id,
-                        recipient_task_id=mail.recipient_task_id,
-                    )
-            else:
-                reconcile = True
-        except Exception:
-            logger.exception("Question %s committed; immediate delivery failed", question_id)
+        question, reconcile = deliver_question_answer(
+            current,
+            body,
+            human=human,
+            store=store,
+            catalog=catalog,
+            background_tasks=request.app.state.background_tasks,
+        )
     if reconcile:
         # Outside the admission fence: a steered answer waits for the provider's
         # acknowledgment, as the steer route does.

@@ -60,8 +60,8 @@ from rcp.runs.auto_research_recovery import (
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.experiment_admission import (
+    WorkExperimentCardRaiser,
     WorkExperimentResumer,
-    WorkExperimentStarter,
 )
 from rcp.runs.experiment_recovery import (
     experiment_rerun_continuation,
@@ -306,9 +306,9 @@ class AgentTaskExecution:
     #: This process's work admission. A question waits for the human only while
     #: it is open; maintenance closes it and locks the human out.
     admission: RuntimeAdmissionGate | None = field(default=None, repr=False)
-    #: Starts the Experiment a Work turn's ``episode --kick-off-experiment`` names;
-    #: the app provides it, a bare engine (tests) leaves the verb unavailable.
-    experiment_starter: WorkExperimentStarter | None = field(default=None, repr=False)
+    #: Raises the plan cards a Work turn's ``episode --kick-off-experiment`` asked for once
+    #: it lands; the app provides it, a bare engine (tests) leaves the verb unavailable.
+    experiment_card_raiser: WorkExperimentCardRaiser | None = field(default=None, repr=False)
     episode_controls: WorkEpisodeControls | None = field(default=None, repr=False)
     watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
@@ -448,7 +448,7 @@ class BackgroundAgentTasks:
         resume_command_mailbox: Callable[[AgentTaskExecution], TaskCommandMailbox | None]
         | None = None,
         dependency_checker: DependencyChecker | None = None,
-        experiment_starter: WorkExperimentStarter | None = None,
+        experiment_card_raiser: WorkExperimentCardRaiser | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         watcher_canceller: WatcherCanceller | None = None,
@@ -456,7 +456,7 @@ class BackgroundAgentTasks:
     ) -> None:
         self.store = store
         self.paper_live = paper_live
-        self.experiment_starter = experiment_starter
+        self.experiment_card_raiser = experiment_card_raiser
         self.episode_controls = episode_controls
         self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
@@ -497,7 +497,7 @@ class BackgroundAgentTasks:
         self._transport_retry_closed = False
         self._transport_retry_fence = threading.Condition(self._controls_lock)
         self._remote_reconciliation_timer: threading.Timer | None = None
-        self._thread_queue_timer: threading.Timer | None = None
+        self._deferred_pass_timers: dict[str, threading.Timer] = {}
         self._remote_reconciliation_worker: threading.Thread | None = None
         self._remote_reconciliation_requested = False
         self._remote_result_lock = threading.Lock()
@@ -654,8 +654,14 @@ class BackgroundAgentTasks:
             and task.status == "queued"
             and self.store.agent_task_dispatch_was_proven_not_started(operation_id)
         }
+        chat_wakes = [
+            task.operation_id
+            for task in self.store.every_pending_chat_wake()
+            if self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+        ]
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
+                *chat_wakes,
                 *consolidation_dispatches,
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],
@@ -1542,8 +1548,8 @@ class BackgroundAgentTasks:
                 self._transport_retry_timers.clear()
                 reconciliation_timer = self._remote_reconciliation_timer
                 self._remote_reconciliation_timer = None
-                thread_queue_timer = self._thread_queue_timer
-                self._thread_queue_timer = None
+                deferred_timers = list(self._deferred_pass_timers.values())
+                self._deferred_pass_timers.clear()
                 workers.append(self._remote_reconciliation_worker)
                 mailboxes = list(self._detached_mailboxes.values())
         for mailbox in mailboxes:
@@ -1552,8 +1558,8 @@ class BackgroundAgentTasks:
             timer.cancel()
         if reconciliation_timer is not None:
             reconciliation_timer.cancel()
-        if thread_queue_timer is not None:
-            thread_queue_timer.cancel()
+        for timer in deferred_timers:
+            timer.cancel()
         for operation_id, control in active:
             if control.request_detach():
                 continue
@@ -2359,7 +2365,7 @@ class BackgroundAgentTasks:
                 self._retry_feedback(record) if continuation in {"retry", "handoff"} else ()
             ),
             admission=self.runtime_admission_gate,
-            experiment_starter=self.experiment_starter,
+            experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
@@ -2715,29 +2721,31 @@ class BackgroundAgentTasks:
             self._remote_reconciliation_timer = timer
         timer.start()
 
-    def schedule_thread_queue_dispatch(self, delay: float, dispatch: Callable[[], object]) -> None:
-        """Arm one later pass over deferred queued messages; an armed pass covers new ones."""
+    def schedule_deferred_pass(
+        self, key: str, delay: float, dispatch: Callable[[], object]
+    ) -> None:
+        """Arm one later pass per key; an armed pass covers everything deferred meanwhile."""
 
         def run() -> None:
             with self._controls_lock:
-                if self._thread_queue_timer is timer:
-                    self._thread_queue_timer = None
+                if self._deferred_pass_timers.get(key) is timer:
+                    del self._deferred_pass_timers[key]
                 if self._shutdown_requested:
                     return
             try:
                 dispatch()
             except Exception:
-                logger.exception("Deferred queued messages could not be dispatched")
+                logger.exception("Deferred %s pass failed", key)
 
         timer = threading.Timer(delay, run)
         timer.daemon = True
         with self._controls_lock:
-            if self._shutdown_requested or self._thread_queue_timer is not None:
+            if self._shutdown_requested or key in self._deferred_pass_timers:
                 return
-            self._thread_queue_timer = timer
+            self._deferred_pass_timers[key] = timer
         timer.start()
 
-    def _recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
+    def recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
         continuation = self.store.agent_task_continuation_cause(record.operation_id) or "fresh"
         if continuation not in _AGENT_TASK_CONTINUATIONS:
             continuation = "fresh"
@@ -2762,7 +2770,7 @@ class BackgroundAgentTasks:
             stage_root=record.stage_root,
             write_scope_fingerprint=record.write_scope_fingerprint,
             continuation=cast(AgentTaskContinuation, continuation),
-            experiment_starter=self.experiment_starter,
+            experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
             watcher_canceller=self.watcher_canceller,
         )
@@ -2823,7 +2831,7 @@ class BackgroundAgentTasks:
                         record = self._require_operation(operation_id)
                         if record.phase != "awaiting_remote_result":
                             continue
-                        owner = self.resume_command_mailbox(self._recorded_execution(record))
+                        owner = self.resume_command_mailbox(self.recorded_execution(record))
                     except (ValueError, KeyError, TypeError):
                         # Corrupt private state cannot grant authority. Isolate
                         # the refusal so other detached passes still reconcile.
@@ -2906,7 +2914,7 @@ class BackgroundAgentTasks:
                 with self._controls_lock:
                     mailbox = self._detached_mailboxes.get(operation_id)
                 execution = (
-                    mailbox.execution if mailbox is not None else self._recorded_execution(record)
+                    mailbox.execution if mailbox is not None else self.recorded_execution(record)
                 )
                 assert execution is not None
                 # No admission or handler may race Apply or watcher settlement.
@@ -3308,6 +3316,17 @@ class BackgroundAgentTasks:
                     self.store.record_agent_task_receipt(
                         execution.operation_id,
                         "experiment_resume_failed",
+                        {"exception_type": type(exc).__name__},
+                        tier="diagnostic",
+                    )
+        if self.experiment_card_raiser is not None:
+            try:
+                self.experiment_card_raiser(execution)
+            except Exception as exc:
+                with suppress(Exception):
+                    self.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "experiment_card_failed",
                         {"exception_type": type(exc).__name__},
                         tier="diagnostic",
                     )

@@ -267,6 +267,25 @@ def governing_decision_bundle(state: GraphState, experiment_id: str) -> list[Exp
     return bundle
 
 
+def governing_links(state: GraphState, experiment_id: str) -> tuple[tuple[str, str | None], ...]:
+    """Every governing link and its decided choice, None while undecided, in stable order.
+
+    A plan card pins these and Start rechecks them, so adding, removing, or deciding a
+    governing link after the card was raised marks the plan changed.
+    """
+
+    links: list[tuple[str, str | None]] = []
+    for decision_id in _related_targets(state, experiment_id, "governed_by"):
+        node = state.nodes.get(decision_id)
+        choice = (
+            node.selected_option
+            if isinstance(node, Decision) and node.status == "decided"
+            else None
+        )
+        links.append((decision_id, choice or None))
+    return tuple(links)
+
+
 def derive_experiment_control_state(
     state: GraphState,
     experiment_id: str,

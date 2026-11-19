@@ -8,12 +8,14 @@ import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, nullcontext
+from datetime import datetime
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote, urlencode
 
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Depends,
     File,
     Form,
     Header,
@@ -43,7 +45,12 @@ from rcp.api.chats import (
     stamp_shown_at,
     transcript_tasks,
 )
-from rcp.api.dependencies import project_write_admission
+from rcp.api.dependencies import (
+    project_write_admission,
+    require_project_membership,
+    require_registered_project,
+)
+from rcp.api.episodes import serialize_episode
 from rcp.api.index import (
     DisplayCacheDependency,
     ExperimentOperationLockDependency,
@@ -51,7 +58,13 @@ from rcp.api.index import (
     episode_title,
     space_run_entries,
 )
-from rcp.api.questions import _answer_continues, _newest_episode, _serialize, _serialize_all
+from rcp.api.questions import (
+    _answer_continues,
+    _newest_episode,
+    _require_question_owner,
+    _serialize,
+    _serialize_all,
+)
 from rcp.api.tasks import (
     BackgroundTasksDependency,
     RetryAgentTaskRequest,
@@ -71,10 +84,12 @@ from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectRe
 from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AGENT_THREAD_QUEUE_MAX_CHARS,
     CHAT_ATTACHMENT_MAX_COUNT,
+    CHAT_DOCK_ENDED_EPISODE_WINDOW,
     SPACE_RUNNING_MAX_ROWS,
 )
 from rcp.projects import ProjectCatalog
@@ -111,7 +126,9 @@ from rcp.storage.agent_threads import (
     thread_binds_task,
 )
 from rcp.storage.chat_names import ChatNameError, chat_titles
+from rcp.storage.models import EpisodeRecord, ProjectRecord
 from rcp.storage.notifications import question_recipients
+from rcp.storage.question_models import QuestionRecord
 from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
@@ -179,16 +196,18 @@ def agent_thread_cards(
     identity_access: IdentityDependency,
 ):
     """Open approval cards of the member's project threads: Proposal cards drawn from each
-    project's local display snapshot, and asked cards from the question list. A member-wide
-    read, Pip's dock, also lists the cards the Space thread asked. Question relays
-    span the member's projects for Space and only the named Project Agent's project.
+    project's local display snapshot, and asked cards from the question list. A named
+    thread's read adds that chat's dock (`chat_dock`). A member-wide read, Pip's dock, also
+    lists the cards the Space thread asked, and relays questions across the member's
+    projects except those a member thread's dock already shows under its episodes.
 
     A member-wide read skips a project whose snapshot cannot be read; a named thread's
     unreadable project is a 503.
     """
     user_id = identity_access.acting_user(request).user_id
+    card_threads = _card_threads(store, user_id, thread_id)
     by_project: dict[str, list[AgentThreadRecord]] = defaultdict(list)
-    for thread in _card_threads(store, user_id, thread_id):
+    for thread in card_threads:
         assert thread.project_id is not None
         by_project[thread.project_id].append(thread)
     drawn: list[ProposalCardView] = []
@@ -205,15 +224,25 @@ def agent_thread_cards(
             logger.warning("Cards skipped project %s: %s", project_id, exc)
         else:
             drawn.extend(proposal_cards(store, project, state, threads))
-        asked.extend(_asked_cards(store, project_id, threads, user_id))
+        if thread_id is None:
+            asked.extend(
+                _asked_cards(store, project_id, [thread.thread_id for thread in threads], user_id)
+            )
     drawn.sort(key=lambda card: card.turn_created_at, reverse=True)
     if thread_id is not None:
-        asked.sort(key=lambda row: row["created_at"], reverse=True)
+        thread = card_threads[0] if card_threads else None
+        if thread is None or thread.project_id is None or store.project(thread.project_id) is None:
+            return {
+                "proposal_cards": drawn,
+                "asked_cards": [],
+                "questions": [],
+                "episodes": [],
+                "next_expiry_at": None,
+            }
         return {
             "proposal_cards": drawn,
-            "asked_cards": asked,
-            "questions": _dock_questions(
-                store, catalog, user_id, by_project, excluded_chat_id=thread_id
+            **chat_dock(
+                store, catalog, user_id, thread.project_id, thread.thread_id, relay_project=True
             ),
         }
     space = [
@@ -221,72 +250,221 @@ def agent_thread_cards(
         for thread in store.agent_threads(user_id)
         if thread.kind == "space" and thread.closed_at is None
     ]
-    asked.extend(_asked_cards(store, store.space_id, space, user_id))
+    asked.extend(
+        _asked_cards(store, store.space_id, [thread.thread_id for thread in space], user_id)
+    )
     asked.sort(key=lambda row: row["created_at"], reverse=True)
-    return {
-        "proposal_cards": drawn,
-        "asked_cards": asked,
-        "questions": _dock_questions(store, catalog, user_id, store.member_project_ids(user_id)),
-    }
-
-
-def _dock_questions(
-    store: AppStore,
-    catalog: ProjectCatalog,
-    user_id: str,
-    project_ids: Iterable[str],
-    *,
-    excluded_chat_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Answerable card-less questions within the admitted project scope, excluding questions
-    already shown inline in the named thread."""
     rows = []
-    for project_id in sorted(project_ids):
+    for project_id in sorted(store.member_project_ids(user_id)):
         project = store.project(project_id)
         if project is None:
             continue
-        pending = store.list_questions(project_id=project_id, open_only=True)
-        cards = store.approval_cards([question.question_id for question in pending])
-        with store.connection() as connection:
-            recipient_of = [
+        relayable = _relayable_questions(store, project_id, user_id)
+        asks = any(question.origin.owner_kind == "episode" for question in relayable)
+        shown = {
+            question.question_id
+            for thread in (by_project.get(project_id, []) if asks else [])
+            for _episode, questions in _chat_children(
+                store, project_id, thread.thread_id, relayable
+            )
+            for question in questions
+        }
+        rows.extend(
+            _relayed_rows(
+                store,
+                catalog,
+                project,
+                [question for question in relayable if question.question_id not in shown],
+            )
+        )
+    rows.sort(key=lambda row: row["created_at"], reverse=True)
+    return {
+        "proposal_cards": drawn,
+        "asked_cards": asked,
+        "questions": rows,
+        "episodes": [],
+        "next_expiry_at": None,
+    }
+
+
+@router.get(
+    "/api/projects/{project_id}/chats/{chat_id}/cards",
+    dependencies=[Depends(require_project_membership)],
+)
+def chat_cards(
+    project_id: str,
+    chat_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+):
+    """A shared or node chat's dock (`chat_dock`); it draws no Proposal cards."""
+    project_id = catalog.resolve_project_id(project_id)
+    require_registered_project(catalog, project_id)
+    user_id = identity_access.acting_user(request).user_id
+    _require_question_owner(store, chat_id, user_id)
+    if store.project(project_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {
+        "proposal_cards": [],
+        **chat_dock(store, catalog, user_id, project_id, chat_id, relay_project=False),
+    }
+
+
+def chat_dock(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    user_id: str,
+    project_id: str,
+    chat_id: str,
+    *,
+    relay_project: bool,
+) -> dict[str, Any]:
+    """One chat's dock buckets, disjoint by question id: the chat's own answerable card
+    questions, its direct child episodes each with their open relayed questions, and, for
+    a Project Agent thread only, the project's other relayed questions."""
+    project = store.project(project_id)
+    assert project is not None
+    relayable = _relayable_questions(store, project_id, user_id)
+    children = _chat_children(store, project_id, chat_id, relayable)
+    archive_states = store.episode_archive_states(project_id) if children else {}
+    next_expiry = min(
+        (
+            datetime.fromisoformat(episode.ended_at or episode.updated_at)
+            + CHAT_DOCK_ENDED_EPISODE_WINDOW
+            for episode, _questions in children
+            if episode.status in {"completed", "stopped", "failed"}
+        ),
+        default=None,
+    )
+    shown = {question.question_id for _episode, questions in children for question in questions}
+    asked = _asked_cards(store, project_id, [chat_id], user_id)
+    asked.sort(key=lambda row: row["created_at"], reverse=True)
+    return {
+        "asked_cards": asked,
+        "next_expiry_at": next_expiry.isoformat() if next_expiry is not None else None,
+        "episodes": [
+            {
+                "episode": serialize_episode(
+                    store,
+                    project_id,
+                    episode,
+                    include_graph_branch=False,
+                    archive_state=archive_states[episode.episode_id],
+                ).model_dump(mode="json"),
+                "title": episode_title(catalog, episode),
+                "link": _episode_link(project_id, episode.graph_target, episode.episode_id),
+                "questions": _relayed_rows(store, catalog, project, questions),
+            }
+            for episode, questions in children
+        ],
+        "questions": _relayed_rows(
+            store,
+            catalog,
+            project,
+            [
                 question
-                for question in pending
-                if question.question_id not in cards
+                for question in relayable
+                if relay_project
+                and question.question_id not in shown
                 and not (
-                    question.origin.owner_kind == "chat"
-                    and question.origin.owner_id == excluded_chat_id
+                    question.origin.owner_kind == "chat" and question.origin.owner_id == chat_id
                 )
-                and user_id in question_recipients(connection, question)
-            ]
-        asked = [
+            ],
+        ),
+    }
+
+
+def _episode_link(project_id: str, target: GraphTargetRef, episode_id: str) -> str:
+    """The app hash that opens one episode on Runs."""
+    return (
+        f"#/projects/{quote(project_id, safe='')}"
+        f"/targets/{quote(target.key, safe='')}/episode/{quote(episode_id, safe='')}"
+    )
+
+
+def _chat_children(
+    store: AppStore, project_id: str, chat_id: str, relayable: list[QuestionRecord]
+) -> list[tuple[EpisodeRecord, list[QuestionRecord]]]:
+    """The chat's direct child episodes that are open or ended within the dock window, newest
+    first, each with the relayable questions its continuation chain asked."""
+    since = datetime.fromisoformat(store.now()) - CHAT_DOCK_ENDED_EPISODE_WINDOW
+    children = store.chat_child_episodes(project_id, chat_id, ended_since=since.isoformat())
+    if not children:
+        return []
+    owners = store.episodes_started_from_chats(
+        list(
+            {
+                question.origin.owner_id
+                for question in relayable
+                if question.origin.owner_kind == "episode"
+            }
+        )
+    )
+    asked: dict[str, list[QuestionRecord]] = defaultdict(list)
+    for question in relayable:
+        if question.origin.owner_kind != "episode":
+            continue
+        owner = owners.get(question.origin.owner_id)
+        if owner is None or owner.chat_id != chat_id:
+            continue
+        newest = _newest_episode(store, question)
+        if newest is not None:
+            asked[newest.episode_id].append(question)
+    return [(episode, asked.get(episode.episode_id, [])) for episode in children]
+
+
+def _relayable_questions(store: AppStore, project_id: str, user_id: str) -> list[QuestionRecord]:
+    """The project's open card-less questions the member receives, except those of a chat
+    that can no longer take a turn."""
+    pending = store.list_questions(project_id=project_id, open_only=True)
+    cards = store.approval_cards([question.question_id for question in pending])
+    with store.connection() as connection:
+        received = [
             question
-            for question in recipient_of
-            if question.origin.owner_kind != "chat"
-            or store.chat_turn_refusal(project_id, question.origin.owner_id) is None
+            for question in pending
+            if question.question_id not in cards
+            and user_id in question_recipients(connection, question)
         ]
-        with store.connection() as connection:
-            chats = chat_titles(
-                connection,
-                project_id,
-                [item.origin.owner_id for item in asked if item.origin.owner_kind == "chat"],
-            )
-        for question in asked:
-            episode = _newest_episode(store, question)
-            row = _serialize(store, question, continues=_answer_continues(store, question, episode))
-            rows.append(
-                {
-                    **row.model_dump(mode="json"),
-                    "project_id": project_id,
-                    "project_name": project.name,
-                    "source_label": (
-                        chats.get(question.origin.owner_id)
-                        if question.origin.owner_kind == "chat"
-                        else episode_title(catalog, episode)
-                        if episode is not None
-                        else None
-                    ),
-                }
-            )
+    return [
+        question
+        for question in received
+        if question.origin.owner_kind != "chat"
+        or store.chat_turn_refusal(project_id, question.origin.owner_id) is None
+    ]
+
+
+def _relayed_rows(
+    store: AppStore, catalog: ProjectCatalog, project: ProjectRecord, asked: list[QuestionRecord]
+) -> list[dict[str, Any]]:
+    """Relayed question rows newest first, each naming its project and the chat or episode
+    that asked."""
+    with store.connection() as connection:
+        chats = chat_titles(
+            connection,
+            project.project_id,
+            [item.origin.owner_id for item in asked if item.origin.owner_kind == "chat"],
+        )
+    rows = []
+    for question in asked:
+        episode = _newest_episode(store, question)
+        row = _serialize(store, question, continues=_answer_continues(store, question, episode))
+        rows.append(
+            {
+                **row.model_dump(mode="json"),
+                "project_id": project.project_id,
+                "project_name": project.name,
+                "source_label": (
+                    chats.get(question.origin.owner_id)
+                    if question.origin.owner_kind == "chat"
+                    else episode_title(catalog, episode)
+                    if episode is not None
+                    else None
+                ),
+            }
+        )
     rows.sort(key=lambda row: row["created_at"], reverse=True)
     return rows
 
@@ -351,9 +529,7 @@ def running_list(
             label=entry.health_label,
             watching=watching.get(entry.episode_id, 0),
             at=entry.last_activity_at,
-            link=f"#/projects/{quote(entry.project_id, safe='')}"
-            f"/targets/{quote(entry.graph_target.key, safe='')}"
-            f"/episode/{quote(entry.episode_id, safe='')}",
+            link=_episode_link(entry.project_id, entry.graph_target, entry.episode_id),
         )
         for entry in episodes
     ]
@@ -385,16 +561,16 @@ def running_list(
 
 
 def _asked_cards(
-    store: AppStore, scope_id: str, threads: list[AgentThreadRecord], user_id: str
+    store: AppStore, scope_id: str, chat_ids: Iterable[str], user_id: str
 ) -> list[dict[str, Any]]:
-    """The answerable pending card questions of these threads under `scope_id`, each naming
+    """The answerable pending card questions of these chats under `scope_id`, each naming
     the project its action acts on, and only while the member still belongs to it."""
     asked = []
-    for thread in threads:
+    for chat_id in chat_ids:
         pending = [
             question
             for question in store.list_questions(
-                project_id=scope_id, owner_kind="chat", owner_id=thread.thread_id
+                project_id=scope_id, owner_kind="chat", owner_id=chat_id
             )
             if question.state == "pending"
         ]

@@ -8,12 +8,14 @@ import json
 import re
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
+    BULLETIN_DELTA_MAX_POSTS,
     BULLETIN_KEY_MAX_CHARS,
     BULLETIN_PAGE_SIZE,
     BULLETIN_POSTS_PER_TARGET_MAX,
@@ -29,6 +31,7 @@ from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.resource_versions import install_bulletin_resource_versions
+from rcp.storage.wake_inputs import queue_wake_input, wake_caused_sql
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -72,7 +75,44 @@ def migrate_graph_bulletin(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS bulletin_mention_observations (project_id TEXT NOT NULL, target_key TEXT NOT NULL, post_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at TEXT NOT NULL, observed_at TEXT, PRIMARY KEY(post_id,user_id))"
     )
+    migrate_bulletin_deltas(connection)
     install_bulletin_resource_versions(connection)
+
+
+def migrate_bulletin_deltas(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS bulletin_actor_reads (project_id TEXT NOT NULL, "
+        "target_key TEXT NOT NULL, actor_id TEXT NOT NULL, through_seq INTEGER NOT NULL, "
+        "PRIMARY KEY(project_id,target_key,actor_id))"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS bulletin_deltas (operation_id TEXT NOT NULL, "
+        "project_id TEXT NOT NULL, actor_id TEXT NOT NULL, target_key TEXT NOT NULL, "
+        "from_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, post_ids_json TEXT NOT NULL, "
+        "PRIMARY KEY(operation_id,project_id,actor_id,target_key))"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS bulletin_mention_wakes (project_id TEXT NOT NULL, "
+        "post_id TEXT NOT NULL, actor_id TEXT NOT NULL, operation_id TEXT, notice_id TEXT, "
+        "created_at TEXT NOT NULL, PRIMARY KEY(post_id,actor_id))"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS bulletin_mention_wakes_actor "
+        "ON bulletin_mention_wakes(project_id,actor_id,created_at)"
+    )
+    connection.execute(
+        "INSERT OR IGNORE INTO bulletin_mention_wakes"
+        "(project_id,post_id,actor_id,operation_id,notice_id,created_at) "
+        "SELECT p.project_id,p.post_id,json_extract(m.value,'$.id'),NULL,NULL,p.created_at "
+        "FROM bulletin_posts AS p, json_each(p.mentions_json) AS m "
+        "WHERE json_extract(m.value,'$.kind')='agent'"
+    )
+    if "mention_operations_json" not in {
+        row[1] for row in connection.execute("PRAGMA table_info(bulletin_posts)")
+    }:
+        connection.execute(
+            "ALTER TABLE bulletin_posts ADD COLUMN mention_operations_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _linked_artifact_ids(text: str) -> list[str]:
@@ -422,6 +462,7 @@ def _post(
         ).fetchone()
         if parent is None or parent["reply_to"] is not None or parent["deleted_at"] is not None:
             error = "bulletin_reply_invalid"
+    existing = None
     if action != "post":
         existing = connection.execute(
             "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? AND post_id=?",
@@ -444,9 +485,23 @@ def _post(
             ([], []) if action == "delete" else _parse(connection, project_id, text or "")
         )
         if action == "edit":
+            assert existing is not None
+            kept = {mention["id"] for mention in json.loads(existing["mentions_json"])}
+            writers = {
+                identity: operation
+                for identity, operation in json.loads(existing["mention_operations_json"]).items()
+                if identity in {mention["id"] for mention in mentions}
+            }
+            if author.get("operation_id"):
+                writers.update(
+                    (mention["id"], author["operation_id"])
+                    for mention in mentions
+                    if mention["kind"] == "agent" and mention["id"] not in kept
+                )
             connection.execute(
-                "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,edited_at=? WHERE post_id=?",
-                (text, json.dumps(refs), json.dumps(mentions), now, post_id),
+                "UPDATE bulletin_posts SET text=?,refs_json=?,mentions_json=?,"
+                "mention_operations_json=?,edited_at=? WHERE post_id=?",
+                (text, json.dumps(refs), json.dumps(mentions), json.dumps(writers), now, post_id),
             )
         elif action == "delete":
             connection.execute(
@@ -480,6 +535,8 @@ def _post(
                     "INSERT OR IGNORE INTO bulletin_mention_observations(project_id,target_key,post_id,user_id,created_at) VALUES(?,?,?,?,?)",
                     (project_id, target_key, post_id, mention["id"], now),
                 )
+        if post_id is not None and any(mention["kind"] == "agent" for mention in mentions):
+            queue_wake_input(connection, project_id, "bulletin_mention", post_id)
         outcome = {
             "post": _records(
                 connection,
@@ -522,7 +579,293 @@ def bulletin_enabled_for_task(connection: sqlite3.Connection, operation_id: str)
     return row is None or bool(row["bulletin_enabled"])
 
 
+def _advance_actor_read(
+    connection: sqlite3.Connection,
+    project_id: str,
+    target_key: str,
+    actor_id: str,
+    through_seq: int,
+) -> None:
+    connection.execute(
+        "INSERT INTO bulletin_actor_reads VALUES(?,?,?,?) "
+        "ON CONFLICT(project_id,target_key,actor_id) DO UPDATE SET "
+        "through_seq=MAX(through_seq,excluded.through_seq)",
+        (project_id, target_key, actor_id, through_seq),
+    )
+
+
+def bulletin_delta_operation(connection: sqlite3.Connection, operation_id: str) -> str:
+    row = connection.execute(
+        "SELECT payload_json FROM graph_run_receipts WHERE operation_id=? "
+        "AND category='operation_admitted' ORDER BY receipt_id LIMIT 1",
+        (operation_id,),
+    ).fetchone()
+    return json.loads(row[0]).get("bulletin_operation_id", operation_id) if row else operation_id
+
+
+def bulletin_wake_posts(
+    connection: sqlite3.Connection,
+    project_id: str,
+    actor_id: str,
+    post_ids: Sequence[str] | None = None,
+) -> list[str]:
+    """Open mentions of an actor that may still wake it, newest first and bounded.
+
+    A post wakes each mentioned actor at most once, never when a wake-caused turn
+    wrote the mention (the post, or the edit that added it), and never after the
+    actor replied in its thread.
+    """
+    only = "" if post_ids is None else f"AND p.post_id IN ({','.join('?' for _ in post_ids)}) "
+    return [
+        row[0]
+        for row in connection.execute(
+            "SELECT p.post_id FROM bulletin_posts AS p "
+            "LEFT JOIN graph_runs AS author ON author.operation_id="
+            "COALESCE(json_extract(p.mention_operations_json,?),p.operation_id) "
+            "WHERE p.project_id=? AND p.deleted_at IS NULL AND p.author_actor_id IS NOT ? "
+            + only
+            + "AND EXISTS(SELECT 1 FROM json_each(p.mentions_json) AS m "
+            "WHERE json_extract(m.value,'$.kind')='agent' AND json_extract(m.value,'$.id')=?) "
+            "AND NOT EXISTS(SELECT 1 FROM bulletin_mention_wakes AS w "
+            "WHERE w.post_id=p.post_id AND w.actor_id=?) "
+            f"AND NOT (author.operation_id IS NOT NULL AND {wake_caused_sql('author')}) "
+            "AND NOT EXISTS(SELECT 1 FROM bulletin_posts AS r WHERE r.project_id=p.project_id "
+            "AND r.target_key=p.target_key AND r.author_actor_id=? AND r.deleted_at IS NULL "
+            "AND r.sequence>p.sequence AND COALESCE(r.reply_to,r.post_id)=COALESCE(p.reply_to,p.post_id)) "
+            "ORDER BY p.sequence DESC LIMIT ?",
+            (
+                f'$."{actor_id}"',
+                project_id,
+                actor_id,
+                *(post_ids or ()),
+                actor_id,
+                actor_id,
+                actor_id,
+                BULLETIN_DELTA_MAX_POSTS,
+            ),
+        )
+    ]
+
+
 class BulletinStoreMixin(StoreMixinBase):
+    def stage_bulletin_delta(
+        self,
+        project_id: str,
+        target_key: str,
+        actor_id: str,
+        operation_id: str,
+        context: dict[str, Any],
+        render: Callable[[dict[str, Any]], str],
+    ) -> tuple[dict[str, Any], str]:
+        """Persist the selected range before publication; only a running recipient consumes it."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            root = bulletin_delta_operation(connection, operation_id)
+            saved = connection.execute(
+                "SELECT * FROM bulletin_deltas WHERE project_id=? AND target_key=? AND actor_id=? "
+                "AND operation_id=?",
+                (project_id, target_key, actor_id, root),
+            ).fetchone()
+            if saved is not None:
+                post_ids = json.loads(saved["post_ids_json"])
+                rows = connection.execute(
+                    "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                    f"AND post_id IN ({','.join('?' for _ in post_ids)}) AND deleted_at IS NULL ORDER BY sequence",
+                    (project_id, target_key, *post_ids),
+                ).fetchall()
+                from_seq = saved["from_seq"]
+            else:
+                cursor = connection.execute(
+                    "SELECT through_seq FROM bulletin_actor_reads "
+                    "WHERE project_id=? AND target_key=? AND actor_id=?",
+                    (project_id, target_key, actor_id),
+                ).fetchone()
+                from_seq = cursor[0] if cursor else 0
+                if cursor is None:
+                    page = connection.execute(
+                        "SELECT sequence FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                        "AND deleted_at IS NULL AND author_actor_id IS NOT ? "
+                        "ORDER BY sequence DESC LIMIT 1 OFFSET ?",
+                        (project_id, target_key, actor_id, BULLETIN_PAGE_SIZE),
+                    ).fetchone()
+                    from_seq = page[0] if page else 0
+                rows = connection.execute(
+                    "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                    "AND sequence>? AND deleted_at IS NULL AND author_actor_id IS NOT ? "
+                    "ORDER BY sequence LIMIT ?",
+                    (project_id, target_key, from_seq, actor_id, BULLETIN_DELTA_MAX_POSTS),
+                ).fetchall()
+            total = connection.execute(
+                "SELECT count(*) FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                "AND sequence>? AND deleted_at IS NULL AND author_actor_id IS NOT ?",
+                (project_id, target_key, from_seq, actor_id),
+            ).fetchone()[0]
+            snapshot = {**context, "posts": _records(connection, rows, self.now()), "total": total}
+            content = render(snapshot)
+            shown = snapshot["shown"]
+            through_seq = rows[shown - 1]["sequence"] if shown else from_seq
+            snapshot["posts"] = snapshot["posts"][:shown]
+            if saved is None:
+                connection.execute(
+                    "INSERT INTO bulletin_deltas "
+                    "(operation_id,project_id,actor_id,target_key,from_seq,through_seq,post_ids_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        root,
+                        project_id,
+                        actor_id,
+                        target_key,
+                        from_seq,
+                        through_seq,
+                        json.dumps([post["post_id"] for post in snapshot["posts"]]),
+                    ),
+                )
+            _advance_actor_read(connection, project_id, target_key, actor_id, from_seq)
+            snapshot["through_seq"] = through_seq
+            return snapshot, content
+
+    def consume_running_bulletin_delta(
+        self, project_id: str, target_key: str, actor_id: str, operation_id: str, through_seq: int
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            root = bulletin_delta_operation(connection, operation_id)
+            row = connection.execute(
+                "SELECT delta.through_seq FROM bulletin_deltas AS delta JOIN graph_runs AS task "
+                "ON task.operation_id=? AND task.project_id=delta.project_id "
+                "WHERE delta.operation_id=? AND delta.project_id=? AND delta.target_key=? "
+                "AND delta.actor_id=? AND task.status='running'",
+                (operation_id, root, project_id, target_key, actor_id),
+            ).fetchone()
+            if row is not None:
+                _advance_actor_read(
+                    connection, project_id, target_key, actor_id, min(through_seq, row[0])
+                )
+
+    def bulletin_wake_actors(self, project_id: str, post_id: str) -> list[str]:
+        """The Work chats and Auto-research orchestrators a post mentions."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT mentions_json FROM bulletin_posts WHERE project_id=? AND post_id=?",
+                (project_id, post_id),
+            ).fetchone()
+            if row is None:
+                return []
+            actors = []
+            for mention in json.loads(row[0]):
+                identity = str(mention.get("id", ""))
+                if mention.get("kind") != "agent":
+                    continue
+                if identity.startswith("chat:") or (
+                    identity.startswith("episode:")
+                    and connection.execute(
+                        "SELECT 1 FROM episodes WHERE episode_id=? AND project_id=? "
+                        "AND mode='auto_research' AND continues_episode_id IS NULL",
+                        (identity.removeprefix("episode:"), project_id),
+                    ).fetchone()
+                ):
+                    actors.append(identity)
+            return actors
+
+    def unwoken_bulletin_mentions(self, after: tuple[int, int]) -> list[tuple[int, int, str, str]]:
+        """One page of agent mentions no wake has handled yet, by post and mention order."""
+        from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
+
+        with self.connection() as connection:
+            return [
+                (row[0], row[1], row[2], row[3])
+                for row in connection.execute(
+                    "SELECT p.sequence,m.key,p.project_id,json_extract(m.value,'$.id') "
+                    "FROM bulletin_posts AS p, json_each(p.mentions_json) AS m "
+                    "WHERE (p.sequence,m.key)>(?,?) AND p.deleted_at IS NULL "
+                    "AND json_extract(m.value,'$.kind')='agent' "
+                    "AND NOT EXISTS(SELECT 1 FROM bulletin_mention_wakes AS w "
+                    "WHERE w.post_id=p.post_id AND w.actor_id=json_extract(m.value,'$.id')) "
+                    "ORDER BY p.sequence,m.key LIMIT ?",
+                    (*after, CHAT_MAIL_RECONCILE_LIMIT),
+                )
+            ]
+
+    def bulletin_wake_cooldown_left(self, project_id: str, actor_id: str) -> float:
+        """Seconds until this actor's next mention wake may start."""
+        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS
+
+        with self.connection() as connection:
+            last = connection.execute(
+                "SELECT MAX(created_at) FROM bulletin_mention_wakes "
+                "WHERE project_id=? AND actor_id=?",
+                (project_id, actor_id),
+            ).fetchone()[0]
+        if last is None:
+            return 0.0
+        elapsed = (
+            datetime.fromisoformat(self.now()) - datetime.fromisoformat(last)
+        ).total_seconds()
+        return max(0.0, BULLETIN_WAKE_MIN_SECONDS - elapsed)
+
+    def bulletin_wake_candidates(self, project_id: str, actor_id: str) -> list[str]:
+        with self.connection() as connection:
+            return bulletin_wake_posts(connection, project_id, actor_id)
+
+    def record_bulletin_mention_notice(self, project_id: str, actor_id: str) -> str | None:
+        """Hand an orchestrator's open mentions to its lifecycle inbox once.
+
+        Returns the live Auto-research episode to wake, or None when nothing is owed.
+        """
+        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS
+        from rcp.storage.models import AutoResearchLifecycleNoticeRecord
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            live = connection.execute(
+                """WITH RECURSIVE chain(episode_id) AS (
+                    SELECT ? UNION
+                    SELECT episode.episode_id FROM episodes AS episode
+                    JOIN chain ON episode.continues_episode_id=chain.episode_id
+                ) SELECT episode.episode_id FROM chain
+                JOIN episodes AS episode ON episode.episode_id=chain.episode_id
+                WHERE episode.project_id=? AND episode.mode='auto_research'
+                  AND episode.status='running' AND episode.stop_requested_at IS NULL
+                  AND episode.ending IS NULL AND episode.bulletin_enabled=1 LIMIT 1""",
+                (actor_id.removeprefix("episode:"), project_id),
+            ).fetchone()
+            if live is None:
+                return None
+            now = self.now()
+            last = connection.execute(
+                "SELECT MAX(created_at) FROM bulletin_mention_wakes "
+                "WHERE project_id=? AND actor_id=?",
+                (project_id, actor_id),
+            ).fetchone()[0]
+            if (
+                last is not None
+                and (datetime.fromisoformat(now) - datetime.fromisoformat(last)).total_seconds()
+                < BULLETIN_WAKE_MIN_SECONDS
+            ):
+                raise BulletinError("bulletin_wake_cooldown")
+            posts = bulletin_wake_posts(connection, project_id, actor_id)
+            if not posts:
+                return None
+            notice = AutoResearchLifecycleNoticeRecord(
+                notice_id=str(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"bulletin-mention:{actor_id}:{posts[0]}")
+                ),
+                episode_id=live[0],
+                source_kind="bulletin_mention",
+                source_id=posts[0],
+                source_event="mentioned",
+                payload={"post_ids": posts},
+                created_at=now,
+            )
+            cast("AppStore", self)._insert_auto_research_lifecycle_notice(connection, notice)
+            connection.executemany(
+                "INSERT INTO bulletin_mention_wakes"
+                "(project_id,post_id,actor_id,operation_id,notice_id,created_at) "
+                "VALUES(?,?,?,NULL,?,?)",
+                [(project_id, post_id, actor_id, notice.notice_id, now) for post_id in posts],
+            )
+            return live[0]
+
     def bulletin_members(self, project_id: str) -> list[dict[str, str]]:
         with self.connection() as connection:
             return _members(connection, project_id)

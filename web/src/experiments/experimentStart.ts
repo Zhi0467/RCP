@@ -6,6 +6,9 @@ import type {
   LoopOverlap,
 } from "../core/types";
 
+/** Why no start runs while the member's own staged graph changes wait for Sync. */
+export const SYNC_BEFORE_START = "Sync staged graph changes before starting an episode.";
+
 /** A new branch shares graph prerequisites, but not the source target's live loop. */
 export function canStartExperiment(
   control: ExperimentControlState | null | undefined,

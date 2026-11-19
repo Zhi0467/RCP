@@ -1,3 +1,4 @@
+import { EpisodeControls } from "./EpisodeControls";
 import { BrowserToggle } from "../core/BrowserControls";
 import {
   AgentConfigChip,
@@ -8,7 +9,7 @@ import {
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
-import { ExternalLink, FlaskConical, Play, RotateCcw } from "lucide-react";
+import { ExternalLink, FlaskConical, RotateCcw } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime, useResource } from "../core/useResource";
@@ -27,7 +28,6 @@ import {
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isExternalWatcherRecord,
-  pausedResumeTurns,
   watcherLastObservedAt,
 } from "./runProjection";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
@@ -87,7 +87,6 @@ interface Props {
   stopBusy: boolean;
   recoveryBusy: boolean;
   watcherCheckBusyId: string | null;
-  providerLabel?: string;
   conversation?: ReactNode;
   ownedByAutoResearch?: boolean;
   watchedByParentAutoResearch?: boolean;
@@ -120,7 +119,6 @@ export function ExperimentRunDetail({
   stopBusy,
   recoveryBusy,
   watcherCheckBusyId,
-  providerLabel,
   conversation,
   ownedByAutoResearch = false,
   watchedByParentAutoResearch = false,
@@ -205,12 +203,6 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
-  const recoveryAction = currentTask ? control.task_control : null;
-  const recoveryProvider =
-    providerLabel ||
-    capitalize(String(currentTask?.request.provider || session?.provider || "agent"));
-  const canSwitchProvider = Boolean(currentTask && control.can_switch_provider);
-  const showStop = Boolean(control.episode_id && (stopBusy || control.can_stop));
   const baseRecommendation = experimentRecommendation(run);
   const canContinue = Boolean(episode?.can_continue && onContinue);
   const recommendation =
@@ -225,11 +217,6 @@ export function ExperimentRunDetail({
   const currentNextAction = currentExperimentGuidance(node, "next_action");
   const watcherActionsDisabled =
     runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
-  // An ended episode with a bound session continues with the turns the human
-  // names here; the count travels with the act and never edits the graph. Where
-  // no episode can continue, a Run at the ceiling still carries the count.
-  // A pause for the human resumes with the turns it left unused; no count to pick.
-  const resumeTurns = canContinue ? pausedResumeTurns(episode) : null;
   const reauthorizing = health === "paused_at_limit" && !canContinue;
   const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
@@ -246,43 +233,46 @@ export function ExperimentRunDetail({
           <strong>{healthLabels[health]}</strong>
         </div>
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
-          {recoveryAction && (
-            <button
-              type="button"
-              className="button primary compact experiment-recovery-button"
-              disabled={runDisabled || recoveryBusy || stopBusy}
-              aria-busy={recoveryBusy}
-              onClick={() => onRecover(recoveryAction)}
-            >
-              {recoveryBusy
-                ? recoveryAction === "resume"
-                  ? `Resuming ${recoveryProvider}…`
-                  : `Retrying ${recoveryProvider}…`
-                : recoveryAction === "resume"
-                  ? `Resume ${recoveryProvider}`
-                  : `Retry ${recoveryProvider}`}
-            </button>
-          )}
-          {canSwitchProvider && (
-            <button
-              type="button"
-              className="button compact"
-              disabled={runDisabled || recoveryBusy || stopBusy}
-              onClick={onSwitchProvider}
-            >
-              Switch provider…
-            </button>
-          )}
-          {showStop && (
-            <button
-              type="button"
-              className="button compact experiment-stop-loop"
-              disabled={runDisabled || stopBusy || recoveryBusy || stopUnsettled}
-              onClick={onStopLoop}
-            >
-              {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
-            </button>
-          )}
+          <EpisodeControls
+            episode={episode}
+            experimentControl={control}
+            taskControl={
+              currentTask && control.task_control
+                ? {
+                    task: currentTask,
+                    kind: control.task_control,
+                    canSwitchProvider: control.can_switch_provider,
+                  }
+                : null
+            }
+            additionalTurns={ceilingInput}
+            onAdditionalTurnsChange={setEditedCeiling}
+            busyAction={
+              stopBusy
+                ? `stop:${control.episode_id}`
+                : runBusy
+                  ? `continue:${control.episode_id}`
+                  : null
+            }
+            taskActionId={recoveryBusy ? (currentTask?.operation_id ?? "recovering") : null}
+            disabled={runDisabled}
+            continuationDisabled={startDisabled}
+            onOperateTask={async (_task, action) => {
+              if (action !== "pause") onRecover(action);
+            }}
+            onSwitchProvider={onSwitchProvider}
+            onContinue={
+              onContinue
+                ? async (id, turns) => {
+                    onContinue(id, turns);
+                  }
+                : undefined
+            }
+            onStop={async () => {
+              onStopLoop();
+            }}
+            onError={setReportOpenError}
+          />
           {control.can_open_report &&
             !control.report_is_current &&
             control.report_episode_id &&
@@ -299,55 +289,20 @@ export function ExperimentRunDetail({
                 Previous episode report
               </EpisodeReportLink>
             )}
-          {!control.node_closed &&
-            ((allowStart && reauthorizing) || (canContinue && resumeTurns === null)) && (
-              <label className="experiment-reauthorize-count">
-                <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  inputMode="numeric"
-                  value={ceilingInput}
-                  disabled={runDisabled || startDisabled || runBusy || !control.can_start}
-                  onChange={(event) => setEditedCeiling(event.target.value)}
-                  aria-label={
-                    canContinue ? "Turns to add" : "Invocations to authorize for the next episode"
-                  }
-                />
-              </label>
-            )}
-          {!control.node_closed && resumeTurns !== null && episode && onContinue && (
-            <button
-              type="button"
-              className="button primary compact experiment-continue-button"
-              disabled={
-                runDisabled || startDisabled || runBusy || stopUnsettled || !control.can_start
-              }
-              onClick={() => onContinue(episode.episode_id, resumeTurns)}
-            >
-              <Play size={12} aria-hidden="true" />
-              Resume · {resumeTurns} {resumeTurns === 1 ? "turn" : "turns"}
-            </button>
-          )}
-          {!control.node_closed && canContinue && resumeTurns === null && episode && onContinue && (
-            <button
-              type="button"
-              className="button primary compact experiment-continue-button"
-              disabled={
-                runDisabled ||
-                startDisabled ||
-                runBusy ||
-                stopUnsettled ||
-                !control.can_start ||
-                authorizedCeiling === null
-              }
-              onClick={() => {
-                if (authorizedCeiling !== null) onContinue(episode.episode_id, authorizedCeiling);
-              }}
-            >
-              {authorizedCeiling === null ? "Add turns" : `Add ${authorizedCeiling} turns`}
-            </button>
+          {!control.node_closed && allowStart && reauthorizing && (
+            <label className="experiment-reauthorize-count">
+              <span className="eyebrow">Invocations</span>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                inputMode="numeric"
+                value={ceilingInput}
+                disabled={runDisabled || startDisabled || runBusy || !control.can_start}
+                onChange={(event) => setEditedCeiling(event.target.value)}
+                aria-label="Invocations to authorize for the next episode"
+              />
+            </label>
           )}
           {allowStart && !control.node_closed && project && launchConfig && (
             <AgentConfigChip

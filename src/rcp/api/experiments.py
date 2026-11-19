@@ -24,17 +24,19 @@ from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.control import ExperimentControlState
+from rcp.control import ExperimentControlState, governing_links
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import canonical_branch_id
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import JSON_SAFE_INTEGER_MAX
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 from rcp.runs.experiment_admission import (
     ExperimentNotReady,
+    PlanChanged,
     WorkExperimentResume,
     WorkExperimentStart,
     experiment_control,
@@ -143,9 +145,7 @@ def run_experiment(
                     not isinstance(requested_ceiling, int)
                     or isinstance(requested_ceiling, bool)
                     or requested_ceiling < 1
-                    # Past 2^53 every JSON client reads back a different number than the
-                    # one authorized here, so Runs would act on a budget nobody chose.
-                    or requested_ceiling > 2**53 - 1
+                    or requested_ceiling > JSON_SAFE_INTEGER_MAX
                 ):
                     raise ValueError("The authorized invocation limit must be a positive integer.")
                 episode_ceiling = (
@@ -199,17 +199,18 @@ def start_work_experiment(
     operation_lock: KeyedLocks,
     start: WorkExperimentStart,
 ) -> AgentTaskRecord:
-    """Start the Experiment a Work turn's command names, as its human's Run would.
+    """Start the Experiment a Work chat's plan card names, as the tapping member's Run would.
 
-    The turn's authorizer and graph target stand in for the Run button's member
-    and page, under the same project admission fence. The agent may shorten the
-    episode but never exceed the node's limit.
+    The raising turn's graph target and run scope stand in for the Run button's
+    page, under the same project admission fence. The member may shorten the
+    episode but never exceed the node's limit. A repeated Start names the same
+    episode and returns its first task.
     """
 
     store = tasks.store
     source = store.agent_task(start.source_operation_id)
-    if source is None or source.authorized_by is None:
-        raise ValueError("The Work turn that sent this command has no human authorizer.")
+    if source is None:
+        raise ValueError("The Work turn that raised this plan card no longer exists.")
     project_id = source.project_id
     target = source.graph_target
     try:
@@ -218,19 +219,24 @@ def start_work_experiment(
             raise ValueError("Space threads must hand off Experiment starts")
     except HTTPException as exc:
         raise ValueError(str(exc.detail)) from exc
+    authorizer = start.authorized_by
     # An uncached pick probes its provider CLI, so it is checked outside the lock.
     reasoning = require_auto_research_child_profile_pick(
         service,
         provider=start.provider,
         model=start.model,
         reasoning=start.reasoning,
-        member_id=source.authorized_by.user_id,
+        member_id=authorizer.user_id,
     )
-    authorizer = source.authorized_by
     with operation_lock(project_id):
+        existing = store.episode(start.episode_id)
+        if existing is not None:
+            root = store.agent_task(existing.root_operation_id or "")
+            assert root is not None
+            return root
         store.require_project_accepts_new_work(project_id)
         if not store.is_project_member(project_id, authorizer.user_id):
-            raise ValueError("The human who sent this Work turn is no longer a project member.")
+            raise ValueError("The member who pressed Start is no longer a project member.")
         try:
             require_graph_edit_admission(store, project_id, target)
         except HTTPException as exc:
@@ -239,6 +245,10 @@ def start_work_experiment(
         node = state.nodes.get(start.node_id)
         if not isinstance(node, Experiment):
             raise ValueError(f"Node {start.node_id!r} is not an Experiment on this graph.")
+        if node.updated_rev != start.node_rev or start.governing != governing_links(
+            state, start.node_id
+        ):
+            raise PlanChanged(start.node_id)
         if start.invocation_limit is not None and start.invocation_limit > node.invocation_ceiling:
             raise ValueError(
                 "The invocation limit exceeds this Experiment's limit of "

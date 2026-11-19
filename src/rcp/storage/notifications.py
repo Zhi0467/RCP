@@ -81,7 +81,8 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
 
 
 def question_recipients(connection: sqlite3.Connection, question: QuestionRecord) -> set[str]:
-    """Who a question asks: a private thread's owner, otherwise every live project member."""
+    """Who a question asks: a private thread's owner, nobody for a shared chat's plan card,
+    otherwise every live project member."""
     origin = question.origin
     if origin.owner_kind == "chat":
         owner = connection.execute(
@@ -89,6 +90,11 @@ def question_recipients(connection: sqlite3.Connection, question: QuestionRecord
         ).fetchone()
         if owner is not None:
             return {owner["user_id"]}
+        card = connection.execute(
+            "SELECT 1 FROM approval_cards WHERE question_id=?", (question.question_id,)
+        ).fetchone()
+        if card is not None:
+            return set()
     return {
         row["user_id"]
         for row in connection.execute(

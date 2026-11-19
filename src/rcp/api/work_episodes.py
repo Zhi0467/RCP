@@ -53,14 +53,93 @@ def _refused(exc: HTTPException, code: str) -> EpisodeRefused:
     return EpisodeRefused(code, str(detail))
 
 
+def start_work_auto_research(
+    catalog: ProjectCatalog,
+    tasks: BackgroundAgentTasks,
+    operation_lock: KeyedLocks,
+    start: WorkAutoResearchStart,
+    *,
+    authorized_by: AuthorizedHuman,
+) -> EpisodeRecord:
+    """Start a Work plan card as its tapping member, retaining the raising turn's lineage."""
+
+    store = tasks.store
+    source = store.agent_task(start.source_operation_id)
+    if source is None:
+        raise EpisodeRefused("authorizer_unavailable", "The raising Work turn no longer exists.")
+    existing = store.episode(start.episode_id)
+    if existing is not None:
+        return existing
+    authorizer = authorized_by
+    if source.graph_target.kind != "main":
+        raise EpisodeRefused(
+            "auto_research_starts_from_main",
+            "Auto-research branches from main; start it from a chat on main.",
+        )
+    try:
+        service = task_owner(store, source, catalog=catalog)
+    except HTTPException as exc:
+        raise _refused(exc, "auto_research_not_started") from exc
+    if not isinstance(service, ProjectService):
+        raise EpisodeRefused(
+            "auto_research_not_started", "Space threads must hand off Auto-research starts."
+        )
+    try:
+        body = StartEpisodeBody.model_validate(
+            {
+                "mode": "auto_research",
+                "invocation_ceiling": start.invocation_ceiling,
+                "starting_instruction": start.goal,
+                "code_worktree": start.code_worktree,
+                "worktree_repository": start.worktree_repository,
+                "branch_name": start.branch_name,
+                "provider": start.provider,
+                "model": start.model,
+                "reasoning": start.reasoning,
+            }
+        )
+        resolved = _resolved_auto_research_start_request(
+            service, body, store=store, project_id=source.project_id
+        ).model_copy(update={"started_from_operation_id": start.source_operation_id})
+    except BranchNameInvalid as exc:
+        raise EpisodeRefused("branch_name_invalid", str(exc)) from exc
+    except ValueError as exc:
+        raise EpisodeRefused("auto_research_start_invalid", str(exc)) from exc
+    try:
+        require_auto_research_provider_ready(service, resolved, member_id=authorizer.user_id)
+    except ValueError as exc:
+        raise EpisodeRefused(str(exc).split(":", 1)[0], str(exc)) from exc
+    with operation_lock(source.project_id):
+        existing = store.episode(start.episode_id)
+        if existing is not None:
+            return existing
+        store.require_project_accepts_new_work(source.project_id)
+        if not store.is_project_member(source.project_id, authorizer.user_id):
+            raise EpisodeRefused("member_departed", "The member who pressed Start has left.")
+        try:
+            episode = start_auto_research_episode(
+                source.project_id,
+                resolved,
+                authorized_by=authorizer,
+                catalog=catalog,
+                background_tasks=tasks,
+                episode_id=start.episode_id,
+            )
+        except BranchNameInvalid as exc:
+            raise EpisodeRefused("branch_name_invalid", str(exc)) from exc
+        except BranchNameTaken as exc:
+            raise EpisodeRefused("branch_name_taken", str(exc)) from exc
+    if not store.is_project_member(source.project_id, authorizer.user_id):
+        fence_episodes_for_departed_member(store, tasks, source.project_id, authorizer.user_id)
+    return episode
+
+
 @dataclass(frozen=True)
 class MemberEpisodeControls:
     """Each control is the human route's function, authorized by the Work turn's member.
 
-    Writes hold the project's write admission, as the routes' dependency does. A
-    start probes provider readiness before taking it, since an uncached probe
-    runs the provider CLI. ``tasks`` is late-bound: the engine is built with these
-    controls.
+    Writes hold the project's write admission, as the routes' dependency does.
+    ``tasks`` is late-bound: the engine is built with these controls.
     """
 
     catalog: ProjectCatalog
@@ -114,66 +193,6 @@ class MemberEpisodeControls:
                 f"This episode's current turn cannot {offered} now.",
             )
         return task
-
-    def start_auto_research(self, start: WorkAutoResearchStart) -> EpisodeRecord:
-        tasks = self.tasks()
-        store = tasks.store
-        source, authorizer = self._source(start.source_operation_id)
-        if source.graph_target.kind != "main":
-            raise EpisodeRefused(
-                "auto_research_starts_from_main",
-                "Auto-research branches from main; start it from a chat on main.",
-            )
-        try:
-            service = task_owner(store, source, catalog=self.catalog)
-        except HTTPException as exc:
-            raise _refused(exc, "auto_research_not_started") from exc
-        if not isinstance(service, ProjectService):
-            raise EpisodeRefused(
-                "auto_research_not_started", "Space threads must hand off Auto-research starts."
-            )
-        try:
-            body = StartEpisodeBody.model_validate(
-                {
-                    "mode": "auto_research",
-                    "invocation_ceiling": start.invocation_ceiling,
-                    "starting_instruction": start.goal,
-                    "code_worktree": start.code_worktree,
-                    "worktree_repository": start.worktree_repository,
-                    "branch_name": start.branch_name,
-                    "provider": start.provider,
-                    "model": start.model,
-                    "reasoning": start.reasoning,
-                }
-            )
-            resolved = _resolved_auto_research_start_request(
-                service, body, store=store, project_id=source.project_id
-            ).model_copy(update={"started_from_operation_id": start.source_operation_id})
-        except BranchNameInvalid as exc:
-            raise EpisodeRefused("branch_name_invalid", str(exc)) from exc
-        except ValueError as exc:
-            raise EpisodeRefused("auto_research_not_started", str(exc)) from exc
-        try:
-            require_auto_research_provider_ready(service, resolved, member_id=authorizer.user_id)
-        except ValueError as exc:
-            raise EpisodeRefused(str(exc).split(":", 1)[0], str(exc)) from exc
-        with self._admitted(source.project_id, authorizer):
-            try:
-                episode = start_auto_research_episode(
-                    source.project_id,
-                    resolved,
-                    authorized_by=authorizer,
-                    catalog=self.catalog,
-                    background_tasks=tasks,
-                    episode_id=start.episode_id,
-                )
-            except BranchNameInvalid as exc:
-                raise EpisodeRefused("branch_name_invalid", str(exc)) from exc
-            except BranchNameTaken as exc:
-                raise EpisodeRefused("branch_name_taken", str(exc)) from exc
-        if not store.is_project_member(source.project_id, authorizer.user_id):
-            fence_episodes_for_departed_member(store, tasks, source.project_id, authorizer.user_id)
-        return episode
 
     def stop(self, act: WorkEpisodeAct) -> None:
         episode, _ = self._episode(act)
@@ -232,6 +251,33 @@ class MemberEpisodeControls:
             except HTTPException as exc:
                 raise _refused(exc, "episode_not_continuable") from exc
         return continuation
+
+    def answer(
+        self, act: WorkEpisodeAct, *, question_id: str, answer: str, choices: list[str]
+    ) -> None:
+        from rcp.api.questions import AnswerQuestionBody, deliver_question_answer
+        from rcp.runs.experiment_questions import reconcile_experiment_question_answers
+
+        episode, authorizer = self._episode(act)
+        tasks = self.tasks()
+        with self._admitted(episode.project_id, authorizer):
+            question = tasks.store.get_question(question_id)
+            if question is None or question.origin.owner_id != act.episode_id:
+                raise EpisodeRefused("question_not_found", "No such child question.")
+            try:
+                _, reconcile = deliver_question_answer(
+                    question,
+                    AnswerQuestionBody(answer=answer, choices=choices),
+                    human=authorizer,
+                    store=tasks.store,
+                    catalog=self.catalog,
+                    background_tasks=tasks,
+                    parent=True,
+                )
+            except HTTPException as exc:
+                raise _refused(exc, "episode_answer_refused") from exc
+        if reconcile:
+            reconcile_experiment_question_answers(tasks, project_id=episode.project_id)
 
     def message(
         self,

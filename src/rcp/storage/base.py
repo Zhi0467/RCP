@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -51,9 +52,12 @@ from rcp.storage.resource_versions import (
     migrate_episode_report_deletion,
     migrate_resource_versions,
 )
+from rcp.storage.wake_inputs import WakeInputKind, take_wake_inputs
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+
+logger = logging.getLogger(__name__)
 
 
 def _weak_changed(store: AppStoreBase) -> Callable[[str, bool], None]:
@@ -69,6 +73,8 @@ def _weak_changed(store: AppStoreBase) -> Callable[[str, bool], None]:
 
 class AppStoreBase:
     """Connection ownership, schema initialization, and the clock every mixin shares."""
+
+    on_wake_input: Callable[[str, WakeInputKind, str], None] | None = None
 
     _STORAGE_SCHEMA_MIGRATIONS: ClassVar[tuple[tuple[int, str], ...]] = (
         (1, "episode_lineage_v1"),
@@ -159,6 +165,10 @@ class AppStoreBase:
         (86, "provider_session_sweeps_v1"),
         (87, "hidden_read_fingerprints_v1"),
         (88, "share_links_v1"),
+        (89, "shared_chat_card_versions_v1"),
+        (90, "plan_card_receipt_index_v1"),
+        (91, "bulletin_deltas_v1"),
+        (92, "episode_mailbox_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -439,18 +449,22 @@ class AppStoreBase:
             cached = cache.acquire(self.path, self._connect)
         connection = cached[1] if cached is not None else self._connect()
         discard = False
+        committed: list[tuple[str, WakeInputKind, str]] = []
         try:
             connection.rollback()
+            take_wake_inputs(connection)
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA legacy_alter_table = OFF")
             connection.row_factory = sqlite3.Row
             yield connection
             connection.commit()
+            committed = take_wake_inputs(connection)
             # Bound instrumentation callbacks must not retain a dropped store.
             connection.set_trace_callback(None)
             connection.set_authorizer(None)
         except BaseException:
             discard = True
+            take_wake_inputs(connection)
             with suppress(sqlite3.Error):
                 connection.rollback()
             raise
@@ -459,6 +473,17 @@ class AppStoreBase:
                 connection.close()
             else:
                 cache.release(cached[0], discard=discard)
+        for project_id, kind, ref in committed:
+            self._wake_input_committed(project_id, kind, ref)
+
+    def _wake_input_committed(self, project_id: str, kind: WakeInputKind, ref: str) -> None:
+        hook = self.on_wake_input
+        if hook is None:
+            return
+        try:
+            hook(project_id, kind, ref)
+        except Exception:
+            logger.exception("Could not hand %s %s to its wake owner", kind, ref)
 
     def online_snapshot(self, destination: Path) -> None:
         """Copy this live store with SQLite's online backup API and no app-wide lock."""
@@ -1151,6 +1176,31 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=88, name="share_links_v1", migration=migrate_share_links
+        )
+        from rcp.storage.approval_cards import migrate_shared_chat_card_versions
+
+        self._run_storage_schema_migration(
+            connection,
+            version=89,
+            name="shared_chat_card_versions_v1",
+            migration=migrate_shared_chat_card_versions,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=90,
+            name="plan_card_receipt_index_v1",
+            migration=self._migrate_plan_card_receipt_index,
+        )
+        from rcp.storage.bulletin import migrate_bulletin_deltas
+
+        self._run_storage_schema_migration(
+            connection, version=91, name="bulletin_deltas_v1", migration=migrate_bulletin_deltas
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=92,
+            name="episode_mailbox_v1",
+            migration=self._migrate_episode_mailbox,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2896,6 +2946,40 @@ class AppStoreBase:
             ),
         )
 
+    def _migrate_episode_mailbox(self, connection: sqlite3.Connection) -> None:
+        """Address mail to an actor, a chat, or an Experiment; old rows stay actor messages."""
+        for column, definition in (
+            ("recipient_kind", "TEXT NOT NULL DEFAULT 'actor'"),
+            ("recipient_chat_id", "TEXT"),
+            ("item_kind", "TEXT NOT NULL DEFAULT 'message'"),
+            ("source_ref", "TEXT"),
+            ("delivery_diagnostic", "TEXT"),
+        ):
+            self._ensure_column(connection, "auto_research_messages", column, definition)
+        self._ensure_column(connection, "questions", "relays_question_id", "TEXT")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS questions_relays ON questions(relays_question_id) "
+            "WHERE relays_question_id IS NOT NULL"
+        )
+        schema = [
+            row for row in self._storage_schema(connection) if row[2] == "auto_research_messages"
+        ]
+        create_sql = next(row[3] for row in schema if row[0] == "table")
+        nullable_sql = create_sql.replace(
+            "recipient_task_id TEXT NOT NULL", "recipient_task_id TEXT", 1
+        )
+        if nullable_sql != create_sql:
+            self._rebuild_storage_table(connection, "auto_research_messages", nullable_sql)
+            for kind, _name, _table, sql in schema:
+                if kind in {"index", "trigger"}:
+                    connection.execute(sql)
+        connection.execute("DROP INDEX IF EXISTS episode_mail_pending")
+        connection.execute(
+            "CREATE INDEX episode_mail_pending ON auto_research_messages"
+            "(recipient_kind, recipient_chat_id, created_at, message_id) "
+            "WHERE delivered_at IS NULL"
+        )
+
     @classmethod
     def _migrate_episode_stop_provenance(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(connection, "episodes", "stop_initiated_by", "TEXT")
@@ -3363,6 +3447,13 @@ class AppStoreBase:
             "CREATE INDEX IF NOT EXISTS graph_runs_chat_turn "
             "ON graph_runs(project_id, json_extract(request_json, '$.chat_id'), "
             "created_at, operation_id)"
+        )
+
+    @staticmethod
+    def _migrate_plan_card_receipt_index(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_run_receipts_plan_cards "
+            "ON graph_run_receipts(category, operation_id)"
         )
 
     @staticmethod

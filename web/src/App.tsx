@@ -57,7 +57,7 @@ import {
 } from "./experiments/episodeResources";
 import { paperFileRequest, paperProfile } from "./paper/paperResources";
 import type { PaperEditorState } from "./paper/PaperWorkspace";
-import { canStartExperiment } from "./experiments/experimentStart";
+import { SYNC_BEFORE_START, canStartExperiment } from "./experiments/experimentStart";
 import { ExperimentStartOverlap } from "./experiments/ExperimentStartOverlap";
 import { UpdateNotice } from "./desktop/UpdateNotice";
 import { ShareLinkNotice } from "./desktop/ShareLinkNotice";
@@ -164,14 +164,12 @@ import {
   loadMergePreview,
   mergeEpisodeToMain,
   mergeGraphFork,
-  continueEpisode,
   refreshEdge,
   refreshProposal,
   sendEpisodeMessage,
   setChatArchived,
   startEpisode,
   startExperimentRun,
-  stopEpisode,
   createGraphFork,
 } from "./core/api";
 import {
@@ -377,7 +375,7 @@ import { voiceTerminalToolDefinitions } from "./voice/voiceTerminal";
 import { openTerminalSocket } from "./terminals/terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./voice/useVoiceAgent";
 import { useAgentThreads } from "./agents/useAgentThreads";
-import { taskControlHeaders } from "./agents/agentThreadsApi";
+import { useEpisodeActions } from "./experiments/episodeActions";
 import { VoicePanel } from "./voice/VoicePanel";
 
 import {
@@ -730,9 +728,6 @@ function MemberApp({
   // The Agents tab opens the board; anything that names a chat opens that chat.
   const [agentsBoard, setAgentsBoard] = useState(!initialRoute.project.chatId);
   const activeGraphTargetRef = useRef(graphTarget);
-  // One request id per logical continuation, kept until the server has answered
-  // it, so a retry after a lost response replays the episode already created.
-  const continuationRequestIds = useRef(new Map<string, string>());
   const taskActionRequestIds = useRef(new Map<string, string>());
   activeGraphTargetRef.current = graphTarget;
   const {
@@ -1287,6 +1282,7 @@ function MemberApp({
     [dispatchProjectSession, getProjectSessionState],
   );
   const apiBase = projectId ? `/api/projects/${encodeURIComponent(projectId)}` : "";
+  const episodeActions = useEpisodeActions(projectId);
   useEffect(() => setPinSelection(null), [pinScope]);
   useEffect(() => {
     if (view !== "artifacts") {
@@ -3323,7 +3319,7 @@ function MemberApp({
       }
       if (mutationsDisabled) throw new Error("Graph mutations are currently disabled.");
       if (experimentStartRequiresSync) {
-        throw new Error("Sync staged graph changes before starting an episode.");
+        throw new Error(SYNC_BEFORE_START);
       }
       const control = project.experiment_control?.[node.id];
       if (!canStartExperiment(control, graphTarget, isolation?.graph_isolation)) {
@@ -3623,24 +3619,13 @@ function MemberApp({
       if (!apiBase) throw new Error("No RCP project is open.");
       const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
       if (!finishEpisodeAction) throw new Error("Wait for the current episode action to finish.");
-      const stopping = projectTasks
-        .filter((task) => task.episode_id === episodeId && isActiveTask(task))
-        .map((task) => ({
-          task,
-          mutation: beginTaskMutation(store, task.project_id, task, "stop"),
-        }));
       try {
-        replaceEpisode(await stopEpisode(apiBase, episodeId));
-        for (const { mutation } of stopping) mutation.settle();
-        scheduler.now();
-      } catch (error) {
-        for (const { mutation } of stopping) mutation.fail(error);
-        throw error;
+        replaceEpisode(await episodeActions.stop(episodeId, projectTasks));
       } finally {
         finishEpisodeAction();
       }
     },
-    [apiBase, beginEpisodeAction, projectTasks, replaceEpisode, scheduler, store],
+    [apiBase, beginEpisodeAction, episodeActions, projectTasks, replaceEpisode],
   );
   const requestEpisodeStop = async (episodeId: string) => {
     try {
@@ -3688,10 +3673,7 @@ function MemberApp({
     const finishEpisodeAction = beginEpisodeAction(`continue:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const requestId = continuationRequestIds.current.get(episodeId) ?? crypto.randomUUID();
-      continuationRequestIds.current.set(episodeId, requestId);
-      const nextEpisode = await continueEpisode(apiBase, episodeId, invocationCeiling, requestId);
-      continuationRequestIds.current.delete(episodeId);
+      const nextEpisode = await episodeActions.addTurns(episodeId, invocationCeiling);
       replaceEpisode(nextEpisode);
       // Continuing ends one episode and starts its successor, so an exact route
       // pinned to the predecessor follows the run instead of handing off to History.
@@ -3865,23 +3847,10 @@ function MemberApp({
     if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     const finish = beginTaskAction(task.operation_id);
     if (!finish) return;
-    const mutation = beginTaskMutation(store, projectId, task, action);
-    const admissionKey = JSON.stringify([projectId, task.operation_id, action]);
-    const requestId = taskActionRequestIds.current.get(admissionKey) ?? crypto.randomUUID();
-    taskActionRequestIds.current.set(admissionKey, requestId);
     try {
-      const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/${action}`, {
-        method: "POST",
-        headers: taskControlHeaders(action, requestId),
-      });
-      taskActionRequestIds.current.delete(admissionKey);
-      mutation.settle(next);
+      const next = await episodeActions.operateTask(task, action);
       if (presentTask && isActiveGraph(task.project_id)) presentAgentTask(next);
-      scheduler.now();
-    } catch (error) {
-      if (error instanceof ApiError && error.status < 500)
-        taskActionRequestIds.current.delete(admissionKey);
-      mutation.fail(error);
+    } catch {
     } finally {
       if (taskActionNeedsAuthoritativeProjectReload(task, action)) await refreshRunsAfter();
       finish();
@@ -5707,12 +5676,6 @@ function MemberApp({
                     watcherCheckBusyId={watcherCheckId}
                     taskActionId={taskActionId}
                     selectedExperimentConversation={selectedExperimentConversation}
-                    providerLabels={Object.fromEntries(
-                      Object.entries(project.providers).map(([id, provider]) => [
-                        id,
-                        provider.label || id,
-                      ]),
-                    )}
                     mutationsDisabled={mutationsDisabled}
                     experimentStartsDisabled={experimentStartRequiresSync}
                     onInspectTask={selectTaskInspector}

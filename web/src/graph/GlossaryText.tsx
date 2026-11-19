@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, Suspense, lazy, type ReactNode } from "react";
 import { segmentGlossaryText, type GlossaryIndex } from "./glossary";
 
 interface Props {
@@ -22,5 +22,35 @@ export function GlossaryText({ text, glossaryIndex }: Props) {
         {segment.text}
       </dfn>
     ),
+  );
+}
+
+/** A node field as the node drawer shows it: lists as lists, objects as JSON, text with its glossary. */
+export function formatNodeValue(value: unknown, glossaryIndex?: GlossaryIndex): ReactNode {
+  if (Array.isArray(value))
+    return (
+      <ul>
+        {value.map((item, index) => (
+          <li key={index}>{formatNodeValue(item, glossaryIndex)}</li>
+        ))}
+      </ul>
+    );
+  if (typeof value === "object" && value !== null)
+    return <pre>{JSON.stringify(value, null, 2)}</pre>;
+  return <GlossaryText text={String(value)} glossaryIndex={glossaryIndex} />;
+}
+
+const MarkdownAnswer = lazy(() =>
+  import("../core/chatMarkdown").then((module) => ({ default: module.MarkdownAnswer })),
+);
+
+export function formatNodeContext(value: unknown, glossaryIndex?: GlossaryIndex): ReactNode {
+  if (typeof value !== "string") return formatNodeValue(value, glossaryIndex);
+  return (
+    <div className="chat-markdown">
+      <Suspense fallback={formatNodeValue(value, glossaryIndex)}>
+        <MarkdownAnswer text={value} glossaryIndex={glossaryIndex} />
+      </Suspense>
+    </div>
   );
 }

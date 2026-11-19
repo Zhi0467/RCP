@@ -101,7 +101,13 @@ adds verbs:
   ended episode's answer still offers Add turns.
 
 Each Project Agent uses the same dock, limited to that project's shared chats
-and episodes, and also docks its own open approval cards. Its plain questions
+and episodes, and also docks its own open approval cards, pending plan cards,
+and its direct child episodes: each episode its turns started, with the
+episode's open questions, its Runs controls (Pause, Resume or Retry, Add turns,
+Stop), and once ended its report, for a day after it ends. Shared and node
+chats show the same dock for their own plan cards and children. A question a
+child asks shows only under that child, so the Space dock leaves out the ones
+a member's Project Agent dock lists. Its plain questions
 stay inline, and a card shows inline only after it leaves the dock, so nothing
 appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
@@ -901,41 +907,46 @@ effects or reopen an old episode.
 
 ### Work-started episodes
 
-A member's ordinary Work chat, including its wakes, may start, steer, extend and
-stop the Experiments and Auto-research episodes that member asks for, as the
+A member's ordinary Work chat, including its wakes, may raise episode plan cards
+and steer, extend and stop the episodes it started, as the
 member's own Runs controls would. The turn's authorizer authorizes each act.
 Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
 **Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
-<file>` runs on the chat's own graph target. A human Run, this command and an
-orchestrator kickoff share one readiness rule, so the node must already be on the
-graph and ready. `--invocation-limit` may shorten the episode but never exceed
-the node's limit, and the goal file is required. Provider, model and effort are
-the agent's pick from the ready profiles, otherwise Settings. The prompt starts
-one only when the member asks, after auditing the Experiment and its neighbors.
-When the audit finds something to fix, the agent writes the fix and does not
-start, because its Patch lands only after the turn. After a start it arms a
-node-status watcher on the Experiment's closed statuses.
+<file>` raises a [plan card](authority-and-proposals.md#episode-plan-cards)
+on the chat's own graph target instead of starting. The card appears when the
+turn's Patch lands, so the agent writes and fixes the node in the same turn.
+`--invocation-limit` may shorten the episode but never exceed the node's limit,
+and the goal file is required. Provider, model and effort are the agent's pick
+from the ready profiles, otherwise Settings; the human may change all three on
+the card. Readiness is checked at Start. The Experiment's ending reaches the chat
+through the episode mailbox, so the agent arms no watcher for it.
+
+**Choosing the route.** The Work prompt sends work that answers a research
+question and needs more than one shot (iteration, debugging, hours of compute,
+or results that could change project beliefs) to an Experiment. Infrastructure
+and tooling of any size, and short one-shot checks, stay in the chat with a
+launch and a watch. This is guidance; nothing caps a direct launch.
 
 **Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
---invocation-limit <n>` starts a new episode on a new branch from main, through
-the same start function as **Start** in Runs. It takes the fields the retired
-Auto-research card carried: the goal as the starting instruction, the turn
-budget, `--code-worktree on|off`, `--worktree-repository`, `--branch-name`, and
-the orchestrator's provider, model and effort. It first checks the orchestrator
-provider's readiness for the member, as the card's ask did, and refuses with the
-same codes (`provider_not_ready`, `machine_not_found`,
-`auto_research_profile_unavailable`, `branch_name_taken`, `branch_name_invalid`).
-Any other invalid start, such as one from a Space thread, is refused with
-`auto_research_not_started`. A chat on a graph branch is refused with
-`auto_research_starts_from_main`.
+--invocation-limit <n>` records a request and answers `card_pending`. The card
+appears after the Work turn succeeds; only the human's Start creates the episode
+on its own branch from main. A branch chat is refused early with
+`auto_research_starts_from_main`; a turn without the member Work and ask grants
+is refused with `auto_research_card_unavailable`. The human may edit the starting
+instruction, budget, branch name, code worktree and repository, and orchestrator
+provider, model and effort. Readiness is checked at Start, with correction and
+settlement rules owned by the [plan card spec](authority-and-proposals.md#episode-plan-cards).
+Open-ended exploration and questions pursued across several dependent Experiments
+route to Auto-research; a single designed study routes to Experiment.
 
-Both starts derive the episode id from the turn's oldest attempt and the command
-key, so Resume or Retry replays the same episode, and record a receipt on the
-turn. The episode's root request names the starting turn, so Runs shows
-**Started from** that chat.
+Both kickoffs persist receipts on the turn. Resume or Retry recovers the same
+card; an older Auto-research receipt whose episode already exists answers
+`existing`. The card request determines the episode id. The tapping member
+authorizes the start, and the episode's root names the raising turn, so Runs
+shows **Started from** that chat, for each continuation too.
 
 **Controls.** The chat controls only an episode it started: its root names a
 turn of this chat as **Started from**, directly or through the episode it
@@ -969,6 +980,77 @@ wait for its human is also open to the chat the Experiment runs in, as before.
 - `episode --message <id> --body-file <file>` is the member's message to an
   Auto-research orchestrator. An ended orchestrator needs `--invocation-limit`,
   which continues it with that message.
+
+**Parent/child mailbox.** A direct child sends its questions, pauses and endings
+to the chat that started the chain. Continuations retain the first episode's
+starting chat. Auto-research children report only to their orchestrator; the
+orchestrator's own questions and ending reach its starting chat. Question and
+ending records insert their mail in the same transaction as the source event.
+The mailbox reuses the Auto-research mail table, addressed to an orchestrator
+actor, a chat or an Experiment chain, so it keeps one id space and claim rule.
+Project transfer refuses while any mail is undelivered and imports it delivered.
+
+The parent's prompt (Work and orchestrator) says the runs it started report
+here, so it needs no watcher for them. It answers a child question itself when
+the human is not needed. Experiment design, upstream decisions and starting
+runs that use significant compute go to the human, through the parent's reply;
+the parent never invents a human answer. The human may answer any time.
+
+An idle parent receives one ordinary Work wake for a bounded mail batch. Storage
+atomically selects the latest settled usable chat session and stage, inserts the
+wake and claims the items. An occupied chat claims pending mail during its next
+turn's staging. Wakes use a deterministic operation id, a cooldown and a per-child
+chain cap equal to the child's invocation ceiling. An item never wakes the chat
+when its question is already resolved, when a wake-caused turn wrote it (a chat
+wake or an Auto-research wake), or when the parent itself caused it: an ending
+names the parent turn that sent `episode --stop` as its sender. Such items, and
+items held back by the cap, wait for the chat's next ordinary turn; wake
+selection reads pending items in keyset pages, so they never hide a newer
+wake-eligible item.
+
+Every committed mail item asks for its chat's reconciliation once its write
+commits, so a child's question, pause or ending wakes the idle parent at once.
+Task settlement reconciles only the settled turn's chat. Startup preserves
+admitted wakes proven not started, launches them, and visits every chat with
+pending mail, longest-waiting first. A cooldown refusal arms one later pass for
+that chat. Any other refusal or launch failure stays on the held-back items as
+a structured code, and the parent's child status lists it as `undelivered_mail`
+(code and item count) while the items wait.
+
+Mail to an Experiment belongs to its chain. A message accepted during an
+episode's final invocation reaches the first invocation of its human-authorized
+continuation; a Stop-fenced episode claims no new mail.
+
+A child started from a chat is told that `ask` reaches that chat first, and
+that the chat answers or asks the human; the rule renders only when the
+episode was started from a chat, and names `ask` only when the turn holds it.
+The parent's usage says a child asks with its own `ask`. A refused verb names
+the verbs the turn holds (`verb_not_granted`, `allowed_verbs`).
+Mail remains in durable storage; a recovery attempt stages the items its lineage
+claimed in `episode-mail.json`, and the prompt points to it with item and
+question counts. The read context of every chat that started episodes lists
+each child chain's state, ending and open questions.
+A wake that fails or is interrupted gives its claimed mail back, at settlement and at
+startup, so the next turn or wake delivers it; delivery is at least once.
+
+`episode --answer <question_id> --answer-file <file> [--choice <choice>]` answers
+only a question from a child started here, using the human route's first-answer
+arbitration. A later answer is `question_already_answered`. Approval and plan
+cards require the human (`question_needs_human`). If answering the chain's last
+open question would need continuation turns, the parent receives
+`question_needs_continuation`; it does not allocate a new child budget. The human
+can answer and add turns through the existing question controls.
+A parent that asks the human a child question names it with
+`ask --relays <question_id>`. RCP accepts the link only while that question is
+pending and comes from a child chain this chat started, and never on an approval
+card. When anyone resolves the child question, each pending copy linked to it
+becomes withdrawn and read-only, so the human never answers a stale copy. Other
+questions and cards from the same turn stay open.
+
+`episode --message <id> --body-file <file>` also accepts a running Experiment
+chain. Its mail waits for the next invocation, which claims it in the episode's
+saved session and stage under the Stop fence. It never steers an active provider
+invocation. An ended Experiment refuses with `episode_not_running`.
 
 Add-turns and message requests derive their request ids from the turn and key,
 so a replay returns the same continuation or message. Pause and resume record a

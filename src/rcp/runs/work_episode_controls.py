@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol
 from rcp.agents.command_protocol import (
     AutoResearchKickoffArguments,
     CommandResponse,
+    EpisodeAnswerArguments,
     EpisodeCommandRequest,
     WorkEpisodeControlArguments,
 )
@@ -28,6 +29,7 @@ from rcp.agents.staged_command_client import (
     EPISODE_RESUME,
     EPISODE_STOP,
     KICKOFF_LIMIT,
+    ask_relay_usage,
     auto_research_kickoff_usage,
     episode_control_usage,
 )
@@ -61,11 +63,7 @@ class WorkEpisodeAct:
 
 @dataclass(frozen=True)
 class WorkAutoResearchStart:
-    """A Work turn's Auto-research kickoff, resolved by its command handler.
-
-    ``episode_id`` derives from the turn and the command key, so a replay names
-    the same episode.
-    """
+    """A human-authorized plan card start with a stable episode id for tap recovery."""
 
     source_operation_id: str
     episode_id: str
@@ -82,8 +80,6 @@ class WorkAutoResearchStart:
 class WorkEpisodeControls(Protocol):
     """The member's episode controls, each raising `EpisodeRefused` or ValueError."""
 
-    def start_auto_research(self, start: WorkAutoResearchStart) -> EpisodeRecord: ...
-
     def stop(self, act: WorkEpisodeAct) -> None: ...
 
     def pause(self, act: WorkEpisodeAct) -> AgentTaskRecord: ...
@@ -93,6 +89,10 @@ class WorkEpisodeControls(Protocol):
     def add_turns(
         self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str
     ) -> EpisodeRecord: ...
+
+    def answer(
+        self, act: WorkEpisodeAct, *, question_id: str, answer: str, choices: list[str]
+    ) -> None: ...
 
     def message(
         self,
@@ -144,7 +144,12 @@ def turn_keyed_id(lineage: tuple[str, ...], scope: str, key: str | None) -> str:
 def turn_keyed_branch_id(lineage: tuple[str, ...], scope: str, key: str | None) -> str:
     """`turn_keyed_id` in the canonical UUIDv4 form a graph branch id requires."""
 
-    digest = hashlib.sha256(f"rcp:work:{lineage[-1]}:{scope}:{key}".encode()).digest()
+    return sha256_uuid4(f"rcp:work:{lineage[-1]}:{scope}:{key}")
+
+
+def sha256_uuid4(value: str) -> str:
+    """Encode a stable identity as the UUIDv4 required for graph branches."""
+    digest = hashlib.sha256(value.encode()).digest()
     return str(uuid.UUID(bytes=digest[:16], version=4))
 
 
@@ -336,10 +341,31 @@ def handle_work_episode_controls(
     execution: AgentTaskExecution,
     mailbox: RunStageMailbox | None,
     request: EpisodeCommandRequest,
-    arguments: WorkEpisodeControlArguments,
+    arguments: WorkEpisodeControlArguments | EpisodeAnswerArguments,
 ) -> CommandResponse:
     """Pause, add turns to, or message an episode this chat started."""
 
+    if isinstance(arguments, EpisodeAnswerArguments):
+        question = execution.store.get_question(arguments.question_id)
+        if question is None or question.origin.owner_kind != "episode":
+            return _refuse(request, "No such child question.", "question_not_found")
+        owned = own_episode(execution, request, question.origin.owner_id)
+        if isinstance(owned, CommandResponse):
+            return owned
+        controls, act = owned
+        if mailbox is None:
+            return _unavailable(request, "Episode answers are unavailable for this turn.")
+
+        def answer() -> CommandResponse:
+            controls.answer(
+                act,
+                question_id=arguments.question_id,
+                answer=read_workspace_text(mailbox, arguments.answer_file, "Answer file"),
+                choices=arguments.choices,
+            )
+            return _ok(request, disposition="answered", question_id=arguments.question_id)
+
+        return _attempt(request, "episode_answer_refused", answer)
     if arguments.action == "pause":
         return control_own_turn(execution, request, arguments.episode_id, "pause")
     owned = own_episode(execution, request, arguments.episode_id)
@@ -400,77 +426,33 @@ def handle_work_auto_research_kickoff(
     request: EpisodeCommandRequest,
     arguments: AutoResearchKickoffArguments,
 ) -> CommandResponse:
-    """Start one Auto-research episode on a new branch, or answer a replay of the same key."""
+    """Record an Auto-research plan card, preserving old direct-start receipt replays."""
 
-    controls = execution.episode_controls
-    if mailbox is None or controls is None:
-        return _unavailable(request, "Auto-research kickoff is unavailable for this turn.")
-    try:
-        goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
-    except ValueError as exc:
-        return _refuse(request, str(exc), None)
-    store = execution.store
-    lineage = turn_lineage(execution)
-    episode_id = turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
-    intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
-    previous = previous_receipt(store, lineage, _AUTO_RESEARCH_RECEIPT, episode_id=episode_id)
-    if previous is not None and previous.get("intent_sha256") != intent:
+    from rcp.runs.work_experiment_commands import record_plan_card_request
+
+    task = execution.store.agent_task(execution.operation_id)
+    if task is not None and task.graph_target.kind != "main":
         return _refuse(
-            request, "This key already started a different Auto-research; use a new key.", None
+            request,
+            "Auto-research branches from main; propose it from a chat on main.",
+            "auto_research_starts_from_main",
         )
-    episode = store.episode(episode_id)
-    disposition = "existing"
-    if episode is None:
-        start = WorkAutoResearchStart(
-            source_operation_id=execution.operation_id,
-            episode_id=episode_id,
-            goal=goal,
-            invocation_ceiling=arguments.invocation_limit,
-            code_worktree=arguments.code_worktree,
-            worktree_repository=arguments.worktree_repository,
-            branch_name=arguments.branch_name,
-            provider=arguments.provider,
-            model=arguments.model,
-            reasoning=arguments.reasoning,
-        )
-        try:
-            controls.start_auto_research(start)
-        except EpisodeRefused as exc:
-            return _refuse(request, str(exc), exc.code)
-        except ValueError as exc:
-            return _refuse(request, str(exc), "auto_research_not_started")
-        store.record_agent_task_receipt(
-            execution.operation_id,
-            _AUTO_RESEARCH_RECEIPT,
-            {"episode_id": episode_id, "intent_sha256": intent},
-            tier="diagnostic",
-        )
-        episode = store.episode(episode_id)
-        assert episode is not None
-        disposition = "created"
-    store.record_agent_task_event(
-        execution.operation_id, f"Auto-research {disposition}: episode {episode_id}."
-    )
-    return _ok(
-        request,
-        disposition=disposition,
-        episode_id=episode_id,
-        branch_id=episode.graph_target.branch_id,
-        status=episode.status,
-        invocation_limit=episode.invocation_ceiling,
-    )
+    return record_plan_card_request(execution, mailbox, request, arguments)
 
 
 def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
     """The Auto-research kickoff and shared episode-control usage of a Work turn."""
+
+    from rcp.agents.prompts import EPISODE_MAILBOX_RULES
+    from rcp.runs.approval_cards import APPROVAL_OUTCOMES
 
     add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
     message = episode_control_usage(
         EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(KICKOFF_LIMIT,)
     )
     return (
-        "Auto-research kickoff starts a new episode on a new graph branch, only when the "
-        "human asks you to start Auto-research: "
+        "Auto-research plan card: propose a new episode for the human to review, edit, and Start, "
+        "only when the human asks for Auto-research: "
         f"`{client} {auto_research_kickoff_usage()}`. Write the goal file first, as for an "
         "Experiment goal: what the human asked the orchestrator to pursue, with the specifics "
         "from this chat. The limit is the orchestrator's turn budget. --code-worktree on gives "
@@ -478,7 +460,18 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         "--branch-name names the branch. Omit any of these, and the provider, model, and "
         "effort, for Settings. Ready orchestrator profiles:\n"
         f"{orchestrator_profiles}\n"
-        "Afterwards tell the human what you started (goal, limit, branch).\n"
+        "A successful command returns card_pending; finish your turn so RCP raises the card "
+        "after your Patch lands. Nothing starts until the human taps Start. The question "
+        "snapshot shows the card outcome: "
+        + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
+        + " To revise the plan after the human comments, "
+        "use a new key; the new card replaces the old one. Once approved, tell the human "
+        "what started (goal, limit, branch).\n"
+        f"{EPISODE_MAILBOX_RULES}\n"
+        f"Answer a child question with `{client} episode --answer <question-id> "
+        "--answer-file <filename> [--choice <choice>] --key <key>`. "
+        f"When you ask the human a child question, add `{ask_relay_usage()}` to your `ask`; "
+        "RCP withdraws your copy once the child question is resolved.\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other.\n"
         f"- `{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
@@ -488,7 +481,7 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         "session.\n"
         f"- `{client} {add_turns}` adds turns to an ended episode. It continues on the same "
         "branch, code worktree, and session, so this is how you restart one there.\n"
-        f"- `{client} {message}` sends the body file to an Auto-research orchestrator. An "
+        f"- `{client} {message}` sends the body file to a child. Experiments receive it next turn. An "
         "ended orchestrator needs the limit, which continues it with that message.\n"
         "To steer a running episode, message it or post to the Bulletin. To change its course, "
         "pause it, make the change (a message for an orchestrator; your Patch for an "

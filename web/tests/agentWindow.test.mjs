@@ -450,3 +450,72 @@ test("without renderCards each asked card renders through renderQuestion", () =>
   assert.match(stacked, /<b data-stack="q1,q2"><\/b>/);
   assert.doesNotMatch(stacked, /data-question/);
 });
+
+test("a plan card draws inside its turn's last answer, outside the card stacks", () => {
+  const plan = card({
+    question_id: "plan",
+    card: { state: "pending", action: { kind: "experiment_start", node_id: "exp/a" } },
+  });
+  const other = card({
+    question_id: "other",
+    created_at: "2026-11-01T10:00:06Z",
+    card: { state: "pending", action: { kind: "proposal" } },
+  });
+  const transcript = [
+    line("request", "human", "op1", "00"),
+    line("first", "agent", "op1", "10"),
+    line("answer", "agent", "op1", "30"),
+  ];
+  const markup = renderToStaticMarkup(
+    React.createElement(AgentWindowTranscript, {
+      transcript,
+      tasks: [],
+      questions: [plan, other],
+      endpoints: projectAgentWindowEndpoints("p", "chat"),
+      artifacts: { renderArtifacts: () => null, repositoryFileErrors: new Map() },
+      comments: {},
+      compactionByLine: new Map(),
+      continuedTaskIds: new Set(),
+      latestGraphReceiptLineIds: new Set(),
+      readOnly: true,
+      renderCards: (entry) =>
+        React.createElement("b", {
+          "data-stack": entry.asked.map((item) => item.question_id).join(","),
+        }),
+      renderPlanCard: (question) => React.createElement("i", { "data-plan": question.question_id }),
+    }),
+  );
+  assert.equal(markup.match(/data-plan=/g)?.length, 1);
+  const answer = markup.indexOf(">answer<");
+  const plan_at = markup.indexOf('data-plan="plan"');
+  assert.ok(answer > 0 && plan_at > answer);
+  const region = markup.lastIndexOf("chat-annotatable-answer", plan_at);
+  assert.ok(region > markup.indexOf(">first<"));
+  assert.doesNotMatch(markup.slice(region, plan_at), /<\/div>/);
+  assert.match(markup, /<b data-stack="other"><\/b>/);
+});
+
+test("a plan card whose turn has no answer keeps the card place, still as a plan card", () => {
+  const plan = card({
+    question_id: "plan",
+    card: { state: "pending", action: { kind: "experiment_start", node_id: "exp/a" } },
+  });
+  const markup = renderToStaticMarkup(
+    React.createElement(AgentWindowTranscript, {
+      transcript: [line("request", "human", "op1", "00")],
+      tasks: [],
+      questions: [plan],
+      endpoints: projectAgentWindowEndpoints("p", "chat"),
+      artifacts: { renderArtifacts: () => null, repositoryFileErrors: new Map() },
+      comments: {},
+      compactionByLine: new Map(),
+      continuedTaskIds: new Set(),
+      latestGraphReceiptLineIds: new Set(),
+      readOnly: true,
+      renderCards: () => React.createElement("b", { "data-stack": "" }),
+      renderPlanCard: (question) => React.createElement("i", { "data-plan": question.question_id }),
+    }),
+  );
+  assert.match(markup, /data-plan="plan"/);
+  assert.doesNotMatch(markup, /data-stack/);
+});

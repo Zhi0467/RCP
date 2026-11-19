@@ -826,7 +826,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   assertDetailProjection(detail, "needs_action", "resume");
   assert.match(
     detail,
-    /class="button primary compact experiment-recovery-button" aria-busy="false"/,
+    /class="button primary compact experiment-recovery-button"[^>]*aria-busy="false"/,
   );
 
   assert.doesNotMatch(detail, /experiment-stop-loop/);

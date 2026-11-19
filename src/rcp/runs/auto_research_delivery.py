@@ -91,6 +91,8 @@ def pending_auto_research_mail_recipients(
             message.recipient_task_id
             for message in store.auto_research_messages(current_episode_id)
             if message.delivered_at is None
+            and message.recipient_kind == "actor"
+            and message.recipient_task_id is not None
         }
         for recipient_task_id in sorted(recipient_ids):
             pending = store.pending_auto_research_messages(

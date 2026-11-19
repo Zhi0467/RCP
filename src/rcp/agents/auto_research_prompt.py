@@ -12,12 +12,15 @@ from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     AGENT_NAME_INSTRUCTION,
     BULLETIN_RULES,
+    BULLETIN_SYNTAX,
+    EPISODE_MAILBOX_RULES,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     GraphReadPrompt,
     ask_contract,
     compute_connection_section,
+    episode_mailbox_child_rule,
     graph_read_contract,
     protected_belief_names,
     selected_skill_section,
@@ -45,7 +48,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v18"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v19"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -161,7 +164,7 @@ def _command_invocations(
     if "name" in allowed_verbs:
         commands += f"\n  {AGENT_NAME_INSTRUCTION}"
     if "bulletin" in allowed_verbs:
-        commands += "".join(f"\n  {rule}" for rule in BULLETIN_RULES)
+        commands += "".join(f"\n  {rule}" for rule in (*BULLETIN_RULES, *BULLETIN_SYNTAX))
     return f"""Staged command client:
 - Command prefix: `{command_client}`
 - Exact invocations, all prefixed by that command:
@@ -528,6 +531,7 @@ def auto_research_orchestrator_task_contract(
     child_profiles: dict[str, dict[str, dict[str, list[str]]]] | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
     paper_path: str | None = None,
+    parent_chat: bool = False,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}
@@ -592,6 +596,10 @@ Worker coordination:
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
+
+{EPISODE_MAILBOX_RULES}
+
+{episode_mailbox_child_rule(allowed_verbs, parent_chat=parent_chat)}
 {_orchestrator_stale_guidance(allowed_verbs)}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
 {REPLY_STYLE}
@@ -702,6 +710,7 @@ def auto_research_orchestrator_continuation_contract(
     messages_path: str | None = None,
     lifecycle_path: str | None = None,
     retry_diagnostics_path: str | None = None,
+    parent_chat: bool = False,
 ) -> str:
     """Continue the sole orchestrator with refreshed project-owned pointers."""
 
@@ -745,6 +754,10 @@ for this continuation.
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
+
+{EPISODE_MAILBOX_RULES}
+
+{episode_mailbox_child_rule(allowed_verbs, parent_chat=parent_chat)}
 {_orchestrator_stale_guidance(allowed_verbs)}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation. If RCP returns `resume_unavailable` for a worker, use fresh `spawn`. For a
 child Experiment, Stop your own child, wait for settlement, then kick off a fresh episode with a

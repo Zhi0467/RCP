@@ -13,7 +13,10 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import APPROVAL_CARD_TTL_HOURS
 from rcp.storage.digest import append_question_attention
 from rcp.storage.mixin_base import StoreMixinBase
-from rcp.storage.resource_versions import install_agent_thread_version
+from rcp.storage.resource_versions import (
+    install_agent_thread_version,
+    install_project_question_version,
+)
 
 
 def migrate_approval_cards(connection: sqlite3.Connection) -> None:
@@ -33,6 +36,20 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
         connection,
         "approval_cards",
         "SELECT t.user_id FROM questions q JOIN agent_threads t ON t.thread_id=q.owner_id WHERE q.question_id=ROW.question_id AND q.owner_kind='chat' AND q.project_id=coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1))",
+    )
+
+
+def migrate_shared_chat_card_versions(connection: sqlite3.Connection) -> None:
+    """A card in a chat that is not an agent thread moves its project's question list."""
+
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER IF EXISTS resource_approval_cards_questions_{event}")
+    install_project_question_version(
+        connection,
+        "approval_cards",
+        "(SELECT q.project_id FROM questions q WHERE q.question_id=ROW.question_id "
+        "AND q.owner_kind='chat' AND NOT EXISTS "
+        "(SELECT 1 FROM agent_threads t WHERE t.thread_id=q.owner_id))",
     )
 
 

@@ -1011,7 +1011,10 @@ def _assert_local_question_upgrade(store: AppStore, before: dict[str, object] | 
         **origin,
         "stage_machine_id": BACKEND_MACHINE_ID,
     }
-    assert after == {key: value for key, value in before.items() if key != "origin_json"}
+    assert after == {
+        **{key: value for key, value in before.items() if key != "origin_json"},
+        "relays_question_id": None,
+    }
 
 
 def _metadata_string(metadata: dict[str, object], name: str) -> str:

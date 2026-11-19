@@ -50,6 +50,9 @@ after(() => runtime.scheduler.stop());
 const renderMarkup = (element) =>
   renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
 const { AutoResearchEpisodeCard } = await server.ssrLoadModule("/src/experiments/CampaignRuns.tsx");
+const { ApprovalCardStack, dockStackCards } = await server.ssrLoadModule(
+  "/src/agents/ApprovalCardStack.tsx",
+);
 const { AutoResearchDialog } = await server.ssrLoadModule(
   "/src/experiments/AutoResearchDialog.tsx",
 );
@@ -913,4 +916,83 @@ test("ended orchestrator messages expose an editable continuation budget and ref
   ]);
   assert.match(refused, /data-refusal-code="episode_isolation_unavailable"/);
   assert.match(refused, /<textarea[^>]*disabled/);
+});
+
+function renderDock(cards) {
+  return renderMarkup(
+    React.createElement(ApprovalCardStack, {
+      stackKey: `dock:${Math.random()}`,
+      cards,
+      onDecided() {},
+      onResolved() {},
+      onAnswered() {},
+      onChanged() {},
+      renderPlanCard: (question) =>
+        React.createElement("div", { "data-plan": question.question_id }),
+    }),
+  );
+}
+
+test("a chat dock puts decisions first: plans, questions, runs needing action, then other runs", () => {
+  const relayed = (id) => ({ question_id: id, project_id: "p", state: "pending" });
+  const run = (id, questions, health = "active") => ({
+    episode: { ...episode, episode_id: id, health },
+    title: id,
+    link: `#/${id}`,
+    questions: questions.map(relayed),
+  });
+  const cards = dockStackCards(
+    [{ question_id: "plan" }],
+    [
+      run("first", ["asked-1", "asked-2"]),
+      run("second", [], "needs_action"),
+      run("third", ["asked-3"], "completed"),
+    ],
+    [relayed("other")],
+  );
+  assert.deepEqual(
+    cards.map((card) => [card.kind, card.key]),
+    [
+      ["plan", "plan:plan"],
+      ["question", "question:asked-1"],
+      ["question", "question:asked-2"],
+      ["question", "question:asked-3"],
+      ["question", "question:other"],
+      ["run", "run:second"],
+      ["run", "run:first"],
+      ["run", "run:third"],
+    ],
+  );
+  assert.equal(new Set(cards.map((card) => card.key)).size, cards.length);
+  assert.match(renderDock(cards.slice(0, 1)), /data-plan="plan"/);
+});
+
+test("a dock run card offers what its episode allows and links its run and report", () => {
+  const card = (state) =>
+    renderDock(
+      dockStackCards(
+        [],
+        [{ episode: { ...episode, ...state }, title: "Sweep", link: "#/run", questions: [] }],
+        [],
+      ),
+    );
+  const live = card({});
+  assert.match(live, /href="#\/run"/);
+  assert.match(live, /campaign-stop/);
+  assert.doesNotMatch(live, /campaign-reauthorize/);
+  const ended = card({
+    can_stop: false,
+    can_continue: true,
+    task_control: null,
+    ending: "exhausted",
+    ended_at: episode.created_at,
+    report: { report_id: "r", ending: "exhausted", created_at: episode.created_at },
+  });
+  assert.doesNotMatch(ended, /campaign-stop/);
+  assert.match(ended, /campaign-reauthorize/);
+  assert.ok(
+    ended.includes(
+      `href="${episodeReportPreviewUrl(episode.project_id, episode.episode_id).replaceAll("&", "&amp;")}"`,
+    ),
+  );
 });

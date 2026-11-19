@@ -328,6 +328,17 @@ export function readAgentCards(
   return loadAgentCards(threadId, request).catch(() => null);
 }
 
+/** A shared or node chat's dock; like `readAgentCards`, a failed read is null. */
+export function readChatCards(
+  projectId: string,
+  chatId: string,
+  request: Request = api,
+): Promise<AgentCardList | null> {
+  return request<AgentCardList>(
+    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/cards`,
+  ).catch(() => null);
+}
+
 /** The member's runs and project agents across their projects, for the Space thread. */
 export function loadRunningList(request: Request = api): Promise<RunningList> {
   return request(`${THREADS}/running`);

@@ -118,12 +118,21 @@ class QuestionStoreMixin(StoreMixinBase):
         choices: list[str] | None = None,
         multiple: bool = False,
         card: dict[str, Any] | None = None,
+        relays: str | None = None,
     ) -> QuestionRecord:
-        """Reuse owner+key across turns; never replace the first origin binding."""
+        """Reuse owner+key across turns; never replace the first origin binding.
+
+        A relay copy names the child question it repeats; it can be created only
+        while that question is pending, and the child's resolution withdraws it.
+        """
         arguments = {"question": question, "choices": choices or [], "multiple": multiple}
         argument_hash = hashlib.sha256(
             json.dumps(
-                {**arguments, **({"action": card["action"]} if card else {})},
+                {
+                    **arguments,
+                    **({"action": card["action"]} if card else {}),
+                    **({"relays": relays} if relays else {}),
+                },
                 sort_keys=True,
                 ensure_ascii=False,
             ).encode()
@@ -133,6 +142,7 @@ class QuestionStoreMixin(StoreMixinBase):
             origin=origin,
             key=key,
             argument_hash=argument_hash,
+            relays_question_id=relays,
             created_at=self.now(),
             **arguments,
         )
@@ -146,11 +156,20 @@ class QuestionStoreMixin(StoreMixinBase):
                 if row["argument_hash"] != argument_hash:
                     raise QuestionArgumentConflict("question key already names different arguments")
                 return _question_record(row)
+            if relays is not None and (
+                connection.execute(
+                    "SELECT 1 FROM questions WHERE question_id=? AND owner_kind='episode' "
+                    "AND state='pending' AND withdrawn_readonly=0",
+                    (relays,),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("The relayed question is no longer pending.")
             connection.execute(
                 """INSERT INTO questions
                 (question_id,project_id,owner_kind,owner_id,key,origin_json,argument_hash,
-                 question,choices_json,multiple,state,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 question,choices_json,multiple,state,relays_question_id,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     record.question_id,
                     origin.project_id,
@@ -163,9 +182,22 @@ class QuestionStoreMixin(StoreMixinBase):
                     json.dumps(record.choices),
                     multiple,
                     record.state,
+                    relays,
                     record.created_at,
                 ),
             )
+            if origin.owner_kind == "episode":
+                from rcp.storage.episodes import append_episode_parent_mail
+
+                append_episode_parent_mail(
+                    connection,
+                    origin.owner_id,
+                    "question",
+                    record.question_id,
+                    question,
+                    record.created_at,
+                    origin.operation_id,
+                )
             if card is not None:
                 insert_approval_card(connection, record.question_id, card, self.now())
             append_question_attention(
@@ -322,7 +354,22 @@ class QuestionStoreMixin(StoreMixinBase):
                 "SELECT * FROM questions WHERE question_id=?", (question_id,)
             ).fetchone()
             append_question_attention(connection, updated, self.now())
+            if record.origin.owner_kind == "episode":
+                self._withdraw_relayed_copies(connection, record)
             return _question_record(updated)
+
+    def _withdraw_relayed_copies(
+        self, connection: sqlite3.Connection, record: QuestionRecord
+    ) -> None:
+        """Retire the parent chat's pending relay copies of this child question."""
+        rows = connection.execute(
+            """UPDATE questions SET withdrawn_readonly=1
+            WHERE relays_question_id=? AND state='pending' AND withdrawn_readonly=0
+            RETURNING *""",
+            (record.question_id,),
+        ).fetchall()
+        for row in rows:
+            append_question_attention(connection, row, self.now())
 
     def reopen_unclaimed_answer(self, question_id: str, answer_revision: int) -> bool:
         """Return an answer to pending when the continuation it started failed.

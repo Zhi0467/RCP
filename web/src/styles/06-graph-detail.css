@@ -434,7 +434,8 @@
   line-height: 1.55;
   margin: 0;
 }
-.context-list dd :is(h1, h2, h3, h4, h5, h6) {
+.context-list dd :is(h1, h2, h3, h4, h5, h6),
+.plan-section dd :is(h1, h2, h3, h4, h5, h6) {
   font-size: var(--type-base);
   margin: 12px 0 4px;
 }

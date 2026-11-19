@@ -24,6 +24,7 @@ from rcp.agents.command_protocol import (
     CommandRequest,
     CommandResponse,
     CommandVerb,
+    EpisodeAnswerArguments,
     EpisodeCommandRequest,
     EpisodeControlArguments,
     ExperimentKickoffArguments,
@@ -1041,7 +1042,8 @@ class AutoResearchCommandDispatcher:
             return self._dispatch_ask(context, request)
 
         if isinstance(request, EpisodeCommandRequest) and isinstance(
-            request.arguments, (AutoResearchKickoffArguments, WorkEpisodeControlArguments)
+            request.arguments,
+            (AutoResearchKickoffArguments, WorkEpisodeControlArguments, EpisodeAnswerArguments),
         ):
             return CommandResponse(
                 request_id=request.request_id,

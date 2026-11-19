@@ -2321,6 +2321,218 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 return False
         return True
 
+    def record_episode_message(
+        self, record: AutoResearchMessageRecord
+    ) -> AutoResearchMessageRecord:
+        if record.recipient_kind == "actor":
+            return self.record_auto_research_message(record)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            episode = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id=?", (record.episode_id,)
+            ).fetchone()
+            if episode is None:
+                raise KeyError(record.episode_id)
+            if record.recipient_kind == "episode" and (
+                episode["mode"] != "experiment_loop"
+                or episode["status"] not in {"queued", "running"}
+                or episode["ending"] is not None
+                or episode["stop_requested_at"] is not None
+            ):
+                raise EpisodeNotRunning("episode_not_running")
+            existing = connection.execute(
+                "SELECT * FROM auto_research_messages WHERE message_id=?", (record.message_id,)
+            ).fetchone()
+            if existing is not None:
+                return self._auto_research_message_record(existing)
+            self._insert_auto_research_message(connection, record)
+        return record
+
+    def pending_episode_mail(
+        self, recipient_kind: str, recipient_id: str
+    ) -> list[AutoResearchMessageRecord]:
+        with self.connection() as connection:
+            scope, params, _claimable = self._episode_mail_scope(
+                connection, recipient_kind, recipient_id
+            )
+            rows = connection.execute(
+                f"SELECT * FROM auto_research_messages WHERE recipient_kind=? AND {scope} "
+                "AND delivered_at IS NULL ORDER BY created_at,message_id LIMIT ?",
+                (recipient_kind, *params, AUTO_RESEARCH_MAIL_MAX_MESSAGES),
+            ).fetchall()
+        return [self._auto_research_message_record(row) for row in rows]
+
+    @staticmethod
+    def _episode_mail_scope(
+        connection: sqlite3.Connection, recipient_kind: str, recipient_id: str
+    ) -> tuple[str, tuple[str, ...], bool]:
+        """Where a recipient's mail lives, and whether a new batch may be claimed now.
+
+        An Experiment's mail is addressed to the chain: a message accepted during
+        the final invocation of one episode reaches the invocation of its
+        human-authorized continuation. A Stop-fenced episode claims nothing new.
+        """
+        if recipient_kind == "chat":
+            return "recipient_chat_id=?", (recipient_id,), True
+        if recipient_kind != "episode":
+            raise ValueError("mail_recipient_invalid")
+        rows = connection.execute(
+            """WITH RECURSIVE chain(episode_id, continues_episode_id) AS (
+                SELECT episode_id, continues_episode_id FROM episodes WHERE episode_id=?
+                UNION
+                SELECT episode.episode_id, episode.continues_episode_id
+                FROM episodes AS episode JOIN chain
+                  ON episode.episode_id=chain.continues_episode_id
+            ) SELECT episode_id FROM chain""",
+            (recipient_id,),
+        ).fetchall()
+        current = connection.execute(
+            "SELECT stop_requested_at,ending FROM episodes WHERE episode_id=?", (recipient_id,)
+        ).fetchone()
+        chain = tuple(row[0] for row in rows) or (recipient_id,)
+        claimable = (
+            current is not None
+            and current["stop_requested_at"] is None
+            and current["ending"] is None
+        )
+        return f"episode_id IN ({','.join('?' for _ in chain)})", chain, claimable
+
+    def episode_mail_claim_prefix(
+        self,
+        rows: Sequence[sqlite3.Row],
+        recipient_kind: str,
+        recipient_id: str,
+        operation_id: str,
+        delivered_at: str,
+    ) -> list[sqlite3.Row]:
+        from rcp.limits import AUTO_RESEARCH_MAIL_MAX_BYTES
+
+        selected: list[sqlite3.Row] = []
+        messages: list[dict[str, object]] = []
+        for row in rows:
+            message = self._auto_research_message_record(row).model_dump(mode="json")
+            message.update(delivery_operation_id=operation_id, delivered_at=delivered_at)
+            envelope = {
+                "version": 1,
+                "recipient_kind": recipient_kind,
+                "recipient_id": recipient_id,
+                "delivery_operation_id": operation_id,
+                "graph_authority": "none",
+                "epistemic_status": "hearsay",
+                "messages": [*messages, message],
+            }
+            if (
+                len(
+                    (
+                        json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    ).encode()
+                )
+                > AUTO_RESEARCH_MAIL_MAX_BYTES
+            ):
+                if not selected:
+                    raise ValueError("episode_mail_item_too_large")
+                break
+            messages.append(message)
+            selected.append(row)
+        return selected
+
+    def claim_episode_mail(
+        self, recipient_kind: str, recipient_id: str, lineage: Sequence[str]
+    ) -> list[AutoResearchMessageRecord]:
+        """Re-render a batch this turn's lineage already claimed, or claim the next one."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            scope, params, claimable = self._episode_mail_scope(
+                connection, recipient_kind, recipient_id
+            )
+            claimed_sql = (
+                f"SELECT * FROM auto_research_messages WHERE recipient_kind=? AND {scope} "
+                f"AND delivery_operation_id IN ({','.join('?' for _ in lineage)}) "
+                "ORDER BY created_at,message_id LIMIT ?"
+            )
+            claimed_params = (recipient_kind, *params, *lineage, AUTO_RESEARCH_MAIL_MAX_MESSAGES)
+            rows = connection.execute(claimed_sql, claimed_params).fetchall()
+            if not rows and claimable:
+                now = self.now()
+                rows = self.episode_mail_claim_prefix(
+                    connection.execute(
+                        f"SELECT * FROM auto_research_messages WHERE recipient_kind=? "
+                        f"AND {scope} AND delivered_at IS NULL "
+                        "ORDER BY created_at,message_id LIMIT ?",
+                        (recipient_kind, *params, AUTO_RESEARCH_MAIL_MAX_MESSAGES),
+                    ).fetchall(),
+                    recipient_kind,
+                    recipient_id,
+                    lineage[0],
+                    now,
+                )
+                connection.executemany(
+                    "UPDATE auto_research_messages SET delivered_at=?,delivery_operation_id=?,"
+                    "delivery_diagnostic=NULL WHERE message_id=? AND delivered_at IS NULL",
+                    [(now, lineage[0], row["message_id"]) for row in rows],
+                )
+                rows = connection.execute(claimed_sql, claimed_params).fetchall()
+        return [self._auto_research_message_record(row) for row in rows]
+
+    def release_failed_wake_mail(self, operation_id: str | None = None) -> int:
+        """Return mail failed or interrupted chat wakes claimed, one wake or all, to the next turn."""
+        with self.connection() as connection:
+            return connection.execute(
+                "UPDATE auto_research_messages SET delivered_at=NULL,delivery_operation_id=NULL "
+                "WHERE recipient_kind='chat' AND delivered_at IS NOT NULL "
+                "AND (? IS NULL OR delivery_operation_id=?) AND EXISTS ("
+                "SELECT 1 FROM graph_runs WHERE operation_id=delivery_operation_id "
+                "AND status IN ('failed','interrupted') "
+                "AND json_extract(request_json,'$.chat_wake') IS NOT NULL)",
+                (operation_id, operation_id),
+            ).rowcount
+
+    def pending_chat_mail_recipients(
+        self, after: tuple[str, str, str] = ("", "", "")
+    ) -> list[tuple[str, str, str]]:
+        """One keyset page of chats with pending mail, the longest-waiting first.
+
+        Each row is (oldest pending item time, project, chat); pass the last row
+        back as ``after`` for the next page.
+        """
+        from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
+
+        with self.connection() as connection:
+            return [
+                (row[0], row[1], row[2])
+                for row in connection.execute(
+                    "SELECT MIN(mail.created_at) AS oldest,episode.project_id,"
+                    "mail.recipient_chat_id FROM auto_research_messages AS mail "
+                    "JOIN episodes AS episode ON episode.episode_id=mail.episode_id "
+                    "WHERE mail.recipient_kind='chat' AND mail.delivered_at IS NULL "
+                    "GROUP BY episode.project_id,mail.recipient_chat_id "
+                    "HAVING (oldest,episode.project_id,mail.recipient_chat_id)>(?,?,?) "
+                    "ORDER BY oldest,episode.project_id,mail.recipient_chat_id LIMIT ?",
+                    (*after, CHAT_MAIL_RECONCILE_LIMIT),
+                )
+            ]
+
+    def claimed_episode_mail(self, operation_id: str) -> list[AutoResearchMessageRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM auto_research_messages WHERE delivery_operation_id=? "
+                "AND recipient_kind IN ('chat','episode') ORDER BY created_at,message_id LIMIT ?",
+                (operation_id, AUTO_RESEARCH_MAIL_MAX_MESSAGES),
+            ).fetchall()
+        return [self._auto_research_message_record(row) for row in rows]
+
+    def record_episode_mail_diagnostic(self, message_ids: Sequence[str], code: str) -> None:
+        """Keep the latest delivery refusal on the items it held back; repeats are no-ops."""
+        if not message_ids:
+            return
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE auto_research_messages SET delivery_diagnostic=? "
+                f"WHERE message_id IN ({','.join('?' for _ in message_ids)}) "
+                "AND delivery_diagnostic IS NOT ?",
+                (code, *message_ids, code),
+            )
+
     def record_auto_research_message(
         self, record: AutoResearchMessageRecord
     ) -> AutoResearchMessageRecord:
@@ -2439,8 +2651,9 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 message_id, episode_id, sender_role, sender_task_id,
                 authorized_space_id, authorized_user_id, authorized_display_name,
                 recipient_task_id, control_node_id, body, created_at,
-                delivered_at, delivery_operation_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                delivered_at, delivery_operation_id, recipient_kind, recipient_chat_id,
+                item_kind, source_ref
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.message_id,
@@ -2456,6 +2669,10 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 record.created_at,
                 record.delivered_at,
                 record.delivery_operation_id,
+                record.recipient_kind,
+                record.recipient_chat_id,
+                record.item_kind,
+                record.source_ref,
             ),
         )
 
@@ -2602,6 +2819,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 """
                 SELECT * FROM auto_research_messages
                 WHERE episode_id = ? AND recipient_task_id = ? AND delivered_at IS NULL
+                  AND recipient_kind = 'actor'
                 ORDER BY created_at, message_id
                 """,
                 (episode_id, recipient_task_id),
@@ -3099,6 +3317,7 @@ class AutoResearchStoreMixin(StoreMixinBase):
         data.pop("authorized_space_id", None)
         data.pop("authorized_user_id", None)
         data.pop("authorized_display_name", None)
+        data.pop("delivery_diagnostic", None)
         return AutoResearchMessageRecord.model_validate(data)
 
 

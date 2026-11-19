@@ -150,6 +150,13 @@ def install_agent_thread_version(
     )
 
 
+def install_project_question_version(
+    connection: sqlite3.Connection, table: str, scope: str
+) -> None:
+    """Invalidate the question list of the project `scope` resolves, when it resolves one."""
+    _install(connection, table, [_bump(scope, "questions")], suffix="_questions")
+
+
 def install_agent_thread_versions(connection: sqlite3.Connection) -> None:
     """Thread state and the existing chat/task owners share one member-scoped rail."""
     install_agent_thread_version(connection, "agent_threads", "ROW.user_id")

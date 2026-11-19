@@ -879,7 +879,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             wrapup=cls._transfer_episode_wrapup(wrapup),
             report=cls._transfer_episode_report(report),
             experiment=(
-                cls._transfer_experiment_history(connection, episode_id)
+                cls._transfer_experiment_history(connection, episode_id, attributions)
                 if row["mode"] == "experiment_loop"
                 else None
             ),
@@ -961,10 +961,12 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             deleted_at=row["deleted_at"],
         )
 
-    @staticmethod
+    @classmethod
     def _transfer_experiment_history(
+        cls,
         connection: sqlite3.Connection,
         episode_id: str,
+        attributions: tuple[TransferArchiveAttribution, ...],
     ) -> TransferExperimentEpisodeHistory:
         row = connection.execute(
             "SELECT * FROM experiment_episode_state WHERE episode_id = ?",
@@ -978,6 +980,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         ):
             raise ValueError("stored Experiment watcher history is invalid")
         return TransferExperimentEpisodeHistory(
+            messages=cls._transfer_episode_messages(connection, episode_id, attributions),
             provider=row["provider"],
             chat_id=row["chat_id"],
             last_turn_operation_id=row["last_turn_operation_id"],
@@ -985,6 +988,43 @@ class ProjectTransferStoreMixin(StoreMixinBase):
             last_graph_result=row["last_graph_result"],
             last_watcher_ids=tuple(watcher_ids),
             session_diagnostic=row["session_diagnostic"],
+        )
+
+    @classmethod
+    def _transfer_episode_messages(
+        cls,
+        connection: sqlite3.Connection,
+        episode_id: str,
+        attributions: tuple[TransferArchiveAttribution, ...],
+    ) -> tuple[TransferAutoResearchMessage, ...]:
+        message_rows = connection.execute(
+            "SELECT * FROM auto_research_messages WHERE episode_id = ? "
+            "ORDER BY created_at, message_id",
+            (episode_id,),
+        ).fetchall()
+        return tuple(
+            TransferAutoResearchMessage(
+                message_id=row["message_id"],
+                sender_role=row["sender_role"],
+                sender_task_id=row["sender_task_id"],
+                authorized_by_attribution_id=cls._transfer_attribution_id(
+                    row,
+                    attributions,
+                )
+                if row["authorized_space_id"] is not None
+                else None,
+                recipient_task_id=row["recipient_task_id"],
+                recipient_kind=row["recipient_kind"],
+                recipient_chat_id=row["recipient_chat_id"],
+                item_kind=row["item_kind"],
+                source_ref=row["source_ref"],
+                control_node_id=row["control_node_id"],
+                body=row["body"],
+                disposition="delivered",
+                created_at=row["created_at"],
+                delivered_at=row["delivered_at"],
+            )
+            for row in message_rows
         )
 
     @classmethod
@@ -1003,11 +1043,6 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         invocation_rows = connection.execute(
             "SELECT * FROM auto_research_invocations WHERE episode_id = ? "
             "ORDER BY created_at, operation_id",
-            (episode_id,),
-        ).fetchall()
-        message_rows = connection.execute(
-            "SELECT * FROM auto_research_messages WHERE episode_id = ? "
-            "ORDER BY created_at, message_id",
             (episode_id,),
         ).fetchall()
         recovery_rows = connection.execute(
@@ -1070,26 +1105,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 )
                 for row in invocation_rows
             ),
-            messages=tuple(
-                TransferAutoResearchMessage(
-                    message_id=row["message_id"],
-                    sender_role=row["sender_role"],
-                    sender_task_id=row["sender_task_id"],
-                    authorized_by_attribution_id=cls._transfer_attribution_id(
-                        row,
-                        attributions,
-                    )
-                    if row["authorized_space_id"] is not None
-                    else None,
-                    recipient_task_id=row["recipient_task_id"],
-                    control_node_id=row["control_node_id"],
-                    body=row["body"],
-                    disposition="delivered",
-                    created_at=row["created_at"],
-                    delivered_at=row["delivered_at"],
-                )
-                for row in message_rows
-            ),
+            messages=cls._transfer_episode_messages(connection, episode_id, attributions),
             recoveries=tuple(
                 TransferAutoResearchRecovery(
                     recovery_id=row["recovery_id"],
@@ -1734,8 +1750,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 tuple(
                     message.message_id
                     for episode in records.episodes
-                    if episode.auto_research is not None
-                    for message in episode.auto_research.messages
+                    for history in (episode.auto_research, episode.experiment)
+                    if history is not None
+                    for message in history.messages
                 ),
             ),
             (
@@ -2199,6 +2216,9 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         episode.updated_at,
                     ),
                 )
+                self._insert_episode_messages(
+                    connection, episode.episode_id, experiment.messages, attributions
+                )
             if episode.auto_research is not None:
                 self._insert_auto_research_history(
                     connection,
@@ -2403,6 +2423,47 @@ class ProjectTransferStoreMixin(StoreMixinBase):
 
         backfill_graph_branches(connection)
 
+    @staticmethod
+    def _insert_episode_messages(
+        connection: sqlite3.Connection,
+        episode_id: str,
+        messages: tuple[TransferAutoResearchMessage, ...],
+        attributions: Mapping[str, TransferArchiveAttribution],
+    ) -> None:
+        for message in messages:
+            space_id, user_id, display_name = _attribution_fields(
+                attributions,
+                message.authorized_by_attribution_id,
+            )
+            connection.execute(
+                """
+                INSERT INTO auto_research_messages (
+                    message_id, episode_id, sender_role, sender_task_id,
+                    authorized_space_id, authorized_user_id, authorized_display_name,
+                    recipient_task_id, control_node_id, body, created_at, delivered_at,
+                    delivery_operation_id, recipient_kind, recipient_chat_id, item_kind, source_ref
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    message.message_id,
+                    episode_id,
+                    message.sender_role,
+                    message.sender_task_id,
+                    space_id,
+                    user_id,
+                    display_name,
+                    message.recipient_task_id,
+                    message.control_node_id,
+                    message.body,
+                    message.created_at,
+                    message.delivered_at or message.created_at,
+                    message.recipient_kind,
+                    message.recipient_chat_id,
+                    message.item_kind,
+                    message.source_ref,
+                ),
+            )
+
     @classmethod
     def _insert_auto_research_history(
         cls,
@@ -2444,39 +2505,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     invocation.created_at,
                 ),
             )
-        for message in history.messages:
-            space_id, user_id, display_name = _attribution_fields(
-                attributions,
-                message.authorized_by_attribution_id,
-            )
-            # Human sender attribution is resolved by the outer task/episode
-            # import caller before this helper is reached.  A message's
-            # archive id is retained in its task lineage; unknown agent
-            # senders intentionally receive no human snapshot.
-            connection.execute(
-                """
-                INSERT INTO auto_research_messages (
-                    message_id, episode_id, sender_role, sender_task_id,
-                    authorized_space_id, authorized_user_id, authorized_display_name,
-                    recipient_task_id, control_node_id, body, created_at, delivered_at,
-                    delivery_operation_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (
-                    message.message_id,
-                    episode.episode_id,
-                    message.sender_role,
-                    message.sender_task_id,
-                    space_id,
-                    user_id,
-                    display_name,
-                    message.recipient_task_id,
-                    message.control_node_id,
-                    message.body,
-                    message.created_at,
-                    message.delivered_at,
-                ),
-            )
+        cls._insert_episode_messages(connection, episode.episode_id, history.messages, attributions)
         for recovery in history.recoveries:
             connection.execute(
                 """

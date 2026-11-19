@@ -68,6 +68,8 @@ def handle_ask(
     store operations. Producing this response does not prove the client received it.
     """
     try:
+        if request.arguments.relays is not None:
+            _check_relay(store, origin, request.arguments.relays)
         arguments = request.arguments.model_dump(exclude={"action"})
         card = None
         if request.arguments.action is not None:
@@ -94,11 +96,27 @@ def handle_ask(
     )
 
 
+def _check_relay(store: AppStore, origin: QuestionOrigin, question_id: str) -> None:
+    from rcp.runs.work_episode_controls import chat_started_episode
+
+    relayed = store.get_question(question_id)
+    task = store.agent_task(origin.operation_id)
+    if (
+        origin.owner_kind != "chat"
+        or relayed is None
+        or relayed.origin.owner_kind != "episode"
+        or task is None
+        or not chat_started_episode(store, task, relayed.origin.owner_id)
+    ):
+        raise ValueError("A relay names a question from a run this chat started.")
+
+
 def _ask_result(
     store: AppStore, request: AskCommandRequest, question: QuestionRecord, parked: bool
 ) -> AskResult:
     # A parked reply ends the wait at once, so it is neither an attempt nor a live wait.
-    pending = question.state == "pending" and not parked
+    withdrawn = question.state == "pending" and question.withdrawn_readonly
+    pending = question.state == "pending" and not parked and not withdrawn
     attempt = None
     if pending:
         attempt = store.question_activity.pending(question.question_id, request.call_id)
@@ -114,7 +132,11 @@ def _ask_result(
         attempt=attempt,
         max_attempts=ASK_MAX_ATTEMPTS if pending else None,
         question_id=question.question_id,
-        state="parked" if parked and question.state == "pending" else question.state,
+        state="withdrawn"
+        if withdrawn
+        else "parked"
+        if parked and question.state == "pending"
+        else question.state,
         answer=question.answer if answered else None,
         choices=question.chosen_choices if answered else [],
     )
@@ -416,7 +438,7 @@ class WorkCommandHandler:
         if request.verb not in self.allowed_verbs:
             if request.verb in _CARD_ROUTES and self.approval_card_member is not None:
                 return _refuse(request, _CARD_ROUTES[request.verb], "approval_card_required")
-            return _not_granted(request, graph_history)
+            return _not_granted(request, graph_history, self.allowed_verbs)
         if request.verb == "projects":
             return self._projects(request, identity)
         if graph_history:
@@ -617,9 +639,13 @@ _CARD_ROUTES: dict[str, str] = {
 }
 
 
-def _not_granted(request: CommandRequest, graph_history: bool) -> CommandResponse:
-    code = "graph_history_verb_not_granted" if graph_history else None
-    return _refuse(request, "This turn does not authorize that command.", code)
+def _not_granted(
+    request: CommandRequest, graph_history: bool, allowed_verbs: frozenset[str]
+) -> CommandResponse:
+    code = "graph_history_verb_not_granted" if graph_history else "verb_not_granted"
+    refused = _refuse(request, "This turn does not authorize that command.", code)
+    refused.result["allowed_verbs"] = sorted(allowed_verbs)
+    return refused
 
 
 def _refuse(request: CommandRequest, message: str, code: str | None = None) -> CommandResponse:

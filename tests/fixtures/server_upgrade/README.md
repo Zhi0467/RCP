@@ -249,3 +249,8 @@ a copy of `pre-comments-v47-c2b0f07` through the existing fixture builder.
 links (migration 88). Exact source `e282ed45d15d3b9bd106d97e06db740506146973`
 upgrades a copy of `pre-provider-session-sweeps-v48-05dfcdb` through the existing
 fixture builder.
+
+`pre-plan-cards-v50-1358a21` freezes migration 88 before shared-chat plan cards
+bump their chat's question version (migration 89). Exact source
+`1358a21dea77572ad2e2a7d5e4377a9024d25ecc` upgrades a copy of
+`pre-share-links-v49-e282ed4` through the existing fixture builder.
