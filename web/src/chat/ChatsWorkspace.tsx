@@ -411,9 +411,6 @@ export function ChatsWorkspace({
   const ownThreadUnread =
     ownThread !== null &&
     threadShowsUnread(ownThread.thread, showingOwnThread ? ownThreadId : null);
-  useEffect(() => {
-    if (showingOwnThread) setListCollapsed(true);
-  }, [showingOwnThread]);
   const conversations = useMemo(
     () =>
       withEpisodeAttention(

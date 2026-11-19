@@ -434,6 +434,10 @@
   line-height: 1.55;
   margin: 0;
 }
+.context-list dd :is(h1, h2, h3, h4, h5, h6) {
+  font-size: var(--type-base);
+  margin: 12px 0 4px;
+}
 .glossary-definition {
   border-bottom: 1px dotted color-mix(in srgb, currentColor 58%, transparent);
   color: inherit;
