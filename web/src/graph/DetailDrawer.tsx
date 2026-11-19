@@ -99,6 +99,7 @@ interface Props {
   behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
+  experimentAgent?: AgentRunConfig | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
   experimentUnavailableLoops?: UnavailableExperimentLoop[];
   /** Whether the project's loop inventory is known yet, for the overlap list. */
@@ -192,6 +193,7 @@ export function DetailDrawer({
   behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
+  experimentAgent = null,
   experimentEntries = [],
   experimentUnavailableLoops = [],
   experimentEntriesStatus = "loaded",
@@ -239,6 +241,7 @@ export function DetailDrawer({
   }, [node.id]);
   const launchConfig =
     pickedConfig ??
+    experimentAgent ??
     (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   const launchReady =
     !project ||
