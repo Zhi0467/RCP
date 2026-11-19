@@ -2,11 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PaperWorkspace, type PaperEditorState } from "../../src/paper/PaperWorkspace";
 import { paperFileRequest } from "../../src/paper/paperResources";
-import { ResourceStore } from "../../src/core/resourceStore";
-import { RefreshRuntimeContext } from "../../src/core/useResource";
+import { ResourceRuntime } from "./resourceRuntime";
 import "../../src/styles.css";
 
-const store = new ResourceStore();
 const project = {
   id: "p",
   revision: 1,
@@ -93,7 +91,7 @@ function Tab() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <RefreshRuntimeContext.Provider value={{ store } as never}>
+  <ResourceRuntime>
     <Tab />
-  </RefreshRuntimeContext.Provider>,
+  </ResourceRuntime>,
 );
