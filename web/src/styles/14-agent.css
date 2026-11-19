@@ -335,6 +335,10 @@
 .upcoming-open[aria-expanded="true"] svg {
   transform: rotate(90deg);
 }
+.upcoming-open[aria-expanded="true"] strong {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 .upcoming-row[data-state="degraded"] .upcoming-when {
   color: var(--coral);
 }

@@ -37,7 +37,7 @@ import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
 import { DraggableWindow } from "../ui/DraggableWindow";
-import { GlossaryText, formatNodeValue } from "./GlossaryText";
+import { GlossaryText, formatNodeContext, formatNodeValue } from "./GlossaryText";
 import { takeNodeEditRequest, useNodeEditRequest } from "./nodeEditRequest";
 import {
   changedNodeFields,
@@ -100,6 +100,7 @@ interface Props {
   behind?: boolean;
   canonicalStanding?: GraphNode["standing"];
   experimentControl?: ExperimentControlState | null;
+  experimentAgent?: AgentRunConfig | null;
   experimentEntries?: ExperimentLoopIndexEntry[];
   experimentUnavailableLoops?: UnavailableExperimentLoop[];
   /** Whether the project's loop inventory is known yet, for the overlap list. */
@@ -193,6 +194,7 @@ export function DetailDrawer({
   behind = false,
   canonicalStanding = node.standing,
   experimentControl = null,
+  experimentAgent = null,
   experimentEntries = [],
   experimentUnavailableLoops = [],
   experimentEntriesStatus = "loaded",
@@ -240,6 +242,7 @@ export function DetailDrawer({
   }, [node.id]);
   const launchConfig =
     pickedConfig ??
+    experimentAgent ??
     (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
   const launchReady =
     !project ||
@@ -960,7 +963,7 @@ export function DetailDrawer({
                     {presentation.context.map((item) => (
                       <div key={item.key}>
                         <dt>{item.label}</dt>
-                        <dd>{formatNodeValue(item.value, glossaryIndex)}</dd>
+                        <dd>{formatNodeContext(item.value, glossaryIndex)}</dd>
                       </div>
                     ))}
                   </dl>

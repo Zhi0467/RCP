@@ -16,7 +16,7 @@ import type {
   ProjectSnapshot,
 } from "../core/types";
 import { SYNC_BEFORE_START } from "../experiments/experimentStart";
-import { formatNodeValue } from "../graph/GlossaryText";
+import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
 import type { GlossaryIndex } from "../graph/glossary";
 import { graphProfile } from "../graph/graphResources";
 import { requestNodeEdit } from "../graph/nodeEditRequest";
@@ -170,7 +170,7 @@ export function ExperimentPlanCardView({
           Design
           {editIcon("Edit node")}
         </dt>
-        <dd>{node?.design ? formatNodeValue(node.design, glossaryIndex) : null}</dd>
+        <dd>{node?.design ? formatNodeContext(node.design, glossaryIndex) : null}</dd>
       </dl>
       <dl className="plan-section">
         <dt>

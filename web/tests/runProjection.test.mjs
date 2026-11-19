@@ -6,6 +6,7 @@ import {
   buildExperimentRun,
   authorizedInvocationCount,
   experimentRecommendation,
+  experimentRunConfig,
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isGraphWatcherRecord,
@@ -730,4 +731,37 @@ test("chat strips and run watchers preserve exact target identity on a shared no
     assert.deepEqual(ids(run.watchers), [id]);
     assert.deepEqual(ids(run.currentWatchers), [id]);
   }
+});
+
+test("the next episode keeps the agent the latest episode ran on", () => {
+  const node = experiment("experiment/agent-choice");
+  const episodeId = "episode-agent-choice";
+  const ran = loopTask("claude-turn", node.id, episodeId, "succeeded", "2026-08-14T09:50:00Z");
+  ran.request = { ...ran.request, provider: "claude", model: "opus", reasoning: "medium" };
+  const ended = control({ episode_id: episodeId }, {});
+
+  assert.deepEqual(experimentRunConfig(buildExperimentRun(node, ended, [ran], []), "backend"), {
+    provider: "claude",
+    model: "opus",
+    reasoning: "medium",
+    run_on: "backend",
+  });
+  assert.equal(
+    experimentRunConfig(buildExperimentRun(node, control({}, {}), [], []), "backend"),
+    null,
+  );
+
+  const aged = control({ episode_id: episodeId }, {});
+  aged.operational.session = {
+    ...aged.operational.session,
+    provider: "claude",
+    model: "opus",
+    reasoning: "medium",
+  };
+  assert.deepEqual(experimentRunConfig(buildExperimentRun(node, aged, [], []), "backend"), {
+    provider: "claude",
+    model: "opus",
+    reasoning: "medium",
+    run_on: "backend",
+  });
 });
