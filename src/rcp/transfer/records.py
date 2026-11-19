@@ -838,6 +838,7 @@ class TransferEpisodeWrapup(_StrictTransferRecord):
 
 
 class TransferExperimentEpisodeHistory(_StrictTransferRecord):
+    messages: tuple[TransferAutoResearchMessage, ...] = ()
     provider: str | None = None
     chat_id: str | None = None
     last_turn_operation_id: str | None = None
@@ -861,7 +862,11 @@ class TransferAutoResearchMessage(_StrictTransferRecord):
     sender_role: Literal["human", "orchestrator", "worker"]
     sender_task_id: str | None = None
     authorized_by_attribution_id: str | None = None
-    recipient_task_id: str = Field(min_length=1)
+    recipient_task_id: str | None = Field(default=None, min_length=1)
+    recipient_kind: Literal["actor", "chat", "episode"] = "actor"
+    recipient_chat_id: str | None = None
+    item_kind: Literal["message", "question", "answer", "pause", "ending"] = "message"
+    source_ref: str | None = None
     control_node_id: str | None = None
     body: str = Field(min_length=1, max_length=16_000)
     disposition: Literal["delivered", "cancelled"]
@@ -877,6 +882,10 @@ class TransferAutoResearchMessage(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_message(self) -> TransferAutoResearchMessage:
+        if (self.recipient_task_id is not None) != (self.recipient_kind == "actor"):
+            raise ValueError("mail actor address does not match recipient kind")
+        if (self.recipient_chat_id is not None) != (self.recipient_kind == "chat"):
+            raise ValueError("mail chat address does not match recipient kind")
         if self.sender_role == "human" and self.authorized_by_attribution_id is None:
             raise ValueError("human Auto-research history requires attribution")
         if self.sender_role != "human" and self.authorized_by_attribution_id is not None:
@@ -1269,8 +1278,9 @@ class TransferRecordBundle(_StrictTransferRecord):
         references.update(
             message.authorized_by_attribution_id
             for episode in self.episodes
-            if episode.auto_research is not None
-            for message in episode.auto_research.messages
+            for history in (episode.auto_research, episode.experiment)
+            if history is not None
+            for message in history.messages
             if message.authorized_by_attribution_id is not None
         )
         if not references <= attribution_ids:
@@ -1338,6 +1348,10 @@ class TransferRecordBundle(_StrictTransferRecord):
                     task_ids,
                     "Experiment last-turn task",
                 )
+                for message in episode.experiment.messages:
+                    require(message.sender_task_id, task_ids, "Experiment mail sender task")
+                    if message.recipient_kind == "actor":
+                        raise ValueError("Experiment mail cannot name an actor recipient")
                 unknown_watchers = set(episode.experiment.last_watcher_ids) - watcher_ids
                 if unknown_watchers:
                     raise ValueError("Experiment history references an unknown watcher")
@@ -1387,7 +1401,10 @@ class TransferRecordBundle(_StrictTransferRecord):
                 require(reference, task_ids, "Auto-research invocation task")
         for message in history.messages:
             require(message.sender_task_id, task_ids, "Auto-research sender task")
-            if message.recipient_task_id not in task_ids | child_work_ids:
+            if (
+                message.recipient_kind == "actor"
+                and message.recipient_task_id not in task_ids | child_work_ids
+            ):
                 raise ValueError("Auto-research message references an unknown recipient")
         for recovery in history.recoveries:
             require(recovery.operation_id, task_ids, "Auto-research recovery task")

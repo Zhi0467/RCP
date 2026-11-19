@@ -981,6 +981,39 @@ wait for its human is also open to the chat the Experiment runs in, as before.
   Auto-research orchestrator. An ended orchestrator needs `--invocation-limit`,
   which continues it with that message.
 
+**Parent/child mailbox.** A direct child sends its questions, pauses and endings
+to the chat that started the chain. Continuations retain the first episode's
+starting chat. Auto-research children report only to their orchestrator; the
+orchestrator's own questions and ending reach its starting chat. Question and
+ending records insert their mail in the same transaction as the source event.
+
+An idle parent receives one ordinary Work wake for a bounded mail batch. Storage
+atomically selects the latest settled usable chat session and stage, inserts the
+wake and claims the items. An occupied chat claims pending mail during its next
+turn's staging. Wakes use a deterministic operation id, a cooldown and a per-child
+chain cap equal to the child's invocation ceiling. Resolved questions alone do
+not wake a chat, and items originating from a wake-caused turn cannot wake it.
+Items held back by the cap or by their cause wait for the chat's next turn.
+Startup and task settlement reconcile pending items and admitted but unlaunched
+wakes through the ordinary task launcher; a cooldown refusal arms one later pass.
+Mail remains in durable storage; a recovery attempt stages the items its lineage
+claimed in `episode-mail.json`, and the prompt points to it with item and
+question counts. The read context of every chat that started episodes lists
+each child chain's state, ending and open questions.
+
+`episode --answer <question_id> --answer-file <file> [--choice <choice>]` answers
+only a question from a child started here, using the human route's first-answer
+arbitration. A later answer is `question_already_answered`. Approval and plan
+cards require the human (`question_needs_human`). If answering the chain's last
+open question would need continuation turns, the parent receives
+`question_needs_continuation`; it does not allocate a new child budget. The human
+can answer and add turns through the existing question controls.
+
+`episode --message <id> --body-file <file>` also accepts a running Experiment
+chain. Its mail waits for the next invocation, which claims it in the episode's
+saved session and stage under the Stop fence. It never steers an active provider
+invocation. An ended Experiment refuses with `episode_not_running`.
+
 Add-turns and message requests derive their request ids from the turn and key,
 so a replay returns the same continuation or message. Pause and resume record a
 receipt, so a replay answers with the turn they already controlled. To change

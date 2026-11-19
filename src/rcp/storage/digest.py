@@ -203,6 +203,17 @@ def append_episode_ended(connection, episode_id, created_at):
         ).fetchone()
     ):
         return
+    from rcp.storage.episodes import append_episode_parent_mail
+
+    append_episode_parent_mail(
+        connection,
+        episode_id,
+        "pause" if row["ending"] == "human_pause" else "ending",
+        episode_id,
+        json.dumps({"status": row["status"], "ending": row["ending"]}),
+        created_at,
+        row["root_operation_id"],
+    )
     append_digest_event(
         connection,
         project_id=row["project_id"],

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol
 from rcp.agents.command_protocol import (
     AutoResearchKickoffArguments,
     CommandResponse,
+    EpisodeAnswerArguments,
     EpisodeCommandRequest,
     WorkEpisodeControlArguments,
 )
@@ -87,6 +88,10 @@ class WorkEpisodeControls(Protocol):
     def add_turns(
         self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str
     ) -> EpisodeRecord: ...
+
+    def answer(
+        self, act: WorkEpisodeAct, *, question_id: str, answer: str, choices: list[str]
+    ) -> None: ...
 
     def message(
         self,
@@ -335,10 +340,31 @@ def handle_work_episode_controls(
     execution: AgentTaskExecution,
     mailbox: RunStageMailbox | None,
     request: EpisodeCommandRequest,
-    arguments: WorkEpisodeControlArguments,
+    arguments: WorkEpisodeControlArguments | EpisodeAnswerArguments,
 ) -> CommandResponse:
     """Pause, add turns to, or message an episode this chat started."""
 
+    if isinstance(arguments, EpisodeAnswerArguments):
+        question = execution.store.get_question(arguments.question_id)
+        if question is None or question.origin.owner_kind != "episode":
+            return _refuse(request, "No such child question.", "question_not_found")
+        owned = own_episode(execution, request, question.origin.owner_id)
+        if isinstance(owned, CommandResponse):
+            return owned
+        controls, act = owned
+        if mailbox is None:
+            return _unavailable(request, "Episode answers are unavailable for this turn.")
+
+        def answer() -> CommandResponse:
+            controls.answer(
+                act,
+                question_id=arguments.question_id,
+                answer=read_workspace_text(mailbox, arguments.answer_file, "Answer file"),
+                choices=arguments.choices,
+            )
+            return _ok(request, disposition="answered", question_id=arguments.question_id)
+
+        return _attempt(request, "episode_answer_refused", answer)
     if arguments.action == "pause":
         return control_own_turn(execution, request, arguments.episode_id, "pause")
     owned = own_episode(execution, request, arguments.episode_id)
@@ -416,6 +442,7 @@ def handle_work_auto_research_kickoff(
 def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
     """The Auto-research kickoff and shared episode-control usage of a Work turn."""
 
+    from rcp.agents.prompts import EPISODE_MAILBOX_RULES
     from rcp.runs.approval_cards import APPROVAL_OUTCOMES
 
     add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
@@ -439,6 +466,9 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         + " To revise the plan after the human comments, "
         "use a new key; the new card replaces the old one. Once approved, tell the human "
         "what started (goal, limit, branch).\n"
+        f"{EPISODE_MAILBOX_RULES}\n"
+        f"Answer a child question with `{client} episode --answer <question-id> "
+        "--answer-file <filename> [--choice <choice>] --key <key>`.\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other.\n"
         f"- `{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
@@ -448,7 +478,7 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         "session.\n"
         f"- `{client} {add_turns}` adds turns to an ended episode. It continues on the same "
         "branch, code worktree, and session, so this is how you restart one there.\n"
-        f"- `{client} {message}` sends the body file to an Auto-research orchestrator. An "
+        f"- `{client} {message}` sends the body file to a child. Experiments receive it next turn. An "
         "ended orchestrator needs the limit, which continues it with that message.\n"
         "To steer a running episode, message it or post to the Bulletin. To change its course, "
         "pause it, make the change (a message for an orchestrator; your Patch for an "

@@ -1453,8 +1453,8 @@ def _stage_claimed_mail(
     messages = _claimed_messages(execution, turn)
     mailbox = RunStageMailbox.for_stage(local_stage=stage.local, remote_stage=stage.remote)
     if messages:
-        recipient = messages[0].recipient_task_id
-        if recipient != turn.binding.actor_operation_id:
+        recipient = turn.binding.actor_operation_id
+        if messages[0].recipient_task_id != recipient:
             raise ValueError("Claimed auto_research mail targets another auto_research actor.")
 
         def build(batch: list[AutoResearchMessageRecord]):

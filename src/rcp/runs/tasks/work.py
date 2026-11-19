@@ -1163,7 +1163,7 @@ def _work_continuation(
     ]
     if browser_grant is not None and browser_grant.status != "not_requested":
         delta = {**(delta or {}), "browser": browser_prompt_line(browser_grant)}
-    parts.append(render_chat_read_context(turn.context))
+    parts.append(render_chat_read_context(turn.context, turn.execution))
     parts.append(
         stage_operational_context_pointer(
             turn.execution,
@@ -1287,7 +1287,7 @@ def _compose_fresh_prompt(
                 turn.remote_stage,
             )
             + "\n\n"
-            + render_chat_read_context(turn.context)
+            + render_chat_read_context(turn.context, turn.execution)
         )
         invocation = _work_invocations(turn, staged.skill_pointers)
         if invocation:
@@ -1327,7 +1327,7 @@ def _compose_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
         question_part=prepare_work_question_snapshot(turn),
-        read_context=render_chat_read_context(turn.context),
+        read_context=render_chat_read_context(turn.context, turn.execution),
         browser_grant=browser_grant,
     )
     return _ComposedWorkPrompt(
@@ -1393,7 +1393,7 @@ def _compose_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
-    prompt += "\n\n" + render_chat_read_context(turn.context)
+    prompt += "\n\n" + render_chat_read_context(turn.context, turn.execution)
     prompt += "\n\n" + stage_operational_context_pointer(
         turn.execution,
         turn.local_stage,

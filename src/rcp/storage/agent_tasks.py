@@ -374,28 +374,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 or classify_terminal_error(task.error or "") == "stale_session"
             ):
                 raise ValueError("question_origin_binding_unavailable")
-            if self._has_resumable_paused_chat_task(
-                connection, origin.project_id, task.kind, origin.owner_id
-            ):
-                raise AgentTaskAdmissionConflict("question_session_paused")
-            if origin.stage_machine_id and self._unresolved_remote_provider_passes(
-                connection, origin.stage_machine_id, origin.stage_root
-            ):
-                raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
-            unavailable = connection.execute(
-                """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
-                category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
-                OR (category='provider_terminal_error'
-                    AND json_extract(payload_json,'$.classification')='stale_session')
-                OR (category='continuation_context_unavailable'
-                    AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
-                (origin.operation_id,),
-            ).fetchone()
-            if unavailable is not None or cast("AppStore", self).provider_session_swept(
-                origin.native_session_id
-            ):
-                raise ValueError("question_origin_session_unavailable")
-            self._require_project_accepts_new_work(connection, origin.project_id)
+            self._require_chat_wake_binding(connection, task)
             # The answer is an ordinary turn: any artifact it changes in place
             # becomes that artifact's next version, as session tracking finds it.
             request = RunRequest.model_validate(
@@ -408,6 +387,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "session_id": origin.native_session_id,
                     "message": question.answer or "\n".join(question.chosen_choices),
                     "trigger": "human",
+                    "chat_wake": None,
                     "attachments": [],
                     "references": [],
                     "attachment_batch_id": None,
@@ -451,6 +431,232 @@ class AgentTaskStoreMixin(StoreMixinBase):
             # still checks current project, graph, session and stage constraints.
             self._insert_agent_task(connection, followup, continuation_cause="message_wake")
         return self.agent_task(operation_id)
+
+    def _require_chat_wake_binding(
+        self, connection: sqlite3.Connection, task: AgentTaskRecord
+    ) -> None:
+        chat_id = task.request.get("chat_id")
+        if (
+            task.status not in {"succeeded", "failed"}
+            or task.history_only
+            or task.authorized_by is None
+            or task.kind not in {"node_chat", "project_chat"}
+            or task.episode_id is not None
+            or not isinstance(chat_id, str)
+            or not task.native_session_id
+            or not task.stage_root
+            or task.dispatch_authority is None
+            or classify_terminal_error(task.error or "") == "stale_session"
+        ):
+            raise ValueError("question_origin_binding_unavailable")
+        if self._has_resumable_paused_chat_task(connection, task.project_id, task.kind, chat_id):
+            raise AgentTaskAdmissionConflict("question_session_paused")
+        if task.stage_machine_id and self._unresolved_remote_provider_passes(
+            connection, task.stage_machine_id, task.stage_root
+        ):
+            raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
+        unavailable = connection.execute(
+            """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
+            category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
+            OR (category='provider_terminal_error'
+                AND json_extract(payload_json,'$.classification')='stale_session')
+            OR (category='continuation_context_unavailable'
+                AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
+            (task.operation_id,),
+        ).fetchone()
+        if unavailable is not None or cast("AppStore", self).provider_session_swept(
+            task.native_session_id
+        ):
+            raise ValueError("question_origin_session_unavailable")
+        cast("AppStore", self)._require_project_accepts_new_work(connection, task.project_id)
+
+    def admit_chat_wake(
+        self, project_id: str, chat_id: str, cause: str, item_ids: Sequence[str]
+    ) -> AgentTaskRecord | None:
+        """Atomically bind a bounded cause batch to one idle chat turn.
+
+        Items written by a wake-caused turn, and items of a child chain that used
+        its wake budget, stay pending for the chat's next ordinary turn.
+        """
+        from rcp.limits import AUTO_RESEARCH_MAIL_MAX_MESSAGES, CHAT_WAKE_MIN_SECONDS
+        from rcp.service import RunRequest
+
+        if not cause or not item_ids or len(set(item_ids)) != len(item_ids):
+            raise ValueError("chat_wake_items_invalid")
+        if len(item_ids) > AUTO_RESEARCH_MAIL_MAX_MESSAGES:
+            raise ValueError("chat_wake_batch_limit")
+        operation_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                json.dumps(
+                    ["chat-wake", project_id, chat_id, cause, sorted(item_ids)],
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if existing is not None:
+                return self._agent_task_record(existing)
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? "
+                "AND kind IN ('node_chat','project_chat') AND episode_id IS NULL "
+                "ORDER BY created_at DESC,operation_id DESC LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("chat_wake_binding_unavailable")
+            task = self._agent_task_record(row)
+            if self._has_active_chat_overlap(connection, task):
+                raise AgentTaskAdmissionConflict("chat_wake_busy")
+            self._require_chat_wake_binding(connection, task)
+            if (
+                task.request.get("mode", "work") != "work"
+                or task.request.get("patch_kind", "work") != "work"
+            ):
+                raise ValueError("chat_wake_binding_unavailable")
+            now = self.now()
+            last = connection.execute(
+                "SELECT created_at FROM graph_runs WHERE project_id=? "
+                "AND json_extract(request_json,'$.chat_id')=? "
+                "AND json_extract(request_json,'$.chat_wake') IS NOT NULL "
+                "ORDER BY created_at DESC LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+            if (
+                last is not None
+                and (datetime.fromisoformat(now) - datetime.fromisoformat(last[0])).total_seconds()
+                < CHAT_WAKE_MIN_SECONDS
+            ):
+                raise AgentTaskAdmissionConflict("chat_wake_cooldown")
+            placeholders = ",".join("?" for _ in item_ids)
+            items = connection.execute(
+                "SELECT mail.* FROM auto_research_messages AS mail "
+                "JOIN episodes AS episode ON episode.episode_id=mail.episode_id "
+                f"WHERE mail.message_id IN ({placeholders}) AND episode.project_id=? "
+                "ORDER BY mail.created_at,mail.message_id",
+                (*item_ids, project_id),
+            ).fetchall()
+            if len(items) != len(item_ids) or any(
+                item["recipient_kind"] != "chat"
+                or item["recipient_chat_id"] != chat_id
+                or item["delivered_at"] is not None
+                for item in items
+            ):
+                raise ValueError("chat_wake_items_unavailable")
+            senders = {item["sender_task_id"] for item in items} - {None}
+            woken = {
+                found[0]
+                for found in connection.execute(
+                    "SELECT operation_id FROM graph_runs WHERE operation_id IN "
+                    f"({','.join('?' for _ in senders)}) "
+                    "AND json_extract(request_json,'$.chat_wake') IS NOT NULL",
+                    tuple(senders),
+                )
+            }
+            items = [item for item in items if item["sender_task_id"] not in woken]
+            if not items:
+                raise AgentTaskAdmissionConflict("chat_wake_self_caused")
+            chains = {
+                item["message_id"]: _chain_root(connection, project_id, item["episode_id"])
+                for item in items
+            }
+            spent = set()
+            for chain_id in set(chains.values()):
+                ceiling = connection.execute(
+                    "SELECT invocation_ceiling FROM episodes WHERE episode_id=?", (chain_id,)
+                ).fetchone()[0]
+                used = connection.execute(
+                    "SELECT COUNT(*) FROM graph_runs, json_each(request_json,'$.chat_wake.chains') "
+                    "WHERE project_id=? AND json_extract(request_json,'$.chat_id')=? "
+                    "AND json_each.value=?",
+                    (project_id, chat_id, chain_id),
+                ).fetchone()[0]
+                if used >= ceiling:
+                    spent.add(chain_id)
+            items = [item for item in items if chains[item["message_id"]] not in spent]
+            if not items:
+                raise AgentTaskAdmissionConflict("chat_wake_chain_limit")
+            if all(item["item_kind"] == "question" for item in items) and (
+                connection.execute(
+                    "SELECT 1 FROM questions WHERE question_id IN "
+                    f"({','.join('?' for _ in items)}) AND state='pending' LIMIT 1",
+                    tuple(item["source_ref"] for item in items),
+                ).fetchone()
+                is None
+            ):
+                return None
+            items = cast("AppStore", self).episode_mail_claim_prefix(
+                items, "chat", chat_id, operation_id, now
+            )
+            claimed = [item["message_id"] for item in items]
+            request = RunRequest.model_validate(
+                {**task.request, "artifact_context": None, "artifact_edit": None}
+            ).model_copy(
+                update={
+                    "browser_requested": cast("AppStore", self)._chat_browser_requested(
+                        connection, project_id, chat_id
+                    ),
+                    "session_id": task.native_session_id,
+                    "message": "Read the episode mailbox.",
+                    "trigger": "human",
+                    "attachments": [],
+                    "references": [],
+                    "attachment_batch_id": None,
+                    "attachment_set_id": None,
+                    "attachment_client_id": None,
+                    "watcher_ids": [],
+                    "invoked_workflow_ids": [],
+                    "invoked_skill_ids": [],
+                    "invoked_provider_skill_names": [],
+                    "resolved_provider_skills": [],
+                    "chat_wake": {
+                        "kind": cause,
+                        "item_ids": claimed,
+                        "chains": sorted({chains[item_id] for item_id in claimed}),
+                    },
+                }
+            )
+            wake = AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind=task.kind,
+                status="queued",
+                request=request.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Queued mailbox wake",
+                native_session_id=task.native_session_id,
+                stage_machine_id=task.stage_machine_id,
+                stage_root=task.stage_root,
+                graph_target=task.graph_target,
+                authorized_by=task.authorized_by,
+                dispatch_authority=task.dispatch_authority,
+                runtime_id=task.runtime_id,
+            )
+            self._insert_agent_task(connection, wake, continuation_cause="message_wake")
+            connection.execute(
+                "UPDATE auto_research_messages SET delivered_at=?,delivery_operation_id=? "
+                f"WHERE message_id IN ({','.join('?' for _ in claimed)})",
+                (now, operation_id, *claimed),
+            )
+        return self.agent_task(operation_id)
+
+    def pending_chat_wakes(self) -> list[AgentTaskRecord]:
+        from rcp.limits import CHAT_MAIL_RECONCILE_LIMIT
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM graph_runs WHERE status='queued' AND history_only=0 "
+                "AND json_extract(request_json,'$.chat_wake.kind') IS NOT NULL "
+                "AND kind IN ('node_chat','project_chat') ORDER BY created_at LIMIT ?",
+                (CHAT_MAIL_RECONCILE_LIMIT,),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
 
     def question_for_followup(self, operation_id: str) -> QuestionRecord | None:
         """Keep an answer's binding through recovery children as well as its first turn."""

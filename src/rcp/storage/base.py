@@ -162,6 +162,7 @@ class AppStoreBase:
         (89, "shared_chat_card_versions_v1"),
         (90, "plan_card_receipt_index_v1"),
         (91, "bulletin_deltas_v1"),
+        (92, "episode_mailbox_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1173,6 +1174,12 @@ class AppStoreBase:
 
         self._run_storage_schema_migration(
             connection, version=91, name="bulletin_deltas_v1", migration=migrate_bulletin_deltas
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=92,
+            name="episode_mailbox_v1",
+            migration=self._migrate_episode_mailbox,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2918,6 +2925,32 @@ class AppStoreBase:
             ),
         )
 
+    def _migrate_episode_mailbox(self, connection: sqlite3.Connection) -> None:
+        """Address mail to an actor, a chat, or an Experiment; old rows stay actor messages."""
+        for column, definition in (
+            ("recipient_kind", "TEXT NOT NULL DEFAULT 'actor'"),
+            ("recipient_chat_id", "TEXT"),
+            ("item_kind", "TEXT NOT NULL DEFAULT 'message'"),
+            ("source_ref", "TEXT"),
+        ):
+            self._ensure_column(connection, "auto_research_messages", column, definition)
+        schema = [
+            row for row in self._storage_schema(connection) if row[2] == "auto_research_messages"
+        ]
+        create_sql = next(row[3] for row in schema if row[0] == "table")
+        nullable_sql = create_sql.replace(
+            "recipient_task_id TEXT NOT NULL", "recipient_task_id TEXT", 1
+        )
+        if nullable_sql != create_sql:
+            self._rebuild_storage_table(connection, "auto_research_messages", nullable_sql)
+            for kind, _name, _table, sql in schema:
+                if kind in {"index", "trigger"}:
+                    connection.execute(sql)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episode_mail_pending "
+            "ON auto_research_messages(recipient_kind, recipient_chat_id, delivered_at, created_at)"
+        )
+
     @classmethod
     def _migrate_episode_stop_provenance(cls, connection: sqlite3.Connection) -> None:
         cls._ensure_column(connection, "episodes", "stop_initiated_by", "TEXT")
@@ -3391,8 +3424,7 @@ class AppStoreBase:
     def _migrate_plan_card_receipt_index(connection: sqlite3.Connection) -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS graph_run_receipts_plan_cards "
-            "ON graph_run_receipts(category, operation_id) "
-            "WHERE json_extract(payload_json,'$.phase')='card_pending'"
+            "ON graph_run_receipts(category, operation_id)"
         )
 
     @staticmethod

@@ -1021,6 +1021,10 @@ class ArtifactEditAdmission(BaseModel):
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    chat_wake: dict[str, object] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     browser_requested: bool = False
     timezone: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source: ChatMessageSource | None = Field(default=None, exclude_if=lambda value: value is None)

@@ -252,6 +252,33 @@ class MemberEpisodeControls:
                 raise _refused(exc, "episode_not_continuable") from exc
         return continuation
 
+    def answer(
+        self, act: WorkEpisodeAct, *, question_id: str, answer: str, choices: list[str]
+    ) -> None:
+        from rcp.api.questions import AnswerQuestionBody, deliver_question_answer
+        from rcp.runs.experiment_questions import reconcile_experiment_question_answers
+
+        episode, authorizer = self._episode(act)
+        tasks = self.tasks()
+        with self._admitted(episode.project_id, authorizer):
+            question = tasks.store.get_question(question_id)
+            if question is None or question.origin.owner_id != act.episode_id:
+                raise EpisodeRefused("question_not_found", "No such child question.")
+            try:
+                _, reconcile = deliver_question_answer(
+                    question,
+                    AnswerQuestionBody(answer=answer, choices=choices),
+                    human=authorizer,
+                    store=tasks.store,
+                    catalog=self.catalog,
+                    background_tasks=tasks,
+                    parent=True,
+                )
+            except HTTPException as exc:
+                raise _refused(exc, "episode_answer_refused") from exc
+        if reconcile:
+            reconcile_experiment_question_answers(tasks, project_id=episode.project_id)
+
     def message(
         self,
         act: WorkEpisodeAct,

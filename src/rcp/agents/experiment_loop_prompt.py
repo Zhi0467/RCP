@@ -12,6 +12,7 @@ from rcp.agents.prompts import (
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     COMMAND_CLIENT,
+    EPISODE_MAILBOX_CHILD_RULE,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     REPOSITORIES_READ_RULE,
@@ -236,6 +237,8 @@ Operate one already-authorized invocation of the bounded loop for Experiment
 `{focused_experiment_id}`. Inspect the current scientific and operational state, do the useful work
 this invocation permits, and decide whether to continue through watchers, pause for human authority,
 or finish. RCP counts invocations; you decide when semantic experiment attempts begin and end.
+
+{EPISODE_MAILBOX_CHILD_RULE}
 
 Project: {project_name}
 

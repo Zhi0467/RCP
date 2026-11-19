@@ -2773,7 +2773,11 @@ class AutoResearchMessageRecord(BaseModel):
     sender_role: AutoResearchMessageRole
     sender_task_id: str | None = None
     authorized_by: AuthorizedHuman | None = None
-    recipient_task_id: str
+    recipient_kind: Literal["actor", "chat", "episode"] = "actor"
+    recipient_task_id: str | None = None
+    recipient_chat_id: str | None = None
+    item_kind: Literal["message", "question", "answer", "pause", "ending"] = "message"
+    source_ref: str | None = None
     control_node_id: str | None = None
     body: str = Field(min_length=1, max_length=AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH)
     created_at: str
@@ -2792,6 +2796,10 @@ class AutoResearchMessageRecord(BaseModel):
     def only_human_messages_carry_human_identity(self) -> AutoResearchMessageRecord:
         if self.sender_role != "human" and self.authorized_by is not None:
             raise ValueError("an agent Auto-research message cannot claim a human sender snapshot")
+        if (self.recipient_task_id is not None) != (self.recipient_kind == "actor"):
+            raise ValueError("mail_actor_address_invalid")
+        if (self.recipient_chat_id is not None) != (self.recipient_kind == "chat"):
+            raise ValueError("mail_chat_address_invalid")
         return self
 
 

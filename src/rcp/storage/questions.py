@@ -166,6 +166,18 @@ class QuestionStoreMixin(StoreMixinBase):
                     record.created_at,
                 ),
             )
+            if origin.owner_kind == "episode":
+                from rcp.storage.episodes import append_episode_parent_mail
+
+                append_episode_parent_mail(
+                    connection,
+                    origin.owner_id,
+                    "question",
+                    record.question_id,
+                    question,
+                    record.created_at,
+                    origin.operation_id,
+                )
             if card is not None:
                 insert_approval_card(connection, record.question_id, card, self.now())
             append_question_attention(

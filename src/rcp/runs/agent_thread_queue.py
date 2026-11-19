@@ -70,7 +70,8 @@ def dispatch_thread_queue(
         except Exception:
             logger.exception("Queued message %s could not be deferred", row.queue_id)
     if any(row.deferred_at is not None for row in store.pending_agent_thread_queue()):
-        background.schedule_thread_queue_dispatch(
+        background.schedule_deferred_pass(
+            "thread_queue",
             AGENT_THREAD_QUEUE_RETRY_SECONDS,
             lambda: dispatch_thread_queue(
                 store, catalog, background, project_admission=project_admission

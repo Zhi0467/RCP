@@ -174,6 +174,7 @@ from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_forks import archive_settled_auto_research_forks
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.episode_mailbox import reconcile_pending_chat_mail
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
@@ -1561,6 +1562,10 @@ def create_app(
                             operation_id=execution.operation_id,
                         )
             finally:
+                try:
+                    reconcile_pending_chat_mail(background_tasks)
+                except Exception:
+                    logger.exception("Could not reconcile chat mailbox after task settlement")
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
 
@@ -2210,6 +2215,10 @@ def create_app(
                         logger.warning(
                             "Could not recover fork merge %s: %s", task.operation_id, exc
                         )
+                try:
+                    await asyncio.to_thread(reconcile_pending_chat_mail, background_tasks)
+                except Exception:
+                    logger.exception("Could not reconcile chat mailbox at startup")
                 for project in store.projects():
                     for episode in store.episodes(project.project_id, limit=None):
                         state = store.episode_isolation_state(
