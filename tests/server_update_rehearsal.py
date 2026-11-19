@@ -425,7 +425,7 @@ def drive(
         private_payload(state, output)
         validate_private_state(private_state, source["manifest_sha256"])
         for name in ("private.tar", "private-sockets.json", "private-state.json"):
-            guest.copy(output / name, "/home/qualifier/" + name)
+            guest.copy(output / name, "/home/qualifier/" + name, timeout=1800)
         python = "/opt/rcp-installed-upgrade/bootstrap/bin/python"
         guest.ssh(
             [

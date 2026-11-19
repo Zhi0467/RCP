@@ -330,7 +330,7 @@ class Guest:
                 exc.add_note("Guest SSH stderr:\n" + exc.stderr[-20000:])
             raise
 
-    def copy(self, source: Path, destination: str) -> None:
+    def copy(self, source: Path, destination: str, *, timeout: int = COMMAND_TIMEOUT) -> None:
         if (
             not destination.startswith("/home/qualifier/")
             or ".." in Path(destination).parts
@@ -345,7 +345,8 @@ class Guest:
                 str(self.port),
                 str(source),
                 f"qualifier@127.0.0.1:{destination}",
-            ]
+            ],
+            timeout=timeout,
         )
 
     def install_payload(self, source: Path) -> None:
