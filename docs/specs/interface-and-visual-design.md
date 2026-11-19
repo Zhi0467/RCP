@@ -569,8 +569,8 @@ Design (markdown), Done when, This run (the goal), then one row with the agent
 chip and turn limit, then Don't run this now and Start. Design and Done when
 open the node's Edit node. An Auto-research plan shows its branch name as a
 chip, This run (the starting instruction, whose pencil also opens the branch
-name), then the same row with the Code worktree choice. Start waits while the
-member has staged changes on the card's graph target. Edits to a plan card
+name), then the same row with the Code worktree choice. An Experiment plan's Start
+waits while the member has staged changes on the card's graph target. Edits to a plan card
 last while its stack is shown, across Next and Back.
 
 Approval cards stay where the agent raised them, before later transcript lines,
@@ -581,7 +581,7 @@ ordered fallbacks as an asked card: the turn's lines, then its time position,
 then the end. Running retries and wakes may have no shown line, so a slot after
 a turn's last line would lose their cards. Cards at one position form one stack:
 the front card with two offset edges behind it, and "‹ 1 of N ›" above its right
-edge. Later puts the front card away for as long as the stack is shown; once
+edge. Later, which plan cards lack, puts the front card away for as long as the stack is shown; once
 every open card is away the stack folds to "N card(s) waiting", which brings
 them back on a tap. Later, the arrows and the
 fold move keyboard focus to the new front card or the fold line. Order and fold
@@ -596,15 +596,15 @@ after a later change that no longer lists it, or when the member leaves the
 thread. The turn keeps its "sent to Inbox" chip. A stale Proposal stays out of
 the dock; the Inbox still lists it. A card whose Proposal was decided elsewhere
 shows "Out of date" with an Open Inbox link. A failed card fetch hides the cards and
-leaves the transcript as it is; an amber cards icon in the composer says so on
-hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
+leaves the transcript as it is; an amber cards icon in the composer (inside
+the dock in shared and node chats) says so on hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
 dock for its own open Proposal and asked cards, then its pending plan cards,
 then its child episodes' questions, then that project's relayed questions,
-then the child runs that need action, then the other child runs, without
-project chips; its plain questions stay inline. A run card names the run,
+then the child runs that need action, then the other child runs. Only its
+Proposal and asked cards drop the project chip; its plain questions stay inline. A run card names the run,
 linked to Runs, with its Runs state, its report once ended, and the controls
 Runs shows from the same projection: an Experiment's controls follow its Runs
 control state, including node readiness and Resume with the turns a pause left
@@ -613,7 +613,7 @@ Back; its controls stay disabled until the dock has re-read after an action.
 At phone width its report link, Later and controls share one row where they
 fit. An ended child leaves the dock when its window closes, without waiting
 for another change. Shared and node chats
-dock their plan cards, children and relayed questions the same way. A decided card
+dock their plan cards, children and child questions the same way. A decided card
 leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval

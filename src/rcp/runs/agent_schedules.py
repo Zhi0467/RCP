@@ -218,6 +218,7 @@ def member_turn(store, task) -> bool:
         bool(str(task.request.get("message") or "").strip())
         and task.request.get("trigger", "human") == "human"
         and source in (None, "voice", "handoff")
+        and not task.request.get("chat_wake")
         and store.question_for_followup(task.operation_id) is None
     ):
         return False

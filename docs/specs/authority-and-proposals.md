@@ -331,7 +331,8 @@ has to open the project to decide. An Auto-research start is the project thread'
 set is refused before it is opened. The action supplies no choices or multiple
 selection; RCP offers Approve and Decline. The action models live in
 [`approval_actions.py`](../../src/rcp/approval_actions.py): Proposal judgment,
-repository truth membership, graph-branch merge, and episode merge. A Proposal
+repository truth membership, graph-branch merge, episode merge, and Experiment
+start. A Proposal
 judgment names an optional `branch_id`: without it the Proposal is on main, with
 it on that graph branch (`proposal_graph`). A stored action from before
 `branch_id` existed reads as main. The model also keeps Auto-research
@@ -346,8 +347,8 @@ instead of telling the member to merge by hand.
 
 The question and its slim `approval_cards` row are committed together. The row
 pins the action and live facts under one SHA-256: pending non-stale Proposal
-content, repository identity and current membership, the Auto-research graph
-target, or the merge source head and preview. The preview already pins main's
+content, repository identity and current membership, the Experiment start pins
+below, the Auto-research graph target, or the merge source head and preview. The preview already pins main's
 value of every field the source changed, and the merge plans against live main,
 so an unrelated main commit leaves a merge card current. Ask refuses an action
 whose target does not exist or no longer applies (for example `branch_not_found`,
@@ -375,7 +376,8 @@ Space prompt raises a card when one fits and never describes one that `ask` did
 not return, because a Space agent that could only point at a dock once invented
 a card that did not exist.
 
-Only the thread's member can resolve a card. The tap checks membership in the
+Only the thread's member can resolve a card, except a
+[plan card](#episode-plan-cards) in a shared or node chat. The tap checks membership in the
 action's project, claims once, compares the presented hash and live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
@@ -413,8 +415,8 @@ The agent reads the outcome from graph state. Decline on any other card executes
 nothing, including a card that asks to reject a Proposal.
 
 Card creation stores a random UUID4 request id; every result retains it.
-Episode start, branch merge and episode merge pass it to their native request-id
-admission. Episode merge compares the pinned source head again under its admission lock,
+Branch merge and episode merge pass it to their native request-id admission.
+Plan-card starts derive the episode id from it instead. Episode merge compares the pinned source head again under its admission lock,
 before reconciliation or merge writes.
 Sync and repository membership have no request-id argument; the durable card
 claim supplies their single-use execution identity. At startup a card claimed
@@ -441,21 +443,28 @@ A fresh Experiment or Auto-research from any agent chat starts only on a human's
 the request and
 answers `card_pending`. When the turn succeeds and its Patch lands, RCP creates
 one `experiment_start` card on the raising turn from the settled graph, so the
-agent may write the node in the same turn. A failed turn, or a node that is
-missing or not an Experiment, gets no card and a task event. A newer card for
+agent may write the node in the same turn. A failed turn gets no card. A node
+that is missing or not an Experiment, or a kickoff a later turn already
+proposed, gets no card and a task event. A newer card for
 the node in the same chat settles the older one `stale`. Kickoff is the only
 creator: `ask` refuses this kind with `experiment_start_uses_episode`.
 
 The card follows its chat. Anyone who can read the chat sees it. In a private
 chat only its owner acts; in a shared or node chat any Patch-capable member with
 write admission acts (`plan_card_actor` in
-[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py)). An Experiment card pins
-the node, its type and the graph target, never the node's revision, so the card
-shows later edits live.
+[`runs/approval_cards.py`](../../src/rcp/runs/approval_cards.py)). Shared-chat
+plan cards send no Needs-you notification. An Experiment card pins the node, its
+type, the graph target, and every governing Decision with its decided option
+(none while undecided), never the node's revision, so the card shows later
+edits live. A changed governing link settles the next tap `stale`.
 
 **Start** goes through the card's tap route with the human's own goal, limit,
-profile and the node revision the card showed. A moved revision answers
-`plan_changed` and keeps the card pending. The episode id derives from the
+profile and the node revision the card showed. Under the project lock, a moved
+revision or changed governing links answer `plan_changed` and keep the card
+pending, as do a missing start (`experiment_start_required`), a limit above the
+node's (`invocation_ceiling_above_node`), and a blank or oversized goal
+(`goal_invalid`). A node that is not ready, an admission conflict, or another
+refusal settles it `failed`. The episode id derives from the
 card's request, the tapping member authorizes it, and its root names the raising
 turn, so that chat may later resume, extend or stop it. **Don't run this now**
 settles `declined`. Outcomes reach the agent through ordinary answer delivery.
@@ -470,7 +479,7 @@ orchestrator profile, and turn budget. Both kinds use one discriminated `start`
 override; a mismatch returns `start_kind_mismatch`. Auto-research uses a stable
 UUIDv4 episode and branch id, while Experiment retains its existing derivation.
 
-`branch_name_invalid`, `branch_name_taken`, `provider_not_ready`,
+`auto_research_start_required`, `branch_name_invalid`, `branch_name_taken`, `provider_not_ready`,
 `machine_not_found`, `auto_research_profile_unavailable`, and
 `auto_research_start_invalid` leave the
 Auto-research card pending for correction. Other start refusals settle it
@@ -478,7 +487,7 @@ Auto-research card pending for correction. Other start refusals settle it
 the durable episode before request receipts and never starts a second episode.
 
 Auto-research Start overrides and kickoff goals share the episode instruction
-length limit. Start validates the human's edits before execution; invalid edits
+length limit. Both kinds cap the turn budget at the largest JSON-safe integer. Start validates the human's edits before execution; invalid edits
 leave the card pending. Refusals carry a code and message. An existing episode
 replays before any provider readiness probe.
 

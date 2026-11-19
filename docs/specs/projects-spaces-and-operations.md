@@ -626,7 +626,9 @@ team `DELETE` itself requires protocol 2 or newer.
 Migration 57 owns target-local Bulletin posts, command receipts, member read
 cursors, and durable mention-notification observations; migration 59 renamed
 Experiment authors and mentions from `episode:<root>` to `chat:<chat_id>` once
-and reinstalled the Bulletin triggers. Posts otherwise retain their original
+and reinstalled the Bulletin triggers. Migration 91 adds per-actor read
+cursors, per-turn deltas and mention wake rows, records which turn added each
+mention, and marks existing agent mentions handled. Posts otherwise retain their original
 agent roster actor id across turns, parsed mentions, edit timestamps,
 and soft-delete timestamps. Artifact links are not stored: each read resolves the
 text's `<artifact:ID>` tokens against the project's readable artifacts (the

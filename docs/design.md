@@ -55,7 +55,9 @@ home for repository-wide invariants and their stable identifiers.
   An episode lineage or a human owns it. It is separate from a Git or filesystem
   branch.
 - A **Bulletin** is an operational board of hearsay for one graph target.
-  It has no wake, steering, or authority effects.
+  It has no steering or authority effects. A
+  [mention](specs/providers-and-containment.md#bulletin-commands-and-context)
+  wakes the idle agent it names.
 - A **Patch** is an attributable, ordered list of typed semantic graph operations.
 - A **Transition** is the manager-prepared atomic result of one mutation.
   It includes generated actions and lifecycle events.
@@ -139,8 +141,10 @@ Linux desktop packages, a hosted service, and multi-server failover.
   stops the providers RCP can reach. There is no persistent provider daemon. Steering uses
   the existing ordinary chat attempt.
 - [Agent mail](specs/auto-research-and-branch-merge.md#mail-and-lifecycle-notices)
-  connects the orchestrator to its workers in a star. There is no peer or
-  cross-episode mail. A member's Space thread may hand that member's request to
+  connects the orchestrator to its workers in a star. A
+  [parent/child mailbox](specs/conversations-episodes-and-watchers.md#work-started-episodes)
+  on the same table carries an episode's questions, pauses and endings to the
+  chat that started it. There is no peer mail. A member's Space thread may hand that member's request to
   the member's own project thread; that is not mail. Agents of different
   members, and board agents, share only through the Bulletin.
 - [Restore](specs/server-and-machine-operations.md#backup-and-restore) requires its

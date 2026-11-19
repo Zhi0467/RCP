@@ -624,7 +624,7 @@ A rule that would ask is rejected, because `opencode run` cannot ask.
 OpenCode prints no event when a turn ends, and a step that stops can be followed
 by another. The launch wrapper therefore prints one `rcp.provider_exit` line
 after the process exits; that line ends the turn locally and in the remote
-fence. Every text part is part of the reply, as Codex's agent messages are.
+fence. Every text part is part of the reply.
 
 ### Antigravity
 
@@ -1017,10 +1017,13 @@ are bounded task events. Broker notices are signed under a notice-only prefix
 and bound to their filename.
 
 `ask --key K --question TEXT` accepts repeated `--choice` and optional `--multiple`
-(which requires choices). It binds immutable origin and arguments; identical
+(which requires choices). A chat may add `--relays <question-id>`, never with
+an approval action, to relay a question from a run it started
+([relays](conversations-episodes-and-watchers.md#work-started-episodes)). It binds immutable origin and arguments; identical
 keys reuse a question, changed arguments fail. Its result carries `question_id`
-and `pending`, `answered`, `dismissed` or `parked`; answered includes text and
-choices. Fresh transport ids poll the same key under one deadline. Once any round
+and `pending`, `answered`, `dismissed`, `parked` or `withdrawn`; answered includes
+text and choices, and `withdrawn` means the human answered the relayed run
+directly. Fresh transport ids poll the same key under one deadline. Once any round
 delivered, later transport failure stays `unknown`. At deadline the agent may
 repeat exactly or end its turn.
 
@@ -1102,10 +1105,11 @@ the agent acted after. The provider runtime holds the latest top-level assistant
 text; the agent's next top-level item releases it as `AgentStatusDelta.message`,
 and text still held when the agent answers is the answer. Claude holds the text
 blocks of one top-level message (subagent text and thinking never count) and
-releases them on its next line; an answering result clears them. Codex app-server
+releases them when a later top-level message or a tool call starts; an answering
+result clears them. Codex app-server
 holds an `agentMessage` with `phase: "commentary"` and releases it on the next
-`item/started`. Commentary is never part of the answer, unless a turn completes
-with nothing else, when the last commentary is the answer. Other phases, and a
+`item/started`. Commentary is never part of the answer, unless it is still held
+when a turn completes without another answer. Other phases, and a
 missing one, are the answer. Codex exec items carry no phase, so it holds every
 `agent_message`, releases it on the next `item.started`, and answers with the one
 still held at `turn.completed`. OpenCode and agy report none. The
