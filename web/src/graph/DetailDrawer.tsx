@@ -1,7 +1,6 @@
 import { WorktreeRepositoryPicker } from "../chat/WorktreeControls";
 import { chosenWorktreeRepository, worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { useEvidenceFlags } from "./EvidenceFlagContext";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { ExperimentStartOverlap } from "../experiments/ExperimentStartOverlap";
 import {
   canStartExperiment,
@@ -33,7 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { pausedResumeTurns } from "../experiments/runProjection";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
@@ -1236,11 +1235,17 @@ function nodeEditFieldError(field: NodeEditField, value: string): string | null 
   return null;
 }
 
+const MarkdownAnswer = lazy(() =>
+  import("../core/chatMarkdown").then((module) => ({ default: module.MarkdownAnswer })),
+);
+
 function formatContextValue(value: unknown, glossaryIndex: GlossaryIndex): React.ReactNode {
   if (typeof value !== "string") return formatValue(value, glossaryIndex);
   return (
     <div className="chat-markdown">
-      <MarkdownAnswer text={value} glossaryIndex={glossaryIndex} />
+      <Suspense fallback={formatValue(value, glossaryIndex)}>
+        <MarkdownAnswer text={value} glossaryIndex={glossaryIndex} />
+      </Suspense>
     </div>
   );
 }
