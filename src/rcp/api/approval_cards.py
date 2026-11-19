@@ -211,7 +211,11 @@ def _start_experiment(
     """Start the plan as the tapping member, from the raising turn, under the card's id."""
     from rcp.api.dependencies import get_background_tasks, get_experiment_operation_lock
     from rcp.api.experiments import start_work_experiment
-    from rcp.runs.experiment_admission import ExperimentNotReady, WorkExperimentStart
+    from rcp.runs.experiment_admission import (
+        ExperimentNotReady,
+        PlanChanged,
+        WorkExperimentStart,
+    )
     from rcp.storage import AgentTaskAdmissionConflict
 
     try:
@@ -223,6 +227,7 @@ def _start_experiment(
                 source_operation_id=source_operation_id,
                 episode_id=experiment_card_episode_id(request_id),
                 node_id=action.node_id,
+                node_rev=overrides.node_rev,
                 goal=overrides.goal,
                 invocation_limit=overrides.invocation_ceiling,
                 provider=overrides.provider,
@@ -231,6 +236,8 @@ def _start_experiment(
                 authorized_by=human,
             ),
         )
+    except PlanChanged as exc:
+        raise _NotNow(409, {"code": "plan_changed"}) from exc
     except (ExperimentNotReady, AgentTaskAdmissionConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:

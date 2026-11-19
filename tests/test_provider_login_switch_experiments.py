@@ -87,6 +87,7 @@ def test_experiment_entry_point_resolves_usable_login(manifest, tmp_path, direct
                 source_operation_id=WORK_TURN,
                 episode_id=str(uuid.uuid4()),
                 node_id=EXPERIMENT_ID,
+                node_rev=app.state.service.history.state().nodes[EXPERIMENT_ID].updated_rev,
                 goal="Run the comparison.",
                 invocation_limit=None,
                 provider=None,

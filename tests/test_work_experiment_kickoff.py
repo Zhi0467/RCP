@@ -303,7 +303,11 @@ def test_a_pre_card_receipt_with_an_episode_still_replays_existing(plan):
     assert _cards(plan, "shared-chat") == []
 
 
-def _start_directly(plan, source, episode_id, goal):
+def _node_rev(plan):
+    return plan.app.state.service.history.state().nodes[EXPERIMENT_ID].updated_rev
+
+
+def _start_directly(plan, source, episode_id, goal, node_rev=None):
     from rcp.api.experiments import start_work_experiment
 
     return start_work_experiment(
@@ -314,6 +318,7 @@ def _start_directly(plan, source, episode_id, goal):
             source_operation_id=source,
             episode_id=episode_id,
             node_id=EXPERIMENT_ID,
+            node_rev=_node_rev(plan) if node_rev is None else node_rev,
             goal=goal,
             invocation_limit=2,
             provider=None,
@@ -407,6 +412,17 @@ def test_a_refused_start_settles_failed_with_its_reason(plan):
     assert plan.store.get_question(refused["question_id"]).state == "answered"
     assert len(_experiment_loops(plan)) == 1
     wait_for_task(plan.store, plan.store.episode(started_episode(plan, running)).root_operation_id)
+
+
+def test_a_plan_edited_before_the_start_lock_is_refused(plan):
+    from rcp.runs.experiment_admission import PlanChanged
+
+    card = _plan_card(plan)
+    with pytest.raises(PlanChanged):
+        _start_directly(
+            plan, card["operation_id"], started_episode(plan, card), "Goal.", _node_rev(plan) - 1
+        )
+    assert _experiment_loops(plan) == []
 
 
 def test_an_interrupted_start_settles_from_its_episode(plan):

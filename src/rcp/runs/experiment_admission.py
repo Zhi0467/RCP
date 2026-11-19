@@ -209,6 +209,7 @@ class WorkExperimentStart:
     #: Derived from the card's request, so a repeated or resumed Start names the same episode.
     episode_id: str
     node_id: str
+    node_rev: int
     goal: str
     invocation_limit: int | None
     provider: str | None
@@ -236,6 +237,10 @@ WorkExperimentResumer = Callable[[WorkExperimentResume], EpisodeRecord]
 
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
+
+
+class PlanChanged(Exception):
+    """The Experiment changed after the member read its plan card."""
 
 
 def ready_experiment_control(

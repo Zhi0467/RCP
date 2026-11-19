@@ -35,6 +35,7 @@ from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research_admission import require_auto_research_child_profile_pick
 from rcp.runs.experiment_admission import (
     ExperimentNotReady,
+    PlanChanged,
     WorkExperimentResume,
     WorkExperimentStart,
     experiment_control,
@@ -245,6 +246,8 @@ def start_work_experiment(
         node = state.nodes.get(start.node_id)
         if not isinstance(node, Experiment):
             raise ValueError(f"Node {start.node_id!r} is not an Experiment on this graph.")
+        if node.updated_rev != start.node_rev:
+            raise PlanChanged(start.node_id)
         if start.invocation_limit is not None and start.invocation_limit > node.invocation_ceiling:
             raise ValueError(
                 "The invocation limit exceeds this Experiment's limit of "
