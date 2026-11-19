@@ -29,7 +29,7 @@ from rcp.approval_actions import (
     MergeEpisodeBody,
     ProposalAction,
 )
-from rcp.core.models import AuthorizedHuman, Experiment, GraphState
+from rcp.core.models import AuthorizedHuman, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import PatchRejected, ReplayHalted
@@ -42,6 +42,7 @@ from rcp.runs.approval_cards import (
     experiment_card_actor,
     experiment_card_episode_id,
 )
+from rcp.runs.experiment_admission import experiment_node
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
@@ -248,8 +249,8 @@ def _require_seen_plan(
     state: GraphState, action: ExperimentStartAction, overrides: ExperimentStartOverrides | None
 ) -> None:
     """Refuse a Start the member did not see or could not mean; the card stays pending."""
-    node = state.nodes.get(action.node_id)
-    assert isinstance(node, Experiment)
+    node = experiment_node(state, action.node_id)
+    assert node is not None
     if overrides is None:
         raise _NotNow(422, {"code": "experiment_start_required"})
     if overrides.node_rev != node.updated_rev:

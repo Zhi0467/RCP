@@ -21,11 +21,12 @@ from rcp.approval_actions import (
     TruthScopeAction,
 )
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import AuthorizedHuman, Experiment, GraphState, Proposal
+from rcp.core.models import AuthorizedHuman, GraphState, Proposal
 from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
 from rcp.core.validation.proposals import proposal_is_stale
 from rcp.history import ReplayHalted
 from rcp.limits import ASK_MAX_ATTEMPTS, COMMAND_CLIENT_WAIT_SECONDS
+from rcp.runs.experiment_admission import experiment_node
 from rcp.runs.shared import turn_first_attempt
 from rcp.service import ProjectService
 from rcp.storage import AgentTaskRecord, AppStore
@@ -456,12 +457,13 @@ def _truth_scope_pins(
 
 def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> dict[str, Any]:
     """The node and where it lives, never its revision, so later edits show live."""
-    if not isinstance(state.nodes.get(action.node_id), Experiment):
+    node = experiment_node(state, action.node_id)
+    if node is None:
         raise ValueError("experiment_not_found")
     target = GraphTargetRef(kind="branch", branch_id=action.branch_id) if action.branch_id else None
     return {
         "node_id": action.node_id,
-        "type": "experiment",
+        "type": node.type,
         "graph_target": (target or GraphTargetRef()).model_dump(mode="json"),
     }
 

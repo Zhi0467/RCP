@@ -18,11 +18,12 @@ from rcp.agents.staged_command_client import (
     experiment_kickoff_usage,
 )
 from rcp.approval_actions import ExperimentStartAction
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, Experiment
+from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
 from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentResumer,
+    experiment_node,
 )
 from rcp.runs.work_episode_controls import (
     chat_started_episode,
@@ -343,8 +344,8 @@ def raise_experiment_plan_cards(execution: AgentTaskExecution, catalog: ProjectC
     state = service.history.state()
     for kickoff_id, payload in requests.items():
         node_id = str(payload["node_id"])
-        node = state.nodes.get(node_id)
-        if not isinstance(node, Experiment):
+        node = experiment_node(state, node_id)
+        if node is None:
             store.record_agent_task_event(
                 execution.operation_id,
                 f"No plan card for {node_id}: it is not an Experiment on this chat's graph.",

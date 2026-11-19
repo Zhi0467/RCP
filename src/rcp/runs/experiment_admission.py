@@ -235,6 +235,12 @@ class WorkExperimentResume:
 WorkExperimentResumer = Callable[[WorkExperimentResume], EpisodeRecord]
 
 
+def experiment_node(state: GraphState, node_id: str) -> Experiment | None:
+    """The node `node_id` names when it is an Experiment on this graph."""
+    node = state.nodes.get(node_id)
+    return node if isinstance(node, Experiment) else None
+
+
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
 

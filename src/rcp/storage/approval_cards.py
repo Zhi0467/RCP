@@ -42,6 +42,8 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
 def migrate_shared_chat_card_versions(connection: sqlite3.Connection) -> None:
     """A card in a chat that is not an agent thread moves its project's question list."""
 
+    for event in ("insert", "update", "delete"):
+        connection.execute(f"DROP TRIGGER IF EXISTS resource_approval_cards_questions_{event}")
     install_project_question_version(
         connection,
         "approval_cards",
