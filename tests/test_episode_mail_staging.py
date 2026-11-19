@@ -68,3 +68,38 @@ def test_old_staged_actor_mail_loads_with_defaults():
     message = AutoResearchMailMessage.model_validate(payload)
     assert message.recipient_kind == "actor"
     assert message.item_kind == "message"
+
+
+def test_the_child_rule_names_ask_only_for_a_chat_started_episode_that_may_ask():
+    from rcp.agents.prompts import COMMAND_CLIENT, episode_mailbox_child_rule
+
+    ask = f"`{COMMAND_CLIENT} ask`"
+    assert ask in episode_mailbox_child_rule(("ask", "apply"), parent_chat=True)
+    assert ask not in episode_mailbox_child_rule(("apply",), parent_chat=True)
+    assert episode_mailbox_child_rule(("apply",), parent_chat=True)
+    assert episode_mailbox_child_rule(("ask", "apply"), parent_chat=False) == ""
+
+
+def test_an_ungranted_verb_refusal_names_the_verbs_this_turn_has():
+    import uuid
+
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.agents.command_protocol import EpisodeCommandRequest
+    from rcp.runs.questions import WorkCommandHandler
+
+    handler = WorkCommandHandler(None, None, frozenset({"ask", "bulletin"}))
+    refused = handler(
+        EpisodeCommandRequest.model_validate(
+            {
+                "mailbox_id": "a" * 32,
+                "request_id": uuid.uuid4().hex,
+                "credential": "b" * 64,
+                "verb": "episode",
+                "idempotency_key": "k",
+                "arguments": {"action": "stop", "episode_id": "e"},
+            }
+        ),
+        CommandTurnIdentity(episode_id=None, task_id="t", turn_id="turn", authority="broker"),
+    )
+    assert refused.status == "invalid"
+    assert refused.result == {"code": "verb_not_granted", "allowed_verbs": ["ask", "bulletin"]}

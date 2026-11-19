@@ -12,7 +12,6 @@ from rcp.agents.prompts import (
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     COMMAND_CLIENT,
-    EPISODE_MAILBOX_CHILD_RULE,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     REPOSITORIES_READ_RULE,
@@ -186,6 +185,7 @@ def experiment_loop_task_contract(
     skill_pointers: list[dict[str, object]] | None = None,
     invoked_skill_pointers: list[dict[str, object]] | None = None,
     compute_profiles: list[dict[str, str]] | None = None,
+    mailbox_child_rule: str = "",
 ) -> str:
     """Build the self-contained contract for one bounded Experiment-loop invocation."""
 
@@ -238,7 +238,7 @@ Operate one already-authorized invocation of the bounded loop for Experiment
 this invocation permits, and decide whether to continue through watchers, pause for human authority,
 or finish. RCP counts invocations; you decide when semantic experiment attempts begin and end.
 
-{EPISODE_MAILBOX_CHILD_RULE}
+{mailbox_child_rule}
 
 Project: {project_name}
 

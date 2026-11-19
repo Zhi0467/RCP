@@ -1123,6 +1123,17 @@ def _compose_human_turn_prompt(
     )
 
 
+def _started_from_chat(turn: WorkTurn) -> bool:
+    if turn.execution is None:
+        return False
+    task = turn.execution.store.agent_task(turn.execution.operation_id)
+    return (
+        task is not None
+        and task.episode_id is not None
+        and turn.execution.store.episode_started_from_chat(task.episode_id) is not None
+    )
+
+
 def _experiment_start_contract(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
@@ -1146,7 +1157,13 @@ def _experiment_start_contract(
         f"task-{staged.token}-human-request.txt",
         human_request,
     )
+    from rcp.agents.prompts import episode_mailbox_child_rule
+
     contract = experiment_loop_task_contract(
+        mailbox_child_rule=episode_mailbox_child_rule(
+            _work_turn_command_handler(turn).allowed_verbs,
+            parent_chat=_started_from_chat(turn),
+        ),
         execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         interference_rule=_loop_interference_rule(turn),
         project_name=turn.context.project_name,
