@@ -1030,6 +1030,8 @@ Mail remains in durable storage; a recovery attempt stages the items its lineage
 claimed in `episode-mail.json`, and the prompt points to it with item and
 question counts. The read context of every chat that started episodes lists
 each child chain's state, ending and open questions.
+A wake that fails or is interrupted gives its claimed mail back, at settlement and at
+startup, so the next turn or wake delivers it; delivery is at least once.
 
 `episode --answer <question_id> --answer-file <file> [--choice <choice>]` answers
 only a question from a child started here, using the human route's first-answer

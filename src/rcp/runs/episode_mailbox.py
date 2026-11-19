@@ -84,6 +84,7 @@ def reconcile_pending_chat_mail(background: BackgroundAgentTasks) -> dict[str, s
     woken never hides a later one.
     """
     statuses: dict[str, str] = {}
+    background.store.release_failed_wake_mail()
     for task in background.store.every_pending_chat_wake():
         try:
             statuses[task.operation_id] = _launch(background, task.operation_id)
@@ -103,10 +104,14 @@ def reconcile_pending_chat_mail(background: BackgroundAgentTasks) -> dict[str, s
 
 
 def reconcile_settled_chat_mail(background: BackgroundAgentTasks, operation_id: str) -> None:
-    """A settled chat turn leaves its chat idle; mail that waited on it may wake it now."""
+    """A settled chat turn leaves its chat idle; mail that waited on it may wake it now.
+
+    A wake that failed or was interrupted gives its claimed mail back first.
+    """
     task = background.store.agent_task(operation_id)
     if task is None or task.episode_id is not None:
         return
+    background.store.release_failed_wake_mail(operation_id)
     chat_id = task.request.get("chat_id")
     if isinstance(chat_id, str) and chat_id:
         reconcile_chat_mail_recipient(background, task.project_id, chat_id)

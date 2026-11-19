@@ -2474,6 +2474,19 @@ class AutoResearchStoreMixin(StoreMixinBase):
                 rows = connection.execute(claimed_sql, claimed_params).fetchall()
         return [self._auto_research_message_record(row) for row in rows]
 
+    def release_failed_wake_mail(self, operation_id: str | None = None) -> int:
+        """Return mail failed or interrupted chat wakes claimed, one wake or all, to the next turn."""
+        with self.connection() as connection:
+            return connection.execute(
+                "UPDATE auto_research_messages SET delivered_at=NULL,delivery_operation_id=NULL "
+                "WHERE recipient_kind='chat' AND delivered_at IS NOT NULL "
+                "AND (? IS NULL OR delivery_operation_id=?) AND EXISTS ("
+                "SELECT 1 FROM graph_runs WHERE operation_id=delivery_operation_id "
+                "AND status IN ('failed','interrupted') "
+                "AND json_extract(request_json,'$.chat_wake') IS NOT NULL)",
+                (operation_id, operation_id),
+            ).rowcount
+
     def pending_chat_mail_recipients(
         self, after: tuple[str, str, str] = ("", "", "")
     ) -> list[tuple[str, str, str]]:

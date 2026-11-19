@@ -217,3 +217,18 @@ def test_a_withdrawn_child_question_never_wakes_the_parent(tmp_path):
     background = _Background(store)
     reconcile_chat_mail_recipient(background, "project", "chat")
     assert background.launched == []
+
+
+def test_a_wake_that_fails_before_staging_gives_its_mail_back(tmp_path):
+    from rcp.runs.episode_mailbox import reconcile_settled_chat_mail
+
+    store, episode, root = _mailbox(tmp_path)
+    _mail(store, episode, root)
+    wake = store.admit_chat_wake("project", "chat", "episode_mail", ["mail"])
+    assert store.pending_episode_mail("chat", "chat") == []
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET status='failed' WHERE operation_id=?", (wake.operation_id,)
+        )
+    reconcile_settled_chat_mail(_Background(store), wake.operation_id)
+    assert [item.message_id for item in store.pending_episode_mail("chat", "chat")] == ["mail"]
