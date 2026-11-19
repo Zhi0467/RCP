@@ -245,7 +245,7 @@ def test_controller_transfers_private_bytes_only_offline_and_never_uploads(
             self.offline = True
             events.append("offline boot")
 
-        def copy(self, source, destination):
+        def copy(self, source, destination, *, timeout=None):
             assert self.offline
             events.append("private transfer")
             if failure == "transfer":
