@@ -2154,6 +2154,7 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         "choices": ["A", "B"],
         "multiple": True,
         "action": None,
+        "relays": None,
     }
     assert not any(seen[0].request_id in name for name in os.listdir(staged.workspace))
     assert not any(seen[0].request_id in name for name in responses)
