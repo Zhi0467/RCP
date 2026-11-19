@@ -86,7 +86,7 @@ def migrate_bulletin_deltas(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE TABLE IF NOT EXISTS bulletin_deltas (operation_id TEXT NOT NULL, "
         "project_id TEXT NOT NULL, actor_id TEXT NOT NULL, target_key TEXT NOT NULL, "
-        "from_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, snapshot_json TEXT NOT NULL, "
+        "from_seq INTEGER NOT NULL, through_seq INTEGER NOT NULL, post_ids_json TEXT NOT NULL, "
         "PRIMARY KEY(operation_id,project_id,actor_id,target_key))"
     )
 
@@ -553,20 +553,13 @@ def _advance_actor_read(
     )
 
 
-def _mark_actor_page_read(
-    connection: sqlite3.Connection,
-    project_id: str,
-    target_key: str,
-    actor_id: str,
-    page: dict[str, Any],
-) -> None:
-    ids = [post["post_id"] for post in page["posts"]]
-    if ids:
-        through_seq = connection.execute(
-            f"SELECT MAX(sequence) FROM bulletin_posts WHERE post_id IN ({','.join('?' for _ in ids)})",
-            ids,
-        ).fetchone()[0]
-        _advance_actor_read(connection, project_id, target_key, actor_id, through_seq)
+def bulletin_delta_operation(connection: sqlite3.Connection, operation_id: str) -> str:
+    row = connection.execute(
+        "SELECT payload_json FROM graph_run_receipts WHERE operation_id=? "
+        "AND category='operation_admitted' ORDER BY receipt_id LIMIT 1",
+        (operation_id,),
+    ).fetchone()
+    return json.loads(row[0]).get("bulletin_operation_id", operation_id) if row else operation_id
 
 
 class BulletinStoreMixin(StoreMixinBase):
@@ -575,22 +568,27 @@ class BulletinStoreMixin(StoreMixinBase):
         project_id: str,
         target_key: str,
         actor_id: str,
-        operation_ids: list[str],
+        operation_id: str,
         context: dict[str, Any],
         render: Callable[[dict[str, Any]], str],
     ) -> tuple[dict[str, Any], str]:
-        """Commit a bounded rendering and its read boundary together before publishing the file."""
+        """Persist the selected range before publication; only a running recipient consumes it."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            root = bulletin_delta_operation(connection, operation_id)
             saved = connection.execute(
                 "SELECT * FROM bulletin_deltas WHERE project_id=? AND target_key=? AND actor_id=? "
-                f"AND operation_id IN ({','.join('?' for _ in operation_ids)}) LIMIT 1",
-                (project_id, target_key, actor_id, *operation_ids),
+                "AND operation_id=?",
+                (project_id, target_key, actor_id, root),
             ).fetchone()
             if saved is not None:
-                snapshot = json.loads(saved["snapshot_json"])
-                content = render(snapshot)
-                from_seq, through_seq = saved["from_seq"], saved["through_seq"]
+                post_ids = json.loads(saved["post_ids_json"])
+                rows = connection.execute(
+                    "SELECT * FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                    f"AND post_id IN ({','.join('?' for _ in post_ids)}) AND deleted_at IS NULL ORDER BY sequence",
+                    (project_id, target_key, *post_ids),
+                ).fetchall()
+                from_seq = saved["from_seq"]
             else:
                 cursor = connection.execute(
                     "SELECT through_seq FROM bulletin_actor_reads "
@@ -612,36 +610,52 @@ class BulletinStoreMixin(StoreMixinBase):
                     "ORDER BY sequence LIMIT ?",
                     (project_id, target_key, from_seq, actor_id, BULLETIN_DELTA_MAX_POSTS),
                 ).fetchall()
-                total = connection.execute(
-                    "SELECT count(*) FROM bulletin_posts WHERE project_id=? AND target_key=? "
-                    "AND sequence>? AND deleted_at IS NULL AND author_actor_id IS NOT ?",
-                    (project_id, target_key, from_seq, actor_id),
-                ).fetchone()[0]
-                snapshot = {
-                    **context,
-                    "posts": _records(connection, rows, self.now()),
-                    "total": total,
-                }
-                content = render(snapshot)
-                shown = snapshot["shown"]
-                through_seq = rows[shown - 1]["sequence"] if shown else from_seq
-                snapshot["posts"] = snapshot["posts"][:shown]
-            connection.execute(
-                "INSERT OR IGNORE INTO bulletin_deltas "
-                "(operation_id,project_id,actor_id,target_key,from_seq,through_seq,snapshot_json) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (
-                    operation_ids[0],
-                    project_id,
-                    actor_id,
-                    target_key,
-                    from_seq,
-                    through_seq,
-                    json.dumps(snapshot),
-                ),
-            )
-            _advance_actor_read(connection, project_id, target_key, actor_id, through_seq)
+            total = connection.execute(
+                "SELECT count(*) FROM bulletin_posts WHERE project_id=? AND target_key=? "
+                "AND sequence>? AND deleted_at IS NULL AND author_actor_id IS NOT ?",
+                (project_id, target_key, from_seq, actor_id),
+            ).fetchone()[0]
+            snapshot = {**context, "posts": _records(connection, rows, self.now()), "total": total}
+            content = render(snapshot)
+            shown = snapshot["shown"]
+            through_seq = rows[shown - 1]["sequence"] if shown else from_seq
+            snapshot["posts"] = snapshot["posts"][:shown]
+            if saved is None:
+                connection.execute(
+                    "INSERT INTO bulletin_deltas "
+                    "(operation_id,project_id,actor_id,target_key,from_seq,through_seq,post_ids_json) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        root,
+                        project_id,
+                        actor_id,
+                        target_key,
+                        from_seq,
+                        through_seq,
+                        json.dumps([post["post_id"] for post in snapshot["posts"]]),
+                    ),
+                )
+            _advance_actor_read(connection, project_id, target_key, actor_id, from_seq)
+            snapshot["through_seq"] = through_seq
             return snapshot, content
+
+    def consume_running_bulletin_delta(
+        self, project_id: str, target_key: str, actor_id: str, operation_id: str, through_seq: int
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            root = bulletin_delta_operation(connection, operation_id)
+            row = connection.execute(
+                "SELECT delta.through_seq FROM bulletin_deltas AS delta JOIN graph_runs AS task "
+                "ON task.operation_id=? AND task.project_id=delta.project_id "
+                "WHERE delta.operation_id=? AND delta.project_id=? AND delta.target_key=? "
+                "AND delta.actor_id=? AND task.status='running'",
+                (operation_id, root, project_id, target_key, actor_id),
+            ).fetchone()
+            if row is not None:
+                _advance_actor_read(
+                    connection, project_id, target_key, actor_id, min(through_seq, row[0])
+                )
 
     def bulletin_members(self, project_id: str) -> list[dict[str, str]]:
         with self.connection() as connection:
@@ -914,17 +928,7 @@ class BulletinStoreMixin(StoreMixinBase):
                         raise BulletinError("bulletin_channel_invalid")
                     target_key = f"branch:{branches[0]['branch_id']}"
             if subcommand == "read":
-                from rcp.bulletin import bulletin_actor_id
-
-                page = _list(connection, project_id, target_key, cursor, now=self.now())
-                actor_id = bulletin_actor_id(connection, task)
-                if (
-                    actor_id
-                    and target_key
-                    == GraphTargetRef.model_validate_json(binding["graph_target_json"]).key
-                ):
-                    _mark_actor_page_read(connection, project_id, target_key, actor_id, page)
-                return page
+                return _list(connection, project_id, target_key, cursor, now=self.now())
             # Replies, edits, and deletes land in the named post's channel.
             named = reply_to if subcommand == "post" else post_id
             named_channel = (

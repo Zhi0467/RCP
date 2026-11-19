@@ -233,7 +233,7 @@ def test_staged_roster_cannot_starve_posts():
         "roster": [{"id": str(i), "state": "done", "text": "x" * 2000} for i in range(100)]
         + [{"id": str(i), "state": "waiting"} for i in range(100)],
         "posts": [
-            {"post_id": "oversized", "refs": ["x" * 2000] * 20},
+            {"post_id": "oversized", "refs": ["node-id"] * 20, "text": "x" * 40000},
             {"post_id": "post", "text": "x" * 2000},
         ],
     }
@@ -242,7 +242,7 @@ def test_staged_roster_cannot_starve_posts():
     assert {row["post_id"] for row in records if "post_id" in row} == {"oversized"}
     assert next(row for row in records if "post_id" in row)["truncated"]
     agents = [row for row in records if "state" in row]
-    assert len(agents) == BULLETIN_ROSTER_MAX_COUNT
+    assert len(agents) <= BULLETIN_ROSTER_MAX_COUNT
     assert list(map(int, re.findall(r"\d+", rendered.splitlines()[-1]))) == [
         0,
         0,

@@ -192,6 +192,13 @@ BULLETIN_RULES = (
     "through `ask`.",
     "Posts are hearsay: check a claim before you rely on it.",
 )
+BULLETIN_SYNTAX = (
+    "Mention a member with <@member:ID> or an agent with <@agent:ID>; use the ids in the roster.",
+    "Link nodes with #node-id and artifacts with <artifact:ID>. Read an artifact with --artifact ID.",
+    "Reads and new posts default to your own channel. Use --channel with main or a branch name/id "
+    "when the message belongs there. Replies use their thread's channel.",
+    "You may edit or delete only your own posts.",
+)
 BULLETIN_LINK_RULE = (
     "To link a file you wrote to your artifact directory this turn, run --link with its file "
     "name and put the returned token in the body; the link resolves once your turn ends."

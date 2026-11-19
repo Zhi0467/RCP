@@ -12,6 +12,7 @@ from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
     AGENT_NAME_INSTRUCTION,
     BULLETIN_RULES,
+    BULLETIN_SYNTAX,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
@@ -161,7 +162,7 @@ def _command_invocations(
     if "name" in allowed_verbs:
         commands += f"\n  {AGENT_NAME_INSTRUCTION}"
     if "bulletin" in allowed_verbs:
-        commands += "".join(f"\n  {rule}" for rule in BULLETIN_RULES)
+        commands += "".join(f"\n  {rule}" for rule in (*BULLETIN_RULES, *BULLETIN_SYNTAX))
     return f"""Staged command client:
 - Command prefix: `{command_client}`
 - Exact invocations, all prefixed by that command:
