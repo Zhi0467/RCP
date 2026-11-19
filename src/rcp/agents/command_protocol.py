@@ -651,7 +651,7 @@ class AskResult(BaseModel):
     receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     attempt: int | None = Field(default=None, ge=1)
     max_attempts: int | None = Field(default=None, ge=1)
-    state: Literal["pending", "answered", "dismissed", "parked"]
+    state: Literal["pending", "answered", "dismissed", "parked", "withdrawn"]
     question_id: str = Field(min_length=1)
     answer: str | None = Field(default=None, max_length=ASK_ANSWER_MAX_LENGTH)
     choices: list[Annotated[str, Field(min_length=1, max_length=ASK_CHOICE_MAX_LENGTH)]] = Field(

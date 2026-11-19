@@ -210,7 +210,7 @@ class WorkExperimentStart:
     episode_id: str
     node_id: str
     node_rev: int
-    governing: tuple[tuple[str, str], ...]
+    governing: tuple[tuple[str, str | None], ...]
     goal: str
     invocation_limit: int | None
     provider: str | None

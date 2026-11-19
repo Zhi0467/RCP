@@ -66,7 +66,7 @@ export function planInputsReady(inputs: PlanInputs, node: GraphNode | null, cap:
   return (
     node !== null &&
     Boolean(inputs.goal.trim()) &&
-    Number.isInteger(limit) &&
+    Number.isSafeInteger(limit) &&
     limit >= 1 &&
     limit <= cap
   );

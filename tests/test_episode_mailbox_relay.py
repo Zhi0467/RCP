@@ -325,6 +325,10 @@ def test_a_human_answer_to_the_child_withdraws_only_the_parents_linked_relay(
     other_record = store.get_question(same_wake.question_id)
     assert relay_record is not None and relay_record.withdrawn_readonly
     assert other_record is not None and not other_record.withdrawn_readonly
+    replay = _chat_ask(
+        member, "replay-turn", "relay", question="Which dataset?", relays=question.question_id
+    )
+    assert (replay.status, replay.result["state"]) == ("ok", "withdrawn")
     late = _chat_ask(
         member, "late-turn", "late", question="Which dataset?", relays=question.question_id
     )

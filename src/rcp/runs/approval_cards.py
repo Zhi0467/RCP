@@ -20,7 +20,7 @@ from rcp.approval_actions import (
     ProposalAction,
     TruthScopeAction,
 )
-from rcp.control import governing_decision_bundle
+from rcp.control import governing_links
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import AuthorizedHuman, GraphState, Proposal
 from rcp.core.transition_models import GraphTargetRef, ProposalActionLine
@@ -476,10 +476,7 @@ def _experiment_start_pins(state: GraphState, action: ExperimentStartAction) -> 
         "node_id": action.node_id,
         "type": node.type,
         "graph_target": (target or GraphTargetRef()).model_dump(mode="json"),
-        "governing": [
-            [pin.decision_id, pin.selected_option]
-            for pin in governing_decision_bundle(state, action.node_id)
-        ],
+        "governing": [list(link) for link in governing_links(state, action.node_id)],
     }
 
 

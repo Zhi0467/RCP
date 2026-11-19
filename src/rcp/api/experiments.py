@@ -24,11 +24,12 @@ from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.control import ExperimentControlState, governing_decision_bundle
+from rcp.control import ExperimentControlState, governing_links
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history.branches import canonical_branch_id
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import JSON_SAFE_INTEGER_MAX
 from rcp.loop_status import LoopOverlap, other_branch_loops
 from rcp.projects import ProjectCatalog
 from rcp.runs.agent_threads import task_owner
@@ -144,9 +145,7 @@ def run_experiment(
                     not isinstance(requested_ceiling, int)
                     or isinstance(requested_ceiling, bool)
                     or requested_ceiling < 1
-                    # Past 2^53 every JSON client reads back a different number than the
-                    # one authorized here, so Runs would act on a budget nobody chose.
-                    or requested_ceiling > 2**53 - 1
+                    or requested_ceiling > JSON_SAFE_INTEGER_MAX
                 ):
                     raise ValueError("The authorized invocation limit must be a positive integer.")
                 episode_ceiling = (
@@ -246,9 +245,8 @@ def start_work_experiment(
         node = state.nodes.get(start.node_id)
         if not isinstance(node, Experiment):
             raise ValueError(f"Node {start.node_id!r} is not an Experiment on this graph.")
-        if node.updated_rev != start.node_rev or start.governing != tuple(
-            (pin.decision_id, pin.selected_option)
-            for pin in governing_decision_bundle(state, start.node_id)
+        if node.updated_rev != start.node_rev or start.governing != governing_links(
+            state, start.node_id
         ):
             raise PlanChanged(start.node_id)
         if start.invocation_limit is not None and start.invocation_limit > node.invocation_ceiling:

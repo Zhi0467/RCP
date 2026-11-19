@@ -115,7 +115,8 @@ def _ask_result(
     store: AppStore, request: AskCommandRequest, question: QuestionRecord, parked: bool
 ) -> AskResult:
     # A parked reply ends the wait at once, so it is neither an attempt nor a live wait.
-    pending = question.state == "pending" and not parked
+    withdrawn = question.state == "pending" and question.withdrawn_readonly
+    pending = question.state == "pending" and not parked and not withdrawn
     attempt = None
     if pending:
         attempt = store.question_activity.pending(question.question_id, request.call_id)
@@ -131,7 +132,11 @@ def _ask_result(
         attempt=attempt,
         max_attempts=ASK_MAX_ATTEMPTS if pending else None,
         question_id=question.question_id,
-        state="parked" if parked and question.state == "pending" else question.state,
+        state="withdrawn"
+        if withdrawn
+        else "parked"
+        if parked and question.state == "pending"
+        else question.state,
         answer=question.answer if answered else None,
         choices=question.chosen_choices if answered else [],
     )

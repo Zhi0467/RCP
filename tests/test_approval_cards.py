@@ -1738,3 +1738,16 @@ def test_old_auto_research_card_pins_settle_stale_without_start_inputs(questions
     assert response.json()["outcome"] == "stale"
     assert store.get_question(question.question_id).state == "answered"
     assert store.episodes(project_id, limit=None) == []
+
+
+def test_plan_start_overrides_refuse_budgets_past_the_json_safe_range() -> None:
+    from rcp.approval_actions import AutoResearchStartOverrides, ExperimentStartOverrides
+    from rcp.limits import JSON_SAFE_INTEGER_MAX
+
+    for kind, model, fields in (
+        ("experiment_start", ExperimentStartOverrides, {"goal": "g", "node_rev": 1}),
+        ("auto_research", AutoResearchStartOverrides, {"starting_instruction": "g"}),
+    ):
+        model(kind=kind, invocation_ceiling=JSON_SAFE_INTEGER_MAX, **fields)
+        with pytest.raises(ValidationError):
+            model(kind=kind, invocation_ceiling=JSON_SAFE_INTEGER_MAX + 1, **fields)

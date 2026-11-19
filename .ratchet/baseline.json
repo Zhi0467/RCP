@@ -49,7 +49,7 @@
   "src/rcp/api/episode_timeline.py": {"comment": 10},
   "src/rcp/api/episodes.py": {"comment": 23},
   "src/rcp/api/experiment_controls.py": {"comment": 16},
-  "src/rcp/api/experiments.py": {"comment": 14},
+  "src/rcp/api/experiments.py": {"comment": 12},
   "src/rcp/api/graph_changes.py": {"comment": 1},
   "src/rcp/api/history.py": {"comment": 3},
   "src/rcp/api/identity.py": {"comment": 1},

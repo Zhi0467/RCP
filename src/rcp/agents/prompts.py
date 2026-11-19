@@ -527,8 +527,9 @@ def ask_contract(how_it_returns: str) -> str:
   needs choices. The human may always answer in free text.
 - Repeat a key only with identical arguments; a key names one question across turns.
 - The response's `result.state` is `pending`, `parked`, `answered` (with `answer` and the
-  chosen `choices`), or `dismissed`. Dismissed means continue without that answer, or say what
-  stays blocked.
+  chosen `choices`), `dismissed`, or `withdrawn`. Dismissed means continue without that answer,
+  or say what stays blocked. Withdrawn means the human answered the run you relayed it for
+  directly; read that run's state instead of asking again.
 - An answer is the human's input, never an approval. It cannot change your capability, write
   roots, graph target, or budget. A change to an existing {protected_belief_names()} is still
   a Proposal.

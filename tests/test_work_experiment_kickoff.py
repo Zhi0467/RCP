@@ -201,19 +201,13 @@ def _startup_pass(plan):
     raise_pending_experiment_cards(plan.store, background.recorded_execution)
 
 
-def test_a_changed_governing_choice_makes_the_card_stale(plan, monkeypatch):
-    from rcp.core.models import ExperimentDecisionPin
+@pytest.mark.parametrize("choice", ["cosine", None])
+def test_a_changed_governing_link_makes_the_card_stale(plan, monkeypatch, choice):
     from rcp.runs import approval_cards
 
     card = _plan_card(plan)
     monkeypatch.setattr(
-        approval_cards,
-        "governing_decision_bundle",
-        lambda _state, _node_id: [
-            ExperimentDecisionPin(
-                decision_id="dec/schedule", decision_revision=9, selected_option="cosine"
-            )
-        ],
+        approval_cards, "governing_links", lambda _state, _node_id: (("dec/schedule", choice),)
     )
 
     assert _start(plan, card).json()["outcome"] == "stale"
@@ -363,13 +357,9 @@ def _node_rev(plan):
 
 
 def _live_governing(plan):
-    from rcp.control import governing_decision_bundle
+    from rcp.control import governing_links
 
-    state = plan.app.state.service.history.state()
-    return tuple(
-        (pin.decision_id, pin.selected_option)
-        for pin in governing_decision_bundle(state, EXPERIMENT_ID)
-    )
+    return governing_links(plan.app.state.service.history.state(), EXPERIMENT_ID)
 
 
 def _start_directly(plan, source, episode_id, goal, node_rev=None, governing=None):
@@ -497,6 +487,14 @@ def test_a_plan_edited_before_the_start_lock_is_refused(plan):
             started_episode(plan, card),
             "Goal.",
             governing=(*_live_governing(plan), ("decision-changed-since", "other")),
+        )
+    with pytest.raises(PlanChanged):
+        _start_directly(
+            plan,
+            card["operation_id"],
+            started_episode(plan, card),
+            "Goal.",
+            governing=(*_live_governing(plan), ("undecided-link-removed-since", None)),
         )
     assert _experiment_loops(plan) == []
 

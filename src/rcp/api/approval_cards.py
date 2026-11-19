@@ -208,7 +208,7 @@ def _start_experiment(
     catalog: ProjectCatalog,
     human: AuthorizedHuman,
     source_operation_id: str,
-    governing: tuple[tuple[str, str], ...],
+    governing: tuple[tuple[str, str | None], ...],
 ):
     """Start the plan as the tapping member, from the raising turn, under the card's id."""
     from rcp.api.dependencies import get_background_tasks, get_experiment_operation_lock
