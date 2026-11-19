@@ -91,6 +91,7 @@ from rcp.storage.comments import CommentStoreMixin, _reopen, delete_comments_by_
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
+from rcp.storage.episodes import append_episode_parent_mail
 from rcp.storage.evidence_flags import (
     EvidenceFlagStoreMixin,
     adopt_legacy_evidence_flag_requests,
@@ -496,11 +497,16 @@ AUTO_RESEARCH_CHILDREN = Entry(
         AutoResearchStoreMixin.create_auto_research_message_wake_task,
         AutoResearchStoreMixin.mark_auto_research_messages_delivered,
         AutoResearchStoreMixin.readdress_auto_research_question_answer,
+        AutoResearchStoreMixin.claim_episode_mail,
+        AutoResearchStoreMixin.record_episode_mail_diagnostic,
+        append_episode_parent_mail,
+        AgentTaskStoreMixin.admit_chat_wake,
         AgentTaskStoreMixin.create_artifact_edit_task,
         AppStoreBase._migrate_per_target_experiment_loops,
         AppStoreBase._migrate_legacy_startup_schema,
         migrate_legacy_auto_research,
         ProjectTransferStoreMixin._insert_auto_research_history,
+        ProjectTransferStoreMixin._insert_episode_messages,
         ProjectStoreMixin.delete_project_records,
         ProjectStoreMixin.migrate_legacy_project_data,
     ),
@@ -1104,7 +1110,10 @@ NOT_LIFECYCLE: dict[str, str] = {
     "branch_name_reservations": "branch name index",
     "branch_names": "branch name index",
     "browser_turn_status": "per-turn browser display cache",
+    "bulletin_actor_reads": "per-agent read cursor",
     "bulletin_command_receipts": "keyed command receipts",
+    "bulletin_deltas": "per-turn delta snapshot, replayed by its turn",
+    "bulletin_mention_wakes": "once-per-post wake receipts",
     "bulletin_mention_observations": "notification observation cursor",
     "bulletin_posts": "message rows; edit and delete are marks, not states",
     "comment_mentions": "mention rows with a notification observation cursor",

@@ -950,7 +950,7 @@ def test_a_refused_merge_in_a_member_thread_points_to_the_approval_card() -> Non
     plain = WorkCommandHandler(None, None, frozenset({"ask"}))
     identity = None
     assert carded(request, identity).result == {"code": "approval_card_required"}  # pyright: ignore[reportArgumentType]
-    assert plain(request, identity).result == {}  # pyright: ignore[reportArgumentType]
+    assert plain(request, identity).result["code"] == "verb_not_granted"  # pyright: ignore[reportArgumentType]
 
 
 def test_a_queued_message_waits_out_a_racing_turn_and_its_deferral_restarts(
