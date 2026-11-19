@@ -499,6 +499,7 @@ AUTO_RESEARCH_CHILDREN = Entry(
         AutoResearchStoreMixin.readdress_auto_research_question_answer,
         AutoResearchStoreMixin.claim_episode_mail,
         AutoResearchStoreMixin.record_episode_mail_diagnostic,
+        AutoResearchStoreMixin.release_failed_wake_mail,
         append_episode_parent_mail,
         AgentTaskStoreMixin.admit_chat_wake,
         AgentTaskStoreMixin.create_artifact_edit_task,
