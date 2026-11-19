@@ -2476,7 +2476,7 @@ table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
 thread. A test holds every grantable verb to a line.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
-`{proposal_cards, asked_cards, questions}` for the member's open project threads in their
+`{proposal_cards, asked_cards, questions, episodes}` for the member's open project threads in their
 projects: not closed, not archived, and never ensured by this read. A named
 thread must be the member's own; a Space thread yields an empty response.
 `proposal_cards` are `ProposalCardView`s (project, thread, the raising turn's
@@ -2488,7 +2488,8 @@ member's open Space thread asked. State comes from each project's local display 
 remote read happens. A member-wide read skips and logs a project whose state
 cannot be read; for a named thread that failure is 503.
 
-The member-wide read's `questions` span every member project. A named open
+The member-wide read's `questions` span every member project, except those a
+member project thread's dock already lists under its `episodes`. A named open
 project thread receives only that project's questions, excluding its own chat's
 questions because those already appear inline. Closed, archived and named Space
 threads have no relayed questions. These are pending questions with no card that
@@ -2497,6 +2498,21 @@ threads have no relayed questions. These are pending questions with no card that
 or the chat or thread title, null when the chat has none) and
 `answer_continues` computed as the episode question list computes it.
 Answers use `POST /api/projects/{project_id}/questions/{question_id}/answer`.
+
+A named thread's `asked_cards`, `questions` and `episodes` come from `chat_dock`
+in [`api/agent_threads.py`](../../src/rcp/api/agent_threads.py), which
+`GET /api/projects/{project_id}/chats/{chat_id}/cards` also calls for a shared or
+node chat, under the chat question route's membership and private-owner checks;
+that route's `proposal_cards` is empty. `episodes` lists the chat's direct child
+episodes, newest first: the current member of each continuation chain whose root
+names a turn of this chat, while it is not completed, stopped or failed, or for
+`CHAT_DOCK_ENDED_EPISODE_WINDOW` after it ends. Each entry is
+`{episode, title, link, questions}`: the Runs `EpisodeResponse`, the Space Runs
+title, the Runs link, and the chain's relayed question rows. The buckets are
+disjoint by question id: the chat's own questions stay inline, its children's
+questions appear only under `episodes`, and `questions` holds the rest of the
+project's relayed questions for a Project Agent thread only; a shared or node
+chat's `questions` is empty.
 
 `GET /api/agent-threads/running` returns `{rows, needs, total}` for the
 acting member ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).

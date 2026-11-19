@@ -4297,11 +4297,22 @@ export type RelayedQuestion = AgentQuestion & {
   source_label: string | null;
 };
 
+/** A direct child episode of a chat, with the open questions its chain asked. */
+export interface DockEpisode {
+  episode: Episode;
+  title: string;
+  /** The app hash that opens the episode on Runs. */
+  link: string;
+  questions: RelayedQuestion[];
+}
+
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
 export interface AgentCardList {
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
   questions?: RelayedQuestion[];
+  /** The named chat's child episodes, newest first. */
+  episodes?: DockEpisode[];
 }
 
 export type RunningRowKind = "experiment_loop" | "auto_research" | "thread";

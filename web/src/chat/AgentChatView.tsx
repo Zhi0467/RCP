@@ -14,7 +14,8 @@ import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import { ExperimentPlanCard } from "../agents/ExperimentPlanCard";
-import { planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
+import { isPlanCardQuestion, planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
+import { ApprovalCardStack, dockStackCards, useAgentCards } from "../agents/ApprovalCardStack";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
 import { QuestionCard } from "./QuestionCard";
@@ -108,6 +109,7 @@ import {
 } from "../core/desktopRuntime";
 import type {
   AgentExecutionProfile,
+  AgentQuestion,
   AgentRunConfig,
   AgentTask,
   ChatMessage,
@@ -470,6 +472,38 @@ export function AgentChatView({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
+  const cards = useAgentCards(questionEpisodeId ? null : { projectId: project.id, chatId }, null);
+  const cardsChanged = () => {
+    void cards.refetch();
+    questionState.refresh();
+  };
+  const dockedPlans = new Set([
+    ...cards.plans.map((question) => question.question_id),
+    ...(cards.loading
+      ? questionState.questions.flatMap((question) =>
+          isPlanCardQuestion(question) && question.state === "pending"
+            ? [question.question_id]
+            : [],
+        )
+      : []),
+  ]);
+  const dockCards = dockStackCards(cards.plans, cards.episodes, cards.questions);
+  const renderPlanCard = (question: AgentQuestion) => {
+    const action = planCardAction(question.card)!;
+    const here =
+      onOpenNode &&
+      sameGraphTarget(planGraphTarget(action), graphTarget) &&
+      Boolean(nodes[action.node_id]);
+    return (
+      <ExperimentPlanCard
+        question={question}
+        actorId={actorId}
+        glossaryIndex={glossaryIndex}
+        onOpenNode={here ? onOpenNode : undefined}
+        onSettled={cardsChanged}
+      />
+    );
+  };
   // While the watched turn can take live input, the ordinary composer addresses
   // that exact attempt instead of starting a new turn. There is no separate
   // steering control; a runtime without an input channel leaves the composer
@@ -1417,22 +1451,8 @@ export function AgentChatView({
               onResolved={questionState.refresh}
             />
           )}
-          renderPlanCard={(question) => {
-            const action = planCardAction(question.card)!;
-            const here =
-              onOpenNode &&
-              sameGraphTarget(planGraphTarget(action), graphTarget) &&
-              Boolean(nodes[action.node_id]);
-            return (
-              <ExperimentPlanCard
-                question={question}
-                actorId={actorId}
-                glossaryIndex={glossaryIndex}
-                onOpenNode={here ? onOpenNode : undefined}
-                onSettled={questionState.refresh}
-              />
-            );
-          }}
+          renderPlanCard={renderPlanCard}
+          shownElsewhere={dockedPlans}
           nodes={nodes}
           glossaryIndex={glossaryIndex}
           onOpenNode={onOpenNode}
@@ -1475,6 +1495,19 @@ export function AgentChatView({
           ))}
         {submitError && <div className="agent-chat-view-line error">{submitError}</div>}
       </AgentWindowLines>
+      {dockCards.length > 0 && (
+        <div className="approval-dock">
+          <ApprovalCardStack
+            stackKey={`${project.id}:${chatId}:dock`}
+            cards={dockCards}
+            onDecided={cards.markDecided}
+            onResolved={cards.markResolved}
+            onAnswered={cards.markAnswered}
+            onChanged={cardsChanged}
+            renderPlanCard={renderPlanCard}
+          />
+        </div>
+      )}
       {archived ? (
         <div className="chat-composer" role="status">
           <button className="button compact" type="button" onClick={onRestore}>

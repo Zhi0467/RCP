@@ -95,14 +95,13 @@ import type { VoiceAgent } from "../voice/useVoiceAgent";
 import {
   ApprovalCardStack,
   askedCardKey,
+  dockStackCards,
   proposalCardKey,
-  questionCardKey,
   useAgentCards,
   type StackCard,
 } from "./ApprovalCardStack";
 import { RunningPopover } from "./RunningPopover";
 import { ExperimentPlanCard } from "./ExperimentPlanCard";
-import { isPlanCardQuestion } from "./experimentPlanModel";
 import { AgentThreadWelcome } from "./AgentThreadWelcome";
 import { pausedTaskText, stoppedByMember } from "./agentTasks";
 import { threadWelcome } from "./threadWelcome";
@@ -1312,14 +1311,16 @@ export function AgentThreadView({
     run().catch((failure: unknown) => setNotice({ threadId, text: errorMessage(failure) }));
   };
 
-  const cards = useAgentCards(thread.kind === "project" ? thread.thread_id : null, revision);
+  const cards = useAgentCards(
+    { threadId: thread.kind === "project" ? thread.thread_id : null },
+    revision,
+  );
   const cardsElsewhere = new Set([
     ...cards.asked.map((question) => question.question_id),
+    ...cards.plans.map((question) => question.question_id),
     ...(cards.loading
       ? questions.flatMap((question) =>
-          question.card && question.state === "pending" && !isPlanCardQuestion(question)
-            ? [question.question_id]
-            : [],
+          question.card && question.state === "pending" ? [question.question_id] : [],
         )
       : []),
   ]);
@@ -1348,12 +1349,11 @@ export function AgentThreadView({
     ...cards.asked.map((question) =>
       askedStackCard(question, relayed ? question.project_name : null),
     ),
-    ...cards.questions.map((question): StackCard => ({
-      kind: "question",
-      key: questionCardKey(question),
-      question,
-    })),
+    ...dockStackCards(cards.plans, cards.episodes, cards.questions),
   ];
+  const renderPlanCard = (question: AgentQuestion) => (
+    <ExperimentPlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
+  );
 
   const renderQuestion = (question: AgentQuestion) =>
     endpoints.questionsApiBase ? (
@@ -1521,9 +1521,7 @@ export function AgentThreadView({
           tasks={tasks}
           questions={questions}
           renderQuestion={renderQuestion}
-          renderPlanCard={(question) => (
-            <ExperimentPlanCard question={question} actorId={actorId} onSettled={cardsChanged} />
-          )}
+          renderPlanCard={renderPlanCard}
           shownElsewhere={cardsElsewhere}
           renderCards={(entry) => (
             <ApprovalCardStack
@@ -1667,6 +1665,7 @@ export function AgentThreadView({
             onResolved={cards.markResolved}
             onAnswered={cards.markAnswered}
             onChanged={cardsChanged}
+            renderPlanCard={renderPlanCard}
           />
         </div>
       )}

@@ -30,6 +30,7 @@ import {
 import {
   decideProposalCard,
   readAgentCards,
+  readChatCards,
   loadThreadQueue,
   loadThreadQuestions,
   queueThreadTurn,
@@ -569,6 +570,25 @@ test("a thread reads only its own cards, and a failed read is null", async () =>
   ]);
   assert.equal(
     await readAgentCards(undefined, async () => {
+      throw new ApiError("down", 503);
+    }),
+    null,
+  );
+});
+
+test("a shared chat reads its own dock, and a failed read is null", async () => {
+  const paths = [];
+  const list = { proposal_cards: [], asked_cards: [], episodes: [] };
+  assert.deepEqual(
+    await readChatCards("p 1", "chat/2", async (path) => {
+      paths.push(path);
+      return list;
+    }),
+    list,
+  );
+  assert.deepEqual(paths, ["/api/projects/p%201/chats/chat%2F2/cards"]);
+  assert.equal(
+    await readChatCards("p", "c", async () => {
       throw new ApiError("down", 503);
     }),
     null,

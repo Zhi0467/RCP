@@ -129,15 +129,60 @@ class EpisodeStoreMixin(StoreMixinBase):
         return snapshots
 
     def episode_started_from_chat(self, episode_id: str) -> EpisodeStartedFromChat | None:
+        return self.episodes_started_from_chats([episode_id]).get(episode_id)
+
+    def episodes_started_from_chats(
+        self, episode_ids: Sequence[str]
+    ) -> dict[str, EpisodeStartedFromChat]:
         with self.connection() as connection:
-            return self._episode_started_from_chats(connection, [episode_id]).get(episode_id)
+            return self._episode_started_from_chats(connection, episode_ids)
+
+    def chat_child_episodes(
+        self, project_id: str, chat_id: str, *, ended_since: str
+    ) -> list[EpisodeRecord]:
+        """The newest member of each continuation chain this chat started that is still
+        open or ended at or after ``ended_since``, newest first."""
+
+        with self.connection() as connection:
+            candidates = [
+                self._episode_record(row)
+                for row in connection.execute(
+                    """
+                    SELECT * FROM episodes AS episode
+                    WHERE episode.project_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM episodes AS successor
+                          WHERE successor.continues_episode_id = episode.episode_id
+                      )
+                      AND (
+                          episode.status NOT IN ('completed', 'stopped', 'failed')
+                          OR julianday(COALESCE(episode.ended_at, episode.updated_at))
+                             >= julianday(?)
+                      )
+                    ORDER BY episode.created_at DESC, episode.episode_id DESC
+                    """,
+                    (project_id, ended_since),
+                )
+            ]
+            started = self._episode_started_from_chats(
+                connection, [episode.episode_id for episode in candidates]
+            )
+        return [
+            episode
+            for episode in candidates
+            if (source := started.get(episode.episode_id)) is not None and source.chat_id == chat_id
+        ]
 
     @staticmethod
     def _episode_started_from_chats(
         connection: sqlite3.Connection, episode_ids: Sequence[str]
     ) -> dict[str, EpisodeStartedFromChat]:
-        """Each episode whose root names the Work turn that started it, with that chat."""
+        """Each episode whose chain root names the Work turn that started it, with that chat.
 
+        A continuation runs the episode its chain root started, so it shares that chat."""
+
+        if not episode_ids:
+            return {}
         placeholders = ",".join("?" for _ in episode_ids)
         return {
             row["episode_id"]: EpisodeStartedFromChat(
@@ -145,20 +190,29 @@ class EpisodeStoreMixin(StoreMixinBase):
             )
             for row in connection.execute(
                 f"""
-                SELECT episode.episode_id,
+                WITH RECURSIVE chain(episode_id, member_id, continues_episode_id) AS (
+                    SELECT episode_id, episode_id, continues_episode_id FROM episodes
+                    WHERE episode_id IN ({placeholders})
+                    UNION
+                    SELECT chain.episode_id, member.episode_id, member.continues_episode_id
+                    FROM chain JOIN episodes AS member
+                      ON member.episode_id = chain.continues_episode_id
+                )
+                SELECT chain.episode_id,
                        json_extract(source.request_json, '$.chat_id') AS chat_id,
                        display.title AS chat_name
-                FROM episodes AS episode
-                JOIN graph_runs AS root ON root.operation_id = episode.root_operation_id
+                FROM chain
+                JOIN episodes AS root
+                  ON root.episode_id = chain.member_id AND root.continues_episode_id IS NULL
+                JOIN graph_runs AS root_run ON root_run.operation_id = root.root_operation_id
                 JOIN graph_runs AS source
                   ON source.operation_id = json_extract(
-                      root.request_json, '$.started_from_operation_id'
+                      root_run.request_json, '$.started_from_operation_id'
                   )
                 LEFT JOIN chat_display AS display
                   ON display.project_id = source.project_id
                  AND display.chat_id = json_extract(source.request_json, '$.chat_id')
-                WHERE episode.episode_id IN ({placeholders})
-                  AND json_extract(source.request_json, '$.chat_id') IS NOT NULL
+                WHERE json_extract(source.request_json, '$.chat_id') IS NOT NULL
                 """,
                 list(episode_ids),
             )

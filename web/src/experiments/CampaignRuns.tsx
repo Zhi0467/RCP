@@ -1,16 +1,6 @@
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { graphViewHash } from "../core/graphTarget";
-import {
-  ChevronDown,
-  Pause,
-  LoaderCircle,
-  Network,
-  Play,
-  RotateCcw,
-  Send,
-  Square,
-  Telescope,
-} from "lucide-react";
+import { ChevronDown, LoaderCircle, Network, RotateCcw, Send, Telescope } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
 import {
   episodeEndingLabel,
@@ -43,6 +33,7 @@ import {
   EpisodeAuthor,
   type ArchiveEpisodeAction,
 } from "./EpisodeRunControls";
+import { EpisodeControls } from "./EpisodeControls";
 
 export function AutoResearchEpisodeCard({
   episode,
@@ -90,7 +81,6 @@ export function AutoResearchEpisodeCard({
   const detailId = useId();
   const chain = episode.chain;
   const [expanded, setExpanded] = useState(initiallyExpanded);
-  const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
   const [messageTurns, setMessageTurns] = useState("3");
   const messageRequest = useRef<{
@@ -123,19 +113,10 @@ export function AutoResearchEpisodeCard({
     [episode, taskRows],
   );
   const { recommendation, taskControl } = projection;
-  const parsedAdditionalTurns = Number(additionalTurns);
-  const continuationIsValid =
-    additionalTurns.trim().length > 0 &&
-    Number.isSafeInteger(parsedAdditionalTurns) &&
-    parsedAdditionalTurns >= 1;
-  const stopBusy = busyAction === `stop:${episode.episode_id}`;
   const mergeBusy = busyAction === `merge:${episode.episode_id}`;
-  const continueBusy = busyAction === `continue:${episode.episode_id}`;
   const messageBusy = busyAction === `message:${episode.episode_id}`;
-  const controlTaskBusy = taskControl !== null && taskActionId === taskControl.task.operation_id;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
   const episodeTimestamp = formatTimestamp(episode.created_at);
-  const showStop = episode.can_stop || stopBusy;
 
   useEffect(() => {
     if (initiallyExpanded) setExpanded(true);
@@ -147,17 +128,6 @@ export function AutoResearchEpisodeCard({
     if (episode.can_continue && !couldContinue.current) setExpanded(true);
     couldContinue.current = episode.can_continue;
   }, [episode.can_continue]);
-
-  const submitContinuation = async () => {
-    if (!continuationIsValid || anotherActionBusy) return;
-    setLocalError(null);
-    try {
-      await onContinue(episode.episode_id, parsedAdditionalTurns);
-      setAdditionalTurns("");
-    } catch (error) {
-      setLocalError(error instanceof Error ? error.message : String(error));
-    }
-  };
 
   useEffect(() => {
     setMessageRefused(false);
@@ -190,16 +160,6 @@ export function AutoResearchEpisodeCard({
         messageRequest.current = null;
         setMessageRefused(true);
       }
-      setLocalError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const operateControlTask = async () => {
-    if (anotherActionBusy || !taskControl) return;
-    setLocalError(null);
-    try {
-      await onOperateTask(taskControl.task, taskControl.kind);
-    } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
     }
   };
@@ -307,87 +267,17 @@ export function AutoResearchEpisodeCard({
                 <Network size={14} /> Open graph
               </a>
             )}
-            {taskControl && (
-              <button
-                className={`button compact ${
-                  taskControl.kind === "resume" ? "primary" : "secondary"
-                }`}
-                type="button"
-                disabled={anotherActionBusy}
-                onClick={() => void operateControlTask()}
-              >
-                {controlTaskBusy ? (
-                  <LoaderCircle className="spin" size={12} />
-                ) : taskControl.kind === "pause" ? (
-                  <Pause size={12} />
-                ) : taskControl.kind === "resume" ? (
-                  <Play size={12} />
-                ) : (
-                  <RotateCcw size={12} />
-                )}
-                {controlTaskBusy
-                  ? `${episodeActionLabel(taskControl.kind)}…`
-                  : episodeActionLabel(taskControl.kind)}
-              </button>
-            )}
-            {taskControl?.kind === "retry" && taskControl.canSwitchProvider && (
-              <button
-                className="button compact"
-                type="button"
-                disabled={anotherActionBusy || controlTaskBusy}
-                onClick={() => onSwitchProvider(taskControl.task)}
-              >
-                Switch provider…
-              </button>
-            )}
-            {episode.can_continue && (
-              <form
-                className="campaign-reauthorize"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void submitContinuation();
-                }}
-              >
-                <input
-                  type="number"
-                  min={1}
-                  step={1}
-                  inputMode="numeric"
-                  aria-label="Turns to add"
-                  value={additionalTurns}
-                  disabled={anotherActionBusy}
-                  onChange={(event) => setAdditionalTurns(event.target.value)}
-                />
-                <button
-                  className="button primary compact"
-                  type="submit"
-                  disabled={!continuationIsValid || anotherActionBusy}
-                >
-                  {continueBusy && <LoaderCircle className="spin" size={12} />}
-                  {continueBusy
-                    ? "Adding turns…"
-                    : continuationIsValid
-                      ? `Add ${parsedAdditionalTurns} turns`
-                      : "Add turns"}
-                </button>
-              </form>
-            )}
-            {showStop && (
-              <button
-                className="button secondary compact campaign-stop"
-                type="button"
-                disabled={anotherActionBusy}
-                onClick={() => {
-                  setLocalError(null);
-                  void onStop(episode.episode_id).catch((error) => {
-                    setLocalError(error instanceof Error ? error.message : String(error));
-                  });
-                }}
-              >
-                {stopBusy ? <LoaderCircle className="spin" size={12} /> : <Square size={12} />}
-                {stopBusy ? "Stopping…" : "Stop"}
-              </button>
-            )}
+            <EpisodeControls
+              episode={episode}
+              taskControl={taskControl}
+              busyAction={busyAction}
+              taskActionId={taskActionId}
+              onOperateTask={onOperateTask}
+              onSwitchProvider={onSwitchProvider}
+              onContinue={onContinue}
+              onStop={onStop}
+              onError={setLocalError}
+            />
           </div>
 
           <RunArtifacts
@@ -624,10 +514,4 @@ function formatTimestamp(value: string, includeSeconds = false): string {
     minute: "2-digit",
     ...(includeSeconds ? { second: "2-digit" } : {}),
   }).format(parsed);
-}
-
-function episodeActionLabel(action: "pause" | "resume" | "retry"): string {
-  if (action === "pause") return "Pause";
-  if (action === "resume") return "Resume";
-  return "Retry";
 }
