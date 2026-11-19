@@ -2027,7 +2027,7 @@ turns of the same actor to manage their own posts. Receipts make all three
 mutations replay-safe within each turn; fresh mutations share the existing
 transactional Stop fence.
 
-Launch snapshots and `bulletin --read` include a mentions section first, newest
+Launch deltas and `bulletin --read` include a mentions section first, newest
 first within the render budget, followed by member ids and names, agents/roster,
 and posts. Budget is allocated to mentions, posts, members, then agents. Agents
 write `<@member:USER_ID>` or `<@agent:ACTOR_ID>` tokens using these identities.
@@ -2043,12 +2043,44 @@ of the post it names. A read and a new post default to the agent's own channel; 
 accepts main or any project branch name/id, resolved the same way for both, so a
 branch agent can read main's posts and links. Reads keep their existing authority. Agents prefer their own channel and
 post elsewhere only when the message belongs there. A reply cannot override its
-parent's channel. The per-turn pointer line carries the open count. Holders of the verb must read and
-reply to an open mention before finishing; replying is not obeying. Otherwise
-they use it occasionally, not every turn: to catch up on the branch and to post
-short progress or team-sync notes. Other agent channels a launch holds come
-first, and questions needing human input go through `ask` when it is held.
-One `BULLETIN_RULES` tuple renders these rules in Work and Auto-research.
+parent's channel.
+
+Each staged operation records a Bulletin delta for its stable actor in its own
+channel. Human read markers remain independent. New posts render oldest first
+after the actor cursor, excluding its own posts, up to `BULLETIN_DELTA_MAX_POSTS`
+and the render byte budget. The first turn starts with the current recent page.
+Rendering stops at the first post that does not fit; when the first post is
+oversized, only its text is truncated. Its author, thread, time, references and
+post id remain, with a `truncated` flag so a channel read can retrieve its full
+text. Mentions receive budget priority, with `BULLETIN_DELTA_MIN_BYTES` reserved
+for post progress. Explicit reads never move the actor cursor. Tasks without a
+Bulletin actor receive a recent page without persistent delta or cursor rows.
+
+The operation stores only its sequence range and shown post ids. Retry and resume
+admission inherit the parent's Bulletin operation id in their durable admission
+receipt, so re-staging selects the saved posts without walking the lineage or
+inserting another delta row. Old admission receipts use their own operation id.
+Posts are re-selected from current storage; deleted or expired posts disappear and edits
+are visible. Mentions, members and roster are refreshed on every stage.
+
+Staging initializes the actor's starting boundary, but consumes the shown range
+only after the stage file is published and the task is running. Cursor updates
+are atomic and idempotent. A failed stage or a task that never reaches running
+leaves its posts available to a fresh turn, including after restart. A crash
+between publication and consumption can repeat context but cannot lose posts.
+Only the rendered range advances the cursor; omitted posts remain for later turns.
+The pointer reports new post count, shown count, and open mention count; the
+rendered context counts remaining posts.
+
+Agents read new posts and mentions each turn and reply in any open mention's
+thread before finishing; replying is not obeying. They post information that would
+change others' actions: a completed dependency, shared setup changes, a shared
+blocker, or a change of direction. Routine progress, plans, and messages to one
+agent do not belong on the Bulletin. Parent/child communication uses the mailbox;
+questions to the human use `ask`. Claims must be checked before relying on them.
+One `BULLETIN_RULES` tuple renders these four rules in Work and Auto-research.
+The adjacent `BULLETIN_SYNTAX` tuple supplies mention tokens, node and artifact
+links, artifact reads, channel selection, and ownership limits for edits and deletes.
 
 Artifact links in posts and replies carry the artifact id, source name, and media
 type in reads and launch snapshots. `bulletin --artifact ID` resolves the current

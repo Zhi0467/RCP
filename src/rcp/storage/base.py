@@ -161,6 +161,7 @@ class AppStoreBase:
         (88, "share_links_v1"),
         (89, "shared_chat_card_versions_v1"),
         (90, "plan_card_receipt_index_v1"),
+        (91, "bulletin_deltas_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1167,6 +1168,11 @@ class AppStoreBase:
             version=90,
             name="plan_card_receipt_index_v1",
             migration=self._migrate_plan_card_receipt_index,
+        )
+        from rcp.storage.bulletin import migrate_bulletin_deltas
+
+        self._run_storage_schema_migration(
+            connection, version=91, name="bulletin_deltas_v1", migration=migrate_bulletin_deltas
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

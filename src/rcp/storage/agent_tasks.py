@@ -1359,6 +1359,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         )
         record_client_request(self, connection, record)
         record_evidence_flag_address(self, connection, record)
+        from rcp.storage.bulletin import bulletin_delta_operation
+
+        bulletin_operation_id = record.operation_id
+        if continuation_cause in {"retry", "resume"} and record.parent_operation_id:
+            bulletin_operation_id = bulletin_delta_operation(connection, record.parent_operation_id)
         self._insert_agent_task_receipt(
             connection,
             record.operation_id,
@@ -1369,6 +1374,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "attempt": record.attempt,
                     "parent_operation_id": record.parent_operation_id,
                     "continuation_cause": continuation_cause,
+                    "bulletin_operation_id": bulletin_operation_id,
                     "admission_committed": True,
                 }
             ),
@@ -4518,6 +4524,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             raise ValueError("The agent task admission intent is malformed.") from exc
         if not isinstance(payload, dict):
             raise ValueError("The agent task admission intent is malformed.")
+        if not legacy and "bulletin_operation_id" in payload:
+            bulletin_operation_id = payload.pop("bulletin_operation_id")
+            if not isinstance(bulletin_operation_id, str) or not bulletin_operation_id:
+                raise ValueError("The agent task admission intent is malformed.")
         kind = payload.get("kind")
         attempt = payload.get("attempt")
         cause = payload.get("continuation_cause")

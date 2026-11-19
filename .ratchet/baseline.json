@@ -191,7 +191,7 @@
   "src/rcp/runs/branch_merge.py": {"comment": 15},
   "src/rcp/runs/branch_merge_context.py": {"comment": 3},
   "src/rcp/runs/browser_lifecycle.py": {"comment": 7},
-  "src/rcp/runs/bulletin.py": {"comment": 5},
+  "src/rcp/runs/bulletin.py": {"comment": 4},
   "src/rcp/runs/chat.py": {"comment": 42},
   "src/rcp/runs/chat_admission.py": {"comment": 1},
   "src/rcp/runs/codex_resume.py": {"comment": 2},
