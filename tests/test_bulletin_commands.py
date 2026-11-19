@@ -239,7 +239,8 @@ def test_staged_roster_cannot_starve_posts():
     }
     rendered = render_bulletin(snapshot)
     records = [json.loads(block.split("\n```", 1)[0]) for block in rendered.split("```json\n")[1:]]
-    assert {row["post_id"] for row in records if "post_id" in row} == {"post"}
+    assert {row["post_id"] for row in records if "post_id" in row} == {"oversized"}
+    assert next(row for row in records if "post_id" in row)["truncated"]
     agents = [row for row in records if "state" in row]
     assert len(agents) == BULLETIN_ROSTER_MAX_COUNT
     assert list(map(int, re.findall(r"\d+", rendered.splitlines()[-1]))) == [
