@@ -921,8 +921,8 @@ turn's Patch lands, so the agent writes and fixes the node in the same turn.
 `--invocation-limit` may shorten the episode but never exceed the node's limit,
 and the goal file is required. Provider, model and effort are the agent's pick
 from the ready profiles, otherwise Settings; the human may change all three on
-the card. Readiness is checked at Start. After the card is approved the agent
-arms a node-status watcher on the Experiment's closed statuses.
+the card. Readiness is checked at Start. The Experiment's ending reaches the chat
+through the episode mailbox, so the agent arms no watcher for it.
 
 **Choosing the route.** The Work prompt sends work that answers a research
 question and needs more than one shot (iteration, debugging, hours of compute,
@@ -986,6 +986,15 @@ to the chat that started the chain. Continuations retain the first episode's
 starting chat. Auto-research children report only to their orchestrator; the
 orchestrator's own questions and ending reach its starting chat. Question and
 ending records insert their mail in the same transaction as the source event.
+The mailbox reuses the Auto-research mail table, addressed to an orchestrator
+actor, a chat or an Experiment chain, so it keeps one id space and claim rule.
+Project transfer refuses while any mail is undelivered and imports it delivered.
+
+The parent's prompt (Work and orchestrator) says the runs it started report
+here, so it needs no watcher for them. It answers a child question itself when
+the human is not needed. Experiment design, upstream decisions and starting
+runs that use significant compute go to the human, through the parent's reply;
+the parent never invents a human answer. The human may answer any time.
 
 An idle parent receives one ordinary Work wake for a bounded mail batch. Storage
 atomically selects the latest settled usable chat session and stage, inserts the

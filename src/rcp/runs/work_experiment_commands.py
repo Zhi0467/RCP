@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -19,7 +18,6 @@ from rcp.agents.staged_command_client import (
     experiment_kickoff_usage,
 )
 from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
-from rcp.core.models import CLOSED_EXPERIMENT_STATUSES
 from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
 from rcp.runs.experiment_admission import (
@@ -542,7 +540,6 @@ def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, subject: str
 def work_experiment_command_usage(client: str, profile_choices: str) -> str:
     """The Experiment plan card and human-pause resume usage of a Work turn granted ``episode``."""
 
-    closed = json.dumps(sorted(CLOSED_EXPERIMENT_STATUSES))
     return (
         'Experiment resume: when this chat\'s loop status shows ending "human_pause", that '
         "episode stopped to wait for its human. If the human's message says what it waited "
@@ -580,7 +577,6 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "shows the card's outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
         + " To revise the plan after the human comments, run the command again with a new key; the new card replaces the old one. Once the card is approved, "
-        "tell the human what started (node, goal, limit, profile) and arm a "
-        f'watch.json graph item {{"node_id":"<node-id>","status_in":{closed}}} so this chat '
-        "resumes when the Experiment closes."
+        "tell the human what started (node, goal, limit, profile). Its ending reaches this "
+        "chat through the episode mailbox."
     )
