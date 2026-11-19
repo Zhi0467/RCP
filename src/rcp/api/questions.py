@@ -66,6 +66,7 @@ class QuestionResponse(BaseModel):
     resolved_by: AuthorizedHuman | None
     resolved_at: str | None
     withdrawn_readonly: bool
+    relays_question_id: str | None = None
     can_answer: bool
     agent_waiting: bool
     # "turns": answering continues the ended episode and names its turns;

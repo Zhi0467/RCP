@@ -3920,6 +3920,8 @@ export interface AgentQuestion {
   resolved_by: AuthorizedHuman | null;
   resolved_at: string | null;
   withdrawn_readonly: boolean;
+  /** The child question this relays; answering that one withdraws this copy. */
+  relays_question_id?: string | null;
   can_answer: boolean;
   created_at: string;
   /** Set on an approval card's question; its outcome is the answer. */
