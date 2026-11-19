@@ -352,6 +352,6 @@ export function experimentRunConfig(
     provider: request.provider,
     model: request.model ?? "",
     reasoning: request.reasoning ?? "",
-    run_on: request.run_on || baseMachine,
+    run_on: baseMachine,
   };
 }
