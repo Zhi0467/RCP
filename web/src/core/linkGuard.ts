@@ -70,7 +70,12 @@ export function installLinkGuard() {
         requestShareLinkInPlace(action.token);
         return;
       }
-      if (isDesktopRuntime() && found.link.target === "_blank" && !found.click.download) {
+      if (
+        isDesktopRuntime() &&
+        found.link.target === "_blank" &&
+        !found.click.download &&
+        leavesApp(found.click.href, new URL(window.location.href))
+      ) {
         found.link.removeAttribute("target");
         setTimeout(() => found.link.setAttribute("target", "_blank"));
       }

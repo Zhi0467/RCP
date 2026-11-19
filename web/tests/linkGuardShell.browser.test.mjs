@@ -34,4 +34,6 @@ test("under the desktop shell's link handler a share link opens in place and oth
   assert.deepEqual(await page.evaluate(() => window.invoked), []);
   assert.deepEqual(await page.evaluate(() => window.opened), ["https://example.com/paper"]);
   assert.equal(await page.getAttribute("#outside", "target"), "_blank");
+  await page.click("#here");
+  assert.equal(await page.evaluate(() => window.location.hash), "");
 });
