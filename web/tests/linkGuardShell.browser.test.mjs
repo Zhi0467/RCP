@@ -21,7 +21,7 @@ after(async () => {
   await server?.close();
 });
 
-test("under the desktop shell's link handler a share link opens in place and others leave", async () => {
+test("under the desktop shell's link handler a share link opens in place and others open past it", async () => {
   const page = await browser.newPage();
   await page.goto(base);
   await page.locator("body[data-ready]").waitFor();
@@ -30,7 +30,10 @@ test("under the desktop shell's link handler a share link opens in place and oth
   assert.equal(await page.evaluate(() => window.shareRequest()?.token), "shared-token");
   assert.equal(new URL(page.url()).pathname, "/tests/fixtures/linkGuardShell.html");
   await page.click("#outside");
-  assert.deepEqual(await page.evaluate(() => window.invoked), [
-    { command: "plugin:shell|open", path: "https://example.com/paper" },
-  ]);
+  await page.click("#handled");
+  assert.deepEqual(await page.evaluate(() => window.invoked), []);
+  assert.deepEqual(await page.evaluate(() => window.opened), ["https://example.com/paper"]);
+  assert.equal(await page.getAttribute("#outside", "target"), "_blank");
+  await page.click("#here");
+  assert.equal(await page.evaluate(() => window.location.hash), "");
 });

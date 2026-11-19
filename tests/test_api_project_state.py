@@ -922,6 +922,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
         "codex-ready"
     )
     assert response.json()["providers"] == response.json()["provider_readiness"][BACKEND_MACHINE_ID]
+    assert response.json()["run_on"] == BACKEND_MACHINE_ID
     assert set(response.json()["agent_profiles"]) >= {"seed", "refresh", "node_chat"}
     assert all(
         "effective_model" in profile for profile in response.json()["agent_profiles"].values()
