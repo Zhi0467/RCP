@@ -175,6 +175,61 @@ claim pattern, transfer already exports it.
   Experiment loops, workers, and consolidation see mentions in their next
   delta.
 
+## Review resolutions (astra design review)
+
+- **Mail records.** `AutoResearchMessageRecord`, the staged mail model, and the
+  transfer records change together. `recipient_task_id` becomes optional and
+  is set exactly when `recipient_kind='actor'`; `recipient_chat_id` exactly
+  when `recipient_kind='chat'`. Experiment-recipient mail names no task; the
+  next invocation claims it. Transfer exports and imports the new fields and
+  Experiment-episode mail; imported mail stays inert as today. Old rows and an
+  old archive are regression-tested.
+- **One wake admission.** Storage owns `admit_chat_wake(chat_id, cause,
+  item_ids)` in one `BEGIN IMMEDIATE` transaction: it refuses when the chat has
+  a queued or running turn (the items stay pending and that turn's staging
+  claims them), checks the per-chain cap and the cooldown, picks the binding
+  the chat question follow-up uses (the chat's latest settled turn session and
+  stage, with the same liveness checks), inserts the task with a deterministic
+  operation id, and claims the item ids with it. Mailbox wakes and Bulletin
+  mention wakes both call it; there is no second launcher. The wake request
+  records its cause, and items or posts written by a wake-caused turn never
+  wake anyone. Startup and every task settlement run one reconcile pass, which
+  also recovers a claim whose task never launched.
+- **Parent answers.** `episode --answer` shares the human route's arbitration.
+  Where the human route needs a continuation budget (the chain's last open
+  question after it ended), the parent is refused with
+  `question_needs_continuation` and the dock shows the question with Answer and
+  Add turns for the human. A parent never spends child turns by answering.
+- **Experiment messages.** No live steering for Experiments. `--message` to a
+  running Experiment chain writes mail with `recipient_kind='experiment'`; the
+  Experiment loop's next invocation staging claims it, alongside answered
+  questions, under the episode's saved session, stage, and Stop fence. An
+  ended chain refuses with `episode_not_running`.
+- **Bulletin cursor.** A new `bulletin_actor_reads(project_id, target_key,
+  actor_id, through_seq)` keeps human reads unchanged. Each staged operation
+  records `bulletin_deltas(operation_id, actor_id, target_key, from_seq,
+  through_seq)`; a retry or resume in the same lineage re-renders that range.
+  Rendering is contiguous: posts render oldest first and stop at the first that
+  does not fit; an oversized post renders truncated with its id for
+  `bulletin --read`, so the boundary always advances.
+- **Dock buckets.** The projection returns mutually exclusive buckets, keyed by
+  question id: this chat's own questions (inline, unchanged), its direct-child
+  episode items, then today's other relayed questions minus both. Episode
+  controls come from the existing episode response and `taskControl`
+  projection, not a second lifecycle. Auto-research children cannot ask, so no
+  grandchild item can reach a chat.
+- **Card authorization.** `_owned_card` and `experiment_card_actor` become one
+  plan-card actor rule for both kinds in shared and node chats.
+- **Auto-research card ids** use the deterministic UUIDv4 encoding of
+  `turn_keyed_branch_id`; Experiment keeps its derivation.
+
+## Slices
+
+Contracts first, by the orchestrator, serially: the `start` overrides union,
+mail record fields and migration, `admit_chat_wake`, and the web payload types.
+Then parallel slices: card, mailbox, Bulletin delta; then dock and Bulletin
+mention wake on top. Policy version bumps land last.
+
 ## Versions
 
 Work v36, Experiment loop v22, Auto-research v19, chat master context 31.
