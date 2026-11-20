@@ -289,7 +289,11 @@ export function AgentWindowTranscript({
               data-source={line.source ?? undefined}
               data-task-id={line.taskId}
               data-time-shown={timeShownIds.has(line.lineId) ? "" : undefined}
-              onClick={shownAt ? (event) => toggleTime(line.lineId, event.target) : undefined}
+              onClick={
+                shownAt || turnEnds.has(line.lineId)
+                  ? (event) => toggleTime(line.lineId, event.target)
+                  : undefined
+              }
             >
               {lineLead?.(line, task)}
               {browserNotices && (
