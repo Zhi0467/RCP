@@ -25,6 +25,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_store,
     get_watcher_delivery,
+    require_agent_project_membership,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -95,7 +96,7 @@ from rcp.transport import StateUnavailable
 from rcp.watchers import WatcherDelivery
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
-agent_router = APIRouter()
+agent_router = APIRouter(dependencies=[Depends(require_agent_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]

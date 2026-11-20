@@ -246,7 +246,11 @@ def test_discuss_resolves_ask_and_name(tmp_path):
     assert work.allowed_verbs == {"validate", "name"}
     rendered = _work_execution_instructions(
         SimpleNamespace(
-            execution=execution, compute_commands=None, service=None, graph_read_scope=None
+            execution=execution,
+            compute_commands=None,
+            service=None,
+            graph_read_scope=None,
+            patch_inputs=SimpleNamespace(patch_path="patch.json"),
         ),
         client="client",
     )
@@ -313,7 +317,7 @@ def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
         compute_commands=None,
         service=None,
         graph_read_scope=None,
-        patch_inputs=SimpleNamespace(validator_staged=staged),
+        patch_inputs=SimpleNamespace(validator_staged=staged, patch_path="patch.json"),
     )
     prompt = _work_execution_instructions(turn, client="rcp-client")
     argv = staged.client_argv()
@@ -629,7 +633,7 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
                 compute_commands=None,
                 service=None,
                 graph_read_scope=None,
-                patch_inputs=SimpleNamespace(validator_staged=staged),
+                patch_inputs=SimpleNamespace(validator_staged=staged, patch_path="patch.json"),
                 validator_lifecycle=lifecycle,
             )
             return _work_execution_instructions(turn, client="rcp-client")

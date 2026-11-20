@@ -5,29 +5,28 @@ from __future__ import annotations
 import logging
 import socket
 import threading
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import uvicorn
 
+from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage import QuestionOrigin
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app, wait_until
 from .test_api_questions import _question
+from .test_storage import _task_record
 
 
 def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.services.store
     project_id = app.state.default_project_id
-    thread_id = str(uuid.uuid4())
-    with store.connection() as connection:
-        connection.execute(
-            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) VALUES (?,?,'project',?,?)",
-            (thread_id, store.local_owner.user_id, project_id, store.now()),
-        )
+    threads = store.ensure_agent_threads(
+        store.local_owner.user_id, [project_id], default_names=("Pip",)
+    )
+    thread_id = next(row.thread_id for row in threads if row.kind == "project")
     question = store.create_or_get_question(
         origin=QuestionOrigin(
             owner_kind="chat",
@@ -57,6 +56,21 @@ def test_served_cards_schedules_and_voice(manifest, tmp_path, caplog):
     relayed = _question(store, project_id, owner_id="shared-chat", key="relay")
     own = _question(store, project_id, owner_id=thread_id, key="own")
     future = datetime.now(UTC) + timedelta(days=1)
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="original-turn",
+            project_id=project_id,
+            kind="project_chat",
+            status="succeeded",
+            request={"chat_id": thread_id},
+            authorized_by=AuthorizedHuman(
+                space_id=store.space_id,
+                user_id=store.local_owner.user_id,
+                display_name=store.local_owner.display_name,
+            ),
+        )
+    )
     schedule = store.add_agent_schedule(
         thread_id=thread_id,
         operation_id="original-turn",
