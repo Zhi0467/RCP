@@ -297,9 +297,10 @@ shrink columns. Fit preserves pins. Returning restores zoom, scroll, and offsets
 
 ## Agent browser controls
 
-The composer's + menu holds Browser use and Work in a worktree below its file
-items, and + shows a count of enabled options. On phones, the menu spans the
-screen-height composer. An outside click, Escape, or a chat change closes it.
+The agent header's ⋯ menu holds the Browser use switch. The composer's + menu
+holds Work in a worktree below its file items, and + shows a count of enabled
+options. On phones, the + menu spans the screen-height composer. An outside
+click, Escape, or a chat change closes either menu.
 Browser use starts off in new chats. A failed save returns to the server value,
 outlines the control in red, and offers one icon-only retry with the error on
 hover. The Coach's Browser use sits at the bottom of its agent picker, starts on,
@@ -324,10 +325,10 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 Chat, the Coach included, is forest. The composer has no mode control.
 Each human turn keeps its recorded label; a historical Discuss turn reads Discuss
-in plum. The Agents header has a title, a picker for provider,
-model, and effort, a context ring, an active-watcher count toggle when watchers
-exist, and one menu. The menu holds Rename, Archive,
-New session, and Branch this chat. The worktree repository choice sits in the + menu.
+in plum. The Agents header is the one agent header described under
+[agent view](#agent-view). Its menu holds Rename, Archive, New session,
+and Branch this chat before the shared rows. The worktree repository choice sits
+in the + menu.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
 
@@ -390,7 +391,8 @@ Working chats cannot be archived.
 Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.
 
-At <=560px, the header is one row of picker, ring, and menu without chat name.
+At <=560px, the header stays one row: the chat name truncates beside its chips
+and menu.
 More → Agents follows the same entry rule. Wider layouts retain
 resizable-list preferences independently of viewport changes. Only code, tables,
 and display math scroll sideways. Paths and URLs wrap.
@@ -494,18 +496,24 @@ Auto-research root, the Paper chat, Experiment chats, project threads and the
 Space thread. It has one header, one composer and one running-turn display.
 What differs comes from the data the view is given: a member thread loads its
 own transcript and turns through the thread routes, whose Space or project path
-the API module chooses, and its row's `can_queue` turns the queue on. The
-header holds the `provider · model · effort` agent chip, the context ring and a
-⋯ menu. A thread's chip stores its pick on the thread at once, and every later
-turn runs it, retries and wakes included; opening the chip reads provider
-readiness again, so a sign-in from Settings appears without a reload. Until the
-member picks, the chip shows the project's Settings profile, or for the Space
-thread the backend machine's first signed-in provider, else its first
-registered provider. A thread's menu adds Rename. A thread with schedules shows
-a Wakes button that counts the schedules that will run without the member and
-opens a popover of them. The chat watcher bar lists the live watchers that wake
-the conversation, for threads and chats alike. Browser use and Work in a
-worktree sit in the composer's + menu; Work in a worktree needs a project.
+the API module chooses, and its row's `can_queue` turns the queue on.
+
+Every agent view, the floating node chat included, uses one header row: the
+title on the left, then icon chips that each carry a count, in this order:
+schedules, compactions, the context ring (`141k / 258k`), watchers, and
+comments. A chip shows only when it has something. A ⋯ menu ends the row. The
+menu holds the host's actions, Rename for a thread, Browser use, and last a
+collapsible `provider · model · effort` row that opens the provider, model and
+effort selects. The agent pick is never a header button. A thread's pick is
+stored on the thread at once, and every later turn runs it, retries and wakes
+included; opening the menu reads provider readiness again, so a sign-in from
+Settings appears without a reload. Until the member picks, the row shows the
+project's Settings profile, or for the Space thread the backend machine's first
+signed-in provider, else its first registered provider. The schedules chip
+counts the schedules that will run without the member and opens a popover of
+them. The watcher chip opens the chat watcher bar, which lists the live
+watchers that wake the conversation. Work in a worktree sits in the composer's
++ menu and needs a project.
 Browser loss shows on its turn. The composer holds the voice button where the
 Space voice agent is available, else dictation. Once a thread's transcript has
 loaded empty, a centered welcome lists what the agent can do under the header

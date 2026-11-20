@@ -141,7 +141,9 @@ for (const width of [1000, 390]) {
     const originLink = page.locator(".chat-origin-link");
     await originLink.waitFor();
     // A pending fork keeps its source's agent; a detached one picks its own.
+    await page.locator(".chat-header-menu > .icon-button").click();
     assert.equal(await page.locator(".agent-config-chip").isDisabled(), width !== 390);
+    await page.keyboard.press("Escape");
     // The link starts the transcript's column, never left of the first message's edge.
     const column = await page.locator(".agent-chat-view-lines").evaluate((lines) => {
       const style = getComputedStyle(lines);
@@ -255,22 +257,26 @@ test("Escape closes the repository list before the menu; the agent picker and Ad
   assert.equal(await menu.getAttribute("aria-expanded"), "false");
   assert.equal(await isFocused(menu), true);
 
-  const chip = page.locator(".agent-config-chip");
+  const chip = page.locator(".chat-header-menu-list .agent-config-chip");
   const panel = page.locator(".agent-config");
+  await menu.click();
   await chip.click();
   await panel.locator("select").first().focus();
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "detached" });
-  assert.equal(await chip.getAttribute("aria-expanded"), "false");
-  assert.equal(await isFocused(chip), true);
+  assert.equal(await menu.getAttribute("aria-expanded"), "false");
+  assert.equal(await isFocused(menu), true);
+  await menu.click();
   await chip.click();
   await panel.waitFor();
   await page.mouse.click(5, 400);
   await panel.waitFor({ state: "detached" });
+  await menu.click();
   await chip.click();
   await panel.waitFor();
   await chip.click();
   await panel.waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
 
   // The composer's Add menu closes on Escape, an outside press, and a send.
   const add = page.getByRole("button", { name: "Add", exact: true });
@@ -307,11 +313,14 @@ test("The chat menu and Branch this chat work by keyboard; the current branch is
   const first = page.getByRole("menuitem").first();
   assert.equal(await isFocused(first), true);
   await page.keyboard.press("End");
-  const branchTrigger = page.locator(".chat-branch-picker .branch-picker-trigger");
-  assert.equal(await isFocused(branchTrigger), true);
+  const agentPick = page.locator(".chat-header-menu-list .agent-config-chip");
+  assert.equal(await isFocused(agentPick), true);
   await page.keyboard.press("ArrowDown");
   assert.equal(await isFocused(first), true);
   await page.keyboard.press("ArrowUp");
+  assert.equal(await isFocused(agentPick), true);
+  await page.keyboard.press("ArrowUp");
+  const branchTrigger = page.locator(".chat-branch-picker .branch-picker-trigger");
   assert.equal(await isFocused(branchTrigger), true);
   await page.keyboard.press("Enter");
   const picker = page.locator(".branch-picker-popover");

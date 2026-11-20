@@ -781,8 +781,7 @@ export function ChatsWorkspace({
             }}
           />
         ) : (
-          // A phone header is only the controls row; More → Agents lists the agents.
-          !narrow && <strong>{selected.title}</strong>
+          <strong>{selected.title}</strong>
         )}
         {selected.conversationKind === "auto_research_child" && (
           <a className="button compact conversation-header-orchestrator" href={orchestratorHref}>

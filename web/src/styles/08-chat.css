@@ -2092,6 +2092,31 @@
   font-size: var(--type-xs);
   gap: 3px;
 }
+.chat-browser-control {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+/* A failed save keeps the row's height: one small retry at its end, the error on hover. */
+.chat-browser-control > .chat-browser-retry {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--coral);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 20px;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  width: 20px;
+}
+.chat-browser-control > .chat-browser-retry:hover:not(:disabled),
+.chat-browser-control > .chat-browser-retry:focus-visible {
+  background: var(--cobalt-soft);
+}
 .chat-option > p,
 .chat-browser-control > p {
   color: var(--muted);

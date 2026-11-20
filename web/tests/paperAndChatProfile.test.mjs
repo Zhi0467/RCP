@@ -84,38 +84,13 @@ const chatProps = {
   onClose() {},
 };
 
-test("chat shows its agent identity and keeps New session in its menu", () => {
+test("chat keeps its agent pick and New session in its menu", () => {
   const fresh = renderToStaticMarkup(React.createElement(AgentChatView, chatProps));
-  assert.match(fresh, /aria-label="Chat agent: Codex"/);
+  assert.doesNotMatch(fresh, /aria-label="Chat agent/);
   assert.match(fresh, /class="chat-header-menu"/);
   assert.doesNotMatch(fresh, /scope-trigger/);
 
   assert.doesNotMatch(fresh, /agent-config-summary/);
-
-  const resumed = renderToStaticMarkup(
-    React.createElement(AgentChatView, {
-      ...chatProps,
-      historyMessages: [
-        {
-          message_id: "answer",
-          operation_id: "operation",
-          role: "assistant",
-          text: "Answer",
-          timestamp: "2026-08-03T10:00:00Z",
-          native_session_id: "native-session",
-          provider: "claude",
-          model: "claude-opus",
-          reasoning: "high",
-          execution_machine: "local",
-          applied_revision: null,
-          mode: "discuss",
-          graph_update: null,
-          trigger: "human",
-        },
-      ],
-    }),
-  );
-  assert.match(resumed, /aria-label="Chat agent: Claude"/);
 });
 
 test("the chat composer marks where to type with field shape, never placeholder copy", () => {

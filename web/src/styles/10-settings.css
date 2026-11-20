@@ -906,12 +906,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   min-width: 0;
 }
 .chat-context-controls {
-  align-items: stretch;
-  border-bottom: 1px solid var(--line);
+  align-items: center;
   display: flex;
   flex: none;
-  gap: 9px;
-  padding: 6px 10px;
+  gap: 6px;
+  margin-left: auto;
 }
 .agent-provider-label {
   align-items: center;
@@ -942,7 +941,57 @@ button.agent-provider-label {
   position: relative;
 }
 .chat-header-menu-list {
-  min-width: 200px;
+  width: min(300px, calc(100vw - 24px));
+}
+.chat-header-menu-list > .chat-browser-control {
+  padding: 6px 10px;
+}
+.chat-header-menu-list .browser-consent {
+  font-size: var(--type-xs);
+}
+.chat-header-menu-list .browser-consent-switch {
+  font-weight: inherit;
+}
+/* The agent pick is the menu's last row; it opens the shared fields beneath it. */
+.agent-pick-row {
+  border-top: 1px solid var(--line);
+  display: grid;
+  margin-top: 4px;
+  padding-top: 4px;
+}
+.agent-pick-row .agent-config-chip {
+  font-weight: inherit;
+  min-width: 0;
+  width: 100%;
+}
+.agent-pick-row .agent-config-chip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-pick-row .agent-config-chip > svg {
+  color: var(--muted);
+  flex: none;
+  transition: transform 0.16s ease;
+}
+.agent-pick-row .agent-config-chip[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+.agent-pick-row .agent-config.compact {
+  animation: agent-pop-in 0.14s ease-out;
+  background: transparent;
+  border: 0;
+  padding: 2px 10px 6px;
+}
+/* Each select names its own value; the field captions stay for screen readers. */
+.agent-pick-row .agent-config-fields label > span {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
 }
 /* The branch picker opens from an ordinary row of this menu: its
    type and hover, the current value muted, and a trailing chevron. */
@@ -1492,8 +1541,8 @@ button.agent-provider-label {
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: none;
-  flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px;
+  min-height: 52px;
   padding: 8px 12px 8px 16px;
 }
 .conversation-heading {
@@ -1504,16 +1553,9 @@ button.agent-provider-label {
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
 }
-/* A phone header without a title, meta, or banner is just the controls row. */
-.conversation-heading:empty {
-  display: none;
-}
-.conversation-header > .chat-context-controls {
-  border-bottom: 0;
-  padding: 0;
-}
 .conversation-heading > strong {
-  font-size: var(--type-md);
+  font-size: var(--type-lg);
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2820,10 +2862,6 @@ button.agent-provider-label {
     font-size: var(--type-sm);
     font-weight: 700;
     text-align: left;
-  }
-  /* The controls take their own full row under any heading; the menu ends it. */
-  .conversation-header > .chat-context-controls {
-    flex: 1 1 100%;
   }
   .view-disclosure-summary > span {
     flex: 1;

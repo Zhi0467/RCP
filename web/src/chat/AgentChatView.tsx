@@ -11,6 +11,7 @@ import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
+import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import { EpisodePlanCard } from "../agents/EpisodePlanCard";
@@ -35,7 +36,6 @@ import {
   GitPullRequestArrow,
   ListPlus,
   LoaderCircle,
-  MessageCircle,
   Mic,
   MicOff,
   Play,
@@ -154,14 +154,8 @@ import type {
   WatcherRecord,
   WorktreeIntegrationOption,
 } from "../core/types";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
+import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
 import { useSkillPicker } from "../core/SkillPicker";
-import { useLayerDismiss } from "../core/useLayerDismiss";
 import { AgentStatusStrip } from "./AgentStatusStrip";
 import { BrowserToggle, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
@@ -423,15 +417,6 @@ export function AgentChatView({
     chatId: string;
     config: AgentRunConfig;
   } | null>(null);
-  const [configOpen, setConfigOpen] = useState(false);
-  const configChipRef = useRef<HTMLButtonElement | null>(null);
-  const configPanelRef = useRef<HTMLDivElement | null>(null);
-  useLayerDismiss(
-    configOpen,
-    () => setConfigOpen(false),
-    [configChipRef, configPanelRef],
-    configChipRef,
-  );
   const pendingFork = Boolean(
     origin?.pending &&
     !relatedTasks.some((task) => task.native_session_id) &&
@@ -478,9 +463,7 @@ export function AgentChatView({
     null,
   );
   const supersededId = supersedes?.chatId === chatId ? supersedes.operationId : null;
-  const [chatBrowserOn, setBrowserOn] = useState(false);
-  const browserOn = feed ? feed.thread.browser_requested : chatBrowserOn;
-  const optionCount = Number(browserOn) + Number(worktree.chosen);
+  const optionCount = Number(worktree.chosen);
   const referencesKey = feed
     ? feed.referencesKey
     : referenceDraftKey(actorId, project!.id, project!.graph_target ?? MAIN_GRAPH, chatId);
@@ -1473,30 +1456,13 @@ export function AgentChatView({
 
   const effectiveModel =
     profile && config.provider === profile.provider ? profile.effective_model : "";
-  const agentSummary = configSource && (
-    <AgentConfigChip
-      ref={configChipRef}
-      project={configSource}
-      value={config}
-      effectiveModel={effectiveModel}
-      open={configOpen}
-      disabled={readOnly || pendingFork}
-      label="Chat agent"
-      workLike
-      onToggle={() => {
-        if (!configOpen) feed?.reloadPicker();
-        setConfigOpen((open) => !open);
-      }}
-    />
-  );
   const pickConfig = (next: AgentRunConfig) => {
     if (feed) reportFailure(() => feed.pickAgent(next));
     else setConfigOverride({ chatId, config: next });
   };
 
-  const contextControls = (showProvider: boolean) => (
-    <div className="chat-context-controls">
-      {(showProvider || !readOnly) && agentSummary}
+  const headerChips = (
+    <>
       {headerTools}
       {feed && (
         <SchedulesPopover
@@ -1506,21 +1472,53 @@ export function AgentChatView({
         />
       )}
       <AgentStatusStrip tasks={statusTasks} />
-      {presentation === "workspace" && watcherToggle}
+      {watcherToggle}
       {replyComments.headerButton}
-      <ChatHeaderMenu
-        link={feed || !project ? undefined : { projectId: project.id, chatId, graphTarget }}
-        actions={[
-          ...headerActions,
-          ...(feed ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
-          ...(!fixedConversation && !readOnly && onNewSession
-            ? [{ label: "New session", onSelect: onNewSession }]
-            : []),
-        ]}
-      >
-        {headerMenuItems}
-      </ChatHeaderMenu>
-    </div>
+    </>
+  );
+  const headerMenu = (
+    <ChatHeaderMenu
+      link={feed || !project ? undefined : { projectId: project.id, chatId, graphTarget }}
+      actions={[
+        ...headerActions,
+        ...(feed ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
+        ...(!fixedConversation && !readOnly && onNewSession
+          ? [{ label: "New session", onSelect: onNewSession }]
+          : []),
+      ]}
+    >
+      {headerMenuItems}
+      {feed ? (
+        <div className="chat-browser-control">
+          <BrowserToggle
+            checked={feed.thread.browser_requested}
+            disabled={readOnly}
+            onChange={(value) => reportFailure(() => feed.setBrowser(value))}
+          />
+        </div>
+      ) : (
+        project && (
+          <ChatBrowserControl
+            key={`${project.id}:${chatId}`}
+            apiBase={apiBase}
+            chatId={chatId}
+            machine={config.run_on}
+            disabled={readOnly}
+          />
+        )
+      )}
+      {configSource && (
+        <AgentPickRow
+          source={configSource}
+          value={config}
+          effectiveModel={effectiveModel}
+          workLikeCapable={profile?.work_like_capable}
+          disabled={readOnly || pendingFork}
+          onChange={pickConfig}
+          onShown={feed?.reloadPicker}
+        />
+      )}
+    </ChatHeaderMenu>
   );
 
   const latest = relatedTasks.at(-1) ?? null;
@@ -1628,40 +1626,26 @@ export function AgentChatView({
             : "Project chat"
       }
     >
-      {presentation === "floating" && (
-        <header data-drag-handle="true">
-          <MessageCircle size={16} />
-          <strong>{chatTitle}</strong>
-          {watcherToggle}
-          <button
-            className="icon-button"
-            onClick={onClose}
-            aria-label="Minimize chat; background work will continue"
-          >
-            <X size={16} />
-          </button>
-        </header>
-      )}
-      {heading ? (
-        <header className="conversation-header" data-state={headerState}>
-          {leading}
-          <div className="conversation-heading">{heading}</div>
-          {contextControls(false)}
-        </header>
-      ) : (
-        contextControls(true)
-      )}
-      {configOpen && !readOnly && configSource && (
-        <AgentConfigControls
-          ref={configPanelRef}
-          project={configSource}
-          value={config}
-          onChange={pickConfig}
-          effectiveModel={effectiveModel}
-          workLikeCapable={profile?.work_like_capable}
-          compact
-        />
-      )}
+      <AgentHeader
+        leading={leading}
+        title={heading ?? <strong>{chatTitle}</strong>}
+        chips={headerChips}
+        menu={headerMenu}
+        state={headerState}
+        dragHandle={presentation === "floating"}
+        trailing={
+          presentation === "floating" && (
+            <button
+              className="icon-button"
+              type="button"
+              onClick={onClose}
+              aria-label="Minimize chat; background work will continue"
+            >
+              <X size={16} />
+            </button>
+          )
+        }
+      />
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherRows.map((watcher) => {
@@ -1955,44 +1939,19 @@ export function AgentChatView({
           addDisabled={attachDisabled}
           addOptionCount={optionCount}
           addOptions={
-            <>
-              {feed ? (
-                <div className="chat-browser-control">
-                  <BrowserToggle
-                    checked={browserOn}
-                    onChange={(value) => reportFailure(() => feed.setBrowser(value))}
-                  />
-                </div>
-              ) : (
-                project && (
-                  <ChatBrowserControl
-                    key={`${project.id}:${chatId}`}
-                    apiBase={apiBase}
-                    chatId={chatId}
-                    machine={config.run_on}
-                    disabled={readOnly}
-                    onRequestedChange={setBrowserOn}
-                  />
-                )
-              )}
-              {project && (
-                <WorktreeChooser
-                  state={worktree.state}
-                  chosen={worktree.chosen}
-                  disabled={Boolean(
-                    relatedActive ||
-                    pausedAttempt ||
-                    submitting ||
-                    reviewPending ||
-                    repairingTaskId,
-                  )}
-                  onChoose={worktree.choose}
-                  repositories={worktreeRepositories}
-                  repository={worktreeRepository}
-                  onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
-                />
-              )}
-            </>
+            project && (
+              <WorktreeChooser
+                state={worktree.state}
+                chosen={worktree.chosen}
+                disabled={Boolean(
+                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+                )}
+                onChoose={worktree.choose}
+                repositories={worktreeRepositories}
+                repository={worktreeRepository}
+                onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
+              />
+            )
           }
           field={
             <ComposerTextarea

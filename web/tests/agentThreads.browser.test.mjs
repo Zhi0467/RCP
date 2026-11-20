@@ -929,9 +929,9 @@ test("Space and project threads pick their agent from the header's agent chip", 
         await page.goto(`${base}#/agent/${hash}`);
         const thread = page.getByRole("region", { name });
         await thread.getByRole("textbox", { name: "Message" }).waitFor();
-        // The composer carries no picker of its own, and the picker panel stays shut.
-        assert.equal(await thread.locator(".chat-composer .agent-config-chip").count(), 0);
-        assert.equal(await thread.locator(".agent-config").count(), 0);
+        // The picker lives in the header menu, shut until asked for.
+        assert.equal(await thread.locator(".agent-config-chip").count(), 0);
+        await thread.getByRole("button", { name: "Chat menu" }).click();
         const row = thread.getByRole("button", { name: /^Chat agent:/ });
         await row.waitFor();
         assert.equal(await row.getAttribute("aria-expanded"), "false");
@@ -955,8 +955,10 @@ test("Space and project threads pick their agent from the header's agent chip", 
           );
           await page.reload();
           await thread.getByRole("textbox", { name: "Message" }).waitFor();
+          await thread.getByRole("button", { name: "Chat menu" }).click();
           await row.waitFor();
           assert.match(await row.textContent(), /Codex/);
+          await page.keyboard.press("Escape");
           await thread.getByRole("textbox", { name: "Message" }).fill("Plan the sweep");
           await thread.getByRole("button", { name: "Send", exact: true }).click();
           await page.waitForFunction(
@@ -1264,7 +1266,7 @@ test("thread switches keep the last view, a failed load retries, and notices cle
     });
     const menu = space.getByRole("button", { name: "Chat menu" });
     const browserItem = space.getByRole("switch", { name: "Browser use" });
-    await space.getByRole("button", { name: "Add", exact: true }).click();
+    await menu.click();
     await browserItem.click();
     const notice = space.locator(
       ".agent-chat-view-lines > .agent-chat-view-line.error[role=alert]",
@@ -1429,11 +1431,10 @@ test("a provider signed in after mount is offered when the agent chip opens", as
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
     await thread.locator(".chat-progress").waitFor();
-    const chip = thread.getByRole("button", { name: /^Chat agent:/ });
-    await chip.waitFor();
     // Codex is signed in from Settings while the thread stays open.
     signedIn = true;
-    await chip.click();
+    await thread.getByRole("button", { name: "Chat menu" }).click();
+    await thread.getByRole("button", { name: /^Chat agent:/ }).click();
     const provider = thread.locator(".agent-config select").first();
     await page.waitForFunction(() =>
       document.querySelector('.agent-config select option[value="codex"]'),
@@ -1468,6 +1469,8 @@ test("a pick stored by a send reads its default machine's readiness", async () =
     ]) {
       await page.goto(`${base}#/agent/${hash}`);
       const thread = page.getByRole("region", { name });
+      await thread.getByRole("textbox", { name: "Message" }).waitFor();
+      await thread.getByRole("button", { name: "Chat menu" }).click();
       const row = thread.getByRole("button", { name: /^Chat agent:/ });
       await row.waitFor();
       await page.waitForFunction(
@@ -1544,6 +1547,8 @@ test("a provider switch picks that provider's first model, listed before any pro
     );
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
+    await thread.getByRole("textbox", { name: "Message" }).waitFor();
+    await thread.getByRole("button", { name: "Chat menu" }).click();
     const row = thread.getByRole("button", { name: /^Chat agent:/ });
     await row.click();
     const [provider, model] = [0, 1].map((index) =>
