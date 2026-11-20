@@ -333,7 +333,7 @@ test("project and Space threads use the same agent route family", async () => {
   assert.equal(threadTasksPath(space), "/api/agent-threads/space/tasks");
 });
 
-test("a project thread queues the send body under its key, reads and removes its queue", async () => {
+test("a project thread queues the send body with its picks under its key, reads and removes its queue", async () => {
   const calls = [];
   const request = async (path, init) => {
     calls.push({
@@ -354,6 +354,11 @@ test("a project thread queues the send body under its key, reads and removes its
     artifact_context: null,
     provider: "claude",
     model: "opus",
+    reasoning: "high",
+    invoked_workflow_ids: ["flow"],
+    invoked_skill_ids: ["skill"],
+    invoked_provider_skill_names: ["native"],
+    worktree: true,
     timezone: "UTC",
   };
   assert.deepEqual(await loadThreadQueue(project, request), { items: [] });
@@ -378,6 +383,12 @@ test("a project thread queues the send body under its key, reads and removes its
     attachment_set_id: "set",
     attachment_client_id: "client",
     references: [{ kind: "node", node_id: "n" }],
+    provider: "claude",
+    model: "opus",
+    reasoning: "high",
+    invoked_workflow_ids: ["flow"],
+    invoked_skill_ids: ["skill"],
+    invoked_provider_skill_names: ["native"],
   });
   await queueThreadTurn(project, { message: "Plain", timezone: "UTC" }, "other", request);
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });

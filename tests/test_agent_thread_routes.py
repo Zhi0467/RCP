@@ -1344,6 +1344,57 @@ def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_
         assert post("Archived").status_code == 409
 
 
+def test_a_queued_message_starts_with_the_members_skill_and_agent_picks(
+    manifest, tmp_path, monkeypatch
+):
+    import uuid
+
+    from rcp.limits import AGENT_THREAD_QUEUE_MAX_INVOCATIONS
+    from tests.helpers import authorized_human, fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    store = tasks.store
+    fake_launch_admitted(monkeypatch, tasks)
+    with signed_in_client(app) as client:
+        space, thread = client.get("/api/agent-threads").json()["threads"]
+        base = f"/api/agent-threads/{thread['thread_id']}/queue"
+        skill_id = client.get("/api/skills").json()["skill_defaults"]["skill_ids"][0]
+        picks = {"provider": "codex", "reasoning": "high", "invoked_skill_ids": [skill_id]}
+
+        def post(body, key=None, url=base):
+            return client.post(
+                url,
+                json={"message": "Then check the logs", **body},
+                headers={"Idempotency-Key": key or str(uuid.uuid4())},
+            )
+
+        _busy_thread_turn(store, authorized_human(store), thread)
+        for refused in (
+            {"model": "opus"},
+            {"provider": "no-such-provider"},
+            {"invoked_skill_ids": ["x"] * (AGENT_THREAD_QUEUE_MAX_INVOCATIONS + 1)},
+            {"invoked_skill_ids": [""]},
+        ):
+            assert post(refused).status_code == 422, refused
+        space_queue = f"/api/agent-threads/{space['thread_id']}/queue"
+        assert post({"invoked_provider_skill_names": ["x"]}, url=space_queue).status_code == 422
+        key = str(uuid.uuid4())
+        queued = post(picks, key)
+        assert queued.status_code == 202, queued.text
+        assert post(picks, key).json() == queued.json()
+        assert post({**picks, "reasoning": "low"}, key).status_code == 422
+        assert post({}, key).status_code == 422
+        store.complete_agent_task("busy", applied_revision=None, result={})
+        assert post({}).status_code == 202
+        row = store.agent_thread_queue_item(queued.json()["queue_id"])
+        assert row is not None and row.operation_id is not None
+        task = store.agent_task(row.operation_id)
+        assert task is not None
+        assert task.request["invoked_skill_ids"] == [skill_id]
+        assert (task.request["provider"], task.request["reasoning"]) == ("codex", "high")
+
+
 def test_queue_lists_ready_handoffs_by_readiness_with_the_space_agent_name(manifest, tmp_path):
     from rcp.service import RunRequest
     from tests.helpers import authorized_human

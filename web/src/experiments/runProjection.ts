@@ -121,6 +121,15 @@ export function jobLabel(path: string): string {
   return `${folder.length > 16 ? `${folder.slice(0, 8)}…` : folder}/${name}`;
 }
 
+/** A watcher reads by what it waits for; a legacy watcher named only by its log reads by the job. */
+export function externalWatcherLabel(
+  watcher: Pick<ExternalWatcherRecord, "purpose" | "log_path" | "watcher_id">,
+): string {
+  const purpose = watcher.purpose?.trim();
+  if (purpose && purpose !== watcher.log_path) return purpose;
+  return jobLabel(watcher.log_path) || watcher.watcher_id;
+}
+
 export function watcherLastObservedAt(watcher: WatcherRecord): string | null {
   return isGraphWatcherRecord(watcher) ? watcher.last_evaluated_at : watcher.last_checked_at;
 }

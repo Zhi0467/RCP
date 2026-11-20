@@ -3047,7 +3047,15 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await box.press("Enter");
     await rows.nth(1).waitFor();
     assert.equal(steers.length, 1);
-    assert.deepEqual(served.posted[1].body, { message: "Then plot it" });
+    assert.deepEqual(served.posted[1].body, {
+      message: "Then plot it",
+      provider: "claude",
+      model: "opus",
+      reasoning: "high",
+      invoked_workflow_ids: [],
+      invoked_skill_ids: [],
+      invoked_provider_skill_names: [],
+    });
     assert.equal(served.posted[1].key, served.refusedKey);
 
     task = settled("op-moss");
@@ -3056,7 +3064,15 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await box.fill("And summarize");
     await box.press("Enter");
     await rows.nth(2).waitFor();
-    assert.deepEqual(served.posted[2].body, { message: "And summarize" });
+    assert.deepEqual(served.posted[2].body, {
+      message: "And summarize",
+      provider: "claude",
+      model: "opus",
+      reasoning: "high",
+      invoked_workflow_ids: [],
+      invoked_skill_ids: [],
+      invoked_provider_skill_names: [],
+    });
     assert.equal(
       writes.filter((write) => write.path === "/api/agent-threads/moss/turns").length,
       0,

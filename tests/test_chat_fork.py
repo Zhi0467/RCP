@@ -520,3 +520,45 @@ def test_the_origin_link_names_the_source_as_it_is_called_now(manifest, tmp_path
     with store.connection() as connection:
         connection.execute("DELETE FROM chat_display WHERE chat_id = ?", (source_id,))
     assert origin_title() == fork.origin.source_title
+
+
+def test_a_chat_keeps_its_node_through_a_mislabelled_turn_and_a_branch(manifest, tmp_path):
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
+    source_id = str(uuid4())
+    assert store.chat_scope(project_id, source_id) is None
+    node = _chat_task_execution(
+        app,
+        RunRequest(chat_id=source_id, chat_scope="node", node_id="rq/source-only", **profile),
+        "node-turn",
+    )
+    node.checkpoint_stage("backend", str(tmp_path / "source-stage"))
+    store.checkpoint_agent_task("node-turn", native_session_id="node-session")
+    store.complete_agent_task("node-turn", applied_revision=None, result={})
+    fork = store.create_chat_fork(project_id, source_id, GraphTargetRef(), str(uuid4()))
+    expected = ("node", fork.node_id) if fork.kind == "node_chat" else ("project", None)
+    assert store.chat_scope(project_id, fork.chat_id) == expected
+
+    _chat_task_execution(
+        app, RunRequest(chat_id=source_id, chat_scope="project", **profile), "mislabelled"
+    )
+    assert store.chat_scope(project_id, source_id) == ("node", "rq/source-only")
+
+
+def test_a_send_to_a_fork_of_an_expired_source_is_refused_not_crashed(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    profile = {"provider": "codex", "model": "", "reasoning": "medium", "run_on": "backend"}
+    _source_id, fork = _settled_source_and_fork(app, tmp_path, profile)
+    app.state.catalog.store.mark_agent_tasks_history_only(["source-turn"])
+    response = signed_in_client(app).post(
+        f"/api/agent-threads/{fork.chat_id}/turns",
+        params={"project_id": app.state.default_project_id},
+        json={"chat_scope": "project", "mode": "work", "message": "next"},
+        headers={"Idempotency-Key": str(uuid4())},
+    )
+    assert response.status_code == 422, response.text

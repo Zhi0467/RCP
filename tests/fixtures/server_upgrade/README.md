@@ -259,3 +259,8 @@ bump their chat's question version (migration 89). Exact source
 pointers gain their own tables (migration 93). Exact source
 `0389869e50478e0a84ba84f7ce8e705b05d70835` upgrades a copy of
 `pre-plan-cards-v50-1358a21` through the existing fixture builder.
+
+`pre-queue-picks-v52-1a806a8` freezes migration 93 before queued thread messages
+keep the member's skill and agent picks (migration 94). Exact source
+`1a806a8126d0e94a9106d1957e0f0e31999cb479` upgrades a copy of
+`pre-agents-v51-0389869` through the existing fixture builder.

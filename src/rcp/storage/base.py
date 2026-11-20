@@ -170,6 +170,7 @@ class AppStoreBase:
         (91, "bulletin_deltas_v1"),
         (92, "episode_mailbox_v1"),
         (93, "agents_and_watcher_checks_v1"),
+        (94, "agent_thread_queue_picks_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1208,6 +1209,14 @@ class AppStoreBase:
             version=93,
             name="agents_and_watcher_checks_v1",
             migration=self._migrate_agents_and_watcher_checks,
+        )
+        from rcp.storage.agent_threads import migrate_agent_thread_queue_picks
+
+        self._run_storage_schema_migration(
+            connection,
+            version=94,
+            name="agent_thread_queue_picks_v1",
+            migration=migrate_agent_thread_queue_picks,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

@@ -208,10 +208,19 @@ def _start_queued_turn(
             "attachment_set_id": row.attachment_set_id,
             "attachment_client_id": row.attachment_client_id,
             "watcher_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "invoked_provider_skill_names": [],
+            "invoked_workflow_ids": row.picks.invoked_workflow_ids,
+            "invoked_skill_ids": row.picks.invoked_skill_ids,
+            "invoked_provider_skill_names": row.picks.invoked_provider_skill_names,
             "resolved_provider_skills": [],
+            **(
+                {
+                    "provider": row.picks.provider,
+                    "model": row.picks.model,
+                    "reasoning": row.picks.reasoning,
+                }
+                if row.picks.provider is not None
+                else {}
+            ),
         }
     )
     with project_admission(project_id) if thread.project_id else nullcontext():
