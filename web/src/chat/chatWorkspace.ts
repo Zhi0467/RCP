@@ -188,6 +188,7 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
   return {
     ...submission.config,
     model: submission.config.model || null,
+    chat_scope: submission.kind === "node_chat" ? "node" : "project",
     node_id: submission.nodeId,
     message,
     chat_id: submission.chatId,

@@ -1215,9 +1215,8 @@ def space_turn(
     if owner.project_id is not None:
         if body.get("chat_id") not in (None, thread_id):
             raise HTTPException(status_code=422, detail="Turn belongs to another agent")
-        node_id = store.chat_node_id(owner.project_id, thread_id)
-        if node_id is not None and body.get("chat_scope") != "node":
-            body = {**body, "chat_scope": "node", "node_id": node_id}
+        if known := store.chat_scope(owner.project_id, thread_id):
+            body = {**body, "chat_scope": known[0], "node_id": known[1]}
         with project_write_admission(owner.project_id, request):
             return task_routes.start_agent_task(
                 owner.project_id,

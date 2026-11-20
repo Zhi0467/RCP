@@ -194,6 +194,30 @@ class ChatForkStoreMixin(StoreMixinBase):
             "chat_scope": "node" if fork.kind == "node_chat" else "project",
         }
 
+    def chat_scope(self, project_id: str, chat_id: str) -> tuple[str, str | None] | None:
+        """The scope and node a chat's turns keep, or None before its first turn.
+
+        A node chat stays on its node: a turn once mislabelled a project turn does
+        not move it, and a branched chat keeps the scope its pending fork names.
+        """
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT kind, json_extract(request_json, '$.node_id') FROM graph_runs
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                  AND json_extract(request_json, '$.chat_id') = ?
+                ORDER BY kind = 'node_chat' DESC, created_at DESC LIMIT 1
+                """,
+                (project_id, chat_id),
+            ).fetchone()
+        if row is not None:
+            return ("node", str(row[1])) if row[0] == "node_chat" else ("project", None)
+        fork = self.pending_chat_fork_profile(project_id, chat_id)
+        if fork is None:
+            return None
+        node_id = fork["node_id"]
+        return str(fork["chat_scope"]), str(node_id) if node_id else None
+
     def create_chat_fork(
         self,
         project_id: str,

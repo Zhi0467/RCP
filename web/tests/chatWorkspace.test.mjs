@@ -490,6 +490,7 @@ test("the shared conversation-turn owner preserves the visible composer's reques
     model: null,
     reasoning: "high",
     run_on: "gpu",
+    chat_scope: "node",
     node_id: "hyp-1",
     message: "Compare the held-out curves.",
     chat_id: "chat-1",
@@ -506,6 +507,10 @@ test("the shared conversation-turn owner preserves the visible composer's reques
   }, submission);
   assert.equal(result.operation_id, "task-1");
   assert.deepEqual(calls, [["node_chat", conversationTurnRequest(submission)]]);
+  assert.equal(
+    conversationTurnRequest({ ...submission, kind: "project_chat", nodeId: null }).chat_scope,
+    "project",
+  );
   assert.equal(
     conversationTurnRequest({ ...submission, supersedes: "old-discuss" }).supersedes,
     "old-discuss",
