@@ -69,3 +69,47 @@ test("a paused Experiment in the dock resumes its unused turns from one compact 
     await server.close();
   }
 });
+
+test("a running run waits folded under the stack and stops from its row menu", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/projects/*/experiment-episodes*", (route) =>
+      route.fulfill({ json: { entries: [], unavailable: [] } }),
+    );
+    const stopped = [];
+    await page.route("**/api/projects/*/episodes/*/stop", (route) => {
+      stopped.push(decodeURIComponent(new URL(route.request().url()).pathname));
+      return route.fulfill({ status: 409, json: { detail: "refused" } });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dockRun.html`,
+    );
+    await page.locator(".dock-runs-fold").waitFor();
+    assert.equal(await page.locator(".episode-run-card").count(), 1);
+    assert.equal(await page.locator(".dock-run").count(), 0);
+    await page.locator(".dock-runs-fold").click();
+    const row = page.locator(".dock-run");
+    assert.equal(await row.count(), 1);
+    assert.equal(await row.locator("a").getAttribute("href"), "#/running");
+    await row.getByRole("button").click();
+    await page.getByRole("menuitem", { name: "Stop" }).click();
+    await row.locator(".dock-run-error").waitFor();
+    assert.equal(stopped.length, 1);
+    assert.ok(stopped[0].endsWith("/episodes/episode/beta/stop"));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
