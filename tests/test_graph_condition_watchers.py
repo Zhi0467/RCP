@@ -1775,3 +1775,37 @@ def test_a_settled_space_turn_reconciles_main_conditions_of_each_bound_project(
     )
 
     assert reconciled == [(project_id, GraphTargetRef())]
+
+
+@pytest.mark.parametrize("changed", ["main", "branch"])
+def test_a_graph_change_reconciles_only_conditions_on_its_own_target(store, changed) -> None:
+    import logging
+
+    from rcp.watchers import GraphWatcherRetryRegistry, WatcherDelivery
+
+    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+    _arm(store, "on-main", _graph_check("on-main"))
+    _arm(store, "on-branch", _graph_check("on-branch", graph_target=branch))
+    delivery = WatcherDelivery(
+        store,
+        retry=GraphWatcherRetryRegistry(),
+        graph_project_service=lambda *_: None,
+        episode_owners={},
+        plain_wake=lambda *_: None,
+        state_unavailable=lambda _exc: False,
+        task_graph_capable=lambda *_: False,
+        task_experiment_episode_id=lambda _request: None,
+        reconcile_experiment_episode=lambda *_, **__: None,
+        reconcile_graph_boundaries=lambda *_, **__: None,
+        logger=logging.getLogger("test"),
+        launch_wait=lambda: 0,
+    )
+    reconciled: list[GraphTargetRef] = []
+    delivery._reconcile_graph_wake_target = lambda _project, target, _generation: reconciled.append(
+        target
+    )
+    target = GraphTargetRef() if changed == "main" else branch
+
+    delivery.evaluate_graph_wake_boundary("project", None, graph_target=target, source="test")
+
+    assert reconciled == [target]
