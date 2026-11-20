@@ -51,6 +51,7 @@ from rcp.storage.watchers import _OPEN, _watcher_records
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
+    from rcp.watcher_folder import WatcherFolderChange
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
 
 _STOP_LOOP_CANCEL_REASON = "Stop loop ended this Experiment episode."
@@ -2046,6 +2047,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         stage_root: str,
         graph_result: str,
         context_baseline: dict[str, object],
+        folder_change: WatcherFolderChange | None = None,
         stops: list[WatcherStopRequest] | None = None,
         ending_signal: dict[str, object] | None = None,
         replace_binding: bool = False,
@@ -2060,13 +2062,22 @@ class ExperimentStoreMixin(StoreMixinBase):
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            stored_watchers = self._persist_experiment_watchers_idempotently(
-                connection,
-                records,
-                stops=stops,
-                binding=binding,
-                episode_id=episode_id,
-            )
+            if folder_change is not None:
+                if (
+                    folder_change.binding.agent_id != binding.agent_id
+                    or folder_change.binding.project_id != binding.project_id
+                    or folder_change.binding.origin_turn_id != operation_id
+                ):
+                    raise ValueError("Watcher folder does not belong to this episode turn.")
+                stored_watchers = folder_change.commit(cast("AppStore", self), connection)
+            else:
+                stored_watchers = self._persist_experiment_watchers_idempotently(
+                    connection,
+                    records,
+                    stops=stops,
+                    binding=binding,
+                    episode_id=episode_id,
+                )
             self._commit_experiment_episode_turn(
                 connection,
                 episode_id=episode_id,

@@ -1747,3 +1747,31 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
         receipt.category for receipt in store.agent_task_receipts(started.operation_id)
     }
     assert {"patch_applied", "task_settled_callback_failed"} <= receipt_categories
+
+
+def test_a_settled_space_turn_reconciles_main_conditions_of_each_bound_project(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.watchers import WatcherDelivery
+
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    operation_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO space_turn_project_bindings VALUES (?, ?, '{}', '', ?)",
+            (operation_id, project_id, GraphTargetRef().model_dump_json()),
+        )
+    reconciled: list[tuple[str, GraphTargetRef | None]] = []
+    monkeypatch.setattr(
+        WatcherDelivery,
+        "evaluate_graph_wake_boundary",
+        lambda _self, bound, _state, *, graph_target=None, **_: reconciled.append(
+            (bound, graph_target)
+        ),
+    )
+
+    app.state.background_tasks.on_task_settled(
+        store.space_id, "space_chat", None, SimpleNamespace(operation_id=operation_id)
+    )
+
+    assert reconciled == [(project_id, GraphTargetRef())]

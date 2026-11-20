@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
     from rcp.storage import AppStore
+    from rcp.watcher_folder import WatcherFolderChange
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -1380,6 +1381,7 @@ def commit_experiment_episode_handoff(
     stage_root: str | None,
     graph_result: str,
     context_baseline: dict[str, object],
+    folder_change: WatcherFolderChange | None = None,
     stops: list[WatcherStopRequest] | None = None,
     ending_signal: dict[str, object] | None = None,
 ) -> list[WatcherRecord]:
@@ -1422,6 +1424,7 @@ def commit_experiment_episode_handoff(
         stage_root=stage_root,
         graph_result=graph_result,
         context_baseline=context_baseline,
+        folder_change=folder_change,
         stops=stops,
         ending_signal=ending_signal,
         replace_binding=replacement_authorized,

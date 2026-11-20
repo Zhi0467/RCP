@@ -367,15 +367,19 @@ class AcceptanceAgentLauncher(AgentLauncher):
             _write_state(resolved_cwd, state)
             # Deliberately invalid. Production orchestration must retain this
             # native session and request exactly one watcher-only correction.
-            _write_json(resolved_cwd / "watch.json", {"invalid": "correction required"})
+            _write_json(
+                resolved_cwd / "watchers" / "invalid.json", {"invalid": "correction required"}
+            )
             answer = "Started two deterministic CPU-only fixture jobs."
         elif action == "watch_correction":
             specs = _watch_specs(resolved_cwd)
             watcher_count = len(specs)
-            _write_json(
-                resolved_cwd / "watch.json",
-                {"external": specs, "graph": []},
-            )
+            for index, spec in enumerate(specs):
+                purpose = spec.pop("purpose")
+                _write_json(
+                    resolved_cwd / "watchers" / f"{operation_id}-{index}.json",
+                    {"purpose": purpose, "checks": [spec]},
+                )
             state["watch_corrected"] = True
             _write_state(resolved_cwd, state)
             answer = "Corrected the watcher handoff without resubmitting either fixture job."
@@ -398,10 +402,6 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     contract,
                     state,
                     focused_experiment_id,
-                )
-                _write_json(
-                    resolved_cwd / "watch.json",
-                    {"external": [], "graph": []},
                 )
                 _write_json(
                     resolved_cwd / "patch.json",

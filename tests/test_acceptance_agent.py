@@ -36,6 +36,9 @@ from tests.helpers import signed_in_client
 
 
 async def _events(launcher: AcceptanceAgentLauncher, prompt: str, cwd: Path, **kwargs):
+    from rcp.transport.watcher_workspace import replace_watcher_folder
+
+    replace_watcher_folder(cwd, {})
     kwargs.setdefault("machine_id", BACKEND_MACHINE_ID)
     kwargs.setdefault("host", "")
     return [
@@ -653,7 +656,9 @@ def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_i
         _events(launcher, _prompt(tmp_path, _experiment_contract(graph_path)), tmp_path)
     )
     assert [event.event for event in initial] == ["session", "answer", "provider_exit", "done"]
-    assert set(json.loads((tmp_path / "watch.json").read_text(encoding="utf-8"))) == {"invalid"}
+    assert set(
+        json.loads((tmp_path / "watchers" / "invalid.json").read_text(encoding="utf-8"))
+    ) == {"invalid"}
     jobs = tmp_path / "acceptance-agent-jobs"
     assert sorted(path.name for path in jobs.glob("*.status")) == [
         "job-one.status",
@@ -668,15 +673,15 @@ def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_i
             session_id=initial[0].session_id,
         )
     )
-    specs = json.loads((tmp_path / "watch.json").read_text(encoding="utf-8"))
+    specs = [json.loads(path.read_text()) for path in (tmp_path / "watchers").glob("*.json")]
     assert [event.event for event in correction] == [
         "session",
         "answer",
         "provider_exit",
         "done",
     ]
-    assert len(specs["external"]) == 2
-    assert specs["graph"] == []
+    assert len(specs) == 2
+    assert all(item["purpose"] and len(item["checks"]) == 1 for item in specs)
     assert launcher.launch_records[-1].action == "watch_correction"
     assert launcher.launch_records[-1].watcher_count == 2
     assert len(list(jobs.glob("*.status"))) == 2
@@ -691,10 +696,7 @@ Read the fresh state before acting:
     wake = asyncio.run(_events(launcher, _prompt(tmp_path, compact_wake), tmp_path))
 
     assert [event.event for event in wake] == ["session", "answer", "provider_exit", "done"]
-    assert json.loads((tmp_path / "watch.json").read_text(encoding="utf-8")) == {
-        "external": [],
-        "graph": [],
-    }
+    assert not list((tmp_path / "watchers").iterdir())
     patch = parse_agent_patch_json((tmp_path / "patch.json").read_text(encoding="utf-8"))
     payload = patch.model_dump(mode="json")
     assert payload["ops"][0]["nodes"] == [
@@ -773,9 +775,9 @@ def test_acceptance_generic_marker_arms_two_watchers_without_a_patch(tmp_path) -
         )
     )
 
-    specs = json.loads((tmp_path / "watch.json").read_text(encoding="utf-8"))
-    assert len(specs["external"]) == 2
-    assert specs["graph"] == []
+    specs = [json.loads(path.read_text()) for path in (tmp_path / "watchers").glob("*.json")]
+    assert len(specs) == 2
+    assert all(item["purpose"] and len(item["checks"]) == 1 for item in specs)
     assert [record.action for record in launcher.launch_records] == [
         "initial",
         "watch_correction",

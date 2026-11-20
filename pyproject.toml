@@ -147,6 +147,7 @@ extend-exclude = [
 "src/rcp/transport/remote_turn_supervisor.py" = "py39"
 "src/rcp/transport/remote_verify_imported_sources.py" = "py39"
 "src/rcp/transport/watcher_process.py" = "py39"
+"src/rcp/transport/watcher_workspace.py" = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

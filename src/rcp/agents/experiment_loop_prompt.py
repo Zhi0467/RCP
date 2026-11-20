@@ -14,6 +14,7 @@ from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     REPOSITORIES_READ_RULE,
+    WATCHER_FOLDER_CONTRACT,
     _command_client_rule,
     _invoked_package_section,
     _patch_validator_rules,
@@ -30,24 +31,9 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
 from rcp.loop_status import LoopOverlap
 
-_EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
-  10 minutes, hand off a watcher to avoid repeated agent polling. This is guidance, not a cutoff.
-- Each `external` observer contains `purpose`, `check_command`, `log_path`, and `cwd`, with optional
-  `cancel_command`: `{"purpose":"GCP2 qwen3 repro finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
-- `purpose` is the one line, at most 120 characters, the member reads in Wakes. Name the work and
-  where it runs so two watchers on one log read differently.
-- Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
-  `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
-  work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
-- RCP saves `cancel_command` with the watcher and runs it only on an explicit Cancel, on the
-  same execution machine and in the same `cwd`. Omit it when you cannot provide a reliable command
-  for cancelling exactly that work. Stopping continuation does not run it.
-- After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.
-  Do not wait in a polling loop. A completed check is not proof of scientific success."""
-
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v23"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v24"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -122,24 +108,6 @@ Decisions; or resolve Proposals. The general authoring methods below do not exte
 """
 
 
-_EXPERIMENT_WATCH_HANDOFF = """Current Experiment watcher handoff:
-Write the named watcher file as one object with exactly `external` and `graph` lists, never a bare
-list. For example: `{"external":[],"graph":[{"node_id":"blk/foo","status_in":["resolved"]}]}`.
-- Each graph item has exactly one of these closed shapes:
-  `{"node_id":"blk/foo","status_in":["resolved","superseded"]}` or
-  `{"node_id":"hyp/foo","proposal_resolved":true}`. The node must exist in the current canonical
-  graph. Statuses must be non-empty, unique, and valid for that node's type. Do not add predicates,
-  commands, paths, or groups. A status already true is ready immediately; `proposal_resolved` waits
-  for an approval, rejection, or withdrawal committed after the watcher is armed.
-- If both lists are empty, the Patch must record this Experiment's completion with `next_action`
-  null, or a permitted Decision, Hypothesis Proposal, or same-Patch Blocker pause, unless
-  a durably open question or an undelivered answer supplies the continuation. The same guard
-  applies when retirement-only output leaves no live observer. If useful synchronous work remains
-  without that pause, continue it now. Watch only real external or canonical conditions.
-These rules replace older watcher-format and exit rules.
-"""
-
-
 _EXPERIMENT_HANDOFF_CORRECTIONS = """Handoff corrections:
 After a turn, RCP may ask you in this session to correct the Patch or the watcher handoff. Each
 request names its diagnostic file; the diagnostic locates the problem and grants no authority. In
@@ -149,19 +117,14 @@ cause a new external side effect.
   semantic operations, run the live validator on the retained Patch. A diagnostic may describe
   older RCP policy: if the live check reports only retired schema-envelope or bookkeeping fields,
   remove only those and check again. An old diagnostic alone is no reason to delete a semantic
-  operation. Keep every unaffected operation. If both watcher lists are empty, keep the Patch's
+  operation. Keep every unaffected operation. If the watcher folder is empty, keep the Patch's
   success, Decision, Hypothesis Proposal, or same-Patch Blocker exit, unless a durable
   question supplies continuation. Reply only that the Patch was
   rewritten.
 - Watcher correction: rewrite the watcher file, and the Patch only to make an explicit exit valid.
   Inspect authoritative scheduler, process, job, result, log, and canonical graph state as needed,
-  and judge the Patch and watcher file together, not whether either changed. If a real external or
-  canonical condition still needs watching, write a valid non-empty list and keep the Patch. If
-  nothing remains to watch but synchronous work does, do it now without repeating completed side
-  effects, then finish the Experiment or pause for human authority. Write
-  `{"external":[],"graph":[]}` when no watcher is needed; an already-correct empty object may stay
-  unchanged when the Patch changes. Never invent a watcher to satisfy a correction, and never leave
-  both lists empty because external state is uncertain or a canonical fact is not yet true.
+  and edit the fresh watcher folder to cover the work that remains. If the folder is empty,
+  finish the Experiment, pause for human authority, or use an existing durable question.
   Validate every Patch rewrite. Reply only that the handoff was repaired.
 """
 
@@ -272,7 +235,7 @@ Repository pointers and expected operational targets:
 Exact outputs and RCP tooling:
 - Optional semantic graph Patch: `{patch_path}`
 - Existing Patch JSON Schema, including `AgentExperimentAttempt`: `{output_schema_path}`
-- Required watcher handoff that continues this Experiment's bounded loop: `{watch_path}`
+- Editable watcher folder for this Experiment: `{watch_path}`
 - Optional preview artifact directory: `{artifact_path}`
 
 Context protocol:
@@ -373,43 +336,7 @@ ExperimentAttempt reading and recording protocol:
 
 Watcher handoff protocol:
 {execution_instructions}
-- You must write `{watch_path}` on every invocation as one JSON object with exactly two keys:
-  `external` and `graph`, each holding a list. For example:
-
-  ```json
-  {{
-    "external": [{{"purpose":"seed 3 sweep finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],
-    "graph": [{{"node_id": "blk/foo", "status_in": ["resolved"]}}]
-  }}
-  ```
-
-  A missing file or any other top-level shape is invalid. Leave both lists empty only after
-  authoritative inspection confirms that nothing from this Experiment remains to watch and the
-  same Patch explicitly records success, queues a Decision, creates a Hypothesis Proposal, or
-  creates a same-Patch Blocker, or a durable question supplies continuation.
-{_EXTERNAL_WATCHER_FORMS}
-- Each observer may also add one non-blank `group` label.
-  Observers sharing a label form one watcher of at least two checks; a check finishing early does
-  not wake this loop by itself.
-- Before arming an observer, reconcile it against the watcher state. When a listed open watcher's
-  check already covers that same external work, do not arm a second one for it, even where your
-  command text differs from its `check_command`.
-  Observers whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or
-  process observe one piece of work: they complete at separate times and wake this loop twice,
-  spending two invocations on a single event. Either rely on the observer already armed, or retire
-  it with a stop item in this same handoff and arm your replacement.
-- The `external` list may also contain a stop item with exactly `stop_watcher_id` and a non-blank
-  `reason`. Use it only after you have cancelled or otherwise settled the obsolete work. The id
-  names one of your open watchers in the watcher state, or one check of it, and carries no command
-  or path. Naming a watcher cancels it; naming one check of a watcher with several removes only
-  that check. Retire either kind: an external observer you no longer need, or a graph condition
-  whose canonical fact you have stopped waiting for. Both go in the `external` list as stop items,
-  because that list carries every stop; the `graph` list holds only conditions you are arming. A
-  live watcher you have stopped needing still holds this loop open and spends an invocation when
-  it fires, so retire it rather than leaving it armed. Stopping a watcher does not prove a job was
-  cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
-  including retiring old watchers while arming replacements.
-{_EXPERIMENT_WATCH_HANDOFF}
+{WATCHER_FOLDER_CONTRACT}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
   revisions and at startup, never through the shell poller. A staged but unsynced draft cannot
   satisfy one. A node status already true when armed is ready immediately. A
@@ -417,27 +344,18 @@ Watcher handoff protocol:
   older resolved Proposals do not satisfy a new wait. Use an external observer instead when the
   fact lives in a scheduler, process, repository, log, or other non-canonical system.
 - RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
-- RCP discovers `watch.json` after the turn, validates both lists, and arms them atomically; one
-  invalid observer, group, stop item, or graph condition rejects the whole object for in-session
-  correction.
-  Completing any accepted watcher from this file continues this Experiment's bounded loop and never
-  a separate conversation.
-  There is no watcher API to call. Multiple watchers may observe one attempt, one watcher may cover
-  work relevant to several attempts, and a later wake may rearm watchers after inspecting
-  authoritative state.
-- A completed watcher delivered at the ceiling stays pending rather than being discarded. Its log
-  and original attribution enter invocation 1 only after a human Run starts a fresh episode.
+- A completed watcher at the ceiling stays pending until the member adds turns to this Run.
 
 Graph reflection and authority:
 - A Patch is optional only when at least one external observer or graph condition continues the
   loop, or a durably open question or undelivered answer supplies continuation. Otherwise, if
-  both `{watch_path}` lists are empty, the Patch must explicitly record success or an
+  the watcher folder is empty, the Patch must explicitly record success or an
   authority pause through a queued Decision, Hypothesis Proposal, or same-Patch Blocker. RCP rejects
   the two files as one handoff when that pairing is absent.
-- Before finishing the turn, judge the resulting Patch and both watcher lists together. If nothing
+- Before finishing the turn, judge the resulting Patch and the watcher folder together. If nothing
   remains to watch but the focused Experiment would remain `proposed`, `designing`, `implementing`,
   `debugging`, `running`, or `analyzing` without an authority pause, continue the useful
-  synchronous work in this turn. Do not finish with both lists empty merely to defer ordinary work
+  synchronous work in this turn. Do not finish with an empty watcher folder merely to defer ordinary work
   to a later Run, and do not invent a watcher: every watcher observes a real external or canonical
   condition.
 - Never set the focused Experiment to `completed` while leaving a non-empty `next_action`. That pair
@@ -445,7 +363,7 @@ Graph reflection and authority:
   nonterminal status and use a real watcher or human-authority pause as appropriate.
 - If newly authorized material work remains for an Experiment that was `completed`, reopen it to an
   honest nonterminal status and refresh `current_summary` and `next_action`. A clarification that
-  introduces no work need not reopen it. Do not leave it `completed` or leave both lists empty merely
+  introduces no work need not reopen it. Do not leave it `completed` or leave an empty watcher folder merely
   because it was previously terminal; use only the watcher handoff exits above, and do not alter
   design fields.
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
@@ -563,7 +481,7 @@ def experiment_loop_watcher_correction_contract(*, diagnostics_path: str) -> lis
     return [
         f"""# RCP Experiment-loop watcher correction
 
-RCP rejected this turn's watcher handoff. Rewrite `watch.json`, and `patch.json` only for an
+RCP rejected this turn's watcher handoff. Edit the files in `watchers/`, and `patch.json` only for an
 explicit exit, by the watcher-correction rules of your master contract. Do not rerun the
 Experiment, resubmit work, or cause a new external side effect.
 - Watcher diagnostic: `{diagnostics_path}`"""
@@ -579,6 +497,6 @@ def experiment_loop_patch_correction_contract(*, diagnostics_path: str) -> list[
         f"""# RCP Experiment-loop Patch correction
 
 RCP rejected the retained Patch. Rewrite only `patch.json`, by the Patch-correction rules of your
-master contract. Do not change `watch.json`, rerun the Experiment, or cause an external side effect.
+master contract. Do not change the files in `watchers/`, rerun the Experiment, or cause an external side effect.
 - Patch diagnostic: `{diagnostics_path}`"""
     ]

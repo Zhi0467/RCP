@@ -36,7 +36,6 @@ LIMIT 1
 
 _RUN_ON_DOCUMENTS = (
     ("graph_runs", "request_json", "$.run_on"),
-    ("watchers", "continuation_json", "$.run_on"),
     ("auto_research_child_experiments", "request_json", "$.run_on"),
     ("chat_forks", "record_json", "$.origin.run_on"),
 )

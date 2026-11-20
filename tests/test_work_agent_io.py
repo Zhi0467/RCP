@@ -790,6 +790,8 @@ def _recorded_pass(
     watch_text: str | None = None,
     experiment_watch: dict[str, str] | None = None,
     thread_id: str = "recorded-thread",
+    *,
+    watcher_folder: dict[str, str] | None = None,
 ):
     """One completed Codex pass, as a host would have recorded it."""
 
@@ -828,6 +830,10 @@ def _recorded_pass(
             name: hashlib.sha256(text.encode("utf-8")).hexdigest()
             for name, text in (experiment_watch or {}).items()
         },
+        "watcher_folder_sha256": {
+            name: hashlib.sha256(text.encode()).hexdigest()
+            for name, text in (watcher_folder or {}).items()
+        },
         "root_thread_id": thread_id,
         "input_message_ids": [],
         "steer_requests": {},
@@ -841,6 +847,7 @@ def _recorded_pass(
             "stderr": "",
             "patch": patch_text,
             "watch": watch_text,
+            "watcher_folder": dict(watcher_folder or {}),
             "experiment_watch": dict(experiment_watch or {}),
         },
     )
@@ -876,6 +883,7 @@ def _recorded_failed_correction(message: str):
                 "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
                 "patch_present": False,
                 "patch_sha256": None,
+                "watcher_folder_sha256": {},
                 "root_thread_id": "recorded-thread",
                 "input_message_ids": [],
                 "steer_requests": {},
@@ -883,6 +891,7 @@ def _recorded_failed_correction(message: str):
             "events": events,
             "stderr": "",
             "patch": None,
+            "watcher_folder": {},
         },
     )
 
@@ -1095,7 +1104,7 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("deliverable", ["patch.json", "watch.json"])
+@pytest.mark.parametrize("deliverable", ["patch.json", "watchers/job.json"])
 async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     tmp_path, monkeypatch, deliverable
 ) -> None:
@@ -1186,7 +1195,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
     )
 
-    (primed.workspace / name).unlink()
+    (primed.workspace / name).unlink(missing_ok=True)
     recorded = _recorded_pass(agent_patch_json(seed_patch()), "I repaired the handoff file.")
     for _attempt in range(2):
         recovered = [

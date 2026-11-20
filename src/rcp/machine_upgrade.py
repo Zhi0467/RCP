@@ -664,7 +664,8 @@ def _rekey(
     Each unique key is its columns and a row predicate, as a partial index has.
     """
 
-    if new in _columns(connection, table):
+    columns = _columns(connection, table)
+    if new in columns or old not in columns:
         return
     connection.execute(f'ALTER TABLE "{table}" RENAME COLUMN "{old}" TO "{new}"')
     if cards is None:

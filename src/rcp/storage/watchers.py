@@ -126,6 +126,8 @@ def migrate_watcher_checks(connection: sqlite3.Connection) -> None:
     claimed wake keeps its turn; an acknowledged delivery is closed.
     """
 
+    if any(row[1] == "agent_id" for row in connection.execute("PRAGMA table_info(watchers)")):
+        return
     connection.execute("ALTER TABLE watchers RENAME TO _watchers_v1")
     for statement in _WATCHER_TABLES:
         connection.execute(statement)

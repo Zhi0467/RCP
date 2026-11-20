@@ -6,7 +6,7 @@ import json
 import shlex
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -81,7 +81,6 @@ from rcp.runs.chat import (
     _prepare_local_chat_workspace,
     _project_write_scope,
     _read_chat_patch,
-    _read_watch_request,
     _record_artifact_discovery_receipt,
     _stage_chat_patch_inputs,
     _validated_local_chat_resume_stage,
@@ -166,6 +165,7 @@ from rcp.runs.tasks.work import (
     _DeliverableRead,
     _DeliverableStep,
     _finalize_work_turn,
+    _folder_baseline,
     _lead_with_retained_answer,
     _load_work_finalization_context,
     _record_work_finalization_context,
@@ -181,6 +181,7 @@ from rcp.runs.tasks.work import (
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
+    _watcher_output,
     _work_command_handler,
     _work_execution_instructions,
     _work_finalization_context,
@@ -213,10 +214,19 @@ from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
-from rcp.storage import ExperimentEpisodeRecord
+from rcp.storage import ExperimentEpisodeRecord, GraphCondition, WatcherStopRequest
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
+from rcp.watcher_folder import (
+    WatcherFile,
+    WatcherFolderChange,
+    prepare_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
 from rcp.watchers import (
+    ExperimentWatchSpec,
     WatcherBinding,
+    WatcherCheckResult,
     WatcherInitialCheckError,
     parse_experiment_watch_json,
     validate_graph_conditions,
@@ -302,9 +312,21 @@ class _ComposedExperimentPrompt(_ComposedWorkPrompt):
 
 @dataclass
 class _SettledExperimentDeliverables(_SettledWorkDeliverables):
+    folder_change: WatcherFolderChange | None = None
+    observed_commands: set[str] = field(default_factory=set)
     loop_watch_empty: bool = False
     loop_watch_text: str | None = None
-    pending_loop_handoff: tuple[object, ...] | None = None
+    pending_loop_handoff: (
+        tuple[
+            list[ExperimentWatchSpec],
+            list[WatcherCheckResult],
+            list[GraphCondition],
+            int | None,
+            ExperimentHandoffScope,
+            list[WatcherStopRequest],
+        ]
+        | None
+    ) = None
 
 
 def _work_patch_source_operation_id(
@@ -387,6 +409,18 @@ async def _stage_work_turn(
     def clear_handoffs(layout: WorkStageLayout) -> None:
         if clear_stale_handoffs:
             _clear_stale_turn_handoffs(layout.workspace, layout.remote_stage)
+        if execution and request.chat_id:
+            stage_watcher_folder(
+                execution.store,
+                watcher_binding(
+                    execution.store,
+                    execution.operation_id,
+                    request.chat_id,
+                    resolved.machine.machine_id,
+                ),
+                layout.workspace,
+                layout.remote_stage,
+            )
 
     turn, staged, _ = await stage_work_turn(
         service,
@@ -541,7 +575,7 @@ def _handoff_values(turn: WorkTurn) -> dict[str, dict[str, object]]:
     values: dict[str, dict[str, object]] = {
         "paths": {
             "patch": turn.patch_inputs.patch_path,
-            "watch": turn.patch_inputs.watch_path,
+            "watch": str(turn.workspace / "watchers"),
             "patch_schema": turn.patch_inputs.schema_path,
         },
         "commands": {"validate": experiment_validate_command(turn.patch_inputs.patch_path)},
@@ -1178,7 +1212,7 @@ def _experiment_start_contract(
         loop_control_path=prepared.loop_control_path,
         watcher_state_path=prepared.watcher_state_path,
         patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
+        watch_path=str(turn.workspace / "watchers"),
         artifact_path=str(staged.artifact_directory),
         output_schema_path=turn.patch_inputs.schema_path,
         command_client=turn.patch_inputs.command_client,
@@ -1352,7 +1386,7 @@ def _read_initial_watch_deliverable(
     predecessor_digest: str | None,
 ) -> _DeliverableRead:
     try:
-        text = _read_watch_request(turn.workspace, turn.remote_stage)
+        text = _watcher_output(turn, 0)
     except (OSError, StateUnavailable, ValueError) as exc:
         _note_stage_unreachable(turn.execution, exc)
         text = None
@@ -1380,9 +1414,11 @@ def _read_initial_watch_deliverable(
     return _DeliverableRead(text=text, failure=failure)
 
 
-def _read_corrected_watch_deliverable(turn: WorkFinalizationContext) -> _DeliverableRead:
+def _read_corrected_watch_deliverable(
+    turn: WorkFinalizationContext, attempt: int
+) -> _DeliverableRead:
     try:
-        corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+        corrected_watch = _watcher_output(turn, attempt)
     except (OSError, StateUnavailable, ValueError) as exc:
         _note_stage_unreachable(turn.execution, exc)
         return _DeliverableRead(
@@ -1417,7 +1453,50 @@ async def _validate_watch_deliverable(
         origin_task = turn.execution.store.agent_task(turn.execution.operation_id)
         if origin_task is None:
             raise ValueError("The originating Experiment-loop operation is no longer available.")
+        baseline = _folder_baseline(turn, correction_rounds)
+        if baseline is not None:
+            files = json.loads(watch_text)
+            definitions = [WatcherFile.model_validate_json(raw) for raw in files.values()]
+            commands = {
+                item.check_command for definition in definitions for item in definition.checks
+            }
+            if turn.compute_commands is not None:
+                await asyncio.to_thread(turn.compute_commands.validate_handoff, commands)
+            if not files and not _has_question_continuation(turn):
+                patch = _read_chat_patch(turn.workspace, turn.remote_stage)
+                node = turn.request.control_node_id
+                if not node or experiment_loop_semantic_ending(patch, node) is None:
+                    raise ValueError(
+                        (experiment_exit_problem(patch, node) if node else None)
+                        or "An empty watcher folder requires an explicit Experiment exit or an open question."
+                    )
+            assert turn.request.chat_id
+            binding = watcher_binding(
+                turn.execution.store,
+                turn.execution.operation_id,
+                turn.request.chat_id,
+                turn.write_scope.machine_id,
+            )
+            state = (
+                await asyncio.to_thread(turn.service.history.state)
+                if any(entry.graph for entry in definitions)
+                else None
+            )
+            settled.folder_change = await asyncio.to_thread(
+                prepare_watcher_files,
+                turn.execution.store,
+                binding,
+                json.loads(baseline),
+                files,
+                state=state,
+            )
+            settled.loop_watch_text = watch_text
+            settled.loop_watch_empty = not files
+            settled.observed_commands = commands
+            settled.watch_correction_rounds = correction_rounds
+            return _DeliverableStep()
         handoff = parse_experiment_watch_json(watch_text)
+        settled.observed_commands = {item.check_command for item in handoff.observers}
         if turn.compute_commands is not None:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
@@ -1679,6 +1758,20 @@ async def _settle_watch_deliverable(
             f"task-{staged.token}-watch-correction-{correction_rounds}.json",
             {"problem": failure.message},
         )
+        if _folder_baseline(turn, 0) is not None:
+            assert turn.request.chat_id
+            stage_watcher_folder(
+                turn.execution.store,
+                watcher_binding(
+                    turn.execution.store,
+                    turn.execution.operation_id,
+                    turn.request.chat_id,
+                    turn.write_scope.machine_id,
+                ),
+                turn.workspace,
+                turn.remote_stage,
+                attempt=correction_rounds,
+            )
         correction_validator: StagedCommandMailbox | None = None
         correction_lifecycle: _WorkValidatorMailboxLifecycle | None = None
         try:
@@ -1783,7 +1876,7 @@ async def _settle_watch_deliverable(
             text = None
             correction_rounds = maximum_corrections
             continue
-        corrected = _read_corrected_watch_deliverable(turn)
+        corrected = _read_corrected_watch_deliverable(turn, correction_rounds)
         text = corrected.text
         failure = corrected.failure
         settled.loop_watch_text = text
@@ -1804,17 +1897,16 @@ async def _resettle_changed_watch_handoff(
     # Preserve Patch-read diagnostics before checking that operational handoff.
     try:
         changed_watch = (
-            _read_watch_request(turn.workspace, turn.remote_stage) != settled.loop_watch_text
+            _watcher_output(turn, settled.watch_correction_rounds) != settled.loop_watch_text
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         _note_stage_unreachable(turn.execution, exc)
         changed_watch = True
     if not changed_watch and turn.compute_commands is not None:
-        observers = settled.pending_loop_handoff[0] if settled.pending_loop_handoff else []
         try:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
-                {item.check_command for item in observers},
+                settled.observed_commands,
             )
         except ValueError:
             changed_watch = True
@@ -2142,7 +2234,6 @@ async def _apply_experiment_loop_turn(
             scope,
             stop_requests,
         ) = settled.pending_loop_handoff
-        assert isinstance(scope, ExperimentHandoffScope)
     else:
         origin_task = execution.store.agent_task(execution.operation_id)
         if origin_task is None:
@@ -2168,8 +2259,16 @@ async def _apply_experiment_loop_turn(
             graph_state=graph_state,
             armed_revision=graph_armed_revision,
         )
-        prepared_watcher_ids = [item.watcher_id for item in prepared]
-        prepared_stopped_watcher_ids = [item.stop_watcher_id for item in stop_requests]
+        prepared_watcher_ids = (
+            settled.folder_change.changed_ids
+            if settled.folder_change is not None
+            else [item.watcher_id for item in prepared]
+        )
+        prepared_stopped_watcher_ids = (
+            settled.folder_change.cancellations
+            if settled.folder_change is not None
+            else [item.stop_watcher_id for item in stop_requests]
+        )
     except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
         _note_stage_unreachable(turn.execution, exc)
         yield _sse(
@@ -2236,7 +2335,7 @@ async def _apply_experiment_loop_turn(
                 "graph_status": applied.graph_update.status,
                 "applied_revision": applied.graph_update.applied_revision,
                 "watcher_ids": prepared_watcher_ids,
-                "requested_stop_ids": [item.stop_watcher_id for item in stop_requests],
+                "requested_stop_ids": prepared_stopped_watcher_ids,
             },
         )
     try:
@@ -2251,6 +2350,7 @@ async def _apply_experiment_loop_turn(
             stage_root=execution.stage_root,
             graph_result=experiment_graph_result_summary(applied.graph_update),
             context_baseline=episode_context_baseline,
+            folder_change=settled.folder_change,
             stops=stop_requests,
             ending_signal=ending_signal,
         )
@@ -2264,7 +2364,9 @@ async def _apply_experiment_loop_turn(
         )
         applied.stop = True
         return
-    if graph_conditions:
+    if graph_conditions or any(
+        check.definition == "graph" for record in armed for check in record.live_checks
+    ):
         execution.armed_graph_watchers = True
     if not _handoff_receipt_recorded(execution, root_id, "watchers_armed", invocation):
         execution.store.record_agent_task_receipt(
@@ -2275,7 +2377,7 @@ async def _apply_experiment_loop_turn(
                 # which one it is rather than only what it armed.
                 "invocation": invocation,
                 "watcher_ids": [item.watcher_id for item in armed],
-                "stopped_watcher_ids": [item.stop_watcher_id for item in stop_requests],
+                "stopped_watcher_ids": prepared_stopped_watcher_ids,
                 "count": len(armed),
                 "correction_rounds": settled.watch_correction_rounds,
             },

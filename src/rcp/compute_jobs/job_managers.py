@@ -26,8 +26,7 @@ JOB_MANAGERS = {
                 "compute, such as a dashboard or a local server. Submit Slurm jobs directly "
                 "with your own commands or scripts; choose the job's resources and submission "
                 "arguments yourself. Slurm owns the detached job. Supply a shell check_command, "
-                "log_path and cwd in watch.json, and a cancel_command such as scancel for the "
-                "exact submitted job if human Cancel should be available. Queued jobs are still "
+                "log_path and cwd for each job the watcher covers. Queued jobs are still "
                 "active. RCP checks account prerequisites but does not submit, size, or "
                 "interpret scheduler jobs."
             ),

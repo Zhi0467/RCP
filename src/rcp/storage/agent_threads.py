@@ -188,6 +188,15 @@ def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
 
 
 class AgentThreadStoreMixin(StoreMixinBase):
+    def space_turn_project_ids(self, operation_id: str) -> list[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT project_id FROM space_turn_project_bindings "
+                "WHERE operation_id=? ORDER BY project_id",
+                (operation_id,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def bump_agent_threads_version(self, user_id: str) -> None:
         """A file-only transcript append (voice) moves no SQL row, so it bumps directly."""
         with self.connection() as connection:

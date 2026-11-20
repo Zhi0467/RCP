@@ -3652,4 +3652,10 @@ def _write_recorded_patch(
     turn: WorkFinalizationContext,
     recorded: RecordedProviderTurn,
 ) -> None:
+    if (
+        recorded.intact
+        and recorded.watcher_folder is None
+        and _folder_baseline(turn, 0) is not None
+    ):
+        raise ValueError("The recorded turn is missing its watcher folder snapshot.")
     write_recorded_patch(turn.workspace, turn.remote_stage, recorded)

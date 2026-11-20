@@ -121,6 +121,7 @@ from rcp.storage import (
     AutoResearchMessageRecord,
 )
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
+from rcp.watcher_folder import stage_watcher_folder, watcher_binding
 
 _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
 
@@ -277,8 +278,7 @@ source of graph truth. A wake names the newly claimed mail to read before contin
   later paid delivery; it does not wake or interrupt the root immediately.
 - Do not invoke {denied_commands}, or any other staged command not allowed above. These commands
   are unavailable to this child turn.
-- When work or a graph condition remains to watch, write `watch.json` with `external` and `graph`
-  lists and finish this turn. If you are already waiting on submitted work, observe it without
+- When waiting on submitted work, observe it without
   launching a replacement. RCP wakes this same child route and native session under the episode's
   Stop fence; worker turns spend no episode budget.
 - If the assignment needs something outside your tools or authority, reply to the orchestrator
@@ -506,6 +506,17 @@ async def _stage_auto_research_child_work_turn(
                 workspace=layout.workspace,
                 remote_stage=layout.remote_stage,
             )
+        stage_watcher_folder(
+            execution.store,
+            watcher_binding(
+                execution.store,
+                execution.operation_id,
+                route.worker_id,
+                resolved.machine.machine_id,
+            ),
+            layout.workspace,
+            layout.remote_stage,
+        )
         return _stage_auto_research_child_work_mail(
             execution,
             route,

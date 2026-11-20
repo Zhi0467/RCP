@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Self
 from uuid import NAMESPACE_URL, uuid5
@@ -160,7 +161,7 @@ def _external_identity(check: WatcherCheckRecord) -> tuple[str, str, str, str]:
 
 def _applied_folder(
     connection: sqlite3.Connection, operation_id: str, digest: str
-) -> list[WatcherRecord] | None:
+) -> tuple[list[WatcherRecord], list[str]] | None:
     row = connection.execute(
         "SELECT payload_json FROM graph_run_receipts WHERE operation_id = ? "
         "AND category = 'watcher_folder_applied' "
@@ -169,15 +170,87 @@ def _applied_folder(
     ).fetchone()
     if row is None:
         return None
-    ids = json.loads(row[0])["watcher_ids"]
-    return (
+    payload = json.loads(row[0])
+    ids = payload["watcher_ids"]
+    records = (
         _watcher_records(connection, f"w.watcher_id IN ({','.join('?' * len(ids))})", ids)
         if ids
         else []
     )
+    return records, payload.get("cancelled_ids", [])
 
 
-def reconcile_watcher_files(
+@dataclass
+class WatcherFolderChange:
+    binding: WatcherBinding
+    digest: str
+    original: dict[str, WatcherFile]
+    additions: list[WatcherRecord]
+    edits: list[tuple[str, str, list[str], list[WatcherCheckRecord]]]
+    cancellations: list[str]
+    applied: list[WatcherRecord] | None = None
+
+    @property
+    def changed_ids(self) -> list[str]:
+        if self.applied is not None:
+            return [record.watcher_id for record in self.applied]
+        return [record.watcher_id for record in self.additions] + [item[0] for item in self.edits]
+
+    def commit(self, store: AppStore, connection: sqlite3.Connection) -> list[WatcherRecord]:
+        """Apply observations, edits, cancellation and the retry receipt together."""
+        previous = _applied_folder(connection, self.binding.origin_turn_id, self.digest)
+        if previous is not None:
+            return previous[0]
+        if not (self.edits or self.additions or self.cancellations):
+            return []
+        for name, definition in self.original.items():
+            watcher_id = _watcher_id(name)
+            matching = _watcher_records(
+                connection,
+                "w.watcher_id = ? AND w.agent_id = ? AND w.project_id = ?",
+                (watcher_id, self.binding.agent_id, self.binding.project_id),
+            )
+            if (
+                not matching
+                or not matching[0].open
+                or matching[0].state == "finished"
+                or _file(matching[0]) != definition
+            ):
+                raise ValueError(f"watcher {watcher_id} is no longer live or has changed")
+        if self.cancellations:
+            store.cancel_watchers(self.cancellations, by="agent", connection=connection)
+        for watcher_id, purpose, removed_ids, new_checks in self.edits:
+            store.revise_watcher(
+                connection,
+                watcher_id,
+                purpose=purpose,
+                removed_check_ids=removed_ids,
+                new_checks=new_checks,
+                at=store.now(),
+            )
+        for watcher in self.additions:
+            store.arm_watcher(watcher, connection=connection)
+        touched = self.changed_ids
+        store._insert_agent_task_receipt(
+            connection,
+            self.binding.origin_turn_id,
+            "watcher_folder_applied",
+            json.dumps(
+                {"sha256": self.digest, "watcher_ids": touched, "cancelled_ids": self.cancellations}
+            ),
+            tier="summary",
+            created_at=store.now(),
+        )
+        return (
+            _watcher_records(
+                connection, f"w.watcher_id IN ({','.join('?' * len(touched))})", touched
+            )
+            if touched
+            else []
+        )
+
+
+def prepare_watcher_files(
     store: AppStore,
     binding: WatcherBinding,
     baseline: Mapping[str, str],
@@ -185,8 +258,8 @@ def reconcile_watcher_files(
     *,
     state: GraphState | None = None,
     check_runner: WatcherCheckRunner = run_watcher_check,
-) -> list[WatcherRecord]:
-    """Apply this turn's additions, edits and deletions, preserving prior observations."""
+) -> WatcherFolderChange:
+    """Validate edits and observe new checks before acquiring the writer lock."""
 
     digest = hashlib.sha256(
         json.dumps([dict(baseline), dict(files)], sort_keys=True).encode("utf-8")
@@ -194,7 +267,7 @@ def reconcile_watcher_files(
     with store.connection() as connection:
         previous = _applied_folder(connection, binding.origin_turn_id, digest)
         if previous is not None:
-            return previous
+            return WatcherFolderChange(binding, digest, {}, [], [], previous[1], previous[0])
     existing = {
         record.watcher_id: record
         for record in store.agent_watchers(binding.agent_id)
@@ -217,14 +290,14 @@ def reconcile_watcher_files(
     changed = sorted(
         name for name in original.keys() | wanted.keys() if original.get(name) != wanted.get(name)
     )
-    if not changed:
-        return []
     created_at = store.now()
     additions: list[WatcherRecord] = []
     edits: list[tuple[str, str, list[str], list[WatcherCheckRecord]]] = []
     cancellations: list[str] = []
     for name in changed:
         watcher_id = _watcher_id(name)
+        if name not in original and store.watcher(watcher_id) is not None:
+            raise ValueError(f"watcher id {watcher_id} is already in use")
         prior = existing.get(watcher_id) if name in original else None
         if name in original and (prior is None or not prior.open or prior.state == "finished"):
             raise ValueError(f"watcher {watcher_id} is no longer live")
@@ -293,52 +366,28 @@ def reconcile_watcher_files(
                     new_checks,
                 )
             )
+    return WatcherFolderChange(
+        binding,
+        digest,
+        {name: original[name] for name in changed if name in original},
+        additions,
+        edits,
+        cancellations,
+    )
+
+
+def reconcile_watcher_files(
+    store: AppStore,
+    binding: WatcherBinding,
+    baseline: Mapping[str, str],
+    files: Mapping[str, str],
+    *,
+    state: GraphState | None = None,
+    check_runner: WatcherCheckRunner = run_watcher_check,
+) -> list[WatcherRecord]:
+    change = prepare_watcher_files(
+        store, binding, baseline, files, state=state, check_runner=check_runner
+    )
     with store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
-        previous = _applied_folder(connection, binding.origin_turn_id, digest)
-        if previous is not None:
-            return previous
-        for name in changed:
-            if name in original:
-                watcher_id = _watcher_id(name)
-                matching = _watcher_records(
-                    connection,
-                    "w.watcher_id = ? AND w.agent_id = ? AND w.project_id = ?",
-                    (watcher_id, binding.agent_id, binding.project_id),
-                )
-                if (
-                    not matching
-                    or not matching[0].open
-                    or matching[0].state == "finished"
-                    or _file(matching[0]) != original[name]
-                ):
-                    raise ValueError(f"watcher {watcher_id} is no longer live or has changed")
-        if cancellations:
-            store.cancel_watchers(cancellations, by="agent", connection=connection)
-        for watcher_id, purpose, removed_ids, new_checks in edits:
-            store.revise_watcher(
-                connection,
-                watcher_id,
-                purpose=purpose,
-                removed_check_ids=removed_ids,
-                new_checks=new_checks,
-                at=created_at,
-            )
-        for watcher in additions:
-            store.arm_watcher(watcher, connection=connection)
-        touched = [record.watcher_id for record in additions] + [item[0] for item in edits]
-        store._insert_agent_task_receipt(
-            connection,
-            binding.origin_turn_id,
-            "watcher_folder_applied",
-            json.dumps({"sha256": digest, "watcher_ids": touched}),
-            tier="summary",
-            created_at=created_at,
-        )
-        return (
-            _watcher_records(
-                connection, f"w.watcher_id IN ({','.join('?' * len(touched))})", touched
-            )
-            if touched
-            else []
-        )
+        return change.commit(store, connection)

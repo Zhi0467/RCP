@@ -1131,7 +1131,7 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
-Ordinary Work chats receive their current definitions in `watchers/<watcher_id>.json`.
+Project Work and Experiment invocations receive their current definitions in `watchers/<watcher_id>.json`.
 Each file has a short `purpose` and either a list of external `checks` or one
 `graph` condition. At turn end RCP applies file additions, edits, and removals
 together. Removing a definition cancels its wake and leaves its job running.
@@ -1152,19 +1152,10 @@ A new Experiment Run gets a new agent. Continuing an existing Run with
 additional turns keeps its agent and watchers. Cancelling a watcher ends
 observation and leaves the underlying job running.
 
-Every watcher file has two all-or-none lists:
-
-- `external` observations with a required one-line `purpose` (at most 120
-  characters), literal `check_command`, absolute `log_path`, and absolute `cwd`,
-  plus optional nonblank `cancel_command`. The purpose titles the watcher in
-  Wakes, where several watchers may share one log; a watcher saved before
-  purposes existed shows its check script name instead; and
-- `graph` conditions from a closed vocabulary.
-
-This is one external watcher form for direct scheduler submissions and
-helper-launched processes. Experiment items may additionally carry their
-existing `group` label; ordinary conversation items cannot. A helper's returned
-watcher object uses these same fields; there is no job-id observer form.
+Each external check records a literal `check_command`, absolute `log_path`, and
+absolute `cwd`. Checks sharing a file wake together. Each Experiment invocation
+commits its watcher changes with the episode session binding. An empty folder
+requires an explicit graph exit or a durable pending question.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
 or any Proposal related to a named node being resolved after arming. There is no arbitrary query,

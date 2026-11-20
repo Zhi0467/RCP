@@ -339,6 +339,7 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
         data_dir=tmp_path / "acceptance-data",
         acceptance_agent=True,
     )
+    app.state.background_tasks.close_watcher_notifications()
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert project_id is not None
