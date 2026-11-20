@@ -4,33 +4,6 @@ import { MACHINE, everyState, loginRow, settingsFor } from "./fixtures/signInRow
 
 const model = await import("../src/projects/providerLoginsModel.ts");
 
-test("each stored setting draws its trays, switches and swap, and switches store the doc's values", () => {
-  const { trayLayout, switchedSetting } = model;
-  const drawn = (value) => {
-    const layout = trayLayout(value);
-    return [layout.order.join(","), layout.on.own, layout.on.shared, layout.locked, layout.swap];
-  };
-  assert.deepEqual(drawn("own_then_shared"), ["own,shared", true, true, null, "shared_then_own"]);
-  assert.deepEqual(drawn("shared_then_own"), ["shared,own", true, true, null, "own_then_shared"]);
-  assert.deepEqual(drawn("own"), ["own,shared", true, false, "own", null]);
-  assert.deepEqual(drawn("shared"), ["shared,own", false, true, "shared", null]);
-
-  // Switch Yours off, back on, then swap.
-  let value = "own_then_shared";
-  value = switchedSetting(value, "own", false);
-  assert.equal(value, "shared");
-  value = switchedSetting(value, "own", true);
-  assert.equal(value, "shared_then_own");
-  value = trayLayout(value).swap;
-  assert.equal(value, "own_then_shared");
-
-  assert.equal(switchedSetting("own_then_shared", "shared", false), "own");
-  assert.equal(switchedSetting("own", "shared", true), "own_then_shared");
-  // The last group that is on cannot turn off.
-  assert.equal(switchedSetting("own", "own", false), null);
-  assert.equal(switchedSetting("shared", "shared", false), null);
-});
-
 test("a card shows the first state that applies: draining, signing in, signed out, limited, ready", () => {
   const all = {
     draining_since: "t",
@@ -191,15 +164,15 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
           .slice(1)
           .map((part) => [part.slice(0, part.indexOf('"')), part]),
       );
-    const team = fold(everyState, settingsFor("own_then_shared", "shared"));
+    const team = fold(everyState, settingsFor());
     const { claude, codex, opencode } = panels(team);
 
-    // Claude: both on, Yours first, swap live; every card state present.
+    // Personal sign-ins come first for Claude, with every card state present.
     assert.deepEqual(
       [...claude.matchAll(/data-tray="(\w+)"/g)].map((match) => match[1]),
       ["own", "shared"],
     );
-    assert.doesNotMatch(claude, /data-sign-ins-swap=""[^>]*aria-disabled/);
+    assert.match(claude, />Shared sign-in</);
     assert.deepEqual(
       [...claude.matchAll(/data-card-state="(\w+)"/g)].map((match) => match[1]),
       ["ready", "ready", "limited", "signed_out", "draining", "ready"],
@@ -208,16 +181,17 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
     assert.equal(count(claude, /data-sign-in-add="own"/g), 0);
     assert.equal(count(claude, /sign-ins-members"/g), 1);
 
-    // Codex: only Shared on, so it is drawn first, its switch locked, the swap disabled.
+    // Shared is first for Codex.
     assert.deepEqual(
       [...codex.matchAll(/data-tray="(\w+)"/g)].map((match) => match[1]),
       ["shared", "own"],
     );
-    assert.match(codex, /class="sign-ins-tray off" data-tray="own"/);
-    assert.match(codex, /data-tray-switch="shared"[^>]*aria-disabled="true"/);
-    assert.doesNotMatch(codex, /data-tray-switch="own"[^>]*aria-disabled/);
-    assert.match(codex, /data-sign-ins-swap=""[^>]*aria-disabled="true"/);
-    // No own Codex login: Yours offers its add slot.
+    for (const managed of [claude, codex]) {
+      assert.match(managed, /title="Only you can use these sign-ins\.">Personal sign-ins</);
+      assert.equal(count(managed, /data-sign-ins-swap=/g), 1);
+      assert.doesNotMatch(managed, /role="switch"|data-sign-ins-swap=""[^>]*disabled/);
+    }
+    // The personal tray offers an add slot when the viewer has no Codex login.
     assert.equal(count(codex, /data-sign-in-add="own"/g), 1);
 
     // Device codes reach only the member who started the sign-in.

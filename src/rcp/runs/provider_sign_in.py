@@ -343,7 +343,8 @@ class ProviderSignInRunner:
             self.launcher.invalidate_readiness(login, binary=binary)
 
     def _require_replaceable(self, login: LoginKey, *, member_id: str) -> None:
-        current = self.require_login(login, member_id=member_id)
+        self.require_login(login, member_id=member_id)
+        current = self.accounts.account_state(login)
         if current.state == "signed_in" and current.source == "verify":
             raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
 

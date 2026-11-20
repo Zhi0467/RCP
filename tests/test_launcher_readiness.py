@@ -225,7 +225,7 @@ def test_remote_probe_closes_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
-    """A probe that could not run is still a refusal, so Work never starts blind."""
+    """Only a probe known to fail refuses; one that could not run lets Work start."""
     ready = ProviderReadiness(provider="claude", installed=True, authenticated=True)
     assert work_like_launch_problem(ready) is None
     unchecked = ready.model_copy(update={"work_like_available": None})
@@ -237,7 +237,7 @@ def test_work_like_launch_problem_is_the_one_readiness_refusal() -> None:
     inconclusive = ready.model_copy(
         update={"work_like_available": None, "work_like_reason": "could not be checked"}
     )
-    assert work_like_launch_problem(inconclusive) == "could not be checked"
+    assert work_like_launch_problem(inconclusive) is None
 
 
 def test_auto_research_retry_is_refused_before_allocation_when_the_work_probe_failed() -> None:

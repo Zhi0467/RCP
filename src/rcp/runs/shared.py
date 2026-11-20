@@ -826,14 +826,12 @@ async def _prepare_hidden_read_scope(
 
     A Space turn passes the catalog inventory it already read for every project.
     """
-    from rcp.agents.hidden_read import HiddenFolderRejected
     from rcp.agents.provider_environment import (
         ProviderProcessEnvironment,
         prepare_hidden_read_launch,
     )
 
     machine_id = request.run_on or "unresolved"
-    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
     try:
         if execution is None:
             raise ValueError("Hidden-read policy needs the task's space store.")
@@ -868,18 +866,7 @@ async def _prepare_hidden_read_scope(
             machine_provider_paths=list(machine.provider_paths.values()),
             git_access=execution.git_access,
             browser_enabled=bool(getattr(request, "browser_requested", False)),
-            thread_owner=(
-                execution.store.private_chat_owner(request.chat_id)
-                if isinstance(request, RunRequest)
-                and request.chat_id is not None
-                and task is not None
-                and task.kind in {"space_chat", "project_chat"}
-                else None
-            ),
-            member_ids=tuple(member.user_id for member in execution.store.space_users()),
         )
-    except HiddenFolderRejected:
-        raise
     except Exception:
         from rcp.agents.provider_environment import unhidden_read_scope
 

@@ -12,6 +12,7 @@ Roles:
 - ``server``: what an installed team server's service account needs beyond
   ``local``.
 - ``server_install``: what the root installer needs before that account exists.
+- ``paper``: pinned programs Paper installs and checks when a document needs them.
 
 Required means an agent run on that machine cannot finish without the program,
 so a definite absence refuses the run. Optional means only one feature stops
@@ -26,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Role = Literal["local", "remote", "server", "server_install"]
+Role = Literal["local", "remote", "server", "server_install", "paper"]
 Platform = Literal["linux", "darwin"]
 
 LINUX: frozenset[Platform] = frozenset({"linux"})
@@ -465,10 +466,9 @@ DEPENDENCIES: tuple[Dependency, ...] = (
     Dependency(
         "tectonic",
         "Compile paper snapshots using RCP's checksum-pinned runtime install.",
-        optional_on=frozenset({"local"}),
+        optional_on=frozenset({"paper"}),
         feature="LaTeX preview and arXiv export",
-        fallback="Preview shows unavailable; arXiv export is refused with the reason.",
-        note="Installed by Paper into the data directory; PATH installations are not used.",
+        fallback="Paper reports a compiler installation failure if its download fails.",
     ),
     Dependency(
         "tar",
@@ -528,4 +528,4 @@ def optional(role: Role, platform: Platform) -> tuple[Dependency, ...]:
 
 
 def _runs(dependency: Dependency, role: Role, platform: Platform) -> bool:
-    return platform in dependency.platforms if role == "local" else platform == "linux"
+    return platform in dependency.platforms if role in {"local", "paper"} else platform == "linux"

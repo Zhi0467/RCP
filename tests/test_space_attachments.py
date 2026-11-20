@@ -103,7 +103,7 @@ def test_space_upload_send_stage_transcript_and_retry(space, tmp_path, monkeypat
     )
     assert request.attachment_batch_id == uploaded["attachment_set_id"]
     assert request.attachment_set_id is None and request.attachment_client_id is None
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     seen = []
 
     async def provider(_provider, prompt, **kwargs):

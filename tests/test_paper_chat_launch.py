@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,7 +55,6 @@ def test_paper_root_is_a_writable_root_that_changes_scope_identity() -> None:
 def test_each_provider_writes_the_paper_only_with_a_paper_scope(paper_root, tmp_path) -> None:
     from rcp.providers.agy.profile import _policy as agy_policy
     from rcp.providers.claude.profile import _claude_write_settings
-    from rcp.providers.codex.profile import _codex_permission_profile
     from rcp.providers.opencode.profile import _permission, _root_pattern
 
     scope = _scope(paper_root)
@@ -65,9 +63,6 @@ def test_each_provider_writes_the_paper_only_with_a_paper_scope(paper_root, tmp_
     claude = _claude_write_settings(scope)["permissions"]
     assert (f"Edit(/{PAPER}/**)" in claude["allow"]) is granted
     assert ("Edit(//home/rcp/data/**)" in claude["deny"]) is not granted
-
-    codex = tomllib.loads(_codex_permission_profile(scope))["permissions"]["rcp_project"]
-    assert (codex["workspace_roots"].get(PAPER) is True) is granted
 
     edit = _permission("work_auto", tmp_path, [], scope)["edit"]
     assert isinstance(edit, dict)

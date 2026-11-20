@@ -59,9 +59,9 @@ def _launch(request: ProviderTurnRequest) -> tuple[list[str], dict[str, object]]
     return turn.command, definition["permission"]
 
 
-def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
-    """OpenCode applies the last matching rule, so grants precede protected storage,
-    then the stage inside it.
+def test_work_edits_anywhere_but_protected_storage_except_the_stage():
+    """OpenCode applies the last matching rule, so protected storage follows the
+    blanket allow, then the stage inside it.
     """
     scope = _scope()
     command, permission = _launch(
@@ -70,9 +70,7 @@ def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
     assert command[:2] == ["sh", "-c"]
     assert "--pure" in command
     assert list(permission["edit"].items()) == [
-        ("*", "deny"),
-        ("home/rcp/**", "allow"),
-        ("tmp/**", "allow"),
+        ("*", "allow"),
         ("home/rcp/.rcp/**", "deny"),
         ("home/rcp/data/**", "deny"),
         ("home/rcp/data/stages/s/workspace/**", "allow"),

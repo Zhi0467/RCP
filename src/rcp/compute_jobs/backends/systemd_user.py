@@ -53,16 +53,6 @@ class SystemdUserBackend:
             f"StandardError=file:{job_root}/log",
         )
         if context.containment == "mirrored" and context.writable_roots:
-            command.extend(
-                [
-                    "-p",
-                    "PrivateUsers=yes",
-                    "-p",
-                    "ProtectSystem=strict",
-                    "-p",
-                    "ProtectHome=read-only",
-                ]
-            )
             for root in dict.fromkeys((*context.writable_roots, job_root)):
                 command.extend(["-p", f"ReadWritePaths={_quote_path(root)}"])
             for path in context.protected_paths:

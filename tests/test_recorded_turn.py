@@ -78,21 +78,15 @@ def test_a_completed_turn_reads_back_as_complete(tmp_path) -> None:
     assert not [event for event in verdict.events if event.event == "error"]
 
 
-@pytest.mark.parametrize(
-    "capability,profile", [("work_auto", "rcp_project"), ("discuss", "rcp_discuss")]
-)
+@pytest.mark.parametrize("capability", ["work_auto", "discuss"])
 @pytest.mark.parametrize("resumed", [False, True])
-@pytest.mark.parametrize("response_profile", ["expected", "rcp_stage", None])
-def test_app_server_recovery_checks_the_original_permission_contract(
-    tmp_path, capability, profile, resumed, response_profile
+@pytest.mark.parametrize("response_sandbox", ["dangerFullAccess", "workspaceWrite", None])
+def test_app_server_recovery_checks_the_original_sandbox_contract(
+    tmp_path, capability, resumed, response_sandbox
 ) -> None:
-    """Replay must judge the response against the owner's launch, not a paper turn."""
-
     thread_result = {"thread": {"id": "recorded-thread"}, "approvalPolicy": "never"}
-    if response_profile is not None:
-        thread_result["activePermissionProfile"] = {
-            "id": profile if response_profile == "expected" else response_profile
-        }
+    if response_sandbox is not None:
+        thread_result["sandbox"] = {"type": response_sandbox}
     messages = [
         {"id": 1, "result": {}},
         {"id": 2, "result": {"config": {}}},
@@ -118,7 +112,7 @@ def test_app_server_recovery_checks_the_original_permission_contract(
             "id": 3,
             "method": "thread/resume" if resumed else "thread/start",
             "params": {
-                "permissions": profile,
+                "sandbox": "danger-full-access",
                 **({"threadId": "recorded-thread"} if resumed else {}),
             },
         },
@@ -153,7 +147,7 @@ def test_app_server_recovery_checks_the_original_permission_contract(
         if step.explicit_terminal:
             break
     recovered = decode_recorded_turn(recorded, request)
-    if response_profile == "expected":
+    if response_sandbox == "dangerFullAccess":
         assert not [event for event in live_events if event.event == "error"]
         assert not [event for event in recovered.events if event.event == "error"]
         assert recovered.complete

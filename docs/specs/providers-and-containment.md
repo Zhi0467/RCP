@@ -261,11 +261,9 @@ and nothing else. Added-login provider homes, under
 `<data dir>/provider-homes` and `~/.rcp/provider-homes`, are hidden whole from
 Claude, OpenCode and Antigravity runs. An Antigravity run still reads its own
 token, because the CLI reads it directly and its overlay's links resolve into
-the machine home. Codex runs hide only each home's `auth.json`, through a
-glob over login IDs, so a sign-in added later is covered too. A launch that
-resolved before `provider-homes/codex` existed covers it from the next turn on.
-**Why:** Codex starts its sandbox helper from inside its own home. A denied
-ancestor makes every shell command fail before it runs.
+the machine home. Codex runs name only each home's `auth.json`, through a
+glob over login IDs, so a sign-in added later is covered too; only the browser
+daemon applies it, because Codex runs [unsandboxed](#codex).
 
 Private SSH identities and deploy keys are hidden only after the right agent
 lists their decoded public-key SHA256 fingerprint and a bounded signing check
@@ -275,11 +273,12 @@ known hosts stay readable; parents containing exempt keys cannot be masked.
 
 Machine Settings accepts at most 64 absolute hidden folders. Host validation
 canonicalizes and rejects overlap with checkouts, stages, tools, binaries,
-command sockets and readable keys. Launch drops a newly conflicting saved folder
-with `hidden_folder_conflict`, preserving code defaults. Any member may edit
-these machine settings; they are not project manifest policy. Tool environments
-drop case-insensitive credential-name globs and retain other variables. Provider
-authentication stays outside the wrapper. Direct-tool credentials such as
+command sockets and readable keys. Launch drops an invalid or duplicate saved
+folder, and a newly conflicting one with `hidden_folder_conflict`, preserving
+code defaults. Any member may edit these machine settings; they are not project
+manifest policy. Tool environments drop only `CLAUDE_CODE_OAUTH_TOKEN`, the
+sign-in RCP exports; a lab's own tokens, cloud, and package-index variables
+reach tool calls. Provider authentication stays outside the wrapper. Direct-tool credentials such as
 `~/.config/gh`, `~/.netrc` and `~/.aws` are not default denies; Keychain stays open.
 
 Deploy keys use `~/.rcp/ssh-agent/agent.sock`; user identities use the account's
@@ -292,11 +291,13 @@ when available.
 **Why:** This policy targets credential exfiltration prompted by generic untrusted
 web content while retaining network, Git, SSH, schedulers, GPUs and browsers.
 Research data, deliberate escapes through other process owners and targeted
-RCP-content attacks are outside it. An environment allowlist would break lab,
-proxy and compute variables; a denylist accepts unusually named secrets passing
-through. Keychain and directly read tool credentials remain compatibility gaps.
-Missing hiding support never blocks launch: Settings/doctor show the reason,
-prompts state the effective scope, and no per-turn badge or trace is added.
+RCP-content attacks are outside it. Filtering variables by name broke lab,
+cloud, package-index and compute setups, so tool environments keep them.
+Keychain and directly read tool credentials remain compatibility gaps.
+Hiding never refuses or breaks a run. A policy that cannot be resolved,
+including an execution host or account mismatch, runs the launch unhidden.
+Settings/doctor show the reason, prompts state the effective scope, and no
+per-turn badge or trace is added.
 
 RCP derives `ProjectWriteScope` from manifests, catalog, repository pointers,
 lineage and the admitted write set, never from client/provider requests. The
@@ -311,7 +312,8 @@ project. Local manifests come from the opened workspace or registration; remote
 ones use validated canonical mirrors, without a new catalog-wide connectivity
 probe. Relative paths resolve against registered project roots. Snapshot locks
 prevent reading provisional publication/rollback state. Missing inventory fails
-closed.
+closed. A registered repository missing on the execution machine is skipped;
+only the run's own repositories must exist.
 
 The workspace must be inside its exact stage. Roots must belong to the same
 project, repository alias and machine id, exist and be writable there.
@@ -320,9 +322,11 @@ from the manifest's card id; a repository pointer's route describes how the
 agent reaches it, not ownership. Its machine id and canonical path must match on
 the execution machine.
 
-Repository roots cannot be another project's checkout, broad parent/home/temp
-folder, app data, SQLite or canonical `.research`. Provider auth/session/cache
-exceptions are runtime storage, not general project write roots.
+Repository roots cannot be a broad parent/home/temp folder, app data, SQLite or
+canonical `.research`; such a launch is refused. An admitted root overlapping
+another project's or an unadmitted repository stays readable but is not a write
+root, and the launch proceeds. Provider auth/session/cache exceptions are runtime
+storage, not general project write roots.
 
 ### Watcher commands
 
@@ -347,8 +351,7 @@ prompt names. Discuss gains no repository-write or graph authority.
 Seed, Refresh, branch merge and artifact edit have no memory root.
 A member's Space thread and backend-run private project threads also get that
 member's private memory folder as a memory root. The prompt labels it apart from
-project memory. Hidden-read hides every other member's folder, and the whole
-member memory root from runs that are not a member's thread.
+project memory. Members are one lab, so hidden-read hides no member's folder.
 The [memory owner](graph-consolidation-and-lessons.md#memory) defines layout,
 index bounds, migration, and the add-only prompt rule for autonomous runs.
 
@@ -369,8 +372,7 @@ as the Paper, read-only.
 
 Repository-writing scopes receive machine-card `granted_roots`, plus `/tmp` and
 the local temporary directory. Scratch-only/read-only launches receive no
-machine-card grants. Codex scratch and Discuss profiles independently allow
-the system temporary directories.
+machine-card grants.
 Humans choose paths; code fixes eligible capabilities. Every launch reads the card afresh, so
 a path added mid-episode applies from the next launch. The write-boundary prompt
 tells a blocked agent to ask for the exact path there, rather than copy files out
@@ -380,12 +382,12 @@ Only RCP storage constrains grants: data and installed-server folders, credentia
 checkpoints/restores, `/etc/rcp`, `/run/rcp`, account `~/.rcp`, remote
 `~/.local/share/rcp`, registered `.research`, launch inputs and legacy stages.
 `rcp_owned_paths` and scope construction compare filesystem identity on the host.
-Save and picker refuse roots equal to or inside protected storage. Storage inside
-a grant remains read-only via `granted_protected_paths`, except the launch's own
-workspace/jobs.
+Save and picker refuse roots equal to or inside protected storage. A launch drops
+a grant that is missing, unwritable, or inside protected storage rather than
+refusing. Storage inside a kept grant remains read-only via
+`granted_protected_paths`, except the launch's own workspace/jobs.
 
-systemd uses `ReadWritePaths`/`ReadOnlyPaths`; Codex permits a deeper write root
-inside a read parent. Claude denies override allows, so a protected parent of its
+systemd uses `ReadWritePaths`/`ReadOnlyPaths`. Claude denies override allows, so a protected parent of its
 own stage is left undenied. A grant covering it can expose sibling stages to file
 writes; Claude's shell is already unbounded.
 
@@ -405,8 +407,8 @@ write access, and directories owned by another account are refused.
 
 Selected-secret policy is rendered from `HiddenReadScope` on every capability:
 Claude receives the staged shell prefix plus native read-path denies; Codex
-receives file, directory, and glob denies in both exec and app-server policies,
-plus the environment deny list; OpenCode receives the shell wrapper and native
+receives only the environment deny list, so every Codex launch reports
+`unhidden` with `provider_native_tools_uncovered`; OpenCode receives the shell wrapper and native
 `read` denies only; its grep and glob rules match search patterns rather than
 paths, so every OpenCode launch reports `unhidden` with
 `provider_native_tools_uncovered`. An uncovered native tool makes the launch
@@ -417,8 +419,7 @@ path component and binds its other existing entries back, so a match created
 after a shell or browser daemon starts, such as a WAL file or a backup, stays
 hidden. A wildcard above the last component is expanded instead; a later match
 is hidden from the next command or browser daemon admission on. In a Codex run
-only the browser daemon uses the wrapper; Codex's own sandbox applies the
-login-home glob to shell commands. A hidden literal that does not exist yet is hidden the same
+only the browser daemon uses the wrapper. A hidden literal that does not exist yet is hidden the same
 way under its existing parent. A shell command never empties the account home or a folder
 above that parent, so deeper misses are rechecked at the next command; the
 persistent browser daemon also masks at the home, so a credential folder created
@@ -434,11 +435,9 @@ stage retention is swept unless a queued, running, pausing or paused task names
 it: locally with each provider session sweep pass, and on a remote host with
 its stage sweep. Install touches the folder before checking it, so a sweep does
 not age it out mid-install.
-When the hiding wrapper is unavailable at command time, the shell runs unwrapped
-without per-command traces only if the launch recorded `wrapper_unavailable` or
-`userns_blocked`. A wrapper that was available at launch but later becomes
-unavailable refuses the command, even when another coverage gap made the overall
-launch `unhidden`.
+Install tightens a loose mode on the wrapper folders instead of refusing.
+When the hiding wrapper is unavailable at command time, the shell runs the
+command unwrapped, without a per-command trace.
 
 A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine.
@@ -452,36 +451,26 @@ human-selected local integration turn alone admits both exact roots. Its target
 is backend-resolved and persisted, never taken from a client-supplied path.
 
 Episode Work and orchestrate use the owner's binding. They never receive the
-shared checkout as a repository write root. Each launch refuses a machine grant
-covering that checkout. A default temporary grant that covers it is omitted.
+shared checkout as a repository write root. Each launch omits any machine or
+default temporary grant overlapping that checkout.
 Repository context renders the same bound worktree used by enforcement.
 
 ### Codex
 
-Work and orchestrate use Codex's native noninteractive project permission
-profile: the exact workspace plus admitted repository roots, never the dangerous
-bypass flag. Fresh launches set the exact working directory; native resume uses
-the provider's supported configuration path while preserving the same scope.
-Public web search remains enabled. Canonical `.research` nested in a writable
-root is refused as a write and kept readable, because RCP stages its `graph.json`
-and `research.md` as required run context; Codex treats a denied path as
-unreadable rather than unwritable.
+Every Codex launch, exec and app-server alike, runs with
+`sandbox_mode="danger-full-access"` and `approval_policy="never"`. App-server
+threads and turns also request the `dangerFullAccess` sandbox, and a thread
+that reports any other sandbox stops before the prompt. Write roots are not
+enforced for Codex. Fresh launches set the exact working directory; native
+resume uses the process working directory. Public web search remains enabled.
+RCP still collects graph changes only from the stage, and Discuss stays
+read-only by its prompt and because RCP collects no Patch from it.
 
-Every hidden or protected path RCP names to Codex exists on the execution host
-when the launch resolves. Both scopes record which of their entries are missing,
-and Codex is told only about the rest. Why: on Linux, Codex hides a missing path
-inside a writable root by creating a stand-in file there. A killed command never
-removes it, and a stand-in where a folder belongs makes every later Codex sandbox
-on that account fail to start. A secret created mid-turn is hidden from the next
-turn on. Claude and OpenCode keep missing entries, because RCP's wrapper masks
-them without writing to disk.
-
-Work, orchestrate, and Discuss also deny reads of the desktop app's WebKit,
-application support, cache, HTTP storage, and cookie paths for both release and Dev
-bundle identifiers. These rules are separate from protected write paths.
-Home-relative paths resolve on the execution host. Discuss uses a named native
-permission profile so the same denial applies in exec and app-server; the
-app-server checks the activated profile before starting a turn.
+**Why:** Codex's Linux sandbox runs every shell command through `bwrap`, which
+made every command fail on an account where it could not start, and its
+permission profiles left stand-in files that broke later sandboxes. As with
+[Claude](#claude), Work on this provider is meant to run real compute, and a
+containment that forbids that is not usable containment.
 
 ### Browser grants
 
@@ -561,8 +550,7 @@ file-editing tool; a `Write(path)` rule is accepted and then ignored, so RCP
 emits only the `Edit` form. These rules govern file-editing tools, subject to the
 [grant exception](#machine-writable-paths), and do not bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
 on its execution machine. That is an accepted accidental-write gap for this
-provider, not a claim of containment; Codex's native permission profile still
-bounds both. Nothing here widens graph authority, which stays with `patch.json`.
+provider, not a claim of containment. Nothing here widens graph authority, which stays with `patch.json`.
 Every human chat turn is Work, so a message that only asks a question has this
 shell reach too. That is accepted: the same member's next Work turn has it, and
 the graph still changes only through the stage and Proposals.
@@ -571,11 +559,13 @@ the graph still changes only through the stage and Proposals.
 
 The internal `session_summary` capability forks or resumes a native session for one
 summary answer. It accepts no write roots, command gate, browser grant, or graph
-output collection. Codex uses a read-only permission profile with hidden-read
-denies and disables shell, subagents, and web search. Claude disables tools,
+output collection. Codex runs unsandboxed and disables shell, subagents, and web
+search. Claude disables tools,
 hooks, external settings sources, and MCP servers. OpenCode and Antigravity
-refuse this capability. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
-owner records the tail fallback when the old provider cannot summarize safely.
+refuse this capability. An `unhidden` policy does not stop a summary. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
+owner records the tail fallback when the old provider cannot summarize safely,
+including when the captured login belongs to someone other than the member
+requesting the switch.
 
 ### OpenCode
 
@@ -594,9 +584,10 @@ under its own rules. So are MCP and custom tools from the member's global
 config. Every launch also turns off formatters and language servers, which run
 their own commands on edited files outside any tool rule.
 
-Edit rules deny everything, then allow the exact workspace and admitted roots,
-then deny protected paths, then allow again each root inside a protected path,
-such as a stage inside RCP storage; OpenCode applies the last rule that matches.
+Work edit rules allow everything, then deny protected paths, then allow again
+each root inside a protected path, such as a stage inside RCP storage; OpenCode
+applies the last rule that matches. Other capabilities deny every edit, then
+allow their workspace and write folders.
 Every capability may read outside its folders. OpenCode
 matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
@@ -610,7 +601,6 @@ human granted the browser. Final edit denies protect the
 client directory itself and all descendants in split and legacy stages.
 Without a broker gate, including artifact edits, there is no client allowance.
 Command selection and launch configuration derive the same rules, including on resumed sessions.
-Codex Discuss retains its existing `rcp_discuss` permission profile.
 
 Every staged command client, including Work's, and its broker wrapper use Python
 `-I -S`: no script-directory or `PYTHONPATH` imports, user-site imports, or site
@@ -636,7 +626,8 @@ in order. A follow-up counts as delivered once written. The first non-`SUCCESS`
 result ends the turn.
 
 Each launch passes `--settings` with `agentMode: ""`, `request-review`,
-`allowNonWorkspaceAccess: false`, the terminal sandbox off, queued messages,
+`allowNonWorkspaceAccess` on for Work and orchestrate (so a path outside the
+workspace is not a turn-ending error) and off otherwise, the terminal sandbox off, queued messages,
 and all three permission lists, because `--settings` replaces each list it
 names. So the member's saved `auto` mode and their own allow and deny rules
 never reach an RCP launch. Every capability but session summaries runs with
@@ -691,8 +682,8 @@ Provider profiles own the minimum supported CLI contract. If the installed
 supported version cannot enforce exact unattended roots, the launch fails with
 a provider-compatibility diagnostic. A selected Codex app-server version or
 startup that fails before prompt delivery may use the explicit exec fallback;
-exec must still enforce the same capability and exact roots. RCP never restores
-broad bypass access or treats prompt wording as containment.
+exec launches the same capability. RCP never treats prompt wording as
+containment.
 
 ### Adding a provider
 
@@ -709,7 +700,9 @@ profile decides each of these explicitly rather than inheriting them:
 4. Models: probed efforts may be empty, and every stored reasoning field must
    accept that.
 5. Version floor: the CLI version whose containment was probed, applied to every
-   capability that relies on it.
+   capability that relies on it. Only a reported version below the floor is
+   refused; a missing or unparseable version launches, because a failed
+   version probe must not stop a run.
 
 Containment is proved against the real CLI at that floor: config precedence,
 path bases, and anything that can rewrite the rules, such as plugins. Tests that
@@ -721,9 +714,8 @@ Sign-ins, and the model picker, locally and on an SSH execution machine.
 
 Launch receipts record project, execution machine id, capability, canonical
 write roots, fingerprint, enforcement mode and fresh/resumed state. Their
-canonical-state boundary is `provider_enforced` only where every tool is bounded
-(Codex) and
-`file_tools_only` where the Work shell is not (Claude, OpenCode). A resumed
+canonical-state boundary is `file_tools_only` where file tools are bounded and
+the Work shell is not (Claude, OpenCode), and `none` where nothing is (Codex). A resumed
 launch checks that its stage still belongs to the same project and machine id, then
 records the scope it built; the provider receives exactly that scope.
 
@@ -1330,7 +1322,9 @@ browser shims, prints one Google URL, and reads the authorization code on stdin.
 RCP shows the URL to the member who started the attempt, and
 `POST /api/providers/{provider}/logins/sign-in/{attempt_id}/code` writes their
 code to the process once. Exit 0 means the CLI took the code; the sign-in counts
-after `agy -p /usage` succeeds. Sign-out deletes the home's token file, since
+after `agy -p /usage` succeeds. On the backend machine, a missing native Antigravity
+credential makes the shared sign-in available immediately, including after a previously
+verified credential disappears. Sign-out deletes the home's token file, since
 agy's own logout is interactive only. Tokens travel through
 stdin/private environment, never argv, events, responses, receipts, logs or
 backups. The `providers` store is backup-excluded. Required missing credentials
@@ -1415,16 +1409,14 @@ Each machine keeps a set of shared logins per provider: the machine sign-in
 stored token for Claude) plus every login a member added as shared. Each member
 may also add one own login per provider and machine. Shared logins belong to the
 machine: any member may add, sign in, verify, sign out or remove them, except
-that the machine sign-in cannot be removed. Only the owner acts on an own login.
+that the machine sign-in cannot be removed. Only the owner can use or manage a personal login.
 OpenCode has only its machine sign-in, because RCP does not sign it in.
 
-Each member has one setting per `(provider, machine_id)`: `own`, `own_then_shared`,
-`shared_then_own` or `shared`. It names which sources are on and the order they
-are tried; "both off" cannot be stored. Lookup is the machine's row, then the
-member's `*` row, then the built-in default: `own` in a team space, `shared` in a
-personal one. The upgrade wrote `*` = `own_then_shared` for every team member
-not being removed, so their work kept using the shared logins. There is no team or
-owner default: a new team member must add their own login or turn Shared on.
+Each member chooses which source to try first per `(provider, machine_id)`.
+Both their own sign-in and the shared pool are eligible. Lookup uses the
+machine's row, then the member's `*` row. Team spaces default to
+`own_then_shared` and personal spaces to `shared_then_own`. Older `own` and
+`shared` settings give that source first priority.
 
 The member is the task's authorizer: the sender for chats, Work and Discuss; the episode's `authorized_by` for Auto-research, Experiment turns
 and reports; the origin task's member for watcher wakes; the schedule's for
@@ -1444,22 +1436,23 @@ The resolver in `agents/provider_accounts.py` picks one login, first match wins:
    sign-in.
 2. A transport reattempt or the initial `graph_repair` correction keeps its
    parent's login, and later provider passes in one task keep the turn's, while
-   that login is usable and is the member's own or shared, whatever the setting
-   or drain.
-3. Otherwise walk the sources the setting turns on, in its order, and take the
+   that login is usable and shared or owned by the turn's authorizer. The
+   priority setting and drain do not interrupt this lineage.
+3. Otherwise walk both sources in the member's chosen order and take the
    first with an assignable login (usable and not draining) without the limit
    mark. For a continued session, a mark on another login that lapsed without
    evidence still counts, so a running session never moves on a lapse. When every
    allowed login is limited, a continued session keeps its previous login while
-   it is assignable and the sender's setting allows it; otherwise take the first
-   source with any assignable login.
+   it is assignable within these sources. Otherwise take the first source with
+   any assignable login.
 4. Inside the shared source, keep the session's previous login while it is
    assignable, allowed and not limited; otherwise take the one assigned longest ago,
    preferring unmarked ones, ties to the machine sign-in, then the oldest add.
-5. Refuse, naming the setting's first source. This is the only refusal: a
-   session's earlier login never blocks a usable one.
+5. When neither source holds an assignable login, refuse and name the first
+   source in the member's priority order.
 
-A switch receipt names the first applicable reason: `unhealthy`, `limited`,
+A switch receipt names the first applicable reason: `different_owner` (the
+previous login belongs to another member), `unhealthy`, `limited`,
 `sender_setting` (another member sent the turn), `setting_changed`, or
 `preferred_source_available`; `limited` reflects any recorded mark, lapsed or
 not. A session's previous login is its latest provider-started turn's; a fork is
@@ -1526,8 +1519,8 @@ A machine lock serializes migrations from different logins. SQLite's own WAL
 locking coordinates native writers; RCP does not merge their databases.
 
 The session indexer reads the machine Codex root. Hidden read hides every added
-login home from Claude and OpenCode runs, and each home's `auth.json` from Codex
-runs. Agents read shared transcripts at their machine-home paths.
+login home from Claude and OpenCode runs, and each home's `auth.json` from a
+Codex run's browser daemon. Agents read shared transcripts at their machine-home paths.
 Only the local machine sign-in keeps the cross-process credential startup lock.
 
 Credentials live under `<data_dir>/providers/<provider>/machine-<machine_id>/`.
@@ -1558,8 +1551,9 @@ settings do.
 
 Every provider resolves at each turn boundary, so a continued session moves to
 another allowed login when its previous one is unhealthy, removed, draining or
-limited, and never runs on another member's own login. A lineage login that
-became unusable or removed resolves the same way. Draining logins admit no new
+limited. When a historical session used another member's personal login, its
+next turn must select an eligible login or wait for sign-in. A lineage login
+that became unusable or removed resolves the same way. Draining logins admit no new
 choices but remain usable by lineage work until its running turns end. Removal retains session files and deletes only credentials; unreachable remote
 cleanup remains pending for reconciliation. Once nothing runs on the login, removal
 also walks its home without following links, unlinks each link and the provider's
@@ -1594,10 +1588,11 @@ from rearming that retry; Auto-research retains its recovery owner and Experimen
 uses ordinary Retry.
 
 Login-keyed release selects recoveries, queued work, Experiment retries and
-watcher groups by member setting. Verified credentials and changed settings use
+watcher groups by the task's authorizer. A shared or own login can release work
+for that member. Verified credentials and changed settings use
 the same release helper, and startup runs it once for every login, so work parked
 on a login that stayed unusable moves to a usable one without a new sign-in. Tasks with no selected login re-resolve the
-member setting on a setting change or verification of an allowed source.
+member's priority on a setting change or verification of either source.
 Authentication failures release after settlement records their park when another
 allowed login is available. Ordinary Work turns retain their authorizer. With a
 complete owned checkpoint and available continuation context, recovery resumes
@@ -1694,7 +1689,7 @@ session.
 
 Recorded decoding uses the owner's original capability and retained Work write
 scope. Codex app-server rechecks the actual journalled thread response against
-that contract, including its active permission profile; recovery does not
+that contract, including its sandbox; recovery does not
 substitute a read-only capability or waive enforcement.
 
 At turn end it snapshots Patch, watcher handoff and maintenance files under
@@ -1809,7 +1804,7 @@ Claude's zero-cost Work startup probe uses enforced settings, stream-json and
 closed empty stdin. It proves CLI acceptance, not containment. Its availability
 and diagnostic are separate from general readiness and shown for profiles that
 can launch Work, including chat. Work/orchestrate refuse launch when this probe
-fails and enforce the version floor; a historical Discuss run does neither, and
+fails and enforce the version floor; a probe that could not run does not refuse; a historical Discuss run does neither, and
 Paper enforces only the version floor. Chat profiles are checked as Work, in
 readiness and in `rcp server provider check`, so a provider that fails the probe
 or the floor is unavailable for chat; there is no Discuss fallback. Transport failures stay transport failures.
@@ -2138,14 +2133,9 @@ local but whose base machine is remote gets a read-only client. Each project lef
 out carries a code and a short line from `SPACE_EXCLUSIONS` in
 [space_projects.py](../../src/rcp/runs/space_projects.py). Raw errors stay in the
 `space_project_not_admitted` receipt, which every exclusion writes. A project is
-left out the same way, without failing the turn, in three cases:
-- its Git transport cannot be prepared;
-- its read-hiding policy is rejected, or preparation returns the
-  `wrapper_unavailable` fallback that the account policy lacks;
-- its policy cannot join the merged policy.
-
-Shared preparation turns most errors into that fallback. Space treats it as that
-project's failure, so it never widens the whole turn. Each
+left out the same way, without failing the turn, when its Git transport cannot
+be prepared. Read hiding never leaves a project out: shared preparation turns
+every error into the unhidden fallback, which joins the union. Each
 project's policy is prepared with only its own Git transport. Admission binds the
 remaining writers only after that preparation. The turn's Git access is then the
 union of the bound writers' transports, so an excluded project's checkouts never
@@ -2185,10 +2175,8 @@ answer when it settles. Only the member's tap on a card is theirs. No verb creat
 from the same resolved verbs the handler enforces.
 The prompt renders one write boundary from the composite scope. The provider
 receives the union of the bound projects' read-hiding policies; the combined policy is installed before launch. Even a turn without
-local write projects retains the local account's default secret and private
-transcript protections. A project whose policy would take the union over
-`HIDDEN_READ_PATH_MAX_COUNT` is left out with `policy_conflict`; its
-`space_project_not_admitted` receipt carries `too_many_hidden_folders`.
+local write projects retains the local account's default secret protections.
+An account policy that cannot be resolved runs the turn unhidden.
 
 Collection reads `patch.json` and `watch.json` at the stage top level and in
 each `projects/<id>` folder, plus the top-level `outcome.json` for the turn
@@ -2230,11 +2218,9 @@ copies into the Space stage. Their paths enter the provider's read directories
 and prompt, and the user transcript record retains their descriptors. Every run
 hides the host's `<data_dir>/chat-attachments` store; only staged copies are inputs.
 
-Every agent run hides every `private-*.jsonl` transcript under the state chat
-roots on its host. Runs on the backend's machine hide other members'
-`<data_dir>/agent-threads/<user_id>` folders; a thread run keeps access to its
-own stages but not its own transcripts, and a non-thread run hides the whole
-root. RCP hands thread history to a fresh session only as prompt text.
+Members of a project are one lab, so agent runs hide no `private-*.jsonl`
+transcript, `agent-threads` folder or member memory. RCP still hands thread
+history to a fresh session only as prompt text.
 
 `projects` returns the member's Cards projection with thread ids and
 `same_machine`, true when both state and base are on the backend's machine, the

@@ -76,8 +76,7 @@ def test_app_server_preserves_encrypted_refusal(
                     "result": {
                         "thread": {"id": thread_id},
                         "approvalPolicy": "never",
-                        "sandbox": {"type": "readOnly"},
-                        "activePermissionProfile": {"id": "rcp_discuss"},
+                        "sandbox": {"type": "dangerFullAccess"},
                     },
                 }
             )

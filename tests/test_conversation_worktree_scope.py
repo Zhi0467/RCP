@@ -181,9 +181,7 @@ def test_legacy_scope_fingerprint_omits_empty_git_metadata_roots() -> None:
     assert ProjectWriteScope.model_validate(loaded.model_dump()).fingerprint == digest
 
 
-def test_git_metadata_root_retargeting_and_foreign_ownership_fail_closed(
-    manifest: Manifest, tmp_path: Path
-) -> None:
+def test_git_metadata_root_retargeting_fails_closed(manifest: Manifest, tmp_path: Path) -> None:
     binding = _binding(manifest, tmp_path)
     metadata = Path(binding.git_common_dir)
     metadata.rmdir()
@@ -194,18 +192,6 @@ def test_git_metadata_root_retargeting_and_foreign_ownership_fail_closed(
     metadata.symlink_to(foreign_path, target_is_directory=True)
     with pytest.raises(ValueError, match="Git metadata moved or its path was retargeted"):
         _resolve(manifest, tmp_path, binding)
-    binding = binding.model_copy(update={"git_common_dir": str(foreign_path.resolve())})
-    inventory = registered_repository_roots(manifest, project_id="project")
-    inventory.append(
-        RegisteredRepositoryRoot(
-            project_id="foreign",
-            alias="foreign",
-            machine=BACKEND_MACHINE_ID,
-            path=str(foreign_path),
-        )
-    )
-    with pytest.raises(ValueError, match="overlaps another project"):
-        _resolve(manifest, tmp_path, binding, inventory=inventory)
 
 
 def test_unbound_scope_cannot_admit_arbitrary_pointer_or_merge_exception(
@@ -282,8 +268,10 @@ def test_worktree_retains_catalog_ownership_and_data_directory_protections(
         machine=BACKEND_MACHINE_ID,
         path=binding.worktree_path,
     )
-    with pytest.raises(ValueError, match="overlaps another project"):
-        _resolve(manifest, tmp_path, binding, inventory=[*inventory, foreign])
+    assert (
+        _resolve(manifest, tmp_path, binding, inventory=[*inventory, foreign]).repository_roots
+        == []
+    )
     with pytest.raises(ValueError, match="canonical project inventory"):
         _resolve(manifest, tmp_path, binding, inventory=[])
     with pytest.raises(ValueError, match="application data directory"):
@@ -459,8 +447,8 @@ def test_episode_scope_admits_one_worktree_without_shared_ancestor_grants(
     )
     assert binding.branch in write_scope_section(scope)
     for grant in (binding.shared_path, str(Path(binding.shared_path).parent)):
-        with pytest.raises(ValueError):
-            _resolve(manifest, tmp_path, binding, machine_writable_paths=[grant])
+        scope = _resolve(manifest, tmp_path, binding, machine_writable_paths=[grant])
+        assert not any(Path(binding.shared_path).is_relative_to(r) for r in scope.granted_roots)
     Path(binding.worktree_path).rmdir()
     with pytest.raises(ValueError):
         _resolve(manifest, tmp_path, binding)

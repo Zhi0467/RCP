@@ -49,8 +49,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool, opener: str = "thre
                 "result": {
                     "thread": {"id": "fence-thread"},
                     "approvalPolicy": "never",
-                    "sandbox": {"type": "readOnly"},
-                    "activePermissionProfile": {"id": "rcp_discuss"},
+                    "sandbox": {"type": "dangerFullAccess"},
                 },
             },
         ):

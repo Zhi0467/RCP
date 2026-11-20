@@ -1396,12 +1396,12 @@
   },
   "tests/providerLogins.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 12
+      "count": 11
     }
   },
   "tests/providerLogins.test.mjs": {
     "rcp/no-comments": {
-      "count": 13
+      "count": 11
     }
   },
   "tests/providerReadiness.test.mjs": {

@@ -1,9 +1,24 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
-import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
+import {
+  ChevronRight,
+  History,
+  Inbox,
+  LoaderCircle,
+  Play,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
+import {
+  localClock,
+  timeDividerLabel,
+  turnCommands,
+  turnSteps,
+  turnStepsSummary,
+} from "../agents/agentThreadModel";
 import {
   isActiveTask,
   isNewestOfTurnClass,
+  orderTranscriptLines,
   pausedTaskText,
   taskKindLabel,
   type TaskTranscriptLine,
@@ -68,6 +83,7 @@ interface Props {
   agentProgress?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
   /** What the owner ends a line with, such as the cards its turn produced. */
   lineTrail?: (line: TaskTranscriptLine) => ReactNode;
+  stopControl?: ReactNode;
   footer?: ReactNode;
   /** A project chat's `main` or `branch:<id>`; its replies then offer a share link. */
   replyLinkGraphTarget?: string;
@@ -118,6 +134,7 @@ export function AgentWindowTranscript({
   browserNotices = true,
   agentProgress,
   lineTrail,
+  stopControl,
   footer,
   replyLinkGraphTarget,
   showModes = true,
@@ -163,8 +180,26 @@ export function AgentWindowTranscript({
   const plansByLine = renderPlanCard
     ? planCardPlacement(transcript, questions, shownElsewhere)
     : NO_PLANS;
+  const liveRows = agentProgress
+    ? []
+    : relatedTasks
+        .filter(
+          (task) =>
+            task.active &&
+            !(pendingTurn?.error && pendingTurn.clientId === task.operation_id) &&
+            !transcript.some((line) => line.running && line.taskId === task.operation_id),
+        )
+        .map((task): TaskTranscriptLine => ({
+          lineId: `task:${task.operation_id}:running`,
+          taskId: task.operation_id,
+          timestamp: task.created_at,
+          shownAt: null,
+          role: "agent",
+          text: "",
+          running: true,
+        }));
   const entries = agentWindowEntries(
-    transcript,
+    liveRows.length ? orderTranscriptLines([...transcript, ...liveRows]) : transcript,
     questions,
     plansByLine.size
       ? new Set([...shownElsewhere, ...[...plansByLine.values()].flat().map((q) => q.question_id)])
@@ -224,7 +259,7 @@ export function AgentWindowTranscript({
           isNewestOfTurnClass(task, relatedTasks)
             ? task
             : null;
-        const pendingLine = pendingTurn?.clientId === line.taskId;
+        const pendingLine = line.role === "human" && pendingTurn?.clientId === line.taskId;
         const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
         const collapsible =
           line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
@@ -277,7 +312,12 @@ export function AgentWindowTranscript({
                   agentProgress ? (
                     agentProgress(line, activeLineTask ?? undefined)
                   ) : (
-                    activeLineTask && <InlineTaskProgress task={activeLineTask} />
+                    activeLineTask && (
+                      <InlineTaskProgress
+                        task={activeLineTask}
+                        control={activeLineTask === relatedTasks.at(-1) ? stopControl : null}
+                      />
+                    )
                   )
                 ) : (
                   (line.text || plans.length > 0) && (
@@ -362,10 +402,6 @@ export function AgentWindowTranscript({
                         onResume={() => onResumeTask?.(pausedLineTask)}
                         onRetry={() => onRetryTask?.(pausedLineTask)}
                       />
-                    ) : activeLineTask ? (
-                      <InlineTaskProgress task={activeLineTask} />
-                    ) : failedTurn ? null : pendingLine ? (
-                      <InlineTaskProgress task={null} />
                     ) : null}
                   </>
                 ))
@@ -461,6 +497,11 @@ export function AgentWindowTranscript({
                 </time>
               )}
             </div>
+            {!agentProgress && pendingLine && !task && !failedTurn && (
+              <div className="agent-chat-view-line agent">
+                <InlineTaskProgress task={null} />
+              </div>
+            )}
             {compaction?.placement === "after" && (
               <CompactionDivider compactions={compaction.compactions} />
             )}
@@ -636,25 +677,59 @@ export function agentWindowEntries(
   }
   return grouped;
 }
-function InlineTaskProgress({ task }: { task: AgentTask | null }) {
-  const label = task
-    ? task.status_message || `${taskKindLabel(task.kind)} is running`
-    : "Starting task";
+function InlineTaskProgress({ task, control }: { task: AgentTask | null; control?: ReactNode }) {
+  const running = task
+    ? turnCommands(task)
+        .filter((command) => command.seconds === null)
+        .at(-1)
+    : undefined;
+  const label =
+    running?.text ??
+    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting task");
   return (
     <>
+      {task && <TurnProgress task={task} live />}
       <span className="chat-task-live" role="status" aria-live="polite" aria-atomic="true">
         {label}
       </span>
-      <details className="chat-task-activity">
-        <summary>
-          <LoaderCircle className="spin" size={12} />
-          <span>Activity</span>
-        </summary>
-        <div className="chat-task-inline running">
-          <span>{label}</span>
-        </div>
-      </details>
+      <span className="agent-turn-live">
+        <LoaderCircle className="spin" size={12} aria-hidden="true" />
+        <span aria-hidden="true">{label}</span>
+        {control}
+      </span>
     </>
+  );
+}
+
+/** A turn's steps: open while it runs, folded under one line once it settles. */
+export function TurnProgress({ task, live = false }: { task: AgentTask; live?: boolean }) {
+  const steps = turnSteps(task);
+  if (!steps.length) return null;
+  const list = (
+    <ol>
+      {steps.map((step) =>
+        step.kind === "message" ? (
+          <li key={step.id} className="turn-message">
+            <MarkdownAnswer text={step.text} />
+          </li>
+        ) : (
+          <li key={step.id}>
+            {step.text}
+            {step.seconds !== null && <span>{step.seconds}s</span>}
+          </li>
+        ),
+      )}
+    </ol>
+  );
+  if (live) return <div className="chat-progress live">{list}</div>;
+  return (
+    <details className="chat-progress">
+      <summary>
+        <ChevronRight className="chev" size={12} aria-hidden="true" />
+        {turnStepsSummary(steps)}
+      </summary>
+      {list}
+    </details>
   );
 }
 

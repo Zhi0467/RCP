@@ -766,10 +766,10 @@ def agent_tasks(
 
 
 def _without_turn_messages(response: dict[str, object]) -> dict[str, object]:
-    """A turn's in-between messages travel only with its task detail."""
+    """A settled turn's in-between messages travel only with its task detail."""
 
     status = response.get("agent_status")
-    if isinstance(status, dict):
+    if isinstance(status, dict) and not response.get("active"):
         response["agent_status"] = {**status, "messages": []}
     return response
 

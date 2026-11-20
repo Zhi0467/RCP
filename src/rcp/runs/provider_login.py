@@ -216,10 +216,7 @@ def resume_provider_account(
             return False
         if authorizer is None or not profile_for(key.provider).authentication.manages_login:
             return not key.login_id
-        setting = store.provider_login_setting(authorizer, key.provider, key.machine_id).setting
-        return (verified.member_id == authorizer and "own" in setting) or (
-            verified.member_id is None and "shared" in setting
-        )
+        return verified.permits_member(authorizer)
 
     selected = []
     for project in store.projects():
@@ -321,21 +318,32 @@ def resolved_task_login(
             store, task.project_id, str(run_on) if run_on else None
         )
     accounts = ProviderAccounts.for_store(store)
+    authorizer = task.authorized_by.user_id if task.authorized_by else None
     result, _ = accounts.resolve_launch_login(
         provider,
         machine_id,
-        task.authorized_by.user_id if task.authorized_by else None,
+        authorizer,
         session_id=task.native_session_id,
         task=task,
         inherit_parent=task.status == "queued",
     )
     if isinstance(result, LoginKey):
         return result
-    # Keep a parked machine login discoverable while it is unhealthy. Release
-    # still checks usability and re-resolves before dispatch.
-    return result.login or (
-        LoginKey(provider, machine_id, task.login_id) if task.login_id is not None else None
+    if result.login is not None or task.login_id is None:
+        return result.login
+    # Older tasks can carry a different member's login. Only an eligible login
+    # may represent this task while it waits for sign-in.
+    row = next(
+        (
+            row
+            for row in store.provider_logins(provider, machine_id)
+            if row.login_id == task.login_id
+        ),
+        None,
     )
+    if row is None or not row.permits_member(authorizer):
+        return None
+    return LoginKey(provider, machine_id, task.login_id)
 
 
 def provider_login_changed(

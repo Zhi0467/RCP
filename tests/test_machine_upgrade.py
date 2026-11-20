@@ -482,8 +482,8 @@ def test_migration_77_rekeys_host_rows_by_card_and_marks_projects(tmp_path, monk
     assert (backend, backend_card.name, backend_card.os_account) == (BACKEND, "Laptop", "alice")
     logins = {row.detail: row.machine_id for row in store.provider_login_states()}
     assert logins == {"gpu.example": GPU, "": backend, "lost.example": ""}
-    assert store.provider_login_setting("user", "codex", GPU).setting == "own"
-    assert store.provider_login_setting("user", "codex", backend).setting == "shared"
+    assert store.provider_login_setting("user", "codex", GPU).setting == "own_then_shared"
+    assert store.provider_login_setting("user", "codex", backend).setting == "shared_then_own"
     with store.connection() as connection:
         projects = {
             row["project_id"]: ProjectRecord.model_validate(dict(row))

@@ -984,24 +984,6 @@
                 }
             }
         ],
-        "./src/rcp/agents/staged_hidden_read.py": [
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 18,
-                    "endColumn": 28,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 74,
-                    "endColumn": 84,
-                    "lineCount": 1
-                }
-            }
-        ],
         "./src/rcp/agents/write_scope.py": [
             {
                 "code": "reportArgumentType",
@@ -1014,24 +996,8 @@
             {
                 "code": "reportArgumentType",
                 "range": {
-                    "startColumn": 32,
-                    "endColumn": 36,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
                     "startColumn": 19,
                     "endColumn": 29,
-                    "lineCount": 1
-                }
-            },
-            {
-                "code": "reportArgumentType",
-                "range": {
-                    "startColumn": 37,
-                    "endColumn": 43,
                     "lineCount": 1
                 }
             },

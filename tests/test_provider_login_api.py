@@ -636,8 +636,16 @@ def test_authorization_precedes_unsupported_method(member_login_api, provider, a
     assert client.post(route, json=body).status_code == 404
 
 
-@pytest.mark.parametrize("setting", ["own", "own_then_shared", "shared_then_own", "shared"])
-def test_setting_round_trip(member_login_api, setting):
+@pytest.mark.parametrize(
+    "setting,expected",
+    [
+        ("own_then_shared", "own_then_shared"),
+        ("shared_then_own", "shared_then_own"),
+        ("own", "own_then_shared"),
+        ("shared", "shared_then_own"),
+    ],
+)
+def test_setting_round_trip(member_login_api, setting, expected):
     client, store, runner, viewer = member_login_api
     saved = client.put(
         "/api/providers/claude/logins/setting",
@@ -645,12 +653,21 @@ def test_setting_round_trip(member_login_api, setting):
     )
     assert saved.status_code == 200
     assert saved.json()["resumed"] == {"checked": 2}
+    assert saved.json()["setting"] == expected
+    with store.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT setting FROM provider_login_settings WHERE user_id=? AND provider=? AND machine_id=?",
+                (viewer["id"], "claude", BACKEND_MACHINE_ID),
+            ).fetchone()[0]
+            == expected
+        )
     item = next(
         item
         for item in client.get("/api/providers/logins/settings").json()["settings"]
         if item["provider"] == "claude"
     )
-    assert item["setting"] == setting and item["stored"] is True
+    assert item["setting"] == expected and item["stored"] is True
 
 
 @pytest.mark.parametrize("setting", ["", "both_off", "OWN", None, False, [], {}])
@@ -675,7 +692,7 @@ def test_settings_get_precedence(member_login_api):
             if item["provider"] == "claude"
         )
 
-    assert current()["setting"] == "own" and current()["stored"] is False
+    assert current()["setting"] == "own_then_shared" and current()["stored"] is False
     with store.connection() as connection:
         connection.execute(
             "INSERT INTO provider_login_settings VALUES(?,?,?,?,?)",
@@ -702,7 +719,7 @@ def test_personal_login_rules(tmp_path, monkeypatch):
     client = TestClient(app)
     assert (
         client_store.provider_login_setting("member", "claude", BACKEND_MACHINE_ID).setting
-        == "shared"
+        == "shared_then_own"
     )
     assert (
         client.post(

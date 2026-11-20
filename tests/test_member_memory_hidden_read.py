@@ -1,61 +1,20 @@
 from __future__ import annotations
 
-import fnmatch
 from pathlib import Path
 
-import pytest
 
-from rcp.agents.hidden_read import HiddenFolderRejected
-
-
-@pytest.mark.parametrize("owner", [None, "alice", "bob"])
-def test_thread_stages_and_member_notes_are_hidden_except_from_their_owner(owner):
-    """Transcripts stay hidden from every run, the owner's included."""
+def test_hidden_paths_never_nest_inside_a_hidden_folder():
+    """A Linux sandbox cannot mask a path inside a folder it already masked read-only."""
     from rcp.agents.hidden_read import hidden_read_defaults
 
-    directories, _, globs = hidden_read_defaults(
+    directories, files, globs = hidden_read_defaults(
         home="/home/member",
         app_data_dir="/data",
         credential_roots=(),
         provider_login_files=(),
         control_socket_dir=None,
-        thread_owner=owner,
-        member_ids=("alice", "bob"),
     )
-    for root in ("/data/agent-threads", "/home/member/.rcp/agent-threads"):
-        for member in ("alice", "bob"):
-            stage = Path(root) / member / "stages/turn"
-            assert any(stage.is_relative_to(path) for path in directories) == (member != owner)
-            transcript = Path(root) / member / "thread.jsonl"
-            assert any(transcript.is_relative_to(path) for path in directories) or any(
-                fnmatch.fnmatch(str(transcript), pattern) for pattern in globs
-            )
-    for member in ("alice", "bob"):
-        notes = Path("/data/memory/members") / member / "MEMORY.md"
-        assert any(notes.is_relative_to(path) for path in directories) == (member != owner)
-
-
-@pytest.mark.asyncio
-async def test_thread_policy_budget_rejection_reaches_launch_owner(manifest, tmp_path, monkeypatch):
-    from rcp.agents import AgentProcessControl, hidden_read
-    from rcp.background import AgentTaskExecution
-    from rcp.machine_cards import BACKEND_MACHINE_ID
-    from rcp.runs.shared import _prepare_hidden_read_scope
-    from rcp.service import RunRequest
-    from tests.helpers import create_named_app
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    monkeypatch.setattr(hidden_read, "HIDDEN_READ_PATH_MAX_COUNT", 1)
-    execution = AgentTaskExecution(
-        operation_id="unbound", store=app.state.catalog.store, control=AgentProcessControl()
-    )
-    with pytest.raises(HiddenFolderRejected):
-        await _prepare_hidden_read_scope(
-            app.state.service,
-            RunRequest(provider="codex", run_on=BACKEND_MACHINE_ID),
-            workspace=tmp_path,
-            remote_stage=None,
-            execution=execution,
-            capability="work_auto",
-            data_dir=tmp_path / "data",
-        )
+    for path in (*directories, *files, *globs):
+        parents = [folder for folder in directories if folder != path]
+        assert not any(Path(path).is_relative_to(folder) for folder in parents), path
+    assert not any("agent-threads" in path or "/memory/" in path for path in (*directories, *globs))

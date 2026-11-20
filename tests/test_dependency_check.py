@@ -37,6 +37,12 @@ def test_platforms_bound_only_the_local_role() -> None:
     assert sudo not in required("server_install", "darwin")
 
 
+def test_missing_system_tectonic_does_not_disable_paper(monkeypatch) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "tectonic" else "/bin/test")
+    result = dependency_check.local_check(("local",))
+    assert all(program.name != "tectonic" for program in result.missing)
+
+
 def test_real_script_reports_only_programs_it_cannot_start(tmp_path: Path) -> None:
     """Runs the shipped script under the machine's real `sh`."""
     for name, body in (("uname", "echo Linux"), ("rsync", "")):

@@ -2,6 +2,7 @@ import { ResourceRuntime, store } from "./resourceRuntime";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import { api } from "../../src/core/api";
 import { AgentChatView } from "../../src/chat/AgentChatView";
 import "../../src/styles.css";
 
@@ -15,7 +16,7 @@ const profile = {
 const project = {
   id: "project",
   name: "Project",
-  agent_profiles: { project_chat: profile },
+  agent_profiles: { project_chat: profile, node_chat: profile },
   provider_readiness: {
     local: {
       codex: {
@@ -32,12 +33,14 @@ const project = {
   state_repository: "repo",
   machines: [{ alias: "local", host: null }],
 };
+const nodeChat = new URLSearchParams(location.search).has("node");
 const initialTask = {
   operation_id: "task",
   project_id: "project",
-  kind: "project_chat",
+  kind: nodeChat ? "node_chat" : "project_chat",
   request: {
     chat_id: "steering-chat",
+    ...(nodeChat ? { node_id: "test-node" } : {}),
     message: "Original prompt",
     mode: "discuss",
     trigger: "human",
@@ -49,6 +52,8 @@ const initialTask = {
   attempt: 2,
   steer_visible: true,
   can_steer: true,
+  can_pause: true,
+  current_chat_session_id: "native-session",
   steer_action_label: "Steer running turn",
   steer_turn_id: "provider-turn",
   steer_unavailable_reason: null,
@@ -80,13 +85,18 @@ function Fixture() {
         graphTarget={{ kind: "main" }}
         key={generation}
         project={project as never}
+        node={nodeChat ? ({ id: "test-node", title: "Test node" } as never) : null}
         tasks={[task] as never}
         historyMessages={history}
         chatId="steering-chat"
         presentation="workspace"
-        onStartTask={async () => {
-          throw new Error("An ordinary turn must not start");
-        }}
+        onStartTask={(kind, request, key) =>
+          api(`/api/projects/project/tasks/${kind}`, {
+            method: "POST",
+            body: JSON.stringify(request),
+            headers: { "Idempotency-Key": key! },
+          })
+        }
         onInspectTask={() => undefined}
         onOpenInbox={() => undefined}
         onRepairGraphUpdate={async () => undefined}

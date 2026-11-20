@@ -25,7 +25,6 @@ from rcp.core.models import (
 )
 from rcp.limits import (
     HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
-    HIDDEN_READ_PATH_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_READINESS_TTL_SECONDS,
 )
@@ -37,32 +36,9 @@ from rcp.transport.ssh import control_directory_candidate
 if TYPE_CHECKING:
     from rcp.storage.models import SpaceMachineRecord
 
-# Case-insensitive globs over variable names. Tool calls keep every other
-# variable, so a lab's own settings, proxies, schedulers, GPUs and toolchains
-# work unchanged; names that commonly carry credentials are dropped.
-HIDDEN_READ_ENV_DENY_LIST = (
-    "*_TOKEN*",
-    "TOKEN",
-    "*SECRET*",
-    "*PASSWORD*",
-    "*PASSWD*",
-    "*PASSPHRASE*",
-    "*CREDENTIAL*",
-    "*API_KEY*",
-    "*APIKEY*",
-    "*ACCESS_KEY*",
-    "*PRIVATE_KEY*",
-    "*_KEY",
-    "*COOKIE*",
-    "*DATABASE_URL*",
-    "*INDEX_URL*",
-    "*_DSN",
-    "AWS_*",
-    "AZURE_*",
-    # Shell startup hooks would run before the wrapped command.
-    "BASH_ENV",
-    "ENV",
-)
+# Only the provider sign-in RCP itself exports; a lab's own tokens, cloud and
+# package-index settings reach tool calls unchanged.
+HIDDEN_READ_ENV_DENY_LIST = ("CLAUDE_CODE_OAUTH_TOKEN",)
 # Command-mailbox credentials are explicit command arguments, not environment variables.
 WEBKIT_READ_DENY_PATHS = tuple(
     f"~/Library/{directory}/{bundle}{suffix}"
@@ -113,8 +89,6 @@ def hidden_read_defaults(
     provider_login_files: tuple[str, ...],
     control_socket_dir: str | None,
     login_home_credentials: tuple[str, ...] = (),
-    thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Credential roots name provider stores, never a deploy-key parent.
 
@@ -170,33 +144,6 @@ def hidden_read_defaults(
                 glob.escape(app_data_dir) + "/run-stage/backup-*",
             )
         )
-    from rcp.agents.memory_files import member_memory_root
-
-    thread_roots = [home + "/.rcp/agent-threads"]
-    if app_data_dir:
-        thread_roots.append(app_data_dir + "/agent-threads")
-    for root in thread_roots:
-        if thread_owner is None:
-            directories.append(root)
-        else:
-            # Reuse the member-id validator; identity comes from the thread row.
-            member_memory_root(PurePosixPath(root), thread_owner)
-            # The owner keeps its stages. Every member's transcripts, including those of
-            # members who join mid-turn, reach a run only as prompt text.
-            globs.append(glob.escape(root) + "/*/*.jsonl")
-            for member in sorted(set(member_ids) - {thread_owner}):
-                member_memory_root(PurePosixPath(root), member)
-                directories.append(root + "/" + member)
-    if app_data_dir:
-        # Member memory is private: only the owner's own thread turns read it.
-        memory = PurePosixPath(app_data_dir) / "memory"
-        if thread_owner is None:
-            directories.append(str(memory / "members"))
-        else:
-            directories.extend(
-                str(member_memory_root(memory, member))
-                for member in sorted(set(member_ids) - {thread_owner})
-            )
     return tuple(sorted(set(directories))), tuple(sorted(set(files))), tuple(sorted(set(globs)))
 
 
@@ -207,18 +154,17 @@ class HiddenFolderRejected(ValueError):
         super().__init__(f"{code}: {path}")
 
 
-def _absolute(path: str) -> None:
-    if (
-        not isinstance(path, str)
-        or not path
-        or len(path) > HIDDEN_READ_PATH_MAX_LENGTH
-        or not path.startswith("/")
-        or path.startswith("//")
-        or str(PurePosixPath(path)) != path
-        or ".." in path.split("/")
-        or any(ord(char) < 32 or ord(char) == 127 for char in path)
-    ):
-        raise HiddenFolderRejected(code="invalid_hidden_folder", path=str(path))
+def _absolute(path: str) -> bool:
+    return (
+        isinstance(path, str)
+        and bool(path)
+        and len(path) <= HIDDEN_READ_PATH_MAX_LENGTH
+        and path.startswith("/")
+        and not path.startswith("//")
+        and str(PurePosixPath(path)) == path
+        and ".." not in path.split("/")
+        and not any(ord(char) < 32 or ord(char) == 127 for char in path)
+    )
 
 
 def _overlap(left: str, right: str) -> bool:
@@ -247,18 +193,6 @@ SYSTEM_RUNTIME_ROOTS = (
 )
 
 
-def _validated_folders(folders: list[str], protected_roots: tuple[str, ...]) -> list[str]:
-    if len(folders) > HIDDEN_READ_PATH_MAX_COUNT:
-        raise HiddenFolderRejected(code="too_many_hidden_folders")
-    for folder in folders:
-        _absolute(folder)
-        if any(_overlap(folder, root) for root in protected_roots):
-            raise HiddenFolderRejected(code="protected_root_overlap", path=folder)
-    if len(folders) != len(set(folders)):
-        raise HiddenFolderRejected(code="duplicate_hidden_folder")
-    return sorted(folders)
-
-
 def validate_machine_hidden_folders(
     folders: list[str], *, protected_roots: tuple[str, ...]
 ) -> list[str]:
@@ -266,7 +200,14 @@ def validate_machine_hidden_folders(
         raise HiddenFolderRejected(code="too_many_hidden_folders")
     # Lexical only: callers canonicalize on the execution host first, so a
     # path is never resolved through this backend's symlinks.
-    return _validated_folders(folders, protected_roots)
+    for folder in folders:
+        if not _absolute(folder):
+            raise HiddenFolderRejected(code="invalid_hidden_folder", path=str(folder))
+        if any(_overlap(folder, root) for root in protected_roots):
+            raise HiddenFolderRejected(code="protected_root_overlap", path=folder)
+    if len(folders) != len(set(folders)):
+        raise HiddenFolderRejected(code="duplicate_hidden_folder")
+    return sorted(folders)
 
 
 def _facts(remote_stage: RemoteRunStage | None, paths: list[str]) -> dict:
@@ -315,8 +256,6 @@ def resolve_hidden_read_scope(
     key_evidence: tuple[HiddenReadKeyEvidence, ...],
     browser_enabled: bool,
     machine_provider_paths: Sequence[str] = (),
-    thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
 ) -> HiddenReadScope:
     return resolve_machine_hidden_read_scope(
         machine=machine,
@@ -331,14 +270,9 @@ def resolve_hidden_read_scope(
         key_evidence=key_evidence,
         browser_enabled=browser_enabled,
         machine_provider_paths=machine_provider_paths,
-        thread_owner=thread_owner,
-        member_ids=member_ids,
         repository_paths=tuple(
             item.path for item in manifest.repositories if item.machine == machine.machine_id
         ),
-        project_transcript_roots=(str(manifest.research_dir / "chat"),)
-        if remote_stage is None
-        else (),
     )
 
 
@@ -356,17 +290,16 @@ def resolve_machine_hidden_read_scope(
     key_evidence: tuple[HiddenReadKeyEvidence, ...],
     browser_enabled: bool,
     machine_provider_paths: Sequence[str] = (),
-    thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
     repository_paths: tuple[str, ...] = (),
-    project_transcript_roots: tuple[str, ...] = (),
 ) -> HiddenReadScope:
     """Resolve account policy independently of whether a project admits writes."""
     if bool(machine.host) != (remote_stage is not None) or (
         remote_stage is not None and remote_stage.host != machine.host
     ):
         raise ValueError("hidden-read execution host does not match the stage")
-    _validated_folders(machine_hidden_folders, ())
+    machine_hidden_folders = [
+        folder for folder in dict.fromkeys(machine_hidden_folders) if _absolute(folder)
+    ]
     facts = _facts(remote_stage, [])
     home = facts["home"]
     if machine.os_account and machine.os_account != facts["os_account"]:
@@ -381,14 +314,10 @@ def resolve_machine_hidden_read_scope(
     directories, files, globs = hidden_read_defaults(
         home=home,
         app_data_dir=data_dir,
-        thread_owner=thread_owner,
-        member_ids=member_ids,
         credential_roots=(),
         provider_login_files=tuple(facts["provider_login_files"]),
         control_socket_dir=str(control_directory_candidate()) if remote_stage is None else None,
-        # A wildcard keeps a home added after this launch covered. Codex expands
-        # deny globs with ripgrep, which anchors `*/name` to its own working
-        # directory; `**/name` matches wherever the run starts.
+        # A wildcard keeps a home added after this launch covered.
         login_home_credentials=tuple(
             f"{provider}/**/{glob.escape(name)}"
             for name in profile_for(provider).login_home_credentials
@@ -396,26 +325,6 @@ def resolve_machine_hidden_read_scope(
         if "glob_rules" not in profile_for(provider).hidden_read_gaps
         else (),
     )
-    # Private history is display data. Fresh thread sessions receive an explicit
-    # bounded prompt seed, so even their own transcript need not be tool-readable.
-    transcript_roots = {
-        str(PurePosixPath(item.path) / ".research" / "chat")
-        for item in repository_inventory
-        if item.machine == machine.machine_id
-    }
-    transcript_roots.update(project_transcript_roots)
-    transcript_roots.update(
-        str(PurePosixPath(path) / ".research" / "chat") for path in repository_paths
-    )
-    if remote_stage is None and data_dir:
-        transcript_roots.update(
-            str(path / ".research" / "chat")
-            for path in (Path(data_dir) / "state-cache").glob("*")
-            if path.is_dir()
-        )
-    globs += tuple(glob.escape(root) + "/private-*.jsonl" for root in sorted(transcript_roots))
-    if len(set((*directories, *files, *globs))) > HIDDEN_READ_PATH_MAX_COUNT:
-        raise HiddenFolderRejected(code="too_many_hidden_folders")
     if data_dir and remote_stage is None:
         storage = installed_server_storage(Path(data_dir))
         if storage:
@@ -461,9 +370,7 @@ def resolve_machine_hidden_read_scope(
     # A saved folder can come to cover a required path later (a provider moved
     # in, a checkout appeared). Drop only that folder; the defaults stay hidden.
     requested = list(dict.fromkeys(canonical[path] for path in machine_hidden_folders))
-    folders = _validated_folders(
-        [folder for folder in requested if not any(_overlap(folder, r) for r in protected)], ()
-    )
+    folders = [folder for folder in requested if not any(_overlap(folder, r) for r in protected)]
     reasons = set()
     if profile_for(provider).hidden_read_gaps:
         reasons.add("provider_native_tools_uncovered")
@@ -488,7 +395,6 @@ def resolve_machine_hidden_read_scope(
             | {canonical[key.path] for key in key_evidence if key.visibility == "hidden"}
         )
     )
-    absent = {canonical[path] for path in resolved["absent"]}
     glob_folders = {
         glob.escape(canonical[prefix]) + suffix: canonical[prefix]
         for pattern in globs
@@ -527,14 +433,6 @@ def resolve_machine_hidden_read_scope(
         key_evidence=tuple(
             HiddenReadKeyEvidence.model_validate({**key.model_dump(), "path": canonical[key.path]})
             for key in key_evidence
-        ),
-        absent_entries=tuple(
-            sorted(
-                {
-                    *(path for path in (*filtered_dirs, *filtered_files) if path in absent),
-                    *(pattern for pattern in filtered_globs if glob_folders[pattern] in absent),
-                }
-            )
         ),
         enforcement=HiddenReadStatus(
             status="unhidden" if reasons else "enforced", reasons=tuple(sorted(reasons))

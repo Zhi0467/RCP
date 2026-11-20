@@ -131,7 +131,7 @@ def test_an_ended_turn_leaves_nothing_running(manifest, tmp_path, fails: bool) -
     assert [item.state for item in status.subagents] == ["failed" if fails else "completed"]
 
 
-def test_in_between_messages_are_written_at_once_and_only_the_task_detail_carries_them(
+def test_in_between_messages_are_written_at_once_and_list_rows_carry_them_while_running(
     manifest, tmp_path
 ) -> None:
     app, request = _running_turn(manifest, tmp_path)
@@ -158,13 +158,19 @@ def test_in_between_messages_are_written_at_once_and_only_the_task_detail_carrie
     client = signed_in_client(app)
     detail = client.get(f"/api/projects/{project_id}/tasks/turn").json()
     assert [item["text"] for item in detail["agent_status"]["messages"]] == texts()
-    (row,) = [
-        row
-        for row in client.get(f"/api/projects/{project_id}/tasks").json()
-        if row["operation_id"] == "turn"
-    ]
-    assert row["agent_status"]["messages"] == []
-    assert row["agent_status"]["context_tokens"] == 10
+
+    def listed() -> dict:
+        (row,) = [
+            row
+            for row in client.get(f"/api/projects/{project_id}/tasks").json()
+            if row["operation_id"] == "turn"
+        ]
+        return row["agent_status"]
+
+    assert [item["text"] for item in listed()["messages"]] == texts()
+    store.fail_agent_task("turn", "stopped")
+    assert listed()["messages"] == []
+    assert listed()["context_tokens"] == 10
 
 
 def test_the_newest_messages_are_kept_and_a_long_one_is_cut() -> None:

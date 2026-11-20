@@ -22,11 +22,9 @@ from rcp.agents.command_protocol import CommandResponse, staged_command_broker_s
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
-from rcp.core.models import HiddenReadScope, HiddenReadStatus
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
-from rcp.providers.codex.profile import CODEX_READ_DENY_PATHS, _codex_read_denials
 from rcp.storage.models import MACHINE_LOGIN_ID
 
 
@@ -540,6 +538,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
             machine_id=BACKEND_MACHINE_ID,
             host="",
             capability="scratch_patch",
+            runtime_id="exec",
         )
     ]
 
@@ -1076,13 +1075,25 @@ def test_claude_session_limit_result_is_a_terminal_error() -> None:
     ).explicit_terminal
 
 
-def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None:
-    """`codex exec resume` has no --sandbox flag and defaults to read-only.
+_CODEX_UNSANDBOXED = [
+    "--config",
+    'approval_policy="never"',
+    "--config",
+    'sandbox_mode="danger-full-access"',
+]
 
-    A resumed run still owes RCP a patch file, so the mode travels as config.
 
-    No --cd on resume, because the writable root is the process working directory.
-    """
+def _codex_runs_unsandboxed(command: list[str]) -> bool:
+    joined = "\n".join(command)
+    return (
+        "\n".join(_CODEX_UNSANDBOXED) in joined
+        and "--sandbox" not in command
+        and not any(item.startswith(("permissions=", "default_permissions=")) for item in command)
+    )
+
+
+def test_codex_resume_runs_unsandboxed_in_its_process_directory() -> None:
+    """`codex exec resume` has no --cd; the process working directory is the workspace."""
 
     command = _command(
         "codex",
@@ -1096,10 +1107,8 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     )
 
     assert command[:4] == ["codex", "exec", "resume", "--json"]
-    assert "--sandbox" not in command
-    assert 'sandbox_mode="workspace-write"' in command
+    assert _codex_runs_unsandboxed(command)
     assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" in command
     assert "--cd" not in command
     assert "--add-dir" not in command
     assert command[-2:] == ["019f0000-0000-7000-8000-000000000000", "-"]
@@ -1109,8 +1118,7 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     ("capability", "scratch"),
     [("scratch_patch", "/data/run-stage/operation"), ("discuss", "/data/conversations/chat-1")],
 )
-def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scratch) -> None:
-    """A named profile carries Discuss's read denials into exec and app-server alike."""
+def test_codex_new_session_runs_unsandboxed_in_its_scratch_folder(capability, scratch) -> None:
     command = _command(
         "codex",
         "write patch.json",
@@ -1119,20 +1127,11 @@ def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scrat
         capability=capability,
     )
     assert command[:3] == ["codex", "exec", "--json"]
-    if capability == "discuss":
-        assert "--sandbox" not in command
-        assert 'default_permissions="rcp_discuss"' in command
-        profile = next(item for item in command if item.startswith("permissions={"))
-        assert f'workspace_roots={{"{scratch}"=true}}' in profile
-        assert "network={enabled=true}" in profile
-    else:
-        assert command[command.index("--sandbox") + 1] == "workspace-write"
-        assert "sandbox_workspace_write.network_access=true" in command
+    assert _codex_runs_unsandboxed(command)
     assert command[command.index("--cd") + 1] == scratch
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
     assert 'web_search="live"' in command
-    assert 'approval_policy="never"' in command
     assert "--output-schema" not in command
     assert command[-1] == "-"
     assert "--add-dir" not in command
@@ -1140,19 +1139,18 @@ def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scrat
 
 
 @pytest.mark.parametrize(
-    ("session_id", "read_dirs", "write_dirs"),
+    ("capability", "session_id", "read_dirs", "write_dirs"),
     [
-        (None, [Path("/data/chat-stage/inputs")], [Path("/project/repo-a")] * 2),
-        ("019f0000-0000-7000-8000-000000000002", [], [Path("/project/repo-a")]),
+        ("work_auto", None, [Path("/data/chat-stage/inputs")], [Path("/project/repo-a")] * 2),
+        ("work_auto", "019f0000-0000-7000-8000-000000000002", [], [Path("/project/repo-a")]),
+        ("orchestrate", None, [], [Path("/project/repo-a")]),
     ],
-    ids=["new", "resume"],
+    ids=["new", "resume", "orchestrate"],
 )
-def test_codex_work_uses_exact_project_permission_profile(
-    session_id, read_dirs, write_dirs
-) -> None:
+def test_codex_work_runs_unsandboxed(capability, session_id, read_dirs, write_dirs) -> None:
     stage = "/data/chat-stage"
     scope = _project_write_scope(
-        capability="work_auto",
+        capability=capability,
         stage=stage,
         repository_paths=["/project/repo-a"],
     )
@@ -1164,23 +1162,12 @@ def test_codex_work_uses_exact_project_permission_profile(
         session_id=session_id,
         write_dirs=write_dirs,
         write_scope=scope,
-        capability="work_auto",
+        capability=capability,
         provider_version="0.147.0",
     )
 
-    assert "--sandbox" not in command
-    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert _codex_runs_unsandboxed(command)
     assert 'web_search="live"' in command
-    assert not any(item.startswith("sandbox_mode=") for item in command)
-    assert not any(item.startswith("approval_policy=") for item in command)
-    assert not any(item.startswith("approvals_reviewer=") for item in command)
-    assert 'default_permissions="rcp_project"' in command
-    assert (
-        'permissions={rcp_project={workspace_roots={"/data/chat-stage"=true,'
-        '"/project/repo-a"=true},filesystem={":root"="read",":workspace_roots"='
-        '{"."="write",".git"="write"},'
-        '"/project/repo-a/.research"="read",' + _codex_read_denials() + "},network={enabled=true}}}"
-    ) in command
     if session_id:
         assert command[:4] == ["codex", "exec", "resume", "--json"]
         assert "--cd" not in command
@@ -1189,144 +1176,6 @@ def test_codex_work_uses_exact_project_permission_profile(
         assert command[command.index("--cd") + 1] == stage
     assert "--add-dir" not in command
     assert command[-1] == "-"
-
-
-def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
-    """The canonical `.research` RCP stages as an agent input must stay readable.
-
-    `_stage_context_paths` hands every graph agent `<state repo>/.research/graph.json`
-    and `research.md`, and the task contract orders it to read both first. Codex reads
-    a `deny` policy as no access at all, so denying `.research` revoked those reads and
-    the agent could only report a Blocker. Invariant 4 protects canonical state from
-    writes, which `read` already does.
-
-    Only the desktop app's own storage is unreadable.
-    """
-    state_repository = "/project/repo-a"
-    scope = _project_write_scope(
-        capability="work_auto",
-        stage="/data/chat-stage",
-        repository_paths=[state_repository],
-    )
-    command = _command(
-        "codex",
-        "run the experiment",
-        cwd=Path("/data/chat-stage"),
-        write_dirs=[Path(state_repository)],
-        write_scope=scope,
-        capability="work_auto",
-        provider_version="0.138.0",
-    )
-    permission_profile = next(item for item in command if item.startswith("permissions={"))
-
-    assert f"{state_repository}/.research" in scope.protected_write_paths
-    assert '".git"="write"' in permission_profile
-    assert all(f'"{path}"="read"' in permission_profile for path in scope.protected_write_paths)
-    assert permission_profile.count('"deny"') == len(CODEX_READ_DENY_PATHS)
-
-
-def test_codex_is_told_only_about_paths_that_exist() -> None:
-    """Codex's Linux sandbox makes a stand-in file for a missing path it must hide or
-    protect. A killed command leaves it behind, and every later sandbox fails to start.
-
-    No relative rule either: it named `.research` inside every writable root.
-    """
-    scope = ProjectWriteScope.create(
-        project_id="project-1",
-        machine_id=BACKEND_MACHINE_ID,
-        capability="work_auto",
-        stage_root="/data/chat-stage",
-        workspace_root="/data/chat-stage",
-        repositories=[
-            WritableRepositoryRoot(alias=name, machine="local", path=f"/project/{name}")
-            for name in ("repo-a", "repo-b")
-        ],
-        protected_write_paths=["/project/repo-a/.research", "/project/repo-b/.research"],
-        absent_protected_paths=["/project/repo-b/.research"],
-    )
-    hidden = HiddenReadScope(
-        machine_id=BACKEND_MACHINE_ID,
-        os_account="rcp",
-        hidden_files=("/home/rcp/.codex/auth.json", "/home/rcp/.config/rcp/claude-setup-token"),
-        hidden_globs=("/data/rcp.sqlite3*",),
-        absent_entries=("/home/rcp/.config/rcp/claude-setup-token",),
-        enforcement=HiddenReadStatus(status="enforced", reasons=()),
-    )
-    command = _command(
-        "codex",
-        "run the experiment",
-        cwd=Path("/data/chat-stage"),
-        write_dirs=[Path("/project/repo-a"), Path("/project/repo-b")],
-        write_scope=scope,
-        hidden_read_scope=hidden,
-        capability="work_auto",
-        provider_version="0.147.0",
-    )
-    profile = next(item for item in command if item.startswith("permissions={"))
-
-    assert '"/project/repo-a/.research"="read"' in profile
-    assert '"/home/rcp/.codex/auth.json"="deny"' in profile
-    assert '"/data/rcp.sqlite3*"="deny"' in profile
-    assert "/project/repo-b/.research" not in profile
-    assert "claude-setup-token" not in profile
-    assert '".research"' not in profile
-
-
-def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
-    stage = "/data/campaign-stage"
-    scope = _project_write_scope(
-        capability="orchestrate",
-        stage=stage,
-        repository_paths=["/project/repo-b"],
-    )
-    command = _command(
-        "codex",
-        "orchestrate the campaign",
-        cwd=Path(stage),
-        read_dirs=[Path("/project/repo-a")],
-        write_dirs=[Path("/project/repo-b")],
-        write_scope=scope,
-        capability="orchestrate",
-        provider_version="0.138.0",
-    )
-
-    assert "--dangerously-bypass-approvals-and-sandbox" not in command
-    assert "--sandbox" not in command
-    assert not any(item.startswith("sandbox_mode=") for item in command)
-    assert not any(item.startswith("approval_policy=") for item in command)
-    permission_profile = next(item for item in command if item.startswith("permissions={"))
-    assert '"/data/campaign-stage"=true' in permission_profile
-    assert '"/project/repo-b"=true' in permission_profile
-    assert "/project/repo-a" not in permission_profile
-    assert '":root"="read"' in permission_profile
-    assert '"/project/repo-b/.research"="read"' in permission_profile
-    assert "network={enabled=true}" in permission_profile
-    assert command[-1] == "-"
-
-
-def test_codex_graph_only_orchestrate_accepts_no_repository_write_roots() -> None:
-    stage = "/data/branch-merge-stage/workspace"
-    scope = _project_write_scope(
-        capability="orchestrate",
-        stage=stage,
-        repository_paths=[],
-    )
-    command = _command(
-        "codex",
-        "merge the graph branch",
-        cwd=Path(stage),
-        read_dirs=[Path("/data/branch-merge-stage/inputs")],
-        write_dirs=[],
-        write_scope=scope,
-        capability="orchestrate",
-        provider_version="0.147.0",
-    )
-
-    permission_profile = next(item for item in command if item.startswith("permissions={"))
-    assert f"{json.dumps(stage)}=true" in permission_profile
-    assert "/project/" not in permission_profile
-    assert command[command.index("--cd") + 1] == stage
-    assert "--add-dir" not in command
 
 
 @pytest.mark.parametrize("provider", PROVIDER_IDS)
@@ -1353,9 +1202,7 @@ def test_work_like_provider_commands_require_a_resolved_project_scope(
     ("provider", "provider_version", "required_version"),
     [
         ("codex", "0.137.9", "0.138.0"),
-        ("codex", None, "0.138.0"),
         ("claude", "2.1.232", "2.1.233"),
-        ("claude", None, "2.1.233"),
     ],
 )
 def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
@@ -1385,6 +1232,27 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
             capability="work_auto",
             provider_version=provider_version,
         )
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_work_like_provider_commands_launch_with_unknown_version(provider: str) -> None:
+    scope = _project_write_scope(
+        capability="work_auto",
+        stage="/data/task-stage",
+        repository_paths=["/project/repo-a"],
+    )
+
+    command = _command(
+        provider,
+        "operate on the project",
+        cwd=Path("/data/task-stage"),
+        write_dirs=[Path("/project/repo-a")],
+        write_scope=scope,
+        capability="work_auto",
+        provider_version=None,
+    )
+
+    assert command
 
 
 def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:

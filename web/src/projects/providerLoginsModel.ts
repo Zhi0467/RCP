@@ -1,62 +1,7 @@
-import type {
-  ProviderLoginAccount,
-  ProviderLoginSettingValue,
-  ProviderLoginState,
-} from "../core/types";
+import type { ProviderLoginAccount, ProviderLoginState } from "../core/types";
 
 /** One of a member's two groups: their own login, or the machine's shared logins. */
 export type Tray = "own" | "shared";
-
-/** How one stored setting draws: tray order, switches, and what Swap would store. */
-export interface TrayLayout {
-  order: [Tray, Tray];
-  on: Record<Tray, boolean>;
-  /** The only group that is on; its switch cannot turn off. */
-  locked: Tray | null;
-  /** The value Swap stores; null when one group is on and Swap is disabled. */
-  swap: ProviderLoginSettingValue | null;
-}
-
-const LAYOUTS: Record<ProviderLoginSettingValue, TrayLayout> = {
-  own_then_shared: {
-    order: ["own", "shared"],
-    on: { own: true, shared: true },
-    locked: null,
-    swap: "shared_then_own",
-  },
-  shared_then_own: {
-    order: ["shared", "own"],
-    on: { own: true, shared: true },
-    locked: null,
-    swap: "own_then_shared",
-  },
-  own: { order: ["own", "shared"], on: { own: true, shared: false }, locked: "own", swap: null },
-  shared: {
-    order: ["shared", "own"],
-    on: { own: false, shared: true },
-    locked: "shared",
-    swap: null,
-  },
-};
-
-export function trayLayout(setting: ProviderLoginSettingValue): TrayLayout {
-  return LAYOUTS[setting];
-}
-
-/**
- * The value a switch stores, or null when it would leave both groups off. Turning
- * the other group back on stores "the group that is on, then the other".
- */
-export function switchedSetting(
-  setting: ProviderLoginSettingValue,
-  tray: Tray,
-  on: boolean,
-): ProviderLoginSettingValue | null {
-  const layout = LAYOUTS[setting];
-  if (layout.on[tray] === on) return setting;
-  if (!on) return layout.locked === tray ? null : tray === "own" ? "shared" : "own";
-  return tray === "own" ? "shared_then_own" : "own_then_shared";
-}
 
 export type CardState = "draining" | "signing_in" | "signed_out" | "limited" | "ready";
 
