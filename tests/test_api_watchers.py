@@ -208,3 +208,61 @@ def test_stop_watching_releases_a_live_observer_only_after_its_experiment_ended(
     assert response.status_code == 200, response.text
     watcher = store.watcher("observer")
     assert watcher.state == "cancelled" and watcher.cancelled_by == "human"
+
+
+def test_a_member_sees_and_cancels_a_space_agents_job_by_agent_route(manifest, tmp_path) -> None:
+    from tests.helpers import authorized_human
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    actor = authorized_human(store)
+    space = next(
+        item
+        for item in store.ensure_agent_threads(actor.user_id, [], default_names=("Pip",))
+        if item.kind == "space"
+    )
+    _turn(store, store.space_id, "space-origin", chat_id=space.thread_id)
+    marker = tmp_path / "cancelled"
+    now = store.now()
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="space-job",
+            agent_id=space.thread_id,
+            project_id=store.space_id,
+            purpose="Training job",
+            origin_turn_id="space-origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="space-job",
+                    watcher_id="space-job",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="false",
+                    log_path=str(tmp_path / "job.log"),
+                    cwd=str(tmp_path),
+                    cancel_command=f"touch {marker}",
+                    created_at=now,
+                )
+            ],
+        )
+    )
+    project_id = app.state.default_project_id
+    _turn(store, project_id, "project-origin", chat_id="chat")
+    _external(store, project_id, "project-job", "project-origin")
+    client = signed_in_client(app)
+    base = f"/api/agent-threads/{space.thread_id}/watchers"
+
+    rows = client.get(base)
+    assert rows.status_code == 200, rows.text
+    assert [(row["watcher_id"], row["can_cancel"]) for row in rows.json()] == [("space-job", True)]
+    foreign = client.post(f"{base}/project-job/cancel", json={})
+    assert foreign.status_code == 404
+
+    response = client.post(f"{base}/space-job/cancel", json={})
+
+    assert response.status_code == 200, response.text
+    assert marker.exists()
+    watcher = store.watcher("space-job")
+    assert watcher is not None
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"

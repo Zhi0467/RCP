@@ -714,7 +714,7 @@ def test_resume_retry_and_repair_capture_the_current_actor_instead_of_parent(
         assert captured[action].display_name == "Second"
 
 
-def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_ambiguity(
+def test_automatic_watcher_delivery_inherits_one_origin_authorizer_per_member_wake(
     manifest,
     tmp_path,
     monkeypatch,
@@ -786,12 +786,18 @@ def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_a
     for name in ("same", "mixed", "legacy", "missing"):
         delivery.deliver_ready("watcher-chat", armed[name])
 
-    assert captured == [first_authorizer]
-    for watcher_id in ("mixed-first", "mixed-second", "legacy", "missing"):
+    assert captured == [first_authorizer, first_authorizer]
+    for watcher_id in ("legacy", "missing"):
         closed = store.watcher(watcher_id)
         assert closed is not None and closed.delivery_closed_at is not None
         assert closed.cancel_reason
-    assert store.watcher("same-authorizer-one").delivery_closed_at is None
+    for watcher_id in ("same-authorizer-one", "mixed-first", "mixed-second"):
+        ready = store.watcher(watcher_id)
+        assert ready is not None and ready.delivery_closed_at is None
+
+    delivery.deliver_ready("watcher-chat", armed["mixed"][1:])
+
+    assert captured[-1] == second_authorizer
 
 
 def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(

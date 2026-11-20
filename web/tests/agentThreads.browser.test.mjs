@@ -3177,7 +3177,9 @@ test("a thread's job watchers show in the chat watcher bar, on a phone too", asy
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       await mockApi(page, []);
-      await page.route("**/api/projects/p1/watchers", (route) => route.fulfill({ json: watchers }));
+      await page.route("**/api/agent-threads/moss/watchers", (route) =>
+        route.fulfill({ json: watchers }),
+      );
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
       await thread.getByRole("button", { name: "3 active watchers" }).click();

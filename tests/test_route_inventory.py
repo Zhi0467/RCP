@@ -126,6 +126,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/agent-threads/{thread_id}/voice-entries"),
     (("GET",), "/api/agent-threads/{thread_id}/memory"),
     (("GET",), "/api/agent-threads/{thread_id}/schedules"),
+    (("GET",), "/api/agent-threads/{thread_id}/watchers"),
+    (("POST",), "/api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel"),
     (("DELETE",), "/api/agent-threads/{thread_id}/schedules/{schedule_id}"),
     (("POST",), "/api/agent-threads/{thread_id}/schedules/{schedule_id}/enable"),
     (("POST",), "/api/agent-threads/{thread_id}/schedules/{schedule_id}/pause"),
@@ -425,6 +427,8 @@ _LEGACY_AGENT_ROUTES: frozenset[RouteEntry] = frozenset(
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
+        (("GET",), "/api/projects/{project_id}/watchers"),
+        (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/cancel"),
     }
 )
 
@@ -449,7 +453,7 @@ def test_no_new_agent_action_lives_under_two_prefixes(route_app: FastAPI) -> Non
     inventory = frozenset(_route_entry(route) for route in _walk_routes(route_app.routes))
     assert not _duplicated_agent_actions(inventory)
     assert inventory >= _LEGACY_AGENT_ROUTES, "delete the retired aliases"
-    assert len(_LEGACY_AGENT_ROUTES) <= 23
+    assert len(_LEGACY_AGENT_ROUTES) <= 25
 
 
 @pytest.mark.parametrize("action", ["turns", "queue", "archive", "fork", "stop-and-send"])
@@ -504,8 +508,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 353
+    assert len(_FROZEN_ROUTE_INVENTORY) == 355
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 349
+    assert sum(isinstance(route, APIRoute) for route in routes) == 351
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

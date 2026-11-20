@@ -104,6 +104,7 @@ from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
 from rcp.api.voice import router as voice_router
 from rcp.api.voice import thread_router as voice_thread_router
+from rcp.api.watchers import agent_router as agent_watchers_router
 from rcp.api.watchers import router as watchers_router
 from rcp.api.work_episodes import MemberEpisodeControls
 from rcp.artifact_import import import_project_artifacts
@@ -2926,6 +2927,7 @@ def create_app(
     app.include_router(tasks_router)
     app.include_router(agent_tasks_router)
     app.include_router(watchers_router)
+    app.include_router(agent_watchers_router)
     app.include_router(terminals_router)
 
     web_dist = web_dist_path()

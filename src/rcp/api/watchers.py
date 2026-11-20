@@ -9,6 +9,7 @@ from rcp.api.dependencies import (
     get_graph_service,
     get_identity_access,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -22,6 +23,7 @@ from rcp.storage.models import AgentTaskRecord, WatcherCheckRecord, WatcherRecor
 from rcp.watchers import cancel_watched_job
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+agent_router = APIRouter()
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
@@ -73,14 +75,53 @@ def cancel_job(
     """Run the job's saved Cancel command; an accepted Cancel ends its watcher too."""
 
     human = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
+    return _cancel(store, catalog.resolve_project_id(project_id), watcher_id, human.user_id)
+
+
+@agent_router.get("/api/agent-threads/{thread_id}/watchers")
+def agent_watchers(
+    thread_id: str, request: Request, *, store: StoreDependency, identity_access: IdentityDependency
+) -> list[dict[str, object]]:
+    """Every watcher one agent armed, Space agents included."""
+
+    from rcp.api.agent_threads import accessible_agent
+
+    accessible_agent(store, thread_id, identity_access.acting_user(request).user_id)
+    return watcher_check_views(store, store.agent_watchers(thread_id))
+
+
+@agent_router.post("/api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel")
+def cancel_agent_job(
+    thread_id: str,
+    watcher_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> dict[str, object]:
+    """Cancel one of this agent's jobs; a project agent's Cancel keeps the write fence."""
+
+    from rcp.api.agent_threads import accessible_agent
+
+    human = identity_access.require_patch_capable_identity(request)
+    accessible_agent(store, thread_id, human.user_id)
+    watcher = store.watcher_of_check(watcher_id)
+    if watcher is None or watcher.agent_id != thread_id:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    if watcher.project_id == store.space_id:
+        return _cancel(store, watcher.project_id, watcher_id, human.user_id)
+    with project_write_admission(watcher.project_id, request) as project_id:
+        return _cancel(store, project_id, watcher_id, human.user_id)
+
+
+def _cancel(store: AppStore, project_id: str, check_id: str, user_id: str) -> dict[str, object]:
     try:
-        watcher = cancel_watched_job(store, project_id, watcher_id, human.user_id)
+        watcher = cancel_watched_job(store, project_id, check_id, user_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Watcher not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _single_view(store, watcher, watcher_id)
+    return _single_view(store, watcher, check_id)
 
 
 @router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
@@ -284,4 +325,4 @@ def _delivery_label(watcher: WatcherRecord, status: str) -> str:
     return "Not delivered"
 
 
-__all__ = ["project_watchers", "router", "watcher_check_views"]
+__all__ = ["agent_router", "project_watchers", "router", "watcher_check_views"]

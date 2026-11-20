@@ -685,6 +685,13 @@ could not run. Otherwise the route claims and executes the saved command once.
 Its result is an action receipt, not a separate cancelled watcher state. Errors
 are returned on the watcher and allow an explicit retry.
 
+`GET /api/agent-threads/{thread_id}/watchers` lists the same rows for one agent,
+keyed by its agent id, so a Space agent's jobs show in its chat.
+`POST /api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel` is the same
+Cancel for a member who can see that agent; a watcher of another agent returns
+404, and a project agent's Cancel keeps project write admission. The project
+Cancel route stays as an alias.
+
 The machine card's Compute fold holds **Slurm**, helper `jobs_root`, and the
 access hint; RCP exposes no resource-argument inputs. Each saves on its own.
 Runs offers **Check again** through

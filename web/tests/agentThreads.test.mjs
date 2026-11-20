@@ -242,10 +242,10 @@ test("pause and resume post to the schedule's own route", async () => {
   ]);
 });
 
-test("a project thread lists only the watchers that will wake it and stops them by project route", async () => {
-  const watcher = (id, chat_id, status, wakes_chat = status === "active") => ({
+test("a thread lists its agent's waking watchers by agent route and stops them by project route", async () => {
+  const watcher = (id, status, wakes_chat = status === "active") => ({
     watcher_id: id,
-    chat_id,
+    chat_id: "scout",
     status,
     wakes_chat,
     graph_target: { kind: "main" },
@@ -256,12 +256,7 @@ test("a project thread lists only the watchers that will wake it and stops them 
   const request = async (path, init) => {
     calls.push(`${init?.method ?? "GET"} ${path}`);
     return path.endsWith("/watchers")
-      ? [
-          watcher("w1", "scout", "active"),
-          watcher("w2", "other", "active"),
-          watcher("w3", "scout", "completed"),
-          watcher("w4", "scout", "active", false),
-        ]
+      ? [watcher("w1", "active"), watcher("w3", "completed"), watcher("w4", "active", false)]
       : {};
   };
   const thread = { kind: "project", project_id: "p 1", thread_id: "scout" };
@@ -270,13 +265,18 @@ test("a project thread lists only the watchers that will wake it and stops them 
     listed.map((item) => item.watcher_id),
     ["w1"],
   );
+  const space = await loadThreadWatchers(
+    { kind: "space", project_id: null, thread_id: "pip" },
+    request,
+  );
   assert.deepEqual(
-    await loadThreadWatchers({ kind: "space", project_id: null, thread_id: "pip" }, request),
-    [],
+    space.map((item) => item.watcher_id),
+    ["w1"],
   );
   await stopThreadWatcher(thread, "w/1", request);
   assert.deepEqual(calls, [
-    "GET /api/projects/p%201/watchers",
+    "GET /api/agent-threads/scout/watchers",
+    "GET /api/agent-threads/pip/watchers",
     "POST /api/projects/p%201/watchers/w%2F1/stop",
   ]);
 });

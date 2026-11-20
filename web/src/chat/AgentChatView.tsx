@@ -1,5 +1,5 @@
 import { useAgentUpcoming } from "../agents/useAgentUpcoming";
-import { queueThreadTurn, removeQueuedTurn } from "../agents/agentThreadsApi";
+import { queueThreadTurn, removeQueuedTurn, threadPath } from "../agents/agentThreadsApi";
 import {
   AgentWindowTranscript,
   InlineTaskProgress,
@@ -1784,7 +1784,10 @@ export function AgentChatView({
             return (
               <div className={`chat-watcher-row ${watcher.status}`} key={watcher.watcher_id}>
                 {external ? (
-                  <ExternalJobRow apiBase={apiBase} watcher={watcher} />
+                  <ExternalJobRow
+                    apiBase={feed ? threadPath(feed.thread.thread_id) : apiBase}
+                    watcher={watcher}
+                  />
                 ) : (
                   <>
                     <strong>{graphConditionLabel(watcher.condition)}</strong>

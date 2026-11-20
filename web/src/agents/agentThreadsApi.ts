@@ -252,14 +252,13 @@ export function loadThreadSchedules(
   return request(`${threadPath(threadId)}/schedules`);
 }
 
-/** A project thread's live watchers; the Space thread has none. */
+/** The live watchers this thread's agent armed. */
 export async function loadThreadWatchers(
   thread: ThreadTaskOwner,
   request: Request = api,
 ): Promise<WatcherRecord[]> {
-  if (thread.kind !== "project") return [];
-  const watchers: WatcherRecord[] = await request(`${threadProjectPath(thread)}/watchers`);
-  return watchers.filter((watcher) => watcher.chat_id === thread.thread_id && watcher.wakes_chat);
+  const watchers: WatcherRecord[] = await request(`${threadPath(thread.thread_id)}/watchers`);
+  return watchers.filter((watcher) => watcher.wakes_chat);
 }
 
 export function stopThreadWatcher(
