@@ -103,8 +103,19 @@ def test_a_turn_names_its_agent_and_the_session_follows_the_newest_bound_turn(tm
     assert replaced[0].payload["replaced_operation_id"] == "second"
     assert replaced[0].payload["replaced_provider"] == "codex"
 
-    assert _bound(store, "node_chat", "chat") is None
     assert _bound(store, "project_chat", "other") is None
+    for collision in ({"kind": "node_chat"}, {"project_id": "elsewhere"}):
+        with pytest.raises(ValueError):
+            store.create_agent_task(
+                _task_record(
+                    store.now(),
+                    operation_id="collision",
+                    request={"chat_id": "chat", "provider": "codex", "run_on": "laptop"},
+                    **{"kind": "project_chat", **collision},
+                )
+            )
+        assert store.agent_task("collision") is None
+    assert _bound(store, "project_chat", "chat") == "third"
     store.close()
 
 

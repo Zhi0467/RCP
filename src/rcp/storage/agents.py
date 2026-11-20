@@ -80,8 +80,9 @@ def migrate_agents(connection: sqlite3.Connection, session_task_kinds: Collectio
 def backfill_agents(connection: sqlite3.Connection, session_task_kinds: Collection[str]) -> None:
     """Give every stored conversation, worker and episode its agent; existing rows stay.
 
-    Each agent keeps the id its records already carry. A session is the newest
-    turn of the agent that holds a native session, as the turn scan read it.
+    Each agent keeps the id its records already carry. An episode's agent follows
+    the `ensure_turn_agent` rule. A session is the newest turn of the agent that
+    holds a native session, as the turn scan read it.
     """
     connection.execute(
         "INSERT OR IGNORE INTO agents(agent_id,space_id,project_id,visibility,entry,"
@@ -91,33 +92,35 @@ def backfill_agents(connection: sqlite3.Connection, session_task_kinds: Collecti
         "FROM agent_threads"
     )
     connection.execute(
+        "WITH first_turn(episode_id, agent_id) AS ("
+        "SELECT episode_id, json_extract(request_json, '$.chat_id') FROM ("
+        "SELECT episode_id, request_json, row_number() OVER (PARTITION BY episode_id "
+        "ORDER BY created_at, rowid) AS position FROM graph_runs WHERE episode_id IS NOT NULL) "
+        "WHERE position = 1), "
+        "own(episode_id, continues_episode_id, agent_id) AS ("
+        "SELECT episode.episode_id, episode.continues_episode_id, coalesce("
+        "nullif(first_turn.agent_id, ''), nullif(state.chat_id, ''), "
+        "CASE WHEN first_turn.episode_id IS NOT NULL THEN episode.episode_id END) "
+        "FROM episodes AS episode LEFT JOIN first_turn USING (episode_id) "
+        "LEFT JOIN experiment_episode_state AS state USING (episode_id)), "
+        "chain(episode_id, agent_id) AS ("
+        "SELECT episode_id, agent_id FROM own WHERE continues_episode_id IS NULL "
+        "UNION ALL SELECT own.episode_id, coalesce(chain.agent_id, own.agent_id) FROM own "
+        "JOIN chain ON own.continues_episode_id = chain.episode_id) "
+        "UPDATE episodes SET agent_id = (SELECT chain.agent_id FROM chain "
+        "WHERE chain.episode_id = episodes.episode_id) WHERE agent_id IS NULL"
+    )
+    connection.execute(
         "INSERT OR IGNORE INTO agents(agent_id,space_id,project_id,visibility,entry,"
         "owner_user_id,created_at) "
         f"SELECT agent_id, {_SPACE_ID}, project_id, 'shared', 'project', NULL, min(created_at) "
         "FROM ("
         "SELECT json_extract(request_json, '$.chat_id') AS agent_id, project_id, created_at "
         "FROM graph_runs "
-        "UNION ALL SELECT state.chat_id, episode.project_id, episode.created_at "
-        "FROM experiment_episode_state AS state JOIN episodes AS episode USING (episode_id) "
         "UNION ALL SELECT worker_id, project_id, created_at FROM auto_research_child_work "
-        "UNION ALL SELECT episode.episode_id, episode.project_id, episode.created_at "
-        "FROM episodes AS episode JOIN auto_research_episodes USING (episode_id) "
-        "WHERE episode.continues_episode_id IS NULL) "
+        "UNION ALL SELECT agent_id, project_id, created_at FROM episodes) "
         f"WHERE agent_id IS NOT NULL AND agent_id != '' AND project_id != {_SPACE_ID} "
         "GROUP BY agent_id"
-    )
-    connection.execute(
-        "UPDATE episodes SET agent_id = (SELECT state.chat_id FROM experiment_episode_state "
-        "AS state WHERE state.episode_id = episodes.episode_id) WHERE agent_id IS NULL"
-    )
-    connection.execute(
-        "WITH RECURSIVE chain(episode_id, root) AS ("
-        "SELECT episode_id, episode_id FROM episodes WHERE continues_episode_id IS NULL "
-        "UNION ALL SELECT next.episode_id, chain.root FROM episodes AS next "
-        "JOIN chain ON next.continues_episode_id = chain.episode_id) "
-        "UPDATE episodes SET agent_id = (SELECT root FROM chain "
-        "WHERE chain.episode_id = episodes.episode_id) "
-        "WHERE agent_id IS NULL AND episode_id IN (SELECT episode_id FROM auto_research_episodes)"
     )
     kinds = sorted(session_task_kinds)
     connection.execute(
