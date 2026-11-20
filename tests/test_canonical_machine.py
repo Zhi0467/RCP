@@ -17,7 +17,7 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
     local = tmp_path / "local"
     local.mkdir()
 
-    with pytest.raises(ValueError, match="refresh must run beside canonical state"):
+    with pytest.raises(ValueError, match="must run beside canonical state"):
         ProjectSetupRequest.model_validate(
             {
                 "name": "mixed",
@@ -36,8 +36,6 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
                 ],
                 "state_repository": "local",
                 "agents": {
-                    "seed": {"location": "local"},
-                    "refresh": {"location": "ssh", "host": "gpu.example"},
                     "node_chat": {"location": "local"},
                     "project_chat": {"location": "local"},
                     "paper_coach": {"location": "ssh", "host": "gpu.example"},
@@ -46,7 +44,7 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
         )
 
 
-@pytest.mark.parametrize("surface", ["refresh", "paper_coach"])
+@pytest.mark.parametrize("surface", ["project_chat", "paper_coach"])
 def test_runtime_override_cannot_move_an_agent_off_the_base(manifest, tmp_path, surface) -> None:
     manifest.machines.append("c" * 32)
     history = HistoryManager(manifest, write_authority=unchecked_write_authority())
@@ -152,10 +150,8 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert effective["project_chat"]["model"] == ""
     assert effective["project_chat"]["effective_model"] == "gpt-5.6-sol"
     assert effective["project_chat"]["reasoning"] == "medium"
-    assert effective["seed"]["effective_model"] == "gpt-5.6-sol"
+    assert effective["node_chat"]["effective_model"] == "gpt-5.6-sol"
     assert set(effective) == {
-        "seed",
-        "refresh",
         "node_chat",
         "project_chat",
         "paper_coach",

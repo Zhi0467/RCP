@@ -4,7 +4,6 @@ needs or skips for a real provider.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,7 +30,6 @@ from .helpers import (
 POLICY_MATRIX = [
     pytest.param("chat Discuss", "start", "fresh task admitted", id="discuss-start"),
     pytest.param("chat Work", "start", "fresh task admitted", id="work-start"),
-    pytest.param("ingestion", "start", "fresh task admitted", id="ingestion-start"),
     pytest.param("Experiment loop", "start", "root admitted atomically", id="experiment-start"),
     pytest.param(
         "Experiment watcher wake",
@@ -58,7 +56,6 @@ POLICY_MATRIX = [
         id="episode-report-start",
     ),
     pytest.param("chat Work", "resume", "owned checkpoint reused", id="work-resume"),
-    pytest.param("ingestion", "resume", "owned checkpoint reused", id="ingestion-resume"),
     pytest.param("Experiment loop", "resume", "episode recovery reused", id="experiment-resume"),
     pytest.param("Auto-research", "resume", "paid allocation reused", id="auto-resume"),
     pytest.param(
@@ -90,12 +87,6 @@ POLICY_MATRIX = [
         "retry",
         "clean handoff started",
         id="work-retry-handoff",
-    ),
-    pytest.param(
-        "ingestion",
-        "retry",
-        "clean handoff started",
-        id="ingestion-retry-handoff",
     ),
     pytest.param(
         "Experiment loop",
@@ -168,12 +159,6 @@ POLICY_MATRIX = [
         "recover_at_startup",
         "active task interrupted",
         id="work-startup",
-    ),
-    pytest.param(
-        "ingestion",
-        "recover_at_startup",
-        "active task interrupted",
-        id="ingestion-startup",
     ),
     pytest.param(
         "Auto-research",
@@ -381,8 +366,6 @@ def _detached_record(
 
 
 async def _done_stream(_project_id, kind, _request, _execution):
-    if kind in {"seed", "refresh"}:
-        yield _sse(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
     yield _sse(AgentEvent(event="done"))
 
 
@@ -393,8 +376,6 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
         kind, request = "project_chat", _chat_request(mode="discuss")
     elif family == "chat Work":
         kind, request = "project_chat", _chat_request()
-    elif family == "ingestion":
-        kind, request = "refresh", _ingestion_request()
     elif family == "Experiment loop":
         task = tasks.start(
             "project",
@@ -433,9 +414,7 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
         raise AssertionError(family)
 
     task = tasks.start("project", kind, request, authorized_by=authorizer)
-    task = wait_for_task(store, task.operation_id, expect="succeeded")
-    if family == "ingestion":
-        assert task.applied_revision == 1
+    wait_for_task(store, task.operation_id, expect="succeeded")
     return "fresh task admitted"
 
 
@@ -517,8 +496,6 @@ def _resume_case(
 
     async def stream(_project_id, kind, _request, execution):
         continuations.append(execution.continuation)
-        if kind in {"seed", "refresh"}:
-            yield _sse(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -571,12 +548,9 @@ def _resume_case(
         assert continuations == ["graph_repair"]
         return "patch-only continuation preserved"
 
-    if family == "chat Work":
-        kind, request = "project_chat", _chat_request()
-    elif family == "ingestion":
-        kind, request = "refresh", _ingestion_request()
-    else:  # pragma: no cover - the table is the closed caller set
+    if family != "chat Work":  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
+    kind, request = "project_chat", _chat_request()
     previous = _record(
         store,
         operation_id="resume-parent",
@@ -607,8 +581,6 @@ def _retry_case(
 
     async def stream(_project_id, kind, _request, execution):
         continuations.append(execution.continuation)
-        if kind in {"seed", "refresh"}:
-            yield _sse(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -656,12 +628,8 @@ def _retry_case(
         assert continuations == ["graph_repair"]
         return "patch-only continuation preserved"
 
-    if family == "ingestion":
-        kind, request = "refresh", _ingestion_request()
-        checkpoint = False
-    else:
-        kind, request = "project_chat", _chat_request()
-        checkpoint = family == "chat Work"
+    kind, request = "project_chat", _chat_request()
+    checkpoint = family == "chat Work"
     previous = _record(
         store,
         operation_id="retry-parent",
@@ -834,12 +802,9 @@ def _recovery_case(
 
     stage = tmp_path / "startup-stage"
     stage.mkdir()
-    if family == "chat Work":
-        kind, request = "project_chat", _chat_request()
-    elif family == "ingestion":
-        kind, request = "refresh", _ingestion_request()
-    else:  # pragma: no cover - the table is the closed caller set
+    if family != "chat Work":  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
+    kind, request = "project_chat", _chat_request()
     task = _record(
         store,
         operation_id="active-at-startup",

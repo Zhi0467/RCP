@@ -14,7 +14,7 @@
   "runs/evidence_flag_commands.py": 1,
   "runs/experiment_loop.py": 4,
   "runs/recorded_settlement.py": 3,
-  "runs/shared.py": 12,
+  "runs/shared.py": 11,
   "runs/space_chat.py": 2,
   "runs/space_projects.py": 6,
   "runs/tasks/auto_research_child_work.py": 1,

@@ -34,7 +34,7 @@
   "core/validation/patch.py": 1,
   "digest.py": 7,
   "episode_health.py": 1,
-  "history/delta.py": 2,
+  "history/delta.py": 1,
   "loop_status.py": 4,
   "machine_upgrade.py": 3,
   "runs/agent_thread_commands.py": 14,
