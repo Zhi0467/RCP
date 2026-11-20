@@ -5,13 +5,17 @@ import { findAnchor, findText, type AnchorContext } from "../comments/anchors.ts
 import type { Point } from "../comments/box.ts";
 import type { CommentRect, CommentThread } from "../comments/types.ts";
 import { drawnInPreview, linesWhere } from "../comments/where.ts";
-import { CommentComposer, type CommentOffer } from "../comments/react/CommentComposer";
+import {
+  CommentComposer,
+  type CommentOffer,
+  type PopoverAnchor,
+} from "../comments/react/CommentComposer";
 import { CommentPins } from "../comments/react/CommentPins";
 import { CommentRail } from "../comments/react/CommentRail";
 import {
   flashRect,
   insideElement,
-  rangeEnd,
+  marginPoint,
   rectEnd,
   textRange,
   toRect,
@@ -98,15 +102,22 @@ function previewContext(pane: HTMLElement, sameVersion: boolean): AnchorContext 
   };
 }
 
-function previewEnd(pane: HTMLElement, thread: CommentThread, sameVersion: boolean) {
+/** A text thread's quote in the rendered preview, with the article that holds it. */
+function previewQuote(pane: HTMLElement, thread: CommentThread) {
   const { anchor } = thread;
-  if (anchor.kind === "text") {
-    const host = pane.querySelector<HTMLElement>("article[data-paper-path], pre[data-paper-path]");
-    const match = host && findText(host.textContent ?? "", anchor.text, anchor.surrounding_text);
-    const range = match && textRange(host, match.start, match.end);
-    return range ? rangeEnd(range) : null;
+  if (anchor.kind !== "text") return null;
+  const host = pane.querySelector<HTMLElement>("article[data-paper-path], pre[data-paper-path]");
+  const match = host && findText(host.textContent ?? "", anchor.text, anchor.surrounding_text);
+  const range = match && textRange(host, match.start, match.end);
+  return range ? { range, host: host! } : null;
+}
+
+function previewEnd(pane: HTMLElement, thread: CommentThread, sameVersion: boolean) {
+  if (thread.anchor.kind === "text") {
+    const quote = previewQuote(pane, thread);
+    return quote && marginPoint(quote.range, quote.host);
   }
-  const rect = findAnchor(anchor, previewContext(pane, sameVersion));
+  const rect = findAnchor(thread.anchor, previewContext(pane, sameVersion));
   return rect && rectEnd(rect);
 }
 
@@ -182,11 +193,7 @@ export function usePaperComments({
     attempt.current += 1;
   }, [fileId, closeOffer]);
 
-  const open = (
-    anchor: CommentOffer["anchor"],
-    rect: PreviewAnchor["rect"],
-    clear?: () => void,
-  ) => {
+  const open = (anchor: CommentOffer["anchor"], point: PopoverAnchor, clear?: () => void) => {
     if (!target || !canPost) {
       clear?.();
       return;
@@ -195,7 +202,7 @@ export function usePaperComments({
       target,
       anchor,
       drawnVersion: version,
-      point: { x: rect.left, y: rect.bottom },
+      point,
       clear,
     });
   };
@@ -224,12 +231,12 @@ export function usePaperComments({
         comment: "",
         where: linesWhere(file.path, doc.lineAt(from).number, doc.lineAt(to).number),
       };
-      return { rect: coords, open: () => open(anchor, coords) };
+      return { rect: coords, open: (point) => open(anchor, point) };
     }
     const pane = previewPane.current;
     if (!pane || !node || !pane.contains(node)) return null;
     const drawn = previewSelectionAnchor(selection, pane);
-    return drawn && { rect: drawn.rect, open: () => open(drawn.anchor, drawn.rect) };
+    return drawn && { rect: drawn.rect, open: (point) => open(drawn.anchor, point) };
   };
   const selectionOffer = useSelectionComment(canPost && !offer && Boolean(file), resolveSelection);
 
@@ -369,15 +376,7 @@ export function usePaperComments({
           onLocate={locate}
           note={note}
           onWhole={() =>
-            open(
-              { kind: "whole", comment: "", where: file.path },
-              {
-                left: window.innerWidth,
-                right: window.innerWidth,
-                top: 72,
-                bottom: 72,
-              },
-            )
+            open({ kind: "whole", comment: "", where: file.path }, { x: window.innerWidth, y: 72 })
           }
           onClose={() => setRailOpen(false)}
         />
@@ -385,6 +384,11 @@ export function usePaperComments({
       <CommentPins
         threads={comments.threads}
         position={position}
+        range={(thread) =>
+          previewPane.current && !inFrame(thread) && drawnInPreview(thread.anchor)
+            ? (previewQuote(previewPane.current, thread)?.range ?? null)
+            : null
+        }
         selected={selected}
         revision={`${fileId}:${sourceVisible}:${previewVisible}:${framed.revision}`}
         subscribe={subscribe}
@@ -401,7 +405,7 @@ export function usePaperComments({
         <SelectionCommentButton
           offer={{
             rect: frameOffer.rect,
-            open: () => open(frameOffer.anchor, frameOffer.rect, frameOffer.clear),
+            open: (point) => open(frameOffer.anchor, point, frameOffer.clear),
           }}
           onOpen={() => setFrameOffer(null)}
         />
@@ -424,7 +428,12 @@ export function usePaperComments({
     railOpen,
     setRailOpen,
     /** A box or frame selection drawn in the preview opens the composer on it. */
-    openAnchor: (drawn: PreviewAnchor) => open(drawn.anchor, drawn.rect, drawn.clear),
+    openAnchor: (drawn: PreviewAnchor) =>
+      open(
+        drawn.anchor,
+        { x: drawn.rect.left, y: drawn.rect.bottom, top: drawn.rect.top },
+        drawn.clear,
+      ),
     /** Text selected inside an HTML page offers Comment, or withdraws the offer. */
     offerFrameSelection: setFrameOffer,
     /** The frame cancelled the selection drawn with `clear`. */

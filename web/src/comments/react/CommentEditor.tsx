@@ -84,10 +84,10 @@ export function CommentEditor({
             event.stopPropagation();
             setQuery(null);
           }
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            void submit(text);
-          }
+          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (query && matches.length > 0) pick(matches[0].label);
+          else void submit(text);
         }}
       />
       {query && matches.length > 0 && (

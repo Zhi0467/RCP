@@ -16,7 +16,7 @@ import {
   textAnchor,
   flashRect,
   insideElement,
-  rangeEnd,
+  marginPoint,
   textRange,
   toRect,
 } from "../comments/react/domText.ts";
@@ -124,22 +124,27 @@ export function useReplyComments({
     return {
       rect,
       firstLine: firstLine(range),
-      open: () =>
+      open: (point) =>
         setOffer({
           target: { kind: "reply", id: operationId },
           anchor,
           drawnVersion: null,
-          point: { x: rect.left, y: rect.bottom },
+          point,
+          range: range.cloneRange(),
         }),
     };
   };
   const selection = useSelectionComment(canPost && !offer, resolve);
 
-  const position = (thread: CommentThread): Point | null => {
+  const quoteRange = (thread: CommentThread) => {
     const root = linesRef.current;
-    const range = root && threadRange(root, thread);
-    const point = range && rangeEnd(range);
-    return point && insideElement(point, root) ? point : null;
+    return root && threadRange(root, thread);
+  };
+  const position = (thread: CommentThread): Point | null => {
+    const range = quoteRange(thread);
+    const answer = range?.startContainer.parentElement?.closest(".chat-annotatable-answer");
+    const point = range && answer && marginPoint(range, answer);
+    return point && insideElement(point, linesRef.current) ? point : null;
   };
   const locate = (thread: CommentThread) => {
     setSelected(thread.thread_id);
@@ -210,6 +215,7 @@ export function useReplyComments({
       <CommentPins
         threads={comments.threads}
         position={position}
+        range={quoteRange}
         selected={selected}
         revision={replyKey}
         onPick={(thread) => {

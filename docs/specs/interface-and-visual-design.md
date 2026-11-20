@@ -566,7 +566,7 @@ opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
 bubble. In every chat and thread, selected reply text starts a
 [shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
-just past the quote's end opens it, the header count lists the chat's reply and
+in the answer's right margin, level with the quote's last line, opens it, the header count lists the chat's reply and
 inline-artifact threads, and saved threads dock at the composer, whose next send
 carries them, a steer while a turn runs. A thread with docked comments refuses
 Queue. A project thread offers Work in a worktree in its + menu like a project
@@ -758,10 +758,19 @@ The [comment](paper-artifacts-and-result-views.md#shared-comments) rail sits
 beside the artifact, the Paper source, and the Paper preview. Each thread card
 shows an avatar, author, time, and quote, with replies in one flat column under
 thin rules. Its reply box keeps one action row: Resolve or Reopen on the left,
-Reply on the right. Open threads show red numbered pins at the end of their
-anchors, and a selected card highlights its pin. The composer is a popover at
-the selection with one row: Cancel on the left, Comment on the right. `@` opens
-the member picker. At 390px the rail is a bottom sheet. A saved comment docks at
+Reply on the right. Open threads show red numbered pins. A quote's pin sits in
+the right margin of the text that holds it, level with the quote's last line,
+never over text and on screen at 390px; a box or page anchor's pin sits at its
+top-right corner. Quoted text shows a soft red highlight, stronger for the
+selected thread, and a selected card highlights its pin. A text selection offers
+a small Comment chip above it. Clicking the chip opens the composer beside the
+selection, never as a bottom sheet: its top-left aligns with the chip just
+below the selection's end, or it opens above when there is no room below. The
+selected text stays highlighted while it is open. The composer has one row:
+Cancel on the left, Comment on the right. Enter saves, Shift+Enter starts a new
+line, and Enter while the `@` member picker shows picks its first member. A
+press outside the composer or Escape closes it. At 390px the rail is a bottom
+sheet. A saved comment docks at
 the chat composer as an "N comments" count above the field
 ([sending](paper-artifacts-and-result-views.md#sending-threads-to-an-agent)).
 Runs preserves server order, with the report first, and labels kind, time, and worker.

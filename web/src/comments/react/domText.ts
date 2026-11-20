@@ -57,11 +57,26 @@ export function toRect(
   return { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
 }
 
-/** Where a pin sits for a range: the end of its last line. */
-export function rangeEnd(range: Range): Point | null {
+/** A margin pin's width, which the right window edge must leave room for. */
+const MARGIN_PIN_WIDTH = 22;
+
+/** A pin's place in the right margin of a text container, level with the range's last line. */
+export interface MarginPoint extends Point {
+  margin: true;
+}
+
+/**
+ * Where a text anchor's pin sits: just past `container`'s text column, vertically
+ * centred on the range's last line, kept inside the window's right edge.
+ */
+export function marginPoint(range: Range, container: Element): MarginPoint | null {
   const rects = [...range.getClientRects()].filter((rect) => rect.width || rect.height);
   const last = rects.at(-1);
-  return last ? { x: last.right, y: last.top + last.height / 2 } : null;
+  if (!last) return null;
+  const box = container.getBoundingClientRect();
+  const textRight = box.right - parseFloat(getComputedStyle(container).paddingRight || "0");
+  const x = Math.min(textRight + 4, window.innerWidth - MARGIN_PIN_WIDTH - 2);
+  return { x, y: last.top + last.height / 2, margin: true };
 }
 
 /** A rect's end, for pins on boxes and pages: its top-right corner. */
