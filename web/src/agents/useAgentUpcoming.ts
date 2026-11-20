@@ -1,30 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import type { AgentCapabilities, AgentSchedule, AgentThreadQueueItem } from "../core/types";
+import type { AgentSchedule, AgentThreadQueueItem } from "../core/types";
 import { errorMessage } from "../core/errors";
-import { loadAgentCapabilities, loadThreadQueue, loadThreadSchedules } from "./agentThreadsApi";
+import { loadThreadQueue, loadThreadSchedules } from "./agentThreadsApi";
 
 export function useAgentUpcoming(agentId: string | null, revision: string | null) {
   const [state, setState] = useState<{
     agentId: string;
-    capabilities: AgentCapabilities;
-    queue: AgentThreadQueueItem[] | null;
+    queue: AgentThreadQueueItem[];
     schedules: AgentSchedule[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refresh = useCallback(async () => {
     if (!agentId) return;
     try {
-      const capabilities = await loadAgentCapabilities(agentId);
       const [queue, schedules] = await Promise.all([
-        capabilities.can_queue ? loadThreadQueue({ thread_id: agentId }) : null,
-        capabilities.can_schedule ? loadThreadSchedules(agentId) : null,
+        loadThreadQueue({ thread_id: agentId }),
+        loadThreadSchedules(agentId),
       ]);
-      setState({
-        agentId,
-        capabilities,
-        queue: queue?.items ?? null,
-        schedules: schedules?.schedules ?? [],
-      });
+      setState({ agentId, queue: queue.items, schedules: schedules.schedules });
       setError(null);
     } catch (failure) {
       setError(errorMessage(failure));

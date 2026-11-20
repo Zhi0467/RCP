@@ -27,7 +27,6 @@ from fastapi import (
 )
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
-from rcp.agents.agent_profile import OFFER, Placement, resolve_agent_profile
 from rcp.api.chats import (
     AttachmentStoreDependency,
     CatalogDependency,
@@ -163,14 +162,6 @@ def accessible_agent(store: AppStore, agent_id: str, user_id: str) -> AgentRecor
     ):
         raise HTTPException(status_code=404, detail="Agent not found")
     return agent
-
-
-@router.get("/api/agent-threads/{thread_id}/capabilities")
-def agent_capabilities(
-    thread_id: str, request: Request, *, store: StoreDependency, identity_access: IdentityDependency
-):
-    agent = accessible_agent(store, thread_id, identity_access.acting_user(request).user_id)
-    return resolve_agent_profile(Placement(agent.entry, agent.visibility), None, OFFER).controls
 
 
 def owned_space_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:

@@ -573,7 +573,7 @@ export function useAgentThread({
     latest,
     parents: lineage,
     loadError,
-    queue: thread.can_queue ? (view?.queue ?? NO_QUEUE) : null,
+    queue: view?.queue ?? NO_QUEUE,
     schedules,
     watchers,
     config,

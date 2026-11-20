@@ -37,7 +37,6 @@ def test_agent_queue_starts_with_the_sending_members_authority(
             )
         )
         base = f"/api/agent-threads/{agent_id}"
-        assert client.get(base + "/capabilities").json()["can_queue"]
         response = client.post(
             base + "/queue",
             json={"message": "Next step"},

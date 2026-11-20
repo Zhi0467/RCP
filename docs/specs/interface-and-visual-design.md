@@ -496,7 +496,7 @@ Auto-research root, the Paper chat, Experiment chats, project threads and the
 Space thread. It has one header, one composer and one running-turn display.
 What differs comes from the data the view is given: a member thread loads its
 own transcript and turns through the thread routes, whose Space or project path
-the API module chooses, and its row's `can_queue` turns the queue on.
+the API module chooses. Every agent shows its queue.
 
 Every agent view, the floating node chat included, uses one header row: the
 title on the left, then icon chips that each carry a count, in this order:

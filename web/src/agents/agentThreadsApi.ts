@@ -5,7 +5,6 @@
 import { api, ApiError } from "../core/api.ts";
 import type {
   AgentCardList,
-  AgentCapabilities,
   AgentQuestion,
   AgentRunConfig,
   AgentSchedule,
@@ -415,11 +414,4 @@ export async function decideProposalCard(
     if (failure.code === "proposal_not_pending") return { outcome: "gone" };
     return { outcome: "refused", reason: failure.message };
   }
-}
-
-export function loadAgentCapabilities(
-  agentId: string,
-  request: Request = api,
-): Promise<AgentCapabilities> {
-  return request(`${threadPath(agentId)}/capabilities`);
 }

@@ -22,7 +22,6 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
             resolve_agent_profile(placement, None, OFFER).welcome()
             for placement in (SINGLE_ENTRY, PRIVATE_PROJECT)
         ]
-        assert [row["can_queue"] for row in rows] == [True, True]
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:
             base = "/api/agent-threads/" + row["thread_id"]

@@ -29,7 +29,6 @@ import {
   decideProposalCard,
   readAgentCards,
   readChatCards,
-  loadAgentCapabilities,
   loadThreadQueue,
   loadThreadQuestions,
   queueThreadTurn,
@@ -384,18 +383,15 @@ test("a project thread queues the send body under its key, reads and removes its
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });
 });
 
-test("agent capabilities and queue routes use identity without a placement", async () => {
+test("queue routes use identity without a placement", async () => {
   const paths = [];
-  const flags = { can_queue: true, can_schedule: true, can_fork: true, can_archive: true };
   const request = async (path) => {
     paths.push(path);
-    return path.endsWith("/capabilities") ? flags : { items: [] };
+    return { items: [] };
   };
-  assert.deepEqual(await loadAgentCapabilities("shared/agent", request), flags);
   await loadThreadQueue({ thread_id: "shared/agent" }, request);
   await loadThreadQueue(space, request);
   assert.deepEqual(paths, [
-    "/api/agent-threads/shared%2Fagent/capabilities",
     "/api/agent-threads/shared%2Fagent/queue",
     "/api/agent-threads/space/queue",
   ]);

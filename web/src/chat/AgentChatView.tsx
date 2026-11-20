@@ -360,7 +360,6 @@ export function AgentChatView({
     !feed && (relatedTasks.length > 0 || historyMessages?.length) ? chatId : null,
     revision ?? relatedTasks.at(-1)?.updated_at ?? null,
   );
-  const capabilities = feed?.thread ?? upcoming.state?.capabilities;
   const projectId = project?.id ?? null;
   const chatEndpoints = useMemo(
     () => (projectId ? projectAgentWindowEndpoints(projectId, chatId) : null),
@@ -1493,7 +1492,7 @@ export function AgentChatView({
   const headerChips = (
     <>
       {headerTools}
-      {capabilities?.can_schedule && (
+      {(feed || upcoming.state) && (
         <SchedulesPopover
           threadId={chatId}
           schedules={feed?.schedules ?? upcoming.state?.schedules ?? []}
@@ -1511,7 +1510,7 @@ export function AgentChatView({
       actions={[
         ...(renameTitle ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
         ...headerActions,
-        ...(feed && project && capabilities?.can_archive
+        ...(feed && project
           ? [
               {
                 label: isArchived ? "Restore" : "Archive",
@@ -1526,7 +1525,7 @@ export function AgentChatView({
       ]}
     >
       {headerMenuItems}
-      {feed && project && capabilities?.can_fork && !isArchived && (
+      {feed && project && !isArchived && (
         <ChatBranchPicker
           projectId={project.id}
           chatId={chatId}

@@ -182,7 +182,6 @@ def thread_projections(
                 # The member's stored pick; null until one is made, when the default applies.
                 "agent": thread.agent,
                 "capabilities": resolve_agent_profile(placement, None, OFFER).welcome(),
-                **resolve_agent_profile(placement, None, OFFER).controls,
                 "archived": bool(shown is not None and shown["archived_at"]),
             }
         )
