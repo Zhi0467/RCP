@@ -332,7 +332,6 @@ def prepare_hidden_read_launch(
     git_access: ProviderGitAccess | None = None,
     browser_enabled: bool = False,
     thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
 ) -> HiddenReadScope:
     """Confirm keys, resolve once, then stage the exact policy used by tools."""
     import logging
@@ -378,7 +377,6 @@ def prepare_hidden_read_launch(
             key_evidence=evidence,
             browser_enabled=browser_enabled,
             thread_owner=thread_owner,
-            member_ids=member_ids,
         )
         reasons = set(scope.enforcement.reasons)
         if profile_for(provider).hidden_read_gaps:

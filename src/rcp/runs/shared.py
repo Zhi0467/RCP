@@ -876,7 +876,6 @@ async def _prepare_hidden_read_scope(
                 and task.kind in {"space_chat", "project_chat"}
                 else None
             ),
-            member_ids=tuple(member.user_id for member in execution.store.space_users()),
         )
     except HiddenFolderRejected:
         raise

@@ -1173,7 +1173,6 @@ def default_space_hidden_read_scope(
         key_evidence=local_hidden_read_key_evidence(owner.catalog.data_dir, execution.git_access),
         browser_enabled=request.browser_requested,
         thread_owner=owner.thread.user_id,
-        member_ids=tuple(member.user_id for member in owner.store.space_users()),
     )
 
 

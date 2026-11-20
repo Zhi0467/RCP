@@ -114,7 +114,6 @@ def hidden_read_defaults(
     control_socket_dir: str | None,
     login_home_credentials: tuple[str, ...] = (),
     thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Credential roots name provider stores, never a deploy-key parent.
 
@@ -170,33 +169,14 @@ def hidden_read_defaults(
                 glob.escape(app_data_dir) + "/run-stage/backup-*",
             )
         )
-    from rcp.agents.memory_files import member_memory_root
 
     thread_roots = [home + "/.rcp/agent-threads"]
     if app_data_dir:
         thread_roots.append(app_data_dir + "/agent-threads")
-    for root in thread_roots:
-        if thread_owner is None:
-            directories.append(root)
-        else:
-            # Reuse the member-id validator; identity comes from the thread row.
-            member_memory_root(PurePosixPath(root), thread_owner)
-            # The owner keeps its stages. Every member's transcripts, including those of
-            # members who join mid-turn, reach a run only as prompt text.
-            globs.append(glob.escape(root) + "/*/*.jsonl")
-            for member in sorted(set(member_ids) - {thread_owner}):
-                member_memory_root(PurePosixPath(root), member)
-                directories.append(root + "/" + member)
-    if app_data_dir:
-        # Member memory is private: only the owner's own thread turns read it.
-        memory = PurePosixPath(app_data_dir) / "memory"
-        if thread_owner is None:
-            directories.append(str(memory / "members"))
-        else:
-            directories.extend(
-                str(member_memory_root(memory, member))
-                for member in sorted(set(member_ids) - {thread_owner})
-            )
+    if thread_owner is None:
+        directories.extend(thread_roots)
+        if app_data_dir:
+            directories.append(str(PurePosixPath(app_data_dir) / "memory" / "members"))
     return tuple(sorted(set(directories))), tuple(sorted(set(files))), tuple(sorted(set(globs)))
 
 
@@ -316,7 +296,6 @@ def resolve_hidden_read_scope(
     browser_enabled: bool,
     machine_provider_paths: Sequence[str] = (),
     thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
 ) -> HiddenReadScope:
     return resolve_machine_hidden_read_scope(
         machine=machine,
@@ -332,7 +311,6 @@ def resolve_hidden_read_scope(
         browser_enabled=browser_enabled,
         machine_provider_paths=machine_provider_paths,
         thread_owner=thread_owner,
-        member_ids=member_ids,
         repository_paths=tuple(
             item.path for item in manifest.repositories if item.machine == machine.machine_id
         ),
@@ -357,7 +335,6 @@ def resolve_machine_hidden_read_scope(
     browser_enabled: bool,
     machine_provider_paths: Sequence[str] = (),
     thread_owner: str | None = None,
-    member_ids: Sequence[str] = (),
     repository_paths: tuple[str, ...] = (),
     project_transcript_roots: tuple[str, ...] = (),
 ) -> HiddenReadScope:
@@ -382,7 +359,6 @@ def resolve_machine_hidden_read_scope(
         home=home,
         app_data_dir=data_dir,
         thread_owner=thread_owner,
-        member_ids=member_ids,
         credential_roots=(),
         provider_login_files=tuple(facts["provider_login_files"]),
         control_socket_dir=str(control_directory_candidate()) if remote_stage is None else None,
