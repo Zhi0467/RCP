@@ -46,7 +46,8 @@ stay above the voice window.
 The Appearance pane of
 [Space Settings](api-web-and-desktop-projections.md#paper-settings-and-history)
 places Mode (System, Light, or Dark) above Theme (Classic, Aqua, or Snowbound).
-The desktop app adds Text size. The settings are independent. They are
+A team space in a browser adds Open share links. The desktop app adds Text size.
+The settings are independent. They are
 remembered per origin, applied before paint, and shared across projects. System follows the OS appearance.
 The defaults are the Aqua theme and System mode.
 Legacy mode choices retain their mode in Aqua. Soft Aqua becomes Aqua in Light mode.
@@ -132,7 +133,7 @@ Unpin has its own icon button. The destination order ends with Terminals, Agents
 and Settings.
 
 At widths <=560px, one top bar holds Back, project name (opens the project dock),
-Sync only for staged changes, the branch picker with Retry graph or Retry tasks
+Sync while there are staged changes or the draft is behind, the branch picker with Retry graph or Retry tasks
 when stale, and a labelled-row ⋯ menu. Bottom tabs show Overview,
 Inbox, Research, Runs, and More. More is active for its destinations.
 Status banners and the Overview
@@ -501,12 +502,15 @@ own transcript and turns through the thread routes, whose Space or project path
 the API module chooses. Every agent shows its queue.
 
 Every agent view, the floating node chat included, uses one header row: the
-title on the left, then icon chips that each carry a count, in this order:
-schedules, compactions, the context ring (`141k / 258k`), watchers, and
-comments. A chip shows only when it has something. A ⋯ menu ends the row. The
-menu starts with Rename wherever the agent's name can be stored: a thread, or
-a project chat with history whose host does not title it. The host's actions
-and New session follow, then Browser use, and last a
+title on the left, then icon chips that each carry a count, in this order: on
+the Space thread the Running button, then schedules, running subagents,
+compactions, the context ring (`141k / 258k`), watchers, and comments. A chip
+shows only when it has something. A ⋯ menu ends the row; a floating window adds
+Minimize after it. The menu starts with Rename wherever the agent's name can be
+stored: a thread, or a project chat with history whose host does not title it.
+In a team space Copy link follows the first item. The host's actions follow,
+then Archive or Restore for a project thread, New session, Branch this chat for
+an unarchived project thread, Browser use, and last a
 collapsible `provider · model · effort` row that opens the provider, model and
 effort selects. The agent pick is never a header button. A thread's pick is
 stored on the thread at once, and every later turn runs it, retries and wakes
@@ -612,8 +616,8 @@ after a later change that no longer lists it, or when the member leaves the
 thread. The turn keeps its "sent to Inbox" chip. A stale Proposal stays out of
 the dock; the Inbox still lists it. A card whose Proposal was decided elsewhere
 shows "Out of date" with an Open Inbox link. A failed card fetch hides the cards and
-leaves the transcript as it is; an amber cards icon in the composer (inside
-the dock in shared and node chats) says so on hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
+leaves the transcript as it is; an amber cards icon in the card dock above the
+composer, in every agent view, says so on hover and leaves at the next good read. The Space thread docks one stack above its composer, hidden when empty:
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same

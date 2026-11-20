@@ -76,8 +76,9 @@ including those for SSH bases. One loop per project in
   means on disk. Disconnected browser edits wait.
 - **Reload.** While a file has viewers or a Paper turn runs, a poll scans the
   folder. It hashes only paths whose stat changed and reads a file once its stat
-  stays stable for one interval. `PAPER_POLL_*` in `limits.py` set the local and
-  SSH intervals and the per-poll file and byte caps.
+  stays stable for one interval. `PAPER_POLL_SECONDS` and
+  `PAPER_REMOTE_POLL_SECONDS` in `limits.py` set the local and SSH intervals.
+  `PAPER_POLL_MAX_FILES` and `PAPER_POLL_MAX_HASH_MB` cap each poll.
 - **Merge.** A disk hash that differs from the last known text is a foreign
   write. An open file merges three ways: the base, the buffer, and the disk. The
   buffer wins overlaps, so the human's text wins. Viewers receive the result as
@@ -898,14 +899,16 @@ mentions. [Comment rendering](../../src/rcp/comments/render.py) is the only plac
 a thread becomes agent text. The [Web module](../../web/src/comments/) owns the
 rail, pins, composer, picker, and box tool for every surface. The viewer shell
 inlines its built bundle, so author HTML stays in its opaque frame
-([invariant 10e](../../AGENTS.md#stable-invariants)). Space agent threads keep
-their own [answer comments](conversations-episodes-and-watchers.md#conversation-scratch-and-human-input).
+([invariant 10e](../../AGENTS.md#stable-invariants)). Space agent threads use
+the same module through `/api/agent-threads/{thread_id}/comment-threads`. They
+take artifact and reply targets, never Paper files.
 
 | Target | Readable by | Its agent |
 | --- | --- | --- |
 | Artifact | members who can read the artifact; a private one only by its owner | the artifact's origin chat |
 | Paper file | project members, while the file exists | the sender's open Coach chat |
 | Chat reply | members who can read its chat; a private one only by its owner | that chat |
+| Space thread artifact or reply | the thread owner only | that thread |
 
 `readable_comment_target` is the single readability check. Every comment route,
 the picker, mentions, the Inbox, and notification delivery use it. An unreadable
@@ -989,7 +992,8 @@ only a prompt. Every send carries a client key. A repeat with the same key
 renders the threads as they stood when sent and replays the original turn or
 steer.
 
-Sending needs project write access and a Patch-capable identity. Only the owner
+Sending needs a Patch-capable identity, plus project write access for a project
+chat. Only the owner
 of a private chat sends to it. Other members' comments do not dock, and they
 mention the owner instead. If an admitted turn later fails, its threads stay
 resolved with the mark; the failure shows in the chat, and Reopen returns them.

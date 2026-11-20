@@ -221,8 +221,9 @@ fields. Launch-time validation remains necessary after a successful save.
 
 ## Agent browser Web consumers
 
-The chat Options menu reads and updates `/api/projects/{project_id}/chats/{chat_id}/browser`
-with the `browser_requested` preference. The strict PUT body contains only that
+The chat Options menu reads and updates the `browser_requested` preference at
+`/api/agent-threads/{chat_id}/browser`. The API also accepts an optional
+`project_id` query parameter for a project agent that has no row yet. The strict PUT body contains only that
 boolean. The preference exists before the chat has messages. Turning it off
 deletes the chat's browser profile after the response; an active turn keeps its
 browser until it ends. A failed write
@@ -673,17 +674,18 @@ requester/time/diagnostic. The backend exports `can_cancel`; the browser does no
 derive it from watcher status. There is no separate compute-job list request.
 Without `branch_id` the list carries every target's rows. With `branch_id` it
 carries that target's rows, or every target's with `all_targets=true`, which a
-branch view's Runs uses for sibling loops. Either way `can_stop_watching` is
-offered only on rows of the displayed target.
+branch view's Runs uses for sibling loops. `can_stop_watching` is true only for
+a live external observer whose Experiment episode has ended, on whichever target
+it was armed.
 
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires project
 write admission and an attributed human. A missing or foreign-project watcher
-returns 404. An already-observed completion or accepted cancellation request
-returns the row unchanged; no cancel command returns 409. A fresh precheck may
-establish completion without attributing it to Cancel, or report why the action
-could not run. Otherwise the route claims and executes the saved command once.
-Its result is an action receipt, not a separate cancelled watcher state. Errors
-are returned on the watcher and allow an explicit retry.
+returns 404. The route claims the Cancel only while the watcher is open, its
+check is neither removed nor completed, it has a cancel command, and no earlier
+Cancel is pending without an error. Otherwise it returns 409, including a repeat
+after an accepted Cancel. A claimed Cancel runs the saved command once, with no
+precheck. Success ends the watcher with status `stopped` and `stopped_by`
+`human`. A failure records `cancel_error`, and Cancel stays offered.
 
 `GET /api/agent-threads/{thread_id}/watchers` lists the same rows for one agent,
 keyed by its agent id, so a Space agent's jobs show in its chat.
@@ -1278,7 +1280,7 @@ after that reply or the next agent response. Nothing opens on its own.
 
 ## Private thread schedule API
 
-The thread owner lists schedules with
+A member who can see the agent lists the schedules their own turns created with
 `GET /api/agent-threads/{thread_id}/schedules`, returning `{schedules: [...]}`.
 Each schedule exposes its id, cron, interval minutes or local one-shot time, local
 start and until, fires left, timezone, note, state, disabled reason, next fire,
@@ -1289,7 +1291,8 @@ disabled schedule and returns it; invalid state, no fire left (such as an elapse
 one-shot time) or the active-schedule cap returns 409 with a plain reason.
 `POST .../{schedule_id}/pause` pauses an active schedule and
 `POST .../{schedule_id}/resume` resumes a paused one; each returns the schedule,
-and another state or the cap returns 409. Other members receive 404.
+and another state or the cap returns 409. Another member's private agent and
+another member's schedule return 404.
 Creation is through the thread's `schedule add` command; the
 [scheduling spec](graph-consolidation-and-lessons.md#private-agent-schedules)
 owns the grammar and wake lifecycle.
@@ -2224,9 +2227,10 @@ Pin lists refresh through the `artifacts` watermark family.
 The authenticated artifact shell pins both HTML and live reads to one version,
 polls while visible, and relays through the existing private artifact channel.
 The agent frame remains opaque with its existing CSP and sandbox restrictions.
-The shell is frameable only by its own RCP origin. It posts one `comments` list,
-each `{text, selection?}`, with an explicit fresh-session flag, to the existing
-comments route. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
+The shell is frameable only by its own RCP origin. It posts `thread_ids` (1 to
+50 saved comment threads) and `fresh_session`, with an `Idempotency-Key`, to
+`POST /api/projects/{project_id}/artifacts/{artifact_id}/comments`, which
+returns 202. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
 version 1 to the same-origin parent with the artifact and operation ids.
 
 ### Inline artifact presentation
@@ -2492,9 +2496,9 @@ carry earlier times than their turn's finish, so the view marks read through the
 `last_finished_at` of the listing its transcript was loaded with. Threads of projects the
 member left are closed and omitted; listing reopens every other thread.
 `capabilities` lists one member-facing line per capability of the thread kind,
-from the record of each verb its turns can be granted: the Space handler's verb
-table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
-thread. A test holds every grantable verb to a line. Every agent queues, schedules,
+from `AgentProfile.welcome()` in
+[`agent_profile.py`](../../src/rcp/agents/agent_profile.py), which reads the
+record of each verb its turns can be granted. A test holds every grantable verb to a line. Every agent queues, schedules,
 forks and archives, so the view shows those controls without a flag.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
@@ -2543,13 +2547,16 @@ branch-owning child lists like any other.
 acting member ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
 Each row has `kind` (`experiment_loop`, `auto_research` or `thread`), `id`,
 `project_id`, `project_name`, `title`, `needs_you`, `label`, `watching`, `at`
-and `link`. Episode rows come from `space_run_entries` in
+and `link`. Episode rows exclude completed and archived episodes. They come
+from `space_run_entries` in
 [`api/index.py`](../../src/rcp/api/index.py), the builder `/api/space/runs`
 also calls: `title`, `label` (`health_label`) and `at` (`last_activity_at`) are
 that row's, `needs_you` is `run_section == "actionable"`, and `link` is
 `#/projects/{project_id}/targets/{target_key}/episode/{episode_id}`. Thread
-rows come from the thread projection: `title` is `agent_name`, `label` is
-`live_label`, `at` is the latest turn's `updated_at`, `needs_you` holds for
+rows come from the thread projection, only when `live_state` is `needs_you`,
+`running`, `queued`, `paused` or `failed`, or `watching` is above zero: `title`
+is `agent_name`, `label` is
+`live_label`, `at` is the thread's `last_activity_at`, `needs_you` holds for
 `needs_you`, `paused` and `failed`, and `link` is `#/agent/{thread_id}`.
 `watching` counts the row's own active or degraded watchers. Rows that need
 the member come first, each group newest `at` first. `needs` and `total` are
@@ -2558,10 +2565,13 @@ counted before the list is cut to `SPACE_RUNNING_MAX_ROWS`.
 Every per-agent action has one route under `/api/agent-threads/{thread_id}`:
 `turns`, `transcript`, `tasks/{operation_id}` with its `steer`, `pause`,
 `resume` and `retry`, `queue`, `attachments`, `title`, `read`, `browser`,
-`archive`, `branch`, and `comment-threads`. Each handler resolves the agent once
+`archive`, `branch`, `comment-threads`, `references`, `agent`, and
+`artifacts/{artifact_id}/state`. Each of these handlers resolves the agent once
 ([`resolve_agent`](../../src/rcp/agents/agent_owner.py)); its placement picks
 the storage scope and write admission, and another member's private agent
-returns 404. A project agent that has no row yet takes a `project_id` query
+returns 404. `watchers` and `schedules` check access to the agent with
+`accessible_agent` and have their own rules (job Cancel above, schedules in
+their own section). `voice-entries` and `memory` serve only the thread's owner. A project agent that has no row yet takes a `project_id` query
 parameter, checked against membership; once the row exists, a different
 `project_id` returns 404. A project agent's `turns` body is the project chat
 send, and a `chat_id` naming another agent returns 422. `archive` and `branch`
@@ -2572,16 +2582,17 @@ The old project chat and task routes for these actions remain for one release
 as aliases that call the same handlers. `tests/test_route_inventory.py` lists
 them and refuses any new copy. The web calls only the agent routes.
 
-A project thread's waiting work lives at `/api/agent-threads/{thread_id}/queue`;
-a Space or unowned thread gets 404
+Every agent's waiting work, the Space thread's included, lives at
+`/api/agent-threads/{thread_id}/queue`. Another member's private agent or a
+closed thread gets 404
 ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
 `POST` takes the project send's `{message, attachment_set_id?,
 attachment_client_id?, references?}` with a UUID4 `Idempotency-Key`, needs a
-patch-capable identity and the project's write admission, and returns 202
+patch-capable identity, plus write admission for a project agent, and returns 202
 `{queue_id, operation_id}`. It runs one drain pass, so `operation_id` is set
 when that pass started the turn. It returns 422 for no text and no files, text
 over `AGENT_THREAD_QUEUE_MAX_CHARS`, unclaimable files, or a key reused with
-another message, and 409 for a closed or archived thread or a thread holding
+another message, and 409 for an archived or refused thread or a thread holding
 `AGENT_THREAD_QUEUE_MAX_ITEMS` unstarted messages. `DELETE .../queue/{queue_id}`
 removes an unstarted or refused message; a started one is 409. `GET` returns
 `{items}` ordered by readiness: `{kind: "handoff", handoff_id, message,
@@ -2606,7 +2617,7 @@ and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
-`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, comment_thread_ids?}`.
+`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, comment_thread_ids?, invoked_workflow_ids?, invoked_skill_ids?}`.
 The attachment fields must be supplied together. A turn needs a nonempty message
 or `comment_thread_ids`: saved threads on this thread's replies or on artifacts
 its own turns produced ([Space comments](#comment-api)). It returns 202 with
