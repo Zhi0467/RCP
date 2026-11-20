@@ -1371,6 +1371,8 @@
   .upcoming-popover,
   .approval-card,
   .approval-quiet,
+  .dock-runs,
+  .dock-runs ul,
   .thread-welcome,
   .thread-agent-picker .agent-config.compact {
     animation: none;
@@ -1380,6 +1382,9 @@
   }
   .thread-queue-row {
     animation: none;
+  }
+  .dock-runs-fold svg {
+    transition: none;
   }
   .thread-queue-row[data-leaving] {
     animation: thread-queue-leave 0.01s forwards;
