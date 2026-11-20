@@ -112,7 +112,7 @@ def _atomic_write(path, data):
         os.close(parent)
 
 
-def _deliverable_snapshot(source, destination, limit):
+def _deliverable_snapshot(source, destination, limit, *, directory_fd=None):
     """Copy one deliverable beside the journal, or report there was none.
 
     A deliverable read back off the stage later is whatever the stage holds by
@@ -120,13 +120,15 @@ def _deliverable_snapshot(source, destination, limit):
     """
 
     try:
-        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        descriptor = os.open(
+            source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+        )
     except (FileNotFoundError, NotADirectoryError):
         return False, None
     with os.fdopen(descriptor, "rb") as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("The provider's deliverable is not a regular file.")
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("The provider's deliverable is not a regular, unlinked file.")
         if info.st_size > limit:
             raise ValueError("The provider's deliverable exceeds its storage limit.")
         content = stream.read(limit + 1)
@@ -134,6 +136,37 @@ def _deliverable_snapshot(source, destination, limit):
         raise ValueError("The provider's deliverable exceeds its storage limit.")
     _atomic_write(destination, content)
     return True, hashlib.sha256(content).hexdigest()
+
+
+def _watcher_folder_snapshot(source, directory, args):
+    try:
+        descriptor = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    digests = {}
+    remaining = args.max_experiment_watch_bytes
+    try:
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                name = entry.name
+                if len(digests) >= args.max_experiment_watch_files:
+                    raise ValueError("The watcher folder exceeds its file count.")
+                if not name.endswith(".json") or name.startswith("."):
+                    raise ValueError("The watcher folder contains an unexpected file.")
+                directory.mkdir(mode=0o700, exist_ok=True)
+                present, digest = _deliverable_snapshot(
+                    name,
+                    directory / name,
+                    min(args.max_patch_bytes, remaining),
+                    directory_fd=descriptor,
+                )
+                if not present:
+                    raise ValueError("The watcher folder changed during capture.")
+                digests[name] = digest
+                remaining -= (directory / name).stat().st_size
+    finally:
+        os.close(descriptor)
+    return digests
 
 
 def run(args):
@@ -378,6 +411,7 @@ def run(args):
     patch_sha256 = None
     watch_present = False
     watch_sha256 = None
+    watcher_folder = None
     experiment_watch = {}
     experiment_watch_snapshotted = False
     if fence.terminal and journal_complete and not error and not external_stop:
@@ -416,6 +450,9 @@ def run(args):
                     experiment_watch[name] = digest
                     remaining -= os.path.getsize(experiment_watch_directory / name)
             experiment_watch_snapshotted = True
+            watcher_folder = _watcher_folder_snapshot(
+                Path(args.watch_path).parent / "watchers", directory / "watchers", args
+            )
         except (OSError, ValueError) as exc:
             error = str(exc)
             # Half a set is not a smaller set. Whatever was copied before the
@@ -467,6 +504,7 @@ def run(args):
                 # snapshotted, which is not the same as a turn that wrote none.
                 "experiment_watch_snapshotted": experiment_watch_snapshotted,
                 "experiment_watch_sha256": experiment_watch,
+                "watcher_folder_sha256": watcher_folder,
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,

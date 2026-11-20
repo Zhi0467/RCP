@@ -1145,6 +1145,13 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
+Ordinary Work chats receive their current definitions in `watchers/<watcher_id>.json`.
+Each file has a short `purpose` and either a list of external `checks` or one
+`graph` condition. At turn end RCP applies file additions, edits, and removals
+together. Removing a definition cancels its wake and leaves its job running.
+Edits retain observations for matching checks. Changing a graph condition
+replaces the watcher. A correction starts with the current live definitions.
+
 A watcher belongs to its arming agent and contains one or more checks.
 RCP retains observations for each check, including checks that were later
 removed. Readiness and the displayed state derive from these observations.

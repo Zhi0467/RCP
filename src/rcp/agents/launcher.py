@@ -52,10 +52,10 @@ from rcp.limits import (
     TURN_JOURNAL_MAX_BYTES,
     TURN_JOURNAL_MAX_CONTROL_MESSAGES,
     TURN_JOURNAL_MAX_EVENT_BYTES,
-    TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES,
-    TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES,
     TURN_JOURNAL_MAX_PATCH_BYTES,
     TURN_JOURNAL_MAX_STDERR_BYTES,
+    TURN_JOURNAL_MAX_WATCHER_BYTES,
+    TURN_JOURNAL_MAX_WATCHER_FILES,
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card, host_of
 from rcp.providers import (
@@ -280,9 +280,9 @@ def _supervised_remote_turn_command(
         "--max-control-messages",
         str(TURN_JOURNAL_MAX_CONTROL_MESSAGES),
         "--max-experiment-watch-files",
-        str(TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES),
+        str(TURN_JOURNAL_MAX_WATCHER_FILES),
         "--max-experiment-watch-bytes",
-        str(TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES),
+        str(TURN_JOURNAL_MAX_WATCHER_BYTES),
         "--stop-hold-seconds",
         str(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
         "--stop-grace-seconds",

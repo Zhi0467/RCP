@@ -8,7 +8,6 @@ from rcp.agents.context import ChatContext
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.loop_overlap import render_loop_overlap
 from rcp.agents.prompts import (
-    _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     COMMAND_CLIENT,
@@ -30,6 +29,21 @@ from rcp.agents.prompts import (
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
 from rcp.loop_status import LoopOverlap
+
+_EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
+  10 minutes, hand off a watcher to avoid repeated agent polling. This is guidance, not a cutoff.
+- Each `external` observer contains `purpose`, `check_command`, `log_path`, and `cwd`, with optional
+  `cancel_command`: `{"purpose":"GCP2 qwen3 repro finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
+- `purpose` is the one line, at most 120 characters, the member reads in Wakes. Name the work and
+  where it runs so two watchers on one log read differently.
+- Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
+  `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
+  work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
+- RCP saves `cancel_command` with the watcher and runs it only on an explicit Cancel, on the
+  same execution machine and in the same `cwd`. Omit it when you cannot provide a reliable command
+  for cancelling exactly that work. Stopping continuation does not run it.
+- After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.
+  Do not wait in a polling loop. A completed check is not proof of scientific success."""
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.

@@ -95,6 +95,7 @@ def _chat_turn(
     authorized_by: AuthorizedHuman | None = None,
     session_id: str | None = "chat-session",
     status: str = "succeeded",
+    kind: str = "node_chat",
     **request: object,
 ) -> AgentTaskRecord:
     now = store.now()
@@ -102,11 +103,12 @@ def _chat_turn(
         AgentTaskRecord(
             operation_id=operation_id,
             project_id="project",
-            kind="node_chat",
+            kind=kind,
             status="queued",
             request={
                 "chat_id": "chat",
-                "node_id": "exp-one",
+                "node_id": "exp-one" if kind == "node_chat" else None,
+                "chat_scope": "node" if kind == "node_chat" else "project",
                 "provider": "codex",
                 "model": "gpt-5",
                 "reasoning": "medium",
@@ -533,11 +535,18 @@ def _plain_tasks(store: AppStore) -> BackgroundAgentTasks:
     return tasks
 
 
-def test_plain_wake_continues_the_newest_turn_and_claims_its_watchers_once(store) -> None:
+@pytest.mark.parametrize("kind", ["node_chat", "project_chat", "space_chat"])
+def test_plain_wake_continues_the_newest_turn_and_claims_its_watchers_once(store, kind) -> None:
     human = fabricated_authorizer("Researcher")
-    _chat_turn(store, "origin", authorized_by=human, session_id="old-session")
+    _chat_turn(store, "origin", kind=kind, authorized_by=human, session_id="old-session")
     newest = _chat_turn(
-        store, "newest", authorized_by=human, session_id="new-session", provider="claude", model="m"
+        store,
+        "newest",
+        kind=kind,
+        authorized_by=human,
+        session_id="new-session",
+        provider="claude",
+        model="m",
     )
     watcher = armed(store, "done", completed=True)
     tasks = _plain_tasks(store)
@@ -546,6 +555,7 @@ def test_plain_wake_continues_the_newest_turn_and_claims_its_watchers_once(store
 
     assert wake is not None and wake.status == "queued"
     assert (wake.request["provider"], wake.request["model"]) == ("claude", "m")
+    assert wake.kind == kind
     assert wake.request["trigger"] == "watcher"
     assert wake.request["watcher_ids"] == ["done"]
     assert wake.authorized_by == human

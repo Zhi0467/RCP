@@ -24,12 +24,10 @@ from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.agents.prompts import COMMAND_CLIENT
 from rcp.agents.staged_command_client import _broker_socket_path
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
-from rcp.storage import EpisodeRecord
 
 from .helpers import (
     agent_patch_json,
@@ -381,84 +379,43 @@ async def test_local_work_keeps_rcp_inputs_outside_provider_workspace(manifest, 
 
 
 @pytest.mark.asyncio
-async def test_work_watcher_binding_keeps_originating_episode_lineage(
-    manifest, tmp_path, monkeypatch
-) -> None:
+async def test_work_watcher_folder_arms_a_watcher_for_the_originating_agent(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(app, request, "work-episode-watcher-binding")
-    episode_id = str(uuid.uuid4())
-    task = execution.store.agent_task(execution.operation_id)
-    assert task is not None
-    execution.store.create_episode(
-        EpisodeRecord(
-            episode_id=episode_id,
-            project_id=task.project_id,
-            mode="auto_research",
-            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
-            graph_base_head=GraphHeadRef(revision=0),
-            status="queued",
-            invocation_ceiling=1,
-            authorized_by=task.authorized_by,
-            created_at=task.created_at,
-            updated_at=task.updated_at,
-        )
-    )
-    original_agent_task = execution.store.agent_task
-
-    def episode_bound_task(operation_id: str):
-        task = original_agent_task(operation_id)
-        return (
-            task.model_copy(update={"episode_id": episode_id})
-            if task is not None and operation_id == execution.operation_id
-            else task
-        )
-
-    monkeypatch.setattr(execution.store, "agent_task", episode_bound_task)
-    bindings = []
-
-    def capture_binding(_store, _specs, binding, **_kwargs):
-        bindings.append(binding)
-        return []
-
-    monkeypatch.setattr(work_module, "arm_watchers", capture_binding)
+    execution = _chat_task_execution(app, request, "work-watcher-folder")
     launcher = ScriptedLauncher(
         [
             {
-                "watch.json": json.dumps(
+                "watchers/training.json": json.dumps(
                     {
-                        "external": [
+                        "purpose": "Training job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": str(tmp_path / "work.log"),
                                 "cwd": str(tmp_path),
                             }
                         ],
-                        "graph": [],
                     }
-                )
+                ),
+                "outcome.json": '{"status":"done"}',
             }
         ],
         message="Detached work is still running.",
     )
-
     frames = [
         frame
         async for frame in stream_work_run(
-            service,
-            launcher,
-            request,
-            tmp_path / "data",
-            execution=execution,
+            service, launcher, request, tmp_path / "data", execution=execution
         )
     ]
-
     assert not any('"event":"error"' in frame for frame in frames), frames
-    assert len(bindings) == 1, frames
-    assert bindings[0].episode_id == episode_id
+    watcher = execution.store.watcher("training")
+    assert watcher and watcher.agent_id == request.chat_id
+    assert watcher.origin_turn_id == execution.operation_id
+    assert watcher.state == "watching"
 
 
 @pytest.mark.asyncio

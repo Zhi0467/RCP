@@ -215,8 +215,14 @@ from rcp.storage import (
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
+from rcp.watcher_folder import (
+    WatcherFile,
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
 from rcp.watchers import (
-    WatcherBinding,
     WatcherInitialCheckError,
     arm_watchers,
     parse_watch_json,
@@ -699,6 +705,18 @@ async def _stage_work_turn(
     def clear_handoffs(layout: WorkStageLayout) -> None:
         if clear_stale_handoffs:
             _clear_stale_turn_handoffs(layout.workspace, layout.remote_stage)
+        if execution and request.chat_id and not is_consolidation(execution):
+            stage_watcher_folder(
+                execution.store,
+                watcher_binding(
+                    execution.store,
+                    execution.operation_id,
+                    request.chat_id,
+                    resolved.machine.machine_id,
+                ),
+                layout.workspace,
+                layout.remote_stage,
+            )
 
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
@@ -779,6 +797,8 @@ async def _stage_work_turn(
         stage_loop_status=stage_loop_status,
         select_skills=select_skills,
     )
+    if execution and request.chat_id and not is_consolidation(execution):
+        turn.patch_inputs = replace(turn.patch_inputs, watch_path=str(turn.workspace / "watchers"))
     return turn, staged
 
 
@@ -1334,12 +1354,26 @@ def _read_initial_patch_deliverable(
     return _DeliverableRead(text=text, failure=failure)
 
 
+def _folder_baseline(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> str | None:
+    if turn.execution is None:
+        return None
+    return turn.execution.store.agent_task_contract(
+        turn.execution.operation_id, f"watcher_folder:{attempt}"
+    )
+
+
+def _watcher_output(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> str | None:
+    if _folder_baseline(turn, attempt) is not None:
+        return json.dumps(read_watcher_folder(turn.workspace, turn.remote_stage), sort_keys=True)
+    return _read_watch_request(turn.workspace, turn.remote_stage)
+
+
 def _read_initial_watch_deliverable(
     turn: WorkFinalizationContext,
     predecessor_digest: str | None,
 ) -> _DeliverableRead:
     try:
-        text = _read_watch_request(turn.workspace, turn.remote_stage)
+        text = _watcher_output(turn, 0)
     except (OSError, StateUnavailable, ValueError) as exc:
         if turn.recorded and isinstance(exc, StateUnavailable):
             raise
@@ -1493,9 +1527,9 @@ def _read_corrected_patch_deliverable(
     )
 
 
-def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
+def _read_corrected_watch_deliverable(turn: WorkTurn, attempt: int) -> _DeliverableRead:
     try:
-        corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+        corrected_watch = _watcher_output(turn, attempt)
     except (OSError, StateUnavailable, ValueError) as exc:
         return _DeliverableRead(
             text=None,
@@ -1551,50 +1585,67 @@ async def _validate_watch_deliverable(
     try:
         if turn.execution is None:
             raise ValueError("Watcher arming requires a durable originating operation.")
-        origin_task = turn.execution.store.agent_task(turn.execution.operation_id)
-        if origin_task is None:
-            raise ValueError("The originating Work operation is no longer available.")
-        ordinary_handoff = parse_watch_json(watch_text)
-        if turn.compute_commands is not None:
-            await asyncio.to_thread(
-                turn.compute_commands.validate_handoff,
-                {item.check_command for item in ordinary_handoff.external},
-            )
-        specs = ordinary_handoff.external
-        graph_conditions = ordinary_handoff.graph
         if not turn.request.chat_id:
             raise ValueError("Watcher arming requires the turn's agent.")
-        binding = WatcherBinding(
-            project_id=origin_task.project_id,
-            agent_id=turn.request.chat_id,
-            origin_turn_id=turn.execution.operation_id,
-            graph_target=origin_task.graph_target,
-            machine_id=turn.write_scope.machine_id,
-        )
-        graph_state = (
-            await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
-        )
-        if graph_conditions:
-            turn.execution.armed_graph_watchers = True
-        watcher_ids = [
-            str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"rcp-work-watcher:{turn.execution.operation_id}:{index}",
-                )
-            )
-            for index in range(len(specs) + len(graph_conditions))
-        ]
-        armed = await asyncio.to_thread(
-            arm_watchers,
+        binding = watcher_binding(
             turn.execution.store,
-            specs,
-            binding,
-            graph_conditions=graph_conditions,
-            state=graph_state,
-            watcher_ids=watcher_ids,
-            reuse_live=True,
+            turn.execution.operation_id,
+            turn.request.chat_id,
+            turn.write_scope.machine_id,
         )
+        baseline = _folder_baseline(turn, correction_rounds)
+        if baseline is not None:
+            files = json.loads(watch_text)
+            definitions = [WatcherFile.model_validate_json(raw) for raw in files.values()]
+            if turn.compute_commands is not None:
+                await asyncio.to_thread(
+                    turn.compute_commands.validate_handoff,
+                    {item.check_command for entry in definitions for item in entry.checks},
+                )
+            graphs = any(entry.graph is not None for entry in definitions)
+            state = await asyncio.to_thread(turn.service.history.state) if graphs else None
+            armed = await asyncio.to_thread(
+                reconcile_watcher_files,
+                turn.execution.store,
+                binding,
+                json.loads(baseline),
+                files,
+                state=state,
+            )
+            turn.execution.armed_graph_watchers |= graphs
+        else:
+            ordinary_handoff = parse_watch_json(watch_text)
+            if turn.compute_commands is not None:
+                await asyncio.to_thread(
+                    turn.compute_commands.validate_handoff,
+                    {item.check_command for item in ordinary_handoff.external},
+                )
+            specs = ordinary_handoff.external
+            graph_conditions = ordinary_handoff.graph
+            graph_state = (
+                await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
+            )
+            if graph_conditions:
+                turn.execution.armed_graph_watchers = True
+            watcher_ids = [
+                str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"rcp-work-watcher:{turn.execution.operation_id}:{index}",
+                    )
+                )
+                for index in range(len(specs) + len(graph_conditions))
+            ]
+            armed = await asyncio.to_thread(
+                arm_watchers,
+                turn.execution.store,
+                specs,
+                binding,
+                graph_conditions=graph_conditions,
+                state=graph_state,
+                watcher_ids=watcher_ids,
+                reuse_live=True,
+            )
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except ValueError as exc:
@@ -1981,6 +2032,20 @@ async def _settle_watch_deliverable(
             phase="correcting",
             event=True,
         )
+        if _folder_baseline(turn, 0) is not None:
+            assert turn.request.chat_id is not None
+            stage_watcher_folder(
+                turn.execution.store,
+                watcher_binding(
+                    turn.execution.store,
+                    turn.execution.operation_id,
+                    turn.request.chat_id,
+                    turn.write_scope.machine_id,
+                ),
+                turn.workspace,
+                turn.remote_stage,
+                attempt=correction_rounds,
+            )
         correction_validator = stage_patch_validation_mailbox(
             local_stage=(launch_turn.workspace if launch_turn.remote_stage is None else None),
             remote_stage=launch_turn.remote_stage,
@@ -2092,7 +2157,7 @@ async def _settle_watch_deliverable(
             correction_rounds = maximum_corrections
             continue
         if watch_failure is not None:
-            corrected = _read_corrected_watch_deliverable(launch_turn)
+            corrected = _read_corrected_watch_deliverable(launch_turn, correction_rounds)
             text = corrected.text
             failure = corrected.failure
         else:

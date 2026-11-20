@@ -60,15 +60,26 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             errors = read("stderr.txt", max_bytes)
         except (OSError, ValueError):
             errors = ""
-        experiment_watch: dict[str, str] = {}
-        recorded_names = outcome.get("experiment_watch_sha256")
-        if isinstance(recorded_names, dict) and recorded_names:
-            # One directory of per-resource outputs. The outcome names them, so
-            # nothing here lists a directory the agent could have added to.
-            resource_fd = os.open("experiment-watch", flags | os.O_DIRECTORY, dir_fd=journal_fd)
-            descriptors.append(resource_fd)
-            for name in sorted(recorded_names):
-                experiment_watch[name] = read(name, max_bytes, resource_fd)
+
+        def watcher_files(directory: str, field: str) -> dict[str, str]:
+            names = outcome.get(field)
+            files: dict[str, str] = {}
+            if isinstance(names, dict) and names:
+                folder = os.open(directory, flags | os.O_DIRECTORY, dir_fd=journal_fd)
+                descriptors.append(folder)
+                remaining = max_bytes
+                for name in sorted(names):
+                    if (
+                        not name.endswith(".json")
+                        or os.path.basename(name) != name
+                        or name.startswith(".")
+                    ):
+                        raise ValueError("Invalid watcher filename in provider journal.")
+                    text = read(name, remaining, folder)
+                    remaining -= len(text.encode("utf-8", "surrogateescape"))
+                    files[name] = text
+            return files
+
         return {
             "accepted": accepted,
             "outcome": outcome,
@@ -76,7 +87,8 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
             "watch": read("watch.json", max_bytes) if outcome.get("watch_present") else None,
-            "experiment_watch": experiment_watch,
+            "experiment_watch": watcher_files("experiment-watch", "experiment_watch_sha256"),
+            "watcher_folder": watcher_files("watchers", "watcher_folder_sha256"),
         }
     finally:
         for fd in reversed(descriptors):
