@@ -2063,30 +2063,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
             + _SESSION_DROP_COLUMNS
             + " FROM agent_sessions AS session JOIN graph_runs AS run "
             "ON run.operation_id = session.operation_id "
-            "WHERE session.agent_id = ? AND run.project_id = ? AND run.kind = ?",
+            "WHERE session.agent_id = ? AND session.project_id = ? AND session.kind = ?",
             (chat_id, project_id, kind),
         ).fetchone()
-
-    @staticmethod
-    def _require_agent_session_owner(
-        connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
-    ) -> None:
-        """Refuse a turn whose chat id already holds a session under another project or kind.
-
-        One agent has one session (invariant 10g). Starting a fresh one beside it
-        would silently split the conversation.
-        """
-        row = connection.execute(
-            "SELECT run.project_id, run.kind FROM agent_sessions AS session "
-            "JOIN graph_runs AS run ON run.operation_id = session.operation_id "
-            "WHERE session.agent_id = ?",
-            (chat_id,),
-        ).fetchone()
-        if row is not None and (row["project_id"], row["kind"]) != (project_id, kind):
-            raise ValueError(
-                "This conversation id already holds a native session in another project or "
-                "chat kind; it cannot continue here."
-            )
 
     def _bind_agent_session(self, connection: sqlite3.Connection, operation_id: str) -> None:
         """Point the agent at this turn's native session, and receipt a replaced one."""
@@ -2108,10 +2087,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
             connection,
             AgentSessionRecord(
                 agent_id=chat_id,
+                project_id=row["project_id"],
+                kind=row["kind"],
                 provider=request.get("provider") or "",
                 machine_id=request.get("run_on") or "",
                 native_session_id=row["native_session_id"],
-                stage_root=row["stage_root"],
                 bound_at=now,
                 operation_id=operation_id,
             ),
@@ -2390,7 +2370,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return record, resolution
-        self._require_agent_session_owner(connection, record.project_id, record.kind, chat_id)
         login_switch = (
             continuation_cause == "handoff"
             and record.request.get("session_id") is None

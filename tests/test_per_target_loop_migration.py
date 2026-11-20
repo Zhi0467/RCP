@@ -119,7 +119,9 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             == "pending"
         )
     upgraded = AppStore(path)
-    assert upgraded.episode("live-main") == episode
+    migrated = upgraded.episode("live-main")
+    assert migrated is not None
+    assert migrated.model_dump(exclude={"agent_id"}) == episode.model_dump(exclude={"agent_id"})
     assert upgraded.agent_task("live-task") == task.model_copy(update={"login_id": ""})
     assert upgraded.watcher("live-watcher") == watcher
     assert upgraded.episode_budget_meter("live-main") == budget

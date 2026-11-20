@@ -503,8 +503,9 @@ takes it back. A turn that binds a different native session leaves an
 `agent_session_replaced` receipt naming what it replaced and why. Each episode
 records the agent it runs on: the agent of the episode it continues, else of its
 first turn, else the episode itself. The migration backfill applies the same
-rule. A turn whose chat id already holds a session under another project or chat
-kind is refused at admission; it never starts a second session beside it.
+rule. The session pointer is keyed by agent, project and task kind, exactly as
+turn resolution reads it, so an Experiment's turns and a member's turns in the
+same conversation each keep their own session line.
 
 - Active turns block human turns. Active and paused-resumable turns defer wakes
   and queued messages. A human message after a paused turn starts the next turn

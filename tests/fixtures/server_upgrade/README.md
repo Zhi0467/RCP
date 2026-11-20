@@ -254,3 +254,8 @@ fixture builder.
 bump their chat's question version (migration 89). Exact source
 `1358a21dea77572ad2e2a7d5e4377a9024d25ecc` upgrades a copy of
 `pre-share-links-v49-e282ed4` through the existing fixture builder.
+
+`pre-agents-v51-0389869` freezes migration 92 before agents and their session
+pointers gain their own tables (migration 93). Exact source
+`0389869e50478e0a84ba84f7ce8e705b05d70835` upgrades a copy of
+`pre-plan-cards-v50-1358a21` through the existing fixture builder.

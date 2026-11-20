@@ -82,7 +82,7 @@ def test_a_turn_names_its_agent_and_the_session_follows_the_newest_bound_turn(tm
         "laptop",
         "session-a",
     )
-    assert (session.stage_root, session.operation_id) == ("/stage/a", "first")
+    assert session.operation_id == "first"
 
     _turn(store, "second", native_session_id="session-a", stage_root="/stage/a")
     assert _bound(store, "project_chat", "chat") == "second"
@@ -104,18 +104,27 @@ def test_a_turn_names_its_agent_and_the_session_follows_the_newest_bound_turn(tm
     assert replaced[0].payload["replaced_provider"] == "codex"
 
     assert _bound(store, "project_chat", "other") is None
-    for collision in ({"kind": "node_chat"}, {"project_id": "elsewhere"}):
-        with pytest.raises(ValueError):
-            store.create_agent_task(
-                _task_record(
-                    store.now(),
-                    operation_id="collision",
-                    request={"chat_id": "chat", "provider": "codex", "run_on": "laptop"},
-                    **{"kind": "project_chat", **collision},
-                )
+    for operation_id, other in (
+        ("other-kind", {"kind": "node_chat"}),
+        ("other-project", {"project_id": "elsewhere"}),
+    ):
+        key = {"kind": "project_chat", "project_id": "project", **other}
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id=operation_id,
+                status="succeeded",
+                status_message="succeeded",
+                request={"chat_id": "chat", "provider": "codex", "run_on": "laptop"},
+                native_session_id="session-" + operation_id,
+                stage_root="/stage/" + operation_id,
+                **key,
             )
-        assert store.agent_task("collision") is None
+        )
+        assert _bound(store, key["kind"], "chat", key["project_id"]) == operation_id
     assert _bound(store, "project_chat", "chat") == "third"
+    newest = store.agent_session("chat")
+    assert newest is not None and newest.operation_id == "other-project"
     store.close()
 
 
@@ -217,6 +226,14 @@ def test_older_database_upgrades_every_agent_kind_and_its_session(tmp_path, monk
             _old_run(connection, "s3", created_at="2026-01-04", chat_id="shared")
             _old_run(
                 connection,
+                "n1",
+                kind="node_chat",
+                created_at="2026-01-02",
+                session="node-session",
+                chat_id="shared",
+            )
+            _old_run(
+                connection,
                 "s4",
                 created_at="2026-01-05",
                 session="edit",
@@ -298,12 +315,13 @@ def test_older_database_upgrades_every_agent_kind_and_its_session(tmp_path, monk
         "2026-01-02",
     )
     assert _bound(upgraded, "project_chat", "shared") == "s2"
+    assert _bound(upgraded, "node_chat", "shared") == "n1"
     assert _bound(upgraded, "project_chat", "thread") == "t1"
     assert _bound(upgraded, "space_chat", "space-thread", space_id) == "sp1"
     assert upgraded.agent_session("worker") is None
     session = upgraded.agent_session("shared")
     assert session is not None
-    assert (session.native_session_id, session.stage_root) == ("b", "/stage/s2")
+    assert (session.native_session_id, session.operation_id) == ("b", "s2")
     current = upgraded.current_chat_session("project", "project_chat", "shared")
     assert current is not None and current.native_session_id == "b"
     with upgraded.connection() as connection:

@@ -3723,6 +3723,7 @@ _PROJECT_ID_TABLES = (
     "auto_research_child_admissions",
     "agent_threads",
     "agents",
+    "agent_sessions",
     "space_turn_project_bindings",
 )
 

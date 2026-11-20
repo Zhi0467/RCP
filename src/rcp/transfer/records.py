@@ -83,6 +83,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
         "agent_threads",
         "agents",
+        "agent_sessions",
         "space_turn_project_bindings",
         "memory_migrations",
         "memory_deletions",

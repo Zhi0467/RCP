@@ -34,10 +34,11 @@ class AgentRecord(BaseModel):
 
 class AgentSessionRecord(BaseModel):
     agent_id: str
+    project_id: str
+    kind: str
     provider: str
     machine_id: str
     native_session_id: str
-    stage_root: str | None = None
     bound_at: str
     operation_id: str
 
@@ -46,18 +47,19 @@ _SPACE_ID = "(SELECT space_id FROM space_identity WHERE singleton=1)"
 
 
 def migrate_agents(connection: sqlite3.Connection, session_task_kinds: Collection[str]) -> None:
-    connection.execute("""CREATE TABLE agents (
+    connection.execute("""CREATE TABLE IF NOT EXISTS agents (
         agent_id TEXT PRIMARY KEY, space_id TEXT NOT NULL, project_id TEXT,
         visibility TEXT NOT NULL CHECK(visibility IN ('private', 'shared')),
         entry TEXT NOT NULL CHECK(entry IN ('single_entry', 'project')),
         owner_user_id TEXT, created_at TEXT NOT NULL,
         CHECK((entry='single_entry') = (project_id IS NULL)),
         CHECK(visibility='shared' OR owner_user_id IS NOT NULL))""")
-    connection.execute("CREATE INDEX agents_project ON agents(project_id)")
-    connection.execute("""CREATE TABLE agent_sessions (
-        agent_id TEXT PRIMARY KEY, provider TEXT NOT NULL, machine_id TEXT NOT NULL,
-        native_session_id TEXT NOT NULL, stage_root TEXT, bound_at TEXT NOT NULL,
-        operation_id TEXT NOT NULL)""")
+    connection.execute("CREATE INDEX IF NOT EXISTS agents_project ON agents(project_id)")
+    connection.execute("""CREATE TABLE IF NOT EXISTS agent_sessions (
+        agent_id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL,
+        provider TEXT NOT NULL, machine_id TEXT NOT NULL,
+        native_session_id TEXT NOT NULL, bound_at TEXT NOT NULL,
+        operation_id TEXT NOT NULL, PRIMARY KEY(agent_id, project_id, kind))""")
     for table, column, definition in (
         ("episodes", "agent_id", "TEXT"),
         ("agent_threads", "is_default", "INTEGER NOT NULL DEFAULT 1"),
@@ -67,11 +69,11 @@ def migrate_agents(connection: sqlite3.Connection, session_task_kinds: Collectio
     connection.execute("DROP INDEX IF EXISTS agent_threads_space")
     connection.execute("DROP INDEX IF EXISTS agent_threads_project")
     connection.execute(
-        "CREATE UNIQUE INDEX agent_threads_default_space ON agent_threads(user_id) "
+        "CREATE UNIQUE INDEX IF NOT EXISTS agent_threads_default_space ON agent_threads(user_id) "
         "WHERE project_id IS NULL AND is_default=1"
     )
     connection.execute(
-        "CREATE UNIQUE INDEX agent_threads_default_project ON agent_threads(user_id, project_id) "
+        "CREATE UNIQUE INDEX IF NOT EXISTS agent_threads_default_project ON agent_threads(user_id, project_id) "
         "WHERE project_id IS NOT NULL AND is_default=1"
     )
     backfill_agents(connection, session_task_kinds)
@@ -124,16 +126,16 @@ def backfill_agents(connection: sqlite3.Connection, session_task_kinds: Collecti
     )
     kinds = sorted(session_task_kinds)
     connection.execute(
-        "INSERT OR IGNORE INTO agent_sessions(agent_id,provider,machine_id,native_session_id,"
-        "stage_root,bound_at,operation_id) "
-        "SELECT agent_id, provider, machine_id, native_session_id, stage_root, created_at, "
+        "INSERT OR IGNORE INTO agent_sessions(agent_id,project_id,kind,provider,machine_id,"
+        "native_session_id,bound_at,operation_id) "
+        "SELECT agent_id, project_id, kind, provider, machine_id, native_session_id, created_at, "
         "operation_id FROM ("
-        "SELECT json_extract(request_json, '$.chat_id') AS agent_id, "
+        "SELECT json_extract(request_json, '$.chat_id') AS agent_id, project_id, kind, "
         "coalesce(json_extract(request_json, '$.provider'), '') AS provider, "
         "coalesce(json_extract(request_json, '$.run_on'), '') AS machine_id, "
-        "native_session_id, stage_root, created_at, operation_id, "
-        "row_number() OVER (PARTITION BY json_extract(request_json, '$.chat_id') "
-        "ORDER BY created_at DESC, rowid DESC) AS newest "
+        "native_session_id, created_at, operation_id, "
+        "row_number() OVER (PARTITION BY json_extract(request_json, '$.chat_id'), project_id, "
+        "kind ORDER BY created_at DESC, rowid DESC) AS newest "
         f"FROM graph_runs WHERE kind IN ({','.join('?' for _ in kinds)}) "
         "AND native_session_id IS NOT NULL AND native_session_id != '' "
         "AND (json_extract(request_json, '$.artifact_edit') IS NULL "
@@ -215,8 +217,12 @@ def agent(connection: sqlite3.Connection, agent_id: str) -> AgentRecord | None:
 
 
 def agent_session(connection: sqlite3.Connection, agent_id: str) -> AgentSessionRecord | None:
+    """The agent's most recently bound session."""
     row = connection.execute(
-        "SELECT * FROM agent_sessions WHERE agent_id = ?", (agent_id,)
+        "SELECT session.* FROM agent_sessions AS session LEFT JOIN graph_runs AS bound "
+        "ON bound.operation_id = session.operation_id WHERE session.agent_id = ? "
+        "ORDER BY bound.created_at DESC, bound.rowid DESC LIMIT 1",
+        (agent_id,),
     ).fetchone()
     return AgentSessionRecord.model_validate(dict(row)) if row is not None else None
 
@@ -224,17 +230,21 @@ def agent_session(connection: sqlite3.Connection, agent_id: str) -> AgentSession
 def bind_session(
     connection: sqlite3.Connection, session: AgentSessionRecord
 ) -> AgentSessionRecord | None:
-    """Make this turn's session the agent's current one.
+    """Make this turn's session current for its agent, project and task kind.
 
-    A turn older than the bound one never takes the session back. Returns the
-    session this one replaced, when the native session changed; the caller owes
-    that replacement a receipt.
+    The key is the one the turn scan resolved by, so a conversation whose turns
+    run under two task kinds keeps each kind's own session line. A turn older
+    than the bound one never takes the session back. Returns the session this
+    one replaced, when the native session changed; the caller owes that
+    replacement a receipt.
     """
+    key = (session.agent_id, session.project_id, session.kind)
     current = connection.execute(
         "SELECT session.*, bound.created_at AS turn_created_at, bound.rowid AS turn_rowid "
         "FROM agent_sessions AS session LEFT JOIN graph_runs AS bound "
-        "ON bound.operation_id = session.operation_id WHERE session.agent_id = ?",
-        (session.agent_id,),
+        "ON bound.operation_id = session.operation_id "
+        "WHERE session.agent_id = ? AND session.project_id = ? AND session.kind = ?",
+        key,
     ).fetchone()
     turn = connection.execute(
         "SELECT created_at, rowid FROM graph_runs WHERE operation_id = ?", (session.operation_id,)
@@ -248,19 +258,19 @@ def bind_session(
     ):
         return None
     connection.execute(
-        "INSERT INTO agent_sessions(agent_id,provider,machine_id,native_session_id,stage_root,"
-        "bound_at,operation_id) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET "
+        "INSERT INTO agent_sessions(agent_id,project_id,kind,provider,machine_id,"
+        "native_session_id,bound_at,operation_id) VALUES(?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(agent_id, project_id, kind) DO UPDATE SET "
         "provider=excluded.provider, machine_id=excluded.machine_id, "
-        "native_session_id=excluded.native_session_id, stage_root=excluded.stage_root, "
+        "native_session_id=excluded.native_session_id, "
         "bound_at=CASE WHEN agent_sessions.operation_id=excluded.operation_id "
         "THEN agent_sessions.bound_at ELSE excluded.bound_at END, "
         "operation_id=excluded.operation_id",
         (
-            session.agent_id,
+            *key,
             session.provider,
             session.machine_id,
             session.native_session_id,
-            session.stage_root,
             session.bound_at,
             session.operation_id,
         ),
@@ -274,9 +284,10 @@ def bind_session(
 
 
 def move_project_agents(connection: sqlite3.Connection, old_id: str, project_id: str) -> None:
-    connection.execute(
-        "UPDATE agents SET project_id = ? WHERE project_id = ?", (project_id, old_id)
-    )
+    for table in ("agents", "agent_sessions"):
+        connection.execute(
+            f"UPDATE {table} SET project_id = ? WHERE project_id = ?", (project_id, old_id)
+        )
 
 
 def rekey_project_sessions(
@@ -284,22 +295,20 @@ def rekey_project_sessions(
 ) -> None:
     """Name each bound session's machine as its turn's rewritten request now does."""
     rows = connection.execute(
-        "SELECT session.agent_id, session.machine_id FROM agent_sessions AS session "
-        "JOIN agents AS agent USING (agent_id) WHERE agent.project_id = ?",
-        (project_id,),
+        "SELECT rowid, machine_id FROM agent_sessions WHERE project_id = ?", (project_id,)
     ).fetchall()
-    for agent_id, machine_id in rows:
+    for rowid, machine_id in rows:
         connection.execute(
-            "UPDATE agent_sessions SET machine_id = ? WHERE agent_id = ?",
-            (mapped(machine_id), agent_id),
+            "UPDATE agent_sessions SET machine_id = ? WHERE rowid = ?", (mapped(machine_id), rowid)
         )
 
 
 def delete_project_agents(connection: sqlite3.Connection, project_id: str) -> dict[str, int]:
+    """Delete a project's sessions, then its agents, so no session outlives its agent."""
     sessions = connection.execute(
-        "DELETE FROM agent_sessions WHERE agent_id IN "
+        "DELETE FROM agent_sessions WHERE project_id = ? OR agent_id IN "
         "(SELECT agent_id FROM agents WHERE project_id = ?)",
-        (project_id,),
+        (project_id, project_id),
     ).rowcount
     agents = connection.execute("DELETE FROM agents WHERE project_id = ?", (project_id,)).rowcount
     return {"agent_sessions": sessions, "agents": agents}
