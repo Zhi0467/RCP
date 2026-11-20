@@ -1161,7 +1161,7 @@ def install_space_hidden_read_scope(scope: HiddenReadScope) -> HiddenReadScope:
                 path.name + ".policy.json": scope.model_dump_json(),
             },
         )
-    except OSError:
+    except (OSError, ValueError):
         logging.getLogger(__name__).exception("Space hidden-read wrapper install failed")
         return unhidden_read_scope(machine_id=scope.machine_id, os_account=scope.os_account)
     return scope
