@@ -124,7 +124,10 @@ outside protected paths. Validate-only credentials and other run kinds cannot
 launch. The response supplies the check to copy into a watcher file. The
 [compute job models](../../src/rcp/compute_jobs/models.py) own stored job,
 launch request and readiness fields. The watcher observes OS ownership and
-receipts rather than guessed PIDs. Cancel uses the saved handle.
+receipts rather than guessed PIDs. Cancel uses the saved handle. It writes a
+`cancelled` receipt only when no `exit` receipt exists, and an `exit` receipt
+always outranks `cancelled`, so a job that finished just before Cancel reads as
+exited.
 
 Each launch probes readiness, starts work, waits
 `COMPUTE_JOB_STARTUP_CHECK_SECONDS` and refreshes once. `startup` reports

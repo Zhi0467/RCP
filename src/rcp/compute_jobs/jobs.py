@@ -167,7 +167,11 @@ def refresh_compute_job(
                 )
             else:
                 status, exit_status, diagnostic = "exited", parsed_status, None
-        cancelled = read_job_file(context, str(PurePosixPath(record.job_root) / "cancelled"))
+        cancelled = (
+            None
+            if status == "exited"
+            else read_job_file(context, str(PurePosixPath(record.job_root) / "cancelled"))
+        )
         if cancelled is not None:
             ended_at = epoch_timestamp(cancelled.strip())
             status, diagnostic = "cancelled", None

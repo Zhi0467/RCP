@@ -90,3 +90,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
     assert run("cancel_command").returncode == 0
     assert (root / "cancelled").is_file()
     assert run("check_command").returncode == 0
+    (root / "cancelled").unlink()
+    (root / "exit").write_text("0 100")
+    assert run("cancel_command").returncode == 0
+    assert not (root / "cancelled").exists()

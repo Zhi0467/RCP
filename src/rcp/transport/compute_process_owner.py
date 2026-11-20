@@ -58,13 +58,13 @@ def observe_job(root: Path, backend: str, handle: str, *, timeout: float) -> int
         raise RuntimeError(result.stderr or "The process owner could not report job state.")
     if alive:
         return 1
-    if (root / "cancelled").is_file():
-        return 0
     try:
         status, ended = (root / "exit").read_text().split()
         if not 0 <= int(status) <= 255 or int(ended) < 0:
             raise ValueError("Invalid exit receipt")
     except (OSError, ValueError) as exc:
+        if (root / "cancelled").is_file():
+            return 0
         raise RuntimeError("The job disappeared without a valid exit receipt.") from exc
     return 0
 
@@ -87,6 +87,8 @@ def main(argv: list[str]) -> int:
             timeout=timeout,
         )
         require_cancel_success(backend, result)
+        if (root / "exit").is_file():
+            return 0
         temporary = root / ".cancelled.tmp"
         temporary.write_text(str(int(time.time())))
         os.replace(temporary, root / "cancelled")
