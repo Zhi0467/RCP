@@ -43,10 +43,17 @@ from rcp.skill_registry import SkillDefaults, SkillSelection, official_registry
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.turn_outcomes import TurnOutcome
+from rcp.watcher_folder import (
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import CompositeWriteScope, RegisteredRepositoryRoot
     from rcp.runs.space_projects import SpaceProjects
+    from rcp.watchers import WatcherBinding
 
 
 def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadScope:
@@ -323,6 +330,7 @@ async def stream_space_chat_run(
         owner, request, execution.operation_id, role="user", text=request.message or ""
     )
     turn.clear_fresh_outputs()
+    watchers = _stage_space_watchers(turn)
     lifecycles = []
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
@@ -373,7 +381,9 @@ async def stream_space_chat_run(
         service=None,
     ):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
-    turn_outcome = settle_space_turn_outcome(turn.stage, summary)
+    turn_outcome = settle_space_turn_outcome(
+        turn.stage, summary, watcher_problem=_reconcile_space_watchers(turn, *watchers)
+    )
     execution.turn_outcome = turn_outcome
     answer = "\n\n".join(outcome.answers)
     append_space_message(
@@ -808,7 +818,7 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
     sections = [
         "You are the member's Space agent. Each turn is a captured Work turn. Read across "
         "their projects; make direct file and graph changes only inside the writable "
-        "projects below. Never create watch.json or a top-level patch.json; a project "
+        "projects below. Never create a top-level patch.json; a project "
         "Patch belongs only in its own projects/<id>/patch.json.",
         render_agent_graph_authority_contract(),
         f"Top-level command client: `{stage / 'rcp'}`. Available commands:\n{usages}",
@@ -995,7 +1005,35 @@ def _commit_space_session(turn: _SpaceTurn, session_id: str) -> None:
     )
 
 
-def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]) -> TurnOutcome:
+def _stage_space_watchers(turn: _SpaceTurn) -> tuple[WatcherBinding, dict[str, str]]:
+    store = turn.owner.store
+    binding = watcher_binding(
+        store, turn.execution.operation_id, turn.owner.thread_id, BACKEND_MACHINE_ID
+    )
+    saved = store.agent_task_contract(binding.origin_turn_id, "watcher_folder:0")
+    if saved is not None and turn.execution.continuation != "fresh":
+        return binding, json.loads(saved)
+    return binding, stage_watcher_folder(store, binding, turn.stage, None)
+
+
+def _reconcile_space_watchers(
+    turn: _SpaceTurn, binding: WatcherBinding, baseline: dict[str, str]
+) -> str | None:
+    try:
+        reconcile_watcher_files(
+            turn.owner.store, binding, baseline, read_watcher_folder(turn.stage, None)
+        )
+    except (OSError, ValueError) as exc:
+        return f"Watcher changes not applied: {exc}"
+    return None
+
+
+def settle_space_turn_outcome(
+    stage: Path,
+    summary: dict[str, dict[str, object]],
+    *,
+    watcher_problem: str | None = None,
+) -> TurnOutcome:
     """The agent's stated outcome, made partial when any project's update did not land.
 
     An unwritten outcome is not stated, as in project Work, never a failure.
@@ -1020,9 +1058,13 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
         for project_id, item in summary.items()
         if item["status"] in {"rejected", "unavailable"}
     ]
-    if not failed:
+    problems = [
+        *(["Project graph updates not applied: " + "; ".join(failed)] if failed else []),
+        *([watcher_problem] if watcher_problem else []),
+    ]
+    if not problems:
         return outcome
-    reason = " ".join(("Project graph updates not applied: " + "; ".join(failed)).split())
+    reason = " ".join(" ".join(problems).split())
     partial = WorkTurnOutcome(status="partial", reason=reason[:TURN_OUTCOME_REASON_MAX_CHARS])
     # The agent may have left a link here; replace it rather than write through it.
     clear_space_output(stage / "outcome.json")

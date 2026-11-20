@@ -1039,3 +1039,76 @@ def test_a_crash_cut_last_line_never_locks_the_space_thread(manifest, tmp_path):
     transcript = read_space_chat_transcript(tmp_path / "data", thread.user_id, thread.thread_id)
     assert transcript is not None
     assert [item.text for item in transcript.messages] == ["Hello", "Hi"]
+
+
+def test_a_space_agent_arms_watchers_from_its_folder_and_a_wake_continues_its_thread(
+    manifest, tmp_path
+):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _reconcile_space_watchers, _stage_space_watchers
+    from rcp.runs.watcher_admission import start_plain_watcher_wake
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, _request, task = _space_owner_and_turn(app, store)
+    stage = tmp_path / "space-stage"
+    stage.mkdir()
+    turn = SimpleNamespace(
+        owner=owner,
+        execution=SimpleNamespace(operation_id=task.operation_id, continuation="fresh"),
+        stage=stage,
+    )
+    binding, baseline = _stage_space_watchers(turn)
+    assert baseline == {} and (stage / "watchers").is_dir()
+    (tmp_path / "job.log").write_text("done\n")
+    (stage / "watchers" / "job.json").write_text(
+        json.dumps(
+            {
+                "purpose": "Job finishes",
+                "checks": [
+                    {
+                        "check_command": "true",
+                        "log_path": str(tmp_path / "job.log"),
+                        "cwd": str(tmp_path),
+                    }
+                ],
+            }
+        )
+    )
+
+    assert _reconcile_space_watchers(turn, binding, baseline) is None
+
+    (watcher,) = store.agent_watchers(owner.thread_id)
+    assert (watcher.project_id, watcher.state) == (store.space_id, "finished")
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    tasks = app.state.background_tasks
+    tasks.admit_provider_task = lambda *_args, **_kwargs: None
+    tasks.launch_admitted = store.agent_task
+    wake = start_plain_watcher_wake(tasks, owner.thread_id, [watcher], task.authorized_by)
+    assert wake is not None
+    assert (wake.kind, wake.project_id) == ("space_chat", store.space_id)
+    assert store.watcher(watcher.watcher_id).wake_turn_id == wake.operation_id
+
+
+def test_a_space_graph_watcher_is_reported_not_armed(manifest, tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _reconcile_space_watchers, _stage_space_watchers
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, _request, task = _space_owner_and_turn(app, store)
+    turn = SimpleNamespace(
+        owner=owner,
+        execution=SimpleNamespace(operation_id=task.operation_id, continuation="fresh"),
+        stage=tmp_path / "space-stage",
+    )
+    turn.stage.mkdir()
+    binding, baseline = _stage_space_watchers(turn)
+    (turn.stage / "watchers" / "node.json").write_text(
+        json.dumps({"purpose": "Node resolves", "graph": {"node_id": "exp/a", "status_in": ["x"]}})
+    )
+
+    assert _reconcile_space_watchers(turn, binding, baseline)
+    assert store.agent_watchers(owner.thread_id) == []
