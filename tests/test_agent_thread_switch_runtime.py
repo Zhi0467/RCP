@@ -51,7 +51,7 @@ def test_provider_switch_seeds_actual_first_turn(manifest, tmp_path, monkeypatch
     monkeypatch.setattr("rcp.runs.shared._prepare_hidden_read_scope", prepare_policy)
     monkeypatch.setattr("rcp.runs.tasks.work._prepare_hidden_read_scope", prepare_policy)
     monkeypatch.setattr("rcp.runs.space_chat.default_space_hidden_read_scope", lambda *a: policy)
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     summary = "Retain the chosen experiment and continue the pending analysis."
     calls = []
 

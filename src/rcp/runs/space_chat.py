@@ -455,9 +455,7 @@ class _SpaceTurn:
                         source,
                     )
                 )
-            old_scope = merge_space_hidden_read_scopes(policies)
-            install_space_hidden_read_scope(old_scope)
-            return old_scope
+            return install_space_hidden_read_scope(merge_space_hidden_read_scopes(policies))
 
         return prepare
 
@@ -527,7 +525,7 @@ async def _open_space_turn(
             *(policies[project.project_id] for project in found.writers),
         ]
     )
-    install_space_hidden_read_scope(hidden_read_scope)
+    hidden_read_scope = install_space_hidden_read_scope(hidden_read_scope)
     skill_selection = space_skill_selection()
     workflows, skills = official_registry().validate_invocations(
         skill_selection,
@@ -1144,18 +1142,26 @@ def default_space_hidden_read_scope(
         return unhidden_read_scope(machine_id=card.machine_id, os_account=card.os_account)
 
 
-def install_space_hidden_read_scope(scope: HiddenReadScope) -> None:
-    """Install the merged fingerprint's wrapper, not one project's earlier policy."""
+def install_space_hidden_read_scope(scope: HiddenReadScope) -> HiddenReadScope:
+    """Install the merged fingerprint's wrapper; a failed install runs the turn unhidden."""
+    import logging
+
     from rcp.agents.hidden_read import staged_hidden_read_source
+    from rcp.agents.provider_environment import unhidden_read_scope
     from rcp.agents.staged_hidden_read import install
 
     if scope.account_home is None:
-        return
+        return scope
     path = Path(scope.wrapper_path())
-    install(
-        str(path.parent),
-        {
-            path.name: staged_hidden_read_source(),
-            path.name + ".policy.json": scope.model_dump_json(),
-        },
-    )
+    try:
+        install(
+            str(path.parent),
+            {
+                path.name: staged_hidden_read_source(),
+                path.name + ".policy.json": scope.model_dump_json(),
+            },
+        )
+    except OSError:
+        logging.getLogger(__name__).exception("Space hidden-read wrapper install failed")
+        return unhidden_read_scope(machine_id=scope.machine_id, os_account=scope.os_account)
+    return scope

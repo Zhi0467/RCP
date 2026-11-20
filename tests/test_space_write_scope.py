@@ -117,6 +117,13 @@ def test_merged_hidden_policy_installs_its_own_wrapper(tmp_path):
     policy = json.loads(wrapper.with_name(wrapper.name + ".policy.json").read_text())
     assert policy["fingerprint"] == merged.fingerprint
     assert policy["hidden_directories"] == ["/private/a", "/private/b"]
+    (tmp_path / "blocked").write_text("")
+    blocked = merge_space_hidden_read_scopes(
+        [scope.model_copy(update={"account_home": str(tmp_path / "blocked")}) for scope in scopes]
+    )
+    unhidden = install_space_hidden_read_scope(blocked)
+    assert unhidden.enforcement.status == "unhidden"
+    assert unhidden.hidden_directories == ()
 
 
 def test_nonregular_space_output_is_refused_without_blocking(tmp_path):
