@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v22"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v23"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -447,7 +447,7 @@ Graph reflection and authority:
 - If reflection is useful, write exactly one semantic Patch JSON object to `{patch_path}` using only
   fields in `{output_schema_path}`. RCP assigns patch kind, agent authorship, revision, run scope,
   Proposal dependencies and base revision, lifecycle, and admission bookkeeping.
-  {REPOSITORIES_READ_RULE} Do not advance the ingestion watermark.
+  {REPOSITORIES_READ_RULE}
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
   independent: report operational truth, and do not state whether RCP applied the Patch; RCP

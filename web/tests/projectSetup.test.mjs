@@ -576,8 +576,6 @@ function settingsProject() {
       },
     ],
     agent_profiles: {
-      seed: profile,
-      refresh: profile,
       node_chat: profile,
       project_chat: profile,
       paper_coach: profile,
@@ -673,7 +671,7 @@ test("the team request derives truth scopes while preserving machine and provide
     ],
     providerChecks: [
       {
-        profile: "seed",
+        profile: "node_chat",
         provider: "codex",
         runtime_id: "codex:exec",
         model: "gpt-5.6-luna",
@@ -759,7 +757,7 @@ test("the provisioning view renders backend answers and hides native actions in 
     ],
     provider_checks: [
       {
-        profile: "seed",
+        profile: "node_chat",
         provider: "codex",
         runtime_id: "codex:exec",
         model: "gpt-5.6-luna",

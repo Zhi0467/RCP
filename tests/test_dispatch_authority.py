@@ -142,17 +142,9 @@ def _wait_for_terminal(store: AppStore, operation_id: str) -> AgentTaskRecord:
 
 
 def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -> None:
-    seed = resolve_dispatch_authority(
-        "seed",
-        RunRequest.model_validate(
-            {
-                "run_truth_scope": ["repo-b", "repo-a", "repo-a"],
-                "profile": "orchestrator",
-                "task_contract": "orchestrate",
-            }
-        ),
-    )
-    refresh = resolve_dispatch_authority("refresh", RunRequest(run_truth_scope=["repo-a"]))
+    for retired in ("seed", "refresh"):
+        with pytest.raises(ValueError, match="unknown task kind"):
+            resolve_dispatch_authority(retired, RunRequest(run_truth_scope=["repo-a"]))
     discuss = resolve_dispatch_authority(
         "node_chat",
         RunRequest(
@@ -180,16 +172,6 @@ def test_ordinary_resolver_maps_every_current_task_and_ignores_forged_fields() -
         ),
     )
 
-    assert seed == AgentDispatchAuthority(
-        profile="ordinary",
-        task_contract="scratch_patch",
-        scope=AgentDispatchScope(
-            run_truth_scope=["repo-a", "repo-b"],
-            patch_kind="seed",
-        ),
-    )
-    assert refresh is not None and refresh.task_contract == "scratch_patch"
-    assert refresh.scope.patch_kind == "refresh"
     assert discuss is not None and discuss.task_contract == "discuss"
     assert discuss.scope.model_dump() == {
         "run_truth_scope": ["repo-a"],
@@ -419,18 +401,6 @@ def test_agent_task_authority_carries_episode_id_from_each_exact_task_row(
                 ),
             ),
             "node chat scope requires an exact node id",
-        ),
-        (
-            AgentDispatchAuthority(
-                profile="ordinary",
-                task_contract="scratch_patch",
-                scope=AgentDispatchScope(
-                    chat_scope="project",
-                    chat_id="chat-one",
-                    patch_kind="seed",
-                ),
-            ),
-            "scratch_patch cannot carry chat identity",
         ),
     ],
 )
@@ -870,16 +840,7 @@ def test_live_apply_rejects_wrong_project_contract_or_scope_without_revision(
                 patch_kind="work",
             ),
         )
-    elif case == "patch-kind":
-        authority = AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="scratch_patch",
-            scope=AgentDispatchScope(
-                run_truth_scope=["repo-a"],
-                patch_kind="refresh",
-            ),
-        )
-    elif case == "control-node":
+    elif case == "patch-kind" or case == "control-node":
         authority = AgentDispatchAuthority(
             profile="ordinary",
             task_contract="work_auto",

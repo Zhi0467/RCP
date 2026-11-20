@@ -24,7 +24,7 @@ from rcp.api.identity import IdentityAccess
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
-    AgentExecutionProfile,
+    RecordedAgentProfile,
 )
 from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.operations import SetProjectTruthScopeOperation
@@ -204,10 +204,11 @@ class ProjectProvisioningCreateRequest(_StrictModel):
         if len(profiles) != len(set(profiles)):
             raise ValueError("project provisioning provider profiles must be unique")
         missing = set(AGENT_EXECUTION_PROFILES) - set(profiles)
-        if missing:
+        extra = set(profiles) - set(AGENT_EXECUTION_PROFILES)
+        if missing or extra:
             raise ValueError(
                 "project provisioning must configure every agent execution profile; "
-                f"missing={sorted(missing)}"
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
             )
         repository_machines = {
             repository.alias: repository.machine_id for repository in self.repositories
@@ -406,7 +407,7 @@ class ProjectProvisioningRepositoryProjection(_StrictModel):
 
 
 class ProjectProvisioningProviderProjection(_StrictModel):
-    profile: AgentExecutionProfile
+    profile: RecordedAgentProfile
     provider: ProviderId
     runtime_id: str
     model: str

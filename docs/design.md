@@ -86,7 +86,7 @@ home for repository-wide invariants and their stable identifiers.
   attribution.
 - [Providers and containment](specs/providers-and-containment.md) covers run
   capabilities, provider launches, exact project write scopes, remote execution,
-  ingestion, skills, and durable task receipts.
+  skills, and durable task receipts.
 - [Machines and compute](specs/machines-and-compute.md) covers base and project machines,
   scheduler readiness, OS-owned helper launches, shell-watcher actions, and
   durable receipts

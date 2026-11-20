@@ -11,7 +11,7 @@ import pytest
 
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
-from rcp.service import ProjectService, RunRequest
+from rcp.service import ProjectService
 from rcp.sources import ImportedProviderSourceStore
 from rcp.sources import imported as imported_module
 from rcp.storage import AppStore
@@ -188,31 +188,6 @@ def test_imported_provider_source_fifo_fails_without_blocking(
             store.inventory()
 
 
-def test_remote_seed_inventory_is_available_for_task_staging(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    capture_root, entries = _capture(tmp_path)
-    ImportedProviderSourceStore(data_dir, PROJECT_ID).publish(capture_root, entries)
-    service = ProjectService(
-        manifest,
-        HistoryManager(manifest, write_authority=unchecked_write_authority()),
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-        data_dir=data_dir,
-        project_id=PROJECT_ID,
-    )
-
-    inventory = service.imported_source_inventory(
-        "seed",
-        "server",
-    )
-
-    assert inventory is not None
-    assert inventory.files[0].sha256 == entries[0].sha256
-
-
 def test_legacy_project_service_has_no_imported_provider_source_owner(
     manifest,
     tmp_path: Path,
@@ -226,42 +201,3 @@ def test_legacy_project_service_has_no_imported_provider_source_owner(
     )
 
     assert service.imported_sources is None
-
-
-def test_seed_context_keeps_imported_sources_separate_from_native_provider_homes(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    capture_root, entries = _capture(
-        tmp_path,
-        content=(
-            b'{"type":"session_meta","payload":{"id":"imported",'
-            + f'"cwd":"{manifest.repository_map["repo-a"].path}"'.encode()
-            + b"}}\n"
-        ),
-    )
-    imported = ImportedProviderSourceStore(data_dir, PROJECT_ID)
-    imported.publish(capture_root, entries)
-    service = ProjectService(
-        manifest,
-        HistoryManager(manifest, write_authority=unchecked_write_authority()),
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-        data_dir=data_dir,
-        project_id=PROJECT_ID,
-    )
-
-    context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        surface="refresh",
-    )
-
-    assert context.imported_source_roots == {"codex": [str(imported.root / "codex")]}
-    assert str(imported.root) not in str(context.source_roots)
-    assert context.all_source_roots()["codex"] == [
-        *context.source_roots["codex"],
-        str(imported.root / "codex"),
-    ]
-    assert context.prompt_payload()["imported_source_roots"] == context.imported_source_roots
-    assert service.index_snapshot().sessions == []

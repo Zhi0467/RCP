@@ -713,12 +713,13 @@ admissions transactionally. Authorized continuations may settle. Capture waits
 for a quiet boundary.
 
 Native transcript selection is best-effort by the recorded account, working
-directory and repositories. Clear matches copy unchanged. Unreadable or
+directory and repositories. Clear matches copy unchanged into read-only
+`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`. Unreadable or
 ambiguous files produce diagnostics, not a completeness claim. Once sealed, the
 content-hashed read-only inventory is durable: missing, changed or unsafe
-entries are corruption. Seed and Refresh read it alongside live sources. Staging
-verifies its fingerprint. Old session ids or paths never grant execution
-authority.
+entries are corruption. Imported sources never enter canonical `.research`,
+provider homes or rebuildable caches. Old session ids or paths never grant
+execution authority.
 
 Target paths, accounts, binaries and profiles come from reviewed readiness
 proof. Historical repository aliases and truth provenance remain stable. Main and branches

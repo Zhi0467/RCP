@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
+from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory
 from rcp.agents.graph_read_scope import branch_label
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
@@ -166,24 +166,6 @@ def _looks_like_patch(text: str) -> bool:
     # exact schema diagnostic. Historical canonical drafts also carry summary +
     # ops, so retained pre-migration work remains recoverable.
     return isinstance(value, dict) and "ops" in value and "summary" in value
-
-
-def _existing_patch_digest(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> str | None:
-    """Fingerprint a patch already sitting in the stage before a launch.
-
-    A continuation runs in the stage its earlier attempt was given, and a
-    failed attempt keeps its `patch.json` on disk. Without this
-    fingerprint a provider that writes nothing at all has its predecessor's
-    file collected as this launch's deliverable.
-    """
-    try:
-        text, _ = _collect_patch_text(workspace, remote_stage)
-    except (AgentOutputProblem, OSError, StateUnavailable):
-        return None
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _is_local_workspace_file(path: Path) -> bool:
@@ -1368,7 +1350,7 @@ def _safe_stage_name(value: str) -> str:
 
 
 def stage_branch_read_context(
-    context: RunContext | ChatContext,
+    context: ChatContext,
     service: ProjectService,
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
@@ -1377,7 +1359,7 @@ def stage_branch_read_context(
 
     Call after mapping repositories to the execution host. Worktree replacement
     may happen before or after this call. ``parent_graph_path`` is an immutable task input,
-    also available to the Auto-research prompt through RunContext.
+    also available to the Auto-research prompt.
     """
 
     if service.history.graph_target.kind != "branch":
@@ -1419,7 +1401,7 @@ def stage_branch_read_context(
 
 
 def _stage_context_paths(
-    context: RunContext | ChatContext,
+    context: ChatContext,
     service: ProjectService,
     stage: RemoteRunStage,
     machine_id: str,

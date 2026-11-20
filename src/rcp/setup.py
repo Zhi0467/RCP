@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
+    RETIRED_AGENT_PROFILES,
     AgentExecutionProfile,
     Manifest,
     load_manifest,
@@ -338,8 +339,6 @@ class SetupAgentProfile(_StrictSetupModel):
 
 
 class SetupAgents(_StrictSetupModel):
-    seed: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
-    refresh: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     node_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     project_chat: SetupAgentProfile = Field(default_factory=SetupAgentProfile)
     paper_coach: SetupAgentProfile = Field(
@@ -348,9 +347,9 @@ class SetupAgents(_StrictSetupModel):
     orchestrator: SetupAgentProfile | None = None
 
     @model_validator(mode="after")
-    def default_orchestrator_to_refresh(self) -> SetupAgents:
+    def default_orchestrator_to_node_chat(self) -> SetupAgents:
         if self.orchestrator is None:
-            self.orchestrator = self.refresh.model_copy(deep=True)
+            self.orchestrator = self.node_chat.model_copy(deep=True)
         return self
 
     def profile(self, surface: AgentExecutionProfile) -> SetupAgentProfile:
@@ -420,8 +419,6 @@ class ProjectSetupRequest(_StrictSetupModel):
                 host=canonical.host,
             )
             self.agents = SetupAgents(
-                seed=graph_profile.model_copy(),
-                refresh=graph_profile.model_copy(),
                 node_chat=graph_profile.model_copy(),
                 project_chat=graph_profile.model_copy(),
                 orchestrator=graph_profile.model_copy(),
@@ -495,8 +492,6 @@ class _RetainedResearch:
 
 
 _SETUP_AGENT_EXECUTION_PROFILES: tuple[AgentExecutionProfile, ...] = (
-    "seed",
-    "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",
@@ -1240,7 +1235,7 @@ def prepared_provider_paths(
         raise ValueError("the prepared project has no final-review digest")
     profile_map = {check.profile: check for check in request.provider_checks}
     missing_profiles = set(AGENT_EXECUTION_PROFILES) - set(profile_map)
-    extra_profiles = set(profile_map) - set(AGENT_EXECUTION_PROFILES)
+    extra_profiles = set(profile_map) - set(AGENT_EXECUTION_PROFILES) - RETIRED_AGENT_PROFILES
     if missing_profiles or extra_profiles:
         raise ValueError(
             "the prepared project must review every agent execution profile; "

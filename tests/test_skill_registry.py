@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from rcp import skill_registry
-from rcp.agents.prompts import PromptFactory
 from rcp.service import RunRequest
 from rcp.skill_registry import SkillDefaults, SkillReference, SkillSelection, official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -389,38 +388,6 @@ def test_selecting_nothing_stages_nothing(tmp_path: Path) -> None:
 
     assert pointers == []
     assert not (stage / "inputs" / "rcp-skills-attempt-1").exists()
-
-
-def test_the_task_contract_carries_staged_package_paths(tmp_path: Path) -> None:
-    stage = tmp_path / "run"
-    stage.mkdir()
-    selection = official_registry().resolve(workflow_ids=["research-graph-audit"])
-    pointers = stage_skill_selection(
-        selection,
-        local_stage=stage,
-        remote_stage=None,
-        label="rcp-skills-attempt-1",
-    )
-
-    contract = PromptFactory.graph_task_contract(
-        "seed",
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=True,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        provider_log_roots={},
-        ingestion_watermark=None,
-        repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
-        patch_path="/stage/workspace/patch.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/workspace/patch.json",
-        skill_pointers=pointers,
-    )
-
-    assert str(stage / "inputs" / "rcp-skills-attempt-1" / "workflow" / "research-graph-audit") in (
-        contract
-    )
 
 
 def test_the_read_only_package_inspector_serves_the_package_text(manifest, tmp_path) -> None:

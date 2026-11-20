@@ -42,7 +42,6 @@ import {
 } from "./settingsDraft";
 import { providerPathPresentation } from "./providerPaths";
 import { SettingsRail, type SettingsSection } from "../ui/SettingsRail";
-import { hasRow, rowOf } from "../core/agentRows";
 import type { ProjectReadinessRetention } from "../graph/projectSession";
 import type {
   AgentExecutionProfile,
@@ -92,14 +91,11 @@ export function publishCacheMetrics(
 }
 
 const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed and refresh" },
-  { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
-const executionRows = executionProfiles.filter(({ id }) => hasRow(id));
 
 /** Every agent runs on the base: the machine that holds the canonical state repository. */
 function baseMachine(project: ProjectSnapshot): string {
@@ -117,7 +113,7 @@ function profilesFrom(
     executionProfiles.map(({ id }) => {
       const storedProfile =
         id === "orchestrator"
-          ? (project.agent_profiles.orchestrator ?? project.agent_profiles.refresh)
+          ? (project.agent_profiles.orchestrator ?? project.agent_profiles.node_chat)
           : project.agent_profiles[id];
       const { run_on: _runOn, ...settings } = profileRunConfig(storedProfile, base);
       return [id, { ...settings, runtime: storedProfile.runtime }];
@@ -388,7 +384,7 @@ export function ProjectSettings({
     const body: ProjectSettingsRequest = {
       default_auto_research_invocation_ceiling: autoResearchInvocationCeiling,
       agent_profiles: Object.fromEntries(
-        executionProfiles.map(({ id }) => [id, profiles[rowOf(id)]]),
+        executionProfiles.map(({ id }) => [id, profiles[id]]),
       ) as Record<AgentExecutionProfile, AgentProfileSettings>,
       skill_defaults: skillDefaults,
     };
@@ -756,7 +752,7 @@ export function ProjectSettings({
             </label>
           </header>
           <div className="settings-agent-list">
-            {executionRows.map(({ id, label }) => (
+            {executionProfiles.map(({ id, label }) => (
               <article className="settings-agent" key={id}>
                 <header>
                   <span>

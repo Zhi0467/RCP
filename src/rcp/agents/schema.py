@@ -597,7 +597,7 @@ def _agent_patch_shape_error(exc: ValidationError) -> ValueError:
 def prepare_agent_patch(
     draft: AgentPatch | OrchestratorAgentPatch,
     *,
-    kind: Literal["seed", "refresh", "work", "experiment_loop"],
+    kind: Literal["work", "experiment_loop"],
     run_truth_scope: list[str],
     read_scope: RepositoryReadScope,
     source_operation_id: str | None = None,
@@ -607,12 +607,9 @@ def prepare_agent_patch(
 ) -> Patch:
     """Wrap one semantic agent deliverable in RCP-owned canonical metadata (invariant 10).
 
-    Conversation and ingestion are different lifecycles that share launch
-    plumbing only: the agent Patch schema has no coverage or cursor operation
-    and `processed_cursors` is always empty here, so a chat turn can never
-    advance an ingestion watermark or cursor
-    (`tests/test_direct_ingestion_contract.py`,
-    `tests/test_api.py::test_chat_does_not_assemble_or_project_transcripts`).
+    The agent Patch schema has no coverage or cursor operation and
+    `processed_cursors` is always empty here, so an agent turn can never
+    advance the ingestion watermark or a cursor that older Patches recorded.
     """
 
     resolved_profile = _agent_patch_profile(draft, profile)

@@ -304,7 +304,7 @@ PATCH_SELF_CHECK_POLL_SECONDS = 0.2
 PATCH_SELF_CHECK_TIMEOUT_SECONDS = 30
 PATCH_SELF_CHECK_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
-# Scratch-only correction rounds in the recovery ladder. Seed/Refresh, Work, and the
+# Scratch-only correction rounds in the recovery ladder. Work and the
 # Auto-research worker each hand validation errors back to the same live session at
 # most this many times before the run is rejected. One number, one policy: raising it
 # here raises it everywhere, which is the point.
@@ -335,8 +335,6 @@ WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT = 5
 CHAT_CONVERSATION_LIMIT = 120
 RUN_INLINE_SESSION_LIMIT = 40
 RUN_INLINE_SESSION_BYTES = 12 * 1024
-REFRESH_DELTA_MAX_ENTRIES = 50
-REFRESH_DELTA_MAX_BYTES = 16 * 1024
 
 # Rebuildable display/source caches and remote source operations.
 PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024

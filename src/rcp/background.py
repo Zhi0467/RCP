@@ -815,11 +815,6 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "An Experiment watcher wake or recovery must use its dedicated admission path."
             )
-        if kind in {"seed", "refresh"} and request.session_id:
-            raise ValueError(
-                "Seed and refresh sessions can only be resumed from an RCP background "
-                "task checkpoint."
-            )
         if stage_machine_id is not None or stage_root is not None:
             raise ValueError("A new task cannot inherit a saved stage.")
         self._validate_request_type(kind, request)
@@ -2552,24 +2547,6 @@ class BackgroundAgentTasks:
         """Commit one consumed stream, live or recorded, to its original task."""
 
         operation_id = record.operation_id
-        # Only ingest runs owe a graph revision. A chat turn answers a
-        # question; changing the graph is the exception, not the contract.
-        if record.kind in {"seed", "refresh"} and outcome.applied_revision is None:
-            if execution.control.pause_requested.is_set():
-                self.store.pause_agent_task(operation_id)
-            else:
-                self.store.record_agent_task_receipt(
-                    operation_id,
-                    "missing_applied_revision",
-                    {"agent_stream_completed": True},
-                    tier="diagnostic",
-                )
-                self.store.fail_agent_task(
-                    operation_id,
-                    "The agent stopped without applying a graph revision.",
-                    remote_pid_file=remote_pid_file,
-                )
-            return
         result: dict[str, object] = {"messages": outcome.messages}
         if execution.project_results is not None:
             result["project_results"] = execution.project_results

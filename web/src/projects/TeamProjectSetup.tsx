@@ -63,7 +63,6 @@ import { OperatorActionPanel } from "./OperatorActionPanel";
 import { NewMachineForm } from "./MachineCard";
 import { AddMachineTile, MachineTile } from "./MachineTile";
 import { machineHostLabel } from "./spaceMachines";
-import { hasRow, rowOf } from "../core/agentRows";
 import type {
   AgentExecutionProfile,
   ProjectProvisioningCreateRequest,
@@ -102,14 +101,11 @@ const steps = [
 ] as const;
 
 const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed and refresh" },
-  { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper chat" },
   { id: "orchestrator", label: "Auto-research orchestrator" },
 ];
-const agentRows = agentProfiles.filter(({ id }) => hasRow(id));
 
 let repositorySequence = 1;
 
@@ -142,8 +138,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
   ]);
   const [stateRepository, setStateRepository] = useState("research");
   const [agents, setAgents] = useState<SetupAgents>({
-    seed: defaultProfile(),
-    refresh: defaultProfile(),
     node_chat: defaultProfile(),
     project_chat: defaultProfile(),
     paper_coach: defaultProfile("gpt-5.6-luna"),
@@ -446,10 +440,10 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       })),
       providerChecks: agentProfiles.map(({ id }) => ({
         profile: id,
-        provider: agents[rowOf(id)].provider,
-        runtime_id: agents[rowOf(id)].runtime,
-        model: agents[rowOf(id)].model,
-        reasoning: agents[rowOf(id)].reasoning,
+        provider: agents[id].provider,
+        runtime_id: agents[id].runtime,
+        model: agents[id].model,
+        reasoning: agents[id].reasoning,
         machine_id: canonicalMachine,
       })),
     });
@@ -841,7 +835,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               />
             </label>
             <div className="agent-role-stack">
-              {agentRows.map(({ id, label }) => {
+              {agentProfiles.map(({ id, label }) => {
                 const profile = agents[id];
                 const readiness = readinessFor(providers, profile.provider);
                 const models = readiness?.models ?? [];

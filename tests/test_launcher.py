@@ -70,7 +70,7 @@ def _decoded_step(provider: str, line: str) -> ProviderRuntimeStep:
             read_dirs=[],
             write_dirs=[],
             write_scope=None,
-            capability="scratch_patch",
+            capability="discuss",
             provider_version=None,
             legacy_command=[provider],
         )
@@ -539,7 +539,7 @@ async def test_stream_drains_oversized_jsonl_provider_frames(
             cwd=Path("/tmp"),
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -587,7 +587,7 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
                 cwd=tmp_path,
                 machine_id=BACKEND_MACHINE_ID,
                 host="",
-                capability="scratch_patch",
+                capability="discuss",
             )
         ]
 
@@ -661,7 +661,7 @@ async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
             reasoning="ultra",
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -688,7 +688,7 @@ async def test_stream_records_explicit_terminal_provider_event(
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -727,7 +727,7 @@ async def test_stream_records_nonzero_provider_exit_before_error(
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -778,7 +778,7 @@ async def test_stream_reuses_capability_and_invalidates_it_after_launch_failure(
             binary=binary,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -819,7 +819,7 @@ async def test_stream_launches_an_authenticated_discovered_path_without_manual_r
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
 
@@ -850,7 +850,7 @@ async def test_cold_readiness_does_not_block_stream_event_loop(tmp_path: Path) -
         cwd=tmp_path,
         host="slow.example",
         machine_id=BACKEND_MACHINE_ID,
-        capability="scratch_patch",
+        capability="discuss",
     )
     first_event = asyncio.create_task(anext(stream))
     try:
@@ -889,7 +889,7 @@ async def test_stream_cancellation_during_stdin_drain_reaps_and_detaches(
         control=control,
         machine_id=BACKEND_MACHINE_ID,
         host="",
-        capability="scratch_patch",
+        capability="discuss",
         runtime_id="exec",
     )
     runtime_event = await anext(stream)
@@ -988,7 +988,7 @@ def _codex_exec_turn():
             read_dirs=[],
             write_dirs=[],
             write_scope=None,
-            capability="scratch_patch",
+            capability="discuss",
             provider_version=None,
             legacy_command=["codex"],
         )
@@ -1029,7 +1029,7 @@ def test_claude_text_becomes_an_in_between_message_only_once_the_agent_acts_afte
             read_dirs=[],
             write_dirs=[],
             write_scope=None,
-            capability="scratch_patch",
+            capability="discuss",
             provider_version=None,
             legacy_command=["claude"],
         )
@@ -1076,58 +1076,22 @@ def test_claude_session_limit_result_is_a_terminal_error() -> None:
     ).explicit_terminal
 
 
-def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None:
-    """`codex exec resume` has no --sandbox flag and defaults to read-only.
-
-    A resumed run still owes RCP a patch file, so the mode travels as config.
-
-    No --cd on resume, because the writable root is the process working directory.
-    """
-
-    command = _command(
-        "codex",
-        "reread current pointers",
-        cwd=Path("/project/.research"),
-        model="gpt-test",
-        reasoning="medium",
-        session_id="019f0000-0000-7000-8000-000000000000",
-        read_dirs=[Path("/project/repo-a")],
-        capability="scratch_patch",
-    )
-
-    assert command[:4] == ["codex", "exec", "resume", "--json"]
-    assert "--sandbox" not in command
-    assert 'sandbox_mode="workspace-write"' in command
-    assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" in command
-    assert "--cd" not in command
-    assert "--add-dir" not in command
-    assert command[-2:] == ["019f0000-0000-7000-8000-000000000000", "-"]
-
-
-@pytest.mark.parametrize(
-    ("capability", "scratch"),
-    [("scratch_patch", "/data/run-stage/operation"), ("discuss", "/data/conversations/chat-1")],
-)
-def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scratch) -> None:
+def test_codex_new_session_writes_only_into_its_scratch_folder() -> None:
     """A named profile carries Discuss's read denials into exec and app-server alike."""
+    scratch = "/data/conversations/chat-1"
     command = _command(
         "codex",
         "write patch.json",
         cwd=Path(scratch),
         read_dirs=[Path("/project/repo-a"), Path("/project/repo-b")],
-        capability=capability,
+        capability="discuss",
     )
     assert command[:3] == ["codex", "exec", "--json"]
-    if capability == "discuss":
-        assert "--sandbox" not in command
-        assert 'default_permissions="rcp_discuss"' in command
-        profile = next(item for item in command if item.startswith("permissions={"))
-        assert f'workspace_roots={{"{scratch}"=true}}' in profile
-        assert "network={enabled=true}" in profile
-    else:
-        assert command[command.index("--sandbox") + 1] == "workspace-write"
-        assert "sandbox_workspace_write.network_access=true" in command
+    assert "--sandbox" not in command
+    assert 'default_permissions="rcp_discuss"' in command
+    profile = next(item for item in command if item.startswith("permissions={"))
+    assert f'workspace_roots={{"{scratch}"=true}}' in profile
+    assert "network={enabled=true}" in profile
     assert command[command.index("--cd") + 1] == scratch
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
@@ -1387,7 +1351,7 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
         )
 
 
-def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
+def test_claude_discuss_preauthorizes_only_native_web_retrieval() -> None:
     """Read context is read-only rules, one set per distinct directory, never --add-dir."""
     command = _command(
         "claude",
@@ -1401,7 +1365,7 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
             Path("/sessions"),
             Path("/project/repo-a"),
         ],
-        capability="scratch_patch",
+        capability="discuss",
     )
 
     assert command[:2] == ["claude", "--print"]
@@ -1627,7 +1591,7 @@ def test_remote_provider_launch_keeps_the_recorded_absolute_argv_zero() -> None:
         "prompt",
         binary="/opt/agents/claude",
         cwd=Path("/srv/project/.research"),
-        capability="scratch_patch",
+        capability="discuss",
     )
     command = AgentLauncher._remote_login_command(
         provider_command,
@@ -1668,7 +1632,7 @@ async def test_stream_refuses_an_unusable_recorded_path_before_subprocess_launch
             binary=str(binary),
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
     assert [event.event for event in events] == ["error"]

@@ -143,8 +143,8 @@ own publication contracts.
 
 Two constant code profiles grant semantic permission:
 
-- The **ordinary** profile applies to Work, Seed and Refresh within ingestion,
-  Experiment loops, and Auto-research child Work.
+- The **ordinary** profile applies to Work, Experiment loops, and Auto-research
+  child Work.
 - The **orchestrator** profile applies to an Auto-research root, the merges it
   dispatches of forks its lineage owns, and a human-dispatched graph merge.
 

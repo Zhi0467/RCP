@@ -30,7 +30,6 @@ AgentCapability = Literal[
     "discuss",
     "work_auto",
     "orchestrate",
-    "scratch_patch",
     "session_summary",
 ]
 

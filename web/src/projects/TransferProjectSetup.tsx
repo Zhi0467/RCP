@@ -80,8 +80,6 @@ export interface TransferActiveWorkSummary {
 }
 
 const agentProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
-  { id: "seed", label: "Seed" },
-  { id: "refresh", label: "Refresh" },
   { id: "node_chat", label: "Node chat" },
   { id: "project_chat", label: "Project chat" },
   { id: "paper_coach", label: "Paper chat" },
@@ -366,7 +364,12 @@ export function TransferProjectSetup({
             ]),
           ),
         );
-        setProviderChecks(loaded.incoming_provisioning.provider_checks);
+        setProviderChecks(
+          loaded.incoming_provisioning.provider_checks.filter(
+            (check): check is typeof check & { profile: AgentExecutionProfile } =>
+              check.profile !== "seed" && check.profile !== "refresh",
+          ),
+        );
         setStep(2);
       })
       .catch((caught) => {

@@ -232,12 +232,6 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
     )
     assert (
         client.post(
-            f"{base}/tasks/refresh?branch_id={episode.graph_target.branch_id}", json={}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
             f"{base}/tasks/project_chat",
             json={**payload, "graph_target": episode.graph_target.model_dump(mode="json")},
         ).status_code

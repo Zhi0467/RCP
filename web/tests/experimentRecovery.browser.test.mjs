@@ -219,9 +219,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         default_run_truth_scope: [],
         providers,
         agent_profiles: Object.fromEntries(
-          ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map(
-            (k) => [k, profile],
-          ),
+          ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [k, profile]),
         ),
         provider_readiness: { local: providers },
         provider_skill_inventories: {},

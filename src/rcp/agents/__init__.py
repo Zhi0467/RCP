@@ -6,7 +6,6 @@ from rcp.agents.acceptance import (
 from rcp.agents.context import (
     ChatContext,
     ContextAssembler,
-    RunContext,
     validate_work_patch,
 )
 from rcp.agents.launcher import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
@@ -31,7 +30,6 @@ __all__ = [
     "ContextAssembler",
     "PromptFactory",
     "ProviderReadiness",
-    "RunContext",
     "agent_output_schema",
     "parse_agent_patch_json",
     "prepare_agent_patch",

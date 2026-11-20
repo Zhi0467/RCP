@@ -214,39 +214,6 @@ def test_provider_native_invocation_preserves_metadata_and_native_token() -> Non
         assert serialized in contract
 
 
-def test_graph_contract_preserves_input_paths_watermark_and_validator_command() -> None:
-    validator_command = "python /stage/validator.py /stage/workspace/patch.json"
-    contract = PromptFactory.graph_task_contract(
-        "refresh",
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=True,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        provider_log_roots={
-            "provider-x": ["/provider/logs/provider-x", "/provider/archive/provider-x"]
-        },
-        ingestion_watermark="2026-07-31T07:00:00-07:00",
-        repositories=[{"alias": "repo-a", "host": "", "path": "/repo-a"}],
-        patch_path="/stage/workspace/patch.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command=validator_command,
-        human_request_path="/stage/inputs/human-request.txt",
-        retry_diagnostics_path="/stage/inputs/retry-diagnostics.json",
-    )
-
-    assert "/provider/logs/provider-x" in contract
-    assert "2026-07-31T07:00:00-07:00" in contract
-    assert "/state/graph.json#ontology" in contract
-    assert "/stage/inputs/patch-schema.json" in contract
-    assert "/stage/inputs/human-request.txt" in contract
-    assert "/stage/inputs/retry-diagnostics.json" in contract
-    assert "/stage/workspace/patch.json" in contract
-    assert "/provider/archive/provider-x" in contract
-    assert validator_command in contract
-    assert graph_rules(edits=True, ontology_extensions=True) in contract
-
-
 def test_work_contract_preserves_inputs_outputs_and_command_client() -> None:
     command_client = "python /stage/validate_patch.py --token work-token"
     contract = PromptFactory.work_task_contract(
@@ -587,23 +554,6 @@ def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> N
     assert "/current/inputs/retry-diagnostics.json" in retry
 
 
-def test_retry_handoff_contract_preserves_paths() -> None:
-    contract = PromptFactory.retry_handoff_task_contract(
-        kind="seed",
-        handoff_path="/stage/inputs/task-retry-handoff.json",
-        original_contract_path="/prior/inputs/task-initial.md",
-        patch_path="/stage/patch.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        ontology_extensions=False,
-    )
-
-    assert "/stage/inputs/task-retry-handoff.json" in contract
-    assert "/prior/inputs/task-initial.md" in contract
-    assert "/stage/patch.json" in contract
-    assert graph_rules(edits=True, ontology_extensions=False) in contract
-    assert REPEATED_RULES_NOTE not in contract
-
-
 def test_work_patch_legality_reuses_the_non_ingest_boundary() -> None:
     cursor_patch = seed_patch().model_copy(
         update={"kind": "work", "processed_cursors": {"session": "record"}}
@@ -820,12 +770,10 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
     from tests.test_merge_patch import make_plan
 
     builders = [
-        PromptFactory.graph_task_contract,
         PromptFactory.discuss_task_contract,
         PromptFactory.work_task_contract,
         PromptFactory.chat_master_context,
         PromptFactory.continuation_task_contract,
-        PromptFactory.retry_handoff_task_contract,
         auto.auto_research_orchestrator_task_contract,
         auto.auto_research_worker_task_contract,
         auto.auto_research_orchestrator_continuation_contract,
@@ -834,13 +782,10 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         episode_report_task_contract,
     ]
     inputs = dict(
-        kind="seed",
         project_name="Example",
         graph_target=GraphTargetRef(),
         repositories=[],
         ontology_extensions=False,
-        provider_log_roots={},
-        ingestion_watermark=None,
         graph_revision=1,
         focused_node_id=None,
         focused_experiment_id="exp/example",

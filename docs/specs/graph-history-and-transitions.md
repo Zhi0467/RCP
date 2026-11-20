@@ -343,8 +343,8 @@ uses assigns the base machine; a repair from history keeps a descriptor's machin
 project uses, otherwise `""`. A `SourceRef.machine` is a card id in new refs
 and inert text in old ones. Cursor keys are `repo/provider/session`; an old
 four-part `repo/machine/provider/session` key is read without its machine
-segment (`core/materialize.current_cursor_key`), so old cursors still suppress
-re-ingestion.
+segment (`core/materialize.current_cursor_key`), so both shapes name the same
+cursor.
 
 Every graph model field declares a `GraphField` role: content, engine bookkeeping,
 or identity. Proposal annotations distinguish filing stamps from resolution fields.
@@ -385,9 +385,9 @@ preceding accepted semantics.
 
 Shared step records carry the state and head before and after each step.
 They also carry decoded operations, the semantic delta, and changed ids.
-Changes, merge, refresh, summaries, digest, coverage, and queries project these
+Changes, merge, summaries, digest, coverage, and queries project these
 records under their own policies. Initiating operations prove merge authorship.
-Refresh keeps its bounds and routing. Raw history includes rejections.
+Raw history includes rejections.
 Materialization, repair, and branch reads share the coherent prefix when history
 is degraded. Mutation refuses degraded history. Diff reports net semantics
 independent of ancestry. It does not plan merges.

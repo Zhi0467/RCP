@@ -187,7 +187,7 @@ async def test_launcher_never_overlaps_two_startups_on_one_credential(
             cwd=Path("/tmp"),
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         ):
             pass
 
@@ -596,7 +596,7 @@ async def test_closing_the_stream_at_the_remote_reservation_frees_the_credential
         "prompt",
         cwd=Path("/tmp"),
         machine_id=BACKEND_MACHINE_ID,
-        capability="scratch_patch",
+        capability="discuss",
         host="agent-host",
         binary="/opt/claude",
         remote_pid_file="/tmp/rcp-test.pid",
@@ -711,7 +711,7 @@ async def test_waiting_launch_captures_environment_and_generation_together(
                 cwd=tmp_path,
                 machine_id=BACKEND_MACHINE_ID,
                 host="",
-                capability="scratch_patch",
+                capability="discuss",
                 before_start=capture,
             )
         ]
@@ -775,7 +775,7 @@ async def test_a_result_that_stops_the_provider_waits_out_the_startup_hold(
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
     elapsed = time.monotonic() - started

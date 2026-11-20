@@ -580,6 +580,18 @@ def test_a_configuration_with_retired_permission_fields_keeps_its_digest_and_mat
     record, _ = _completed_registration(tmp_path)
     manifest = load_manifest(record.locator)
     payload = BackupManifestConfiguration.from_manifest(manifest).model_dump(mode="json")
+    for retired in ("seed", "refresh"):
+        payload["agent_profiles"].append(
+            {
+                **payload["agent_profiles"][0],
+                "profile": retired,
+                "permissions": {
+                    **payload["agent_profiles"][0]["permissions"],
+                    "write_graph_patch": True,
+                    "write_project_files": False,
+                },
+            }
+        )
     for profile in payload["agent_profiles"]:
         profile["permissions"] |= {"read_introduction": True, "write_paper": False}
         if profile["profile"] == "paper_coach":

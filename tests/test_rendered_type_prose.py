@@ -17,7 +17,7 @@ from rcp.agents.auto_research_prompt import (
     auto_research_orchestrator_task_contract,
     orchestrator_graph_authority_contract,
 )
-from rcp.agents.prompts import PromptFactory, ask_contract
+from rcp.agents.prompts import ask_contract
 from rcp.core import project_types
 from rcp.core.authority import (
     _AGENT_GRAPH_AUTHORITY_BODY,
@@ -92,22 +92,6 @@ def test_contract_sentences_follow_the_project_type(renamed: None) -> None:
     assert "A change to an existing Goal or Design is still a Proposal." in _flat(
         ask_contract("<how>")
     )
-
-    graph = PromptFactory.graph_task_contract(
-        "refresh",
-        project_name="Example",
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=False,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        provider_log_roots={},
-        ingestion_watermark=None,
-        repositories=[],
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="validate",
-    )
-    assert "Existing goal changes require a Proposal" in _flat(graph)
 
     orchestrator = auto_research_orchestrator_task_contract(
         project_name="Example",

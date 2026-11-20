@@ -18,6 +18,10 @@ from tests.paper_helpers import start_paper
 from .helpers import seed_patch
 
 
+def _chat_turn() -> dict[str, object]:
+    return {"chat_id": str(uuid.uuid4()), "message": "Explain."}
+
+
 def _assert_name_required(response) -> None:
     assert response.status_code == 428, response.text
     assert response.json()["detail"]["code"] == "identity_name_required"
@@ -249,8 +253,6 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
             json={"base_revision": current_revision},
         )
     )
-    for kind in ("seed", "refresh"):
-        _assert_name_required(client.post(f"/api/projects/{project_id}/tasks/{kind}", json={}))
 
     def unexpected_claim(*_args, **_kwargs):
         raise AssertionError("attachment claim ran before identity admission")
@@ -377,9 +379,9 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     assert resumed_discuss.status_code == 202
     assert recovery_authorizers["discuss"] is not None
     assert recovery_authorizers["discuss"].display_name == "Researcher"
-    admitted = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    admitted = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert admitted.status_code == 202
-    assert started_kinds[-1] == "seed"
+    assert started_kinds[-1] == "project_chat"
 
 
 def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_creation(
@@ -394,7 +396,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
     missing_app = create_app(str(manifest.path), data_dir=data_dir)
     missing_client = signed_in_client(missing_app)
     project_id = missing_app.state.default_project_id
-    missing = missing_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    missing = missing_client.post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert missing.status_code == 401
     assert missing.json()["detail"]["code"] == "team_identity_required"
     assert missing_app.state.background_tasks.store.agent_tasks(project_id) == []
@@ -405,7 +409,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         trusted_principal_resolver=lambda _request, _store: str(uuid.uuid4()),
     )
     invalid_client = signed_in_client(invalid_app)
-    invalid = invalid_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    invalid = invalid_client.post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert invalid.status_code == 403
     assert invalid.json()["detail"]["code"] == "team_identity_invalid"
     assert invalid_app.state.background_tasks.store.agent_tasks(project_id) == []
@@ -445,7 +451,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         )
 
     monkeypatch.setattr(valid_app.state.background_tasks, "start", fake_start)
-    admitted = signed_in_client(valid_app).post(f"/api/projects/{project_id}/tasks/seed", json={})
+    admitted = signed_in_client(valid_app).post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert admitted.status_code == 202
 
 
@@ -488,7 +496,7 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
         "_spawn_record",
         lambda record, _request, **_kwargs: record,
     )
-    seed = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    seed = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert seed.status_code == 202, seed.text
     seed_record = app.state.background_tasks.store.agent_task(seed.json()["operation_id"])
     assert seed_record is not None
@@ -500,7 +508,7 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
     )
 
     assert client.patch("/api/identity", json={"display_name": "Later name"}).status_code == 200
-    refresh = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
+    refresh = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert refresh.status_code == 202, refresh.text
     refresh_record = app.state.background_tasks.store.agent_task(refresh.json()["operation_id"])
     assert refresh_record is not None
@@ -573,8 +581,9 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     )
     selected[0] = bob.user_id
     forged = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
+        f"/api/projects/{project_id}/tasks/project_chat",
         json={
+            **_chat_turn(),
             "user_id": alice.user_id,
             "authorized_by": sync_authorizer.model_dump(mode="json"),
         },
@@ -594,7 +603,7 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     selected[0] = alice.user_id
     renamed = client.patch("/api/identity", json={"display_name": "Alice renamed"})
     assert renamed.status_code == 200
-    future = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
+    future = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert future.status_code == 202, future.text
     future_record = app.state.background_tasks.store.agent_task(future.json()["operation_id"])
     assert future_record is not None

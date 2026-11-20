@@ -295,37 +295,6 @@ async def test_launcher_delivers_grant_environment(tmp_path, monkeypatch):
     assert path.startswith("/browser/bin:")
 
 
-@pytest.mark.parametrize("capability", ["scratch_patch"])
-def test_excluded_profiles_do_not_add_browser_shell(capability, tmp_path):
-    staged = stage_command_mailbox(
-        local_stage=tmp_path,
-        remote_stage=None,
-        episode_id=None,
-        task_id="excluded-task",
-        turn_id="excluded-turn",
-        authority="broker",
-    )
-    for provider in ("claude", "opencode"):
-        profile = profile_for(provider)
-        request = replace(
-            _request(provider, "granted"),
-            capability=capability,
-            provider_version="2.200.0",
-            write_dirs=[],
-            invocation_gate=staged.invocation_gate,
-        )
-        turn = profile.runtime(profile.legacy_runtime_id).turn(request)
-        client = shlex.join(staged.client_argv()[:4])
-        if provider == "claude":
-            assert [arg for arg in turn.command if arg.startswith("Bash(")] == [f"Bash({client}:*)"]
-        else:
-            config = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
-            agent = turn.command[turn.command.index("--agent") + 1]
-            rules = config["agent"][agent]["permission"]
-            assert rules.get("bash") == {"*": "deny", f"{client} *": "allow"}
-    staged.cleanup()
-
-
 @pytest.mark.parametrize("module", ["rcp.browser", "rcp.transport", "rcp.storage", "rcp.providers"])
 def test_lower_layers_import_first_in_a_fresh_interpreter(module):
     """Grant models are shared below storage; importing them from rcp.agents made these packages

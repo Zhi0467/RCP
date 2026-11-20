@@ -88,7 +88,7 @@ def test_every_launch_denies_unlisted_tools_first(capability):
     assert "task" not in permission
 
 
-@pytest.mark.parametrize("capability", ["discuss", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss"])
 def test_unscoped_launch_edits_only_its_own_folders_and_has_no_shell(capability):
     command, permission = _launch(_request(capability, write_dirs=[Path("/work/notes")]))
     assert "--pure" in command
@@ -100,7 +100,7 @@ def test_unscoped_launch_edits_only_its_own_folders_and_has_no_shell(capability)
     }
 
 
-@pytest.mark.parametrize("capability", ["discuss", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss"])
 @pytest.mark.parametrize("legacy_stage", [False, True])
 @pytest.mark.parametrize("session_id", [None, "saved-session"])
 def test_gated_client_is_executable_but_not_editable(capability, legacy_stage, session_id):
@@ -258,7 +258,7 @@ def test_the_wrapper_reports_the_exit_and_refuses_a_git_work_tree(tmp_path: Path
     assert refused.returncode == 64 and refused.stdout == ""
 
 
-@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate"])
 def test_hidden_reads_keep_shell_and_native_rules_on_every_capability(capability):
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
 

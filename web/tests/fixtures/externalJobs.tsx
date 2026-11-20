@@ -47,10 +47,7 @@ const initialProject = {
     },
   ],
   agent_profiles: Object.fromEntries(
-    ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map((name) => [
-      name,
-      profile,
-    ]),
+    ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((name) => [name, profile]),
   ),
   providers: {},
   provider_readiness: {},

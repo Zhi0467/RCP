@@ -47,7 +47,7 @@ test("a retry rebinds everything but an episode's own execution machine", () => 
   }
   for (const task of [
     { kind: "node_chat", episode_id: null, request: {} },
-    { kind: "seed", episode_id: null, request: {} },
+    { kind: "project_chat", episode_id: null, request: {} },
   ]) {
     assert.deepEqual(taskRetryRequestBody(task, config), { ...rebound, run_on: "cluster" });
   }
@@ -681,9 +681,7 @@ test("Project Settings supports legacy profiles without an ontology authoring su
             },
           ],
           agent_profiles: {
-            seed: profile,
-            refresh: { ...profile, model: "legacy-refresh" },
-            node_chat: profile,
+            node_chat: { ...profile, model: "node-chat-model" },
             project_chat: profile,
             paper_coach: profile,
           },
@@ -702,7 +700,7 @@ test("Project Settings supports legacy profiles without an ontology authoring su
 
     assert.match(
       html.slice(html.indexOf("<strong>Auto-research orchestrator</strong>")),
-      /legacy-refresh/,
+      /node-chat-model/,
     );
   } finally {
     globalThis.localStorage = previousLocalStorage;

@@ -568,7 +568,7 @@ def test_provider_commands_use_the_recorded_binary_as_argv_zero() -> None:
         reasoning=None,
         session_id=None,
         read_dirs=[],
-        capability="scratch_patch",
+        capability="discuss",
     )
 
     assert command[0] == "/Applications/Codex.app/Contents/MacOS/codex"
@@ -1059,7 +1059,7 @@ def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
         assert filesystem[":root"] == "read"
 
 
-@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate"])
 @pytest.mark.parametrize("runtime", ["codex.exec-json.v1", "codex.app-server-stdio.v1"])
 @pytest.mark.parametrize("session_id", [None, "resumed-session"])
 @pytest.mark.parametrize("unhidden", [False, True])

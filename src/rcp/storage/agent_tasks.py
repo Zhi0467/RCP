@@ -102,6 +102,7 @@ from rcp.storage.models import (
     _retention_reference_time,
 )
 from rcp.storage.question_models import QuestionRecord
+from rcp.storage.request_compat import stored_dispatch_authority
 from rcp.storage.wake_inputs import wake_caused_sql
 from rcp.turn_outcomes import TurnOutcome
 
@@ -3307,11 +3308,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             merge_dispatcher=("member" if binding.dispatcher_episode_id is None else "orchestrator")
             if binding is not None
             else None,
-            dispatch_authority=(
-                AgentDispatchAuthority.model_validate_json(dispatch_json)
-                if dispatch_json is not None
-                else None
-            ),
+            dispatch_authority=stored_dispatch_authority(dispatch_json),
         )
 
     def _claim_agent_task_graph_repair(
@@ -5625,7 +5622,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 break
         if durations:
             return max(1.0, float(median(durations))), len(durations)
-        return (600.0 if kind == "seed" else 300.0), 0
+        return 300.0, 0
 
     @staticmethod
     def _transition_agent_task(

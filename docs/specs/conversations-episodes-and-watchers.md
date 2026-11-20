@@ -223,7 +223,7 @@ project's base machine, and a Space task always runs on the backend. A changed p
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
 on each record. The reader verifies the filename against the record. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
-private transcripts never enter ingestion or consolidation sources. Space
+private transcripts never enter consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
 use `chatScope: "space"` without node or graph target fields. One reader,
 `read_space_chat_records`, serves Space turns, steering, the transcript route
@@ -377,8 +377,8 @@ Every turn settled by ordinary Work (human Work chat and nightly consolidation) 
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
 `could_not`; `reason` is optional for `done`, and required and non-blank otherwise.
 The reason is one line of at most 240 characters. The answer is never parsed for
-an outcome. Experiment loops, Auto-research, child Work, historical Discuss, and
-Seed/Refresh are outside this contract. New turns clear stale outcomes with the other handoffs.
+an outcome. Experiment loops, Auto-research, child Work, and historical Discuss
+are outside this contract. New turns clear stale outcomes with the other handoffs.
 
 A missing or invalid outcome gets one same-session correction through the watcher
 handoff correction loop, without another invocation, budget, or repeated operational
@@ -476,7 +476,7 @@ left on it. Neither archive nor Restore changes the native session. The shared
 
 ## Native chat context
 
-RCP chat history is display data, never an input for transcript ingestion or
+RCP chat history is display data, never an agent's source material or
 task authority. Native provider continuation may retain its own context. An
 agent the member runs in their authenticated page acts as that member under
 [Authority and Proposals](authority-and-proposals.md); a Work message it sends
@@ -683,7 +683,7 @@ stage and master even while idle.
 
 Human chat turns and human Experiment invocations may `ask`; the question
 card receives answers while the composer remains steering. Viewer edits,
-consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
+consolidation, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
 

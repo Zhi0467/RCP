@@ -23,9 +23,7 @@ from rcp.agents import (
     AgentPatch,
     ChatContext,
     ContextAssembler,
-    PromptFactory,
     ProviderReadiness,
-    RunContext,
     parse_agent_patch_json,
 )
 from rcp.agents.provider_accounts import LoginRefusal, ProviderAccounts
@@ -36,7 +34,6 @@ from rcp.compute import machine_compute_context
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     AgentExecutionProfile,
-    AgentSurface,
     AgentSurfaceConfig,
     Manifest,
     launches_work_like,
@@ -130,9 +127,7 @@ from rcp.sources import (
     AppChatOrigin,
     ConversationIndex,
     ConversationIndexer,
-    ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
-    preflight_provider_roots,
     project_cache_roots,
 )
 from rcp.storage import AppStore
@@ -148,8 +143,6 @@ if TYPE_CHECKING:
     from rcp.runs.provider_sign_in import ProviderSignInRunner
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
-    "seed",
-    "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",
@@ -1134,15 +1127,6 @@ def resolve_dispatch_authority(
         raise TypeError(f"{kind} dispatch requires a RunRequest")
 
     run_truth_scope = sorted(set(request.run_truth_scope or ()))
-    if kind in {"seed", "refresh"}:
-        return AgentDispatchAuthority(
-            profile="ordinary",
-            task_contract="scratch_patch",
-            scope=AgentDispatchScope(
-                run_truth_scope=run_truth_scope,
-                patch_kind=kind,
-            ),
-        )
     if kind not in {"node_chat", "project_chat", "space_chat"}:
         raise ValueError(f"Authority refused action 'dispatch': unknown task kind {kind!r}.")
 
@@ -2934,129 +2918,6 @@ class ProjectService:
                 else head.reasoning[0]
             )
         return profile.model_copy(update=filled)
-
-    def assemble_run(
-        self,
-        request: RunRequest,
-        surface: AgentSurface = "refresh",
-        *,
-        imported_source_inventory: ImportedProviderSourceInventory | None = None,
-    ) -> RunContext:
-        materialization = self.history.current_materialization()
-        state = self.history.require_writable(materialization.state)
-        self.resolve_agent_profile(
-            surface,
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-        )
-        execution_machine = self.manifest.base_machine
-        assembler = ContextAssembler(
-            self.manifest,
-            cards=self.machine_cards(),
-            graph_root=self.history.root,
-            paper_path=self.paper_folder(),
-        )
-        source_roots = assembler.source_roots(execution_machine)
-        source_errors = preflight_provider_roots(
-            source_roots, card(self.paper.store, execution_machine)
-        )
-        imported = imported_source_inventory or self.imported_source_inventory(
-            surface,
-            execution_machine,
-        )
-        imported_source_roots = (
-            imported.roots(self.imported_sources.root)
-            if self.imported_sources is not None and imported.files
-            else {}
-        )
-        context = assembler.assemble(
-            state,
-            writable=request.run_truth_scope,
-            refresh_delta=(
-                self.history.refresh_delta(materialization) if surface == "refresh" else None
-            ),
-            source_roots=source_roots,
-            imported_source_roots=imported_source_roots,
-            imported_source_fingerprint=(
-                imported.fingerprint if imported is not None and imported.files else None
-            ),
-            source_errors=source_errors,
-        )
-        return context
-
-    def imported_source_inventory(
-        self,
-        surface: AgentSurface,
-        execution_machine: str,
-    ) -> ImportedProviderSourceInventory | None:
-        if self.imported_sources is None or surface not in {"seed", "refresh"}:
-            return None
-        return self.imported_sources.inventory()
-
-    def validate_imported_source_context(
-        self,
-        context: RunContext,
-        inventory: ImportedProviderSourceInventory | None,
-        *,
-        expected_roots: dict[str, list[str]] | None = None,
-    ) -> None:
-        if expected_roots is None:
-            expected_roots = (
-                inventory.roots(self.imported_sources.root)
-                if inventory is not None and inventory.files and self.imported_sources is not None
-                else {}
-            )
-        expected_fingerprint = (
-            inventory.fingerprint if inventory is not None and inventory.files else None
-        )
-        if (
-            context.imported_source_roots != expected_roots
-            or context.imported_source_fingerprint != expected_fingerprint
-        ):
-            raise ValueError("imported provider history changed after this context was prepared")
-
-    def graph_task_contract(
-        self,
-        kind: str,
-        *,
-        project_name: str,
-        ontology_path: str,
-        ontology_extensions: bool,
-        graph_path: str | None,
-        research_path: str | None,
-        provider_log_roots: dict[str, list[str]],
-        ingestion_watermark: datetime | str | None,
-        repositories: list[dict[str, str]],
-        patch_path: str,
-        output_schema_path: str,
-        validator_command: str,
-        human_request_path: str | None = None,
-        retry_diagnostics_path: str | None = None,
-        source_errors: list[str] | None = None,
-        skill_pointers: list[dict[str, object]] | None = None,
-        compute_profiles: list[dict[str, str]] | None = None,
-    ) -> str:
-        return PromptFactory.graph_task_contract(
-            kind,
-            project_name=project_name,
-            ontology_path=ontology_path,
-            ontology_extensions=ontology_extensions,
-            graph_path=graph_path,
-            research_path=research_path,
-            provider_log_roots=provider_log_roots,
-            ingestion_watermark=ingestion_watermark,
-            repositories=repositories,
-            patch_path=patch_path,
-            output_schema_path=output_schema_path,
-            human_request_path=human_request_path,
-            retry_diagnostics_path=retry_diagnostics_path,
-            source_errors=source_errors or [],
-            validator_command=validator_command,
-            skill_pointers=skill_pointers,
-            compute_profiles=compute_profiles,
-        )
 
     def assemble_chat(self, request: RunRequest) -> ChatContext:
         """Chat context: the graph and live pointers, never the ingest corpus."""

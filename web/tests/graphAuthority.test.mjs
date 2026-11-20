@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
-  taskMayMutateGraph,
 } from "../src/graph/graphAuthority.ts";
 
 test("degraded replay blocks graph authority and names the last coherent state", () => {
@@ -22,12 +21,4 @@ test("degraded replay blocks graph authority and names the last coherent state",
     projectGraphMutationsDisabled({ graph_mutation: { available: true, reason: null } }),
     false,
   );
-});
-
-test("only graph-writing task continuations are blocked by degraded replay", () => {
-  assert.equal(taskMayMutateGraph({ kind: "refresh", request: {} }), true);
-  assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { mode: "work" } }), false);
-  assert.equal(taskMayMutateGraph({ kind: "project_chat", request: { mode: "discuss" } }), false);
-  assert.equal(taskMayMutateGraph({ kind: "node_chat", request: { mode: "work" } }), false);
-  assert.equal(taskMayMutateGraph({ kind: "paper_coach", request: {} }), false);
 });

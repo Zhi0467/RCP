@@ -215,7 +215,7 @@ test("an invalid ceiling shows in the save bar on every pane and keeps Save disa
   assert.equal(await save.isDisabled(), false);
 });
 
-test("Seed and Refresh share one row, and a save gives Refresh the Seed profile", async (t) => {
+test("a save sends one profile per agent row", async (t) => {
   let sent;
   const saved = new Promise((resolve) => (sent = resolve));
   const page = await openRail(t, {
@@ -229,10 +229,9 @@ test("Seed and Refresh share one row, and a save gives Refresh the Seed profile"
       ),
   });
   await select(page, "agent-defaults");
-  assert.equal(await page.locator(".settings-agent").count(), 5);
+  const rows = await page.locator(".settings-agent").count();
   await ceiling(page).fill("12");
   await page.locator(".settings-savebar .button.primary").click();
   const body = await saved;
-  assert.deepEqual(body.agent_profiles.refresh, body.agent_profiles.seed);
-  assert.equal(Object.keys(body.agent_profiles).length, 6);
+  assert.equal(Object.keys(body.agent_profiles).length, rows);
 });

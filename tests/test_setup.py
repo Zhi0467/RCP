@@ -39,8 +39,6 @@ def test_setup_agent_profiles_no_longer_carry_a_write_mode() -> None:
     agents = SetupAgents()
 
     for surface in (
-        "seed",
-        "refresh",
         "node_chat",
         "project_chat",
         "paper_coach",
@@ -49,8 +47,8 @@ def test_setup_agent_profiles_no_longer_carry_a_write_mode() -> None:
         profile = agents.profile(surface)
         assert not hasattr(profile, "write_path")
         assert "write_path" not in profile.model_dump()
-    assert agents.profile("orchestrator") == agents.profile("refresh")
-    assert agents.profile("orchestrator") is not agents.profile("refresh")
+    assert agents.profile("orchestrator") == agents.profile("node_chat")
+    assert agents.profile("orchestrator") is not agents.profile("node_chat")
 
 
 def _local_payload(repository_path: str) -> dict[str, object]:
@@ -872,18 +870,6 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
             ],
             "state_repository": "paper-repo",
             "agents": {
-                "seed": {
-                    "provider": "claude",
-                    "model": "claude-seed",
-                    "reasoning": "high",
-                    "location": "local",
-                },
-                "refresh": {
-                    "provider": "codex",
-                    "model": "codex-refresh",
-                    "reasoning": "medium",
-                    "location": "local",
-                },
                 "node_chat": {
                     "provider": "claude",
                     "model": "claude-node",
@@ -916,13 +902,12 @@ def test_wizard_manifest_records_each_agent_role_and_fixed_permissions(tmp_path)
 
     assert "[execution]" not in rendered
     assert "write_path" not in rendered
-    assert manifest.agent_profile("seed").provider == "claude"
-    assert manifest.agent_profile("seed").runtime == "stream-json"
+    assert manifest.agent_profile("node_chat").provider == "claude"
+    assert manifest.agent_profile("node_chat").runtime == "stream-json"
     assert manifest.agent_profile("project_chat").runtime == "app-server"
     assert manifest.agent_profile("project_chat").reasoning == "xhigh"
     assert manifest.agent_profile("paper_coach").model == "claude-coach"
     assert manifest.agent_profile("paper_coach").permissions == permissions_for("paper_coach")
-    assert manifest.agent_profile("refresh").permissions.read_repositories == "run_scope"
     assert "[agent.orchestrator]" in rendered
-    assert manifest.agent_profile("orchestrator").model == "codex-refresh"
+    assert manifest.agent_profile("orchestrator").model == "claude-node"
     assert manifest.agent_profile("orchestrator").permissions == permissions_for("orchestrate")

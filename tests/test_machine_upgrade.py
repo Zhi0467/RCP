@@ -131,7 +131,7 @@ def test_a_legacy_manifest_names_each_machine_by_the_card_for_its_host(tmp_path)
         "old": "",
     }
     assert manifest.base_machine == BACKEND
-    assert manifest.agent_profile("refresh").provider == "claude"
+    assert manifest.agent_profile("orchestrator").provider == "claude"
     coach = manifest.agent_profile("paper_coach")
     assert (coach.provider, coach.model, coach.reasoning) == ("claude", "opus", "high")
     document = tomlkit.parse(path.read_text(encoding="utf-8")).unwrap()

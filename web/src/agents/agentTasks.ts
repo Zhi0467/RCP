@@ -46,19 +46,6 @@ export function isActiveTask(task: AgentTask): boolean {
   return task.active;
 }
 
-export function isTaskNotificationSuperseded(task: AgentTask, tasks: AgentTask[]): boolean {
-  // A paused turn is the one awaiting-human state the human can still resume, and
-  // its notification is the way back to it, so a later success never retires it.
-  if ((task.kind !== "seed" && task.kind !== "refresh") || !task.awaiting_human || task.paused)
-    return false;
-  return tasks.some(
-    (candidate) =>
-      (candidate.kind === "seed" || candidate.kind === "refresh") &&
-      candidate.settled &&
-      compareTaskTime(candidate, task) > 0,
-  );
-}
-
 /** Style follows the answers the projection published, never a status of its own. */
 export function agentTaskTone(task: AgentTask): "running" | "failed" | "paused" | "succeeded" {
   if (task.failed) return "failed";
@@ -81,10 +68,10 @@ export function projectActivityTask(
     tasks.flatMap((task) => (task.parent_operation_id ? [task.parent_operation_id] : [])),
   );
   const paused = tasks.find((task) => task.paused && !continuedTaskIds.has(task.operation_id));
-  if (paused) return isTaskNotificationSuperseded(paused, tasks) ? null : paused;
+  if (paused) return paused;
   if (!observedTaskId) return null;
   const observed = tasks.find((task) => task.operation_id === observedTaskId);
-  if (!observed || isTaskNotificationSuperseded(observed, tasks)) return null;
+  if (!observed) return null;
   const byId = new Map(tasks.map((task) => [task.operation_id, task]));
   const descendants = tasks
     .filter((task) => task.operation_id !== observed.operation_id)

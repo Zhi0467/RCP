@@ -194,7 +194,6 @@ def measure(service, store, cache, branch, *, count=None) -> dict:
         "raw_history": lambda: manager.slice(1),
         "recent_history": lambda: manager.slice(recent.revision),
         "recent_summaries": lambda: manager.revision_summaries(recent.revision),
-        "refresh_delta": manager.refresh_delta,
         "digest": lambda: projector.reconcile_project(service._project_id),
     }
     if branch:

@@ -23,7 +23,6 @@ interface Props {
   task: AgentTask | null;
   loading: boolean;
   actionBusy: boolean;
-  mutatingActionsDisabled?: boolean;
   onSelect: (taskId: string) => void;
   onPause: () => void;
   onStop?: () => void;
@@ -37,7 +36,6 @@ export function AgentTaskInspector({
   task,
   loading,
   actionBusy,
-  mutatingActionsDisabled = false,
   onSelect,
   onPause,
   onStop,
@@ -160,7 +158,7 @@ export function AgentTaskInspector({
                       className="icon-button"
                       title={task.action_error}
                       aria-label={`Retry action: ${task.action_error}`}
-                      disabled={actionBusy || mutatingActionsDisabled}
+                      disabled={actionBusy}
                       onClick={
                         task.action_error_action === "stop"
                           ? onStop
@@ -397,21 +395,12 @@ export function AgentTaskInspector({
                   </button>
                 )}
                 {task.can_retry && (
-                  <button
-                    className="button secondary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onRetry}
-                  >
-                    <RotateCcw size={14} />{" "}
-                    {task.kind === "seed" || task.kind === "refresh" ? "Retry…" : "Retry"}
+                  <button className="button secondary" disabled={actionBusy} onClick={onRetry}>
+                    <RotateCcw size={14} /> Retry
                   </button>
                 )}
                 {task.can_resume && (
-                  <button
-                    className="button primary"
-                    disabled={actionBusy || mutatingActionsDisabled}
-                    onClick={onResume}
-                  >
+                  <button className="button primary" disabled={actionBusy} onClick={onResume}>
                     <Play size={14} /> Resume
                   </button>
                 )}

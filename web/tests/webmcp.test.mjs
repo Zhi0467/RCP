@@ -695,14 +695,7 @@ test("project overview returns bounded saved facts without an AI summary", () =>
 
 test("the overview tool fits every agent role, long recent titles, and many episodes", async () => {
   const project = projectFixture();
-  for (const role of [
-    "seed",
-    "refresh",
-    "node_chat",
-    "project_chat",
-    "paper_coach",
-    "orchestrator",
-  ]) {
+  for (const role of ["node_chat", "project_chat", "paper_coach", "orchestrator"]) {
     project.agent_profiles[role] = { ...project.agent_profiles.node_chat, model: "m".repeat(40) };
   }
   for (const type of ["hypothesis", "experiment", "evidence", "blocker"]) {

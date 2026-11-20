@@ -6,7 +6,6 @@ import "../../src/styles.css";
 
 const project = {
   agent_profiles: {
-    seed: { provider: "codex", model: "", reasoning: "medium", run_on: "local", permissions: {} },
     node_chat: {
       provider: "codex",
       model: "",
