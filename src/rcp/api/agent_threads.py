@@ -89,6 +89,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AGENT_THREAD_QUEUE_MAX_CHARS,
+    AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_DOCK_ENDED_EPISODE_WINDOW,
@@ -122,6 +123,7 @@ from rcp.storage.agent_threads import (
     AgentThreadQueueFull,
     AgentThreadQueueRecord,
     AgentThreadRecord,
+    QueuedTurnPicks,
     private_artifact_owner,
     thread_binds_task,
 )
@@ -756,13 +758,17 @@ def rename_thread(
     return thread_projection(store, thread)
 
 
+_PickName = Annotated[str, Field(min_length=1, max_length=200)]
+_PickReasoning = Annotated[str, Field(min_length=1, max_length=100)]
+
+
 class ThreadAgentBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     provider: ProviderId
-    model: str | None = Field(default=None, min_length=1, max_length=200)
-    reasoning: str | None = Field(default=None, min_length=1, max_length=100)
-    run_on: str | None = Field(default=None, min_length=1, max_length=200)
+    model: _PickName | None = None
+    reasoning: _PickReasoning | None = None
+    run_on: _PickName | None = None
 
 
 @router.post("/api/agent-threads/{thread_id}/agent")
@@ -951,16 +957,42 @@ class QueuedMessageBody(BaseModel):
     references: list[ProjectReferenceSelector] = Field(
         default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
     )
+    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: _PickName | None = Field(default=None, exclude_if=lambda value: value is None)
+    reasoning: _PickReasoning | None = Field(default=None, exclude_if=lambda value: value is None)
+    invoked_workflow_ids: list[_PickName] = Field(
+        default_factory=list,
+        max_length=AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
+        exclude_if=lambda value: not value,
+    )
+    invoked_skill_ids: list[_PickName] = Field(
+        default_factory=list,
+        max_length=AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
+        exclude_if=lambda value: not value,
+    )
+    invoked_provider_skill_names: list[_PickName] = Field(
+        default_factory=list,
+        max_length=AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
+        exclude_if=lambda value: not value,
+    )
 
     @model_validator(mode="after")
     def validate_content(self) -> Self:
         require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
         if not (self.message.strip() or self.attachment_set_id or self.references):
             raise ValueError("A queued message needs text or files")
+        if self.provider is None and (self.model or self.reasoning):
+            raise ValueError("A queued model or reasoning pick needs its provider")
         return self
 
     def request_sha256(self) -> str:
+        """Unpicked fields stay out, so a body without picks hashes as it did before them."""
         return hashlib.sha256(self.model_dump_json().encode()).hexdigest()
+
+    def picks(self) -> QueuedTurnPicks:
+        return QueuedTurnPicks.model_validate(
+            self.model_dump(include=set(QueuedTurnPicks.model_fields))
+        )
 
 
 @router.post("/api/agent-threads/{thread_id}/queue", status_code=202)
@@ -986,6 +1018,8 @@ def queue_thread_message(
     ) as project_id:
         if refusal := store.chat_turn_refusal(project_id, thread_id):
             raise HTTPException(status_code=409, detail=refusal)
+        if thread.project_id is None and body.invoked_provider_skill_names:
+            raise HTTPException(status_code=422, detail="A Space turn takes no provider skills")
         queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
             store, catalog, attachment_store, thread, project_id, authorized.user_id, body, key
         )
@@ -1044,6 +1078,7 @@ def _queue_new_message(
             attachment_client_id=client_id,
             attachment_count=len(claimed.attachments),
             request_sha256=body.request_sha256(),
+            picks=body.picks(),
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:

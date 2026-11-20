@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from rcp.storage.agents import ensure_agent
 from rcp.storage.artifact_models import Artifact
@@ -97,6 +98,17 @@ class AgentHandoffRecord(BaseModel):
     refusal_reason: str | None = None
 
 
+class QueuedTurnPicks(BaseModel):
+    """The agent and skills a member picked when queueing; empty keeps the drain's own resolution."""
+
+    provider: str | None = None
+    model: str | None = None
+    reasoning: str | None = None
+    invoked_workflow_ids: list[str] = Field(default_factory=list)
+    invoked_skill_ids: list[str] = Field(default_factory=list)
+    invoked_provider_skill_names: list[str] = Field(default_factory=list)
+
+
 class AgentThreadQueueRecord(BaseModel):
     queue_id: str
     thread_id: str
@@ -112,6 +124,18 @@ class AgentThreadQueueRecord(BaseModel):
     refusal_reason: str | None = None
     deferred_at: str | None = None
     removed_at: str | None = None
+    picks: QueuedTurnPicks = Field(default_factory=QueuedTurnPicks)
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_picks_column(cls, data: Any) -> Any:
+        """A stored row carries its picks as JSON; a row queued before migration 94 has none."""
+        if isinstance(data, dict) and "picks_json" in data:
+            data = dict(data)
+            stored = data.pop("picks_json")
+            if stored is not None:
+                data["picks"] = json.loads(stored)
+        return data
 
 
 class AgentThreadQueueFull(Exception):
@@ -180,6 +204,10 @@ def migrate_agent_thread_queue(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE INDEX agent_thread_queue_pending ON agent_thread_queue(thread_id, created_at)
         WHERE operation_id IS NULL AND refusal_reason IS NULL AND removed_at IS NULL""")
     install_agent_thread_version(connection, "agent_thread_queue", "ROW.user_id")
+
+
+def migrate_agent_thread_queue_picks(connection: sqlite3.Connection) -> None:
+    connection.execute("ALTER TABLE agent_thread_queue ADD COLUMN picks_json TEXT")
 
 
 def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
@@ -481,6 +509,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
         attachment_client_id: str | None = None,
         attachment_count: int = 0,
         request_sha256: str,
+        picks: QueuedTurnPicks | None = None,
     ) -> AgentThreadQueueRecord:
         """Store one member message for the thread's next free turn; a replayed key returns it.
 
@@ -515,11 +544,12 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 attachment_count=attachment_count,
                 request_sha256=request_sha256,
                 created_at=self.now(),
+                picks=picks or QueuedTurnPicks(),
             )
             connection.execute(
                 "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
-                "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at,"
+                "picks_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.queue_id,
                     thread_id,
@@ -531,6 +561,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     attachment_count,
                     request_sha256,
                     record.created_at,
+                    record.picks.model_dump_json(),
                 ),
             )
             return record
