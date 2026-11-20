@@ -36,6 +36,7 @@ import {
   RadioTower,
   Send,
   SlidersHorizontal,
+  Square,
   X,
 } from "lucide-react";
 import {
@@ -390,6 +391,14 @@ export function AgentChatView({
   const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
   const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
   const [submitting, setSubmitting] = useState(false);
+  const [stop, setStop] = useState<{
+    scope: string;
+    operationId: string;
+    attempt: number;
+    message: string;
+    sessionId: string | null;
+    result?: true | Error;
+  } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -517,7 +526,8 @@ export function AgentChatView({
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
-  const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
+  const awaitingSteerReceipt = (Boolean(steeringTask) && submitting) || Boolean(stop);
+  const latest = relatedTasks.at(-1);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherRows = useMemo(
     () => visibleChatWatchers(watchers, chatId, node, graphTarget),
@@ -1091,6 +1101,7 @@ export function AgentChatView({
       if (threads) setSubmitError(reason);
       return false;
     };
+    if (stop) return refuse("The running turn is stopping.");
     if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
       if (threads) return refuse("Finish dictating before sending comments.");
@@ -1099,6 +1110,14 @@ export function AgentChatView({
       return false;
     }
     if (steeringTask) return steer(steeringTask, threads);
+    return sendNewTurn(threads);
+  };
+
+  const sendNewTurn = async (threads: { ids: readonly string[]; key: string } | null) => {
+    const refuse = (reason: string) => {
+      if (threads) setSubmitError(reason);
+      return false;
+    };
     if (relatedActive || submitting || repairingTaskId || reviewPending) {
       if (threads) setSubmitError("Wait for the running turn to finish.");
       return false;
@@ -1206,6 +1225,51 @@ export function AgentChatView({
       setSubmitting(false);
     }
   };
+
+  const stopSends =
+    draftSendable && providerReady && !attachmentsUnready && !dictating && !reviewPending;
+  const stopTurn = async (task: AgentTask) => {
+    const request = {
+      scope: endpoints.scopeKey,
+      operationId: task.operation_id,
+      attempt: task.attempt,
+      message: stopSends ? draft.get() : "",
+      sessionId,
+    };
+    setStop(request);
+    setSubmitError(null);
+    try {
+      await endpoints.control(task.operation_id, "pause", crypto.randomUUID());
+      setStop((current) => (current === request ? { ...request, result: true } : current));
+    } catch (error) {
+      setStop((current) =>
+        current === request ? { ...request, result: new Error(errorMessage(error)) } : current,
+      );
+    }
+  };
+  const finishStop = useEffectEvent(() => {
+    if (!stop) return;
+    const same =
+      stop.scope === endpoints.scopeKey &&
+      stop.operationId === latest?.operation_id &&
+      stop.attempt === latest.attempt;
+    if (same && (!stop.result || (stop.result === true && latest.active))) return;
+    setStop(null);
+    if (same && stop.result instanceof Error) setSubmitError(stop.result.message);
+    if (
+      same &&
+      stop.result === true &&
+      latest.paused &&
+      (!stop.sessionId || stop.sessionId === sessionId) &&
+      !readOnly &&
+      stop.message &&
+      draft.get() === stop.message
+    )
+      void sendNewTurn(null);
+  });
+  useEffect(() => {
+    finishStop();
+  }, [stop, latest, endpoints.scopeKey]);
 
   const sendThreads: SendThreads = async (threadIds, key) => {
     if (!(await send({ ids: threadIds, key }))) throw new Error("Not sent; the chat shows why.");
@@ -1440,6 +1504,18 @@ export function AgentChatView({
             graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main"
           }
           tasks={relatedTasks}
+          stopControl={
+            latest?.active && latest.can_pause && latest.kind === surface && !readOnly ? (
+              <button
+                type="button"
+                className="button compact secondary"
+                disabled={submitting || Boolean(stop) || latest.pausing}
+                onClick={() => void stopTurn(latest)}
+              >
+                <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
+              </button>
+            ) : null
+          }
           questions={questionState.questions}
           endpoints={endpoints}
           artifacts={artifacts}
@@ -1643,7 +1719,7 @@ export function AgentChatView({
                   dictationError ||
                   (dictating ? "Stop dictation" : "Dictate")
                 }
-                disabled={submitting || dictationState === "transcribing"}
+                disabled={submitting || Boolean(stop) || dictationState === "transcribing"}
                 // An unavailable microphone still rereads the choice, then points to Settings.
                 onClick={() => void toggleDictation()}
               >
@@ -1666,6 +1742,7 @@ export function AgentChatView({
                   // While dictating, Send finishes the dictation and sends its transcript.
                   !(draftSendable || dictating) ||
                   submitting ||
+                  Boolean(stop) ||
                   (steeringTask
                     ? composer.staged
                     : attachmentsUnready ||

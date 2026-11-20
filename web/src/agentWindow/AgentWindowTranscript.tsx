@@ -82,6 +82,7 @@ interface Props {
   agentProgress?: (line: TaskTranscriptLine, task: AgentTask | undefined) => ReactNode;
   /** What the owner ends a line with, such as the cards its turn produced. */
   lineTrail?: (line: TaskTranscriptLine) => ReactNode;
+  stopControl?: ReactNode;
   footer?: ReactNode;
   /** A project chat's `main` or `branch:<id>`; its replies then offer a share link. */
   replyLinkGraphTarget?: string;
@@ -132,6 +133,7 @@ export function AgentWindowTranscript({
   browserNotices = true,
   agentProgress,
   lineTrail,
+  stopControl,
   footer,
   replyLinkGraphTarget,
   showModes = true,
@@ -291,7 +293,12 @@ export function AgentWindowTranscript({
                   agentProgress ? (
                     agentProgress(line, activeLineTask ?? undefined)
                   ) : (
-                    activeLineTask && <InlineTaskProgress task={activeLineTask} />
+                    activeLineTask && (
+                      <InlineTaskProgress
+                        task={activeLineTask}
+                        control={activeLineTask === relatedTasks.at(-1) ? stopControl : null}
+                      />
+                    )
                   )
                 ) : (
                   (line.text || plans.length > 0) && (
@@ -476,7 +483,10 @@ export function AgentWindowTranscript({
               !pausedLineTask &&
               (activeLineTask || (pendingLine && !failedTurn)) && (
                 <div className="agent-chat-view-line agent">
-                  <InlineTaskProgress task={activeLineTask} />
+                  <InlineTaskProgress
+                    task={activeLineTask}
+                    control={activeLineTask === relatedTasks.at(-1) ? stopControl : null}
+                  />
                 </div>
               )}
             {compaction?.placement === "after" && (
@@ -654,7 +664,7 @@ export function agentWindowEntries(
   }
   return grouped;
 }
-function InlineTaskProgress({ task }: { task: AgentTask | null }) {
+function InlineTaskProgress({ task, control }: { task: AgentTask | null; control?: ReactNode }) {
   const running = task
     ? turnCommands(task)
         .filter((command) => command.seconds === null)
@@ -669,9 +679,10 @@ function InlineTaskProgress({ task }: { task: AgentTask | null }) {
       <span className="chat-task-live" role="status" aria-live="polite" aria-atomic="true">
         {label}
       </span>
-      <span className="agent-turn-live" aria-hidden="true">
-        <LoaderCircle className="spin" size={12} />
-        {label}
+      <span className="agent-turn-live">
+        <LoaderCircle className="spin" size={12} aria-hidden="true" />
+        <span aria-hidden="true">{label}</span>
+        {control}
       </span>
     </>
   );

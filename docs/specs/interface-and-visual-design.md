@@ -518,7 +518,9 @@ turn that paused by itself shows the same row. A member's Stop reads Stopped
 with no button, on one rounded row shaped like the failed turn's, and Send
 stays on: the next message continues the session. While a turn runs and the
 composer holds a sendable message, Stop reads Stop and send: it stops the turn
-and sends that message as the next one. With rows already waiting it stays
+and sends that message as the next one. Shared node and project chats offer the same
+control beside the running status. They send the draft when that attempt confirms
+a member pause, while ordinary Send still steers the turn. With rows already waiting it stays
 Stop, so a new message never jumps the queue. Continue
 continues its turn, so the member's message shows once. In a
 project thread, what waits for the next turn shows as one-line rows above the
