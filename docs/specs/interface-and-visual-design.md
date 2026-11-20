@@ -471,6 +471,27 @@ receipt is a card as wide as the answer.
 Other modes without outcome metadata show no chip.
 Long reasons wrap without failure coloring.
 
+## Turn details
+
+The agent view shows each agent's conversation and live state. Turn details
+audits one turn: its state, task contract, exact prompts, staged contracts,
+event history, and the task controls. It has no list of other turns.
+
+The header names the turn's owner, then the turn: the first line of its first
+attempt's message, else its kind. Two or more attempts show as chips, newest
+first. An attempt continues a parent of the same kind whose attempt number is
+one less. Other parent links, such as orchestrator wakes, are not attempts.
+
+Each turn's last line that is not the member's carries a Turn details icon in
+its annotation row. In the Agents workspace it appears with the line's time:
+on hover, keyboard focus, or tap.
+
+Project history lists owners, not turns, newest activity first. A conversation
+Agents lists is one agent row and opens there, whatever started its turns. An
+episode is one Experiment or Auto-research row. Each other chat or attempt
+lineage is one row named by its kind. Non-agent rows open their newest turn's
+details. At phone width the rows scroll sideways without a heading.
+
 ## Agent view
 
 The space home switches between Projects (the project cards) and Agent. At

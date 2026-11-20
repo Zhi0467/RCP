@@ -180,6 +180,8 @@ test("Project history reports loading without hiding the already-loaded Agent ta
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       summaries: [],
       tasks: [task("active-task", "refresh", "running", 1)],
       loading: true,
@@ -299,6 +301,8 @@ test("Project history groups episode envelopes while preserving revision attribu
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       summaries,
       tasks: [],
       loading: false,
@@ -350,6 +354,8 @@ test("Project history report control links to the decorated report's preview", (
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       summaries: [
         {
           ...latestSummary,
@@ -443,6 +449,8 @@ test("Project history labels system, attributed, and legacy revisions without in
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       summaries: [
         {
           ...latestSummary,
@@ -506,6 +514,8 @@ test("history exposes fork controls for independent and grouped revisions", () =
   const html = renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       tasks: [],
       loading: false,
       error: null,
@@ -530,6 +540,8 @@ test("history names the member's agent without linking an unverified private thr
     renderToStaticMarkup(
       React.createElement(ProjectHistoryDrawer, {
         projectId: "project",
+        chatTitles: new Map(),
+        onOpenAgent() {},
         summaries: [
           {
             ...latestSummary,

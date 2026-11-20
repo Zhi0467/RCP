@@ -51,6 +51,7 @@ function inspector(degradation) {
   const selected = task(degradation);
   return renderToStaticMarkup(
     React.createElement(AgentTaskInspector, {
+      ownerLabel: null,
       tasks: [selected],
       task: selected,
       loading: false,
@@ -68,6 +69,8 @@ function drawer(degradation) {
   return renderToStaticMarkup(
     React.createElement(ProjectHistoryDrawer, {
       projectId: "project",
+      chatTitles: new Map(),
+      onOpenAgent() {},
       summaries: [],
       tasks: [task(degradation)],
       loading: false,
@@ -90,7 +93,7 @@ test("the inspector detail repeats the note beside the status it contradicts", (
   const html = inspector(NOTE);
 
   assert.match(html, /run-degradation/);
-  assert.equal(html.match(/ignored the requested reasoning effort/g).length, 2);
+  assert.equal(html.match(/ignored the requested reasoning effort/g).length, 1);
 });
 
 test("an untroubled task claims nothing", () => {

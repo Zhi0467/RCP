@@ -1,7 +1,17 @@
-import { Clock3, ExternalLink, GitFork, MoreHorizontal, RotateCcw, X } from "lucide-react";
+import {
+  Bot,
+  Clock3,
+  Cog,
+  ExternalLink,
+  FlaskConical,
+  GitFork,
+  MoreHorizontal,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../core/api";
-import { taskKindLabel, taskStatusLabel } from "./agentTasks";
+import { taskOwnerRows, taskStatusLabel } from "./agentTasks";
 import type { AgentTask, RevisionSummary } from "../core/types";
 import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
 
@@ -9,9 +19,12 @@ interface Props {
   projectId: string;
   summaries: RevisionSummary[];
   tasks: AgentTask[];
+  /** Conversations the member can open, by chat id. */
+  chatTitles: ReadonlyMap<string, string>;
   loading: boolean;
   error: string | null;
   onInspectTask: (taskId: string) => void;
+  onOpenAgent: (chatId: string) => void;
   episodeReportHref: (episodeId: string) => string;
   onClose: () => void;
   onFork?: (revision: number, requestId: string) => Promise<void>;
@@ -27,9 +40,11 @@ export function ProjectHistoryDrawer({
   projectId,
   summaries,
   tasks,
+  chatTitles,
   loading,
   error,
   onInspectTask,
+  onOpenAgent,
   episodeReportHref,
   onClose,
   onFork,
@@ -37,6 +52,7 @@ export function ProjectHistoryDrawer({
   reportError,
 }: Props) {
   const historyEntries = groupEpisodeRevisions(summaries);
+  const owners = taskOwnerRows(tasks, chatTitles);
 
   return (
     <div
@@ -57,27 +73,35 @@ export function ProjectHistoryDrawer({
         <div className="run-inspector-body">
           <nav className="run-history" aria-label="Agent tasks">
             <span className="eyebrow">Agent tasks</span>
-            {tasks.map((task) => (
-              <button
-                data-task-id={task.operation_id}
-                key={task.operation_id}
-                onClick={() => onInspectTask(task.operation_id)}
-                type="button"
-              >
-                <span className={`run-state-dot ${task.status}`} />
-                <span className="run-history-copy">
-                  <strong>
-                    {taskKindLabel(task.kind)} · attempt {task.attempt}
-                  </strong>
-                  <span className="run-history-meta">
-                    {taskStatusLabel(task)} · {formatTimestamp(task.created_at)}
+            {owners.map((owner) => {
+              const KindIcon = { agent: Bot, episode: FlaskConical, run: Cog }[owner.kind];
+              return (
+                <button
+                  data-task-id={owner.latest.operation_id}
+                  key={owner.key}
+                  onClick={() =>
+                    owner.chatId
+                      ? onOpenAgent(owner.chatId)
+                      : onInspectTask(owner.latest.operation_id)
+                  }
+                  type="button"
+                >
+                  <span className={`run-state-dot ${owner.latest.status}`} />
+                  <span className="run-history-copy">
+                    <strong>
+                      <KindIcon className="run-history-kind" size={13} aria-hidden="true" />
+                      {owner.label}
+                    </strong>
+                    <span className="run-history-meta">
+                      {taskStatusLabel(owner.latest)} · {formatTimestamp(owner.latest.updated_at)}
+                    </span>
+                    {owner.latest.degradation && (
+                      <span className="run-history-degraded">{owner.latest.degradation}</span>
+                    )}
                   </span>
-                  {task.degradation && (
-                    <span className="run-history-degraded">{task.degradation}</span>
-                  )}
-                </span>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </nav>
 
           <div className="run-inspector-detail">

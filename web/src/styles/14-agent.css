@@ -366,6 +366,41 @@
   white-space: nowrap;
   width: 1px;
 }
+.chat-dock.workspace .agent-chat-view-line:has(.chat-turn-details) {
+  position: relative;
+}
+.chat-dock.workspace .chat-answer-annotations:has(> .chat-turn-details) {
+  margin: 0;
+  position: absolute;
+  right: 3px;
+  top: calc(100% + 1px);
+}
+.chat-dock.workspace .chat-answer-annotation-button.chat-turn-details {
+  clip-path: none;
+  height: auto;
+  opacity: 0;
+  pointer-events: none;
+  position: static;
+  transition: opacity 0.16s ease;
+  width: auto;
+}
+.chat-dock.workspace .chat-answer-annotation-button.chat-turn-details:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (hover: hover) {
+  .chat-dock.workspace .agent-chat-view-line:hover .chat-turn-details,
+  .chat-dock.workspace .agent-chat-view-line:focus-within .chat-turn-details {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+@media (hover: none) {
+  .chat-dock.workspace .agent-chat-view-line[data-time-shown] .chat-turn-details {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
 .chat-dock.workspace .agent-chat-view-line.agent .chat-markdown p {
   margin: 0 0 10px;
 }

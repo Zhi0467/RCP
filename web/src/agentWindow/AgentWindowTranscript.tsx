@@ -6,6 +6,7 @@ import {
   LoaderCircle,
   Play,
   RotateCcw,
+  ScrollText,
   TriangleAlert,
 } from "lucide-react";
 import {
@@ -21,6 +22,7 @@ import {
   orderTranscriptLines,
   pausedTaskText,
   taskKindLabel,
+  turnEndLineIds,
   type TaskTranscriptLine,
 } from "../agents/agentTasks";
 import type {
@@ -193,8 +195,12 @@ export function AgentWindowTranscript({
           text: "",
           running: true,
         }));
+  const shownLines = liveRows.length
+    ? orderTranscriptLines([...transcript, ...liveRows])
+    : transcript;
+  const turnEnds = turnEndLineIds(shownLines);
   const entries = agentWindowEntries(
-    liveRows.length ? orderTranscriptLines([...transcript, ...liveRows]) : transcript,
+    shownLines,
     questions,
     plansByLine.size
       ? new Set([...shownElsewhere, ...[...plansByLine.values()].flat().map((q) => q.question_id)])
@@ -474,17 +480,30 @@ export function AgentWindowTranscript({
                 </div>
               )}
               {lineTrail?.(line)}
-              {replyLinkGraphTarget &&
-                endpoints.projectId &&
-                line.role === "agent" &&
-                !line.running &&
-                line.text && (
-                  <ReplyLinkButton
-                    projectId={endpoints.projectId}
-                    graphTarget={replyLinkGraphTarget}
-                    operationId={line.taskId}
-                  />
+              <div className="chat-answer-annotations">
+                {replyLinkGraphTarget &&
+                  endpoints.projectId &&
+                  line.role === "agent" &&
+                  !line.running &&
+                  line.text && (
+                    <ReplyLinkButton
+                      projectId={endpoints.projectId}
+                      graphTarget={replyLinkGraphTarget}
+                      operationId={line.taskId}
+                    />
+                  )}
+                {onInspectTask && task && turnEnds.has(line.lineId) && (
+                  <button
+                    type="button"
+                    className="chat-answer-annotation-button chat-turn-details"
+                    aria-label="Turn details"
+                    title="Turn details"
+                    onClick={() => onInspectTask(line.taskId)}
+                  >
+                    <ScrollText size={12} aria-hidden="true" />
+                  </button>
                 )}
+              </div>
               {shownAt && line.trigger !== "schedule" && (
                 <time className="chat-line-time" dateTime={shownAt.toISOString()}>
                   {localClock(shownAt)}

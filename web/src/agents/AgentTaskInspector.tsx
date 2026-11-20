@@ -15,12 +15,16 @@ import {
   reconstructTaskTranscript,
   taskKindLabel,
   taskStatusLabel,
+  turnAttempts,
+  turnTitle,
 } from "./agentTasks";
 import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../core/types";
 
 interface Props {
   tasks: AgentTask[];
   task: AgentTask | null;
+  /** Who ran the turn: its agent's name, else what kind of run it is. */
+  ownerLabel: string | null;
   loading: boolean;
   actionBusy: boolean;
   onSelect: (taskId: string) => void;
@@ -34,6 +38,7 @@ interface Props {
 export function AgentTaskInspector({
   tasks,
   task,
+  ownerLabel,
   loading,
   actionBusy,
   onSelect,
@@ -46,6 +51,7 @@ export function AgentTaskInspector({
   const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
   const [copiedContractRole, setCopiedContractRole] = useState<string | null>(null);
   const transcript = task ? reconstructTaskTranscript([task]) : [];
+  const attempts = task ? turnAttempts(task, tasks) : [];
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
   const contracts = task?.contracts ?? [];
   const resolvedSkillPackages = task?.request.resolved_skill_packages ?? [];
@@ -81,38 +87,35 @@ export function AgentTaskInspector({
         if (event.currentTarget === event.target) onClose();
       }}
     >
-      <aside className="detail-drawer run-inspector" aria-label="Agent task inspector">
+      <aside className="detail-drawer run-inspector turn-audit" aria-label="Turn details">
         <header>
-          <h2>Agent tasks</h2>
-          <button className="icon-button" aria-label="Close agent task inspector" onClick={onClose}>
+          <div>
+            {ownerLabel && <span className="eyebrow">{ownerLabel}</span>}
+            <h2>{task ? turnTitle(attempts.at(-1) ?? task) : "Turn details"}</h2>
+            {attempts.length > 1 && (
+              <nav className="turn-attempts" aria-label="Attempts">
+                {attempts.map((item) => (
+                  <button
+                    key={item.operation_id}
+                    type="button"
+                    className={item.operation_id === task?.operation_id ? "active" : ""}
+                    aria-pressed={item.operation_id === task?.operation_id}
+                    title={taskStatusLabel(item)}
+                    onClick={() => onSelect(item.operation_id)}
+                  >
+                    <span className={`run-state-dot ${item.status}`} />
+                    Attempt {item.attempt}
+                  </button>
+                ))}
+              </nav>
+            )}
+          </div>
+          <button className="icon-button" aria-label="Close turn details" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
 
         <div className="run-inspector-body">
-          <nav className="run-history" aria-label="Agent task history">
-            {tasks.map((item) => (
-              <button
-                key={item.operation_id}
-                className={task?.operation_id === item.operation_id ? "active" : ""}
-                onClick={() => onSelect(item.operation_id)}
-              >
-                <span className={`run-state-dot ${item.status}`} />
-                <span className="run-history-copy">
-                  <strong>
-                    {taskKindLabel(item.kind)} · attempt {item.attempt}
-                  </strong>
-                  <span className="run-history-meta">
-                    {taskStatusLabel(item)} · {formatTimestamp(item.created_at)}
-                  </span>
-                  {item.degradation && (
-                    <span className="run-history-degraded">{item.degradation}</span>
-                  )}
-                </span>
-              </button>
-            ))}
-          </nav>
-
           <div className="run-inspector-detail">
             {loading && !task ? (
               <div className="quiet-empty">
@@ -139,9 +142,6 @@ export function AgentTaskInspector({
                     )}
                   </div>
                   <div>
-                    <span className="eyebrow">
-                      {taskKindLabel(task.kind)} · attempt {task.attempt}
-                    </span>
                     <h3>{taskStatusLabel(task)}</h3>
                     <p>{task.error || task.status_message}</p>
                     {task.degradation && (

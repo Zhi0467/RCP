@@ -9,6 +9,8 @@ const target = new URLSearchParams(location.search).has("branch")
 createRoot(document.getElementById("root")).render(
   React.createElement(ProjectHistoryDrawer, {
     projectId: "project",
+    chatTitles: new Map(),
+    onOpenAgent() {},
     tasks: [],
     loading: false,
     error: null,
