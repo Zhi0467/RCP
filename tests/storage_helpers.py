@@ -13,6 +13,8 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=49")
     for table in (
         "agent_threads",
+        "agents",
+        "agent_sessions",
         "agent_schedules",
         "approval_cards",
         "agent_handoffs",
@@ -49,6 +51,8 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE projects ADD COLUMN state_remote INTEGER NOT NULL DEFAULT 0"
         )
+    if any(row[1] == "agent_id" for row in connection.execute("PRAGMA table_info(episodes)")):
+        connection.execute("ALTER TABLE episodes DROP COLUMN agent_id")
     if any(
         row[1] == "relays_question_id" for row in connection.execute("PRAGMA table_info(questions)")
     ):

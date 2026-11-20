@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from rcp.compute_jobs.models import ComputeJobRecord
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkill
+from rcp.storage.agents import delete_project_agents, move_project_agents
 from rcp.storage.compute_jobs import _compute_job_record
 from rcp.storage.digest import rewrite_digest_project_links
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, EpisodeStoreMixin
@@ -868,6 +869,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 counts["agent_threads"] = connection.execute(
                     "DELETE FROM agent_threads WHERE project_id = ?", (project_id,)
                 ).rowcount
+                counts.update(delete_project_agents(connection, project_id))
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)
                 ).rowcount
@@ -1324,6 +1326,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 "UPDATE graph_runs SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
+            move_project_agents(connection, legacy_id, project_id)
             connection.execute(
                 "UPDATE episodes SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),

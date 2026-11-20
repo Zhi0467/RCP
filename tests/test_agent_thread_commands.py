@@ -90,6 +90,70 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
     assert store.agent_task("report") is None and store.agent_task("duplicate") is None
 
 
+def test_handoff_lands_in_the_default_agent_when_the_member_has_another(
+    manifest, tmp_path: Path
+) -> None:
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.agents.command_protocol import HandoffArguments, HandoffCommandRequest
+    from rcp.runs.agent_thread_commands import (
+        ThreadCommandHandler,
+        project_details,
+        projects_projection,
+    )
+    from tests.helpers import authorized_human, create_named_app
+    from tests.test_storage import _task_record
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    actor = authorized_human(store)
+    project_id = app.state.default_project_id
+    threads = store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
+    source = next(row for row in threads if row.kind == "space")
+    default = next(row for row in threads if row.project_id == project_id)
+    with store.connection() as connection:
+        for thread_id, created_at in (("earlier", "2000-01-01"), ("later", "2999-01-01")):
+            connection.execute(
+                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at,"
+                "is_default) VALUES(?,?,'project',?,?,0)",
+                (thread_id, actor.user_id, project_id, created_at),
+            )
+    assert projects_projection(store, catalog, actor.user_id)[0]["thread_id"] == default.thread_id
+    assert (
+        project_details(store, catalog, actor.user_id, project_id)["thread_id"] == default.thread_id
+    )
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="source",
+            project_id=store.space_id,
+            kind="space_chat",
+            authorized_by=actor,
+            request={"chat_id": source.thread_id, "chat_scope": "project", "mode": "work"},
+        )
+    )
+    (tmp_path / "message.md").write_text("Please check the project")
+    handler = ThreadCommandHandler(store, catalog, "source", tmp_path)
+    request = HandoffCommandRequest(
+        verb="handoff",
+        mailbox_id="a" * 32,
+        request_id="b" * 32,
+        credential="c" * 64,
+        idempotency_key="once",
+        arguments=HandoffArguments(project_id=project_id, message_file="message.md"),
+    )
+    response = handler(request, CommandTurnIdentity(None, "source", "turn", "broker"))
+    assert response.status == "ok"
+    assert [item.target_thread_id for item in store.pending_agent_handoffs()] == [default.thread_id]
+    with pytest.raises(ValueError):
+        store.create_agent_handoff(
+            source_thread_id=source.thread_id,
+            source_operation_id="source",
+            idempotency_key="other",
+            target_thread_id="later",
+            message="Please check the project",
+        )
+
+
 def test_projects_and_handoff_share_cards_and_member_ownership(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:

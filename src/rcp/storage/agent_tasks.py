@@ -59,6 +59,7 @@ from rcp.limits import (
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
+from rcp.storage.agents import AgentSessionRecord, bind_session, ensure_turn_agent
 from rcp.storage.branch_names import _chain_root
 from rcp.storage.chat_forks import FORK_PROFILE_FIELDS, ChatForkRefused
 from rcp.storage.chat_names import initialize_task_chat_name
@@ -122,6 +123,9 @@ def native_session_profile_reason(
     if previous.get("run_on") != requested.get("run_on"):
         return "machine_mismatch"
     return "current_session"
+
+
+SESSION_TASK_KINDS = frozenset({"node_chat", "project_chat", "space_chat"})
 
 
 def _origin_bound_edit(request: Mapping[str, object]) -> bool:
@@ -1692,6 +1696,14 @@ class AgentTaskStoreMixin(StoreMixinBase):
             record.request,
             record.graph_target.branch_id,
         )
+        chat_id = record.request.get("chat_id")
+        ensure_turn_agent(
+            connection,
+            agent_id=chat_id if isinstance(chat_id, str) and chat_id else None,
+            project_id=record.project_id,
+            episode_id=record.episode_id,
+            created_at=record.created_at,
+        )
         record_client_request(self, connection, record)
         record_evidence_flag_address(self, connection, record)
         from rcp.storage.bulletin import bulletin_delta_operation
@@ -1726,6 +1738,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 tier="summary",
                 created_at=record.created_at,
             )
+        self._bind_agent_session(connection, record.operation_id)
 
     def validate_agent_task_graph_target(self, record: AgentTaskRecord) -> None:
         """Recheck the same durable target contract immediately before dispatch."""
@@ -2044,22 +2057,76 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _current_chat_session_row(
         connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
     ) -> sqlite3.Row | None:
+        """The turn that bound the agent's current session, when this chat owns it."""
         return connection.execute(
-            """
-            SELECT run.*, """
+            "SELECT run.*, "
             + _SESSION_DROP_COLUMNS
-            + """
-            FROM graph_runs AS run
-            WHERE project_id = ? AND kind = ?
-              AND json_extract(request_json, '$.chat_id') = ?
-              AND native_session_id IS NOT NULL AND native_session_id != ''
-              -- Origin-bound viewer edits do not advance the current chat session.
-              AND (json_extract(request_json, '$.artifact_edit') IS NULL
-                   OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0)
-            ORDER BY created_at DESC, run.rowid DESC LIMIT 1
-            """,
-            (project_id, kind, chat_id),
+            + " FROM agent_sessions AS session JOIN graph_runs AS run "
+            "ON run.operation_id = session.operation_id "
+            "WHERE session.agent_id = ? AND run.project_id = ? AND run.kind = ?",
+            (chat_id, project_id, kind),
         ).fetchone()
+
+    def _bind_agent_session(self, connection: sqlite3.Connection, operation_id: str) -> None:
+        """Point the agent at this turn's native session, and receipt a replaced one."""
+        row = connection.execute(
+            "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        request = json.loads(row["request_json"])
+        chat_id = request.get("chat_id")
+        if (
+            row["kind"] not in SESSION_TASK_KINDS
+            or not row["native_session_id"]
+            or not isinstance(chat_id, str)
+            or not chat_id
+            or _origin_bound_edit(request)
+        ):
+            return
+        now = self.now()
+        replaced = bind_session(
+            connection,
+            AgentSessionRecord(
+                agent_id=chat_id,
+                provider=request.get("provider") or "",
+                machine_id=request.get("run_on") or "",
+                native_session_id=row["native_session_id"],
+                stage_root=row["stage_root"],
+                bound_at=now,
+                operation_id=operation_id,
+            ),
+        )
+        if replaced is None:
+            return
+        self._insert_agent_task_receipt(
+            connection,
+            operation_id,
+            "agent_session_replaced",
+            self._bounded_receipt_payload(
+                {
+                    "replaced_operation_id": replaced.operation_id,
+                    "replaced_provider": replaced.provider,
+                    "replaced_machine_id": replaced.machine_id,
+                    "reason": self._session_replacement_reason(connection, operation_id),
+                }
+            ),
+            tier="summary",
+            created_at=now,
+        )
+
+    @staticmethod
+    def _session_replacement_reason(connection: sqlite3.Connection, operation_id: str) -> str:
+        """Why this turn did not continue the bound session: its resolution, else its admission."""
+        rows = {
+            row["category"]: json.loads(row["payload_json"])
+            for row in connection.execute(
+                "SELECT category, payload_json FROM graph_run_receipts WHERE operation_id = ? "
+                "AND category IN ('chat_session_resolution', 'operation_admitted') "
+                "ORDER BY receipt_id",
+                (operation_id,),
+            )
+        }
+        resolved = rows.get("chat_session_resolution", {}).get("reason_code")
+        return str(resolved or rows.get("operation_admitted", {}).get("continuation_cause") or "")
 
     def current_chat_agent(
         self, project_id: str, kind: str, chat_id: str
@@ -2297,7 +2364,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 None,
             )
         resolution: dict[str, object] | None = None
-        if record.kind not in {"node_chat", "project_chat", "space_chat"}:
+        if record.kind not in SESSION_TASK_KINDS:
             return record, resolution
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
@@ -2817,7 +2884,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
     ) -> bool:
-        if record.kind not in {"node_chat", "project_chat", "space_chat"}:
+        if record.kind not in SESSION_TASK_KINDS:
             return False
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
@@ -5758,6 +5825,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 ),
             ).rowcount
             if updated == 1:
+                self._bind_agent_session(connection, operation_id)
                 return
             existing = connection.execute(
                 "SELECT native_session_id FROM graph_runs WHERE operation_id = ?",

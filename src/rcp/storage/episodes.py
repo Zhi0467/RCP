@@ -393,7 +393,11 @@ class EpisodeStoreMixin(StoreMixinBase):
                     """,
                     (record.episode_id, root_task.operation_id, root_task.created_at),
                 )
-                stored_episode = started
+                stored_episode = self._episode_record(
+                    connection.execute(
+                        "SELECT * FROM episodes WHERE episode_id = ?", (record.episode_id,)
+                    ).fetchone()
+                )
                 invocation_row = connection.execute(
                     """
                     SELECT * FROM episode_invocations
@@ -2420,6 +2424,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                 "status": "running",
                 "invocations_used": 1,
                 "updated_at": requested_task.created_at,
+                "agent_id": stored_episode.agent_id,
             }
         )
         if (

@@ -42,8 +42,10 @@ and separate Experiment episodes must not create separate agent identities.
 
 ## Private agent threads
 
-Each member has one Space thread and one project thread per project membership.
-Both are private to the member and continue indefinitely. Listing
+Each member has one default Space thread and one default project thread per
+project membership. Both are private to the member and continue indefinitely.
+Storage allows a member more private threads in the same place; exactly one is
+the default, and the project list and `handoff` always name it. Listing
 `/api/agent-threads`, and the `projects` and `handoff` verbs, create missing
 threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
@@ -128,8 +130,8 @@ branch and starts no episodes. A Space turn records the member's message at
 launch, once per turn: a Resume or Retry keeps its first attempt's record. A
 reply with no outcome file is not stated, as in project Work.
 
-`handoff` passes a Space request to the same member's project thread, with that
-member's authority. It is not mail. Its usage lists the project thread's
+`handoff` passes a Space request to the same member's default project thread,
+with that member's authority. It is not mail. Its usage lists the project thread's
 capabilities from `thread_capabilities("project")`, so the Space agent knows
 what a handoff can ask for. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
@@ -492,6 +494,15 @@ The [API spec](api-web-and-desktop-projections.md) owns the tool surface.
 Task insertion resolves the latest native-session binding of the exact chat in
 the same transaction as overlap and stage admission. Client hints and transcript
 text cannot select it; resolution never skips an unusable current binding.
+
+Every conversation, worker and episode is an agent with one id, recorded once
+in `agents` with its placement: private or shared, single-entry or project.
+`agent_sessions` names each chat agent's current native session and the turn
+that bound it. The newest session-holding turn owns it; an older turn never
+takes it back. A turn that binds a different native session leaves an
+`agent_session_replaced` receipt naming what it replaced and why. Each episode
+records the agent it runs on: the agent of the episode it continues, else of its
+first turn.
 
 - Active turns block human turns. Active and paused-resumable turns defer wakes
   and queued messages. A human message after a paused turn starts the next turn

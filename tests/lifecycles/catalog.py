@@ -75,6 +75,15 @@ from rcp.server_ops.restore import (
 )
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
 from rcp.storage.agent_threads import AgentThreadStoreMixin, claim_queued_turn
+from rcp.storage.agents import (
+    backfill_agents,
+    bind_session,
+    delete_project_agents,
+    ensure_agent,
+    ensure_turn_agent,
+    move_project_agents,
+    rekey_project_sessions,
+)
 from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifacts import ArtifactStoreMixin, insert_artifact
 from rcp.storage.auto_research import AutoResearchStoreMixin, migrate_legacy_auto_research
@@ -1064,7 +1073,41 @@ PROVIDER_SESSION_SWEEP = Entry(
     ),
 )
 
+AGENT = Entry(
+    name="agent identity and session",
+    status="native_session_id",
+    tables=frozenset({"agents", "agent_sessions"}),
+    writers=(
+        backfill_agents,
+        ensure_agent,
+        ensure_turn_agent,
+        bind_session,
+        move_project_agents,
+        rekey_project_sessions,
+        delete_project_agents,
+    ),
+    rules=(
+        Rule(
+            "placement_written_once",
+            "An agent keeps the id and placement of its first write.",
+            "code guard at ensure_agent",
+        ),
+        Rule(
+            "newest_bound_turn_owns_the_session",
+            "The agent's session is the one its newest session-holding turn bound; "
+            "an older turn never takes it back.",
+            "code guard at bind_session",
+        ),
+        Rule(
+            "replacement_leaves_a_receipt",
+            "A turn that binds a different native session records what it replaced and why.",
+            "invariant 10g; code guard at AgentTaskStoreMixin._bind_agent_session",
+        ),
+    ),
+)
+
 ENTRIES = (
+    AGENT,
     PROJECT_PROVISIONING,
     PROJECT_TRANSFER,
     PROVIDER_LOGIN,

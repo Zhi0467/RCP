@@ -51,7 +51,7 @@ def projects_projection(
     threads = store.ensure_agent_threads(
         user_id, sorted(visible), default_names=DEFAULT_AGENT_NAMES
     )
-    thread_ids = {thread.project_id: thread.thread_id for thread in threads}
+    thread_ids = {thread.project_id: thread.thread_id for thread in threads if thread.is_default}
     counts = digest_counts(store, sorted(visible), user_id)
     return [
         {
@@ -73,7 +73,9 @@ def project_details(
     if not store.is_project_member(project_id, user_id):
         raise ValueError("Project not found")
     threads = store.ensure_agent_threads(user_id, [project_id], default_names=DEFAULT_AGENT_NAMES)
-    thread = next(thread for thread in threads if thread.project_id == project_id)
+    thread = next(
+        thread for thread in threads if thread.project_id == project_id and thread.is_default
+    )
     service = catalog.open_display(project_id)
     state = service.history.state()
     project_type = project_type_of(state)
@@ -224,7 +226,7 @@ class ThreadCommandHandler:
             for item in self.store.ensure_agent_threads(
                 thread.user_id, [project_id], default_names=DEFAULT_AGENT_NAMES
             )
-            if item.project_id == project_id
+            if item.project_id == project_id and item.is_default
         )
         key = request.idempotency_key or ""
         # Only a new handoff stores its pick: a replay already did, and a reused

@@ -82,6 +82,7 @@ TRANSFER_RECORD_TABLES |= frozenset(PAPER_SECTION_TABLES)
 TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
     {
         "agent_threads",
+        "agents",
         "space_turn_project_bindings",
         "memory_migrations",
         "memory_deletions",

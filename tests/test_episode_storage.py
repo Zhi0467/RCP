@@ -1492,7 +1492,8 @@ def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> 
     reopened = AppStore(path)
 
     repaired = reopened.episode(episode_id)
-    assert repaired == stopping
+    assert repaired is not None
+    assert repaired.model_dump(exclude={"agent_id"}) == stopping.model_dump(exclude={"agent_id"})
     assert reopened.episode_wrapup(episode_id) is None
     settled = reopened.mark_episode_stop_skipped(
         episode_id,
