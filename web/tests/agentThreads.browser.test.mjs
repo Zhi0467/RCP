@@ -1868,6 +1868,15 @@ test("Wakes shows each schedule's zone, next run and waiting state, with Cancel 
           .click(),
       ]);
       assert.equal(resume.method(), "POST");
+      await page
+        .waitForFunction(
+          (element) =>
+            element.getBoundingClientRect().bottom <=
+            element.closest(".space-agent").getBoundingClientRect().bottom,
+          await popover.elementHandle(),
+          { timeout: 2000 },
+        )
+        .catch(() => undefined);
       const box = await popover.evaluate((element) => ({
         scroll: element.scrollHeight > element.clientHeight,
         right: element.getBoundingClientRect().right,
@@ -1876,7 +1885,10 @@ test("Wakes shows each schedule's zone, next run and waiting state, with Cancel 
       }));
       assert.ok(box.scroll, "a long list scrolls inside the popover");
       assert.ok(box.right <= width);
-      assert.ok(box.bottom <= box.frame, "the popover ends inside the thread's frame");
+      assert.ok(
+        box.bottom <= box.frame,
+        `the popover ends inside the thread's frame at ${width}px: ${JSON.stringify(box)}`,
+      );
       await page.waitForTimeout(200);
       if (shots) await page.screenshot({ path: `${shots}/upcoming-${width}.png` });
       // An Enable the backend refuses says why.
