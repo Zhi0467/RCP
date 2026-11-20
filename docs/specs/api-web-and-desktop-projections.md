@@ -490,7 +490,7 @@ offers, and human-closed node state. Runtime, parent, tasks, budget, and report
 come from one SQLite snapshot. Task polling cannot override it. Recovery binds
 the named operation and disappears if its row is unavailable. A candidate graph
 must be synced before Start; a rule-inert prose draft needs no such fence.
-Snapshots also publish canonical mutation availability; watchers publish Check now.
+Snapshots also publish canonical mutation availability.
 
 Reads are start-order fenced per project/target even at equal revision. New reads,
 settings saves, and Sync fence older graph/control responses. Every branch route

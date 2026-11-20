@@ -225,7 +225,6 @@ def _check_view(
         "stop_reason": watcher.cancel_reason,
         "stopped_at": watcher.cancelled_at or check.removed_at,
         "stop_operation_id": None,
-        "can_check_now": False,
         "can_stop_watching": can_stop_watching,
         "wakes_chat": (
             turn is not None

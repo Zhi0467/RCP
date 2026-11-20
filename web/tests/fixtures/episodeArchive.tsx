@@ -108,7 +108,6 @@ function Fixture() {
           focusExperimentId={null}
           runBusy={false}
           stopBusyIds={new Set()}
-          watcherCheckBusyId={null}
           taskActionId={null}
           onInspectTask={noop}
           onLoadEpisodeMessages={episodeState.refreshEpisodeMessages}
@@ -124,7 +123,6 @@ function Fixture() {
           onOpenHistory={() => setHistoryOpen(true)}
           onRunExperiment={noop}
           onStopExperiment={noop}
-          onCheckExperimentWatcher={noop}
           onRecoverExperiment={noop}
           onSwitchExperimentProvider={noop}
           episodeReportHref={() => "#"}

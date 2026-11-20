@@ -177,7 +177,6 @@ export function useGraphSelection({
     selectedAutoResearchEpisodeId,
   } = experimentSelection;
   const [experimentStopIds, setExperimentStopIds] = useState<Set<string>>(() => new Set());
-  const [watcherCheckId, setWatcherCheckId] = useState<string | null>(null);
   const [dockedNodeIds, setDockedNodeIds] = useState<string[]>([]);
   const [dagRelationFocusId, setDagRelationFocusId] = useState<string | null>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -272,7 +271,6 @@ export function useGraphSelection({
             },
       );
       setExperimentStopIds(new Set());
-      setWatcherCheckId(null);
       setDockedNodeIds(snapshot.dockedNodeIds.filter((nodeId) => Boolean(nextGraph.nodes[nodeId])));
       setDagRelationFocusId(snapshot.dagRelationFocusId);
       panelScrollRef.current = new Map(snapshot.viewState.panelScroll);
@@ -304,7 +302,6 @@ export function useGraphSelection({
         autoResearchEpisodeId,
       });
       setExperimentStopIds(new Set());
-      setWatcherCheckId(null);
       setDockedNodeIds([]);
       setDagRelationFocusId(null);
       panelScrollRef.current = new Map();
@@ -549,10 +546,6 @@ export function useGraphSelection({
         return pending;
       });
   }, []);
-  const beginWatcherCheck = useCallback((watcherId: string) => {
-    setWatcherCheckId(watcherId);
-    return () => setWatcherCheckId(null);
-  }, []);
   const clearDagRelationFocus = useCallback(() => {
     setDagRelationFocusId(null);
   }, []);
@@ -590,7 +583,6 @@ export function useGraphSelection({
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
     experimentStopIds,
-    watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,
     panelRef,
@@ -616,7 +608,6 @@ export function useGraphSelection({
     clearExperimentFocus,
     showExperiment,
     beginExperimentStop,
-    beginWatcherCheck,
     clearDagRelationFocus,
     forgetProjectViewport,
   };

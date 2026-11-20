@@ -170,7 +170,6 @@ function watcher(fields = {}) {
     stop_reason: null,
     stopped_at: null,
     stop_operation_id: null,
-    can_check_now: false,
     delivery_label: "Pending delivery",
     ...fields,
   };
@@ -212,12 +211,10 @@ function render(run, props = {}) {
       runDisabled: false,
       stopBusy: false,
       recoveryBusy: false,
-      watcherCheckBusyId: null,
       onRun() {},
       onStopLoop() {},
       onRecover() {},
       onSwitchProvider() {},
-      onCheckWatcher() {},
       onStopWatcher() {},
       episodeReportHref: (episodeId) => `/reports/${episodeId}`,
       ...props,
@@ -858,14 +855,12 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
       focusExperimentId: null,
       runBusy: false,
       stopBusyIds: new Set(),
-      watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
       onSelectExperiment() {},
       onDetailFocused() {},
       onRunExperiment() {},
       onStopExperiment() {},
-      onCheckExperimentWatcher() {},
       onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},
@@ -1050,7 +1045,7 @@ test("detail keeps Experiment meaning under a neutral Research summary", () => {
   assertDetailProjection(html, "needs_action", "start_episode");
 });
 
-test("degraded external watcher exposes backoff and Check now without recommending stop", () => {
+test("degraded external watcher exposes backoff without recommending stop", () => {
   const degraded = watcher({
     status: "degraded",
     completed_at: null,
@@ -1058,7 +1053,6 @@ test("degraded external watcher exposes backoff and Check now without recommendi
     last_error: "ssh connection timed out",
     next_check_at: "2026-08-06T04:30:00Z",
     consecutive_error_count: 3,
-    can_check_now: true,
   });
   const html = render({
     node: node({ status: "debugging" }),
@@ -1087,41 +1081,6 @@ test("degraded external watcher exposes backoff and Check now without recommendi
   assert.match(html, />3<\/dd>/);
 
   assertDetailProjection(html, "degraded", "keep_loop");
-
-  assert.match(html, /class="experiment-run-watcher-actions"[^]*?<button/);
-});
-
-test("watcher Check now renders busy and disables concurrent mutations", () => {
-  const degraded = watcher({ status: "degraded", completed_at: null, can_check_now: true });
-  const html = render(
-    {
-      node: node(),
-      control: control(
-        {
-          ready: false,
-          invocations_used: 1,
-          invocations_remaining: 2,
-          health: "degraded",
-          recommendation: "keep_loop",
-          run_section: "running",
-          live: true,
-          can_start: false,
-          can_stop: true,
-        },
-        { detached_work_active: true, watcher_degraded: true },
-      ),
-      taskGroup: null,
-      currentTask: null,
-      watchers: [degraded],
-      currentWatchers: [degraded],
-      health: "degraded",
-    },
-    { watcherCheckBusyId: degraded.watcher_id, runDisabled: true },
-  );
-
-  assert.match(html, /<button[^>]*disabled=""[^>]*aria-busy="true"/);
-  assert.match(html, /experiment-stop-loop" disabled=""/);
-  assert.match(html, /experiment-run-button" disabled=""/);
 });
 
 test("missing episode continuity recommends stop then start without parsing diagnostic text", () => {
@@ -1234,14 +1193,12 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
       focusExperimentId: null,
       runBusy: false,
       stopBusyIds: new Set(),
-      watcherCheckBusyId: null,
       taskActionId: null,
       onInspectTask() {},
       onSelectExperiment() {},
       onDetailFocused() {},
       onRunExperiment() {},
       onStopExperiment() {},
-      onCheckExperimentWatcher() {},
       onStopExperimentWatcher() {},
       onRecoverExperiment() {},
       onSwitchExperimentProvider() {},

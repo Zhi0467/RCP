@@ -86,7 +86,6 @@ interface Props {
   runDisabled: boolean;
   stopBusy: boolean;
   recoveryBusy: boolean;
-  watcherCheckBusyId: string | null;
   conversation?: ReactNode;
   ownedByAutoResearch?: boolean;
   watchedByParentAutoResearch?: boolean;
@@ -106,7 +105,6 @@ interface Props {
   onStopLoop: () => void;
   onRecover: (action: "resume" | "retry") => void;
   onSwitchProvider: () => void;
-  onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   episodeReportHref: (episodeId: string) => string;
 }
@@ -118,7 +116,6 @@ export function ExperimentRunDetail({
   runDisabled,
   stopBusy,
   recoveryBusy,
-  watcherCheckBusyId,
   conversation,
   ownedByAutoResearch = false,
   watchedByParentAutoResearch = false,
@@ -131,7 +128,6 @@ export function ExperimentRunDetail({
   onStopLoop,
   onRecover,
   onSwitchProvider,
-  onCheckWatcher,
   onStopWatcher,
   episodeReportHref,
 }: Props) {
@@ -215,8 +211,6 @@ export function ExperimentRunDetail({
   const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
   const currentSummary = currentExperimentGuidance(node, "current_summary");
   const currentNextAction = currentExperimentGuidance(node, "next_action");
-  const watcherActionsDisabled =
-    runDisabled || runBusy || stopBusy || recoveryBusy || watcherCheckBusyId !== null;
   const reauthorizing = health === "paused_at_limit" && !canContinue;
   const ceilingInput = editedCeiling ?? String(node.invocation_ceiling);
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
@@ -561,9 +555,6 @@ export function ExperimentRunDetail({
             <WatcherItems
               apiBase={apiBase}
               items={currentWatcherItems}
-              watcherCheckBusyId={watcherCheckBusyId}
-              actionsDisabled={watcherActionsDisabled}
-              onCheckWatcher={onCheckWatcher}
               onStopWatcher={onStopWatcher}
               onHideWatcher={watcherVisibility.hide}
               machineName={machineName}
@@ -576,9 +567,6 @@ export function ExperimentRunDetail({
               <WatcherItems
                 apiBase={apiBase}
                 items={stoppedWatcherItems}
-                watcherCheckBusyId={watcherCheckBusyId}
-                actionsDisabled={watcherActionsDisabled}
-                onCheckWatcher={onCheckWatcher}
                 onStopWatcher={onStopWatcher}
                 onHideWatcher={watcherVisibility.hide}
                 machineName={machineName}
@@ -768,18 +756,12 @@ function joinFacts(parts: (string | null | undefined)[]): string | null {
 function WatcherItems({
   apiBase,
   items,
-  watcherCheckBusyId,
-  actionsDisabled,
-  onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
   machineName,
 }: {
   apiBase: string;
   items: ExperimentWatcherItem[];
-  watcherCheckBusyId: string | null;
-  actionsDisabled: boolean;
-  onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
   machineName: (machineId: string) => string;
@@ -789,9 +771,6 @@ function WatcherItems({
       <WatcherGroupDetail
         apiBase={apiBase}
         group={item.group}
-        watcherCheckBusyId={watcherCheckBusyId}
-        actionsDisabled={actionsDisabled}
-        onCheckWatcher={onCheckWatcher}
         onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         machineName={machineName}
@@ -801,9 +780,6 @@ function WatcherItems({
       <WatcherDetail
         apiBase={apiBase}
         watcher={item.watcher}
-        watcherCheckBusyId={watcherCheckBusyId}
-        actionsDisabled={actionsDisabled}
-        onCheckWatcher={onCheckWatcher}
         onStopWatcher={onStopWatcher}
         onHideWatcher={onHideWatcher}
         machineName={machineName}
@@ -826,18 +802,12 @@ function watcherItemIsStopped(item: ExperimentWatcherItem): boolean {
 function WatcherGroupDetail({
   apiBase,
   group,
-  watcherCheckBusyId,
-  actionsDisabled,
-  onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
   machineName,
 }: {
   apiBase: string;
   group: ExperimentWatcherGroup;
-  watcherCheckBusyId: string | null;
-  actionsDisabled: boolean;
-  onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
   machineName: (machineId: string) => string;
@@ -861,9 +831,6 @@ function WatcherGroupDetail({
             <WatcherDetail
               apiBase={apiBase}
               watcher={watcher}
-              watcherCheckBusyId={watcherCheckBusyId}
-              actionsDisabled={actionsDisabled}
-              onCheckWatcher={onCheckWatcher}
               onStopWatcher={onStopWatcher}
               onHideWatcher={onHideWatcher}
               machineName={machineName}
@@ -879,28 +846,17 @@ function WatcherGroupDetail({
 function WatcherDetail({
   apiBase,
   watcher,
-  watcherCheckBusyId,
-  actionsDisabled,
-  onCheckWatcher,
   onStopWatcher,
   onHideWatcher,
   machineName,
 }: {
   apiBase: string;
   watcher: WatcherRecord;
-  watcherCheckBusyId: string | null;
-  actionsDisabled: boolean;
-  onCheckWatcher: (watcherId: string) => void;
   onStopWatcher: (watcherId: string) => void;
   onHideWatcher: (watcherId: string) => void;
   machineName: (machineId: string) => string;
 }) {
   const external = isExternalWatcherRecord(watcher);
-  // Retiring an observer writes no graph, so the graph-mutation lock folded into
-  // actionsDisabled must not reach it: that would leave destructive Cancel as the
-  // only enabled control, which is the dead end this whole control exists to remove.
-  const canCheckNow = watcher.can_check_now;
-  const checkBusy = watcherCheckBusyId === watcher.watcher_id;
   return (
     <li className={`experiment-run-watcher ${watcher.status}`}>
       <div className="chat-watcher-row">
@@ -995,19 +951,6 @@ function WatcherDetail({
             },
           ]}
         />
-        {canCheckNow && (
-          <div className="experiment-run-watcher-actions">
-            <button
-              type="button"
-              className="button compact"
-              disabled={actionsDisabled}
-              aria-busy={checkBusy}
-              onClick={() => onCheckWatcher(watcher.watcher_id)}
-            >
-              {checkBusy ? "Checking…" : "Check now"}
-            </button>
-          </div>
-        )}
         {external ? (
           <>
             <div className="experiment-run-watcher-command">

@@ -181,12 +181,10 @@ function WatcherFixture() {
           runDisabled={false}
           stopBusy={false}
           recoveryBusy={false}
-          watcherCheckBusyId={null}
           onRun={noop}
           onStopLoop={noop}
           onRecover={noop}
           onSwitchProvider={noop}
-          onCheckWatcher={noop}
           episodeReportHref={() => "#report"}
         />
       </section>
