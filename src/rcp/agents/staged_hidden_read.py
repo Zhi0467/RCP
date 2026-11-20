@@ -322,7 +322,7 @@ def main(argv=None):
             ],
             env,
         )
-    executable = shutil.which("bwrap")
+    executable = shutil.which("bwrap") or "bwrap"
     try:
         argv = bwrap_argv(policy, args.command, executable=executable)
     except OSError:
