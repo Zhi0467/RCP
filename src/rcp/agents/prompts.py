@@ -66,7 +66,7 @@ def render_chat_read_context(
     status = context.loop_status
     if status is not None:
         parts.append(
-            "Loop status for this turn (read-only; grants no watcher maintenance):\n"
+            "Loop status for this turn (read-only):\n"
             + "```json\n"
             + json.dumps({"loop_status": status}, ensure_ascii=False)
             + "\n```"
@@ -642,116 +642,6 @@ def _watcher_execution_host(execution_host: str) -> str:
     return f"host `{execution_host}`" if execution_host else "this machine"
 
 
-def _discuss_experiment_watcher_resource_section(
-    resources: list[dict[str, str]] | None,
-) -> str:
-    if not resources:
-        return ""
-    pointers: list[str] = []
-    for item in resources:
-        control_node_id = item["control_node_id"]
-        host = _watcher_execution_host(item.get("execution_host", ""))
-        pointers.append(
-            "\n".join(
-                [
-                    f"- Experiment `{control_node_id}` (episode execution host: {host})",
-                    f"  - current watcher state: `{item['watcher_state_path']}`",
-                ]
-            )
-        )
-    rendered = "\n".join(pointers)
-    return f"""
-Readable node-attached Experiment operational resources:
-{rendered}
-- These are current read-only operational pointers for this Discuss turn. You may inspect watcher
-  state and the named episode execution host, but Discuss has no watcher-maintenance output and may
-  not arm, retire, group, or otherwise change an Experiment watcher.
-"""
-
-
-def _work_experiment_watcher_resource_section(
-    resources: list[dict[str, str]] | None,
-    *,
-    work_execution_host: str,
-) -> str:
-    if not resources:
-        return ""
-    pointers: list[str] = []
-    for item in resources:
-        control_node_id = item["control_node_id"]
-        resource_execution_host = item.get("execution_host", "")
-        same_execution_host = resource_execution_host == work_execution_host
-        host = (
-            "this machine"
-            if same_execution_host
-            else _watcher_execution_host(resource_execution_host)
-        )
-        access = (
-            "  - run watcher inspection and command verification directly in a local "
-            "cold-login shell on this machine; do not SSH back into this machine"
-            if same_execution_host
-            else "  - use the named episode execution host for watcher inspection and command "
-            "verification"
-        )
-        pointers.append(
-            "\n".join(
-                [
-                    f"- Experiment `{control_node_id}` (episode execution host: {host})",
-                    f"  - current watcher state: `{item['watcher_state_path']}`",
-                    f"  - watcher maintenance output: `{item['watch_path']}`",
-                    access,
-                    "  - completing an accepted watcher from this file continues this "
-                    "Experiment's bounded loop; it does not continue this conversation",
-                ]
-            )
-        )
-    rendered = "\n".join(pointers)
-    return f"""
-Node-attached Experiment watcher maintenance:
-{rendered}
-- Read the selected Experiment's current watcher-state file before proposing replacements. The
-  physical output path selects the Experiment resource; never add a target node, episode, provider,
-  session, execution-host, kind, or surface field to the JSON.
-- Each maintenance file is one JSON object with exactly `external` and `graph` lists. `external`
-  contains observer items, plus an optional non-blank `group`, or stop items with exactly
-  `stop_watcher_id` and a non-blank `reason`. Observers use `purpose`, `check_command`, `log_path`,
-  and `cwd`, with optional `cancel_command`. Same-label observers form an immutable group and each new group
-  needs at least two observers. A stop may name any compatible staged watcher, external observer or
-  graph condition alike, and never requests the human-only **Stop loop** action. Every stop goes in
-  `external`, including one retiring a graph condition; `graph` holds only conditions you are
-  arming. Compatible means the staged watcher state lists it for this Experiment node, graph
-  target, and execution host, and its status is still `active`, `degraded`, or `completed` with
-  `notified` false. A watcher armed by an earlier episode and adopted by this one qualifies: a
-  differing `episode_id` is that watcher's immutable provenance, not a reason to leave stale work
-  armed.
-- Before arming an observer, reconcile it against that staged watcher state. When a listed
-  `active`, `degraded`, or unnotified `completed` watcher already covers the same work, do not arm
-  a second one for it, even where your command text differs from its `check_command`. Observers
-  whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or process
-  observe one piece of work: they complete at separate times and wake the episode twice, spending
-  two of its invocations on a single event. Either rely on the watcher already armed, or retire it
-  with a stop item in this same file and arm your replacement.
-- This Work turn is not an episode turn and cannot end the episode. A running episode with no
-  pending turn wakes only through its watchers, including an unnotified completion, so leave it at
-  least one: RCP refuses a file that stops all of them and arms none. To move the Experiment to new
-  work, launch that work in this turn and arm its observer in the same file as the stop. When the
-  Experiment looks done or needs a human, keep a watcher and say so in your answer; the episode's
-  own turn records that exit when the watcher wakes it.
-- `graph` contains only one of two strict canonical conditions: a node-status item
-  `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
-  `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision
-  boundaries, never by shell polling and never from an unsynced draft. A node status already true
-  when armed is ready immediately; a Proposal resolution counts only when committed after arming.
-- RCP runs every new observer check at the location named beside that resource. `this machine`
-  means the Work turn is already there and must use a local cold-login shell without self-SSH; an
-  explicit host means that distinct machine. Observer commands have the same cold-login, read-only
-  exit contract as this conversation's own watcher file.
-- RCP validates and commits one resource file atomically. A maintenance handoff spends no bounded-loop
-  invocation, creates or closes no Experiment attempt, and cannot change the episode's native
-  session, invocation ceiling, Decision bundle, standing, approval state, or Stop-loop intent.
-"""
-
-
 STAGED_SKILL_RULE = (
     "Use a staged skill or workflow when its description matches the task. Follow explicitly invoked\n"
     "packages for that turn."
@@ -1031,9 +921,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v17"
+DISCUSS_POLICY_VERSION = "discuss-v18"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v35"
+WORK_POLICY_VERSION = "work-v37"
 
 
 class PromptFactory:
@@ -1167,7 +1057,6 @@ class PromptFactory:
         command_client: str,
         watch_path: str | None = None,
         execution_host: str = "",
-        experiment_watcher_resources: list[dict[str, str]] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -1196,7 +1085,6 @@ class PromptFactory:
             paper_path=paper_path,
             human_request_path=None,
             artifact_path=artifact_path,
-            experiment_watcher_resources=experiment_watcher_resources,
             execution_instructions=(
                 _command_client_rule(command_client) + "\n" + discuss_execution_instructions
                 if discuss_execution_instructions
@@ -1219,7 +1107,6 @@ class PromptFactory:
             output_schema_path=output_schema_path,
             watch_path=watch_path,
             execution_host=execution_host,
-            experiment_watcher_resources=experiment_watcher_resources,
             command_client=command_client,
             execution_instructions=execution_instructions,
             write_scope=write_scope,
@@ -1286,7 +1173,6 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
         human_request_path: str | None,
         artifact_path: str,
         retry_diagnostics_path: str | None = None,
-        experiment_watcher_resources: list[dict[str, str]] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -1318,9 +1204,6 @@ name arrives with each turn's branch read pointers. A later value is `current.gr
             if human_request_path is not None
             else "- Human request: the unchanged message following the active turn marker"
         )
-        experiment_resources = _discuss_experiment_watcher_resource_section(
-            experiment_watcher_resources
-        )
         return _tidy(f"""# RCP Discuss task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
@@ -1332,7 +1215,7 @@ Answer the human's question. Keep to what was asked; do not sweep the corpus or 
 {"" if embedded else _CHANGED_VALUES_RULE}
 {_retry_context(retry_diagnostics_path)}
 {context}
-{experiment_resources}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
+{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
 
 Required objective:
 {objective}
@@ -1375,7 +1258,6 @@ Boundary:
         retry_diagnostics_path: str | None = None,
         watch_path: str | None = None,
         execution_host: str = "",
-        experiment_watcher_resources: list[dict[str, str]] | None = None,
         command_client: str,
         execution_instructions: str = "",
         write_scope: ProjectWriteScope | None = None,
@@ -1455,10 +1337,6 @@ Optional watcher handoff:
             if watch_path is not None
             else ""
         )
-        experiment_resources = _work_experiment_watcher_resource_section(
-            experiment_watcher_resources,
-            work_execution_host=execution_host,
-        )
         validator_rules = (
             _command_client_rule(command_client)
             + "\n\n"
@@ -1487,7 +1365,7 @@ adjacent work.
 {"" if embedded else _CHANGED_VALUES_RULE}
 {_retry_context(retry_diagnostics_path)}
 {context}
-{experiment_resources}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
+{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_attachment_items(attachments)}
 Required objective:
 {objective}
 {_pointer("Prior-attempt diagnostics", retry_diagnostics_path)}
@@ -1601,8 +1479,6 @@ Graph Patch (optional):
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         artifact_path: str | None = None,
-        experiment_watcher_resources: list[dict[str, str]] | None = None,
-        execution_host: str = "",
     ) -> str:
         """Render a continuation contract for a launch that starts a new native session."""
 
@@ -1736,13 +1612,6 @@ Resume authority:
             if validator_command and mode in {"resume", "retry"}
             else ""
         )
-        experiment_resources = (
-            _discuss_experiment_watcher_resource_section(experiment_watcher_resources)
-            if turn_mode == "discuss"
-            else _work_experiment_watcher_resource_section(
-                experiment_watcher_resources, work_execution_host=execution_host
-            )
-        )
         return _tidy(f"""# RCP {mode.replace("_", " ")} contract
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
@@ -1771,7 +1640,6 @@ Resume authority:
 {selected_skill_section(skill_pointers)}
 {_invoked_package_section(invoked_skill_pointers)}
 {invoked_provider_skill_section(invoked_provider_skills)}
-{experiment_resources}
 {input_rules}
 {continuation_rules}
 {validator_rules}

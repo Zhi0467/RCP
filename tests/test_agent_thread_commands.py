@@ -970,7 +970,6 @@ def test_a_thread_turn_with_every_gate_open_gets_its_placement_offer(monkeypatch
     monkeypatch.setattr(approval_cards, "approval_card_member", lambda *_: None)
     monkeypatch.setattr(questions, "work_ask_authorized", lambda _: True)
     monkeypatch.setattr(questions, "work_experiment_allowed", lambda _: True)
-    monkeypatch.setattr(questions, "member_work_chat_turn", lambda _: True)
     handler = questions.work_command_handler(
         SimpleNamespace(operation_id="turn", store=store),  # pyright: ignore[reportArgumentType]
         SimpleNamespace(launch_available=True),  # pyright: ignore[reportArgumentType]

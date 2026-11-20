@@ -9,9 +9,8 @@ from rcp.service import ChatMessage, ChatTranscript, RunRequest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
-    WatcherContinuation,
-    WatcherRecord,
 )
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from tests.helpers import signed_in_client, unchecked_write_authority
 from tests.paper_helpers import start_paper
 
@@ -76,27 +75,34 @@ def _agent_task(
 
 
 def _watcher(
+    store: AppStore,
     *,
     watcher_id: str,
     project_id: str,
     origin_operation_id: str,
 ) -> WatcherRecord:
-    return WatcherRecord(
-        watcher_id=watcher_id,
-        project_id=project_id,
-        origin_operation_id=origin_operation_id,
-        origin_task_kind="project_chat",
-        chat_id="watcher-chat",
-        check_command="true",
-        log_path="watcher.log",
-        cwd=".",
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on="backend",
-            run_truth_scope=["repo-a"],
-        ),
-        status="completed",
-        created_at="2026-08-11T00:00:00Z",
+    created_at = "2026-08-11T00:00:00+00:00"
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id="watcher-chat",
+            project_id=project_id,
+            purpose="Job",
+            origin_turn_id=origin_operation_id,
+            created_at=created_at,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/watcher.log",
+                    cwd="/tmp",
+                    created_at=created_at,
+                    completed_at=created_at,
+                )
+            ],
+        )
     )
 
 
@@ -749,73 +755,43 @@ def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_a
         )
 
     captured: list[AuthorizedHuman] = []
-
-    def fake_delivery(
-        _tasks, _project_id, _kind, _request, _watcher_ids, *, authorized_by, **_kwargs
-    ):
-        captured.append(authorized_by)
-        return None
-
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", fake_delivery)
-    callback = app.state.watcher_poller.on_completed
-    same_authorizer = [
-        _watcher(
-            watcher_id="same-authorizer-one",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-        _watcher(
-            watcher_id="same-authorizer-two",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-    ]
-    mixed = [
-        _watcher(
-            watcher_id="mixed-first",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-        _watcher(
-            watcher_id="mixed-second",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-second",
-        ),
-    ]
-    legacy = [
-        _watcher(
-            watcher_id="legacy",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-legacy",
-        )
-    ]
-    missing = [
-        _watcher(
-            watcher_id="missing",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-missing",
-        )
-    ]
-    for watcher_group in (same_authorizer, mixed, legacy, missing):
-        for watcher in watcher_group:
-            store.create_watchers([watcher])
-
-    callback(same_authorizer)
-    assert captured == [first_authorizer]
-
-    callback(mixed)
-    callback(legacy)
-    callback(missing)
-
-    assert captured == [first_authorizer]
-    assert store.watcher("mixed-first").stop_reason is not None
-    assert "different human authorizers" in store.watcher("mixed-first").stop_reason
-    assert "predates durable human attribution" in store.watcher("legacy").stop_reason
-    assert "originating task is unavailable" in store.watcher("missing").stop_reason
-    assert all(
-        store.watcher(watcher_id).status == "stopped" and store.watcher(watcher_id).notified
-        for watcher_id in ("mixed-first", "mixed-second", "legacy", "missing")
+    delivery = app.state.services.watcher_delivery
+    monkeypatch.setattr(
+        delivery,
+        "_plain_wake",
+        lambda _agent_id, _ready, authorized_by, _fence: captured.append(authorized_by),
     )
+    groups = {
+        "same": [
+            ("same-authorizer-one", "watcher-origin-first"),
+            ("same-authorizer-two", "watcher-origin-first"),
+        ],
+        "mixed": [
+            ("mixed-first", "watcher-origin-first"),
+            ("mixed-second", "watcher-origin-second"),
+        ],
+        "legacy": [("legacy", "watcher-origin-legacy")],
+        "missing": [("missing", "watcher-origin-missing")],
+    }
+    armed = {
+        name: [
+            _watcher(
+                store, watcher_id=watcher_id, project_id=project_id, origin_operation_id=origin
+            )
+            for watcher_id, origin in members
+        ]
+        for name, members in groups.items()
+    }
+
+    for name in ("same", "mixed", "legacy", "missing"):
+        delivery.deliver_ready("watcher-chat", armed[name])
+
+    assert captured == [first_authorizer]
+    for watcher_id in ("mixed-first", "mixed-second", "legacy", "missing"):
+        closed = store.watcher(watcher_id)
+        assert closed is not None and closed.delivery_closed_at is not None
+        assert closed.cancel_reason
+    assert store.watcher("same-authorizer-one").delivery_closed_at is None
 
 
 def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
@@ -844,14 +820,11 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
         request={"mode": "work", "chat_id": "watcher-chat"},
     )
     store.create_agent_task(origin)
-    store.create_watchers(
-        [
-            _watcher(
-                watcher_id="pre-upgrade-watcher",
-                project_id=project_id,
-                origin_operation_id=origin.operation_id,
-            )
-        ]
+    _watcher(
+        store,
+        watcher_id="pre-upgrade-watcher",
+        project_id=project_id,
+        origin_operation_id=origin.operation_id,
     )
     with store.connection() as connection:
         connection.execute(
@@ -865,29 +838,20 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
         )
 
     reopened = create_app(str(manifest.path), data_dir=data_dir)
-    wake_attempts: list[list[str]] = []
+    reopened_store = reopened.state.background_tasks.store
+    delivery = reopened.state.services.watcher_delivery
 
-    def capture_wake(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        wake_attempts.append(watcher_ids)
-        return None
+    delivery.deliver_ready_watchers(source="test")
+    delivery.deliver_ready_watchers(source="test")
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_wake)
-
-    first_pass = reopened.state.watcher_poller.poll_once()
-    second_pass = reopened.state.watcher_poller.poll_once()
-
-    terminal = reopened.state.background_tasks.store.watcher("pre-upgrade-watcher")
-    assert first_pass and [item.watcher_id for item in first_pass[0]] == ["pre-upgrade-watcher"]
-    assert second_pass == []
-    assert wake_attempts == []
+    terminal = reopened_store.watcher("pre-upgrade-watcher")
     assert terminal is not None
-    assert terminal.status == "stopped"
-    assert terminal.notified is True
-    assert terminal.stop_reason is not None
-    assert "predates durable human attribution" in terminal.stop_reason
-    assert [
-        task.operation_id for task in reopened.state.background_tasks.store.agent_tasks(project_id)
-    ] == [origin.operation_id]
+    assert terminal.delivery_closed_at is not None and terminal.wake_turn_id is None
+    assert terminal.cancel_reason
+    assert reopened_store.ready_watchers() == []
+    assert [task.operation_id for task in reopened_store.agent_tasks(project_id)] == [
+        origin.operation_id
+    ]
 
 
 def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(

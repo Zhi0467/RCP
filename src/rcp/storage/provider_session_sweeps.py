@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from rcp.limits import PROVIDER_SESSION_RETENTION_DAYS, PROVIDER_SESSION_SWEEP_MAX_ATTEMPTS
 from rcp.storage.mixin_base import StoreMixinBase
+from rcp.storage.watchers import _OPEN as _OPEN_WATCHER
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -83,9 +84,11 @@ _HELD = f"""
            OR (state = 'answered' AND owner_kind = 'chat' AND withdrawn_readonly = 0
                AND client_receipt_revision IS NULL AND followup_operation_id IS NULL)
         UNION
-        SELECT run.native_session_id FROM watchers AS watcher
-        JOIN graph_runs AS run ON run.operation_id = watcher.origin_operation_id
-        WHERE watcher.status IN ('active','degraded')
+        SELECT run.native_session_id FROM watchers AS w
+        JOIN graph_runs AS run ON run.operation_id = w.origin_turn_id
+        WHERE {_OPEN_WATCHER} AND EXISTS (
+            SELECT 1 FROM watcher_checks AS c WHERE c.watcher_id = w.watcher_id
+              AND c.removed_at IS NULL AND c.completed_at IS NULL)
         UNION
         SELECT native_session_id FROM writing_sessions
         UNION

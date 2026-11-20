@@ -48,6 +48,7 @@ from rcp.limits import (
     TEAM_ENROLLMENT_CODE_MAX_LENGTH,
     TEAM_SESSION_LABEL_MAX_LENGTH,
     WATCHER_ERROR_BACKOFF_SECONDS,
+    WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
     WATCHER_HEALTHY_INTERVAL_SECONDS,
     WATCHER_SCHEDULE_JITTER_RATIO,
 )
@@ -3191,15 +3192,8 @@ class AgentUsageSnapshot(BaseModel):
     records: list[AgentUsageRecord] = Field(default_factory=list)
 
 
-WatcherStatus = Literal["active", "degraded", "completed", "stopped"]
-
-
 class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
-
-
-class ExperimentEpisodeUnwakeable(ValueError):
-    """A watcher maintenance edit would leave a running episode nothing to wake it."""
 
 
 class WatcherStopRequest(BaseModel):
@@ -3217,45 +3211,6 @@ class WatcherStopRequest(BaseModel):
         if not stripped:
             raise ValueError("watcher stop fields must not be blank")
         return stripped
-
-
-class WatcherContinuation(BaseModel):
-    """RCP-bound policy needed to create a fresh Work wake."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    browser_requested: bool = False
-    provider: str
-    model: str | None = None
-    reasoning: str | None = None
-    run_on: str
-    run_truth_scope: list[str] | None = None
-    patch_kind: Literal["work", "experiment_loop"] = "work"
-    control_node_id: str | None = None
-    control_revision: int | None = Field(default=None, ge=0)
-    control_episode_id: str | None = None
-    control_invocation: int | None = Field(default=None, ge=1)
-    control_invocation_ceiling: int | None = Field(default=None, ge=1)
-    control_decision_bundle: list[dict[str, object]] = Field(default_factory=list)
-    control_completion_criteria: list[str] = Field(default_factory=list)
-    workflow_ids: list[str] = Field(default_factory=list)
-    skill_ids: list[str] = Field(default_factory=list)
-    invoked_workflow_ids: list[str] = Field(default_factory=list)
-    invoked_skill_ids: list[str] = Field(default_factory=list)
-    resolved_skill_packages: list[SkillReference] = Field(default_factory=list)
-
-    @model_validator(mode="before")
-    @classmethod
-    def ignore_retired_compute_fields(cls, value: object) -> object:
-        # A wake resolves every project machine when it launches. Rows written while
-        # a turn froze its own compute selection still load; the selection is ignored.
-        if isinstance(value, dict):
-            return {
-                key: item
-                for key, item in value.items()
-                if key not in {"active_compute_ids", "resolved_compute_context"}
-            }
-        return value
 
 
 class NodeStatusGraphCondition(BaseModel):
@@ -3315,122 +3270,108 @@ GraphCondition = Annotated[
 ]
 
 
-class WatcherDeliveryRecord(BaseModel):
-    """Durable delivery state shared by external and graph watchers."""
+WatcherState = Literal["watching", "check_failing", "finished", "cancelled"]
+WatcherCanceller = Literal["agent", "rcp", "human"]
+
+
+class WatcherCheckRecord(BaseModel):
+    """One check of a watcher: an external shell check or one graph condition.
+
+    A removed check keeps its row and observation history.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    check_id: str
+    watcher_id: str
+    machine_id: str = ""
+    definition: Literal["external", "graph"]
+    check_command: str | None = None
+    log_path: str | None = None
+    cwd: str | None = None
+    condition: GraphCondition | None = None
+    graph_target: GraphTargetRef | None = None
+    armed_head: int | None = Field(default=None, ge=0)
+    created_at: str
+    last_checked_at: str | None = None
+    last_exit_code: int | None = None
+    last_error: str | None = None
+    completed_at: str | None = None
+    next_check_at: str | None = None
+    consecutive_error_count: int = Field(default=0, ge=0)
+    removed_at: str | None = None
+
+    @model_validator(mode="after")
+    def definition_fields_agree(self) -> WatcherCheckRecord:
+        external = (self.check_command, self.log_path, self.cwd)
+        if self.definition == "external":
+            if not all(external) or self.condition is not None:
+                raise ValueError("an external check needs its command, log path, and cwd")
+        elif any(external) or self.condition is None or self.graph_target is None:
+            raise ValueError("a graph check needs exactly its condition and graph target")
+        return self
+
+    @property
+    def unobservable(self) -> bool:
+        return (
+            self.completed_at is None
+            and self.consecutive_error_count >= WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+        )
+
+
+class WatcherRecord(BaseModel):
+    """One watcher file of one agent; its state derives from its live checks."""
 
     model_config = ConfigDict(extra="forbid")
 
     watcher_id: str
+    agent_id: str
     project_id: str
-    origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat", "auto_research"]
-    chat_id: str
-    node_id: str | None = None
-    episode_id: str | None = None
-    worker_id: str | None = None
-    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    machine_id: str = ""
-    continuation: WatcherContinuation
-    status: WatcherStatus = "active"
+    purpose: str
+    origin_turn_id: str
     created_at: str
-    completed_at: str | None = None
-    notified: bool = False
-    notification_operation_id: str | None = None
-    stopped_by: Literal["human", "loop", "agent"] | None = None
-    stop_reason: str | None = None
-    stopped_at: str | None = None
-    stop_operation_id: str | None = None
-
-
-class WatcherRecord(WatcherDeliveryRecord):
-    """Durable shell observer with an optional human-triggered cancellation action."""
-
-    check_command: str
-    log_path: str
-    cwd: str
-    purpose: str | None = None
-    cancel_command: str | None = None
-    cancel_requested_by: str | None = None
-    cancel_requested_at: str | None = None
-    cancel_error: str | None = None
-    last_checked_at: str | None = None
-    last_exit_code: int | None = None
-    last_error: str | None = None
-    next_check_at: str | None = None
-    consecutive_error_count: int = Field(default=0, ge=0)
-    group_id: str | None = None
-    group_label: str | None = None
-
-    @field_validator("cancel_command")
-    @classmethod
-    def cancel_command_is_not_blank(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("cancel_command must not be blank")
-        return value.strip() if value is not None else None
+    cancelled_at: str | None = None
+    cancelled_by: WatcherCanceller | None = None
+    cancel_reason: str | None = None
+    wake_turn_id: str | None = None
+    delivery_closed_at: str | None = None
+    checks: list[WatcherCheckRecord] = Field(default_factory=list)
 
     @property
-    def can_cancel(self) -> bool:
-        return bool(
-            self.cancel_command
-            and self.completed_at is None
-            and (self.cancel_requested_at is None or self.cancel_error is not None)
+    def live_checks(self) -> list[WatcherCheckRecord]:
+        return [check for check in self.checks if check.removed_at is None]
+
+    @property
+    def open(self) -> bool:
+        """Still able to wake its agent."""
+
+        return (
+            self.cancelled_at is None
+            and self.wake_turn_id is None
+            and self.delivery_closed_at is None
         )
 
-
-class GraphWatcherRecord(WatcherDeliveryRecord):
-    """Durable canonical-graph condition with no shell-check fields."""
-
-    condition: GraphCondition
-    armed_revision: int | None = Field(default=None, ge=0)
-    last_evaluated_at: str | None = None
-    status: Literal["active", "completed", "stopped"] = "active"
+    @property
+    def state(self) -> WatcherState:
+        if self.cancelled_at is not None:
+            return "cancelled"
+        live = self.live_checks
+        if self.wake_turn_id is not None or (
+            live and all(check.completed_at is not None for check in live)
+        ):
+            return "finished"
+        if any(check.consecutive_error_count > 0 for check in live):
+            return "check_failing"
+        return "watching"
 
     @property
-    def last_checked_at(self) -> str | None:
-        return self.last_evaluated_at
-
-    @property
-    def last_exit_code(self) -> None:
-        return None
-
-    @property
-    def last_error(self) -> None:
-        return None
-
-    @property
-    def next_check_at(self) -> None:
-        return None
-
-    @property
-    def consecutive_error_count(self) -> int:
-        return 0
-
-    @property
-    def group_id(self) -> None:
-        return None
-
-    @property
-    def group_label(self) -> None:
-        return None
-
-
-StoredWatcherRecord = WatcherRecord | GraphWatcherRecord
-
-
-class ExperimentWatcherResourceRecord(BaseModel):
-    """The current node-and-episode owner of one Experiment watcher file."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_id: str
-    control_node_id: str
-    episode_id: str
-    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    machine_id: str
-    wake_task_kind: Literal["node_chat"]
-    wake_chat_id: str
-    continuation: WatcherContinuation
-    watcher_snapshot_token: str
+    def ready(self) -> bool:
+        live = self.live_checks
+        return (
+            self.open
+            and bool(live)
+            and all(check.completed_at is not None or check.unobservable for check in live)
+        )
 
 
 def watcher_next_check_at(
@@ -3938,7 +3879,6 @@ __all__ = [
     "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
-    "ExperimentEpisodeUnwakeable",
     "ExperimentEpisodeProjectionSnapshot",
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
@@ -3960,9 +3900,7 @@ __all__ = [
     "EpisodeStatus",
     "EpisodeWrapupState",
     "EpisodeWrapupRecord",
-    "ExperimentWatcherResourceRecord",
     "GraphCondition",
-    "GraphWatcherRecord",
     "MemberRemovalPreviewRecord",
     "TeamMemberAuthorityRecord",
     "NodeStatusGraphCondition",
@@ -4014,15 +3952,14 @@ __all__ = [
     "SpaceKind",
     "SpaceUserKind",
     "SpaceUserRecord",
-    "StoredWatcherRecord",
     "TeamAuthenticationError",
     "TeamInvitationRecord",
     "TeamSessionRecord",
     "WatcherClaimConflict",
-    "WatcherContinuation",
-    "WatcherDeliveryRecord",
+    "WatcherCanceller",
+    "WatcherCheckRecord",
     "WatcherRecord",
-    "WatcherStatus",
+    "WatcherState",
     "WatcherStopRequest",
     "normalize_space_access_url",
     "normalize_space_name",

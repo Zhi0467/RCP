@@ -51,7 +51,6 @@ class AgentTurn:
     can_self_name: bool = False
     bulletin: bool = False
     ask: bool = False
-    member_turn: bool = False
     episode_start: bool = False
     projects: bool = False
     schedule: bool = False
@@ -63,7 +62,6 @@ OFFER = AgentTurn(
     can_self_name=True,
     bulletin=True,
     ask=True,
-    member_turn=True,
     episode_start=True,
     projects=True,
     schedule=True,
@@ -116,13 +114,13 @@ class AgentProfile:
 def resolve_agent_profile(
     placement: Placement, episode_role: EpisodeRole | None, turn: AgentTurn
 ) -> AgentProfile:
-    """Grant a turn its verbs; an Experiment turn never starts an episode or arms a watcher."""
+    """Grant a turn its verbs; an Experiment turn never starts another episode."""
     if episode_role is None or episode_role == "experiment":
         verbs = _placement_grants(placement, turn)
     else:
         verbs = _ROLE_GRANTS[episode_role](turn)
     if episode_role == "experiment":
-        verbs = verbs - {"episode", "watcher"}
+        verbs = verbs - {"episode"}
     return AgentProfile(placement, episode_role, frozenset(verbs))
 
 
@@ -150,7 +148,6 @@ def _placement_grants(placement: Placement, turn: AgentTurn) -> set[str]:
         *_when(turn.schedule, "schedule"),
         *_when(turn.ask, "ask"),
         *_when(turn.episode_start, "episode"),
-        *_when(turn.member_turn, "watcher"),
     }
 
 
@@ -166,7 +163,6 @@ _ROLE_GRANTS: dict[EpisodeRole, Callable[[AgentTurn], set[str]]] = {
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "finish",
@@ -386,12 +382,6 @@ def _flag_usage(_profile: AgentProfile, context: UsageContext) -> str:
     return flag_command_usage(context.client)
 
 
-def _watcher_usage(_profile: AgentProfile, context: UsageContext) -> str:
-    from rcp.runs.work_watcher_commands import work_watcher_command_usage
-
-    return work_watcher_command_usage(context.client)
-
-
 @dataclass(frozen=True)
 class VerbSpec:
     """A verb's member-facing welcome line and its prompt usage renderer."""
@@ -423,10 +413,6 @@ VERBS: dict[CommandVerb, VerbSpec] = {
     "resume": VerbSpec(_RESEARCH, _forms("resume --key <key> <worker-id>")),
     "stop": VerbSpec(_RESEARCH, _forms("stop --key <key> <worker-id>")),
     "message": VerbSpec("Messages the agents it works with", _message_usage),
-    "watch_graph": VerbSpec(
-        _RESEARCH,
-        _forms("watch-graph --key <key> --condition-json <json> --reason <text>"),
-    ),
     "episode": VerbSpec(
         "Starts, pauses, steers, extends and stops experiments and Auto-research you ask for",
         _episode_usage,
@@ -440,5 +426,4 @@ VERBS: dict[CommandVerb, VerbSpec] = {
     "bulletin": VerbSpec("Talks with other agents on the project Bulletin", _bulletin_usage),
     "name": VerbSpec("Picks its own name", _name_usage),
     "flag": VerbSpec("Flags evidence that needs another look", _flag_usage),
-    "watcher": VerbSpec(_JOBS, _watcher_usage),
 }

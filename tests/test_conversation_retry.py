@@ -369,7 +369,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         assert not (workspace / "watch.json").exists()
     assert "rq/stale-retry-deliverable" not in service.history.state().nodes
     assert retried["result"]["graph_update"]["status"] == "none"
-    assert store.watchers(project_id) == []
+    assert store.project_watchers(project_id) == []
     comparisons = [
         item.payload
         for item in store.agent_task_receipts(str(retried["operation_id"]))

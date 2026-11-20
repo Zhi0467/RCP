@@ -1,3 +1,9 @@
+"""Watchers: shell checks, graph conditions, polling, and the one wake path.
+
+A watcher wakes the agent that armed it. When that agent runs an episode,
+the episode owner decides in one step whether the wake runs and spends.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,16 +14,14 @@ import subprocess
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from rcp.core.models import AuthorizedHuman, ExperimentDecisionPin, GraphState, Patch
-from rcp.core.project_types import project_type_of
+from rcp.core.models import AuthorizedHuman, GraphState, Patch
 from rcp.core.transition_models import (
     GraphHeadRef,
     GraphTargetRef,
@@ -34,15 +38,13 @@ from rcp.machine_cards import host_of
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.storage import (
     AgentTaskKind,
+    AgentTaskRecord,
     AppStore,
-    ExperimentEpisodeRecord,
-    ExperimentLoopRuntime,
+    EpisodeRecord,
     GraphCondition,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProposalResolvedGraphCondition,
-    StoredWatcherRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
     WatcherStopRequest,
 )
@@ -143,20 +145,15 @@ class ExperimentWatchHandoff(BaseModel):
 
 
 class WatcherBinding(BaseModel):
-    """Identity and authority RCP binds from the originating operation."""
+    """The agent and turn a newly armed watcher belongs to."""
 
     model_config = ConfigDict(extra="forbid")
 
     project_id: str
-    origin_operation_id: str
-    origin_task_kind: Literal["node_chat", "project_chat", "auto_research"]
-    chat_id: str
-    node_id: str | None = None
-    episode_id: str | None = None
-    worker_id: str | None = None
+    agent_id: str = Field(min_length=1)
+    origin_turn_id: str = Field(min_length=1)
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     machine_id: str
-    continuation: WatcherContinuation
 
 
 class WatcherCheckResult(BaseModel):
@@ -167,16 +164,8 @@ class WatcherCheckResult(BaseModel):
 
 
 WatcherCheckRunner = Callable[[WatchSpec, str, float], WatcherCheckResult]
-WatcherCompletionCallback = Callable[[list[WatcherRecord]], None]
 WatcherPollCompletedCallback = Callable[[], None]
-WatcherCanceller = Callable[[str, str, str], WatcherRecord]
-GraphWatcherTargetResolver = Callable[[GraphWatcherRecord], GraphTargetRef]
-
-
-def implicit_main_watcher_target(record: GraphWatcherRecord) -> GraphTargetRef:
-    """Resolve the stored target; migrated pre-branch watchers default to main."""
-
-    return record.graph_target
+AdmissionFence = Callable[[Callable[[], None]], bool]
 
 
 class WatcherRetryGeneration:
@@ -420,105 +409,33 @@ def graph_condition_transition_event_result(
     return "active"
 
 
-def evaluate_graph_watchers(
-    store: AppStore,
-    project_id: str,
-    state: GraphState,
-    *,
-    lifecycle_events: Sequence[TransitionEvent] = (),
-    graph_target: GraphTargetRef | None = None,
-    watcher_target: GraphWatcherTargetResolver = implicit_main_watcher_target,
-) -> list[list[StoredWatcherRecord]]:
-    """Evaluate one in-memory boundary without advancing the durable target head.
-
-    This low-level primitive exists for isolated evaluation and compatibility
-    tests. Production delivery routes accepted history through
-    ``reconcile_accepted_graph_boundaries``, which uses the same pure result
-    function while atomically checkpointing the boundary. A degraded replay is
-    deliberately a no-op. Lifecycle events must come from the accepted
-    transition at this exact boundary; callers must never pass a preview or an
-    uncommitted candidate.
-
-    Existing stored graph watchers implicitly target ``main``. The resolver is
-    injectable so branch-aware storage can route a boundary without teaching
-    this evaluator how targets are persisted.
-    """
-
-    if state.replay_status != "complete":
-        return ready_graph_watcher_groups(store, project_id)
-    target = graph_target or GraphTargetRef()
-    evaluated_at = store.now()
-    for record in store.active_graph_watchers(project_id):
-        if watcher_target(record) != target:
-            continue
-        if record.armed_revision is None:
-            store.initialize_graph_watcher_baseline(
-                record.watcher_id,
-                armed_revision=state.revision,
-                evaluated_at=evaluated_at,
-            )
-            continue
-        if record.armed_revision >= state.revision:
-            continue
-        result = graph_watcher_boundary_result(record, state, lifecycle_events)
-        store.record_graph_watcher_result(
-            record.watcher_id,
-            result=result,
-            evaluated_at=evaluated_at,
-        )
-    return ready_graph_watcher_groups(store, project_id)
-
-
-def graph_watcher_boundary_result(
-    record: GraphWatcherRecord,
+def graph_check_boundary_result(
+    check: WatcherCheckRecord,
     state: GraphState,
     lifecycle_events: Sequence[TransitionEvent],
 ) -> Literal["active", "completed", "removed"]:
-    """Pure target-boundary evaluation shared by direct and durable reconciliation."""
+    """Pure target-boundary evaluation of one graph check."""
 
-    if record.armed_revision is None:
-        raise ValueError("a graph watcher requires an arming revision before evaluation")
+    if check.armed_head is None or check.condition is None:
+        raise ValueError("a graph check requires its condition and arming revision")
     event_result = graph_condition_transition_event_result(
-        record.condition,
+        check.condition,
         lifecycle_events,
-        armed_revision=record.armed_revision,
+        armed_revision=check.armed_head,
         boundary_revision=state.revision,
     )
     result = (
         "completed"
         if event_result == "completed"
-        else graph_condition_result(
-            record.condition,
-            state,
-            armed_revision=record.armed_revision,
-        )
+        else graph_condition_result(check.condition, state, armed_revision=check.armed_head)
     )
     if result != "removed" and event_result != "completed":
         try:
-            validate_graph_conditions([record.condition], state)
+            validate_graph_conditions([check.condition], state)
         except ValueError as exc:
-            logger.error(
-                "Stored graph watcher %s is semantically invalid: %s",
-                record.watcher_id,
-                exc,
-            )
+            logger.error("Stored graph check %s is semantically invalid: %s", check.check_id, exc)
             return "active"
     return result
-
-
-def ready_graph_watcher_groups(
-    store: AppStore,
-    project_id: str,
-) -> list[list[StoredWatcherRecord]]:
-    """Return ready groups containing graph rows without evaluating conditions."""
-
-    return [
-        group
-        for group in store.completed_watcher_groups()
-        if group
-        and group[0].project_id == project_id
-        and any(isinstance(record, GraphWatcherRecord) for record in group)
-    ]
 
 
 class _AcceptedReplay(Protocol):
@@ -549,90 +466,6 @@ class _TaskExecution(Protocol):
     armed_graph_watchers: bool
 
 
-class _EpisodeWakePreflight(Protocol):
-    @property
-    def readiness(self) -> str: ...
-
-    @property
-    def diagnostic(self) -> str | None: ...
-
-    @property
-    def session_id(self) -> str | None: ...
-
-    @property
-    def stage_machine_id(self) -> str | None: ...
-
-    @property
-    def stage_root(self) -> str | None: ...
-
-
-class _ExperimentInvocationAdmission(Protocol):
-    episode_id: str
-    invocation: int
-    invocation_ceiling: int
-    decision_bundle: list[ExperimentDecisionPin]
-
-
-class _CopyableRequest(Protocol):
-    def model_copy(self, *, update: Mapping[str, object]) -> Self: ...
-
-
-class _ExperimentAdmission(Protocol):
-    def __call__(
-        self,
-        project_id: str,
-        service: _ProjectService,
-        request: object,
-    ) -> AbstractContextManager[object]: ...
-
-
-class _ExperimentInvocationAdmitter(Protocol):
-    def __call__(
-        self,
-        state: GraphState,
-        experiment_id: str,
-        *,
-        episode_id: str | None,
-        invocations_used: int,
-        invocation_ceiling: int | None,
-        decision_bundle: list[ExperimentDecisionPin],
-        task_active: bool,
-        episode_exited: bool,
-        stop_requested: bool,
-    ) -> _ExperimentInvocationAdmission | None: ...
-
-
-class _ExperimentWatcherRequestBuilder(Protocol):
-    def __call__(
-        self,
-        group: list[StoredWatcherRecord],
-        *,
-        trigger: Literal["watcher"],
-        episode_id: str,
-        invocation: int,
-        invocation_ceiling: int,
-        control_revision: int,
-        decision_bundle: list[ExperimentDecisionPin],
-        completion_criteria: list[str],
-        session_id: str | None,
-    ) -> _CopyableRequest: ...
-
-
-class _WatcherNotificationStarter(Protocol):
-    def __call__(
-        self,
-        project_id: str,
-        kind: Literal["node_chat", "project_chat"],
-        request: object,
-        watcher_ids: list[str],
-        *,
-        authorized_by: AuthorizedHuman,
-        episode_stage_machine_id: str | None = None,
-        episode_stage_root: str | None = None,
-        admission_fence: Callable[[Callable[[], None]], bool] | None = None,
-    ) -> object | None: ...
-
-
 class _ExperimentEpisodeReconciler(Protocol):
     def __call__(
         self,
@@ -651,68 +484,149 @@ class _GraphBoundaryReconciler(Protocol):
         boundaries: Sequence[AcceptedGraphBoundary],
         *,
         current_head: GraphHeadRef,
-    ) -> list[list[StoredWatcherRecord]]: ...
+    ) -> None: ...
 
 
 class _GraphWatcherReplayDegraded(RuntimeError):
     pass
 
 
+def watcher_wake_message(ready: list[WatcherRecord]) -> str:
+    """Name each ready watcher and its checks for the agent it wakes."""
+
+    lines = []
+    for watcher in ready:
+        lines.append(f"- watcher `{watcher.watcher_id}`: {watcher.purpose}")
+        for check in watcher.live_checks:
+            detail = (
+                f"graph condition `{check.condition.model_dump_json()}`"
+                if check.condition is not None
+                else f"external check log `{check.log_path}`"
+            )
+            state = "completed" if check.completed_at is not None else "unobservable"
+            lines.append(f"  - {detail} ({state})")
+    return (
+        "RCP watcher update: the following watchers are ready. Inspect their current "
+        "authoritative state and continue the Work turn.\n" + "\n".join(lines)
+    )
+
+
+class EpisodeWakeOwner(Protocol):
+    """An episode's half of a wake: check Stop, ending, budget and session, spend, claim."""
+
+    def __call__(
+        self,
+        agent_id: str,
+        episode: EpisodeRecord,
+        ready: list[WatcherRecord],
+        fence: AdmissionFence | None,
+    ) -> None: ...
+
+
+class PlainWake(Protocol):
+    """Admit an ordinary turn for an agent outside any episode."""
+
+    def __call__(
+        self,
+        agent_id: str,
+        ready: list[WatcherRecord],
+        authorized_by: AuthorizedHuman,
+        fence: AdmissionFence | None,
+    ) -> AgentTaskRecord | None: ...
+
+
 class WatcherDelivery:
-    """Reconcile and deliver ready watcher groups through injected app services."""
+    """Deliver each agent's ready watchers through one path."""
 
     def __init__(
         self,
         store: AppStore,
         *,
         retry: GraphWatcherRetryRegistry,
-        project_service: Callable[[str], _ProjectService],
-        graph_project_service: Callable[[str, GraphTargetRef], _ProjectService] | None = None,
-        generic_request: Callable[[list[StoredWatcherRecord]], object],
-        experiment_operation_lock: Callable[[str], AbstractContextManager[object]],
-        experiment_admission: _ExperimentAdmission,
-        deliver_auto_research_group: Callable[[list[StoredWatcherRecord]], str | None],
-        preflight_episode_wake: Callable[
-            [ExperimentLoopRuntime, ExperimentEpisodeRecord | None, list[StoredWatcherRecord]],
-            _EpisodeWakePreflight,
-        ],
-        admit_experiment_watcher_invocation: _ExperimentInvocationAdmitter,
-        experiment_watcher_request: _ExperimentWatcherRequestBuilder,
-        start_watcher_notification: _WatcherNotificationStarter,
+        graph_project_service: Callable[[str, GraphTargetRef], _ProjectService],
+        episode_owners: Mapping[str, EpisodeWakeOwner],
+        plain_wake: PlainWake,
         state_unavailable: Callable[[Exception], bool],
         task_graph_capable: Callable[[AgentTaskKind, object], bool],
         task_experiment_episode_id: Callable[[object], str | None],
         reconcile_experiment_episode: _ExperimentEpisodeReconciler,
         reconcile_graph_boundaries: _GraphBoundaryReconciler,
-        ready_graph_groups: Callable[
-            [AppStore, str],
-            list[list[StoredWatcherRecord]],
-        ],
         logger: logging.Logger,
         launch_wait: Callable[[], float] = seconds_until_automatic_launch,
     ) -> None:
         self._store = store
         self._retry = retry
-        self._launch_wait = launch_wait
-        self._project_service = project_service
-        self._graph_project_service = graph_project_service or (
-            lambda project_id, _target: project_service(project_id)
-        )
-        self._generic_request = generic_request
-        self._experiment_operation_lock = experiment_operation_lock
-        self._experiment_admission = experiment_admission
-        self._deliver_auto_research_group = deliver_auto_research_group
-        self._preflight_episode_wake = preflight_episode_wake
-        self._admit_experiment_watcher_invocation = admit_experiment_watcher_invocation
-        self._experiment_watcher_request = experiment_watcher_request
-        self._start_watcher_notification = start_watcher_notification
+        self._graph_project_service = graph_project_service
+        self._episode_owners = episode_owners
+        self._plain_wake = plain_wake
         self._state_unavailable = state_unavailable
         self._task_graph_capable = task_graph_capable
         self._task_experiment_episode_id = task_experiment_episode_id
         self._reconcile_experiment_episode = reconcile_experiment_episode
         self._reconcile_graph_boundaries = reconcile_graph_boundaries
-        self._ready_graph_groups = ready_graph_groups
         self._logger = logger
+        self._launch_wait = launch_wait
+
+    def deliver_ready(
+        self,
+        agent_id: str,
+        ready: list[WatcherRecord],
+        *,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Wake one agent for its ready watchers, through its episode when it has one."""
+
+        if not ready or not self._retry.generation_is_current(retry_generation):
+            return
+        if any(watcher.agent_id != agent_id for watcher in ready):
+            raise ValueError("one wake delivers only its own agent's watchers")
+        if self._launch_wait() > 0:
+            # A wake started now would lose its link partway through its launch.
+            return
+        ids = [watcher.watcher_id for watcher in ready]
+        refusal = self._store.chat_turn_refusal(ready[0].project_id, agent_id)
+        if refusal:
+            self._store.cancel_watchers(ids, by="rcp", reason=refusal)
+            return
+        fence = retry_generation.run_if_current if retry_generation is not None else None
+        episode = self._store.agent_episode(agent_id)
+        if episode is not None:
+            self._episode_owners[episode.mode](agent_id, episode, ready, fence)
+            return
+        authorized_by = self._store.resolve_watcher_authorizer(ids)
+        if authorized_by is not None:
+            self._plain_wake(agent_id, ready, authorized_by, fence)
+
+    def deliver_ready_watchers(
+        self,
+        *,
+        project_id: str | None = None,
+        source: str,
+        retry_generation: WatcherRetryGeneration | None = None,
+    ) -> None:
+        """Deliver every ready watcher, one batch per agent."""
+
+        try:
+            ready = self._store.ready_watchers()
+        except Exception as exc:
+            self._logger.warning("Could not read ready watchers after %s: %s", source, exc)
+            return
+        by_agent: dict[str, list[WatcherRecord]] = {}
+        for watcher in ready:
+            if project_id is None or watcher.project_id == project_id:
+                by_agent.setdefault(watcher.agent_id, []).append(watcher)
+        for agent_id, batch in by_agent.items():
+            if not self._retry.generation_is_current(retry_generation):
+                return
+            try:
+                self.deliver_ready(agent_id, batch, retry_generation=retry_generation)
+            except Exception as exc:
+                self._logger.warning(
+                    "Could not deliver watchers %s after %s: %s",
+                    [watcher.watcher_id for watcher in batch],
+                    source,
+                    exc,
+                )
 
     def evaluate_graph_conditions_after_task(
         self,
@@ -728,11 +642,10 @@ class WatcherDelivery:
                 source=f"task {execution.operation_id} settlement",
                 operation_id=execution.operation_id,
             )
-        if not self._task_graph_capable(kind, request):
-            self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
-            return
-        if execution.applied_revision is None and not execution.armed_graph_watchers:
-            self.deliver_ready_graph_wake_groups(project_id, source="task settlement")
+        if not self._task_graph_capable(kind, request) or (
+            execution.applied_revision is None and not execution.armed_graph_watchers
+        ):
+            self.deliver_ready_watchers(project_id=project_id, source="task settlement")
             return
         task = self._store.agent_task(execution.operation_id)
         graph_target = task.graph_target if task is not None else GraphTargetRef()
@@ -750,252 +663,6 @@ class WatcherDelivery:
             source=("agent patch" if execution.applied_revision is not None else "watcher arming"),
         )
 
-    def deliver_watcher_group(
-        self,
-        group: list[StoredWatcherRecord],
-        *,
-        retry_generation: WatcherRetryGeneration | None = None,
-    ) -> None:
-        if not group:
-            return
-        if not self._retry.generation_is_current(retry_generation):
-            return
-        if self._launch_wait() > 0:
-            # A wake started now would lose its link partway through its launch.
-            # The group stays completed, and every poll offers it again.
-            return
-        watcher_ids = [item.watcher_id for item in group]
-        first = group[0]
-        if first.chat_id and self._store.chat_turn_refusal(first.project_id, first.chat_id):
-            self._store.stop_watchers(first.project_id, watcher_ids)
-            return
-        continuation = first.continuation
-        # Experiment observations may be adopted across episodes or maintained
-        # by another member. The receiving episode owns their wake authority;
-        # generic Work and Auto-research retain origin-based authorization.
-        authorized_by = None
-        if continuation.patch_kind != "experiment_loop":
-            authorized_by, terminal_diagnostic = self._store.resolve_watcher_delivery_authorizer(
-                watcher_ids
-            )
-            if not self._retry.generation_is_current(retry_generation):
-                return
-            if authorized_by is None:
-                if terminal_diagnostic is not None:
-                    self._logger.warning(
-                        "Watcher delivery terminalized for %s: %s",
-                        watcher_ids,
-                        terminal_diagnostic,
-                    )
-                return
-        service = self._graph_project_service(first.project_id, first.graph_target)
-        if first.origin_task_kind == "auto_research":
-            started: list[str] = []
-
-            def claim_auto_research_wake() -> None:
-                operation_id = self._deliver_auto_research_group(group)
-                if operation_id is not None:
-                    started.append(operation_id)
-
-            if retry_generation is not None:
-                if not retry_generation.run_if_current(claim_auto_research_wake):
-                    return
-            else:
-                claim_auto_research_wake()
-            if started:
-                self._logger.info(
-                    "Auto-research watcher group %s queued task %s.",
-                    watcher_ids,
-                    started[0],
-                )
-            return
-        if continuation.patch_kind == "experiment_loop":
-            control_node_id = continuation.control_node_id
-            if control_node_id is None:
-                raise ValueError("An Experiment watcher is missing its control node.")
-            with self._experiment_operation_lock(first.project_id):
-                state = service.history.state()
-                if not self._retry.generation_is_current(retry_generation):
-                    return
-                control_node = state.nodes.get(control_node_id)
-                if control_node is None or not project_type_of(state).is_control_node(
-                    control_node.type
-                ):
-                    self._store.stop_watchers(first.project_id, watcher_ids)
-                    return
-                runtime = self._store.experiment_loop_runtime(
-                    first.project_id,
-                    control_node_id,
-                    graph_target=first.graph_target,
-                )
-                episode = (
-                    self._store.experiment_episode(runtime.episode_id)
-                    if runtime.episode_id is not None
-                    else None
-                )
-                if episode is None:
-                    preflight = self._preflight_episode_wake(runtime, None, group)
-                    if runtime.episode_id is not None:
-                        self._store.record_experiment_episode_diagnostic(
-                            episode_id=runtime.episode_id,
-                            project_id=first.project_id,
-                            control_node_id=control_node_id,
-                            diagnostic=preflight.diagnostic,
-                        )
-                    return
-                if episode.graph_target != first.graph_target:
-                    raise ValueError(
-                        "An Experiment watcher resolved an episode on another graph target."
-                    )
-                parent = self._store.episode(episode.episode_id)
-                authorized_by = parent.authorized_by if parent is not None else None
-                if authorized_by is None:
-                    self._store.record_experiment_episode_diagnostic(
-                        episode_id=episode.episode_id,
-                        project_id=first.project_id,
-                        control_node_id=control_node_id,
-                        diagnostic=(
-                            "This Experiment episode has no recorded human authorizer. "
-                            "Stop the loop and start a new episode."
-                        ),
-                    )
-                    return
-                machine_id = runtime.run_on
-                if (
-                    machine_id is None
-                    or episode.machine_id != machine_id
-                    or episode.stage_machine_id != machine_id
-                    or {item.machine_id for item in group} != {machine_id}
-                ):
-                    if runtime.episode_id is not None:
-                        self._store.record_experiment_episode_diagnostic(
-                            episode_id=runtime.episode_id,
-                            project_id=first.project_id,
-                            control_node_id=control_node_id,
-                            diagnostic=(
-                                "The Experiment episode's saved execution host or stage host "
-                                "no longer matches the current project manifest. Stop the loop "
-                                "and start a new Run after confirming the execution target."
-                            ),
-                        )
-                    return
-                # The episode session is proved before the claim and before the
-                # budget spend, so an unusable binding never costs an invocation
-                # and never quietly becomes a fresh session.
-                preflight = self._preflight_episode_wake(runtime, episode, group)
-                if not self._retry.generation_is_current(retry_generation):
-                    return
-                if preflight.readiness == "unavailable":
-                    if runtime.episode_id is not None:
-                        self._store.record_experiment_episode_diagnostic(
-                            episode_id=runtime.episode_id,
-                            project_id=first.project_id,
-                            control_node_id=control_node_id,
-                            diagnostic=preflight.diagnostic,
-                        )
-                    return
-                if preflight.readiness != "ready":
-                    # Transient unreachability and an incompatible group both
-                    # leave the completion pending and visible for a later pass.
-                    return
-                if runtime.session_diagnostic is not None and runtime.episode_id is not None:
-                    self._store.record_experiment_episode_diagnostic(
-                        episode_id=runtime.episode_id,
-                        project_id=first.project_id,
-                        control_node_id=control_node_id,
-                        diagnostic=None,
-                    )
-                pins = [
-                    ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle
-                ]
-                admission = self._admit_experiment_watcher_invocation(
-                    state,
-                    control_node_id,
-                    episode_id=runtime.episode_id,
-                    invocations_used=runtime.invocations_used,
-                    invocation_ceiling=runtime.invocation_ceiling,
-                    decision_bundle=pins,
-                    task_active=runtime.task_active,
-                    episode_exited=runtime.episode_exited,
-                    stop_requested=runtime.stop_requested,
-                )
-                if admission is None:
-                    return
-                if runtime.control_revision is None:
-                    raise ValueError("An Experiment watcher is missing its control revision.")
-                # Watchers keep the maintenance turn as immutable creation
-                # provenance. Delivery always resumes the live episode's node
-                # chat and pinned policy instead.
-                request = self._experiment_watcher_request(
-                    group,
-                    trigger="watcher",
-                    episode_id=admission.episode_id,
-                    invocation=admission.invocation,
-                    invocation_ceiling=admission.invocation_ceiling,
-                    control_revision=runtime.control_revision,
-                    decision_bundle=admission.decision_bundle,
-                    completion_criteria=runtime.completion_criteria,
-                    session_id=preflight.session_id,
-                )
-                parent = self._store.episode(episode.episode_id)
-                if parent is None:
-                    raise ValueError("episode_isolation_episode_missing")
-                request = request.model_copy(
-                    update={
-                        "code_worktree": parent.code_worktree,
-                        "graph_isolation": parent.graph_isolation,
-                        "provider": runtime.provider,
-                        "model": runtime.model,
-                        "reasoning": runtime.reasoning,
-                        "run_on": runtime.run_on,
-                        "run_truth_scope": runtime.run_truth_scope,
-                        "workflow_ids": runtime.workflow_ids,
-                        "skill_ids": runtime.skill_ids,
-                        "resolved_skill_packages": runtime.resolved_skill_packages,
-                        "chat_scope": "node",
-                        "node_id": control_node_id,
-                        "chat_id": episode.chat_id,
-                        "session_id": preflight.session_id,
-                    }
-                )
-
-                self._start_watcher_notification(
-                    first.project_id,
-                    "node_chat",
-                    request,
-                    watcher_ids,
-                    authorized_by=authorized_by,
-                    episode_stage_machine_id=preflight.stage_machine_id,
-                    episode_stage_root=preflight.stage_root,
-                    admission_fence=(
-                        retry_generation.run_if_current if retry_generation is not None else None
-                    ),
-                )
-            return
-
-        assert authorized_by is not None
-        request = self._generic_request(group)
-        if first.episode_id is None and first.chat_id is not None:
-            # A chat wake follows the chat's Browser choice now, not at watch time.
-            request = request.model_copy(
-                update={
-                    "browser_requested": self._store.chat_browser_requested(
-                        first.project_id, first.chat_id
-                    )
-                }
-            )
-        with self._experiment_admission(first.project_id, service, request):
-            self._start_watcher_notification(
-                first.project_id,
-                first.origin_task_kind,
-                request,
-                watcher_ids,
-                authorized_by=authorized_by,
-                admission_fence=(
-                    retry_generation.run_if_current if retry_generation is not None else None
-                ),
-            )
-
     def evaluate_graph_wake_boundary(
         self,
         project_id: str,
@@ -1012,8 +679,12 @@ class WatcherDelivery:
         retry_needed = False
         with self._retry.lock_for(project_id):
             try:
-                records = self._store.active_graph_watchers(project_id)
-                targets = {record.graph_target.key: record.graph_target for record in records}
+                checks = self._store.open_graph_checks(project_id)
+                targets = {
+                    check.graph_target.key: check.graph_target
+                    for check in checks
+                    if check.graph_target is not None
+                }
                 if graph_target is not None:
                     targets = (
                         {graph_target.key: graph_target} if graph_target.key in targets else {}
@@ -1053,10 +724,8 @@ class WatcherDelivery:
                 retry_generation, lambda: self._retry.clear(project_id)
             ):
                 return
-        self.deliver_ready_graph_wake_groups(
-            project_id,
-            source=source,
-            retry_generation=retry_generation,
+        self.deliver_ready_watchers(
+            project_id=project_id, source=source, retry_generation=retry_generation
         )
 
     def _graph_reconciliation_retryable(self, exc: Exception) -> bool:
@@ -1078,42 +747,32 @@ class WatcherDelivery:
             raise _GraphWatcherReplayDegraded(
                 f"{target.key} graph replay is degraded at revision {replay.state.revision}"
             )
-
-        # Captured task/sync state is only an arrival signal. The
-        # target-local durable head selects the not-yet-consumed
-        # accepted boundaries; main and branch revisions never
-        # consume one another's watcher events.
-        consumed_head = self._store.graph_watcher_reconciliation_head(
-            project_id,
-            target,
-        )
+        # The target-local durable head selects the not-yet-consumed accepted
+        # boundaries; main and branch revisions never consume each other's events.
+        consumed_head = self._store.graph_watcher_reconciliation_head(project_id, target)
         if consumed_head is not None and consumed_head.revision > replay.state.revision:
             raise _GraphWatcherReplayDegraded(
                 f"{target.key} graph is behind its consumed watcher head "
                 f"{consumed_head.revision} at revision {replay.state.revision}"
             )
-        trace_reader = getattr(service.history, "transition_trace_at_revision", None)
-        from rcp.runs.transition_event_reconciliation import (
-            AcceptedGraphBoundary,
-        )
+        from rcp.runs.transition_event_reconciliation import AcceptedGraphBoundary
 
         accepted_boundaries: list[AcceptedGraphBoundary] = []
         for boundary in boundaries:
             if consumed_head is not None and boundary.revision < consumed_head.revision:
                 continue
-            trace = trace_reader(boundary.revision) if callable(trace_reader) else None
+            trace = service.history.transition_trace_at_revision(boundary.revision)
             if trace is not None and trace.pre_head.target != target:
                 raise _GraphWatcherReplayDegraded(
                     "accepted transition target does not match its history view"
                 )
-            lifecycle_events = tuple(trace.lifecycle_events) if trace is not None else ()
             accepted_boundaries.append(
                 AcceptedGraphBoundary(
                     target=target,
                     revision=boundary.revision,
                     transition_id=(trace.transition_id if trace is not None else None),
                     state=boundary,
-                    lifecycle_events=lifecycle_events,
+                    lifecycle_events=tuple(trace.lifecycle_events) if trace is not None else (),
                 )
             )
         if not self._retry.generation_is_current(retry_generation):
@@ -1122,63 +781,20 @@ class WatcherDelivery:
             self._store,
             project_id,
             accepted_boundaries,
-            current_head=GraphHeadRef(
-                target=target,
-                revision=replay.state.revision,
-            ),
+            current_head=GraphHeadRef(target=target, revision=replay.state.revision),
         )
-
-    def deliver_ready_graph_wake_groups(
-        self,
-        project_id: str,
-        *,
-        source: str,
-        retry_generation: WatcherRetryGeneration | None = None,
-    ) -> None:
-        """Retry ready graph delivery without evaluating an active condition."""
-
-        if not self._retry.generation_is_current(retry_generation):
-            return
-        try:
-            groups = self._ready_graph_groups(self._store, project_id)
-        except Exception as exc:
-            self._logger.warning(
-                "Could not read ready graph-condition completions after %s for project %s: %s",
-                source,
-                project_id,
-                exc,
-            )
-            return
-        for group in groups:
-            if not self._retry.generation_is_current(retry_generation):
-                return
-            try:
-                self.deliver_watcher_group(
-                    group,
-                    retry_generation=retry_generation,
-                )
-            except Exception as exc:
-                self._logger.warning(
-                    "Could not retry graph-condition completion %s for project %s: %s",
-                    [item.watcher_id for item in group],
-                    project_id,
-                    exc,
-                )
 
     def request_startup_sweep(self) -> None:
         """Queue every watcher project for the retry worker's first pass.
 
         Conditions satisfied while RCP was down are evaluated right after
-        startup, but on the retry worker: a remote graph read never runs on
-        the API readiness path, and one that fails retries with the ordinary
-        poll-pass backoff.
+        startup, on the retry worker, never on the API readiness path.
         """
         for project_id in self._store.graph_watcher_project_ids():
             self._retry.request(project_id)
 
     def retry_graph_wakes_after_poll(self, generation: WatcherRetryGeneration) -> None:
-        due = self._retry.due()
-        for project_id in due:
+        for project_id in self._retry.due():
             if not generation.is_current():
                 return
             self.evaluate_graph_wake_boundary(
@@ -1187,16 +803,6 @@ class WatcherDelivery:
                 source="reconciliation retry",
                 retry_generation=generation,
             )
-        reconciled = set(due)
-        for project_id in self._store.graph_watcher_project_ids():
-            if not generation.is_current():
-                return
-            if project_id not in reconciled:
-                self.deliver_ready_graph_wake_groups(
-                    project_id,
-                    source="watcher poll",
-                    retry_generation=generation,
-                )
 
 
 def _retryable_sqlite_error(exc: Exception) -> bool:
@@ -1327,6 +933,64 @@ def validate_watch_specs(
     return results
 
 
+def external_check(
+    check_id: str,
+    spec: WatchSpec,
+    result: WatcherCheckResult,
+    *,
+    machine_id: str,
+    created_at: str,
+) -> WatcherCheckRecord:
+    """A new external check carrying its first observation."""
+
+    completed = result.state == "complete"
+    return WatcherCheckRecord(
+        check_id=check_id,
+        watcher_id=check_id,
+        machine_id=machine_id,
+        definition="external",
+        check_command=spec.check_command,
+        log_path=spec.log_path,
+        cwd=spec.cwd,
+        created_at=created_at,
+        last_checked_at=result.checked_at,
+        last_exit_code=result.exit_code,
+        completed_at=result.checked_at if completed else None,
+    )
+
+
+def graph_check(
+    check_id: str,
+    condition: GraphCondition,
+    state: GraphState,
+    *,
+    graph_target: GraphTargetRef,
+    machine_id: str,
+    created_at: str,
+) -> WatcherCheckRecord:
+    """A new graph check armed at the state's revision."""
+
+    result = graph_condition_result(condition, state, armed_revision=state.revision)
+    if result == "removed":
+        raise ValueError(f"graph condition target does not exist: {condition.node_id}")
+    return WatcherCheckRecord(
+        check_id=check_id,
+        watcher_id=check_id,
+        machine_id=machine_id,
+        definition="graph",
+        condition=condition,
+        graph_target=graph_target,
+        armed_head=state.revision,
+        created_at=created_at,
+        last_checked_at=created_at,
+        completed_at=created_at if result == "completed" else None,
+    )
+
+
+def _condition_purpose(condition: GraphCondition) -> str:
+    return f"Graph condition on {condition.node_id}"
+
+
 def arm_watchers(
     store: AppStore,
     specs: list[AgentWatchSpec],
@@ -1338,99 +1002,47 @@ def arm_watchers(
     reuse_live: bool = False,
     check_runner: WatcherCheckRunner = run_watcher_check,
     timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-) -> list[StoredWatcherRecord]:
-    """Validate one mixed handoff and persist all of it, or persist none of it.
+) -> list[WatcherRecord]:
+    """Arm one watcher per external spec and per graph condition, all or none.
 
-    ``reuse_live`` lets a conversation's re-armed condition resolve to its identical
-    live watcher. Keyed effects leave it off: their recovery finds a watcher only
-    under its planned id.
+    ``reuse_live`` resolves a request identical to one of the agent's open
+    single-check watchers to that watcher instead of stacking a second wake.
     """
 
     conditions = list(graph_conditions or [])
-    if not specs and not conditions:
+    count = len(specs) + len(conditions)
+    if not count:
         raise ValueError("a watch list must contain at least one watcher")
-    watcher_count = len(specs) + len(conditions)
-    if watcher_ids is None:
-        resolved_watcher_ids = [str(uuid4()) for _ in range(watcher_count)]
-    else:
-        if len(watcher_ids) != watcher_count:
-            raise ValueError("watcher_ids must match the mixed watcher handoff exactly")
-        if any(
-            not isinstance(watcher_id, str) or not watcher_id.strip() for watcher_id in watcher_ids
-        ):
-            raise ValueError("watcher_ids must contain only nonblank strings")
-        if len(watcher_ids) != len(set(watcher_ids)):
-            raise ValueError("watcher_ids must be unique")
-        resolved_watcher_ids = list(watcher_ids)
-    twins = (
-        _active_twins(store, specs, conditions, binding) if reuse_live else [None] * watcher_count
-    )
-    existing = [store.watcher(watcher_id) for watcher_id in resolved_watcher_ids]
+    ids = watcher_ids if watcher_ids is not None else [str(uuid4()) for _ in range(count)]
+    if len(ids) != count or len(set(ids)) != count or any(not item.strip() for item in ids):
+        raise ValueError("watcher_ids must be unique, nonblank, and match the handoff exactly")
+    live = store.agent_watchers(binding.agent_id, open_only=True) if reuse_live else []
+
+    def twin(definition: tuple[object, ...]) -> WatcherRecord | None:
+        for watcher in live:
+            checks = watcher.live_checks
+            if len(checks) == 1 and _definition(checks[0]) == definition:
+                live.remove(watcher)
+                return watcher
+        return None
+
+    twins = [
+        *(twin(("external", spec.check_command, spec.log_path, spec.cwd)) for spec in specs),
+        *(
+            twin(("graph", condition.model_dump_json(), binding.graph_target.key))
+            for condition in conditions
+        ),
+    ]
+    existing = [store.watcher(watcher_id) for watcher_id in ids]
     if any(item is not None for item in existing):
-        if any(item is None and twin is None for item, twin in zip(existing, twins, strict=True)):
+        if any(item is None and found is None for item, found in zip(existing, twins, strict=True)):
             raise ValueError("the watcher handoff was only partly persisted")
-        for index, record in enumerate(existing):
-            if record is None:
-                continue
-            expected_common = {
-                "project": (record.project_id, binding.project_id),
-                "origin operation": (
-                    record.origin_operation_id,
-                    binding.origin_operation_id,
-                ),
-                "origin task kind": (record.origin_task_kind, binding.origin_task_kind),
-                "conversation": (record.chat_id, binding.chat_id),
-                "node": (record.node_id, binding.node_id),
-                "episode": (record.episode_id, binding.episode_id),
-                "worker": (record.worker_id, binding.worker_id),
-                "graph target": (record.graph_target, binding.graph_target),
-                "machine": (record.machine_id, binding.machine_id),
-                "continuation": (record.continuation, binding.continuation),
-            }
-            mismatched = [
-                label for label, (saved, requested) in expected_common.items() if saved != requested
-            ]
-            if index < len(specs):
-                spec = specs[index]
-                if not isinstance(record, WatcherRecord):
-                    mismatched.append("watcher kind")
-                else:
-                    expected_spec = {
-                        "check command": (record.check_command, spec.check_command),
-                        "log path": (record.log_path, spec.log_path),
-                        "working directory": (record.cwd, spec.cwd),
-                        "cancel command": (record.cancel_command, spec.cancel_command),
-                    }
-                    mismatched.extend(
-                        label
-                        for label, (saved, requested) in expected_spec.items()
-                        if saved != requested
-                    )
-            else:
-                condition = conditions[index - len(specs)]
-                if not isinstance(record, GraphWatcherRecord):
-                    mismatched.append("watcher kind")
-                elif record.condition != condition:
-                    mismatched.append("graph condition")
-            if mismatched:
-                raise ValueError(
-                    "the retained watcher has a mismatched " + ", ".join(mismatched) + " binding"
-                )
-        return [_present(item or twin) for item, twin in zip(existing, twins, strict=True)]
+        return [item or found for item, found in zip(existing, twins, strict=True) if item or found]  # type: ignore[misc]
     if conditions:
         if state is None:
             raise ValueError("graph watcher arming requires canonical graph state")
         validate_graph_conditions(conditions, state)
-    fresh_specs = [
-        (resolved_watcher_ids[index], spec)
-        for index, spec in enumerate(specs)
-        if twins[index] is None
-    ]
-    fresh_conditions = [
-        (resolved_watcher_ids[len(specs) + index], condition)
-        for index, condition in enumerate(conditions)
-        if twins[len(specs) + index] is None
-    ]
+    fresh_specs = [(ids[i], spec) for i, spec in enumerate(specs) if twins[i] is None]
     results = (
         validate_watch_specs(
             [spec for _, spec in fresh_specs],
@@ -1442,160 +1054,84 @@ def arm_watchers(
         else []
     )
     created_at = _now()
-    records: list[StoredWatcherRecord] = []
+    armed: dict[str, WatcherRecord] = {}
     for (watcher_id, spec), result in zip(fresh_specs, results, strict=True):
-        completed = result.state == "complete"
-        records.append(
-            WatcherRecord(
-                watcher_id=watcher_id,
-                project_id=binding.project_id,
-                origin_operation_id=binding.origin_operation_id,
-                origin_task_kind=binding.origin_task_kind,
-                chat_id=binding.chat_id,
-                node_id=binding.node_id,
-                episode_id=binding.episode_id,
-                worker_id=binding.worker_id,
-                graph_target=binding.graph_target,
-                machine_id=binding.machine_id,
-                cancel_command=spec.cancel_command,
-                check_command=spec.check_command,
-                log_path=spec.log_path,
-                cwd=spec.cwd,
-                purpose=spec.purpose,
-                continuation=binding.continuation,
-                status="completed" if completed else "active",
-                created_at=created_at,
-                last_checked_at=result.checked_at,
-                last_exit_code=result.exit_code,
-                completed_at=result.checked_at if completed else None,
-            )
+        armed[watcher_id] = _new_watcher(
+            binding,
+            watcher_id,
+            spec.purpose,
+            external_check(
+                watcher_id, spec, result, machine_id=binding.machine_id, created_at=created_at
+            ),
+            created_at,
         )
-    if state is not None:
-        for watcher_id, condition in fresh_conditions:
-            result = graph_condition_result(
+    for index, condition in enumerate(conditions):
+        watcher_id = ids[len(specs) + index]
+        if twins[len(specs) + index] is not None:
+            continue
+        assert state is not None
+        armed[watcher_id] = _new_watcher(
+            binding,
+            watcher_id,
+            _condition_purpose(condition),
+            graph_check(
+                watcher_id,
                 condition,
                 state,
-                armed_revision=state.revision,
-            )
-            if result == "removed":
-                raise ValueError(f"graph condition target does not exist: {condition.node_id}")
-            completed = result == "completed"
-            records.append(
-                GraphWatcherRecord(
-                    watcher_id=watcher_id,
-                    project_id=binding.project_id,
-                    origin_operation_id=binding.origin_operation_id,
-                    origin_task_kind=binding.origin_task_kind,
-                    chat_id=binding.chat_id,
-                    node_id=binding.node_id,
-                    episode_id=binding.episode_id,
-                    worker_id=binding.worker_id,
-                    graph_target=binding.graph_target,
-                    machine_id=binding.machine_id,
-                    condition=condition,
-                    armed_revision=state.revision,
-                    continuation=binding.continuation,
-                    status="completed" if completed else "active",
-                    created_at=created_at,
-                    last_evaluated_at=created_at,
-                    completed_at=created_at if completed else None,
-                )
-            )
-    created = iter(store.create_watchers(records) if records else [])
-    return [twin if twin is not None else next(created) for twin in twins]
-
-
-def _active_twins(
-    store: AppStore,
-    specs: list[AgentWatchSpec],
-    conditions: list[GraphCondition],
-    binding: WatcherBinding,
-) -> list[StoredWatcherRecord | None]:
-    """Each requested watcher's identical live watcher in the same chat, if one exists.
-
-    A turn that re-arms a condition its chat already watches reuses that watcher
-    rather than stacking a duplicate wake on it.
-    """
-    live = [
-        record
-        for record in store.watchers(binding.project_id, chat_id=binding.chat_id)
-        if record.status in ("active", "degraded")
-        and not record.notified
-        and (
-            record.node_id,
-            record.episode_id,
-            record.worker_id,
-            record.graph_target,
-            record.machine_id,
+                graph_target=binding.graph_target,
+                machine_id=binding.machine_id,
+                created_at=created_at,
+            ),
+            created_at,
         )
-        == (
-            binding.node_id,
-            binding.episode_id,
-            binding.worker_id,
-            binding.graph_target,
-            binding.machine_id,
-        )
-    ]
-    taken: set[str] = set()
-
-    def twin(matches: Callable[[StoredWatcherRecord], bool]) -> StoredWatcherRecord | None:
-        found = next(
-            (record for record in live if record.watcher_id not in taken and matches(record)),
-            None,
-        )
-        if found is not None:
-            taken.add(found.watcher_id)
-        return found
-
+    if armed:
+        store.arm_watchers(list(armed.values()))
     return [
-        *(
-            twin(
-                lambda record, spec=spec: (
-                    isinstance(record, WatcherRecord)
-                    and (record.check_command, record.log_path, record.cwd, record.cancel_command)
-                    == (spec.check_command, spec.log_path, spec.cwd, spec.cancel_command)
-                )
-            )
-            for spec in specs
-        ),
-        *(
-            twin(
-                lambda record, condition=condition: (
-                    isinstance(record, GraphWatcherRecord) and record.condition == condition
-                )
-            )
-            for condition in conditions
-        ),
+        found if found is not None else store.watcher(watcher_id) or armed[watcher_id]
+        for watcher_id, found in zip(ids, twins, strict=True)
     ]
 
 
-def _present(record: StoredWatcherRecord | None) -> StoredWatcherRecord:
-    if record is None:
-        raise ValueError("the watcher handoff was only partly persisted")
-    return record
+def _new_watcher(
+    binding: WatcherBinding,
+    watcher_id: str,
+    purpose: str,
+    check: WatcherCheckRecord,
+    created_at: str,
+) -> WatcherRecord:
+    return WatcherRecord(
+        watcher_id=watcher_id,
+        agent_id=binding.agent_id,
+        project_id=binding.project_id,
+        purpose=purpose,
+        origin_turn_id=binding.origin_turn_id,
+        created_at=created_at,
+        checks=[check],
+    )
+
+
+def _definition(check: WatcherCheckRecord) -> tuple[object, ...]:
+    if check.definition == "external":
+        return ("external", check.check_command, check.log_path, check.cwd)
+    assert check.condition is not None and check.graph_target is not None
+    return ("graph", check.condition.model_dump_json(), check.graph_target.key)
 
 
 class WatcherPoller:
-    """Small process-owned polling loop over durable watcher rows."""
+    """Small process-owned polling loop over durable external checks."""
 
     def __init__(
         self,
         store: AppStore,
         *,
-        on_completed: WatcherCompletionCallback | None = None,
         on_poll_completed: WatcherPollCompletedCallback | None = None,
         check_runner: WatcherCheckRunner = run_watcher_check,
         timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
         interval: float = WATCHER_POLL_INTERVAL_SECONDS,
         workers: int = WATCHER_CHECK_WORKERS,
         clock: Callable[[], str] | None = None,
-        cancel_runner: Callable[[WatchSpec, str, float], str | None] = run_watcher_cancel,
-        helper_cancel_action: Callable[[WatcherRecord], Callable[[], bool] | None] | None = None,
     ) -> None:
         self.store = store
-        self.cancel_runner = cancel_runner
-        self.helper_cancel_action = helper_cancel_action
-        self.on_completed = on_completed
         self.on_poll_completed = on_poll_completed
         self.check_runner = check_runner
         self.timeout = timeout
@@ -1625,161 +1161,48 @@ class WatcherPoller:
         thread = self._thread
         return thread is not None and thread.is_alive()
 
-    def poll_once(self) -> list[list[WatcherRecord]]:
-        with self._poll_lock:
-            records = self.store.pollable_watchers(as_of=self.clock())
-            self._check_records(records)
-            return self._finish_poll()
-
-    def check_now(self, project_id: str, watcher_id: str) -> WatcherRecord:
-        """Check one degraded external watcher through the ordinary poll path."""
+    def poll_once(self) -> None:
+        """Check every due external check, then hand off to delivery."""
 
         with self._poll_lock:
-            record = self.store.watcher(watcher_id)
-            if record is None or record.project_id != project_id:
-                raise KeyError(watcher_id)
-            if not isinstance(record, WatcherRecord):
-                raise ValueError("Only an external watcher can be checked now.")
-            if record.status != "degraded" or record.notified:
-                raise ValueError("Only a degraded watcher awaiting delivery can be checked now.")
-            self._check_records([record])
-            self._finish_poll()
-            updated = self.store.watcher(watcher_id)
-            if not isinstance(updated, WatcherRecord):
-                raise RuntimeError("External watcher changed type during its check.")
-            return updated
-
-    def cancel(self, project_id: str, watcher_id: str, requested_by: str) -> WatcherRecord:
-        """Claim a human helper action, or freshly check generic external work before Cancel."""
-
-        # The API holds the project's write-admission lock. Do not acquire the
-        # poll lock here: poll delivery takes those locks in the opposite order.
-        # SQLite claims serialize cancellation; ordinary polling owns delivery.
-        record = self.store.watcher(watcher_id)
-        if record is None or record.project_id != project_id:
-            raise KeyError(watcher_id)
-        if not isinstance(record, WatcherRecord) or not record.cancel_command:
-            raise ValueError("This watcher has no cancel command.")
-        if not record.can_cancel:
-            return record
-        helper_action = self.helper_cancel_action(record) if self.helper_cancel_action else None
-        if helper_action is not None:
-            claimed = self.store.claim_watcher_cancel(project_id, watcher_id, requested_by)
-            if claimed is None:
-                current = self.store.watcher(watcher_id)
-                assert isinstance(current, WatcherRecord)
-                return current
-            assert claimed.cancel_requested_at is not None
-            try:
-                cancel_performed = helper_action()
-                return self.store.complete_watcher_cancel(
-                    watcher_id,
-                    requested_at=claimed.cancel_requested_at,
-                    cancel_performed=cancel_performed,
-                )
-            except Exception as exc:
-                return self.store.record_watcher_cancel_result(
-                    watcher_id,
-                    requested_at=claimed.cancel_requested_at,
-                    error=_bounded_error(f"Helper cancellation could not be confirmed: {exc}"),
-                )
-        try:
-            result = self._check_record(record)
-        except Exception as exc:
-            result = WatcherCheckResult(
-                state="error", checked_at=_now(), error=_bounded_error(str(exc))
-            )
-        checked = self.store.record_watcher_check(
-            watcher_id,
-            status={"active": "active", "complete": "completed", "error": "degraded"}[result.state],
-            exit_code=result.exit_code,
-            error=result.error,
-            checked_at=result.checked_at,
-            include_stopped=True,
-        )
-        if result.state == "error":
-            return self.store.record_watcher_cancel_result(
-                watcher_id,
-                requested_at=record.cancel_requested_at,
-                error=_bounded_error(
-                    "Could not check whether the external work is still active; "
-                    f"Cancel was not run. {result.error or ''}"
-                ),
-            )
-        if result.state == "complete":
-            return checked
-        claimed = self.store.claim_watcher_cancel(project_id, watcher_id, requested_by)
-        if claimed is None:
-            current = self.store.watcher(watcher_id)
-            assert isinstance(current, WatcherRecord)
-            return current
-        try:
-            error = self.cancel_runner(
-                _spec_from_record(claimed), host_of(self.store, claimed.machine_id), self.timeout
-            )
-        except Exception as exc:
-            error = _bounded_error(f"Cancel command failed: {exc}")
-        return self.store.record_watcher_cancel_result(
-            watcher_id, requested_at=claimed.cancel_requested_at, error=error
-        )
-
-    def _check_record(self, record: WatcherRecord) -> WatcherCheckResult:
-        return self.check_runner(
-            _spec_from_record(record), host_of(self.store, record.machine_id), self.timeout
-        )
-
-    def _check_records(self, records: list[WatcherRecord]) -> None:
-        if records:
-            with ThreadPoolExecutor(max_workers=min(self.workers, len(records))) as executor:
-                futures = {
-                    executor.submit(self._check_record, record): record for record in records
-                }
-                for future in as_completed(futures):
-                    record = futures[future]
-                    try:
-                        result = future.result()
-                    except Exception as exc:  # a runner failure is a degraded check, not completion
-                        result = WatcherCheckResult(
-                            state="error",
-                            checked_at=_now(),
-                            error=_bounded_error(f"watcher check failed: {exc}"),
-                        )
-                    status = {
-                        "active": "active",
-                        "complete": "completed",
-                        "error": "degraded",
-                    }[result.state]
-                    self.store.record_watcher_check(
-                        record.watcher_id,
-                        status=status,
-                        exit_code=result.exit_code,
-                        error=result.error,
-                        checked_at=result.checked_at,
-                    )
-
-    def _finish_poll(self) -> list[list[WatcherRecord]]:
-        groups: list[list[WatcherRecord]] = []
-        for group in self.store.completed_watcher_groups():
-            if any(isinstance(item, GraphWatcherRecord) for item in group):
-                continue
-            external = [item for item in group if isinstance(item, WatcherRecord)]
-            if external:
-                groups.append(external)
-        if self.on_completed is not None:
-            for group in groups:
-                watcher_ids = [record.watcher_id for record in group]
+            self._check(self.store.due_external_checks(as_of=self.clock()))
+            if self.on_poll_completed is not None:
                 try:
-                    self.on_completed(group)
-                except Exception as exc:
-                    # The group stays pending for the next poll; its watchers show why.
-                    logger.exception("Watcher completion callback failed for %s", watcher_ids)
-                    self.store.record_watcher_wake_error(watcher_ids, f"Wake failed: {exc}")
-        if self.on_poll_completed is not None:
-            try:
-                self.on_poll_completed()
-            except Exception:
-                logger.exception("Watcher poll-completed callback failed")
-        return groups
+                    self.on_poll_completed()
+                except Exception:
+                    logger.exception("Watcher poll-completed callback failed")
+
+    def _check_one(self, check: WatcherCheckRecord) -> WatcherCheckResult:
+        return self.check_runner(
+            _spec_from_check(check), host_of(self.store, check.machine_id), self.timeout
+        )
+
+    def _check(self, checks: list[WatcherCheckRecord]) -> None:
+        if not checks:
+            return
+        with ThreadPoolExecutor(max_workers=min(self.workers, len(checks))) as executor:
+            futures = {executor.submit(self._check_one, check): check for check in checks}
+            for future in as_completed(futures):
+                check = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:  # a runner failure is an error, not completion
+                    result = WatcherCheckResult(
+                        state="error",
+                        checked_at=_now(),
+                        error=_bounded_error(f"watcher check failed: {exc}"),
+                    )
+                self.store.record_watcher_check(
+                    check.check_id,
+                    status="degraded"
+                    if result.state == "error"
+                    else "completed"
+                    if result.state == "complete"
+                    else "active",
+                    exit_code=result.exit_code,
+                    error=result.error,
+                    checked_at=result.checked_at,
+                )
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -1788,6 +1211,11 @@ class WatcherPoller:
             except Exception:
                 logger.exception("Watcher polling pass failed")
             self._stop.wait(self.interval)
+
+
+def _spec_from_check(check: WatcherCheckRecord) -> WatchSpec:
+    assert check.check_command and check.log_path and check.cwd
+    return WatchSpec(check_command=check.check_command, log_path=check.log_path, cwd=check.cwd)
 
 
 class WatcherRetryWorker:
@@ -1886,15 +1314,6 @@ class WatcherRetryWorker:
                 self.callback(lease)
             except Exception:
                 logger.exception("Graph watcher ready-delivery retry failed")
-
-
-def _spec_from_record(record: WatcherRecord) -> WatchSpec:
-    return WatchSpec(
-        check_command=record.check_command,
-        log_path=record.log_path,
-        cwd=record.cwd,
-        cancel_command=record.cancel_command,
-    )
 
 
 def _process_error_output(stderr: object, stdout: object) -> str:

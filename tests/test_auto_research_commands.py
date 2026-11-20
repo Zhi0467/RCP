@@ -32,7 +32,6 @@ from rcp.agents.command_protocol import (
     StatusCommandRequest,
     StopCommandRequest,
     ValidateCommandRequest,
-    WatchGraphCommandRequest,
 )
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
@@ -241,7 +240,6 @@ class _Effects:
     spawn_calls: list[tuple[SpawnArguments, str]] = field(default_factory=list)
     message_calls: list[MessageArguments] = field(default_factory=list)
     planned_message_ids: list[str] = field(default_factory=list)
-    planned_watcher_ids: list[str] = field(default_factory=list)
     pause_worker_ids: list[str] = field(default_factory=list)
     resume_operation_ids: list[str] = field(default_factory=list)
     stop_worker_ids: list[str] = field(default_factory=list)
@@ -264,7 +262,6 @@ class _Effects:
             resume=self.resume,
             stop=self.stop,
             message=self.message,
-            watch_graph=self.watch_graph,
             apply=unavailable,
             episode=self.episode,
             inbox=unavailable,
@@ -344,15 +341,6 @@ class _Effects:
         self.planned_message_ids.append(planned_message_id)
         return AutoResearchCommandEffectResult(result={"delivered": True})
 
-    def watch_graph(
-        self,
-        _context,
-        _arguments,
-        planned_watcher_id: str,
-    ) -> AutoResearchCommandEffectResult:
-        self.planned_watcher_ids.append(planned_watcher_id)
-        return AutoResearchCommandEffectResult(result={"armed": True})
-
     def resume(
         self,
         _context,
@@ -430,7 +418,7 @@ def _remaining_idempotent_request(
     request_id: str,
     key: str,
     worker_id: str,
-) -> MessageCommandRequest | WatchGraphCommandRequest | InboxCommandRequest:
+) -> MessageCommandRequest | InboxCommandRequest:
     if kind == "message":
         return _request(
             MessageCommandRequest,
@@ -440,17 +428,6 @@ def _remaining_idempotent_request(
             arguments={
                 "recipient_task_id": worker_id,
                 "body": "Continue the bounded child task.",
-            },
-        )
-    if kind == "watch_graph":
-        return _request(
-            WatchGraphCommandRequest,
-            request_id=request_id,
-            verb="watch_graph",
-            idempotency_key=key,
-            arguments={
-                "condition": {"node_id": "hyp/result", "status_in": ["active"]},
-                "reason": "Continue when the graph condition settles.",
             },
         )
     assert kind == "inbox"
@@ -1045,19 +1022,6 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
                 },
             ),
         ),
-        dispatcher.dispatch(
-            root.operation_id,
-            _request(
-                WatchGraphCommandRequest,
-                request_id="e" * 32,
-                verb="watch_graph",
-                idempotency_key="watch-after-finish",
-                arguments={
-                    "condition": {"node_id": "hyp/result", "status_in": ["active"]},
-                    "reason": "This must not cross the ending fence.",
-                },
-            ),
-        ),
     ]
     status = dispatcher.dispatch(
         root.operation_id,
@@ -1106,7 +1070,6 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
     )
     assert len(effects.spawn_calls) == 1
     assert effects.message_calls == []
-    assert effects.planned_watcher_ids == []
     assert status.status == validation.status == "ok"
     fenced = store.episode(auto_research.episode_id)
     assert fenced is not None
@@ -1128,7 +1091,6 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
         "4" * 32: "unavailable",
         "c" * 32: "unavailable",
         "d" * 32: "unavailable",
-        "e" * 32: "unavailable",
         "1" * 32: "ok",
         "2" * 32: "ok",
     }.items():
@@ -1547,15 +1509,13 @@ def test_reusing_a_key_with_different_arguments_is_rejected_instead_of_deduplica
     assert len(effects.spawn_calls) == 1
 
 
-def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_path) -> None:
+def test_message_persists_and_passes_its_planned_effect_id(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     worker = _worker(store, auto_research, root, "worker")
     effects = _Effects(store, auto_research, root)
     bundled = effects.bundle()
     message_key = "planned-message"
-    watcher_key = "planned-watcher"
     message_command_id = "0" * 32
-    watcher_command_id = "1" * 32
 
     def message_after_durable_start(context, arguments, planned_message_id):
         invocation = store.agent_command(message_command_id)
@@ -1564,21 +1524,7 @@ def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_p
         assert invocation.start_payload["planned_message_id"] == planned_message_id
         return effects.message(context, arguments, planned_message_id)
 
-    def watcher_after_durable_start(context, arguments, planned_watcher_id):
-        invocation = store.agent_command(watcher_command_id)
-        assert invocation is not None
-        assert invocation.exited_at is None
-        assert invocation.start_payload["planned_watcher_id"] == planned_watcher_id
-        return effects.watch_graph(context, arguments, planned_watcher_id)
-
-    dispatcher = _dispatcher(
-        store,
-        replace(
-            bundled,
-            message=message_after_durable_start,
-            watch_graph=watcher_after_durable_start,
-        ),
-    )
+    dispatcher = _dispatcher(store, replace(bundled, message=message_after_durable_start))
 
     message = dispatcher.dispatch(
         root.operation_id,
@@ -1593,32 +1539,13 @@ def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_p
             },
         ),
     )
-    watch = dispatcher.dispatch(
-        root.operation_id,
-        _request(
-            WatchGraphCommandRequest,
-            request_id=watcher_command_id,
-            verb="watch_graph",
-            idempotency_key=watcher_key,
-            arguments={
-                "condition": {"node_id": "hyp/result", "status_in": ["active"]},
-                "reason": "Wait for the durable graph condition.",
-            },
-        ),
-    )
 
     expected_message_id = _effect_id(auto_research.episode_id, "message", message_key)
-    expected_watcher_id = _effect_id(auto_research.episode_id, "watch_graph", watcher_key)
     assert message.status == "ok"
-    assert watch.status == "ok"
     assert effects.planned_message_ids == [expected_message_id]
-    assert effects.planned_watcher_ids == [expected_watcher_id]
     message_invocation = store.agent_command(message_command_id)
-    watcher_invocation = store.agent_command(watcher_command_id)
     assert message_invocation is not None
-    assert watcher_invocation is not None
     assert message_invocation.start_payload["planned_message_id"] == expected_message_id
-    assert watcher_invocation.start_payload["planned_watcher_id"] == expected_watcher_id
 
 
 def test_unknown_message_reexecutes_with_its_original_deterministic_effect_id(
@@ -1969,7 +1896,7 @@ def test_completed_unavailable_experiment_resume_reuses_the_planned_operation_id
     assert original is not None and original.status == "unavailable"
 
 
-@pytest.mark.parametrize("effect_name", ["message", "watch_graph", "inbox"])
+@pytest.mark.parametrize("effect_name", ["message", "inbox"])
 @pytest.mark.parametrize("committed", [False, True])
 def test_completed_unavailable_idempotent_effect_recovers_with_recorded_id(
     tmp_path, effect_name, committed
@@ -2155,93 +2082,6 @@ def test_unknown_worker_control_reissues_only_the_idempotent_pause_or_stop(
     assert response.status == "ok"
     assert effects.reconcile_calls == [verb]
     assert getattr(effects, call_field) == [worker.operation_id]
-
-
-def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
-    tmp_path,
-) -> None:
-    """A malformed durable planned id is unavailable and never reaches reconciliation."""
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    effects = _Effects(
-        store,
-        auto_research,
-        root,
-        reconcile_result=AutoResearchCommandEffectResult(result={"watcher_id": "existing"}),
-    )
-    dispatcher = _dispatcher(store, effects.bundle())
-    key = "watch-once"
-    original_request_id = "4" * 32
-    arguments = _request(
-        WatchGraphCommandRequest,
-        request_id=original_request_id,
-        verb="watch_graph",
-        idempotency_key=key,
-        arguments={
-            "condition": {"node_id": "hyp/result", "status_in": ["active"]},
-            "reason": "Wait for the original watcher.",
-        },
-    ).arguments
-    planned_watcher_id = _effect_id(auto_research.episode_id, "watch_graph", key)
-    store.start_agent_command(
-        operation_id=root.operation_id,
-        command_id=original_request_id,
-        episode_id=auto_research.episode_id,
-        verb="watch_graph",
-        idempotency_key=key,
-        payload={
-            "request_id": original_request_id,
-            "arguments": arguments.model_dump(mode="json"),
-            "planned_watcher_id": planned_watcher_id,
-        },
-    )
-
-    response = dispatcher.dispatch(
-        root.operation_id,
-        _request(
-            WatchGraphCommandRequest,
-            request_id="5" * 32,
-            verb="watch_graph",
-            idempotency_key=key,
-            arguments=arguments,
-        ),
-    )
-
-    assert response.status == "ok"
-    assert response.result == {"watcher_id": "existing"}
-    assert effects.reconcile_calls == ["watch_graph"]
-    assert effects.reconcile_planned_effect_ids == [planned_watcher_id]
-    assert effects.planned_watcher_ids == []
-
-    mismatch_path = tmp_path / "mismatch"
-    mismatch_path.mkdir()
-    store, auto_research, root = _setup_auto_research(mismatch_path)
-    effects = _Effects(store, auto_research, root)
-    dispatcher = _dispatcher(store, effects.bundle())
-    store.start_agent_command(
-        operation_id=root.operation_id,
-        command_id="6" * 32,
-        episode_id=auto_research.episode_id,
-        verb="watch_graph",
-        idempotency_key=key,
-        payload={
-            "request_id": "6" * 32,
-            "arguments": arguments.model_dump(mode="json"),
-            "planned_watcher_id": str(uuid.uuid4()),
-        },
-    )
-    refused = dispatcher.dispatch(
-        root.operation_id,
-        _request(
-            WatchGraphCommandRequest,
-            request_id="7" * 32,
-            verb="watch_graph",
-            idempotency_key=key,
-            arguments=arguments,
-        ),
-    )
-    assert refused.status == "unavailable"
-    assert "deterministic effect id" in (refused.message or "")
-    assert effects.reconcile_calls == []
 
 
 def test_orchestrator_messages_spawned_child_work_by_stable_worker_id(tmp_path) -> None:
@@ -2674,16 +2514,6 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
             verb="stop",
             idempotency_key="worker-stop",
             arguments={"worker_id": worker.operation_id},
-        ),
-        _request(
-            WatchGraphCommandRequest,
-            request_id="d" * 32,
-            verb="watch_graph",
-            idempotency_key="worker-watch",
-            arguments={
-                "condition": {"node_id": "hyp/result", "status_in": ["active"]},
-                "reason": "Wait for the belief transition.",
-            },
         ),
         _request(
             FinishCommandRequest,

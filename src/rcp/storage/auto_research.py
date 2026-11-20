@@ -804,6 +804,68 @@ class AutoResearchStoreMixin(StoreMixinBase):
         assert stored is not None
         return stored
 
+    def create_auto_research_watcher_wake_task(
+        self,
+        record: AgentTaskRecord,
+        agent_id: str,
+        watcher_ids: list[str],
+        *,
+        continuation_cause: str,
+        lifecycle_notice_ids: list[str] | None = None,
+        message_ids: list[str] | None = None,
+        expected_pending_notice_ids: list[str] | None = None,
+        expected_pending_message_ids: list[str] | None = None,
+    ) -> AgentTaskRecord | None:
+        """Spend one actor allocation and give it the agent's ready watchers.
+
+        A root orchestrator wake also claims its pending lifecycle and mail
+        prefixes. A stopped or ending episode, a busy actor, or a changed
+        watcher set writes nothing.
+        """
+
+        claims_root_inputs = lifecycle_notice_ids is not None or message_ids is not None
+        if claims_root_inputs and record.request.get("role") != "orchestrator":
+            raise ValueError("only a root Auto-research watcher wake may claim lifecycle and mail")
+        if record.episode_id is None or record.request.get("watcher_ids") != watcher_ids:
+            raise ValueError("an Auto-research watcher wake must name its episode and watchers")
+        try:
+            with self.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                episode = self._load_auto_research_episode(connection, record.episode_id)
+                if (
+                    episode.status != "running"
+                    or episode.ending is not None
+                    or episode.stop_requested_at is not None
+                ):
+                    return None
+                role = TypeAdapter(AutoResearchRole).validate_python(record.request.get("role"))
+                self._insert_paid_auto_research_task(
+                    connection, episode, record, role, continuation_cause=continuation_cause
+                )
+                if claims_root_inputs and not self._claim_auto_research_root_inputs(
+                    connection,
+                    episode,
+                    record,
+                    lifecycle_notice_ids=list(lifecycle_notice_ids or []),
+                    message_ids=list(message_ids or []),
+                    expected_pending_notice_ids=expected_pending_notice_ids,
+                    expected_pending_message_ids=expected_pending_message_ids,
+                ):
+                    connection.rollback()
+                    return None
+                if not cast("AppStore", self).claim_watcher_wake(
+                    connection, agent_id, watcher_ids, record.operation_id
+                ):
+                    connection.rollback()
+                    return None
+        except AutoResearchActorBusy:
+            return None
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Could not create the Auto-research watcher wake task.") from exc
+        stored = cast("AppStore", self).agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
     def _claim_auto_research_root_inputs(
         self,
         connection: sqlite3.Connection,
@@ -2182,44 +2244,41 @@ class AutoResearchStoreMixin(StoreMixinBase):
         episode = self._load_auto_research_episode(connection, episode_id)
         if episode.stop_requested_at is None and episode.ending is None:
             raise EpisodeNotRunning("the episode ending fence must be durable first")
-        stopped_at = episode.stop_requested_at or episode.updated_at or now
-        if episode.stop_requested_at is not None:
+        stopped = episode.stop_requested_at is not None
+        if stopped:
             reason = "Auto-research episode stopped."
         else:
             reason = f"Auto-research episode ended ({episode.ending})."
-        retain_child_observers = episode.ending == "exhausted" and episode.stop_requested_at is None
-        return connection.execute(
+        retain_child_observers = episode.ending == "exhausted" and not stopped
+        return cast("AppStore", self)._cancel_where(
             """
-            UPDATE watchers
-            SET status = 'stopped', notified = 1, next_check_at = NULL,
-                stopped_by = COALESCE(stopped_by, 'loop'),
-                stop_reason = COALESCE(stop_reason, ?),
-                stopped_at = COALESCE(stopped_at, ?)
-            WHERE status IN ('active', 'degraded', 'completed')
-              AND NOT (? AND worker_id IS NOT NULL)
-              AND (
-                  episode_id = ?
-                  OR EXISTS (
-                      SELECT 1 FROM graph_runs AS origin
-                      WHERE origin.operation_id = watchers.origin_operation_id
-                        AND origin.episode_id = ?
-                  )
-                  OR (? AND episode_id IN (
-                      SELECT child_episode_id FROM auto_research_child_experiments
-                      WHERE auto_research_episode_id = ?
-                  ))
-              )
-            """,
             (
-                reason,
-                stopped_at,
-                retain_child_observers,
-                episode_id,
-                episode_id,
-                episode.stop_requested_at is not None,
-                episode_id,
-            ),
-        ).rowcount
+                origin_turn_id IN (SELECT operation_id FROM graph_runs WHERE episode_id = ?)
+                OR (? AND (
+                    origin_turn_id IN (
+                        SELECT run.operation_id FROM graph_runs AS run
+                        JOIN auto_research_child_experiments AS route
+                          ON route.child_episode_id = run.episode_id
+                        WHERE route.auto_research_episode_id = ?
+                    )
+                    OR agent_id IN (
+                        SELECT state.chat_id FROM experiment_episode_state AS state
+                        JOIN auto_research_child_experiments AS route
+                          ON route.child_episode_id = state.episode_id
+                        WHERE route.auto_research_episode_id = ?
+                    )
+                ))
+            )
+            AND NOT (? AND origin_turn_id IN (
+                SELECT operation_id FROM auto_research_child_work_attempts
+            ))
+            """,
+            (episode_id, stopped, episode_id, episode_id, retain_child_observers),
+            by="rcp",
+            reason=reason,
+            connection=connection,
+            at=episode.stop_requested_at or episode.updated_at or now,
+        )
 
     def auto_research_is_quiescent(self, episode_id: str) -> bool:
         """Whether all mode tasks are settled enough for the generic ending manager."""

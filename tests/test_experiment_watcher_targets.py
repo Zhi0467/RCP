@@ -7,8 +7,7 @@ import pytest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.experiment_loop import experiment_watcher_output_name
-from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
+from rcp.storage import AgentTaskRecord, AppStore, WatcherCheckRecord, WatcherRecord
 
 _PROJECT_ID = "project"
 _CONTROL_NODE_ID = "exp/shared"
@@ -102,82 +101,32 @@ def _watcher(
     *,
     status: str = "completed",
 ) -> WatcherRecord:
-    episode_id = root.episode_id
-    assert episode_id is not None
-    continuation = WatcherContinuation(
-        provider="codex",
-        model="gpt-5",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["state"],
-        patch_kind="experiment_loop",
-        control_node_id=_CONTROL_NODE_ID,
-        control_revision=0,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=[],
-    )
     created_at = store.now()
     return WatcherRecord(
         watcher_id=watcher_id,
+        agent_id=str(root.request["chat_id"]),
         project_id=_PROJECT_ID,
-        origin_operation_id=root.operation_id,
-        origin_task_kind="node_chat",
-        chat_id=str(root.request["chat_id"]),
-        node_id=_CONTROL_NODE_ID,
-        episode_id=episode_id,
-        graph_target=root.graph_target,
-        machine_id=(episode.machine_id if (episode := store.experiment_episode(episode_id)) else "")
-        or "",
-        check_command="true",
-        log_path=f"/tmp/{watcher_id}.log",
-        cwd="/tmp",
-        continuation=continuation,
-        status=status,
+        purpose=watcher_id,
+        origin_turn_id=root.operation_id,
         created_at=created_at,
-        completed_at=created_at if status == "completed" else None,
-    )
-
-
-def _watcher_snapshot(store: AppStore, graph_target: GraphTargetRef) -> str:
-    with store.connection() as connection:
-        return store._experiment_watcher_snapshot_token(  # noqa: SLF001
-            connection,
-            _PROJECT_ID,
-            _CONTROL_NODE_ID,
-            graph_target,
-        )
-
-
-def test_same_node_watcher_snapshot_and_file_identity_are_target_local(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    main = GraphTargetRef()
-    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
-    main_root = _loop_task(store, "main-root", str(uuid.uuid4()), graph_target=main)
-    _branch_episode_id, branch_root = _create_episode(store, "branch-root", branch)
-
-    empty_main = _watcher_snapshot(store, main)
-    empty_branch = _watcher_snapshot(store, branch)
-    assert empty_main == empty_branch
-
-    store.create_watchers([_watcher(store, "main-watcher", main_root, status="active")])
-    main_only = _watcher_snapshot(store, main)
-    assert main_only != empty_main
-    assert _watcher_snapshot(store, branch) == empty_branch
-
-    store.create_watchers([_watcher(store, "branch-watcher", branch_root, status="active")])
-    assert _watcher_snapshot(store, main) == main_only
-    assert _watcher_snapshot(store, branch) != empty_branch
-    assert experiment_watcher_output_name(_CONTROL_NODE_ID, main) != experiment_watcher_output_name(
-        _CONTROL_NODE_ID,
-        branch,
+        checks=[
+            WatcherCheckRecord(
+                check_id=watcher_id,
+                watcher_id=watcher_id,
+                machine_id=BACKEND_MACHINE_ID,
+                definition="external",
+                check_command="true",
+                log_path=f"/tmp/{watcher_id}.log",
+                cwd="/tmp",
+                created_at=created_at,
+                completed_at=created_at if status == "completed" else None,
+            )
+        ],
     )
 
 
 @pytest.mark.parametrize("watcher_target_kind", ["main", "branch"])
-def test_newer_other_target_episode_cannot_claim_or_adopt_completed_watcher(
+def test_newer_other_target_episode_cannot_claim_another_agents_watcher(
     tmp_path,
     watcher_target_kind: str,
 ) -> None:
@@ -189,7 +138,7 @@ def test_newer_other_target_episode_cannot_claim_or_adopt_completed_watcher(
     old_episode_id, old_root = _create_episode(store, "old-root", watcher_target)
     store.complete_agent_task(old_root.operation_id, applied_revision=None, result={})
     pending = _watcher(store, "pending-old-target", old_root)
-    store.create_watchers([pending])
+    store.arm_watcher(pending)
 
     newer_episode_id, newer_root = _create_episode(store, "newer-root", newer_target)
     assert (
@@ -214,20 +163,6 @@ def test_newer_other_target_episode_cannot_claim_or_adopt_completed_watcher(
     assert exact_old.watcher_completion_pending is True
     assert exact_new.episode_id == newer_episode_id
     assert exact_new.watcher_completion_pending is False
-    group = store.completed_experiment_watcher_group(
-        _PROJECT_ID,
-        _CONTROL_NODE_ID,
-        graph_target=watcher_target,
-    )
-    assert group is not None and [item.watcher_id for item in group] == [pending.watcher_id]
-    assert (
-        store.completed_experiment_watcher_group(
-            _PROJECT_ID,
-            _CONTROL_NODE_ID,
-            graph_target=newer_target,
-        )
-        is None
-    )
 
     forged = _loop_task(
         store,
@@ -237,11 +172,11 @@ def test_newer_other_target_episode_cannot_claim_or_adopt_completed_watcher(
         watcher_ids=[pending.watcher_id],
         graph_target=newer_target,
     )
-    with pytest.raises(ValueError, match="different graph targets"):
+    with pytest.raises(ValueError, match="another agent"):
         store.create_experiment_watcher_invocation(forged, [pending.watcher_id])
 
     assert store.agent_task(forged.operation_id) is None
-    assert store.watcher(pending.watcher_id).notified is False
+    assert store.watcher(pending.watcher_id).wake_turn_id is None
     assert store.episode(newer_episode_id).invocations_used == 1
     assert store.agent_task(newer_root.operation_id).applied_revision is None
 
@@ -257,11 +192,11 @@ def test_exact_target_stop_mutates_only_selected_episode_and_target_watchers(
     selected_episode_id, selected_root = _create_episode(store, "branch-root", selected_target)
     store.complete_agent_task(selected_root.operation_id, applied_revision=None, result={})
     selected_watcher = _watcher(store, "branch-watcher", selected_root, status="active")
-    store.create_watchers([selected_watcher])
+    store.arm_watcher(selected_watcher)
 
     other_episode_id, other_root = _create_episode(store, "newer-main-root", other_target)
     other_watcher = _watcher(store, "main-watcher", other_root, status="active")
-    store.create_watchers([other_watcher])
+    store.arm_watcher(other_watcher)
     stopped = store.request_experiment_loop_stop(
         _PROJECT_ID,
         _CONTROL_NODE_ID,
@@ -276,8 +211,8 @@ def test_exact_target_stop_mutates_only_selected_episode_and_target_watchers(
     other = store.episode(other_episode_id)
     assert other is not None and other.status == "running"
     assert other.stop_requested_at is None and other.stop_settled_at is None
-    assert store.watcher(selected_watcher.watcher_id).status == "stopped"
-    assert store.watcher(other_watcher.watcher_id).status == "active"
+    assert store.watcher(selected_watcher.watcher_id).state == "cancelled"
+    assert store.watcher(other_watcher.watcher_id).open
     assert store.agent_task(other_root.operation_id).status == "queued"
 
 
@@ -347,9 +282,7 @@ def test_same_node_targets_claim_graph_repairs_independently(tmp_path, branch_fi
 
 
 @pytest.mark.parametrize("branch_first", [False, True])
-def test_same_node_targets_deliver_completed_watcher_groups_independently(
-    tmp_path, branch_first
-) -> None:
+def test_same_node_targets_deliver_ready_watchers_independently(tmp_path, branch_first) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     targets = [GraphTargetRef(), GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))]
     if branch_first:
@@ -376,9 +309,10 @@ def test_same_node_targets_deliver_completed_watcher_groups_independently(
             watcher_ids=[],
             context_baseline={"ontology": {"sha256": "abc"}},
         )
-        store.create_watchers([_watcher(store, f"watcher-{root.operation_id}", root)])
-    groups = store.completed_watcher_groups()
-    assert {group[0].graph_target.key for group in groups} == {target.key for target in targets}
+        store.arm_watcher(_watcher(store, f"watcher-{root.operation_id}", root))
+    assert {watcher.agent_id for watcher in store.ready_watchers()} == {
+        str(root.request["chat_id"]) for root in roots
+    }
     for root in roots:
         assert root.episode_id is not None
         watcher_id = f"watcher-{root.operation_id}"
@@ -406,8 +340,8 @@ def test_same_node_targets_deliver_completed_watcher_groups_independently(
         episode = store.episode(root.episode_id)
         assert episode is not None and episode.invocations_used == 2
         watcher = store.watcher(watcher_id)
-        assert watcher is not None and watcher.notification_operation_id == wake.operation_id
-    assert store.completed_watcher_groups() == []
+        assert watcher is not None and watcher.wake_turn_id == wake.operation_id
+    assert store.ready_watchers() == []
 
 
 def test_stop_requires_an_exact_identity(tmp_path) -> None:

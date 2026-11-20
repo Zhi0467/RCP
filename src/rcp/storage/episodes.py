@@ -48,6 +48,7 @@ from rcp.storage.models import (
 )
 from rcp.storage.rows import _agent_task_control_flags
 from rcp.storage.wake_inputs import queue_wake_input
+from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -2722,12 +2723,6 @@ class EpisodeStoreMixin(StoreMixinBase):
         return EpisodeReportAttemptRecord.model_validate(dict(row))
 
     @staticmethod
-    def _episode_report_record(row: sqlite3.Row) -> EpisodeReportRecord:
-        data = dict(row)
-        data.pop("display_title", None)
-        return EpisodeReportRecord.model_validate(data)
-
-    @staticmethod
     def _episode_wrapup_record(row: sqlite3.Row) -> EpisodeWrapupRecord:
         data = dict(row)
         data["partial"] = bool(data["partial"])
@@ -3138,10 +3133,10 @@ def _migrate_experiment_episodes(connection: sqlite3.Connection) -> None:
             for task in all_task_rows
         )
         live_watcher = connection.execute(
-            """
-            SELECT 1 FROM watchers
-            WHERE episode_id = ? AND notified = 0
-              AND status IN ('active', 'degraded', 'completed') LIMIT 1
+            f"""
+            SELECT 1 FROM watchers AS w
+            JOIN graph_runs AS origin ON origin.operation_id = w.origin_turn_id
+            WHERE origin.episode_id = ? AND {_OPEN} LIMIT 1
             """,
             (episode_id,),
         ).fetchone()

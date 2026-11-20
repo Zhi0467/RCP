@@ -11,6 +11,7 @@ from rcp.providers import classify_terminal_error
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
+from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     import sqlite3
@@ -27,7 +28,15 @@ if TYPE_CHECKING:
     from rcp.transport.run_stage import RemoteRunStage
 
 
-_LIVE_WATCHER = "status IN ('active', 'degraded')"
+_WATCHING = (
+    f"{_OPEN} AND EXISTS (SELECT 1 FROM watcher_checks AS c WHERE c.watcher_id = w.watcher_id "
+    "AND c.removed_at IS NULL AND c.completed_at IS NULL) "
+    "AND w.agent_id NOT IN (SELECT actor_operation_id FROM auto_research_invocations "
+    "WHERE role = 'worker')"
+)
+_WATCHER_ORIGIN = (
+    "FROM watchers AS w LEFT JOIN graph_runs AS origin ON origin.operation_id = w.origin_turn_id "
+)
 
 
 def thread_scope_id(store: AppStore, thread: AgentThreadRecord) -> str:
@@ -81,9 +90,9 @@ def thread_projections(
         watching = {
             (row["project_id"], row["chat_id"]): row["watching"]
             for row in connection.execute(
-                "SELECT project_id, chat_id, COUNT(*) AS watching FROM watchers "
-                f"WHERE chat_id IN ({ids}) AND episode_id IS NULL AND worker_id IS NULL "
-                f"AND {_LIVE_WATCHER} GROUP BY project_id, chat_id",
+                f"SELECT w.project_id, w.agent_id AS chat_id, COUNT(*) AS watching {_WATCHER_ORIGIN}"
+                f"WHERE w.agent_id IN ({ids}) AND origin.episode_id IS NULL "
+                f"AND {_WATCHING} GROUP BY w.project_id, w.agent_id",
                 thread_ids,
             )
         }
@@ -213,9 +222,9 @@ def episode_watching(store: AppStore, episode_ids: Sequence[str]) -> dict[str, i
         return {
             row["episode_id"]: row["watching"]
             for row in connection.execute(
-                "SELECT episode_id, COUNT(*) AS watching FROM watchers "
-                f"WHERE episode_id IN ({','.join('?' for _ in episode_ids)}) "
-                f"AND worker_id IS NULL AND {_LIVE_WATCHER} GROUP BY episode_id",
+                f"SELECT origin.episode_id, COUNT(*) AS watching {_WATCHER_ORIGIN}"
+                f"WHERE origin.episode_id IN ({','.join('?' for _ in episode_ids)}) "
+                f"AND {_WATCHING} GROUP BY origin.episode_id",
                 list(episode_ids),
             )
         }

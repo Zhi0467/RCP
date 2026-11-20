@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
     from rcp.background import BackgroundAgentTasks
     from rcp.storage import AppStore
-    from rcp.storage.models import AgentTaskRecord, ProviderLoginStateRecord, StoredWatcherRecord
+    from rcp.storage.models import AgentTaskRecord, ProviderLoginStateRecord, WatcherRecord
     from rcp.watchers import WatcherDelivery
 
 
@@ -86,7 +86,7 @@ class ParkedProviderWork:
     recoveries: list[tuple[str, str]] = field(default_factory=list)
     queued: list[str] = field(default_factory=list)
     retries: list[str] = field(default_factory=list)
-    watcher_groups: list[list[StoredWatcherRecord]] = field(default_factory=list)
+    watcher_batches: dict[str, list[WatcherRecord]] = field(default_factory=dict)
 
 
 def parked_provider_work(
@@ -121,17 +121,19 @@ def parked_provider_work(
         account = resolved_task_login(store, current)
         if account is not None:
             work[account].retries.append(current.operation_id)
-    for group in store.completed_watcher_groups():
-        first = group[0]
-        if first.project_id == project_id:
-            origin = store.agent_task(first.origin_operation_id)
-            account = (
-                resolved_task_login(store, origin, machine_id=first.machine_id)
-                if origin is not None
-                else None
+    for watcher in store.ready_watchers():
+        if watcher.project_id != project_id:
+            continue
+        origin = store.agent_task(watcher.origin_turn_id)
+        try:
+            account = resolved_task_login(store, origin) if origin is not None else None
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning(
+                "Provider login skipped a watcher wake with an unavailable execution target."
             )
-            if account is not None:
-                work[account].watcher_groups.append(group)
+            continue
+        if account is not None:
+            work[account].watcher_batches.setdefault(watcher.agent_id, []).append(watcher)
     return work
 
 
@@ -232,9 +234,15 @@ def resume_provider_account(
             work.recoveries = [pair for pair in work.recoveries if eligible(pair[1])]
             work.queued = [operation_id for operation_id in work.queued if eligible(operation_id)]
             work.retries = [operation_id for operation_id in work.retries if eligible(operation_id)]
-            work.watcher_groups = [
-                group for group in work.watcher_groups if eligible(group[0].origin_operation_id)
-            ]
+            work.watcher_batches = {
+                agent_id: eligible_batch
+                for agent_id, batch in work.watcher_batches.items()
+                if (
+                    eligible_batch := [
+                        watcher for watcher in batch if eligible(watcher.origin_turn_id)
+                    ]
+                )
+            }
             selected.append(work)
     for work in selected:
         recoveries = [
@@ -264,9 +272,9 @@ def resume_provider_account(
             if not store.agent_task_has_receipt(operation_id, "operation_dispatch_started"):
                 background.launch_admitted(operation_id)
                 checked += 1
-        for group in work.watcher_groups:
+        for agent_id, batch in work.watcher_batches.items():
             if watcher_delivery is not None:
-                watcher_delivery.deliver_watcher_group(group)
+                watcher_delivery.deliver_ready(agent_id, batch)
                 checked += 1
     return {"checked": checked}
 

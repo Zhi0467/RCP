@@ -25,7 +25,7 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 
@@ -659,30 +659,28 @@ def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path
             stage_root=str(stage),
         )
     )
-    continuation = WatcherContinuation(
-        provider="codex",
-        model="gpt-5",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["state"],
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="finished-work",
-                project_id=legacy_id,
-                origin_operation_id="work-before-adoption",
-                origin_task_kind="project_chat",
-                chat_id=chat_id,
-                check_command="true",
-                log_path="/tmp/finished-work.log",
-                cwd="/tmp",
-                continuation=continuation,
-                status="completed",
-                created_at="2026-08-01T00:00:00+00:00",
-                completed_at="2026-08-01T00:01:00+00:00",
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="finished-work",
+            agent_id=chat_id,
+            project_id=legacy_id,
+            purpose="work finishes",
+            origin_turn_id="work-before-adoption",
+            created_at="2026-08-01T00:00:00+00:00",
+            checks=[
+                WatcherCheckRecord(
+                    check_id="finished-work",
+                    watcher_id="finished-work",
+                    machine_id="laptop",
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/finished-work.log",
+                    cwd="/tmp",
+                    created_at="2026-08-01T00:00:00+00:00",
+                    completed_at="2026-08-01T00:01:00+00:00",
+                )
+            ],
+        )
     )
     store.migrate_project_identity(legacy_id, canonical_id, store.space_id)
     now = store.now()
@@ -697,7 +695,7 @@ def test_adopted_generic_watcher_wake_inherits_conversation_stage(tmp_path: Path
         status_message="Queued watcher wake.",
     )
 
-    queued = store.create_watcher_notification_task(wake, ["finished-work"])
+    queued = store.create_watcher_wake_task(wake, chat_id, ["finished-work"])
 
     assert queued is not None
     assert wake.stage_root is None

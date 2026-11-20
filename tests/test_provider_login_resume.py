@@ -427,7 +427,7 @@ def test_verify_matches_failed_tasks_by_frozen_stage_machine(
     assert len(store.episode_tasks(roots[1].episode_id)) == 1
 
 
-def test_verify_matches_watchers_by_frozen_machine_not_run_on(manifest, tmp_path, monkeypatch):
+def test_verify_wakes_each_agent_once_for_its_ready_watchers(manifest, tmp_path, monkeypatch):
     from .test_auto_research_delivery import _arm_completed_graph_condition
     from .test_provider_login_admission import _idle_root
 
@@ -436,21 +436,21 @@ def test_verify_matches_watchers_by_frozen_machine_not_run_on(manifest, tmp_path
     store.upsert_project(
         store.project("project").model_copy(update={"locator": str(manifest.path)})
     )
-    watcher = _arm_completed_graph_condition(store, episode, root)
-    stale = watcher.model_copy(
-        update={"continuation": watcher.continuation.model_copy(update={"run_on": "removed"})}
+    first = _arm_completed_graph_condition(store, episode, root, watcher_id="first")
+    second = _arm_completed_graph_condition(store, episode, root, watcher_id="second")
+    orphan = first.model_copy(
+        update={"watcher_id": "orphan", "agent_id": "other", "origin_turn_id": "missing"}
     )
-    elsewhere = watcher.model_copy(update={"watcher_id": "elsewhere", "machine_id": "other"})
-    monkeypatch.setattr(store, "completed_watcher_groups", lambda: [[stale], [elsewhere]])
+    monkeypatch.setattr(store, "ready_watchers", lambda: [first, second, orphan])
     client = _verify_client(store, background, monkeypatch)
     delivered = []
     monkeypatch.setattr(
         client.app.state.services.watcher_delivery,
-        "deliver_watcher_group",
-        lambda group: delivered.append(group),
+        "deliver_ready",
+        lambda agent_id, batch: delivered.append((agent_id, [item.watcher_id for item in batch])),
     )
     response = client.post(
         "/api/providers/codex/logins/verify", json={"machine_id": BACKEND_MACHINE_ID}
     )
     assert response.status_code == 200, response.text
-    assert [group[0].watcher_id for group in delivered] == [watcher.watcher_id]
+    assert delivered == [(episode.episode_id, ["first", "second"])]

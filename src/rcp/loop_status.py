@@ -1,6 +1,6 @@
 """Read-only loop identity and status shared by Runs, chats, and orchestrators.
 
-These projections confer no watcher-maintenance or episode-control authority.
+These projections confer no watcher or episode-control authority.
 Checkout identity comes from the immutable worktree binding or an actual launch
 receipt, never from a possibly moved current manifest.
 """

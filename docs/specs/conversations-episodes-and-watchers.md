@@ -888,9 +888,9 @@ Readiness separates graph and operational reasons and adds
 `isolated_start_reasons` for a prospective branch. Run waits while other-target
 loops load; failed/partial reads report unknown overlap but leave Run available.
 Every Experiment-node chat/wake receives this target's loop status, authorizer,
-Stop attribution, other-target loops and refreshed watcher-state file, without
-maintenance authority. Agents able to ask should clarify interference with other
-branches; children pause conflicting work and tell their orchestrator. Branch
+Stop attribution, other-target loops and refreshed watcher-state file. Agents
+able to ask should clarify interference with other branches; children pause
+conflicting work and tell their orchestrator. Branch
 turns also receive read-only main graph and shared-checkout/Git pointers.
 
 A completed, abandoned or superseded Experiment cannot start fresh until an
@@ -1145,34 +1145,19 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
-Conversation, Experiment, and Auto-research child Work watcher targets are
-separate exact resources, not a client-chosen mode field.
+A watcher belongs to its arming agent and contains one or more checks.
+RCP retains observations for each check, including checks that were later
+removed. Readiness and the displayed state derive from these observations.
 
-- A conversation `watch.json` wakes that same conversation. A later turn that
-  re-arms a check or graph condition the conversation already watches, live and
-  undelivered at the same target, reuses that watcher instead of adding another.
-- An Experiment watcher resource is keyed by project, exact graph target,
-  Experiment node, and compatible episode, and wakes that bounded episode.
-- A child Work watcher retains the parent episode and child route worker id and
-  wakes that same route and native session, never the Auto-research root.
+Ready watchers are delivered together to their agent. An ordinary wake uses
+the current conversation settings and the arming turn's human authority. An
+Experiment or Auto-research episode owns its admission, budget and Stop
+fence. Its watcher claim and wake task commit together. A child Work wake
+returns to the child route that armed it.
 
-A branch watcher can never wake a main task, and a main watcher can never spend
-a branch episode. Watcher selection, staging, atomic claim, task creation, and
-episode association retain the same target.
-
-An Experiment episode adopts unclaimed compatible observations from earlier
-episodes of that Experiment on the same exact graph target and execution
-machine.
-Completions may coalesce across those origin episodes, including on a branch.
-The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment execution policy and invocation budget; official packages
-follow the [current Settings selection](providers-and-containment.md#official-skills-and-workflows)
-on that new turn. Watcher origin is immutable provenance, including when another human
-created or maintained the observation.
-This adoption does not change ordinary conversation, Auto-research root, or
-child Work routing. Existing group readiness and atomic, once-only claims still
-apply. A child Experiment also retains its receiving parent's admission and
-shared Experiment allowance gates.
+A new Experiment Run gets a new agent. Continuing an existing Run with
+additional turns keeps its agent and watchers. Cancelling a watcher ends
+observation and leaves the underlying job running.
 
 Every watcher file has two all-or-none lists:
 
@@ -1260,15 +1245,6 @@ Stop fences continuation and leaves the action available for still-live work.
 Cancellation failures permit explicit retry. Transfer and offline restore
 remove executable actions; ordinary restart preserves them.
 
-A member's ordinary Work chat, the same turns that may start an Experiment, holds
-the `watcher` verb over the watchers its own Work turns armed for the chat: the
-chat id, project and Work continuation match. `watcher --list` shows the live
-ones. `watcher --stop <id>` retires one under the same storage rule as the
-human's stop, recorded as stopped by `agent`. `watcher --cancel <id>` is the
-member's Cancel, attributed to that member, under the same write admission. An
-Experiment loop's watcher wakes its episode, not the chat, so it is refused with
-`watcher_not_armed_here` like another chat's; it stops with that episode.
-
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
 
@@ -1331,27 +1307,6 @@ succeeded current child task. A repeated delivery cannot create a second wake. A
 undelivered watcher is waiting, which blocks the root's guarded finish. Episode
 Stop and the root's child `stop` verb retire the child's watchers within their
 admission fence. They never cancel the observed jobs.
-
-## Watcher maintenance authority
-
-An authorized node Work chat may maintain only its focused Experiment resource;
-authorized project Work may maintain live Experiment resources in that project
-and exact graph target. A historical Discuss turn may inspect staged state but cannot mutate it.
-Origin chat, provider, path, or maintenance machine grants no authority.
-
-Maintenance uses its own Work task/session, spends no Experiment invocation,
-does not create an attempt, and never replaces the episode's native-session
-binding. Stop, watcher claim, and competing maintenance have one atomic winner.
-
-A Work turn is not an episode turn, even on the episode's own session, so its
-maintenance cannot end the episode. A file that stops watchers and arms none is
-refused when, after its stops, the episode has no pending turn, no live watcher,
-and no undelivered completion. The refusal rolls back. Its diagnostic states
-that episode state and enters the ordinary maintenance correction round. The
-agent either drops a stop, so that watcher still wakes the loop, or arms an
-observer for replacement work it already launched. Completion and authority
-pauses remain the episode turn's Patch exits, recorded when a watcher wakes it,
-and a human **Stop loop** remains the other way to end the loop.
 
 ## Live artifact reconciliation
 

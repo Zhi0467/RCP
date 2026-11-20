@@ -1,49 +1,710 @@
+"""Watchers and their checks: the one writer of both tables.
+
+A watcher belongs to the agent that armed it and wakes that agent once, when
+every live check is done. Its state derives from its checks and is never
+stored. Removing a check keeps its row and history; cancelling a watcher
+never ends jobs.
+"""
+
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal
-
-from pydantic import (
-    TypeAdapter,
-)
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING, Literal, cast
 
 from rcp.core.graph_targets import graph_target_json
-from rcp.core.models import (
-    AuthorizedHuman,
-)
+from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import (
-    WATCHER_ERROR_MAX_CHARS,
-    WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
-)
-from rcp.storage.experiments import ExperimentStoreMixin
+from rcp.limits import WATCHER_ERROR_MAX_CHARS, WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import (
-    AgentTaskAdmissionConflict,
     AgentTaskRecord,
-    AutoResearchActorBusy,
-    AutoResearchRole,
-    ExperimentEpisodeRecord,
-    GraphWatcherRecord,
-    StoredWatcherRecord,
-    WatcherClaimConflict,
-    WatcherContinuation,
+    EpisodeRecord,
+    WatcherCanceller,
+    WatcherCheckRecord,
     WatcherRecord,
-    WatcherStatus,
-    WatcherStopRequest,
     _required_timestamp,
     watcher_next_check_at,
 )
-from rcp.storage.rows import RowMappingMixin
 
 if TYPE_CHECKING:
-    from rcp.watchers import WatcherBinding
+    from rcp.storage import AppStore
+
+GraphCheckResult = Literal["active", "completed", "removed"]
+
+_WATCHER_TABLES = (
+    """CREATE TABLE watchers (
+        watcher_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        origin_turn_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        cancelled_at TEXT,
+        cancelled_by TEXT CHECK(cancelled_by IN ('agent', 'rcp', 'human')),
+        cancel_reason TEXT,
+        wake_turn_id TEXT,
+        delivery_closed_at TEXT,
+        CHECK((cancelled_at IS NULL) = (cancelled_by IS NULL))
+    )""",
+    """CREATE TABLE watcher_checks (
+        check_id TEXT PRIMARY KEY,
+        watcher_id TEXT NOT NULL REFERENCES watchers(watcher_id),
+        machine_id TEXT NOT NULL DEFAULT '',
+        definition TEXT NOT NULL CHECK(definition IN ('external', 'graph')),
+        check_command TEXT,
+        log_path TEXT,
+        cwd TEXT,
+        graph_condition_json TEXT,
+        graph_target_json TEXT,
+        armed_head INTEGER,
+        created_at TEXT NOT NULL,
+        last_checked_at TEXT,
+        last_exit_code INTEGER,
+        last_error TEXT,
+        completed_at TEXT,
+        next_check_at TEXT,
+        consecutive_error_count INTEGER NOT NULL DEFAULT 0,
+        removed_at TEXT
+    )""",
+)
+_WATCHER_INDEXES = (
+    "CREATE INDEX watchers_agent ON watchers(agent_id, created_at)",
+    "CREATE INDEX watchers_project ON watchers(project_id, created_at)",
+    "CREATE INDEX watchers_origin ON watchers(origin_turn_id)",
+    "CREATE INDEX watcher_checks_watcher ON watcher_checks(watcher_id)",
+    "CREATE INDEX watcher_checks_open ON watcher_checks(definition, completed_at, removed_at)",
+)
+# An open watcher can still wake its agent.
+_OPEN = "w.cancelled_at IS NULL AND w.wake_turn_id IS NULL AND w.delivery_closed_at IS NULL"
+
+
+def _legacy_agent_id(connection: sqlite3.Connection, row: sqlite3.Row) -> str:
+    """Name the agent a pre-migration watcher wakes: an orchestrator is its chain root."""
+
+    if row["origin_task_kind"] != "auto_research" or row["episode_id"] is None:
+        return str(row["chat_id"])
+    role = connection.execute(
+        "SELECT role FROM auto_research_invocations WHERE operation_id = ?",
+        (row["origin_operation_id"],),
+    ).fetchone()
+    if role is None or role["role"] != "orchestrator":
+        return str(row["chat_id"])
+    episode_id = str(row["episode_id"])
+    seen: set[str] = set()
+    while episode_id not in seen:
+        seen.add(episode_id)
+        parent = connection.execute(
+            "SELECT continues_episode_id FROM episodes WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        if parent is None or parent["continues_episode_id"] is None:
+            return episode_id
+        episode_id = str(parent["continues_episode_id"])
+    return episode_id
+
+
+def _legacy_purpose(rows: list[sqlite3.Row]) -> str:
+    first = rows[0]
+    for value in (first["group_label"], first["purpose"]):
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())[:120]
+    if first["graph_condition_json"] is not None:
+        condition = json.loads(first["graph_condition_json"])
+        return f"Graph condition on {condition.get('node_id', 'a node')}"[:120]
+    return str(first["log_path"])[:120]
+
+
+_LEGACY_CANCELLER = {"human": "human", "loop": "rcp", "agent": "agent"}
+
+
+def migrate_watcher_checks(connection: sqlite3.Connection) -> None:
+    """Fold per-check watcher rows into one watcher with checks.
+
+    A group becomes one watcher. An agent-stopped member becomes a removed
+    check; any other stop cancels the whole watcher with its attribution. A
+    claimed wake keeps its turn; an acknowledged delivery is closed.
+    """
+
+    connection.execute("ALTER TABLE watchers RENAME TO _watchers_v1")
+    for statement in _WATCHER_TABLES:
+        connection.execute(statement)
+    rows = connection.execute(
+        "SELECT * FROM _watchers_v1 ORDER BY created_at, watcher_id"
+    ).fetchall()
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        groups.setdefault(str(row["group_id"] or row["watcher_id"]), []).append(row)
+    for watcher_id, members in groups.items():
+        first = members[0]
+        blocking = next(
+            (
+                member
+                for member in members
+                if member["status"] == "stopped" and member["stopped_by"] != "agent"
+            ),
+            None,
+        )
+        if blocking is None and all(member["status"] == "stopped" for member in members):
+            blocking = members[0]
+        cancelled_at = (
+            blocking["stopped_at"] or blocking["completed_at"] or blocking["created_at"]
+            if blocking is not None
+            else None
+        )
+        claimed = next(
+            (
+                member["notification_operation_id"]
+                for member in members
+                if member["notification_operation_id"]
+            ),
+            None,
+        )
+        closed = (
+            None
+            if blocking is not None
+            or claimed is not None
+            or not any(member["notified"] for member in members)
+            else max(
+                str(member["stopped_at"] or member["completed_at"] or member["created_at"])
+                for member in members
+            )
+        )
+        connection.execute(
+            """
+            INSERT INTO watchers (
+                watcher_id, agent_id, project_id, purpose, origin_turn_id, created_at,
+                cancelled_at, cancelled_by, cancel_reason, wake_turn_id, delivery_closed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                watcher_id,
+                _legacy_agent_id(connection, first),
+                first["project_id"],
+                _legacy_purpose(members),
+                first["origin_operation_id"],
+                first["created_at"],
+                cancelled_at,
+                _LEGACY_CANCELLER.get(str(blocking["stopped_by"]), "rcp")
+                if blocking is not None
+                else None,
+                blocking["stop_reason"] if blocking is not None else None,
+                claimed,
+                closed,
+            ),
+        )
+        for member in members:
+            graph = member["graph_condition_json"] is not None
+            removed_at = (
+                member["stopped_at"] or member["created_at"]
+                if blocking is None
+                and member["status"] == "stopped"
+                and member["stopped_by"] == "agent"
+                else None
+            )
+            connection.execute(
+                """
+                INSERT INTO watcher_checks (
+                    check_id, watcher_id, machine_id, definition, check_command, log_path,
+                    cwd, graph_condition_json, graph_target_json, armed_head, created_at,
+                    last_checked_at, last_exit_code, last_error, completed_at, next_check_at,
+                    consecutive_error_count, removed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    member["watcher_id"],
+                    watcher_id,
+                    member["machine_id"] or "",
+                    "graph" if graph else "external",
+                    None if graph else member["check_command"],
+                    None if graph else member["log_path"],
+                    None if graph else member["cwd"],
+                    member["graph_condition_json"],
+                    member["graph_target_json"] if graph else None,
+                    member["armed_revision"] if graph else None,
+                    member["created_at"],
+                    member["last_checked_at"],
+                    member["last_exit_code"],
+                    member["last_error"],
+                    member["completed_at"],
+                    None
+                    if member["status"] in {"completed", "stopped"}
+                    else member["next_check_at"],
+                    member["consecutive_error_count"],
+                    removed_at,
+                ),
+            )
+    connection.execute("DROP TABLE _watchers_v1")
+    for statement in _WATCHER_INDEXES:
+        connection.execute(statement)
+    from rcp.storage.resource_versions import install_watcher_versions
+
+    install_watcher_versions(connection)
+
+
+def _check_record(row: sqlite3.Row) -> WatcherCheckRecord:
+    data = dict(row)
+    condition = data.pop("graph_condition_json")
+    target = data.pop("graph_target_json")
+    data["condition"] = json.loads(condition) if condition is not None else None
+    data["graph_target"] = json.loads(target) if target is not None else None
+    return WatcherCheckRecord.model_validate(data)
+
+
+def _watcher_records(
+    connection: sqlite3.Connection, where: str, parameters: Iterable[object] = ()
+) -> list[WatcherRecord]:
+    rows = connection.execute(
+        f"SELECT w.* FROM watchers AS w WHERE {where} ORDER BY w.created_at, w.watcher_id",
+        tuple(parameters),
+    ).fetchall()
+    if not rows:
+        return []
+    ids = [str(row["watcher_id"]) for row in rows]
+    checks: dict[str, list[WatcherCheckRecord]] = {watcher_id: [] for watcher_id in ids}
+    for start in range(0, len(ids), 500):
+        chunk = ids[start : start + 500]
+        for row in connection.execute(
+            f"SELECT * FROM watcher_checks WHERE watcher_id IN ({','.join('?' * len(chunk))}) "
+            "ORDER BY created_at, check_id",
+            chunk,
+        ):
+            checks[str(row["watcher_id"])].append(_check_record(row))
+    return [
+        WatcherRecord.model_validate({**dict(row), "checks": checks[str(row["watcher_id"])]})
+        for row in rows
+    ]
 
 
 class WatcherStoreMixin(StoreMixinBase):
-    """External and graph watchers, their claims, and notification delivery."""
+    """Watchers, their checks, graph-boundary evaluation, and wake claims."""
+
+    # Reads
+
+    def watcher(self, watcher_id: str) -> WatcherRecord | None:
+        with self.connection() as connection:
+            found = _watcher_records(connection, "w.watcher_id = ?", (watcher_id,))
+        return found[0] if found else None
+
+    def agent_watchers(self, agent_id: str, *, open_only: bool = False) -> list[WatcherRecord]:
+        where = "w.agent_id = ?" + (f" AND {_OPEN}" if open_only else "")
+        with self.connection() as connection:
+            return _watcher_records(connection, where, (agent_id,))
+
+    def project_watchers(self, project_id: str) -> list[WatcherRecord]:
+        with self.connection() as connection:
+            return _watcher_records(connection, "w.project_id = ?", (project_id,))
+
+    def episode_watchers(
+        self, episode_id: str, *, newest: int | None = None
+    ) -> list[WatcherRecord]:
+        """Watchers armed by the episode's turns, newest first."""
+
+        with self.connection() as connection:
+            found = _watcher_records(
+                connection,
+                "w.origin_turn_id IN (SELECT operation_id FROM graph_runs WHERE episode_id = ?)",
+                (episode_id,),
+            )
+        found.reverse()
+        return found[:newest] if newest is not None else found
+
+    def ready_watchers(self) -> list[WatcherRecord]:
+        """Open watchers whose every live check is done or unobservable, oldest first."""
+
+        with self.connection() as connection:
+            candidates = _watcher_records(
+                connection,
+                f"{_OPEN} AND NOT EXISTS (SELECT 1 FROM watcher_checks AS c "
+                "WHERE c.watcher_id = w.watcher_id AND c.removed_at IS NULL "
+                "AND c.completed_at IS NULL AND c.consecutive_error_count < ?) "
+                "AND EXISTS (SELECT 1 FROM watcher_checks AS c "
+                "WHERE c.watcher_id = w.watcher_id AND c.removed_at IS NULL)",
+                (WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,),
+            )
+        return [watcher for watcher in candidates if watcher.ready]
+
+    def due_external_checks(self, *, as_of: str | None = None) -> list[WatcherCheckRecord]:
+        now = as_of or self.now()
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.* FROM watcher_checks AS c JOIN watchers AS w USING (watcher_id)
+                WHERE {_OPEN} AND c.definition = 'external' AND c.removed_at IS NULL
+                  AND c.completed_at IS NULL
+                  AND (c.next_check_at IS NULL OR c.next_check_at <= ?)
+                ORDER BY c.created_at, c.check_id
+                """,
+                (now,),
+            ).fetchall()
+        return [_check_record(row) for row in rows]
+
+    def open_graph_checks(self, project_id: str) -> list[WatcherCheckRecord]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT c.* FROM watcher_checks AS c JOIN watchers AS w USING (watcher_id)
+                WHERE w.project_id = ? AND {_OPEN} AND c.definition = 'graph'
+                  AND c.removed_at IS NULL AND c.completed_at IS NULL
+                ORDER BY c.created_at, c.check_id
+                """,
+                (project_id,),
+            ).fetchall()
+        return [_check_record(row) for row in rows]
+
+    def graph_watcher_project_ids(self) -> list[str]:
+        """Projects with an open watcher holding a graph check."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT DISTINCT w.project_id FROM watchers AS w
+                JOIN watcher_checks AS c USING (watcher_id)
+                WHERE {_OPEN} AND c.definition = 'graph' AND c.removed_at IS NULL
+                ORDER BY w.project_id
+                """
+            ).fetchall()
+        return [str(row["project_id"]) for row in rows]
+
+    # Arming, revising, cancelling
+
+    def arm_watcher(
+        self,
+        watcher: WatcherRecord,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> WatcherRecord:
+        """Insert one new watcher with its checks; an identical retry returns it."""
+
+        if not watcher.checks or not watcher.open:
+            raise ValueError("a new watcher needs at least one check and must be open")
+        if connection is None:
+            with self.connection() as owned:
+                owned.execute("BEGIN IMMEDIATE")
+                self._insert_watcher(owned, watcher)
+        else:
+            self._insert_watcher(connection, watcher)
+        stored = self.watcher(watcher.watcher_id) if connection is None else watcher
+        assert stored is not None
+        return stored
+
+    def arm_watchers(self, watchers: list[WatcherRecord]) -> None:
+        """Insert several new watchers in one transaction."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for watcher in watchers:
+                if not watcher.checks or not watcher.open:
+                    raise ValueError("a new watcher needs at least one check and must be open")
+                self._insert_watcher(connection, watcher)
+
+    def agent_episode(self, agent_id: str) -> EpisodeRecord | None:
+        """The newest episode this agent runs, if any.
+
+        An Experiment agent is its Run's chat; an Auto-research orchestrator is
+        its chain's root episode; a worker is its actor or child-Work route.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                WITH RECURSIVE chain(episode_id) AS (
+                    SELECT episode_id FROM episodes
+                    WHERE episode_id = :agent AND mode = 'auto_research'
+                    UNION
+                    SELECT child.episode_id FROM episodes AS child
+                    JOIN chain ON child.continues_episode_id = chain.episode_id
+                    WHERE child.mode = 'auto_research'
+                )
+                SELECT * FROM episodes WHERE episode_id IN (
+                    SELECT episode_id FROM experiment_episode_state WHERE chat_id = :agent
+                    UNION SELECT episode_id FROM auto_research_invocations
+                        WHERE actor_operation_id = :agent AND role = 'worker'
+                    UNION SELECT episode_id FROM auto_research_child_work
+                        WHERE worker_id = :agent
+                    UNION SELECT episode_id FROM chain
+                    UNION SELECT run.episode_id FROM watchers AS w
+                        JOIN graph_runs AS run ON run.operation_id = w.origin_turn_id
+                        WHERE w.agent_id = :agent AND run.episode_id IS NOT NULL
+                )
+                ORDER BY created_at DESC, episode_id DESC LIMIT 1
+                """,
+                {"agent": agent_id},
+            ).fetchone()
+        return cast("AppStore", self)._episode_record(row) if row is not None else None
+
+    def resolve_watcher_authorizer(self, watcher_ids: list[str]) -> AuthorizedHuman | None:
+        """The one human whose arming turns authorized these watchers.
+
+        Missing, legacy, or conflicting attribution cannot be proved; RCP closes
+        those watchers' delivery with a visible reason instead of retrying.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"""
+                SELECT run.operation_id, run.authorized_space_id, run.authorized_user_id,
+                       run.authorized_display_name
+                FROM watchers AS w LEFT JOIN graph_runs AS run
+                  ON run.operation_id = w.origin_turn_id
+                WHERE w.watcher_id IN ({",".join("?" * len(ids))}) AND {_OPEN}
+                """,
+                ids,
+            ).fetchall()
+            if len(rows) != len(ids):
+                return None
+            try:
+                found = [
+                    None if row["operation_id"] is None else self._authorized_human_snapshot(row)
+                    for row in rows
+                ]
+            except RuntimeError:
+                found = [None]
+            if found[0] is not None and all(item == found[0] for item in found):
+                return found[0]
+            self.close_watcher_delivery(
+                connection,
+                ids,
+                reason=(
+                    "RCP cannot prove which human authorized this wake. "
+                    "Send the agent a message to continue."
+                ),
+            )
+            return None
+
+    def _insert_watcher(self, connection: sqlite3.Connection, watcher: WatcherRecord) -> None:
+        existing = _watcher_records(connection, "w.watcher_id = ?", (watcher.watcher_id,))
+        if existing:
+            if _identity(existing[0]) != _identity(watcher):
+                raise ValueError("a watcher id was reused for a different watcher")
+            return
+        connection.execute(
+            """
+            INSERT INTO watchers (
+                watcher_id, agent_id, project_id, purpose, origin_turn_id, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                watcher.watcher_id,
+                watcher.agent_id,
+                watcher.project_id,
+                watcher.purpose,
+                watcher.origin_turn_id,
+                watcher.created_at,
+            ),
+        )
+        for check in watcher.checks:
+            self._insert_check(
+                connection, check.model_copy(update={"watcher_id": watcher.watcher_id})
+            )
+
+    def _insert_check(self, connection: sqlite3.Connection, check: WatcherCheckRecord) -> None:
+        if check.definition == "graph":
+            assert check.graph_target is not None
+            consumed = connection.execute(
+                "SELECT revision FROM graph_watcher_reconciliation "
+                "WHERE project_id = (SELECT project_id FROM watchers WHERE watcher_id = ?) "
+                "AND graph_target_key = ?",
+                (check.watcher_id, check.graph_target.key),
+            ).fetchone()
+            if (
+                check.armed_head is not None
+                and consumed is not None
+                and check.armed_head < int(consumed["revision"])
+            ):
+                raise ValueError("a graph check cannot arm behind the consumed target boundary")
+        next_check_at = check.next_check_at
+        if check.definition == "external" and check.completed_at is None and next_check_at is None:
+            next_check_at = watcher_next_check_at(
+                check.check_id,
+                check.last_checked_at or check.created_at,
+                check.consecutive_error_count,
+            )
+        connection.execute(
+            """
+            INSERT INTO watcher_checks (
+                check_id, watcher_id, machine_id, definition, check_command, log_path, cwd,
+                graph_condition_json, graph_target_json, armed_head, created_at,
+                last_checked_at, last_exit_code, last_error, completed_at, next_check_at,
+                consecutive_error_count, removed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                check.check_id,
+                check.watcher_id,
+                check.machine_id,
+                check.definition,
+                check.check_command,
+                check.log_path,
+                check.cwd,
+                check.condition.model_dump_json() if check.condition is not None else None,
+                graph_target_json(check.graph_target) if check.graph_target is not None else None,
+                check.armed_head,
+                check.created_at,
+                check.last_checked_at,
+                check.last_exit_code,
+                check.last_error,
+                check.completed_at,
+                next_check_at,
+                check.consecutive_error_count,
+            ),
+        )
+
+    def revise_watcher(
+        self,
+        connection: sqlite3.Connection,
+        watcher_id: str,
+        *,
+        purpose: str,
+        removed_check_ids: list[str],
+        new_checks: list[WatcherCheckRecord],
+        at: str,
+    ) -> None:
+        """Change an open watcher in place: matched checks keep their state."""
+
+        current = _watcher_records(connection, "w.watcher_id = ?", (watcher_id,))
+        if not current or not current[0].open:
+            raise ValueError(f"watcher {watcher_id} is no longer live and cannot be edited")
+        connection.execute(
+            "UPDATE watchers SET purpose = ? WHERE watcher_id = ?", (purpose, watcher_id)
+        )
+        for check_id in removed_check_ids:
+            connection.execute(
+                "UPDATE watcher_checks SET removed_at = ?, next_check_at = NULL "
+                "WHERE check_id = ? AND watcher_id = ? AND removed_at IS NULL",
+                (at, check_id, watcher_id),
+            )
+        for check in new_checks:
+            self._insert_check(connection, check.model_copy(update={"watcher_id": watcher_id}))
+
+    def cancel_watchers(
+        self,
+        watcher_ids: Iterable[str],
+        *,
+        by: WatcherCanceller,
+        reason: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids:
+            return 0
+        return self._cancel_where(
+            f"watcher_id IN ({','.join('?' * len(ids))})",
+            ids,
+            by=by,
+            reason=reason,
+            connection=connection,
+        )
+
+    def cancel_agent_watchers(
+        self,
+        agent_id: str,
+        *,
+        by: WatcherCanceller,
+        reason: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        return self._cancel_where(
+            "agent_id = ?", (agent_id,), by=by, reason=reason, connection=connection
+        )
+
+    def _cancel_where(
+        self,
+        where: str,
+        parameters: Iterable[object],
+        *,
+        by: WatcherCanceller,
+        reason: str | None,
+        connection: sqlite3.Connection | None,
+        at: str | None = None,
+    ) -> int:
+        if connection is None:
+            with self.connection() as owned:
+                owned.execute("BEGIN IMMEDIATE")
+                return self._cancel_where(
+                    where, parameters, by=by, reason=reason, connection=owned, at=at
+                )
+        timestamp = at or self.now()
+        return connection.execute(
+            f"""
+            UPDATE watchers SET cancelled_at = ?, cancelled_by = ?, cancel_reason = ?
+            WHERE ({where}) AND cancelled_at IS NULL AND wake_turn_id IS NULL
+              AND delivery_closed_at IS NULL
+            """,
+            (timestamp, by, reason, *parameters),
+        ).rowcount
+
+    def close_watcher_delivery(
+        self, connection: sqlite3.Connection, watcher_ids: list[str], *, reason: str
+    ) -> None:
+        """End delivery RCP cannot perform, keeping the reason on the watcher."""
+
+        placeholders = ",".join("?" * len(watcher_ids))
+        connection.execute(
+            f"""
+            UPDATE watchers SET delivery_closed_at = ?, cancel_reason = ?
+            WHERE watcher_id IN ({placeholders}) AND cancelled_at IS NULL
+              AND wake_turn_id IS NULL AND delivery_closed_at IS NULL
+            """,
+            (self.now(), reason[:WATCHER_ERROR_MAX_CHARS], *watcher_ids),
+        )
+
+    def claim_watcher_wake(
+        self,
+        connection: sqlite3.Connection,
+        agent_id: str,
+        watcher_ids: list[str],
+        wake_turn_id: str,
+    ) -> bool:
+        """Give ready watchers of one agent to one wake turn, inside its transaction.
+
+        False means the set changed under the caller (cancelled, claimed, or no
+        longer ready) and nothing was written.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids or len(ids) != len(watcher_ids):
+            raise ValueError("a watcher wake requires unique watcher ids")
+        found = _watcher_records(connection, f"w.watcher_id IN ({','.join('?' * len(ids))})", ids)
+        if len(found) != len(ids) or any(
+            watcher.agent_id != agent_id or not watcher.ready for watcher in found
+        ):
+            return False
+        cursor = connection.execute(
+            f"""
+            UPDATE watchers SET wake_turn_id = ?
+            WHERE watcher_id IN ({",".join("?" * len(ids))}) AND {_OPEN.replace("w.", "")}
+            """,
+            (wake_turn_id, *ids),
+        )
+        if cursor.rowcount != len(ids):
+            raise RuntimeError("watcher wake claim changed during its transaction")
+        return True
+
+    def create_watcher_wake_task(
+        self, record: AgentTaskRecord, agent_id: str, watcher_ids: list[str]
+    ) -> AgentTaskRecord | None:
+        """Queue an ordinary wake and claim its watchers in one transaction.
+
+        A live turn of the same agent wins its slot; nothing changes and the
+        watchers stay ready for a later pass.
+        """
+
+        if record.status != "queued" or record.request.get("watcher_ids") != watcher_ids:
+            raise ValueError("a watcher wake must be queued and name exactly its watchers")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if cast("AppStore", self)._has_active_chat_overlap(connection, record):
+                return None
+            cast("AppStore", self)._insert_agent_task(
+                connection, record, continuation_cause="watcher_wake"
+            )
+            if not self.claim_watcher_wake(connection, agent_id, watcher_ids, record.operation_id):
+                connection.rollback()
+                return None
+        return cast("AppStore", self).agent_task(record.operation_id)
 
     @staticmethod
     def detach_watchers_for_restore(
@@ -53,7 +714,7 @@ class WatcherStoreMixin(StoreMixinBase):
         confirmed_by: str,
         now: str,
     ) -> None:
-        """Stop every captured watcher that could still check or deliver."""
+        """Cancel every captured watcher that could still check or wake."""
 
         if not connection.in_transaction:
             raise ValueError("restored watcher detachment requires an active transaction")
@@ -62,492 +723,63 @@ class WatcherStoreMixin(StoreMixinBase):
         if not detail or not confirmer:
             raise ValueError("restored watcher detachment requires a reason and confirmer")
         _required_timestamp(now)
-        stop_reason = f"{detail} Restore confirmed by {confirmer}."[:2000]
-        # Restore is historical: even a previously stopped watcher must not
-        # retain an executable action against its former execution machine.
-        connection.execute("UPDATE watchers SET cancel_command = NULL")
         connection.execute(
             """
-            UPDATE watchers
-            SET status = 'stopped', notified = 1, next_check_at = NULL,
-                stopped_by = 'human', stop_reason = ?, stopped_at = COALESCE(stopped_at, ?)
-            WHERE status IN ('active', 'degraded')
-               OR (status = 'completed' AND notified = 0)
+            UPDATE watchers SET cancelled_at = ?, cancelled_by = 'human', cancel_reason = ?
+            WHERE cancelled_at IS NULL AND wake_turn_id IS NULL AND delivery_closed_at IS NULL
             """,
-            (stop_reason, now),
+            (now, f"{detail} Restore confirmed by {confirmer}."[:2000]),
         )
 
-    def create_watchers(self, records: list[StoredWatcherRecord]) -> list[StoredWatcherRecord]:
-        """Insert one validated watch list atomically."""
+    # Observation
 
-        records = [self._prepare_watcher_for_insert(record) for record in records]
-        self._validate_watch_list(records)
-        watcher_ids = [record.watcher_id for record in records]
+    def record_watcher_check(
+        self,
+        check_id: str,
+        *,
+        status: Literal["active", "completed", "degraded"],
+        exit_code: int | None,
+        error: str | None,
+        checked_at: str | None = None,
+    ) -> None:
+        if status == "degraded" and not error:
+            raise ValueError("a degraded check requires its error")
+        timestamp = checked_at or self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for record in records:
-                self._insert_watcher(connection, record)
-        stored: list[StoredWatcherRecord] = []
-        for watcher_id in watcher_ids:
-            record = self.watcher(watcher_id)
-            assert record is not None
-            stored.append(record)
-        return stored
-
-    def _validate_and_apply_agent_watcher_stops(
-        self,
-        connection: sqlite3.Connection,
-        binding: WatcherBinding,
-        stops: list[WatcherStopRequest],
-        episode_row: sqlite3.Row | None,
-        *,
-        apply: bool = True,
-    ) -> None:
-        """Retire only staged compatible observers under the arming transaction."""
-
-        continuation = binding.continuation
-        episode_id = continuation.control_episode_id
-        control_node_id = continuation.control_node_id
-        if episode_row is None or not episode_id or not control_node_id:
-            raise ValueError("An agent watcher stop requires the current Experiment episode.")
-        episode = self._experiment_episode_record(episode_row)
-        root_request = self._experiment_episode_root_request(
-            connection,
-            binding.project_id,
-            control_node_id,
-            episode_id,
-        )
-        if root_request is None:
-            raise ValueError("An agent watcher stop requires the bound Experiment root task.")
-        ids = [item.stop_watcher_id for item in stops]
-        placeholders = ",".join("?" for _ in ids)
-        rows = connection.execute(
-            f"SELECT * FROM watchers WHERE watcher_id IN ({placeholders})",
-            ids,
-        ).fetchall()
-        by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in rows}
-        for stop in stops:
-            record = by_id.get(stop.stop_watcher_id)
-            if record is None:
-                raise ValueError(
-                    f"Watcher stop names an unknown staged watcher: {stop.stop_watcher_id}"
-                )
-            if record.status == "stopped":
-                if (
-                    record.stopped_by == "agent"
-                    and record.stop_operation_id == binding.origin_operation_id
-                    and record.stop_reason == stop.reason
-                ):
-                    continue
-                # Stop loop retires this episode's watchers while its authorized turn is
-                # still running. That turn's retirement is already satisfied, so it
-                # finishes normally instead of correcting a race it cannot win.
-                if episode.stop_requested_at is not None:
-                    continue
-                raise ValueError(f"Watcher stop was already resolved: {stop.stop_watcher_id}")
-            if record.notified or record.notification_operation_id is not None:
-                raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
-            if (
-                record.project_id != binding.project_id
-                or record.node_id != control_node_id
-                or not self._experiment_watcher_matches_current(record, root_request, episode)
-            ):
-                raise ValueError(
-                    f"Watcher stop is outside the bound Experiment episode: {stop.stop_watcher_id}"
-                )
-            if record.status not in {"active", "degraded", "completed"}:
-                raise ValueError(f"Watcher cannot be retired: {stop.stop_watcher_id}")
-
-        if not apply:
-            return
-        timestamp = self.now()
-        for stop in stops:
-            record = by_id[stop.stop_watcher_id]
-            if record.status == "stopped":
-                continue
-            cursor = connection.execute(
-                """
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = 'agent', stop_reason = ?, stopped_at = ?, stop_operation_id = ?
-                WHERE watcher_id = ? AND status IN ('active', 'degraded', 'completed')
-                  AND notified = 0 AND notification_operation_id IS NULL
-                """,
-                (stop.reason, timestamp, binding.origin_operation_id, stop.stop_watcher_id),
-            )
-            if cursor.rowcount != 1:
-                raise WatcherClaimConflict("A watcher update changed during its retirement claim.")
-
-    def _stop_chat_watchers(
-        self, connection: sqlite3.Connection, project_id: str, chat_id: str
-    ) -> None:
-        """Thread closure retires its observations; reopening does not rearm them."""
-        connection.execute(
-            "UPDATE watchers SET status='stopped', notified=1, next_check_at=NULL, "
-            "stopped_by=COALESCE(stopped_by,'human'), stopped_at=COALESCE(stopped_at,?) "
-            "WHERE project_id=? AND chat_id=? "
-            "AND status IN ('active','degraded','completed') AND notification_operation_id IS NULL",
-            (self.now(), project_id, chat_id),
-        )
-
-    def _stop_watcher_for_loop(self, connection: sqlite3.Connection, watcher_id: str) -> None:
-        timestamp = self.now()
-        connection.execute(
-            """
-            UPDATE watchers
-            SET status = 'stopped', notified = 1, next_check_at = NULL,
-                stopped_by = COALESCE(stopped_by, 'loop'),
-                stopped_at = COALESCE(stopped_at, ?)
-            WHERE watcher_id = ?
-            """,
-            (timestamp, watcher_id),
-        )
-
-    @staticmethod
-    def _prepare_watcher_for_insert(record: StoredWatcherRecord) -> StoredWatcherRecord:
-        continuation = record.continuation
-        if continuation.patch_kind == "experiment_loop":
-            episode_id = record.episode_id or continuation.control_episode_id
-            if episode_id != record.episode_id:
-                record = record.model_copy(update={"episode_id": episode_id})
-        if isinstance(record, GraphWatcherRecord):
-            return record
-        if record.status not in {"active", "degraded"} or record.next_check_at is not None:
-            return record
-        error_count = record.consecutive_error_count
-        if record.status == "degraded" and error_count == 0:
-            error_count = 1
-        checked_at = record.last_checked_at or record.created_at
-        return record.model_copy(
-            update={
-                "consecutive_error_count": error_count,
-                "next_check_at": watcher_next_check_at(
-                    record.watcher_id,
-                    checked_at,
-                    error_count,
-                ),
-            }
-        )
-
-    @staticmethod
-    def _validate_watch_list(records: list[StoredWatcherRecord]) -> None:
-        if not records:
-            raise ValueError("a watch list must contain at least one watcher")
-        watcher_ids = [record.watcher_id for record in records]
-        if len(watcher_ids) != len(set(watcher_ids)):
-            raise ValueError("a watch list cannot repeat a watcher id")
-        bindings = {
-            (
-                record.project_id,
-                record.origin_operation_id,
-                record.origin_task_kind,
-                record.graph_target.key,
-                record.chat_id,
-                record.node_id,
-                record.episode_id,
-                record.worker_id,
-                record.machine_id,
-                record.continuation.model_dump_json(),
-            )
-            for record in records
-        }
-        if len(bindings) != 1:
-            raise ValueError("one watch list must share one RCP-bound continuation context")
-        continuation = records[0].continuation
-        if any(
-            isinstance(record, GraphWatcherRecord) and record.status == "degraded"
-            for record in records
-        ):
-            raise ValueError("a graph condition cannot have a degraded shell-check state")
-        if any(
-            isinstance(record, GraphWatcherRecord) and record.armed_revision is None
-            for record in records
-        ):
-            raise ValueError("a new graph condition requires its canonical arming revision")
-        grouped = [record for record in records if record.group_id is not None]
-        if any(isinstance(record, GraphWatcherRecord) for record in grouped):
-            raise ValueError("graph conditions cannot join an external watcher group")
-        if any((record.group_id is None) != (record.group_label is None) for record in records):
-            raise ValueError("watcher group identity and label must be stored together")
-        if grouped and continuation.patch_kind != "experiment_loop":
-            raise ValueError("only Experiment-loop watchers may join a watcher group")
-        if grouped:
-            group_counts: dict[str, int] = {}
-            for record in grouped:
-                assert record.group_id is not None
-                group_counts[record.group_id] = group_counts.get(record.group_id, 0) + 1
-            if any(count < 2 for count in group_counts.values()):
-                raise ValueError("an Experiment watcher group requires at least two observers")
-        if continuation.patch_kind != "experiment_loop":
-            return
-        if not all(
-            (
-                continuation.control_node_id,
-                continuation.control_episode_id,
-                continuation.control_invocation,
-                continuation.control_invocation_ceiling,
-            )
-        ):
-            raise ValueError("an experiment-loop watcher must preserve its control binding")
-        assert continuation.control_invocation is not None
-        assert continuation.control_invocation_ceiling is not None
-        if continuation.control_invocation > continuation.control_invocation_ceiling:
-            raise ValueError("an experiment-loop watcher invocation exceeds its pinned ceiling")
-        if any(record.episode_id != continuation.control_episode_id for record in records):
-            raise ValueError("an Experiment watcher must bind explicitly to its control episode")
-
-    @staticmethod
-    def _validate_idempotent_watcher(
-        existing: StoredWatcherRecord,
-        desired: StoredWatcherRecord,
-    ) -> None:
-        if type(existing) is not type(desired):
-            raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
-        immutable_fields = [
-            "project_id",
-            "origin_operation_id",
-            "origin_task_kind",
-            "graph_target",
-            "chat_id",
-            "node_id",
-            "episode_id",
-            "worker_id",
-            "machine_id",
-            "continuation",
-            "group_id",
-            "group_label",
-        ]
-        if isinstance(existing, WatcherRecord):
-            immutable_fields.extend(("check_command", "log_path", "cwd", "cancel_command"))
-        else:
-            immutable_fields.append("condition")
-        if any(getattr(existing, field) != getattr(desired, field) for field in immutable_fields):
-            raise ValueError("Experiment-loop watcher identity conflicts with stored state.")
-
-    @staticmethod
-    def _insert_watcher(connection: sqlite3.Connection, record: StoredWatcherRecord) -> None:
-        origin = connection.execute(
-            "SELECT project_id, episode_id, graph_target_json, kind FROM graph_runs "
-            "WHERE operation_id = ?",
-            (record.origin_operation_id,),
-        ).fetchone()
-        if origin is not None and origin["kind"] == "space_chat":
-            raise ValueError("Space threads cannot own watchers; hand off to a project thread")
-        if origin is None:
-            if record.graph_target.kind == "branch":
-                raise ValueError("a branch watcher requires its durable origin task")
-        elif (
-            origin["project_id"] != record.project_id
-            or (origin["episode_id"] is not None and origin["episode_id"] != record.episode_id)
-            or json.loads(origin["graph_target_json"])
-            != record.graph_target.model_dump(mode="json")
-        ):
-            raise ValueError("a watcher cannot change its origin task graph binding")
-        child_route = connection.execute(
-            """
-            SELECT route.worker_id, route.episode_id, route.stop_requested_at
-            FROM auto_research_child_work AS route
-            JOIN auto_research_child_work_attempts AS attempt
-              ON attempt.worker_id = route.worker_id
-            WHERE attempt.operation_id = ?
-            """,
-            (record.origin_operation_id,),
-        ).fetchone()
-        if (child_route is None and record.worker_id is not None) or (
-            child_route is not None
-            and (
-                record.worker_id != child_route["worker_id"]
-                or record.episode_id != child_route["episode_id"]
-            )
-        ):
-            raise ValueError("a child watcher must preserve its durable worker route")
-        if child_route is not None and child_route["stop_requested_at"] is not None:
-            record = record.model_copy(
-                update={
-                    "status": "stopped",
-                    "notified": True,
-                    "next_check_at": None,
-                    "stopped_by": "loop",
-                    "stopped_at": child_route["stop_requested_at"],
-                    "stop_reason": "Auto-research child Work stopped.",
-                }
-            )
-        stopped_episode = connection.execute(
-            """
-            SELECT COALESCE(
-                       episode.stop_requested_at,
-                       episode.ended_at,
-                       episode.updated_at
-                   ) AS stop_requested_at
-            FROM graph_runs AS run
-            JOIN episodes AS episode ON episode.episode_id = run.episode_id
-            WHERE run.operation_id = ?
-              AND (
-                  episode.stop_requested_at IS NOT NULL
-                  OR (episode.ending IS NOT NULL
-                      AND NOT (episode.ending = 'exhausted' AND ?))
-              )
-            """,
-            (record.origin_operation_id, record.worker_id is not None),
-        ).fetchone()
-        if stopped_episode is not None and record.status != "stopped":
-            record = record.model_copy(
-                update={
-                    "status": "stopped",
-                    "notified": True,
-                    "next_check_at": None,
-                    "stopped_by": "loop",
-                    "stopped_at": stopped_episode["stop_requested_at"],
-                }
-            )
-        if isinstance(record, GraphWatcherRecord):
-            consumed = connection.execute(
-                """
-                SELECT revision FROM graph_watcher_reconciliation
-                WHERE project_id = ? AND graph_target_key = ?
-                """,
-                (record.project_id, record.graph_target.key),
-            ).fetchone()
-            if (
-                record.status != "stopped"
-                and record.armed_revision is not None
-                and consumed is not None
-                and record.armed_revision < int(consumed["revision"])
-            ):
-                raise ValueError("a graph watcher cannot arm behind the consumed target boundary")
-            check_command = ""
-            log_path = ""
-            cwd = ""
-            graph_condition_json = record.condition.model_dump_json()
-            armed_revision = record.armed_revision
-        else:
-            check_command = record.check_command
-            log_path = record.log_path
-            cwd = record.cwd
-            graph_condition_json = None
-            armed_revision = None
-        connection.execute(
-            """
-            INSERT INTO watchers (
-                watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, node_id, episode_id, graph_target_json, machine_id,
-                check_command, log_path, cwd, graph_condition_json, armed_revision,
-                continuation_json, status, created_at, last_checked_at,
-                last_exit_code, last_error, completed_at, next_check_at,
-                consecutive_error_count, group_id, group_label, notified,
-                notification_operation_id, stopped_by, stop_reason, stopped_at,
-                stop_operation_id, worker_id, cancel_command, cancel_requested_by,
-                cancel_requested_at, cancel_error, purpose
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.watcher_id,
-                record.project_id,
-                record.origin_operation_id,
-                record.origin_task_kind,
-                record.chat_id,
-                record.node_id,
-                record.episode_id,
-                graph_target_json(record.graph_target),
-                record.machine_id,
-                check_command,
-                log_path,
-                cwd,
-                graph_condition_json,
-                armed_revision,
-                record.continuation.model_dump_json(),
-                record.status,
-                record.created_at,
-                record.last_checked_at,
-                record.last_exit_code,
-                record.last_error,
-                record.completed_at,
-                record.next_check_at,
-                record.consecutive_error_count,
-                record.group_id,
-                record.group_label,
-                int(record.notified),
-                record.notification_operation_id,
-                record.stopped_by,
-                record.stop_reason,
-                record.stopped_at,
-                record.stop_operation_id,
-                record.worker_id,
-                record.cancel_command if isinstance(record, WatcherRecord) else None,
-                record.cancel_requested_by if isinstance(record, WatcherRecord) else None,
-                record.cancel_requested_at if isinstance(record, WatcherRecord) else None,
-                record.cancel_error if isinstance(record, WatcherRecord) else None,
-                record.purpose if isinstance(record, WatcherRecord) else None,
-            ),
-        )
-
-    def watcher(self, watcher_id: str) -> StoredWatcherRecord | None:
-        with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
-            ).fetchone()
-        return self._watcher_record(row) if row is not None else None
-
-    def episode_watchers(
-        self, episode_id: str, *, newest: int | None = None
-    ) -> list[StoredWatcherRecord]:
-        """One episode's watchers, newest first; ``newest`` keeps only that many."""
-
-        with self.connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM watchers WHERE episode_id = ? ORDER BY created_at DESC, watcher_id"
-                + (" LIMIT ?" if newest is not None else ""),
-                (episode_id,) if newest is None else (episode_id, newest),
-            ).fetchall()
-        return [self._watcher_record(row) for row in rows]
-
-    def watchers(
-        self,
-        project_id: str,
-        *,
-        chat_id: str | None = None,
-    ) -> list[StoredWatcherRecord]:
-        query = "SELECT * FROM watchers WHERE project_id = ?"
-        parameters: list[object] = [project_id]
-        if chat_id is not None:
-            query += " AND chat_id = ?"
-            parameters.append(chat_id)
-        query += " ORDER BY created_at DESC, watcher_id"
-        with self.connection() as connection:
-            rows = connection.execute(query, parameters).fetchall()
-        return [self._watcher_record(row) for row in rows]
-
-    def active_graph_watchers(self, project_id: str) -> list[GraphWatcherRecord]:
-        """Return graph conditions awaiting a canonical revision boundary."""
-
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE project_id = ? AND graph_condition_json IS NOT NULL
-                  AND status = 'active' AND notified = 0
-                ORDER BY created_at, watcher_id
+                f"""
+                SELECT c.consecutive_error_count FROM watcher_checks AS c
+                JOIN watchers AS w USING (watcher_id)
+                WHERE c.check_id = ? AND c.definition = 'external' AND c.removed_at IS NULL
+                  AND c.completed_at IS NULL AND {_OPEN}
                 """,
-                (project_id,),
-            ).fetchall()
-        records = [self._watcher_record(row) for row in rows]
-        if any(not isinstance(record, GraphWatcherRecord) for record in records):
-            raise RuntimeError("External watcher row appeared in the graph-condition index.")
-        return records  # type: ignore[return-value]
-
-    def graph_watcher_project_ids(self) -> list[str]:
-        """Return projects needing startup graph evaluation or delivery retry."""
-
-        with self.connection() as connection:
-            rows = connection.execute(
+                (check_id,),
+            ).fetchone()
+            if row is None:
+                return
+            errors = int(row["consecutive_error_count"]) + 1 if status == "degraded" else 0
+            connection.execute(
                 """
-                SELECT DISTINCT project_id FROM watchers
-                WHERE graph_condition_json IS NOT NULL
-                  AND status IN ('active', 'completed') AND notified = 0
-                ORDER BY project_id
-                """
-            ).fetchall()
-        return [str(row["project_id"]) for row in rows]
+                UPDATE watcher_checks
+                SET last_checked_at = ?, last_exit_code = ?, last_error = ?,
+                    consecutive_error_count = ?, completed_at = ?, next_check_at = ?
+                WHERE check_id = ?
+                """,
+                (
+                    timestamp,
+                    exit_code,
+                    error[:WATCHER_ERROR_MAX_CHARS] if status == "degraded" and error else None,
+                    errors,
+                    timestamp if status == "completed" else None,
+                    None
+                    if status == "completed"
+                    else watcher_next_check_at(check_id, timestamp, errors),
+                    check_id,
+                ),
+            )
+
+    # Graph conditions
 
     def graph_watcher_reconciliation_head(
         self,
@@ -588,55 +820,47 @@ class WatcherStoreMixin(StoreMixinBase):
         armed_revision: int,
         evaluated_at: str | None = None,
     ) -> None:
-        """Give every migrated target-local graph watcher one current baseline."""
+        """Give every unbaselined graph check on one target its current boundary."""
 
         timestamp = evaluated_at or self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE project_id = ? AND graph_condition_json IS NOT NULL
-                  AND armed_revision IS NULL AND status = 'active' AND notified = 0
-                ORDER BY created_at, watcher_id
-                """,
-                (project_id,),
-            ).fetchall()
-            ids = [
-                record.watcher_id
-                for row in rows
-                if isinstance((record := self._watcher_record(row)), GraphWatcherRecord)
-                and record.graph_target == graph_target
-            ]
-            if not ids:
-                return
-            placeholders = ",".join("?" for _ in ids)
-            connection.execute(
-                f"""
-                UPDATE watchers SET armed_revision = ?, last_checked_at = ?
-                WHERE watcher_id IN ({placeholders})
-                  AND graph_condition_json IS NOT NULL AND armed_revision IS NULL
-                  AND status = 'active' AND notified = 0
-                """,
-                (armed_revision, timestamp, *ids),
-            )
+            for check in self._open_graph_checks_in(connection, project_id):
+                if check.graph_target == graph_target and check.armed_head is None:
+                    connection.execute(
+                        "UPDATE watcher_checks SET armed_head = ?, last_checked_at = ? "
+                        "WHERE check_id = ? AND armed_head IS NULL",
+                        (armed_revision, timestamp, check.check_id),
+                    )
+
+    @staticmethod
+    def _open_graph_checks_in(
+        connection: sqlite3.Connection, project_id: str
+    ) -> list[WatcherCheckRecord]:
+        rows = connection.execute(
+            f"""
+            SELECT c.* FROM watcher_checks AS c JOIN watchers AS w USING (watcher_id)
+            WHERE w.project_id = ? AND {_OPEN} AND c.definition = 'graph'
+              AND c.removed_at IS NULL AND c.completed_at IS NULL
+            ORDER BY c.created_at, c.check_id
+            """,
+            (project_id,),
+        ).fetchall()
+        return [_check_record(row) for row in rows]
 
     def consume_graph_watcher_boundary(
         self,
         project_id: str,
         head: GraphHeadRef,
         *,
-        evaluate: Callable[[GraphWatcherRecord], Literal["active", "completed", "removed"]],
+        evaluate: Callable[[WatcherCheckRecord], GraphCheckResult],
         evaluated_at: str | None = None,
     ) -> bool:
         """Evaluate and checkpoint one accepted target boundary atomically.
 
         The target-local head is the durable receipt. A repeated or older
-        boundary performs no watcher writes; a same-revision identity mismatch
-        fails closed. ``transition_id=None`` is the stable identity for an
-        accepted historical Patch that predates transition traces. If evaluation
-        raises, SQLite rolls back both watcher changes and the head so a restart
-        can retry the exact boundary.
+        boundary writes nothing; a same-revision identity mismatch fails closed.
+        If evaluation raises, both the check changes and the head roll back.
         """
 
         timestamp = evaluated_at or self.now()
@@ -671,33 +895,14 @@ class WatcherStoreMixin(StoreMixinBase):
                             "Accepted graph boundary changed identity at a consumed revision."
                         )
                     return False
-
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE project_id = ? AND graph_condition_json IS NOT NULL
-                  AND status = 'active' AND notified = 0
-                ORDER BY created_at, watcher_id
-                """,
-                (project_id,),
-            ).fetchall()
-            for row in rows:
-                record = self._watcher_record(row)
-                if not isinstance(record, GraphWatcherRecord):
-                    raise RuntimeError(
-                        "External watcher row appeared in the graph-condition index."
-                    )
-                if record.graph_target != head.target or record.armed_revision is None:
+            for check in self._open_graph_checks_in(connection, project_id):
+                if (
+                    check.graph_target != head.target
+                    or check.armed_head is None
+                    or check.armed_head >= head.revision
+                ):
                     continue
-                if record.armed_revision >= head.revision:
-                    continue
-                self._record_graph_watcher_result_locked(
-                    connection,
-                    record,
-                    result=evaluate(record),
-                    evaluated_at=timestamp,
-                )
-
+                self._record_graph_result(connection, check, evaluate(check), timestamp)
             if cursor_row is None:
                 connection.execute(
                     """
@@ -716,7 +921,6 @@ class WatcherStoreMixin(StoreMixinBase):
                     ),
                 )
             else:
-                previous_revision = int(cursor_row["revision"])
                 updated = connection.execute(
                     """
                     UPDATE graph_watcher_reconciliation
@@ -730,1083 +934,96 @@ class WatcherStoreMixin(StoreMixinBase):
                         timestamp,
                         project_id,
                         head.target.key,
-                        previous_revision,
+                        int(cursor_row["revision"]),
                     ),
                 )
                 if updated.rowcount != 1:
                     raise RuntimeError("Graph-watcher reconciliation head changed concurrently.")
         return True
 
-    @staticmethod
-    def _record_graph_watcher_result_locked(
-        connection: sqlite3.Connection,
-        current: GraphWatcherRecord,
-        *,
-        result: Literal["active", "completed", "removed"],
-        evaluated_at: str,
-    ) -> None:
-        if result == "active":
-            connection.execute(
-                """
-                UPDATE watchers SET last_checked_at = ?
-                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                  AND status = 'active' AND notified = 0
-                """,
-                (evaluated_at, current.watcher_id),
-            )
-        elif result == "completed":
-            connection.execute(
-                """
-                UPDATE watchers
-                SET status = 'completed', last_checked_at = ?, completed_at = ?,
-                    next_check_at = NULL
-                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                  AND status = 'active' AND notified = 0
-                """,
-                (evaluated_at, evaluated_at, current.watcher_id),
-            )
-        else:
-            connection.execute(
-                """
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, last_checked_at = ?,
-                    next_check_at = NULL, stopped_by = 'loop',
-                    stop_reason = 'Graph condition target was removed.', stopped_at = ?
-                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                  AND status = 'active' AND notified = 0
-                """,
-                (evaluated_at, evaluated_at, current.watcher_id),
-            )
-
-    def record_graph_watcher_result(
+    def record_graph_check_result(
         self,
-        watcher_id: str,
+        check_id: str,
         *,
-        result: Literal["active", "completed", "removed"],
+        result: GraphCheckResult,
         evaluated_at: str | None = None,
-    ) -> GraphWatcherRecord:
-        """Persist one canonical graph evaluation without entering the shell poller."""
+    ) -> None:
+        """Persist one graph evaluation outside a consumed boundary."""
 
         timestamp = evaluated_at or self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
+                "SELECT * FROM watcher_checks WHERE check_id = ?", (check_id,)
             ).fetchone()
             if row is None:
-                raise KeyError(watcher_id)
-            current = self._watcher_record(row)
-            if not isinstance(current, GraphWatcherRecord):
-                raise ValueError("an external watcher cannot receive a graph evaluation")
-            if current.status != "active" or current.notified:
-                return current
-            self._record_graph_watcher_result_locked(
-                connection,
-                current,
-                result=result,
-                evaluated_at=timestamp,
-            )
-        stored = self.watcher(watcher_id)
-        assert isinstance(stored, GraphWatcherRecord)
-        return stored
+                raise KeyError(check_id)
+            self._record_graph_result(connection, _check_record(row), result, timestamp)
 
-    def initialize_graph_watcher_baseline(
+    @classmethod
+    def _record_graph_result(
+        cls,
+        connection: sqlite3.Connection,
+        check: WatcherCheckRecord,
+        result: GraphCheckResult,
+        at: str,
+    ) -> None:
+        if result == "removed":
+            # A condition whose node is gone can never complete; RCP cancels it.
+            connection.execute(
+                "UPDATE watcher_checks SET last_checked_at = ? WHERE check_id = ?",
+                (at, check.check_id),
+            )
+            connection.execute(
+                """
+                UPDATE watchers SET cancelled_at = ?, cancelled_by = 'rcp',
+                    cancel_reason = 'Graph condition target was removed.'
+                WHERE watcher_id = ? AND cancelled_at IS NULL AND wake_turn_id IS NULL
+                  AND delivery_closed_at IS NULL
+                """,
+                (at, check.watcher_id),
+            )
+            return
+        connection.execute(
+            """
+            UPDATE watcher_checks SET last_checked_at = ?,
+                completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END
+            WHERE check_id = ? AND removed_at IS NULL AND completed_at IS NULL
+            """,
+            (at, result == "completed", at, check.check_id),
+        )
+
+    def initialize_graph_check_baseline(
         self,
-        watcher_id: str,
+        check_id: str,
         *,
         armed_revision: int,
         evaluated_at: str | None = None,
-    ) -> GraphWatcherRecord:
-        """Fail closed while giving one pre-baseline graph row a durable boundary."""
-
-        timestamp = evaluated_at or self.now()
-        with self.connection() as connection:
-            connection.execute(
-                """
-                UPDATE watchers SET armed_revision = ?, last_checked_at = ?
-                WHERE watcher_id = ? AND graph_condition_json IS NOT NULL
-                  AND armed_revision IS NULL AND status = 'active' AND notified = 0
-                """,
-                (armed_revision, timestamp, watcher_id),
-            )
-        stored = self.watcher(watcher_id)
-        assert isinstance(stored, GraphWatcherRecord)
-        return stored
-
-    def pollable_watchers(self, *, as_of: str | None = None) -> list[WatcherRecord]:
-        """Return only active/degraded observers whose durable due time arrived."""
-
-        now = as_of or self.now()
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM watchers
-                WHERE status IN ('active', 'degraded')
-                  AND notified = 0
-                  AND graph_condition_json IS NULL
-                  AND (next_check_at IS NULL OR next_check_at <= ?)
-                ORDER BY created_at, watcher_id
-                """,
-                (now,),
-            ).fetchall()
-            records = [self._watcher_record(row) for row in rows]
-            if any(not isinstance(record, WatcherRecord) for record in records):
-                raise RuntimeError("Graph conditions cannot enter the external watcher poller.")
-            stopping_contexts: dict[
-                tuple[str, str, str],
-                tuple[dict[str, object], ExperimentEpisodeRecord] | None,
-            ] = {}
-            return [
-                record
-                for record in records
-                if not self._watcher_suppressed_by_current_stop(
-                    connection,
-                    record,
-                    stopping_contexts,
-                )
-            ]
-
-    def stop_watchers(
-        self,
-        project_id: str,
-        watcher_ids: list[str],
-        *,
-        observing_only: bool = False,
-        stopped_by: Literal["human", "agent"] = "human",
-    ) -> list[StoredWatcherRecord]:
-        """Release watchers the human, or their thread's agent, has given up on.
-
-        A stopped watcher leaves the polling set and can never wake a turn. RCP
-        never decides this for itself — a check that cannot answer is reported,
-        not interpreted.
-
-        ``observing_only`` refuses a watcher that already completed, one that
-        belongs to a group, and an Experiment loop's graph condition. A caller that offered this action against a lone live
-        observation evaluates both rules here, inside the write transaction, so an
-        observation that completes between the offer and the request fails instead
-        of retiring a delivery nobody claimed. Callers acknowledging a pending
-        completion or retiring a whole group on purpose leave it false.
-        """
-
-        ids = list(dict.fromkeys(watcher_ids))
-        if not ids:
-            raise ValueError("stopping watchers requires at least one watcher id")
-        placeholders = ",".join("?" for _ in ids)
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                f"""
-                SELECT watcher_id, project_id, status, notified, notification_operation_id,
-                       group_id, graph_condition_json,
-                       json_extract(continuation_json, '$.patch_kind') AS patch_kind
-                FROM watchers
-                WHERE watcher_id IN ({placeholders})
-                """,
-                ids,
-            ).fetchall()
-            if {str(row["watcher_id"]) for row in rows} != set(ids) or {
-                str(row["project_id"]) for row in rows
-            } != {project_id}:
-                missing = next(
-                    (
-                        watcher_id
-                        for watcher_id in ids
-                        if watcher_id not in {str(row["watcher_id"]) for row in rows}
-                    ),
-                    ids[0],
-                )
-                raise KeyError(missing)
-            if any(row["notification_operation_id"] is not None for row in rows):
-                raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
-            invalid = [
-                str(row["watcher_id"])
-                for row in rows
-                if row["status"] not in {"active", "degraded", "completed", "stopped"}
-                or (bool(row["notified"]) and row["status"] != "stopped")
-            ]
-            if invalid:
-                raise ValueError(f"Watchers cannot be stopped: {', '.join(sorted(invalid))}.")
-            if observing_only:
-                # Retiring an Experiment loop's observer answers an observed job
-                # that outlives its episode and would otherwise leave Cancel as the
-                # only move. A canonical-graph condition among them runs no job and
-                # has no Cancel, so retiring it only discards a future graph
-                # delivery. An ordinary conversation's condition is unaffected: its
-                # own Stop watching predates this rule.
-                conditions = [
-                    str(row["watcher_id"])
-                    for row in rows
-                    if row["graph_condition_json"] is not None
-                    and row["patch_kind"] == "experiment_loop"
-                ]
-                if conditions:
-                    raise ValueError(
-                        "An Experiment graph condition is not an observed job to retire: "
-                        f"{', '.join(sorted(conditions))}."
-                    )
-                # A group wakes once when every member settles, and a human-stopped
-                # member makes the whole group undeliverable, so retiring one member
-                # strands its siblings' results.
-                grouped = [str(row["watcher_id"]) for row in rows if row["group_id"] is not None]
-                if grouped:
-                    raise ValueError(
-                        "A grouped watcher is retired with its group, not on its own: "
-                        f"{', '.join(sorted(grouped))}."
-                    )
-                settled = [str(row["watcher_id"]) for row in rows if row["status"] == "completed"]
-                if settled:
-                    raise WatcherClaimConflict(
-                        "A watcher finished before it could be stopped: "
-                        f"{', '.join(sorted(settled))}."
-                    )
-            # The same restriction guards the write, so a status that changes
-            # under this transaction cannot slip past the check above.
-            stoppable = (
-                "'active', 'degraded'" if observing_only else "'active', 'degraded', 'completed'"
-            )
-            connection.execute(
-                f"""
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = COALESCE(stopped_by, ?),
-                    stopped_at = COALESCE(stopped_at, ?)
-                WHERE project_id = ? AND watcher_id IN ({placeholders})
-                  AND status IN ({stoppable})
-                  AND notification_operation_id IS NULL
-                """,
-                (stopped_by, self.now(), project_id, *ids),
-            )
-        stopped: list[StoredWatcherRecord] = []
-        for watcher_id in ids:
-            record = self.watcher(watcher_id)
-            assert record is not None
-            stopped.append(record)
-        return stopped
-
-    @classmethod
-    def _watcher_suppressed_by_current_stop(
-        cls,
-        connection: sqlite3.Connection,
-        record: StoredWatcherRecord,
-        cache: dict[
-            tuple[str, str, str],
-            tuple[dict[str, object], ExperimentEpisodeRecord] | None,
-        ],
-    ) -> bool:
-        continuation = record.continuation
-        control_node_id = continuation.control_node_id
-        if continuation.patch_kind != "experiment_loop" or not control_node_id:
-            return False
-        key = (record.project_id, control_node_id, record.graph_target.key)
-        if key not in cache:
-            root = connection.execute(
-                """
-                SELECT request_json FROM graph_runs
-                WHERE project_id = ? AND parent_operation_id IS NULL
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(request_json, '$.control_node_id') = ?
-                  AND json_extract(graph_target_json, '$.kind') = ?
-                  AND json_extract(graph_target_json, '$.branch_id') IS ?
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT 1
-                """,
-                (
-                    record.project_id,
-                    control_node_id,
-                    record.graph_target.kind,
-                    record.graph_target.branch_id,
-                ),
-            ).fetchone()
-            context = None
-            if root is not None:
-                root_request = json.loads(root["request_json"])
-                episode_id = root_request.get("control_episode_id")
-                episode_row = (
-                    cls._experiment_episode_row(connection, episode_id)
-                    if isinstance(episode_id, str)
-                    else None
-                )
-                if episode_row is not None and episode_row["stop_requested_at"] is not None:
-                    context = (root_request, cls._experiment_episode_record(episode_row))
-            cache[key] = context
-        context = cache[key]
-        return context is not None and cls._experiment_watcher_matches_current(
-            record,
-            context[0],
-            context[1],
-        )
-
-    def claim_watcher_cancel(
-        self, project_id: str, watcher_id: str, requested_by: str
-    ) -> WatcherRecord | None:
-        """Claim one human action before execution, including across concurrent requests."""
-
-        if not requested_by.strip():
-            raise ValueError("Cancellation requires an attributed human.")
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM watchers WHERE watcher_id = ? AND project_id = ?",
-                (watcher_id, project_id),
-            ).fetchone()
-            if row is None:
-                raise KeyError(watcher_id)
-            current = self._watcher_record(row)
-            if not isinstance(current, WatcherRecord) or not current.cancel_command:
-                raise ValueError("This watcher has no cancel command.")
-            if not current.can_cancel:
-                return None
-            connection.execute(
-                "UPDATE watchers SET cancel_requested_by = ?, cancel_requested_at = ?, "
-                "cancel_error = NULL WHERE watcher_id = ?",
-                (requested_by, self.now(), watcher_id),
-            )
-            return self._watcher_record(
-                connection.execute(
-                    "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
-                ).fetchone()
-            )
-
-    def record_watcher_cancel_result(
-        self, watcher_id: str, *, requested_at: str | None, error: str | None
-    ) -> WatcherRecord:
-        """An action receipt never changes observation or continuation state."""
-
-        with self.connection() as connection:
-            connection.execute(
-                "UPDATE watchers SET cancel_error = ? "
-                "WHERE watcher_id = ? AND cancel_requested_at IS ?",
-                (error, watcher_id, requested_at),
-            )
-        stored = self.watcher(watcher_id)
-        if not isinstance(stored, WatcherRecord):
-            raise KeyError(watcher_id)
-        return stored
-
-    def complete_watcher_cancel(
-        self, watcher_id: str, *, requested_at: str, cancel_performed: bool = True
-    ) -> WatcherRecord:
-        """Settle the helper observation, attributing only a performed cancellation."""
-        timestamp = self.now()
-        with self.connection() as connection:
-            connection.execute(
-                """
-                UPDATE watchers
-                SET status = CASE WHEN status = 'stopped' THEN 'stopped' ELSE 'completed' END,
-                    completed_at = COALESCE(completed_at, ?), last_checked_at = ?,
-                    last_exit_code = 0, last_error = NULL, next_check_at = NULL,
-                    consecutive_error_count = 0, cancel_error = NULL,
-                    cancel_requested_by = CASE WHEN ? THEN cancel_requested_by ELSE NULL END,
-                    cancel_requested_at = CASE WHEN ? THEN cancel_requested_at ELSE NULL END
-                WHERE watcher_id = ? AND cancel_requested_at = ?
-                  AND status IN ('active', 'degraded', 'stopped', 'completed')
-                """,
-                (
-                    timestamp,
-                    timestamp,
-                    cancel_performed,
-                    cancel_performed,
-                    watcher_id,
-                    requested_at,
-                ),
-            )
-        stored = self.watcher(watcher_id)
-        if not isinstance(stored, WatcherRecord):
-            raise KeyError(watcher_id)
-        return stored
-
-    def record_watcher_check(
-        self,
-        watcher_id: str,
-        *,
-        status: WatcherStatus,
-        exit_code: int | None,
-        error: str | None,
-        checked_at: str | None = None,
-        include_stopped: bool = False,
-    ) -> WatcherRecord:
-        if status == "degraded" and not error:
-            raise ValueError("a degraded watcher requires a check error")
-        if status != "degraded":
-            error = None
-        timestamp = checked_at or self.now()
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
-            ).fetchone()
-            if row is None:
-                raise KeyError(watcher_id)
-            current = self._watcher_record(row)
-            if not isinstance(current, WatcherRecord):
-                raise ValueError("a graph condition cannot receive a shell check result")
-            stopped = include_stopped and current.status == "stopped"
-            if not stopped and (current.status not in {"active", "degraded"} or current.notified):
-                return current
-            consecutive_error_count = (
-                current.consecutive_error_count + 1 if status == "degraded" else 0
-            )
-            next_check_at = (
-                watcher_next_check_at(watcher_id, timestamp, consecutive_error_count)
-                if not stopped and status in {"active", "degraded"}
-                else None
-            )
-            cursor = connection.execute(
-                """
-                UPDATE watchers
-                SET status = ?, last_checked_at = ?, last_exit_code = ?, last_error = ?,
-                    next_check_at = ?, consecutive_error_count = ?,
-                    completed_at = CASE
-                        WHEN ? = 'completed' THEN COALESCE(completed_at, ?)
-                        ELSE completed_at
-                    END
-                WHERE watcher_id = ? AND status = ? AND notified = ?
-                """,
-                (
-                    "stopped" if stopped else status,
-                    timestamp,
-                    exit_code,
-                    error,
-                    next_check_at,
-                    consecutive_error_count,
-                    status,
-                    timestamp,
-                    watcher_id,
-                    current.status,
-                    int(current.notified),
-                ),
-            )
-            if cursor.rowcount == 0:
-                return self._watcher_record(
-                    connection.execute(
-                        "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
-                    ).fetchone()
-                )
-        stored = self.watcher(watcher_id)
-        assert isinstance(stored, WatcherRecord)
-        return stored
-
-    def completed_watcher_groups(self) -> list[list[StoredWatcherRecord]]:
-        """Return compatible ready delivery units without splitting Experiment groups."""
-
-        with self.connection() as connection:
-            units = self._ready_watcher_delivery_units(connection)
-        groups: dict[tuple[object, ...], list[StoredWatcherRecord]] = {}
-        for unit in units:
-            first = unit[0]
-            key = (
-                (
-                    first.project_id,
-                    first.graph_target.key,
-                    "experiment_loop",
-                    first.node_id,
-                    first.machine_id,
-                    self._automatic_watcher_delivery_policy(first.continuation),
-                )
-                if first.continuation.patch_kind == "experiment_loop"
-                else (
-                    first.project_id,
-                    first.graph_target.key,
-                    first.origin_task_kind,
-                    first.chat_id,
-                    first.node_id,
-                    first.machine_id,
-                    self._automatic_watcher_delivery_policy(first.continuation),
-                )
-            )
-            groups.setdefault(key, []).extend(unit)
-        return list(groups.values())
-
-    def _ready_watcher_delivery_units(
-        self,
-        connection: sqlite3.Connection,
-    ) -> list[list[StoredWatcherRecord]]:
-        """Build indivisible ready groups plus ordinary completed observer units.
-
-        A lone observer that stays unobservable as long as a group member may
-        wakes its agent with the error, as a group does, rather than holding its
-        work shut forever.
-        """
-
-        ungrouped_rows = connection.execute(
-            """
-            SELECT * FROM watchers
-            WHERE group_id IS NULL AND notified = 0
-              AND (
-                status = 'completed'
-                OR (status = 'degraded' AND consecutive_error_count >= ?)
-              )
-            ORDER BY completed_at, created_at, watcher_id
-            """,
-            (WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,),
-        ).fetchall()
-        grouped_rows = connection.execute(
-            """
-            SELECT * FROM watchers
-            WHERE group_id IN (
-                SELECT DISTINCT group_id FROM watchers
-                WHERE group_id IS NOT NULL AND notified = 0
-                  AND (
-                    status = 'completed'
-                    OR (
-                        status = 'degraded'
-                        AND consecutive_error_count >= ?
-                    )
-                  )
-            )
-            ORDER BY completed_at, created_at, watcher_id
-            """,
-            (WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,),
-        ).fetchall()
-        ungrouped = [self._watcher_record(row) for row in ungrouped_rows]
-        grouped_records = [self._watcher_record(row) for row in grouped_rows]
-        stopping_contexts: dict[
-            tuple[str, str, str], tuple[dict[str, object], ExperimentEpisodeRecord] | None
-        ] = {}
-        units: list[list[StoredWatcherRecord]] = []
-        grouped: dict[str, list[StoredWatcherRecord]] = {}
-        for record in ungrouped:
-            if self._watcher_suppressed_by_current_stop(connection, record, stopping_contexts):
-                continue
-            units.append([record])
-        for record in grouped_records:
-            assert record.group_id is not None
-            grouped.setdefault(record.group_id, []).append(record)
-        for members in grouped.values():
-            ready = self._ready_group_members(members)
-            if not ready:
-                continue
-            if self._watcher_suppressed_by_current_stop(connection, ready[0], stopping_contexts):
-                continue
-            units.append(ready)
-        return units
-
-    def create_watcher_notification_task(
-        self,
-        record: AgentTaskRecord,
-        watcher_ids: list[str],
-        *,
-        continuation_cause: str = "fresh",
-        lifecycle_notice_ids: list[str] | None = None,
-        message_ids: list[str] | None = None,
-        expected_pending_notice_ids: list[str] | None = None,
-        expected_pending_message_ids: list[str] | None = None,
-    ) -> AgentTaskRecord | None:
-        """Queue a wake and mark its completed watchers notified in one transaction.
-
-        A live task in the same conversation wins its slot. In that case no
-        watcher row changes, and the completed group can be retried later.
-        """
-
-        claims_root_inputs = lifecycle_notice_ids is not None or message_ids is not None
-        if claims_root_inputs and (
-            record.kind != "auto_research" or record.request.get("role") != "orchestrator"
-        ):
-            raise ValueError("only a root Auto-research watcher wake may claim lifecycle and mail")
-        ids = list(dict.fromkeys(watcher_ids))
-        if not ids or len(ids) != len(watcher_ids):
-            raise ValueError("a watcher notification requires unique watcher ids")
-        if record.status != "queued":
-            raise ValueError("a watcher notification task must be queued")
-        requested_ids = record.request.get("watcher_ids")
-        if (
-            not isinstance(requested_ids, list)
-            or any(not isinstance(item, str) for item in requested_ids)
-            or len(requested_ids) != len(set(requested_ids))
-            or set(requested_ids) != set(ids)
-        ):
-            raise ValueError("the watcher notification request must name exactly its watcher ids")
-        placeholders = ",".join("?" for _ in ids)
-        try:
-            with self.connection() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                rows = connection.execute(
-                    f"""
-                    SELECT *
-                    FROM watchers
-                    WHERE watcher_id IN ({placeholders})
-                        AND status IN ('completed', 'degraded') AND notified = 0
-                    """,
-                    ids,
-                ).fetchall()
-                if {str(row["watcher_id"]) for row in rows} != set(ids):
-                    raise ValueError("watchers are missing, unready, or already notified")
-                watchers = [self._watcher_record(row) for row in rows]
-                if any(item.worker_id is not None for item in watchers):
-                    raise ValueError("child Work watchers require their route's paid wake")
-                self._validate_watcher_notification_members(connection, watchers)
-                if {item.project_id for item in watchers} != {record.project_id}:
-                    raise ValueError("watchers and notification task belong to different projects")
-                bindings = {
-                    (
-                        (
-                            "experiment_loop",
-                            item.node_id,
-                            item.graph_target.key,
-                            item.machine_id,
-                            self._automatic_watcher_delivery_policy(item.continuation),
-                        )
-                        if item.continuation.patch_kind == "experiment_loop"
-                        else (
-                            item.origin_task_kind,
-                            item.chat_id,
-                            item.node_id,
-                            item.machine_id,
-                            self._watcher_delivery_policy(item.continuation),
-                        )
-                    )
-                    for item in watchers
-                }
-                if len(bindings) != 1:
-                    raise ValueError("one notification cannot merge incompatible watch lists")
-                self._validate_watcher_notification_scope(connection, record, watchers)
-                if self._experiment_wake_is_stopped(connection, record):
-                    return None
-                if self._auto_research_wake_is_stopped(connection, record):
-                    return None
-                if self._has_active_chat_overlap(connection, record):
-                    raise AgentTaskAdmissionConflict("a turn in this chat is running")
-                if record.kind == "auto_research":
-                    episode_id = record.request.get("episode_id")
-                    if not isinstance(episode_id, str) or episode_id != record.episode_id:
-                        raise ValueError("Auto-research watcher wake has invalid episode lineage")
-                    episode = self._load_auto_research_episode(connection, episode_id)
-                    role = TypeAdapter(AutoResearchRole).validate_python(record.request.get("role"))
-                    self._insert_paid_auto_research_task(
-                        connection,
-                        episode,
-                        record,
-                        role,
-                        continuation_cause=continuation_cause,
-                    )
-                    # Paid admission above proves the orchestrator is the episode root.
-                    if claims_root_inputs and not self._claim_auto_research_root_inputs(
-                        connection,
-                        episode,
-                        record,
-                        lifecycle_notice_ids=list(lifecycle_notice_ids or []),
-                        message_ids=list(message_ids or []),
-                        expected_pending_notice_ids=expected_pending_notice_ids,
-                        expected_pending_message_ids=expected_pending_message_ids,
-                    ):
-                        connection.rollback()
-                        return None
-                else:
-                    self._insert_agent_task(
-                        connection,
-                        record,
-                        continuation_cause=continuation_cause,
-                    )
-                cursor = connection.execute(
-                    f"""
-                    UPDATE watchers
-                    SET notified = 1, notification_operation_id = ?,
-                        last_error = CASE WHEN status = 'completed' THEN NULL
-                                          ELSE last_error END
-                    WHERE watcher_id IN ({placeholders})
-                        AND status IN ('completed', 'degraded') AND notified = 0
-                    """,
-                    [record.operation_id, *ids],
-                )
-                if cursor.rowcount != len(ids):
-                    raise RuntimeError("watcher notification changed during its transaction")
-        except AutoResearchActorBusy:
-            return None
-        except AgentTaskAdmissionConflict as exc:
-            if record.kind in {"node_chat", "project_chat"} and record.episode_id is None:
-                self.record_watcher_wake_error(ids, f"Wake deferred: {exc}")
-            return None
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("Could not queue the watcher notification task.") from exc
-        stored = self.agent_task(record.operation_id)
-        assert stored is not None
-        return stored
-
-    def record_watcher_wake_error(self, watcher_ids: list[str], reason: str) -> None:
-        """Show why a completed watcher has not woken its chat yet.
-
-        The reason replaces itself rather than accumulating, is written only when
-        it changed, and is cleared when the wake is admitted. A degraded watcher
-        keeps its own check error.
-        """
-
-        reason = reason[:WATCHER_ERROR_MAX_CHARS]
-        placeholders = ",".join("?" for _ in watcher_ids)
-        with self.connection() as connection:
-            connection.execute(
-                f"""
-                UPDATE watchers SET last_error = ?
-                WHERE watcher_id IN ({placeholders})
-                  AND status = 'completed' AND notified = 0
-                  AND last_error IS NOT ?
-                """,
-                [reason, *watcher_ids, reason],
-            )
-
-    @staticmethod
-    def _auto_research_wake_is_stopped(
-        connection: sqlite3.Connection,
-        record: AgentTaskRecord,
-    ) -> bool:
-        """Refuse a watcher wake after its Auto-research ending fence wins."""
-
-        if record.episode_id is None:
-            return False
-        row = connection.execute(
-            "SELECT status, ending, stop_requested_at FROM episodes "
-            "WHERE episode_id = ? AND mode = 'auto_research'",
-            (record.episode_id,),
-        ).fetchone()
-        return row is not None and (
-            row["status"] != "running"
-            or row["ending"] is not None
-            or row["stop_requested_at"] is not None
-        )
-
-    def resolve_watcher_delivery_authorizer(
-        self,
-        watcher_ids: list[str],
-    ) -> tuple[AuthorizedHuman | None, str | None]:
-        """Resolve one automatic wake's human authority or terminalize it.
-
-        Legacy tasks have no trustworthy authorizer to inherit. Missing tasks,
-        partial snapshots, and a delivery unit assembled from different humans
-        are equally non-recoverable without a new human action. Consume those
-        completed watchers with a durable, UI-visible diagnostic so the poller
-        cannot retry an unauthorized wake forever.
-
-        The resolution and terminal transition share the same write transaction
-        as the watcher readiness check. A concurrent notification claim or Stop
-        therefore wins cleanly instead of producing both a wake and a terminal
-        diagnostic.
-        """
-
-        ids = list(dict.fromkeys(watcher_ids))
-        if not ids or len(ids) != len(watcher_ids):
-            raise ValueError("watcher delivery authorization requires unique watcher ids")
-        placeholders = ",".join("?" for _ in ids)
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute(
-                f"""
-                SELECT * FROM watchers
-                WHERE watcher_id IN ({placeholders})
-                  AND status IN ('completed', 'degraded')
-                  AND notified = 0 AND notification_operation_id IS NULL
-                """,
-                ids,
-            ).fetchall()
-            if {str(row["watcher_id"]) for row in rows} != set(ids):
-                return None, None
-            watchers = [self._watcher_record(row) for row in rows]
-            self._validate_watcher_notification_members(connection, watchers)
-
-            origin_ids = sorted({item.origin_operation_id for item in watchers})
-            origin_placeholders = ",".join("?" for _ in origin_ids)
-            origin_rows = connection.execute(
-                f"""
-                SELECT operation_id, authorized_space_id, authorized_user_id,
-                       authorized_display_name
-                FROM graph_runs
-                WHERE operation_id IN ({origin_placeholders})
-                """,
-                origin_ids,
-            ).fetchall()
-            by_operation = {str(row["operation_id"]): row for row in origin_rows}
-
-            diagnostic: str | None = None
-            if set(by_operation) != set(origin_ids):
-                diagnostic = (
-                    "Automatic watcher wake stopped: an originating task is unavailable, so "
-                    "RCP cannot prove who authorized the wake. Start a new Work turn or "
-                    "Experiment Run to continue."
-                )
-            else:
-                try:
-                    authorizers = [
-                        self._authorized_human_snapshot(by_operation[operation_id])
-                        for operation_id in origin_ids
-                    ]
-                except RuntimeError:
-                    diagnostic = (
-                        "Automatic watcher wake stopped: an originating task has an invalid "
-                        "human authorizer snapshot, so RCP cannot prove who authorized the "
-                        "wake. Start a new Work turn or Experiment Run to continue."
-                    )
-                else:
-                    if any(authorizer is None for authorizer in authorizers):
-                        diagnostic = (
-                            "Automatic watcher wake stopped: an originating task predates "
-                            "durable human attribution, so RCP cannot prove who authorized the "
-                            "wake. Start a new Work turn or Experiment Run to continue."
-                        )
-                    else:
-                        authorized_by = authorizers[0]
-                        assert authorized_by is not None
-                        if any(authorizer != authorized_by for authorizer in authorizers[1:]):
-                            diagnostic = (
-                                "Automatic watcher wake stopped: the originating tasks have "
-                                "different human authorizers, so RCP cannot choose one. Start a "
-                                "new Work turn or Experiment Run to continue."
-                            )
-                        else:
-                            return authorized_by, None
-
-            assert diagnostic is not None
-            timestamp = self.now()
-            cursor = connection.execute(
-                f"""
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = 'loop', stop_reason = ?,
-                    stopped_at = COALESCE(stopped_at, ?)
-                WHERE watcher_id IN ({placeholders})
-                  AND status IN ('completed', 'degraded')
-                  AND notified = 0 AND notification_operation_id IS NULL
-                """,
-                [diagnostic, timestamp, *ids],
-            )
-            if cursor.rowcount != len(ids):
-                raise RuntimeError(
-                    "Watcher delivery changed during its authorizer terminalization."
-                )
-
-            episode_ids = sorted(
-                {
-                    item.episode_id
-                    for item in watchers
-                    if item.continuation.patch_kind == "experiment_loop"
-                    and item.episode_id is not None
-                }
-            )
-            if episode_ids:
-                episode_placeholders = ",".join("?" for _ in episode_ids)
-                connection.execute(
-                    f"""
-                    UPDATE experiment_episode_state
-                    SET session_diagnostic = ?, updated_at = ?
-                    WHERE episode_id IN ({episode_placeholders})
-                    """,
-                    [diagnostic, timestamp, *episode_ids],
-                )
-            return None, diagnostic
-
-    @staticmethod
-    def _watcher_delivery_policy(continuation: WatcherContinuation) -> str:
-        policy = continuation.model_dump(mode="json")
-        if continuation.patch_kind == "work":
-            policy.pop("invoked_workflow_ids", None)
-            policy.pop("invoked_skill_ids", None)
-        if continuation.patch_kind == "experiment_loop" and policy.get("model") is None:
-            # Legacy Experiment watchers stored the provider-default sentinel
-            # as null. It is immutable policy, equivalent to today's "".
-            policy["model"] = ""
-        for field in (
-            "control_revision",
-            "control_episode_id",
-            "control_invocation",
-            "control_invocation_ceiling",
-            "control_decision_bundle",
-            "control_completion_criteria",
-        ):
-            policy.pop(field, None)
-        return json.dumps(policy, sort_keys=True, separators=(",", ":"))
-
-    @staticmethod
-    def _automatic_watcher_delivery_policy(continuation: WatcherContinuation) -> str:
-        """Policy key for poller-driven delivery; generic Work stays unchanged."""
-
-        if continuation.patch_kind != "experiment_loop":
-            return WatcherStoreMixin._watcher_delivery_policy(continuation)
-        policy = {
-            "browser_requested": continuation.browser_requested,
-            "patch_kind": continuation.patch_kind,
-            "control_node_id": continuation.control_node_id,
-        }
-        return json.dumps(policy, sort_keys=True, separators=(",", ":"))
-
-    @staticmethod
-    def _validate_watcher_notification_scope(
-        connection: sqlite3.Connection,
-        record: AgentTaskRecord,
-        watchers: list[StoredWatcherRecord],
     ) -> None:
-        first = watchers[0]
-        continuation = first.continuation
-        request = record.request
-        trigger = request.get("trigger")
-        if {item.graph_target.key for item in watchers} != {record.graph_target.key}:
-            raise ValueError("watcher notification changed its exact graph target")
-        auto_research_wake = first.origin_task_kind == "auto_research"
-        if auto_research_wake:
-            if record.kind != "auto_research" or record.episode_id is None:
-                raise ValueError("Auto-research watchers must wake an Auto-research task")
-            actor_bindings: set[tuple[object, ...]] = set()
-            for watcher in watchers:
-                origin = connection.execute(
-                    """
-                    SELECT run.episode_id, run.request_json, invocation.role
-                    FROM graph_runs AS run
-                    JOIN auto_research_invocations AS invocation
-                      ON invocation.operation_id = run.operation_id
-                    WHERE run.operation_id = ?
-                    """,
-                    (watcher.origin_operation_id,),
-                ).fetchone()
-                if origin is None or origin["episode_id"] != record.episode_id:
-                    raise ValueError("Auto-research watcher origin is outside the episode")
-                origin_request = json.loads(origin["request_json"])
-                actor_bindings.add(
-                    (
-                        origin["episode_id"],
-                        origin_request.get("actor_operation_id") or watcher.origin_operation_id,
-                        origin["role"],
-                        origin_request.get("control_node_id"),
-                    )
-                )
-            if len(actor_bindings) != 1:
-                raise ValueError("one Auto-research watcher wake cannot merge different actors")
-            expected_episode, expected_actor, expected_role, expected_seat = next(
-                iter(actor_bindings)
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE watcher_checks SET armed_head = ?, last_checked_at = ? "
+                "WHERE check_id = ? AND armed_head IS NULL",
+                (armed_revision, evaluated_at or self.now(), check_id),
             )
-            actual = (
-                request.get("episode_id"),
-                request.get("actor_operation_id"),
-                request.get("role"),
-                request.get("control_node_id"),
-            )
-            if actual != (expected_episode, expected_actor, expected_role, expected_seat):
-                raise ValueError("Auto-research watcher wake changed its actor binding")
-        elif continuation.patch_kind == "experiment_loop":
-            if (
-                record.kind != "node_chat"
-                or request.get("node_id") != continuation.control_node_id
-                or not isinstance(request.get("chat_id"), str)
-                or not request.get("chat_id")
-            ):
-                raise ValueError("Experiment watcher delivery must target its node chat.")
-        else:
-            expected = {
-                "kind": first.origin_task_kind,
-                "chat_id": first.chat_id,
-                "node_id": first.node_id,
-            }
-            actual = {
-                "kind": record.kind,
-                "chat_id": request.get("chat_id"),
-                "node_id": request.get("node_id"),
-            }
-            mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
-            if mismatched:
-                raise ValueError(
-                    f"watcher notification changed immutable scope: {', '.join(mismatched)}"
-                )
-        request_continuation_data = {
-            key: request[key] for key in WatcherContinuation.model_fields if key in request
-        }
-        for nullable_list in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
-            if request_continuation_data.get(nullable_list) is None:
-                request_continuation_data[nullable_list] = []
-        request_continuation = WatcherContinuation.model_validate(request_continuation_data)
-        if auto_research_wake or continuation.patch_kind == "work":
-            if request_continuation.invoked_workflow_ids or request_continuation.invoked_skill_ids:
-                raise ValueError("Watcher wake cannot inherit package invocations")
-            continuation = continuation.model_copy(
-                update={"invoked_workflow_ids": [], "invoked_skill_ids": []}
-            )
-        request_policy = (
-            WatcherStoreMixin._automatic_watcher_delivery_policy(request_continuation)
-            if continuation.patch_kind == "experiment_loop"
-            else WatcherStoreMixin._watcher_delivery_policy(request_continuation)
-        )
-        continuation_policy = (
-            WatcherStoreMixin._automatic_watcher_delivery_policy(continuation)
-            if continuation.patch_kind == "experiment_loop"
-            else WatcherStoreMixin._watcher_delivery_policy(continuation)
-        )
-        if request_policy != continuation_policy:
-            raise ValueError("watcher notification changed its immutable delivery policy")
-        if auto_research_wake:
-            graph_wake = all(isinstance(item, GraphWatcherRecord) for item in watchers)
-            expected_cause = "graph_condition" if graph_wake else "watcher"
-            if request.get("wake_cause") != expected_cause:
-                raise ValueError("Auto-research watcher wake changed its continuation cause")
-            return
-        if continuation.patch_kind != "experiment_loop":
-            expected_trigger = "orchestrator" if first.worker_id is not None else "watcher"
-            if trigger != expected_trigger:
-                raise ValueError("a watcher notification must preserve its owner trigger")
-            return
-        invocation = request.get("control_invocation")
-        episode_id = request.get("control_episode_id")
-        if trigger == "watcher":
-            if not isinstance(invocation, int) or invocation < 2:
-                raise ValueError("an automatic Experiment wake must continue an existing episode")
-            newest = connection.execute(
-                """
-                SELECT kind, request_json, graph_target_json FROM graph_runs
-                WHERE project_id = ? AND parent_operation_id IS NULL
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                  AND json_extract(request_json, '$.control_node_id') = ?
-                  AND json_extract(graph_target_json, '$.kind') = ?
-                  AND json_extract(graph_target_json, '$.branch_id') IS ?
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT 1
-                """,
-                (
-                    record.project_id,
-                    continuation.control_node_id,
-                    record.graph_target.kind,
-                    record.graph_target.branch_id,
-                ),
-            ).fetchone()
-            newest_request = json.loads(newest["request_json"]) if newest is not None else None
-            if newest_request is None or newest_request.get("control_episode_id") != episode_id:
-                raise ValueError("an automatic Experiment wake must use the newest episode")
-            episode_row = ExperimentStoreMixin._experiment_episode_row(
-                connection,
-                episode_id,
-            )
-            episode = (
-                RowMappingMixin._experiment_episode_record(episode_row)
-                if episode_row is not None
-                else None
-            )
-            if episode is not None and (
-                record.kind != newest["kind"] or request.get("chat_id") != episode.chat_id
-            ):
-                raise ValueError("Experiment watcher delivery changed its episode wake target.")
-            if any(
-                not ExperimentStoreMixin._experiment_watcher_matches_current(
-                    item, newest_request, episode
-                )
-                for item in watchers
-            ):
-                raise ValueError(
-                    "completed watchers are incompatible with the current Experiment episode"
-                )
-            return
-        if trigger != "experiment_run" or invocation != 1:
-            raise ValueError("a human Experiment watcher claim must start a new episode")
-        previous = connection.execute(
-            """
-            SELECT request_json FROM graph_runs
-            WHERE project_id = ? AND parent_operation_id IS NULL
-              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-              AND json_extract(request_json, '$.control_node_id') = ?
-              AND json_extract(graph_target_json, '$.kind') = ?
-              AND json_extract(graph_target_json, '$.branch_id') IS ?
-            ORDER BY created_at DESC, rowid DESC
-            LIMIT 1
-            """,
+
+
+def _identity(watcher: WatcherRecord) -> tuple[object, ...]:
+    return (
+        watcher.agent_id,
+        watcher.project_id,
+        watcher.origin_turn_id,
+        tuple(
             (
-                record.project_id,
-                continuation.control_node_id,
-                record.graph_target.kind,
-                record.graph_target.branch_id,
-            ),
-        ).fetchone()
-        if previous is None:
-            raise ValueError("a human watcher claim requires a prior Experiment episode")
-        previous_request = json.loads(previous["request_json"])
-        if previous_request.get("control_episode_id") == episode_id:
-            raise ValueError("a human watcher claim must authorize a fresh episode")
+                check.check_id,
+                check.machine_id,
+                check.definition,
+                check.check_command,
+                check.log_path,
+                check.cwd,
+                check.condition.model_dump_json() if check.condition is not None else None,
+                check.graph_target.key if check.graph_target is not None else None,
+            )
+            for check in watcher.checks
+        ),
+    )

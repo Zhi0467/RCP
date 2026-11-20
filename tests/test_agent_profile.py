@@ -138,7 +138,7 @@ def test_single_entry_hands_project_work_off_but_keeps_its_own_verbs() -> None:
     assert not profile.binds_questions
     for writer in (False, True):
         client = single_entry_client_profile(OFFER.read_verbs, writer=writer)
-        assert client.verbs.isdisjoint({"episode", "launch", "ask", "watcher", "handoff"})
+        assert client.verbs.isdisjoint({"episode", "launch", "ask", "handoff"})
 
 
 def test_auto_research_child_keeps_its_enforced_surface() -> None:
@@ -169,7 +169,6 @@ def test_episode_roles_keep_their_grants() -> None:
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "finish",
@@ -179,7 +178,7 @@ def test_episode_roles_keep_their_grants() -> None:
     assert worker.verbs == {"validate", "status", "message", "bulletin", "graph_diff", "graph_log"}
     experiment = resolve_agent_profile(SHARED_PROJECT, "experiment", OFFER)
     plain = resolve_agent_profile(SHARED_PROJECT, None, OFFER)
-    assert experiment.verbs == plain.verbs - {"episode", "watcher"}
+    assert experiment.verbs == plain.verbs - {"episode"}
 
 
 def test_every_project_agent_may_read_the_authorizing_members_projects() -> None:

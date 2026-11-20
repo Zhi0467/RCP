@@ -17,7 +17,6 @@ from rcp.api.dependencies import (
     get_store,
     require_project_membership,
     require_project_write_admission,
-    require_registered_project,
 )
 from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
@@ -329,22 +328,6 @@ def resume_work_experiment(
             raise ValueError(str(exc.detail)) from exc
 
 
-@router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
-def stop_experiment_watchers(
-    project_id: str,
-    node_id: str,
-    *,
-    catalog: CatalogDependency,
-) -> list[dict[str, object]]:
-    """Reject the retired bulk watcher control in favor of graceful Stop loop."""
-
-    require_registered_project(catalog, project_id)
-    raise HTTPException(
-        status_code=409,
-        detail="This control was retired. Use Stop loop for the current Experiment episode.",
-    )
-
-
 def stop_bound_experiment_episode(
     project_id: str,
     episode: EpisodeRecord,
@@ -448,8 +431,8 @@ def continue_experiment_episode(
     The continuation is a new episode with its own ceiling, invocation 1 of
     which resumes the source's native session inside the source's stage. It
     reuses the Run path: the source's last turn request, re-pinned to the
-    current graph revision and Decision bundle, and any pending watcher group
-    is delivered with it. The caller holds the Experiment operation lock.
+    current graph revision and Decision bundle. The session's chat keeps its
+    watchers. The caller holds the Experiment operation lock.
     """
 
     node_id = source.control_node_id
@@ -501,11 +484,6 @@ def continue_experiment_episode(
     )
     if not control.ready:
         raise HTTPException(status_code=409, detail=" ".join(control.reasons))
-    pending_group = store.completed_experiment_watcher_group(
-        project_id,
-        node_id,
-        graph_target=source.graph_target,
-    )
     episode_id = str(uuid.uuid4())
     request = RunRequest.model_validate(last_turn.request).model_copy(
         update={
@@ -525,7 +503,7 @@ def continue_experiment_episode(
             "control_invocation_ceiling": invocation_ceiling,
             "control_decision_bundle": control.governing_decisions,
             "control_completion_criteria": list(node.completion_criteria),
-            "watcher_ids": [item.watcher_id for item in pending_group or []],
+            "watcher_ids": [],
             "invoked_workflow_ids": [],
             "invoked_skill_ids": [],
             "invoked_provider_skill_names": [],
@@ -560,8 +538,6 @@ def continue_experiment_episode(
     return continuation
 
 
-# Register this after ``.../watchers/stop``: ``{node_id:path}`` is greedy, so
-# the stop-loop route would otherwise swallow that path.
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
 def stop_experiment_loop(
     project_id: str,
@@ -578,9 +554,9 @@ def stop_experiment_loop(
     """Finish the current turn, then disable automatic continuation.
 
     The stop is durable before this returns, so no unclaimed watcher can win a
-    wake afterwards. It never cancels the live task, kills external work,
-    deletes a watcher, or changes what the Experiment means, and calling it
-    again changes nothing.
+    wake afterwards. Once the turn settles, the agent's watchers are cancelled.
+    It never cancels the live task, kills external work, or changes what the
+    Experiment means, and calling it again changes nothing.
     """
 
     actor = identity_access.require_patch_capable_identity(request)
@@ -630,5 +606,4 @@ __all__ = [
     "run_experiment",
     "stop_bound_experiment_episode",
     "stop_experiment_loop",
-    "stop_experiment_watchers",
 ]

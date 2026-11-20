@@ -20,12 +20,10 @@ from rcp.storage.models import (
     AgentTaskRecord,
     AgentUsageRecord,
     ChatSessionContextRecord,
+    EpisodeReportRecord,
     ExperimentEpisodeRecord,
-    GraphWatcherRecord,
     ProjectRecord,
     SpaceUserRecord,
-    StoredWatcherRecord,
-    WatcherRecord,
 )
 from rcp.storage.request_compat import migrate_stored_task_request, stored_dispatch_authority
 
@@ -132,37 +130,10 @@ class RowMappingMixin:
         return ProjectRecord.model_validate(data)
 
     @staticmethod
-    def _watcher_record(row: sqlite3.Row) -> StoredWatcherRecord:
+    def _episode_report_record(row: sqlite3.Row) -> EpisodeReportRecord:
         data = dict(row)
-        data["continuation"] = json.loads(data.pop("continuation_json"))
-        data["graph_target"] = json.loads(
-            data.pop("graph_target_json", '{"kind":"main","branch_id":null}')
-        )
-        data["notified"] = bool(data["notified"])
-        graph_condition_json = data.pop("graph_condition_json", None)
-        if graph_condition_json is None:
-            data.pop("armed_revision", None)
-            return WatcherRecord.model_validate(data)
-        for field in (
-            "cancel_command",
-            "cancel_requested_by",
-            "cancel_requested_at",
-            "cancel_error",
-        ):
-            data.pop(field, None)
-        data.pop("check_command", None)
-        data.pop("purpose", None)
-        data.pop("log_path", None)
-        data.pop("cwd", None)
-        data["last_evaluated_at"] = data.pop("last_checked_at", None)
-        data.pop("last_exit_code", None)
-        data.pop("last_error", None)
-        data.pop("next_check_at", None)
-        data.pop("consecutive_error_count", None)
-        data.pop("group_id", None)
-        data.pop("group_label", None)
-        data["condition"] = json.loads(graph_condition_json)
-        return GraphWatcherRecord.model_validate(data)
+        data.pop("display_title", None)
+        return EpisodeReportRecord.model_validate(data)
 
     @staticmethod
     def _experiment_episode_record(row: sqlite3.Row) -> ExperimentEpisodeRecord:

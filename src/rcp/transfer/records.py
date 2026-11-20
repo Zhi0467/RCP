@@ -73,6 +73,7 @@ TRANSFER_RECORD_TABLES = frozenset(
         "graph_run_receipts",
         "graph_runs",
         "paper_drafts",
+        "watcher_checks",
         "watchers",
     }
 )

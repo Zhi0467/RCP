@@ -25,20 +25,20 @@ from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AutoResearchChildAdmissionRecord
 
 from .helpers import wait_for_task
+from .lifecycles.agent_task import done_stream as _done_stream
+from .test_auto_research_child_work_watchers_storage import armed_watcher
 from .test_auto_research_children_storage import (
     _experiment_route,
     _experiment_task,
     _insert_cancelled_legacy_route,
     _work_pair,
 )
-from .test_background import _done_stream
 from .test_branch_merge import _field, _Run
 from .test_branch_target_storage import (
     _create_auto_episode,
     _merge_task,
     _ordinary_branch_chat,
     _store,
-    _watcher,
     _worker_authority,
 )
 
@@ -52,8 +52,14 @@ async def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it
     stage = Path(root.stage_root)
     retained = stage / "patch.json"
     retained.write_bytes(b"retained unfinished provider output")
-    watcher = _watcher(store, episode, root, watcher_id="paused-watch")
-    store.create_watchers([watcher])
+    watcher = armed_watcher(
+        store,
+        "paused-watch",
+        agent_id=episode.episode_id,
+        origin_turn_id=root.operation_id,
+        project_id=episode.project_id,
+        completed=False,
+    )
     before_episode = store.episode(episode.episode_id)
     before_root = store.agent_task(root.operation_id)
     before_budget = store.episode_budget_meter(episode.episode_id)

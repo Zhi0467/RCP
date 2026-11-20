@@ -36,10 +36,11 @@ from rcp.runs.auto_research_admission import (
 )
 from rcp.runs.episodes.report import start_episode_report
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+from rcp.runs.experiment_loop import EpisodeWakePreflight, _start_experiment_wake
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_reconciliation import Reconciliation
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
-from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.service import RunRequest
 from rcp.storage import (
     AgentTaskAlreadyContinued,
@@ -48,8 +49,6 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
-    WatcherContinuation,
-    WatcherRecord,
 )
 from rcp.storage.models import MACHINE_LOGIN_ID
 from tests.lifecycles.agent_task import admitted_launch_task as _admitted_launch_task
@@ -67,6 +66,7 @@ from .helpers import (
     wait_for_task,
     wait_until,
 )
+from .test_watchers import armed
 
 _EXPERIMENT_ID = "exp/background-admission"
 _EXPERIMENT_EPISODE_ID = "00000000-0000-4000-8000-000000000101"
@@ -1862,39 +1862,15 @@ def test_generic_chat_wake_is_a_new_turn_on_the_server_resolved_session(tmp_path
     tasks = BackgroundAgentTasks(store, stream)
     first = tasks.start("project", "project_chat", request, authorized_by=authorizer)
     first = wait_for_task(store, first.operation_id, expect="succeeded")
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="chat-complete",
-                project_id="project",
-                origin_operation_id=first.operation_id,
-                origin_task_kind="project_chat",
-                chat_id=request.chat_id,
-                check_command="true",
-                cwd=str(stage),
-                log_path=str(stage / "watch.log"),
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    model="",
-                    reasoning="medium",
-                    run_on=BACKEND_MACHINE_ID,
-                    run_truth_scope=["repo"],
-                    patch_kind="work",
-                ),
-                status="completed",
-                created_at=store.now(),
-                completed_at=store.now(),
-            )
-        ]
+    watcher = armed(
+        store,
+        "chat-complete",
+        agent_id=request.chat_id,
+        origin_turn_id=first.operation_id,
+        completed=True,
+        cwd=str(stage),
     )
-    wake = start_watcher_notification(
-        tasks,
-        "project",
-        "project_chat",
-        request.model_copy(update={"trigger": "watcher", "watcher_ids": ["chat-complete"]}),
-        ["chat-complete"],
-        authorized_by=authorizer,
-    )
+    wake = start_plain_watcher_wake(tasks, request.chat_id, [watcher], authorizer)
     assert wake is not None
     wake = wait_for_task(store, wake.operation_id, expect="succeeded")
     human = tasks.start("project", "project_chat", request, authorized_by=authorizer)
@@ -1907,7 +1883,33 @@ def test_generic_chat_wake_is_a_new_turn_on_the_server_resolved_session(tmp_path
     ]
     assert human.native_session_id == wake.native_session_id == first.native_session_id
     assert human.stage_root == wake.stage_root == first.stage_root == str(stage)
-    assert store.agent_task_continuation_cause(wake.operation_id) == "watcher_wake"
+    assert store.watcher("chat-complete").wake_turn_id == wake.operation_id
+
+
+def _start_experiment_watcher_wake(
+    tasks: BackgroundAgentTasks,
+    episode_id: str,
+    request: RunRequest,
+    watcher_ids: list[str],
+    authorizer,
+    stage: Path,
+) -> None:
+    episode = tasks.store.episode(episode_id)
+    assert episode is not None
+    _start_experiment_wake(
+        tasks,
+        episode,
+        request,
+        watcher_ids,
+        authorizer,
+        preflight=EpisodeWakePreflight(
+            readiness="ready",
+            session_id=request.session_id,
+            stage_machine_id=BACKEND_MACHINE_ID,
+            stage_root=str(stage),
+        ),
+        fence=None,
+    )
 
 
 def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) -> None:
@@ -1950,48 +1952,17 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
         watcher_ids=[],
         context_baseline={},
     )
-    now = store.now()
-    watcher = WatcherRecord(
-        watcher_id="completed-watcher",
-        project_id="project",
-        origin_operation_id=root.operation_id,
-        origin_task_kind="node_chat",
-        chat_id="experiment-chat",
-        node_id=_EXPERIMENT_ID,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path="/tmp/completed-watcher.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation(
-            provider="codex",
-            model="",
-            reasoning="medium",
-            run_on=BACKEND_MACHINE_ID,
-            run_truth_scope=["repo"],
-            patch_kind="experiment_loop",
-            control_node_id=_EXPERIMENT_ID,
-            control_revision=1,
-            control_episode_id=_EXPERIMENT_EPISODE_ID,
-            control_invocation=1,
-            control_invocation_ceiling=3,
-            control_decision_bundle=[],
-            control_completion_criteria=["The bounded comparison is analyzed."],
-        ),
-        status="active",
-        created_at=now,
-    )
-    store.create_watchers([watcher])
-    store.record_watcher_check(
-        watcher.watcher_id,
-        status="completed",
-        exit_code=0,
-        error=None,
+    watcher = armed(
+        store,
+        "completed-watcher",
+        agent_id="experiment-chat",
+        origin_turn_id=root.operation_id,
+        completed=True,
     )
 
-    wake = start_watcher_notification(
+    _start_experiment_watcher_wake(
         tasks,
-        "project",
-        "node_chat",
+        _EXPERIMENT_EPISODE_ID,
         _experiment_request(
             trigger="watcher",
             invocation=2,
@@ -1999,19 +1970,15 @@ def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) 
             session_id="experiment-session",
         ),
         [watcher.watcher_id],
-        authorized_by=authorizer,
-        episode_stage_machine_id=BACKEND_MACHINE_ID,
-        episode_stage_root=str(stage),
+        authorizer,
+        stage,
     )
-    assert wake is not None
-    wake = wait_for_task(store, wake.operation_id, expect="succeeded")
+    wake_id = store.watcher(watcher.watcher_id).wake_turn_id
+    assert wake_id is not None
+    wake = wait_for_task(store, wake_id, expect="succeeded")
 
     assert wake.episode_id == _EXPERIMENT_EPISODE_ID
     assert store.episode_budget_meter(_EXPERIMENT_EPISODE_ID).invocations_used == 2
-    claimed = store.watcher(watcher.watcher_id)
-    assert claimed is not None
-    assert claimed.notified is True
-    assert claimed.notification_operation_id == wake.operation_id
 
 
 def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
@@ -2066,39 +2033,13 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         watcher_ids=[],
         context_baseline={},
     )
-    watcher = WatcherRecord(
-        watcher_id="child-experiment-completed-watcher",
-        project_id="project",
-        origin_operation_id=child_root.operation_id,
-        origin_task_kind="node_chat",
-        chat_id=child_request.chat_id,
-        node_id="exp/child",
-        episode_id=child_id,
-        graph_target=parent.graph_target,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path="/tmp/child-experiment-completed-watcher.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation(
-            provider="codex",
-            model="",
-            reasoning="medium",
-            run_on=BACKEND_MACHINE_ID,
-            run_truth_scope=["repo"],
-            patch_kind="experiment_loop",
-            control_node_id="exp/child",
-            control_revision=1,
-            control_episode_id=child_id,
-            control_invocation=1,
-            control_invocation_ceiling=2,
-            control_decision_bundle=[],
-            control_completion_criteria=["The bounded child comparison is analyzed."],
-        ),
-        status="active",
-        created_at=store.now(),
+    watcher = armed(
+        store,
+        "child-experiment-completed-watcher",
+        agent_id=child_request.chat_id,
+        origin_turn_id=child_root.operation_id,
+        completed=True,
     )
-    store.create_watchers([watcher])
-    store.record_watcher_check(watcher.watcher_id, status="completed", exit_code=0, error=None)
     wake_request = RunRequest.model_validate(child_root.request).model_copy(
         update={
             "trigger": "watcher",
@@ -2114,37 +2055,24 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
 
     monkeypatch.setattr(threading.Thread, "start", fail_before_thread_start)
     with pytest.raises(RuntimeError, match="before watcher thread start"):
-        start_watcher_notification(
-            background,
-            "project",
-            "node_chat",
-            wake_request,
-            [watcher.watcher_id],
-            authorized_by=authorizer,
-            episode_stage_machine_id=BACKEND_MACHINE_ID,
-            episode_stage_root=str(stage),
+        _start_experiment_watcher_wake(
+            background, child_id, wake_request, [watcher.watcher_id], authorizer, stage
         )
     monkeypatch.setattr(threading.Thread, "start", real_thread_start)
-    claimed = store.watcher(watcher.watcher_id)
-    assert claimed is not None and claimed.notification_operation_id is not None
-    operation_id = claimed.notification_operation_id
+    operation_id = store.watcher(watcher.watcher_id).wake_turn_id
+    assert operation_id is not None
     allowance_before = store.auto_research_experiment_allowance(parent.episode_id)
     meter_before = store.episode_budget_meter(child_id)
 
     restarted = BackgroundAgentTasks(store, stream)
     queued = store.agent_task(operation_id)
     assert queued is not None and queued.status == "queued"
-    assert reconcile_committed_auto_research_dispatches(
-        restarted,
-    ) == [operation_id]
+    assert reconcile_committed_auto_research_dispatches(restarted) == [operation_id]
     completed = wait_for_task(store, operation_id, expect="succeeded")
 
-    claimed_after = store.watcher(watcher.watcher_id)
     assert completed.native_session_id == "child-watcher-session"
     assert completed.graph_target == parent.graph_target
-    assert claimed_after is not None and claimed_after.graph_target == parent.graph_target
     assert watcher_executions == ["watcher_wake"]
-    assert claimed_after.notification_operation_id == operation_id
     assert store.auto_research_experiment_allowance(parent.episode_id) == allowance_before
     assert store.episode_budget_meter(child_id) == meter_before
 

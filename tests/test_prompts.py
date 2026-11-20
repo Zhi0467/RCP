@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -22,14 +20,13 @@ from rcp.agents.prompts import (
     PromptFactory,
 )
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
-from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
+from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.core.validation.experiment_loop import (
     _PINNED_DECISION_FIELDS,
     PINNED_DECISION_BALLOT_FIELDS,
 )
-from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkillReference
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
@@ -91,40 +88,6 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
         assert path in master
     assert master.count(graph_rules(edits=True, ontology_extensions=True)) == 1
     assert master.count(REPLY_STYLE) == 2
-
-
-def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> None:
-    resource = {
-        "control_node_id": "exp/example",
-        "episode_id": "episode-1",
-        "execution_host": "episode.example",
-        "watcher_state_path": "/stage/inputs/exp-example-watchers.json",
-        "watch_path": "/stage/workspace/experiment-watch-example.json",
-    }
-    master = PromptFactory.chat_master_context(
-        project_name="Example",
-        graph_target=GraphTargetRef(),
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=False,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        graph_revision=7,
-        focused_node_id="exp/example",
-        repositories=[],
-        paper_path=None,
-        patch_path="/stage/workspace/patch.json",
-        workspace_path="/stage/workspace",
-        output_schema_path="/stage/inputs/schema.json",
-        command_client="python3 /stage/inputs/validate.py",
-        watch_path="/stage/workspace/watch.json",
-        execution_host="chat.example",
-        experiment_watcher_resources=[resource],
-    )
-
-    assert resource["watcher_state_path"] in master
-    assert resource["watch_path"] in master
-    assert resource["execution_host"] in master
-    assert "/stage/workspace/watch.json" in master
 
 
 @pytest.mark.parametrize("bootstrap", [False, True])
@@ -265,147 +228,6 @@ async def test_experiment_loop_context_fails_closed_without_episode_binding() ->
             token="missing-binding",
             continuation="fresh",
         )
-
-
-@pytest.mark.asyncio
-async def test_pending_completion_context_names_human_reauthorization(tmp_path) -> None:
-    class Store:
-        def agent_task(self, operation_id):
-            assert operation_id == "operation"
-            return SimpleNamespace(project_id="project")
-
-        def watchers(self, project_id):
-            assert project_id == "project"
-            return []
-
-    execution = SimpleNamespace(operation_id="operation", store=Store())
-    service = SimpleNamespace(history=SimpleNamespace(state=lambda: GraphState()))
-    request = RunRequest(
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/example",
-        control_revision=2,
-        control_episode_id="d91bb1b3-a480-4dbf-b5f0-4bd62bf4f779",
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        watcher_ids=["watcher-from-old-episode"],
-    )
-
-    control_path, _ = await stage_experiment_loop_context(
-        service,
-        request,
-        execution,
-        tmp_path / "stage",
-        None,
-        token="reauthorized",
-        continuation="fresh",
-    )
-
-    control = json.loads(Path(control_path).read_text(encoding="utf-8"))
-    assert control["phase"] == "human_reauthorization"
-    assert control["invocation"] == 1
-    assert control["delivered_watcher_ids"] == ["watcher-from-old-episode"]
-
-
-@pytest.mark.asyncio
-async def test_watcher_wake_context_keeps_every_delivered_group_member(tmp_path) -> None:
-    def watcher(
-        watcher_id: str,
-        *,
-        status: str,
-        episode_id: str,
-        stopped_by: str | None = None,
-    ) -> SimpleNamespace:
-        return SimpleNamespace(
-            watcher_id=watcher_id,
-            origin_operation_id="older-operation",
-            graph_target=GraphTargetRef(),
-            machine_id=BACKEND_MACHINE_ID,
-            check_command="test -f complete",
-            cancel_command=None,
-            cancel_requested_by=None,
-            cancel_requested_at=None,
-            cancel_error=None,
-            log_path=f"/tmp/{watcher_id}.log",
-            cwd="/tmp",
-            status=status,
-            created_at="2026-08-07T00:00:00+00:00",
-            last_checked_at="2026-08-07T00:00:00+00:00",
-            last_exit_code=0 if status == "completed" else None,
-            last_error=None,
-            completed_at="2026-08-07T00:00:00+00:00" if status == "completed" else None,
-            next_check_at=None,
-            consecutive_error_count=0,
-            group_id="group/replicas",
-            group_label="replicas",
-            notified=True,
-            notification_operation_id="wake-operation",
-            stopped_by=stopped_by,
-            stop_reason="superseded replica" if stopped_by else None,
-            stopped_at="2026-08-07T00:00:00+00:00" if stopped_by else None,
-            stop_operation_id="older-operation" if stopped_by else None,
-            continuation=SimpleNamespace(
-                patch_kind="experiment_loop",
-                control_node_id="exp/example",
-                control_episode_id=episode_id,
-                control_invocation=1,
-                control_invocation_ceiling=3,
-                control_revision=2,
-                control_decision_bundle=[],
-            ),
-        )
-
-    delivered = watcher("watcher/completed", status="completed", episode_id="old-episode")
-    agent_stopped = watcher(
-        "watcher/agent-stopped",
-        status="stopped",
-        episode_id="even-older-episode",
-        stopped_by="agent",
-    )
-
-    class Store:
-        def agent_task(self, operation_id):
-            assert operation_id == "wake-operation"
-            return SimpleNamespace(project_id="project", graph_target=GraphTargetRef())
-
-        def watchers(self, project_id):
-            assert project_id == "project"
-            return [delivered, agent_stopped]
-
-    execution = SimpleNamespace(operation_id="wake-operation", store=Store())
-    service = SimpleNamespace(history=SimpleNamespace(state=lambda: GraphState()))
-    request = RunRequest(
-        trigger="watcher",
-        patch_kind="experiment_loop",
-        control_node_id="exp/example",
-        control_revision=2,
-        control_episode_id="new-episode",
-        control_invocation=2,
-        control_invocation_ceiling=3,
-        watcher_ids=["watcher/completed"],
-    )
-
-    control_path, watcher_state_path = await stage_experiment_loop_context(
-        service,
-        request,
-        execution,
-        tmp_path / "stage",
-        None,
-        token="delivered-group",
-        continuation="fresh",
-    )
-
-    control = json.loads(Path(control_path).read_text(encoding="utf-8"))
-    assert control["delivered_watcher_groups"] == [
-        {
-            "group_id": "group/replicas",
-            "label": "replicas",
-            "members": json.loads(Path(watcher_state_path).read_text(encoding="utf-8")),
-        }
-    ]
-    assert {
-        member["watcher_id"] for member in control["delivered_watcher_groups"][0]["members"]
-    } == {"watcher/completed", "watcher/agent-stopped"}
 
 
 def test_experiment_contract_preserves_control_paths_and_resolved_commands(

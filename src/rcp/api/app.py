@@ -112,7 +112,6 @@ from rcp.background import (
     StartupEffectFence,
 )
 from rcp.build_identity import build_identity
-from rcp.compute_jobs.jobs import helper_cancel_action
 from rcp.compute_jobs.probe import (
     machine_compute_routes,
     probe_compute_backend,
@@ -121,7 +120,6 @@ from rcp.compute_jobs.probe import (
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.consolidation import ConsolidationPoller
-from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.dependency_check import DependencyChecker
 from rcp.digest import DigestProjector
@@ -166,7 +164,7 @@ from rcp.runs.auto_research_child_reconcile import (
     reconcile_pending_auto_research_child_admissions,
 )
 from rcp.runs.auto_research_delivery import (
-    deliver_auto_research_watcher_group,
+    deliver_auto_research_watchers,
     reconcile_pending_auto_research_lifecycle,
     reconcile_pending_auto_research_mail,
 )
@@ -188,8 +186,7 @@ from rcp.runs.experiment_admission import (
     reconcile_reserved_experiment_branch_roots,
 )
 from rcp.runs.experiment_loop import (
-    experiment_watcher_delivery_request,
-    preflight_episode_wake,
+    deliver_experiment_watchers,
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
 from rcp.runs.paper_turns import end_settled_paper_turns
@@ -219,7 +216,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episod
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
-from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.runs.work_experiment_commands import (
     raise_pending_experiment_cards,
     raise_plan_cards,
@@ -282,10 +279,7 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeRecord,
-    GraphWatcherRecord,
-    StoredWatcherRecord,
     TeamAuthenticationError,
-    WatcherRecord,
 )
 from rcp.storage.comments import CommentError
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -303,7 +297,6 @@ from rcp.watchers import (
     WatcherDelivery,
     WatcherPoller,
     WatcherRetryWorker,
-    ready_graph_watcher_groups,
 )
 from rcp.web_assets import web_dist_path
 
@@ -984,7 +977,6 @@ def create_app(
                 )
             ),
             graph_state=service.history.state,
-            machine_id=request.run_on,
             apply_patch=apply_auto_research_patch,
             merge=merge_owned_branch,
             on_graph_applied=lambda: evaluate_graph_wake_boundary(
@@ -992,12 +984,6 @@ def create_app(
                 None,
                 graph_target=task.graph_target,
                 source="Auto-research in-turn Apply",
-            ),
-            on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
-                ready_project_id,
-                None,
-                graph_target=task.graph_target,
-                source="Auto-research graph condition",
             ),
             experiment_coordinator=auto_research_experiment_coordinator,
             branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
@@ -1249,13 +1235,6 @@ def create_app(
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
 
-    def cancel_watcher_from_work(
-        project_id: str, watcher_id: str, requested_by: str
-    ) -> WatcherRecord:
-        with experiment_operation_lock(project_id):
-            store.require_project_accepts_new_work(project_id)
-            return watcher_poller.cancel(project_id, watcher_id, requested_by)
-
     # One per process: admission and the machine card share its cache.
     dependency_checker = DependencyChecker(space_kind=lambda: store.space_kind)
     background_tasks = BackgroundAgentTasks(
@@ -1272,7 +1251,6 @@ def create_app(
         episode_controls=MemberEpisodeControls(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
-        watcher_canceller=cancel_watcher_from_work,
         paper_live=paper_live,
     )
 
@@ -1432,7 +1410,6 @@ def create_app(
     watcher_delivery = WatcherDelivery(
         store,
         retry=graph_watcher_retry,
-        project_service=lambda project_id: catalog.open_execution(project_id),
         graph_project_service=lambda project_id, target: catalog.open_execution(
             project_id
         ).for_graph_target(
@@ -1443,33 +1420,32 @@ def create_app(
                 else None
             ),
         ),
-        generic_request=_generic_watcher_delivery_request,
-        experiment_operation_lock=experiment_operation_lock,
-        experiment_admission=experiment_admission,
-        deliver_auto_research_group=lambda group: deliver_auto_research_watcher_group(
-            background_tasks,
-            group,
-        ),
-        preflight_episode_wake=lambda runtime, episode, group: preflight_episode_wake(
-            runtime, episode, group, store=store
-        ),
-        admit_experiment_watcher_invocation=admit_experiment_watcher_invocation,
-        experiment_watcher_request=experiment_watcher_delivery_request,
-        start_watcher_notification=lambda *args, **kwargs: start_watcher_notification(
-            background_tasks, *args, **kwargs
+        episode_owners={
+            "experiment_loop": lambda agent_id, episode, ready, fence: deliver_experiment_watchers(
+                agent_id,
+                episode,
+                ready,
+                fence,
+                tasks=background_tasks,
+                graph_project_service=lambda project_id, target: catalog.open_execution(
+                    project_id
+                ).for_graph_target(target),
+                experiment_operation_lock=experiment_operation_lock,
+            ),
+            "auto_research": lambda agent_id, episode, ready, fence: deliver_auto_research_watchers(
+                background_tasks, agent_id, episode, ready, fence
+            ),
+        },
+        plain_wake=lambda agent_id, ready, authorized_by, fence: start_plain_watcher_wake(
+            background_tasks, agent_id, ready, authorized_by, fence
         ),
         state_unavailable=lambda exc: isinstance(exc, StateUnavailable),
         task_graph_capable=task_graph_capable,
         task_experiment_episode_id=task_experiment_episode_id,
         reconcile_experiment_episode=episode_reconciler.reconcile_experiment_episode,
         reconcile_graph_boundaries=reconcile_accepted_graph_boundaries,
-        ready_graph_groups=lambda candidate_store, project_id: ready_graph_watcher_groups(
-            candidate_store,
-            project_id,
-        ),
         logger=logger,
     )
-    deliver_watcher_group = watcher_delivery.deliver_watcher_group
     evaluate_graph_wake_boundary = watcher_delivery.evaluate_graph_wake_boundary
     request_startup_sweep = watcher_delivery.request_startup_sweep
     retry_graph_wakes_after_poll = watcher_delivery.retry_graph_wakes_after_poll
@@ -1693,6 +1669,7 @@ def create_app(
             pass
 
     def after_watcher_poll() -> None:
+        watcher_delivery.deliver_ready_watchers(source="watcher poll")
         provider_sign_ins.reconcile_recovery()
         # Expired cards answer their questions; delivery wakes each asking thread.
         for project_id in store.expire_approval_cards():
@@ -1713,9 +1690,7 @@ def create_app(
 
     watcher_poller = WatcherPoller(
         store,
-        on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
-        helper_cancel_action=lambda watcher: helper_cancel_action(store, watcher),
     )
     consolidation_poller = ConsolidationPoller(
         store,
@@ -2999,47 +2974,6 @@ def _is_page_navigation(scope) -> bool:
     headers = Headers(scope=scope)
     mode = headers.get("sec-fetch-mode")
     return mode == "navigate" if mode else "text/html" in headers.get("accept", "")
-
-
-def _generic_watcher_delivery_request(group: list[StoredWatcherRecord]) -> RunRequest:
-    first = group[0]
-    continuation = first.continuation
-    if continuation.patch_kind != "work":
-        raise ValueError("A generic watcher cannot carry Experiment-loop authority.")
-    watcher_ids = [item.watcher_id for item in group]
-    details = "\n".join(
-        (
-            f"- graph condition `{item.watcher_id}`: `{item.condition.model_dump_json()}`"
-            if isinstance(item, GraphWatcherRecord)
-            else f"- external watcher `{item.watcher_id}`: `{item.log_path}`"
-        )
-        for item in group
-    )
-    return RunRequest(
-        provider=continuation.provider,
-        browser_requested=continuation.browser_requested,
-        model=continuation.model,
-        reasoning=continuation.reasoning,
-        run_on=continuation.run_on,
-        run_truth_scope=continuation.run_truth_scope,
-        chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
-        node_id=first.node_id,
-        message=(
-            "RCP watcher update: the following external or canonical graph conditions are "
-            f"ready. Inspect their current authoritative state and continue the Work turn.\n{details}"
-        ),
-        chat_id=first.chat_id,
-        session_id=None,
-        mode="work",
-        trigger="watcher",
-        patch_kind="work",
-        workflow_ids=continuation.workflow_ids,
-        skill_ids=continuation.skill_ids,
-        invoked_workflow_ids=[],
-        invoked_skill_ids=[],
-        resolved_skill_packages=continuation.resolved_skill_packages,
-        watcher_ids=watcher_ids,
-    )
 
 
 def _experiment_control_node_id(

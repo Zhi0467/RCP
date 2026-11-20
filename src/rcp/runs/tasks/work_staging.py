@@ -11,7 +11,7 @@ is calling.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
@@ -38,7 +38,6 @@ from rcp.runs.chat import (
     _validated_remote_chat_resume_stage,
 )
 from rcp.runs.consolidation import is_consolidation
-from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import PatchValidationBudget
 from rcp.runs.shared import (
     _protected_hidden_reads,
@@ -102,12 +101,7 @@ async def stage_work_turn(
     stage_artifacts: (
         Callable[[WorkStageLayout, Path | PurePosixPath], StagedArtifactAccess] | None
     ) = None,
-    stage_experiment_resources: (
-        Callable[
-            [WorkStageLayout, GraphReadScope], Awaitable[list[StagedExperimentWatcherResource]]
-        ]
-        | None
-    ) = None,
+    stage_loop_status: Callable[[WorkStageLayout, GraphReadScope], None] | None = None,
     select_skills: Callable[[RunRequest], tuple[SkillSelection, RunRequest]] | None = None,
 ) -> tuple[WorkTurn, StagedWorkInputs, _HandoffT]:
     """Build the launch context for one Work provider pass.
@@ -307,14 +301,8 @@ async def stage_work_turn(
             graph_read_scope=graph_read_scope,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
-        experiment_resources = (
-            await stage_experiment_resources(layout, graph_read_scope)
-            if stage_experiment_resources is not None
-            else []
-        )
-        experiment_resource_pointers = [
-            dict[str, object](item.prompt_value()) for item in experiment_resources
-        ]
+        if stage_loop_status is not None:
+            stage_loop_status(layout, graph_read_scope)
         if select_skills is not None:
             skill_selection, request = select_skills(request)
         else:
@@ -368,8 +356,6 @@ async def stage_work_turn(
             token=token,
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
-            experiment_resources=experiment_resources,
-            experiment_resource_pointers=experiment_resource_pointers,
             skill_selection=skill_selection,
             skill_pointers=skill_pointers,
             attachment_pointers=attachment_pointers,

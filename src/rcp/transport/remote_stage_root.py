@@ -32,8 +32,8 @@ def prepare_read_context_input(inputs: str, label: str, *, immutable: bool = Tru
     """Inspect a content-addressed read input and retire its superseded snapshots.
 
     Chat loop status also retires old unkeyed loop watcher snapshots from this
-    reused session stage. Keyed watcher-maintenance inputs and contracts remain
-    owned by their consumers. Content is never read back.
+    reused session stage. Keyed inputs and contracts remain owned by their
+    consumers. Content is never read back.
     """
 
     match = READ_CONTEXT_INPUT.fullmatch(label)

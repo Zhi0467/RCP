@@ -121,7 +121,6 @@ from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
 from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
-from rcp.watchers import WatcherCanceller
 
 if TYPE_CHECKING:
     from rcp.paper import PaperLive
@@ -310,7 +309,6 @@ class AgentTaskExecution:
     #: it lands; the app provides it, a bare engine (tests) leaves the verb unavailable.
     experiment_card_raiser: WorkExperimentCardRaiser | None = field(default=None, repr=False)
     episode_controls: WorkEpisodeControls | None = field(default=None, repr=False)
-    watcher_canceller: WatcherCanceller | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -451,14 +449,12 @@ class BackgroundAgentTasks:
         experiment_card_raiser: WorkExperimentCardRaiser | None = None,
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
-        watcher_canceller: WatcherCanceller | None = None,
         paper_live: PaperLive | None = None,
     ) -> None:
         self.store = store
         self.paper_live = paper_live
         self.experiment_card_raiser = experiment_card_raiser
         self.episode_controls = episode_controls
-        self.watcher_canceller = watcher_canceller
         # Resumes the paused Experiment a Work turn's ``episode --resume`` named,
         # once that turn has succeeded.
         self.experiment_resumer = experiment_resumer
@@ -571,11 +567,11 @@ class BackgroundAgentTasks:
             for project in projects
             for task in self.store.all_project_agent_tasks(project.project_id)
         ]
-        watchers = [
-            watcher
+        watcher_ids = {
+            check.watcher_id
             for project in projects
-            for watcher in self.store.active_graph_watchers(project.project_id)
-        ]
+            for check in self.store.open_graph_checks(project.project_id)
+        }
         return StartupRecoveryPlan(
             active_operation_ids=tuple(sorted(task.operation_id for task in tasks if task.active)),
             stopping_experiment_operation_ids=tuple(
@@ -590,7 +586,7 @@ class BackgroundAgentTasks:
             auto_research_recovery_operation_ids=tuple(
                 sorted(task.operation_id for task in self.store.auto_research_recovery_candidates())
             ),
-            active_watcher_ids=tuple(sorted(watcher.watcher_id for watcher in watchers)),
+            active_watcher_ids=tuple(sorted(watcher_ids)),
         )
 
     def _require_startup_effects_open(self, effect: str) -> None:
@@ -1839,7 +1835,6 @@ class BackgroundAgentTasks:
             if request.trigger == "experiment_run" and parent is None:
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
-                    request.watcher_ids,
                     continues_episode_id=continues_episode_id,
                     continuation_request_id=continuation_request_id,
                     graph_base_head=graph_base_head,
@@ -2362,7 +2357,6 @@ class BackgroundAgentTasks:
             admission=self.runtime_admission_gate,
             experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
-            watcher_canceller=self.watcher_canceller,
         )
         awaiting_remote_result = False
         try:
@@ -2749,7 +2743,6 @@ class BackgroundAgentTasks:
             continuation=cast(AgentTaskContinuation, continuation),
             experiment_card_raiser=self.experiment_card_raiser,
             episode_controls=self.episode_controls,
-            watcher_canceller=self.watcher_canceller,
         )
 
     def _settle_stale_detached_mailboxes(self) -> bool:

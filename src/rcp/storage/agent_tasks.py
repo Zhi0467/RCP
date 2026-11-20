@@ -1500,7 +1500,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return (
             connection.execute(
                 f"SELECT 1 FROM watchers JOIN graph_runs AS origin "
-                f"ON origin.operation_id = watchers.origin_operation_id "
+                f"ON origin.operation_id = watchers.origin_turn_id "
                 f"WHERE watchers.watcher_id IN ({placeholders}) "
                 "AND origin.episode_id IS NOT NULL LIMIT 1",
                 watcher_ids,
@@ -2130,6 +2130,22 @@ class AgentTaskStoreMixin(StoreMixinBase):
         resolved = rows.get("chat_session_resolution", {}).get("reason_code")
         return str(resolved or rows.get("operation_admitted", {}).get("continuation_cause") or "")
 
+    def newest_chat_turn(self, project_id: str, chat_id: str) -> AgentTaskRecord | None:
+        """The chat's newest visible turn, whose settings a wake continues."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM graph_runs
+                WHERE project_id = ? AND visible = 1
+                  AND kind IN ('node_chat', 'project_chat', 'space_chat')
+                  AND json_extract(request_json, '$.chat_id') = ?
+                ORDER BY created_at DESC, rowid DESC LIMIT 1
+                """,
+                (project_id, chat_id),
+            ).fetchone()
+        return self._agent_task_record(row) if row is not None else None
+
     def current_chat_agent(
         self, project_id: str, kind: str, chat_id: str
     ) -> dict[str, object] | None:
@@ -2646,11 +2662,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                                 run.stage_root AS root
                 FROM watchers AS watcher
                 JOIN graph_runs AS run
-                  ON run.operation_id = watcher.origin_operation_id
+                  ON run.operation_id = watcher.origin_turn_id
                 WHERE watcher.watcher_id IN ({placeholders})
                   AND watcher.project_id = ?
-                  AND watcher.origin_task_kind = ?
-                  AND watcher.chat_id = ?
+                  AND run.kind = ?
+                  AND watcher.agent_id = ?
                   AND run.stage_root IS NOT NULL AND run.stage_root != ''
                 """,
                 (*watcher_ids, record.project_id, record.kind, chat_id),

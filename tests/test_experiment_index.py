@@ -31,9 +31,9 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeNotRunning,
     EpisodeRecord,
-    GraphWatcherRecord,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
+    WatcherRecord,
 )
 from tests.helpers import signed_in_client
 
@@ -1347,27 +1347,28 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         parent.graph_target,
         expected_episode_id=parent.episode_id,
     ).history.head_ref()
-    app.state.background_tasks.store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id=str(uuid.uuid4()),
-                project_id=project_id,
-                origin_operation_id=parent.root_operation_id,
-                origin_task_kind="auto_research",
-                graph_target=parent.graph_target,
-                chat_id=parent.episode_id,
-                episode_id=parent.episode_id,
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on=BACKEND_MACHINE_ID,
-                    run_truth_scope=["repo-a"],
-                    patch_kind="work",
-                ),
-                condition=parent_condition,
-                armed_revision=branch_head.revision,
-                created_at=app.state.background_tasks.store.now(),
-            )
-        ]
+    watcher_id = str(uuid.uuid4())
+    now = app.state.background_tasks.store.now()
+    app.state.background_tasks.store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=parent.episode_id,
+            project_id=project_id,
+            purpose="Parent graph condition",
+            origin_turn_id=parent.root_operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="graph",
+                    condition=parent_condition,
+                    graph_target=parent.graph_target,
+                    armed_head=branch_head.revision,
+                    created_at=now,
+                )
+            ],
+        )
     )
 
     with signed_in_client(app) as client:

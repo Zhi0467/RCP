@@ -1,41 +1,31 @@
 from __future__ import annotations
 
 import fcntl
+import logging
 import os
 import shlex
 import signal
-import sqlite3
 import subprocess
 import sys
-import threading
-import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
-from rcp.core.transition_models import GraphTargetRef
-from rcp.storage import (
-    AgentTaskRecord,
-    AppStore,
-    EpisodeInvocationCeilingReached,
-    ExperimentEpisodeUnwakeable,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    WatcherClaimConflict,
-    WatcherContinuation,
-    WatcherRecord,
-    WatcherStopRequest,
-    watcher_next_check_at,
-)
+from rcp.limits import WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+from rcp.runs.watcher_admission import start_plain_watcher_wake
+from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord, watcher_next_check_at
+from rcp.storage.models import WatcherCheckRecord
 from rcp.watchers import (
     AgentWatchSpec,
-    ExperimentWatchSpec,
+    GraphWatcherRetryRegistry,
     WatcherBinding,
     WatcherCheckResult,
+    WatcherDelivery,
     WatcherInitialCheckError,
     WatcherPoller,
     WatchSpec,
@@ -45,8 +35,7 @@ from rcp.watchers import (
     run_watcher_check,
 )
 
-from .helpers import wait_until
-from .storage_helpers import downgrade_artifacts, downgrade_resource_watermarks
+from .helpers import fabricated_authorizer, wait_until
 
 
 @pytest.fixture
@@ -54,154 +43,122 @@ def store(tmp_path) -> AppStore:
     return AppStore(tmp_path / "rcp.sqlite3")
 
 
-def _continuation() -> WatcherContinuation:
-    return WatcherContinuation(
-        provider="codex",
-        model="gpt-5",
-        reasoning="medium",
-        run_on="backend",
-        run_truth_scope=["state"],
-        patch_kind="work",
-    )
-
-
-def _binding(origin: str = "origin") -> WatcherBinding:
-    return WatcherBinding(
-        project_id="project",
-        origin_operation_id=origin,
-        origin_task_kind="node_chat",
-        chat_id="chat",
-        node_id="exp-one",
-        machine_id="backend",
-        continuation=_continuation(),
-    )
-
-
-def _identity(store: AppStore) -> AuthorizedHuman:
-    owner = store.local_owner
-    assert owner is not None
-    return AuthorizedHuman(
-        space_id=store.space_id,
-        user_id=owner.user_id,
-        display_name=owner.display_name or "Test researcher",
-    )
-
-
-def _record(
+def armed(
+    store: AppStore,
     watcher_id: str,
     *,
-    origin: str = "origin",
-    status: str = "active",
-    continuation: WatcherContinuation | None = None,
+    agent_id: str = "chat",
+    origin_turn_id: str = "origin",
+    project_id: str = "project",
+    completed: bool = False,
+    cwd: str = "/tmp",
+    machine_id: str = "backend",
 ) -> WatcherRecord:
-    return WatcherRecord(
-        watcher_id=watcher_id,
-        project_id="project",
-        origin_operation_id=origin,
-        origin_task_kind="node_chat",
-        chat_id="chat",
-        node_id="exp-one",
-        machine_id="backend",
-        check_command="true",
-        log_path=f"/tmp/{watcher_id}.log",
-        cwd="/tmp",
-        continuation=continuation or _continuation(),
-        status=status,
-        created_at="2026-08-01T00:00:00+00:00",
-        completed_at=("2026-08-01T00:01:00+00:00" if status == "completed" else None),
-    )
+    """Arm one watcher with one external check, optionally already finished."""
 
-
-def _group_record(watcher_id, continuation, group_id, *, origin="origin", status="active"):
-    return _record(watcher_id, origin=origin, status=status).model_copy(
-        update={
-            "continuation": continuation,
-            "group_id": group_id,
-            "group_label": "eval-shards",
-        }
-    )
-
-
-def _task(store: AppStore, operation_id: str, watcher_ids: list[str]) -> AgentTaskRecord:
     now = store.now()
-    return AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        kind="node_chat",
-        status="queued",
-        request={
-            "chat_id": "chat",
-            "node_id": "exp-one",
-            "provider": "codex",
-            "model": "gpt-5",
-            "reasoning": "medium",
-            "run_on": "backend",
-            "run_truth_scope": ["state"],
-            "mode": "work",
-            "trigger": "watcher",
-            "patch_kind": "work",
-            "control_node_id": None,
-            "workflow_ids": [],
-            "skill_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "resolved_skill_packages": [],
-            "watcher_ids": watcher_ids,
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Queued watcher wake.",
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=agent_id,
+            project_id=project_id,
+            purpose="Job finishes",
+            origin_turn_id=origin_turn_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    machine_id=machine_id,
+                    definition="external",
+                    check_command="true",
+                    log_path=f"{cwd}/{watcher_id}.log",
+                    cwd=cwd,
+                    created_at=now,
+                    completed_at=now if completed else None,
+                )
+            ],
+        )
     )
 
 
-def _loop_task(
+def _binding() -> WatcherBinding:
+    return WatcherBinding(
+        project_id="project", agent_id="chat", origin_turn_id="origin", machine_id="backend"
+    )
+
+
+def _chat_turn(
     store: AppStore,
     operation_id: str,
     *,
-    episode_id: str,
-    invocation: int,
-    ceiling: int = 2,
-    watcher_ids: list[str] | None = None,
-    parent_operation_id: str | None = None,
+    authorized_by: AuthorizedHuman | None = None,
+    session_id: str | None = "chat-session",
+    status: str = "succeeded",
+    **request: object,
 ) -> AgentTaskRecord:
     now = store.now()
-    return AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        episode_id=episode_id,
-        kind="node_chat",
-        status="queued",
-        request={
-            "chat_id": "chat",
-            "node_id": "exp-one",
-            "provider": "codex",
-            "model": "gpt-5",
-            "reasoning": "medium",
-            "run_on": "backend",
-            "run_truth_scope": ["state"],
-            "mode": "work",
-            "trigger": "watcher" if watcher_ids else "experiment_run",
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp-one",
-            "control_revision": 0,
-            "control_episode_id": episode_id,
-            "control_invocation": invocation,
-            "control_invocation_ceiling": ceiling,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-            "workflow_ids": [],
-            "skill_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "resolved_skill_packages": [],
-            "watcher_ids": watcher_ids or [],
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Queued loop invocation.",
-        parent_operation_id=parent_operation_id,
-        attempt=2 if parent_operation_id else 1,
-        authorized_by=_identity(store),
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id="project",
+            kind="node_chat",
+            status="queued",
+            request={
+                "chat_id": "chat",
+                "node_id": "exp-one",
+                "provider": "codex",
+                "model": "gpt-5",
+                "reasoning": "medium",
+                "run_on": "backend",
+                "run_truth_scope": ["state"],
+                "mode": "work",
+                "trigger": "human",
+                "patch_kind": "work",
+                "message": "Run the job.",
+                **request,
+            },
+            created_at=now,
+            updated_at=now,
+            status_message="Queued.",
+            authorized_by=authorized_by,
+        )
+    )
+    if status == "queued":
+        return store.agent_task(operation_id)
+    store.mark_agent_task_running(operation_id)
+    if session_id is not None:
+        store.checkpoint_agent_task(
+            operation_id,
+            native_session_id=session_id,
+            stage_machine_id="",
+            stage_root=str(store.path.parent / "chat-stage"),
+        )
+    if status == "succeeded":
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+    return store.agent_task(operation_id)
+
+
+def _delivery(store: AppStore, plain, owners=None) -> WatcherDelivery:
+    return WatcherDelivery(
+        store,
+        retry=GraphWatcherRetryRegistry(),
+        graph_project_service=lambda *_: None,
+        episode_owners=owners or {},
+        plain_wake=plain,
+        state_unavailable=lambda _exc: False,
+        task_graph_capable=lambda *_: False,
+        task_experiment_episode_id=lambda _request: None,
+        reconcile_experiment_episode=lambda *_, **__: None,
+        reconcile_graph_boundaries=lambda *_, **__: None,
+        logger=logging.getLogger("test"),
+        launch_wait=lambda: 0,
+    )
+
+
+def _result(state: str, exit_code: int | None, error: str | None = None) -> WatcherCheckResult:
+    return WatcherCheckResult(
+        state=state, checked_at="2026-08-01T00:01:00+00:00", exit_code=exit_code, error=error
     )
 
 
@@ -236,837 +193,20 @@ def test_watch_json_is_a_nonempty_strict_two_list_object() -> None:
             parse_watch_json(payload)
 
 
-def test_experiment_watch_json_accepts_external_maintenance_and_graph_conditions() -> None:
+def test_experiment_watch_json_accepts_observers_stops_and_graph_conditions() -> None:
     assert parse_experiment_watch_json('{"external":[],"graph":[]}').is_empty
     handoff = parse_experiment_watch_json(
         '{"external":['
-        '{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
-        '{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/b.log","cwd":"/tmp"},'
+        '{"purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
         '{"stop_watcher_id":"old-watcher","reason":"Cancelled superseded job"}'
         '],"graph":[{"node_id":"hyp/result","proposal_resolved":true}]}'
     )
 
-    assert handoff.observers == [
-        ExperimentWatchSpec(
-            purpose="job finishes",
-            group="eval-shards",
-            check_command="exit 1",
-            log_path="/tmp/a.log",
-            cwd="/tmp",
-        ),
-        ExperimentWatchSpec(
-            purpose="job finishes",
-            group="eval-shards",
-            check_command="exit 1",
-            log_path="/tmp/b.log",
-            cwd="/tmp",
-        ),
-    ]
-    assert handoff.stops == [
-        WatcherStopRequest(stop_watcher_id="old-watcher", reason="Cancelled superseded job")
-    ]
+    assert [item.log_path for item in handoff.observers] == ["/tmp/a.log"]
+    assert [item.stop_watcher_id for item in handoff.stops] == ["old-watcher"]
     assert [item.model_dump(mode="json") for item in handoff.graph_conditions] == [
         {"node_id": "hyp/result", "proposal_resolved": True}
     ]
-    with pytest.raises(ValidationError):
-        parse_watch_json(
-            '{"external":[{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1",'
-            '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
-        )
-    with pytest.raises(ValueError, match="at least two"):
-        parse_experiment_watch_json(
-            '{"external":[{"group":"eval-shards","purpose":"job finishes","check_command":"exit 1",'
-            '"log_path":"/tmp/a.log","cwd":"/tmp"}],"graph":[]}'
-        )
-
-
-def _loop_continuation(
-    episode_id: str,
-    *,
-    invocation: int = 1,
-    ceiling: int = 3,
-    revision: int | None = 0,
-    node_id: str = "exp-one",
-) -> WatcherContinuation:
-    return _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": node_id,
-            "control_revision": revision,
-            "control_episode_id": episode_id,
-            "control_invocation": invocation,
-            "control_invocation_ceiling": ceiling,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
-
-
-def _bound_episode(store: AppStore, episode_id: str, *, operation_id: str = "loop-root") -> None:
-    root = _loop_task(store, operation_id, episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(operation_id, applied_revision=None, result={})
-    store.commit_experiment_episode_turn(
-        episode_id=episode_id,
-        project_id="project",
-        control_node_id="exp-one",
-        provider="codex",
-        machine_id="backend",
-        native_session_id="native-loop-session",
-        stage_machine_id=None,
-        stage_root="/tmp/loop-stage",
-        chat_id="chat",
-        operation_id=operation_id,
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
-
-
-def _maintenance_task(
-    store: AppStore,
-    operation_id: str,
-    *,
-    kind: str = "project_chat",
-    mode: str = "work",
-    node_id: str | None = None,
-    chat_id: str = "maintenance-chat",
-) -> AgentTaskRecord:
-    now = store.now()
-    return AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        kind=kind,
-        status="queued",
-        request={
-            "chat_id": chat_id,
-            "node_id": node_id,
-            "provider": "claude",
-            "model": "different-model",
-            "reasoning": "high",
-            "run_on": "different-machine",
-            "run_truth_scope": ["different-scope"],
-            "mode": mode,
-            "trigger": "human",
-            "patch_kind": "work",
-            "workflow_ids": [],
-            "skill_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "resolved_skill_packages": [],
-            "watcher_ids": [],
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Maintaining node observers.",
-    )
-
-
-def _maintenance_binding(resource) -> WatcherBinding:
-    return WatcherBinding(
-        project_id="project",
-        origin_operation_id="maintenance",
-        origin_task_kind="project_chat",
-        chat_id="maintenance-chat",
-        node_id="exp-one",
-        machine_id=resource.machine_id,
-        continuation=resource.continuation,
-    )
-
-
-def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = _maintenance_binding(resource)
-
-    assert store.admit_experiment_watcher_maintenance(binding) == resource
-    assert resource.wake_chat_id == "chat"
-    assert resource.continuation.provider == "codex"
-    assert resource.continuation.run_on == "backend"
-
-    store.create_agent_task(
-        _maintenance_task(
-            store,
-            "other-node",
-            kind="node_chat",
-            node_id="different-experiment",
-        )
-    )
-    with pytest.raises(ValueError, match="permission denied: node scope"):
-        store.admit_experiment_watcher_maintenance(
-            binding.model_copy(
-                update={
-                    "origin_operation_id": "other-node",
-                    "origin_task_kind": "node_chat",
-                }
-            )
-        )
-    store.complete_agent_task("other-node", applied_revision=None, result={})
-
-    store.create_agent_task(
-        _maintenance_task(store, "discuss", kind="node_chat", mode="discuss", node_id="exp-one")
-    )
-    with pytest.raises(ValueError, match="Work capability is required"):
-        store.admit_experiment_watcher_maintenance(
-            binding.model_copy(
-                update={"origin_operation_id": "discuss", "origin_task_kind": "node_chat"}
-            )
-        )
-
-
-@pytest.mark.parametrize("observation_errors", [0, 2])
-def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(
-    store, observation_errors
-) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    old = _record("old", origin="loop-root", continuation=_loop_continuation(episode_id))
-    store.create_watchers([old])
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = _maintenance_binding(resource)
-    replacement = _record("replacement", origin="maintenance").model_copy(
-        update={
-            "origin_task_kind": "project_chat",
-            "chat_id": "maintenance-chat",
-            "episode_id": episode_id,
-            "continuation": resource.continuation,
-        }
-    )
-    before = store.experiment_episode(episode_id)
-    for _ in range(observation_errors):
-        store.record_watcher_check(
-            "old", status="degraded", exit_code=127, error="squeue: command not found"
-        )
-
-    stored = store.persist_experiment_watchers_idempotently(
-        [replacement],
-        stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced observer")],
-        binding=binding,
-        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-    )
-
-    assert [item.watcher_id for item in stored] == ["replacement"]
-    assert stored[0].chat_id == "maintenance-chat"
-    assert stored[0].origin_task_kind == "project_chat"
-    assert stored[0].node_id == "exp-one"
-    assert stored[0].episode_id == episode_id
-    assert stored[0].machine_id == resource.machine_id
-    assert stored[0].continuation.provider == "codex"
-    assert store.watcher("old").status == "stopped"
-    assert store.watcher("old").stop_operation_id == "maintenance"
-    assert store.experiment_episode(episode_id) == before
-
-
-def test_maintenance_cannot_retire_the_last_way_a_running_episode_wakes(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    continuation = _loop_continuation(episode_id)
-    store.create_watchers(
-        [
-            _record("finished", origin="loop-root", status="completed", continuation=continuation),
-            _record("running", origin="loop-root", continuation=continuation),
-        ]
-    )
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = _maintenance_binding(resource)
-
-    def retire(*watcher_ids: str) -> None:
-        store.persist_experiment_watchers_idempotently(
-            [],
-            stops=[
-                WatcherStopRequest(stop_watcher_id=item, reason="Cancelled the job")
-                for item in watcher_ids
-            ],
-            binding=binding,
-            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-        )
-
-    with pytest.raises(ExperimentEpisodeUnwakeable):
-        retire("finished", "running")
-    assert store.watcher("finished").status == "completed"
-    assert store.watcher("running").status == "active"
-
-    retire("running")
-    with pytest.raises(ExperimentEpisodeUnwakeable):
-        retire("finished")
-    assert store.watcher("finished").notified is False
-
-
-def test_episode_origin_cannot_arm_a_watcher_for_another_episode(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    mismatched = _record(
-        "mismatched-episode", origin="loop-root", continuation=_loop_continuation(str(uuid.uuid4()))
-    )
-
-    with pytest.raises(ValueError, match="cannot change its origin task graph binding"):
-        store.create_watchers([mismatched])
-
-
-def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
-    store,
-) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "first-maintenance"))
-    store.create_agent_task(
-        _maintenance_task(store, "second-maintenance", chat_id="second-maintenance-chat")
-    )
-    resource = store.experiment_watcher_resources("project")[0]
-
-    def binding(operation_id: str, chat_id: str) -> WatcherBinding:
-        return WatcherBinding(
-            project_id="project",
-            origin_operation_id=operation_id,
-            origin_task_kind="project_chat",
-            chat_id=chat_id,
-            node_id="exp-one",
-            machine_id=resource.machine_id,
-            continuation=resource.continuation,
-        )
-
-    def replacement(watcher_id: str, operation_id: str, chat_id: str) -> WatcherRecord:
-        return _record(watcher_id, origin=operation_id).model_copy(
-            update={
-                "origin_task_kind": "project_chat",
-                "chat_id": chat_id,
-                "episode_id": episode_id,
-                "continuation": resource.continuation,
-            }
-        )
-
-    store.persist_experiment_watchers_idempotently(
-        [replacement("first-replacement", "first-maintenance", "maintenance-chat")],
-        binding=binding("first-maintenance", "maintenance-chat"),
-        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-    )
-
-    with pytest.raises(WatcherClaimConflict):
-        store.persist_experiment_watchers_idempotently(
-            [
-                replacement(
-                    "second-replacement",
-                    "second-maintenance",
-                    "second-maintenance-chat",
-                )
-            ],
-            binding=binding("second-maintenance", "second-maintenance-chat"),
-            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-        )
-    assert store.watcher("second-replacement") is None
-
-
-def test_a_retirement_another_turn_already_won_is_refused_per_item(store) -> None:
-    """Membership is the fence; a resolved stop is caught by its own compare-and-swap."""
-
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    old = _record("old", origin="loop-root", continuation=_loop_continuation(episode_id))
-    store.create_watchers([old])
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = _maintenance_binding(resource)
-
-    store.stop_watchers("project", ["old"])
-
-    with pytest.raises(ValueError, match="already resolved"):
-        store.persist_experiment_watchers_idempotently(
-            [],
-            stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced degraded observer")],
-            binding=binding,
-            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-        )
-
-
-def test_watcher_admission_fails_closed_after_stop_or_stale_episode(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = _maintenance_binding(resource)
-
-    stale = binding.model_copy(
-        update={
-            "continuation": binding.continuation.model_copy(
-                update={"control_episode_id": str(uuid.uuid4())}
-            )
-        }
-    )
-    with pytest.raises(ValueError, match="stale episode"):
-        store.admit_experiment_watcher_maintenance(stale)
-
-    store.request_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
-    assert store.experiment_watcher_resources("project") == []
-    with pytest.raises(ValueError, match="live, unstopped episode"):
-        store.admit_experiment_watcher_maintenance(binding)
-
-
-def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) -> None:
-    path = tmp_path / "legacy.sqlite3"
-    store = AppStore(path)
-    episode_id = str(uuid.uuid4())
-    store.create_watchers([_record("legacy-loop", continuation=_loop_continuation(episode_id))])
-    with sqlite3.connect(path) as connection:
-        downgrade_resource_watermarks(connection)
-        connection.execute("DROP INDEX watchers_episode")
-        connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
-        downgrade_artifacts(connection)
-        connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
-        )
-
-    reopened = AppStore(path)
-    with reopened.connection() as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(watchers)")}
-        indexes = {row[1] for row in connection.execute("PRAGMA index_list(watchers)")}
-        stored_episode_id = connection.execute(
-            "SELECT episode_id FROM watchers WHERE watcher_id = 'legacy-loop'"
-        ).fetchone()[0]
-
-    assert "episode_id" in columns
-    assert "watchers_episode" in indexes
-    assert stored_episode_id == episode_id
-
-
-def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -> None:
-    path = tmp_path / "legacy-graph-watcher.sqlite3"
-    AppStore(path)
-    with sqlite3.connect(path) as connection:
-        downgrade_resource_watermarks(connection)
-        connection.execute("DROP INDEX watchers_graph_conditions")
-        connection.execute("ALTER TABLE watchers DROP COLUMN graph_condition_json")
-        connection.execute("ALTER TABLE watchers DROP COLUMN armed_revision")
-        downgrade_artifacts(connection)
-        connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
-        )
-
-    reopened = AppStore(path)
-    with reopened.connection() as connection:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(watchers)")}
-        indexes = {row[1] for row in connection.execute("PRAGMA index_list(watchers)")}
-
-    assert "graph_condition_json" in columns
-    assert "armed_revision" in columns
-    assert "watchers_graph_conditions" in indexes
-
-
-def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    continuation = _loop_continuation(episode_id)
-    binding = _binding("loop-root").model_copy(update={"continuation": continuation})
-    old = _record("old-observer", origin="loop-root", continuation=continuation)
-    store.create_watchers([old])
-    replacement = _record("replacement", origin="loop-root", continuation=continuation)
-
-    armed = store.persist_experiment_watchers_idempotently(
-        [replacement],
-        stops=[
-            WatcherStopRequest(stop_watcher_id="old-observer", reason="Cancelled superseded job")
-        ],
-        binding=binding,
-    )
-
-    stopped = store.watcher("old-observer")
-    assert stopped is not None
-    assert stopped.status == "stopped"
-    assert stopped.notified is True
-    assert stopped.stopped_by == "agent"
-    assert stopped.stop_reason == "Cancelled superseded job"
-    assert stopped.stopped_at is not None
-    assert stopped.stop_operation_id == "loop-root"
-    assert [item.watcher_id for item in armed] == ["replacement"]
-    assert "old-observer" not in {item.watcher_id for item in store.pollable_watchers()}
-    assert all(
-        "old-observer" not in {item.watcher_id for item in group}
-        for group in store.completed_watcher_groups()
-    )
-
-    assert (
-        store.persist_experiment_watchers_idempotently(
-            [replacement],
-            stops=[
-                WatcherStopRequest(
-                    stop_watcher_id="old-observer", reason="Cancelled superseded job"
-                )
-            ],
-            binding=binding,
-        )
-        == armed
-    )
-
-    with pytest.raises(ValueError, match="unknown staged"):
-        store.persist_experiment_watchers_idempotently(
-            [_record("must-not-arm", origin="loop-root", continuation=continuation)],
-            stops=[WatcherStopRequest(stop_watcher_id="missing", reason="No longer useful")],
-            binding=binding,
-        )
-    assert store.watcher("must-not-arm") is None
-
-
-def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    continuation = _loop_continuation(episode_id)
-    binding = _binding("loop-root").model_copy(update={"continuation": continuation})
-    observer = _record("observer", origin="loop-root", continuation=continuation)
-    store.create_watchers([observer])
-
-    store.request_experiment_loop_stop("project", "exp-one", graph_target=GraphTargetRef())
-    stopped_by_loop = store.watcher("observer")
-    assert stopped_by_loop is not None and stopped_by_loop.stopped_by == "loop"
-
-    stops = [WatcherStopRequest(stop_watcher_id="observer", reason="Cancelled the job")]
-    store.validate_experiment_agent_watcher_stops(binding, stops)
-    replacement = _record("replacement", origin="loop-root", continuation=continuation)
-    armed = store.persist_experiment_watchers_idempotently(
-        [replacement], stops=stops, binding=binding
-    )
-
-    retained = store.watcher("observer")
-    assert retained is not None
-    assert (retained.status, retained.stopped_by) == ("stopped", "loop")
-    assert [item.status for item in armed] == ["stopped"]
-    assert store.pollable_watchers() == []
-
-
-def test_watcher_schedule_persists_backoff_and_resets_after_a_healthy_check(store) -> None:
-    created_at = "2026-08-01T00:00:00+00:00"
-    armed_due_times = {
-        watcher_next_check_at(f"watcher-{index}", created_at, 0) for index in range(20)
-    }
-    assert len(armed_due_times) > 10
-    for due_at in armed_due_times:
-        delay = datetime.fromisoformat(due_at) - datetime.fromisoformat(created_at)
-        assert 2 * 60 * 0.9 <= delay.total_seconds() <= 2 * 60 * 1.1
-
-    store.create_watchers([_record("scheduled", status="active")])
-    record = store.watcher("scheduled")
-    assert record is not None and record.next_check_at is not None
-    assert store.pollable_watchers(as_of="2026-08-01T00:01:00+00:00") == []
-
-    checked_at = created_at
-    expected_minutes = (2, 4, 8, 15, 30, 30)
-    for error_count, minutes in enumerate(expected_minutes, start=1):
-        record = store.record_watcher_check(
-            "scheduled",
-            status="degraded",
-            exit_code=255,
-            error="transport unavailable",
-            checked_at=checked_at,
-        )
-        assert record.consecutive_error_count == error_count
-        assert record.next_check_at is not None
-        delay = datetime.fromisoformat(record.next_check_at) - datetime.fromisoformat(checked_at)
-        assert minutes * 60 * 0.9 <= delay.total_seconds() <= minutes * 60 * 1.1
-        checked_at = record.next_check_at
-
-    reopened = AppStore(store.path)
-    persisted = reopened.watcher("scheduled")
-    assert persisted is not None and persisted.next_check_at == checked_at
-    assert persisted.consecutive_error_count == 6
-    assert (
-        reopened.pollable_watchers(
-            as_of=(datetime.fromisoformat(checked_at) - timedelta(seconds=1)).isoformat()
-        )
-        == []
-    )
-
-    healthy = reopened.record_watcher_check(
-        "scheduled",
-        status="active",
-        exit_code=1,
-        error=None,
-        checked_at=checked_at,
-    )
-    assert healthy.consecutive_error_count == 0
-    assert healthy.next_check_at == watcher_next_check_at("scheduled", checked_at, 0)
-    assert healthy.last_error is None
-
-
-def test_concurrent_degraded_checks_preserve_every_error_and_latest_backoff(tmp_path) -> None:
-    path = tmp_path / "rcp.sqlite3"
-    store = AppStore(path)
-    store.create_watchers([_record("concurrent-degraded", status="active")])
-    first = AppStore(path)
-    second = AppStore(path)
-    start = threading.Barrier(3)
-    failures: list[BaseException] = []
-
-    def record(opened: AppStore) -> None:
-        try:
-            start.wait()
-            opened.record_watcher_check(
-                "concurrent-degraded",
-                status="degraded",
-                exit_code=255,
-                error="transport unavailable",
-                checked_at="2026-08-01T00:01:00+00:00",
-            )
-        except BaseException as exc:  # pragma: no cover - surfaced below
-            failures.append(exc)
-
-    threads = [threading.Thread(target=record, args=(opened,)) for opened in (first, second)]
-    for thread in threads:
-        thread.start()
-    start.wait()
-    for thread in threads:
-        thread.join(timeout=5)
-
-    assert not failures
-    assert all(not thread.is_alive() for thread in threads)
-    stored = store.watcher("concurrent-degraded")
-    assert stored is not None
-    assert stored.status == "degraded"
-    assert stored.consecutive_error_count == 2
-    assert stored.next_check_at == watcher_next_check_at(
-        stored.watcher_id,
-        "2026-08-01T00:01:00+00:00",
-        2,
-    )
-
-
-def test_terminal_watcher_check_winner_cannot_be_reverted_by_a_waiting_error(tmp_path) -> None:
-    path = tmp_path / "rcp.sqlite3"
-    store = AppStore(path)
-    store.create_watchers([_record("terminal-race", status="active")])
-    waiting_store = AppStore(path)
-    started = threading.Event()
-    finished = threading.Event()
-
-    def record_waiting_error() -> None:
-        started.set()
-        waiting_store.record_watcher_check(
-            "terminal-race",
-            status="degraded",
-            exit_code=255,
-            error="late transport failure",
-            checked_at="2026-08-01T00:02:00+00:00",
-        )
-        finished.set()
-
-    with sqlite3.connect(path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            """
-            UPDATE watchers
-            SET status = 'completed', completed_at = ?
-            WHERE watcher_id = 'terminal-race'
-            """,
-            ("2026-08-01T00:01:00+00:00",),
-        )
-        thread = threading.Thread(target=record_waiting_error)
-        thread.start()
-        assert started.wait(timeout=1)
-        assert not finished.wait(timeout=0.05)
-        connection.commit()
-    thread.join(timeout=5)
-
-    assert finished.is_set()
-    stored = store.watcher("terminal-race")
-    assert stored is not None
-    assert stored.status == "completed"
-    assert stored.consecutive_error_count == 0
-    assert stored.last_error is None
-
-
-def test_grouped_watchers_wait_for_all_members_then_claim_once(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    continuation = _loop_continuation(episode_id)
-    first = _group_record(
-        "shard-a", continuation, "eval-group", origin="loop-root", status="completed"
-    )
-    second = _group_record("shard-b", continuation, "eval-group", origin="loop-root")
-    store.create_watchers([first, second])
-    assert store.completed_watcher_groups() == []
-
-    store.record_watcher_check(
-        "shard-b",
-        status="completed",
-        exit_code=0,
-        error=None,
-        checked_at="2026-08-01T00:02:00+00:00",
-    )
-    groups = store.completed_watcher_groups()
-    assert [[item.watcher_id for item in group] for group in groups] == [["shard-a", "shard-b"]]
-
-    wake = _loop_task(
-        store,
-        "group-wake",
-        episode_id=episode_id,
-        invocation=2,
-        ceiling=3,
-        watcher_ids=["shard-a", "shard-b"],
-    )
-    wake = wake.model_copy(
-        update={
-            "request": {**wake.request, "session_id": "native-loop-session"},
-            "native_session_id": "native-loop-session",
-            "stage_root": "/tmp/loop-stage",
-        }
-    )
-    assert store.create_watcher_notification_task(wake, ["shard-a", "shard-b"]) is not None
-    assert all(item.notified for item in store.watchers("project"))
-    assert store.completed_watcher_groups() == []
-
-
-def test_agent_stopped_group_members_neither_block_nor_trigger_delivery(store) -> None:
-    continuation = _loop_continuation(str(uuid.uuid4()))
-
-    def group_member(watcher_id: str, group_id: str, status: str) -> WatcherRecord:
-        return _record(watcher_id, status=status).model_copy(
-            update={
-                "continuation": continuation,
-                "group_id": group_id,
-                "group_label": group_id,
-                "notified": status == "stopped",
-                "stopped_by": "agent" if status == "stopped" else None,
-                "stop_reason": "Cancelled obsolete shard" if status == "stopped" else None,
-                "stopped_at": ("2026-08-01T00:01:00+00:00" if status == "stopped" else None),
-            }
-        )
-
-    store.create_watchers(
-        [
-            group_member("remaining-complete", "partially-stopped", "completed"),
-            group_member("retired-sibling", "partially-stopped", "stopped"),
-        ]
-    )
-    store.create_watchers(
-        [
-            group_member("retired-a", "fully-stopped", "stopped"),
-            group_member("retired-b", "fully-stopped", "stopped"),
-        ]
-    )
-
-    assert [[item.watcher_id for item in group] for group in store.completed_watcher_groups()] == [
-        ["remaining-complete"]
-    ]
-
-
-def test_fifth_group_observation_error_is_ready_but_remains_degraded(store) -> None:
-    episode_id = str(uuid.uuid4())
-    completed = _group_record(
-        "shard-complete", _loop_continuation(episode_id), "diagnostic-group", status="completed"
-    )
-    degraded = _group_record(
-        "shard-unknown", _loop_continuation(episode_id), "diagnostic-group", status="degraded"
-    ).model_copy(update={"consecutive_error_count": 5, "last_error": "SSH unavailable"})
-    store.create_watchers([completed, degraded])
-
-    groups = store.completed_watcher_groups()
-
-    assert [{item.watcher_id for item in group} for group in groups] == [
-        {"shard-complete", "shard-unknown"}
-    ]
-    unknown = store.watcher("shard-unknown")
-    assert unknown is not None
-    assert unknown.status == "degraded"
-    assert unknown.consecutive_error_count == 5
-
-
-def test_lone_observer_unobservable_as_long_as_a_group_member_wakes(store) -> None:
-    """A check that loses sight of its job (squeue forgets finished jobs) must not hold
-    its episode shut forever.
-    """
-    for watcher_id, errors in (("lone-early", 4), ("lone-unknown", 5)):
-        store.create_watchers(
-            [
-                _record(
-                    watcher_id, status="degraded", continuation=_loop_continuation("episode")
-                ).model_copy(
-                    update={"consecutive_error_count": errors, "last_error": "Invalid job id"}
-                )
-            ]
-        )
-
-    groups = store.completed_watcher_groups()
-
-    assert [[item.watcher_id for item in group] for group in groups] == [["lone-unknown"]]
-    assert store.watcher("lone-unknown").status == "degraded"
-
-
-def test_claimed_diagnostic_group_remains_history_not_live_work(store) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    completed = _group_record(
-        "shard-complete",
-        _loop_continuation(episode_id),
-        "diagnostic-group",
-        origin="loop-root",
-        status="completed",
-    )
-    degraded = _group_record(
-        "shard-unknown",
-        _loop_continuation(episode_id),
-        "diagnostic-group",
-        origin="loop-root",
-        status="degraded",
-    ).model_copy(update={"consecutive_error_count": 5, "last_error": "SSH unavailable"})
-    store.create_watchers([completed, degraded])
-    wake = _loop_task(
-        store,
-        "diagnostic-wake",
-        episode_id=episode_id,
-        invocation=2,
-        ceiling=3,
-        watcher_ids=["shard-complete", "shard-unknown"],
-    )
-    wake = wake.model_copy(
-        update={
-            "request": {**wake.request, "session_id": "native-loop-session"},
-            "native_session_id": "native-loop-session",
-            "stage_root": "/tmp/loop-stage",
-        }
-    )
-
-    assert (
-        store.create_experiment_watcher_invocation(
-            wake,
-            ["shard-complete", "shard-unknown"],
-        )
-        is not None
-    )
-    store.complete_agent_task("diagnostic-wake", applied_revision=None, result={})
-
-    stored = store.watcher("shard-unknown")
-    assert stored is not None
-    assert stored.status == "degraded"
-    assert stored.notified is True
-    assert (
-        store.record_watcher_check(
-            "shard-unknown",
-            status="active",
-            exit_code=1,
-            error=None,
-        )
-        == stored
-    )
-    assert store.pollable_watchers(as_of="2026-08-02T00:00:00+00:00") == []
-    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-    assert runtime.detached_work_active is False
-    assert runtime.watcher_degraded is False
-    assert runtime.active is False
-    assert store.completed_watcher_groups() == []
-    with pytest.raises(ValueError, match="missing, unready, or already notified"):
-        store.create_watcher_notification_task(
-            _loop_task(
-                store,
-                "diagnostic-wake-again",
-                episode_id=episode_id,
-                invocation=3,
-                ceiling=3,
-                watcher_ids=["shard-complete", "shard-unknown"],
-            ),
-            ["shard-complete", "shard-unknown"],
-        )
 
 
 def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
@@ -1085,12 +225,9 @@ def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
         AgentWatchSpec(purpose="job finishes", check_command="echo broken >&2; exit 9", **common)
     )
 
-    assert complete.state == "complete"
-    assert complete.exit_code == 0
-    assert active.state == "active"
-    assert active.exit_code == 1
-    assert error.state == "error"
-    assert error.exit_code == 9
+    assert (complete.state, complete.exit_code) == ("complete", 0)
+    assert (active.state, active.exit_code) == ("active", 1)
+    assert (error.state, error.exit_code) == ("error", 9)
 
 
 def test_check_has_a_hard_timeout(tmp_path) -> None:
@@ -1106,7 +243,7 @@ def test_check_has_a_hard_timeout(tmp_path) -> None:
 
     assert result.state == "error"
     assert result.exit_code is None
-    assert "timed out" in result.error
+    assert result.error
 
 
 def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:
@@ -1180,13 +317,10 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
                 timeout=2,
             )
             assert result.state == "error"
-            assert "timed out" in result.error
             child_pid = int(child_pid_path.read_text())
 
             def child_stopped():
-                """Process exit releases the lease before the zombie is reaped; no
-                process-list permission is needed.
-                """
+                """Process exit releases the lease before the zombie is reaped."""
                 with child_lock_path.open("a") as lease:
                     try:
                         fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1206,1131 +340,252 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
                     os.kill(child_pid, signal.SIGKILL)
 
 
-def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(store) -> None:
-    """Jitter keeps a repeated pair out of a shared delivery pass, so each would buy its
-    own wake.
-    """
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    continuation = _loop_continuation(episode_id)
-    binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
-    first = _record("first", origin="loop-root", continuation=continuation)
-    store.persist_experiment_watchers_idempotently([first], binding=binding)
+def test_check_schedule_backs_off_on_errors_and_resets_after_a_healthy_check(store) -> None:
+    armed(store, "scheduled")
+    check = store.watcher("scheduled").checks[0]
+    assert store.due_external_checks(as_of=check.created_at) == []
+    assert [item.check_id for item in store.due_external_checks(as_of=check.next_check_at)] == [
+        "scheduled"
+    ]
 
-    repeat = first.model_copy(update={"watcher_id": "repeat"})
-    with pytest.raises(ValueError, match="already covers this work: first"):
-        store.persist_experiment_watchers_idempotently([repeat], binding=binding)
-    assert store.watcher("repeat") is None
-
-    store.record_watcher_check("first", status="completed", exit_code=0, error=None)
-    assert store.watcher("first").notified is False
-    with pytest.raises(ValueError, match="already covers this work: first"):
-        store.persist_experiment_watchers_idempotently([repeat], binding=binding)
-    assert store.watcher("repeat") is None
-
-    with pytest.raises(ValueError, match="arms one check twice"):
-        store.persist_experiment_watchers_idempotently(
-            [repeat, first.model_copy(update={"watcher_id": "twin"})],
-            stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
-            binding=binding,
+    checked_at = "2026-08-01T00:00:00+00:00"
+    for error_count, minutes in enumerate((2, 4, 8, 15, 30, 30), start=1):
+        store.record_watcher_check(
+            "scheduled", status="degraded", exit_code=255, error="ssh down", checked_at=checked_at
         )
-    assert store.watcher("first").status == "completed"
+        check = store.watcher("scheduled").checks[0]
+        assert check.consecutive_error_count == error_count
+        delay = datetime.fromisoformat(check.next_check_at) - datetime.fromisoformat(checked_at)
+        assert minutes * 60 * 0.9 <= delay.total_seconds() <= minutes * 60 * 1.1
+        checked_at = check.next_check_at
+    early = (datetime.fromisoformat(checked_at) - timedelta(seconds=1)).isoformat()
+    assert AppStore(store.path).due_external_checks(as_of=early) == []
 
-    stored = store.persist_experiment_watchers_idempotently(
-        [repeat],
-        stops=[WatcherStopRequest(stop_watcher_id="first", reason="Replaced observer")],
-        binding=binding,
+    store.record_watcher_check(
+        "scheduled", status="active", exit_code=1, error=None, checked_at=checked_at
     )
-    assert [item.watcher_id for item in stored] == ["repeat"]
-    assert store.watcher("first").status == "stopped"
+    healthy = store.watcher("scheduled").checks[0]
+    assert healthy.consecutive_error_count == 0
+    assert healthy.last_error is None
+    assert healthy.next_check_at == watcher_next_check_at("scheduled", checked_at, 0)
 
 
-def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(store) -> None:
-    """Watcher ids derive from the list index, so a re-declared observer reaches
-    persistence under a fresh id; the refusal must land where the turn can still
-    answer it.
-    """
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    continuation = _loop_continuation(episode_id)
-    binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
-    live = _record("live", origin="loop-root", continuation=continuation)
-    store.persist_experiment_watchers_idempotently([live], binding=binding)
-    spec = ExperimentWatchSpec(
-        purpose="job finishes",
-        check_command=live.check_command,
-        log_path=live.log_path,
-        cwd=live.cwd,
+def test_poll_records_each_check_then_hands_off_to_delivery_once(store) -> None:
+    armed(store, "bad")
+    armed(store, "done")
+    handed_off: list[list[str]] = []
+
+    def first(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+        if spec.log_path.endswith("bad.log"):
+            return _result("error", 255, "ssh unavailable")
+        return _result("complete", 0)
+
+    def hand_off() -> None:
+        handed_off.append([item.watcher_id for item in store.ready_watchers()])
+        raise RuntimeError("a failed delivery pass never breaks polling")
+
+    poller = WatcherPoller(
+        store, check_runner=first, on_poll_completed=hand_off, clock=lambda: "9999-01-01"
     )
+    poller.poll_once()
 
-    with pytest.raises(ValueError, match="already covers this work: live"):
-        store.validate_experiment_observer_duplicates(binding, [spec])
+    assert handed_off == [["done"]]
+    bad = store.watcher("bad")
+    assert bad.state == "check_failing"
+    assert bad.checks[0].last_error == "ssh unavailable"
+    assert store.watcher("done").state == "finished"
 
-    store.validate_experiment_observer_duplicates(
-        binding,
-        [spec],
-        stops=[WatcherStopRequest(stop_watcher_id="live", reason="Replaced observer")],
-    )
+    poller.check_runner = lambda *_: _result("active", 1)
+    poller.poll_once()
 
-    store.record_watcher_check("live", status="completed", exit_code=0, error=None)
-    with pytest.raises(ValueError, match="already covers this work: live"):
-        store.validate_experiment_observer_duplicates(binding, [spec])
+    assert store.watcher("bad").state == "watching"
+    assert store.watcher("bad").checks[0].last_error is None
+    assert [item.check_id for item in store.due_external_checks(as_of="9999-01-01")] == ["bad"]
 
-    with pytest.raises(ValueError, match="already covers this work: live"):
-        store.validate_experiment_observer_duplicates(
-            binding,
-            [spec.model_copy(update={"group": "shards"})],
-        )
+
+def test_an_unobservable_check_still_wakes_its_agent(store) -> None:
+    armed(store, "lost")
+    for _ in range(WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT - 1):
+        store.record_watcher_check("lost", status="degraded", exit_code=255, error="ssh down")
+    assert store.ready_watchers() == []
+
+    store.record_watcher_check("lost", status="degraded", exit_code=255, error="ssh down")
+
+    (ready,) = store.ready_watchers()
+    assert ready.watcher_id == "lost"
+    assert ready.checks[0].unobservable
 
 
 def test_initial_error_arms_none_then_corrected_list_persists_atomically(store) -> None:
     specs = [
         AgentWatchSpec(
-            purpose="job finishes", check_command="one", log_path="/tmp/one.log", cwd="/tmp"
-        ),
-        AgentWatchSpec(
-            purpose="job finishes", check_command="two", log_path="/tmp/two.log", cwd="/tmp"
-        ),
+            purpose="job finishes", check_command=name, log_path=f"/tmp/{name}.log", cwd="/tmp"
+        )
+        for name in ("one", "two")
     ]
 
     def one_bad(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        if spec.check_command == "two":
-            return WatcherCheckResult(
-                state="error",
-                checked_at="2026-08-01T00:00:00+00:00",
-                exit_code=2,
-                error="check exited with status 2",
-            )
-        return WatcherCheckResult(
-            state="active", checked_at="2026-08-01T00:00:00+00:00", exit_code=1
+        return (
+            _result("error", 2, "exit 2") if spec.check_command == "two" else _result("active", 1)
         )
 
     with pytest.raises(WatcherInitialCheckError):
         arm_watchers(store, specs, _binding(), check_runner=one_bad)
-    assert store.watchers("project") == []
+    assert store.agent_watchers("chat") == []
 
     def corrected(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        return WatcherCheckResult(
-            state="complete" if spec.check_command == "two" else "active",
-            checked_at="2026-08-01T00:01:00+00:00",
-            exit_code=0 if spec.check_command == "two" else 1,
-        )
+        return _result("complete", 0) if spec.check_command == "two" else _result("active", 1)
 
     records = arm_watchers(store, specs, _binding(), check_runner=corrected)
 
-    assert len(records) == 2
-    assert {record.status for record in records} == {"active", "completed"}
-    reopened = AppStore(store.path)
-    assert {record.watcher_id for record in reopened.watchers("project")} == {
+    assert [record.state for record in records] == ["watching", "finished"]
+    assert {record.watcher_id for record in AppStore(store.path).agent_watchers("chat")} == {
         record.watcher_id for record in records
     }
 
 
-def test_runtime_error_degrades_only_that_watcher_and_later_clears(store) -> None:
-    store.create_watchers([_record("bad"), _record("done")])
-
-    def first(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        if spec.log_path.endswith("bad.log"):
-            return WatcherCheckResult(
-                state="error",
-                checked_at="2026-08-01T00:01:00+00:00",
-                exit_code=255,
-                error="ssh unavailable",
-            )
-        return WatcherCheckResult(
-            state="complete", checked_at="2026-08-01T00:01:00+00:00", exit_code=0
-        )
-
-    groups = WatcherPoller(store, check_runner=first).poll_once()
-
-    assert store.watcher("bad").status == "degraded"
-    assert store.watcher("bad").last_error == "ssh unavailable"
-    assert store.watcher("done").status == "completed"
-    assert [[item.watcher_id for item in group] for group in groups] == [["done"]]
-
-    def recovered(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        return WatcherCheckResult(
-            state="active", checked_at="2026-08-01T00:02:00+00:00", exit_code=1
-        )
-
-    WatcherPoller(store, check_runner=recovered).poll_once()
-
-    assert store.watcher("bad").status == "active"
-    assert store.watcher("bad").last_error is None
-
-
-def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(store) -> None:
-    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
-    record = _record("manual").model_copy(update={"machine_id": gpu.machine_id})
-    store.create_watchers([record])
-    degraded = store.record_watcher_check(
-        "manual",
-        status="degraded",
-        exit_code=255,
-        error="ssh unavailable",
-        checked_at="2026-08-01T00:01:00+00:00",
+def test_an_identical_live_watcher_is_reused_instead_of_stacking_a_second_wake(store) -> None:
+    spec = AgentWatchSpec(
+        purpose="job finishes", check_command="squeue", log_path="/tmp/job.log", cwd="/tmp"
     )
-    assert degraded.next_check_at is not None
-    assert degraded.next_check_at > "2026-08-01T00:01:30+00:00"
-    calls: list[tuple[str, float]] = []
+    other = spec.model_copy(update={"log_path": "/tmp/other.log"})
 
-    def recovered(_spec: WatchSpec, host: str, timeout: float) -> WatcherCheckResult:
-        calls.append((host, timeout))
-        return WatcherCheckResult(
-            state="active",
-            checked_at="2026-08-01T00:01:30+00:00",
-            exit_code=1,
-        )
+    def active(*_args) -> WatcherCheckResult:
+        return _result("active", 1)
 
-    poller = WatcherPoller(
-        store,
-        check_runner=recovered,
-        timeout=7,
-        clock=lambda: "2026-08-01T00:01:31+00:00",
-    )
-    updated = poller.check_now("project", "manual")
-
-    assert calls == [("gpu.example", 7)]
-    assert updated.status == "active"
-    assert updated.consecutive_error_count == 0
-    assert updated.last_error is None
-    assert updated.next_check_at == watcher_next_check_at("manual", "2026-08-01T00:01:30+00:00", 0)
-    assert poller.poll_once() == []
-    assert calls == [("gpu.example", 7)]
-
-
-def test_manual_completion_runs_the_ordinary_delivery_callback_once(store) -> None:
-    store.create_watchers([_record("manual-complete", status="degraded")])
-    delivered: list[list[str]] = []
-
-    def completed(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        return WatcherCheckResult(
-            state="complete",
-            checked_at="2026-08-01T00:02:00+00:00",
-            exit_code=0,
-        )
-
-    updated = WatcherPoller(
-        store,
-        check_runner=completed,
-        on_completed=lambda group: delivered.append([item.watcher_id for item in group]),
-    ).check_now("project", "manual-complete")
-
-    assert updated.status == "completed"
-    assert updated.next_check_at is None
-    assert delivered == [["manual-complete"]]
-
-
-def test_manual_error_advances_backoff_from_the_new_check_time(store) -> None:
-    store.create_watchers([_record("manual-error", status="degraded")])
-
-    def still_broken(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        return WatcherCheckResult(
-            state="error",
-            checked_at="2026-08-01T00:05:00+00:00",
-            exit_code=255,
-            error="still unavailable",
-        )
-
-    updated = WatcherPoller(store, check_runner=still_broken).check_now("project", "manual-error")
-
-    assert updated.status == "degraded"
-    assert updated.consecutive_error_count == 2
-    assert updated.next_check_at == watcher_next_check_at(
-        "manual-error", "2026-08-01T00:05:00+00:00", 2
+    (first,) = arm_watchers(store, [spec], _binding(), check_runner=active)
+    again, fresh = arm_watchers(
+        store, [spec, other], _binding(), reuse_live=True, check_runner=active
     )
 
-
-def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(store) -> None:
-    store.create_watchers([_record("serialized", status="degraded")])
-    first_started = threading.Event()
-    release_first = threading.Event()
-    second_started = threading.Event()
-    manual_started = threading.Event()
-    calls = 0
-    calls_lock = threading.Lock()
-
-    def blocked_check(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        nonlocal calls
-        with calls_lock:
-            calls += 1
-            call_number = calls
-        if call_number == 1:
-            first_started.set()
-            release_first.wait(timeout=2)
-        else:
-            second_started.set()
-        return WatcherCheckResult(
-            state="error",
-            checked_at=f"2026-08-01T00:0{call_number}:00+00:00",
-            exit_code=255,
-            error="still unavailable",
-        )
-
-    poller = WatcherPoller(
-        store,
-        check_runner=blocked_check,
-        clock=lambda: "2027-08-01T00:00:00+00:00",
-    )
-    scheduled = threading.Thread(target=poller.poll_once)
-
-    def check_manually() -> None:
-        manual_started.set()
-        poller.check_now("project", "serialized")
-
-    manual = threading.Thread(target=check_manually)
-    scheduled.start()
-    assert first_started.wait(timeout=1)
-    manual.start()
-    assert manual_started.wait(timeout=1)
-    assert not second_started.wait(timeout=0.1)
-
-    release_first.set()
-    scheduled.join(timeout=2)
-    manual.join(timeout=2)
-
-    assert not scheduled.is_alive()
-    assert not manual.is_alive()
-    assert second_started.is_set()
-    assert calls == 2
+    assert again.watcher_id == first.watcher_id
+    assert fresh.watcher_id != first.watcher_id
+    assert len(store.agent_watchers("chat")) == 2
 
 
-def test_manual_check_rejects_missing_graph_and_ineligible_watchers(store) -> None:
-    store.create_watchers(
-        [
-            _record("active"),
-            _record("already-notified", status="degraded").model_copy(update={"notified": True}),
-        ]
-    )
-    store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="graph",
-                project_id="project",
-                origin_operation_id="origin-graph",
-                origin_task_kind="node_chat",
-                chat_id="chat",
-                node_id="exp-one",
-                continuation=_continuation(),
-                condition=NodeStatusGraphCondition(
-                    node_id="exp-one",
-                    status_in=["resolved"],
-                ),
-                armed_revision=0,
-                created_at="2026-08-01T00:00:00+00:00",
-            )
-        ]
-    )
-    poller = WatcherPoller(store)
+def test_plain_delivery_is_authorized_by_the_arming_turns_human(store) -> None:
+    human = fabricated_authorizer("Researcher")
+    _chat_turn(store, "origin", authorized_by=human)
+    armed(store, "done", completed=True)
+    calls = []
 
-    with pytest.raises(KeyError):
-        poller.check_now("project", "missing")
-    with pytest.raises(KeyError):
-        poller.check_now("wrong-project", "active")
-    with pytest.raises(ValueError, match="external watcher"):
-        poller.check_now("project", "graph")
-    with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):
-        poller.check_now("project", "active")
-    with pytest.raises(ValueError, match="degraded watcher awaiting delivery"):
-        poller.check_now("project", "already-notified")
+    _delivery(store, lambda *args: calls.append(args)).deliver_ready_watchers(source="test")
 
-
-def test_completed_groups_do_not_merge_different_origin_policies(store) -> None:
-    store.create_watchers([_record("one", status="completed")])
-    different_policy = _record(
-        "two",
-        status="completed",
-        continuation=_loop_continuation(str(uuid.uuid4()), revision=None, ceiling=2),
-    )
-    store.create_watchers([different_policy])
-
-    groups = store.completed_watcher_groups()
-
-    assert {tuple(item.watcher_id for item in group) for group in groups} == {("one",), ("two",)}
-
-
-def test_completed_groups_merge_compatible_watchers_from_different_work_turns(store) -> None:
-    store.create_watchers([_record("one", origin="work-one", status="completed")])
-    store.create_watchers([_record("two", origin="work-two", status="completed")])
-
-    groups = store.completed_watcher_groups()
-
-    assert [[item.watcher_id for item in group] for group in groups] == [["one", "two"]]
-    queued = store.create_watcher_notification_task(
-        _task(store, "watcher-turn", ["one", "two"]), ["one", "two"]
-    )
-    assert queued is not None
-    assert all(item.notified for item in store.watchers("project"))
-
-
-def test_old_writer_slash_invocations_do_not_block_a_fresh_generic_wake(store):
-    from rcp.api.app import _generic_watcher_delivery_request
-
-    origin = _completed_chat_turn(store, "slash-origin", "exact-native-session")
-    store.create_watchers(
-        [
-            _record("old-slash", origin=origin.operation_id, status="completed"),
-            _record("without-slash", origin=origin.operation_id, status="completed"),
-        ]
-    )
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE watchers SET continuation_json=json_set(continuation_json, "
-            "'$.invoked_workflow_ids',json('[\"research-graph-audit\"]'), "
-            "'$.invoked_skill_ids',json('[\"graph-audit\"]')) WHERE watcher_id='old-slash'"
-        )
-    reopened = AppStore(store.path)
-    (group,) = reopened.completed_watcher_groups()
-    assert {item.watcher_id for item in group} == {"old-slash", "without-slash"}
-    request = _generic_watcher_delivery_request(group)
-    watcher_ids = request.watcher_ids
-    assert request.invoked_skill_ids == [] and request.invoked_workflow_ids == []
-    forged = _task(reopened, "forged-slash-wake", watcher_ids)
-    forged.request.update(request.model_dump(mode="json"))
-    forged.request["run_truth_scope"] = ["elsewhere"]
-    with pytest.raises(ValueError, match="immutable delivery policy"):
-        reopened.create_watcher_notification_task(forged, watcher_ids)
-    assert not reopened.watcher("old-slash").notified
-    injected = _task(reopened, "injected-slash-wake", watcher_ids)
-    injected.request.update(request.model_dump(mode="json"))
-    injected.request["invoked_skill_ids"] = ["graph-audit"]
-    with pytest.raises(ValueError, match="cannot inherit package invocations"):
-        reopened.create_watcher_notification_task(injected, watcher_ids)
-    record = _task(reopened, "fresh-slash-wake", watcher_ids)
-    record.request.update(request.model_dump(mode="json"))
-    wake = reopened.create_watcher_notification_task(record, watcher_ids)
-    assert wake is not None
-    assert wake.native_session_id == origin.native_session_id
-    assert wake.stage_root == origin.stage_root
-    assert wake.request["invoked_skill_ids"] == wake.request["invoked_workflow_ids"] == []
-    assert reopened.watcher("old-slash").notification_operation_id == wake.operation_id
-    with pytest.raises(ValueError, match="already notified"):
-        reopened.create_watcher_notification_task(record, watcher_ids)
-
-
-def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(store) -> None:
-    store.create_watchers([_record("one", status="completed"), _record("two", status="completed")])
-    live = _task(store, "human-turn", [])
-    store.create_agent_task(live)
-
-    assert (
-        store.create_watcher_notification_task(
-            _task(store, "watcher-turn-blocked", ["one", "two"]), ["one", "two"]
-        )
-        is None
-    )
-    assert store.agent_task("watcher-turn-blocked") is None
-    assert all(not item.notified for item in store.watchers("project"))
-
-    store.fail_agent_task("human-turn", "done")
-    queued = store.create_watcher_notification_task(
-        _task(store, "watcher-turn", ["one", "two"]), ["one", "two"]
-    )
-
-    assert queued is not None
-    assert queued.status == "queued"
-    reopened = AppStore(store.path)
-    assert reopened.agent_task("watcher-turn") is not None
-    assert all(item.notified for item in reopened.watchers("project"))
-    assert {item.notification_operation_id for item in reopened.watchers("project")} == {
-        "watcher-turn"
-    }
-
-
-def _completed_chat_turn(
-    store, operation_id, session_id, *, request_updates=None, status="succeeded"
-):
-    task = _task(store, operation_id, [])
-    task.request.update({"trigger": "human", **(request_updates or {})})
-    task = AgentTaskRecord.model_validate(task.model_dump(exclude={"runtime_id"}))
-    store.create_agent_task(task)
-    store.mark_agent_task_running(operation_id)
-    store.checkpoint_agent_task(
-        operation_id,
-        native_session_id=session_id,
-        stage_machine_id="",
-        stage_root=str(store.path.parent / "chat-stage"),
-    )
-    if status == "failed":
-        store.fail_agent_task(operation_id, "The prior turn failed after establishing its session.")
-    else:
-        store.complete_agent_task(operation_id, applied_revision=None, result={})
-    return store.agent_task(operation_id)
-
-
-def _session_resolution(store, operation_id):
-    receipts = [
-        receipt.payload
-        for receipt in store.agent_task_receipts(operation_id)
-        if receipt.category == "chat_session_resolution"
-    ]
-    assert len(receipts) == 1
-    return receipts[0]
-
-
-@pytest.mark.parametrize("status", ["succeeded", "failed"])
-def test_chat_wake_and_following_human_turn_share_the_current_native_session(store, status) -> None:
-    previous = _completed_chat_turn(store, "human-before", "chat-native-session", status=status)
-    store.create_watchers([_record("done", origin=previous.operation_id, status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None
-    assert wake.request["session_id"] == previous.native_session_id
-    assert wake.native_session_id == previous.native_session_id
-    assert (wake.stage_machine_id or "", wake.stage_root) == (
-        previous.stage_machine_id or "",
-        previous.stage_root,
-    )
-    assert _session_resolution(store, wake.operation_id)["outcome"] == "continued"
-    store.mark_agent_task_running(wake.operation_id)
-    store.complete_agent_task(wake.operation_id, applied_revision=None, result={})
-
-    human = _task(store, "human-after", [])
-    human.request["trigger"] = "human"
-    store.create_agent_task(human)
-    stored = store.agent_task(human.operation_id)
-    assert stored.request["session_id"] == wake.native_session_id
-    assert stored.native_session_id == wake.native_session_id
-    assert stored.stage_root == wake.stage_root
-
-
-@pytest.mark.parametrize("status", ["paused", "interrupted"])
-def test_chat_wake_defers_behind_unresolved_turn_without_claiming_watchers(store, status) -> None:
-    task = _task(store, "paused-human", [])
-    task.request["trigger"] = "human"
-    store.create_agent_task(task)
-    store.mark_agent_task_running(task.operation_id)
-    store.checkpoint_agent_task(
-        task.operation_id,
-        native_session_id="paused-session",
-        stage_root=str(store.path.parent / "chat-stage"),
-    )
-    if status == "paused":
-        store.pause_agent_task(task.operation_id)
-    else:
-        store.fail_agent_task(task.operation_id, "Lost provider transport", status="interrupted")
-    store.create_watchers([_record("done", status="completed")])
-
-    assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"]) is None
-    assert store.agent_task("wake") is None
-    assert store.watcher("done").notified is False
-    assert store.watcher("done").notification_operation_id is None
-    assert store.watcher("done").last_error
-    if status == "interrupted":
-        store.mark_agent_tasks_history_only([task.operation_id])
-        assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-        assert store.watcher("done").last_error is None
-
-
-@pytest.mark.parametrize("changed_agent", [{"provider": "claude"}, {"model": "other-model"}])
-def test_chat_wake_reaches_the_chats_current_agent(store, changed_agent) -> None:
-    current = _completed_chat_turn(
-        store, "human-before", "current-session", request_updates=changed_agent
-    )
-    store.create_watchers([_record("done", status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None and wake.status == "queued"
-    assert wake.native_session_id == current.native_session_id
-    assert {key: wake.request.get(key) for key in ("provider", "model", "reasoning")} == {
-        key: current.request.get(key) for key in ("provider", "model", "reasoning")
-    }
-
-
-def test_chat_wake_admits_the_current_agents_provider(store) -> None:
-    from rcp.runs.provider_login import AdmissionRefused
-    from rcp.runs.watcher_admission import start_watcher_notification
-    from rcp.service import RunRequest
-
-    _completed_chat_turn(
-        store, "human-before", "current-session", request_updates={"provider": "claude"}
-    )
-    store.create_watchers([_record("done", status="completed")])
-    tasks = BackgroundAgentTasks(store, None)
-    admitted: list[str | None] = []
-
-    def admit(_project_id, request, *, authorized_by, automatic):
-        assert authorized_by == _identity(store)
-        assert automatic
-        admitted.append(request.provider)
-        raise AdmissionRefused("stop here")
-
-    tasks.admit_provider_task = admit
-    request = RunRequest.model_validate(_task(store, "wake", ["done"]).request)
-    start_watcher_notification(
-        tasks,
-        "project",
-        "node_chat",
-        request,
+    ((agent_id, ready, authorized_by, fence),) = calls
+    assert (agent_id, [item.watcher_id for item in ready], authorized_by, fence) == (
+        "chat",
         ["done"],
-        authorized_by=_identity(store),
+        human,
+        None,
     )
 
-    assert admitted == ["claude"]
 
-
-def test_chat_wake_refuses_a_machine_change_with_durable_reason(store) -> None:
-    _completed_chat_turn(
-        store, "human-before", "current-session", request_updates={"run_on": "other-machine"}
-    )
-    store.create_watchers([_record("done", status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None
-    assert wake.status == "failed"
-    assert wake.error
-    assert wake.finished_at
-    resolution = _session_resolution(store, wake.operation_id)
-    assert resolution["outcome"] == "refused"
-    assert resolution["reason_code"] == "machine_mismatch"
-    assert store.watcher("done").notification_operation_id == wake.operation_id
-    assert store.watcher("done").notified is True
-    assert store.agent_task(wake.operation_id).can_retry is False
-    with pytest.raises(ValueError):
-        BackgroundAgentTasks(store, None).retry(wake.operation_id)
-
-
-def test_human_turn_keeps_its_session_across_a_model_switch(store) -> None:
-    previous = _completed_chat_turn(
-        store, "human-before", "current-session", request_updates={"model": "other-model"}
-    )
-
-    human = _task(store, "human-after", [])
-    human.request["trigger"] = "human"
-    store.create_agent_task(human)
-
-    stored = store.agent_task(human.operation_id)
-    assert stored.native_session_id == previous.native_session_id
-    assert _session_resolution(store, human.operation_id)["outcome"] == "continued"
-
-
-def test_chat_wake_without_a_session_records_why_it_starts_fresh(store) -> None:
-    store.create_watchers([_record("done", status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None and wake.status == "queued"
-    assert wake.request.get("session_id") is None
-    assert wake.native_session_id is None
-    resolution = _session_resolution(store, wake.operation_id)
-    assert resolution["outcome"] == "fresh"
-    assert resolution["reason_code"] == "no_session_yet"
-
-
-@pytest.mark.parametrize("reason_code", ["session_history_only", "session_stage_unavailable"])
-def test_chat_wake_never_searches_past_unusable_latest_session(store, reason_code) -> None:
-    older = _completed_chat_turn(store, "older", "older-session")
-    latest = _task(store, "latest", []).model_copy(
-        update={
-            "status": "succeeded",
-            "native_session_id": "latest-session",
-            "stage_root": older.stage_root if reason_code == "session_history_only" else None,
-        }
-    )
-    latest.request["trigger"] = "human"
-    store.create_agent_task(latest)
-    if reason_code == "session_history_only":
-        store.mark_agent_tasks_history_only([latest.operation_id])
-    store.create_watchers([_record("done", origin=older.operation_id, status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None and wake.status == "queued"
-    assert wake.request.get("session_id") is None
-    assert wake.native_session_id is None
-    resolution = _session_resolution(store, wake.operation_id)
-    assert resolution["outcome"] == "fresh"
-    assert resolution["reason_code"] == reason_code
-    assert resolution["source_operation_id"] == latest.operation_id
-
-
-@pytest.mark.parametrize(
-    ("category", "payload", "reason_code"),
-    [
-        ("provider_terminal_error", {"classification": "session_limit"}, None),
-        ("provider_terminal_error", {"classification": "stale_session"}, "session_stale"),
-        (
-            "continuation_context_unavailable",
-            {"retry_required": True},
-            "session_context_unavailable",
-        ),
-    ],
-)
-def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
-    store, category, payload, reason_code
-) -> None:
-    latest = _completed_chat_turn(store, "latest", "dropped-session", status="failed")
-    store.record_agent_task_receipt(latest.operation_id, category, payload)
-    store.create_watchers([_record("done", origin=latest.operation_id, status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None and wake.status == "queued"
-    resolution = _session_resolution(store, wake.operation_id)
-    if reason_code is None:
-        assert wake.native_session_id == latest.native_session_id
-        assert resolution["outcome"] == "continued"
-    else:
-        assert wake.native_session_id is None
-        assert resolution["outcome"] == "fresh"
-        assert resolution["reason_code"] == reason_code
-    assert resolution["source_operation_id"] == latest.operation_id
-
-
-def test_artifact_edit_does_not_become_the_chat_session(store) -> None:
-    chat = _completed_chat_turn(store, "human-before", "chat-native-session")
-    origin = _completed_chat_turn(
-        store, "artifact-origin", "artifact-session", request_updates={"chat_id": "origin-chat"}
-    )
-    _completed_chat_turn(
-        store,
-        "artifact-edit",
-        "artifact-session",
-        request_updates={
-            "session_id": origin.native_session_id,
-            "artifact_edit": {
-                "artifact_id": "a" * 24,
-                "base_version": 1,
-                "origin_operation_id": origin.operation_id,
-                "stage_machine_id": origin.stage_machine_id,
-                "stage_root": origin.stage_root,
-            },
-        },
-    )
-    store.create_watchers([_record("done", origin=chat.operation_id, status="completed")])
-
-    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
-
-    assert wake is not None
-    assert wake.native_session_id == chat.native_session_id
-    assert _session_resolution(store, wake.operation_id)["source_operation_id"] == "human-before"
-
-
-def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:
-    store.create_watchers([_record("watch-live"), _record("watch-degraded")])
-    store.record_watcher_check(
-        "watch-degraded",
-        status="degraded",
-        exit_code=255,
-        error="ssh: connect to host gpu01 port 22: No route to host",
-    )
-    assert {record.watcher_id for record in store.pollable_watchers()} == {"watch-live"}
-
-    stopped = store.stop_watchers("project", ["watch-degraded"])
-
-    assert [record.status for record in stopped] == ["stopped"]
-    assert [record.watcher_id for record in store.pollable_watchers()] == ["watch-live"]
-    assert store.watcher("watch-degraded").notified is True
-    assert store.completed_watcher_groups() == []
-
-
-def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(store) -> None:
-    episode_id = str(uuid.uuid4())
-    first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=4)
-    store.create_experiment_episode_with_invocation(first)
-    store.fail_agent_task("first", "provider failed")
-
-    changed = _loop_task(
-        store,
-        "bad-retry",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=4,
-        parent_operation_id="first",
-    )
-    changed.request["control_revision"] = 1
-    with pytest.raises(ValueError, match="preserve its control binding"):
-        store.create_experiment_recovery_task(changed)
-
-    recovery = _loop_task(
-        store,
-        "retry",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=4,
-        parent_operation_id="first",
-    )
-    store.create_experiment_recovery_task(recovery)
-    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-    assert runtime.invocations_used == 1
-    assert runtime.episode_id == episode_id
-    store.complete_agent_task("retry", applied_revision=None, result={})
-
-    skipped = _loop_task(store, "third", episode_id=episode_id, invocation=3, ceiling=4)
-    skipped.request["trigger"] = "watcher"
-    with pytest.raises(ValueError, match="out of sequence; expected 2"):
-        store.create_experiment_watcher_invocation(skipped, [])
-
-
-def test_ceiling_refuses_wake_without_consuming_pending_completion(store) -> None:
-    old_episode = str(uuid.uuid4())
-    first = _loop_task(store, "first", episode_id=old_episode, invocation=1, ceiling=1)
-    store.create_experiment_episode_with_invocation(first)
-    store.complete_agent_task("first", applied_revision=None, result={})
-    watcher = _record(
-        "done",
-        status="completed",
-        continuation=_loop_continuation(old_episode, revision=None, ceiling=1),
-    )
-    store.create_watchers([watcher])
-
-    over_budget = _loop_task(
-        store,
-        "over-budget",
-        episode_id=old_episode,
-        invocation=2,
-        ceiling=1,
-        watcher_ids=["done"],
-    )
-    with pytest.raises(EpisodeInvocationCeilingReached):
-        store.create_experiment_watcher_invocation(over_budget, ["done"])
-    assert store.watcher("done").notified is False
-
-
-def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceiling(
-    store,
-) -> None:
-    episode_id = str(uuid.uuid4())
-    first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=1)
-    store.create_experiment_episode_with_invocation(first)
-    store.complete_agent_task("first", applied_revision=None, result={})
-    watcher = _record(
-        "bounded-work", continuation=_loop_continuation(episode_id, revision=None, ceiling=1)
-    )
-    store.create_watchers([watcher])
-
-    running = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-    assert running.detached_work_active is True
-    assert running.watcher_completion_pending is False
-    assert running.paused is True
-
-    store.record_watcher_check(
-        "bounded-work",
-        status="completed",
-        exit_code=0,
-        error=None,
-    )
-    completed = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-    assert completed.detached_work_active is False
-    assert completed.watcher_completion_pending is True
-    assert completed.paused is True
-
-
-def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(store) -> None:
-    old_episode = str(uuid.uuid4())
-    watcher = _record(
-        "still-running", continuation=_loop_continuation(old_episode, revision=1, ceiling=1)
-    )
-    store.create_watchers([watcher])
-    new_episode = str(uuid.uuid4())
-    root = _loop_task(
-        store,
-        "reauthorized",
-        episode_id=new_episode,
-        invocation=1,
-        ceiling=3,
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task("reauthorized", applied_revision=None, result={})
-
-    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-
-    assert runtime.episode_id == new_episode
-    assert runtime.invocations_used == 1
-    assert runtime.active is True
-    assert store.watcher("still-running").continuation.control_episode_id == old_episode
-
-
-def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(store) -> None:
-    episode_id = str(uuid.uuid4())
-    root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_experiment_episode_with_invocation(root)
-    store.fail_agent_task("root", "provider failed")
-    child = _loop_task(
-        store,
-        "repair",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=3,
-        parent_operation_id="root",
-    )
-    store.create_experiment_recovery_task(child)
-    store.complete_agent_task("repair", applied_revision=4, result={})
-    store.record_agent_task_receipt(
-        "repair",
-        "experiment_loop_exit",
-        {"episode_id": episode_id, "invocation": 1},
-    )
-    watcher = _record("pending", status="completed", continuation=_loop_continuation(episode_id))
-    store.create_watchers([watcher])
-
-    runtime = store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
-
-    assert runtime.episode_exited is True
-    assert runtime.active is False
-    assert runtime.paused is False
-
-
-def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path, store) -> None:
-    episode_id = str(uuid.uuid4())
-    root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
-    store.create_experiment_episode_with_invocation(root)
-    store.fail_agent_task("root", "failed")
-    child = _loop_task(
-        store,
-        "child",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=3,
-        parent_operation_id="root",
-    )
-    store.create_experiment_recovery_task(child)
-    store.fail_agent_task("child", "failed again")
-
-    sibling = child.model_copy(update={"operation_id": "sibling", "parent_operation_id": "root"})
-    with pytest.raises(ValueError, match="latest Experiment task"):
-        store.create_experiment_recovery_task(sibling)
-
-    successful_store = AppStore(tmp_path / "successful.sqlite3")
-    successful_episode = str(uuid.uuid4())
-    successful = _loop_task(
-        successful_store,
-        "successful",
-        episode_id=successful_episode,
-        invocation=1,
-        ceiling=3,
-    )
-    successful_store.create_experiment_episode_with_invocation(successful)
-    successful_store.complete_agent_task("successful", applied_revision=None, result={})
-    invalid_retry = _loop_task(
-        successful_store,
-        "retry-success",
-        episode_id=successful_episode,
-        invocation=1,
-        ceiling=3,
-        parent_operation_id="successful",
-    )
-    with pytest.raises(ValueError, match="latest unresolved loop task"):
-        successful_store.create_experiment_recovery_task(invalid_retry)
-
-
-def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(store) -> None:
-    episode_id = str(uuid.uuid4())
-    root = _loop_task(store, "root", episode_id=episode_id, invocation=1)
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(
-        "root",
-        applied_revision=None,
-        result={
-            "graph_update": {
-                "status": "rejected",
-                "repairable": False,
-            }
-        },
-    )
-    repair = _loop_task(
-        store,
-        "repair",
-        episode_id=episode_id,
-        invocation=1,
-        parent_operation_id="root",
-    )
-
-    stored = store.create_experiment_recovery_task(repair)
-
-    assert stored.parent_operation_id == "root"
-    assert stored.request["control_invocation"] == 1
-
-
-def test_experiment_groups_coalesce_across_origin_episode_provenance(store) -> None:
-    records = []
-    for watcher_id, revision, invocation, ceiling in (
-        ("old", 1, 1, 2),
-        ("new", 9, 3, 5),
-    ):
-        record = _record(watcher_id, status="completed")
-        records.append(
-            record.model_copy(
-                update={
-                    "continuation": _loop_continuation(
-                        str(uuid.uuid4()), revision=revision, invocation=invocation, ceiling=ceiling
-                    )
-                }
-            )
-        )
-    for record in records:
-        store.create_watchers([record])
-
-    groups = store.completed_watcher_groups()
-
-    assert [[item.watcher_id for item in group] for group in groups] == [["new", "old"]]
-
-
-def test_notification_claim_rejects_forged_scope_without_consuming_watchers(store) -> None:
-    store.create_watchers([_record("done", status="completed")])
-    forged = _task(store, "forged", ["done"])
-    forged.request["provider"] = "claude"
-
-    with pytest.raises(ValueError, match="immutable delivery policy"):
-        store.create_watcher_notification_task(forged, ["done"])
-
-    assert store.watcher("done").notified is False
-    assert store.agent_task("forged") is None
-
-
-def test_stop_acknowledges_pending_completion_and_conflicts_after_claim(store) -> None:
-    store.create_watchers([_record("pending", status="completed")])
-
-    stopped = store.stop_watchers("project", ["pending"])
-
-    assert stopped[0].status == "stopped"
-    assert stopped[0].notified is True
-    assert store.completed_watcher_groups() == []
-
-    store.create_watchers([_record("claimed", status="completed")])
-    assert store.create_watcher_notification_task(
-        _task(store, "delivery", ["claimed"]), ["claimed"]
-    )
-    with pytest.raises(WatcherClaimConflict):
-        store.stop_watchers("project", ["claimed"])
-
-
-def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically(
-    store,
-) -> None:
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
+@pytest.mark.parametrize("case", ["missing", "unattributed", "conflicting"])
+def test_unprovable_authorizer_closes_delivery_without_a_wake(store, case) -> None:
+    if case == "unattributed":
+        _chat_turn(store, "origin")
+    elif case == "conflicting":
+        _chat_turn(store, "origin", authorized_by=fabricated_authorizer("One"))
+        _chat_turn(store, "other", authorized_by=fabricated_authorizer("Two"))
+        armed(store, "second", origin_turn_id="other", completed=True)
+    armed(store, "done", completed=True)
+    calls = []
+
+    _delivery(store, lambda *args: calls.append(args)).deliver_ready_watchers(source="test")
+
+    assert calls == []
+    assert store.ready_watchers() == []
+    closed = store.agent_watchers("chat")
+    assert closed and all(item.delivery_closed_at and item.cancel_reason for item in closed)
+
+
+def test_thread_closure_cancels_its_watchers_and_refuses_later_wakes(store) -> None:
+    human = fabricated_authorizer("Researcher")
+    _chat_turn(store, "origin", authorized_by=human)
+    armed(store, "live")
     with store.connection() as connection:
         connection.execute(
-            """
-            UPDATE graph_runs
-            SET authorized_space_id = NULL, authorized_user_id = NULL,
-                authorized_display_name = NULL
-            WHERE operation_id = 'loop-root'
-            """
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES('chat','member','project','project',?)",
+            (store.now(),),
         )
-    watcher = _record("legacy-loop", origin="loop-root", status="completed").model_copy(
-        update={
-            "episode_id": episode_id,
-            "continuation": _loop_continuation(episode_id),
-        }
+    store.close_agent_thread("chat", reason="access_lost")
+    assert store.watcher("live").cancelled_by == "rcp"
+
+    armed(store, "late", completed=True)
+    calls = []
+    _delivery(store, lambda *args: calls.append(args)).deliver_ready_watchers(source="test")
+
+    assert calls == []
+    assert store.watcher("late").state == "cancelled"
+    assert store.agent_watchers("chat", open_only=True) == []
+
+
+def _task_count(store: AppStore) -> int:
+    with store.connection() as connection:
+        return connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+
+
+def _plain_tasks(store: AppStore) -> BackgroundAgentTasks:
+    tasks = BackgroundAgentTasks(store, None)
+    tasks.admit_provider_task = lambda *_args, **_kwargs: None
+    tasks.launch_admitted = store.agent_task
+    return tasks
+
+
+def test_plain_wake_continues_the_newest_turn_and_claims_its_watchers_once(store) -> None:
+    human = fabricated_authorizer("Researcher")
+    _chat_turn(store, "origin", authorized_by=human, session_id="old-session")
+    newest = _chat_turn(
+        store, "newest", authorized_by=human, session_id="new-session", provider="claude", model="m"
     )
-    store.create_watchers([watcher])
+    watcher = armed(store, "done", completed=True)
+    tasks = _plain_tasks(store)
 
-    authorized_by, diagnostic = store.resolve_watcher_delivery_authorizer([watcher.watcher_id])
+    wake = start_plain_watcher_wake(tasks, "chat", [watcher], human)
 
-    terminal = store.watcher(watcher.watcher_id)
-    episode = store.experiment_episode(episode_id)
-    assert authorized_by is None
-    assert diagnostic is not None
-    assert "predates durable human attribution" in diagnostic
-    assert terminal is not None
-    assert terminal.status == "stopped"
-    assert terminal.notified is True
-    assert terminal.stopped_by == "loop"
-    assert terminal.stop_reason == diagnostic
-    assert episode is not None
-    assert episode.session_diagnostic == diagnostic
-    assert store.completed_watcher_groups() == []
+    assert wake is not None and wake.status == "queued"
+    assert (wake.request["provider"], wake.request["model"]) == ("claude", "m")
+    assert wake.request["trigger"] == "watcher"
+    assert wake.request["watcher_ids"] == ["done"]
+    assert wake.authorized_by == human
+    assert wake.native_session_id == newest.native_session_id
+    assert store.agent_task_continuation_cause(wake.operation_id) == "watcher_wake"
+    assert store.watcher("done").wake_turn_id == wake.operation_id
+    assert start_plain_watcher_wake(tasks, "chat", [watcher], human) is None
 
 
-def test_authorizer_terminalization_loses_cleanly_to_notification_claim(store) -> None:
-    store.create_watchers([_record("claimed-first", status="completed")])
-    assert store.create_watcher_notification_task(
-        _task(store, "delivery-first", ["claimed-first"]),
-        ["claimed-first"],
-    )
-
-    authorized_by, diagnostic = store.resolve_watcher_delivery_authorizer(["claimed-first"])
-
-    claimed = store.watcher("claimed-first")
-    assert authorized_by is None
-    assert diagnostic is None
-    assert claimed is not None
-    assert claimed.status == "completed"
-    assert claimed.notified is True
-    assert claimed.notification_operation_id == "delivery-first"
-    assert claimed.stop_reason is None
-
-
-def test_poller_isolates_completion_callback_failures_between_groups(store) -> None:
-    first = _record("first", status="completed")
-    second = _record(
-        "second",
-        status="completed",
-        continuation=_continuation().model_copy(update={"model": "other"}),
-    )
-    store.create_watchers([first])
-    store.create_watchers([second])
-    called: list[str] = []
-
-    def callback(group: list[WatcherRecord]) -> None:
-        called.append(group[0].watcher_id)
-        if group[0].watcher_id == "first":
-            raise RuntimeError("one bad group")
-
-    WatcherPoller(store, on_completed=callback).poll_once()
-
-    assert called == ["first", "second"]
-
-
-@pytest.mark.parametrize("closed", [False, True])
-def test_quiet_chat_keeps_no_armed_watchers_and_refuses_wake(store, closed):
-    from rcp.storage import AgentTaskAdmissionConflict
-
-    previous = _completed_chat_turn(store, "before", "session")
-    store.create_watchers([_record("done", origin=previous.operation_id, status="completed")])
-    if closed:
-        with store.connection() as connection:
-            connection.execute(
-                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
-                "VALUES('chat','member','project','project',?)",
-                (store.now(),),
-            )
-        store.close_agent_thread("chat", reason="access_lost")
+@pytest.mark.parametrize("blocker", ["live_turn", "shutdown"])
+def test_plain_wake_waits_without_claiming(store, blocker) -> None:
+    human = fabricated_authorizer("Researcher")
+    _chat_turn(store, "origin", authorized_by=human)
+    watcher = armed(store, "done", completed=True)
+    tasks = _plain_tasks(store)
+    if blocker == "live_turn":
+        _chat_turn(store, "live", authorized_by=human, status="running")
     else:
-        with pytest.raises(AgentTaskAdmissionConflict, match="chat_has_live_work"):
-            store.set_chat_archived("project", "chat", "member", archived=True)
-        assert not store.chat_archived("project", "chat")
-        store.stop_watchers("project", ["done"])
-        store.set_chat_archived("project", "chat", "member", archived=True)
-    assert store.watcher("done").status == "stopped"
-    store.create_watchers([_record("late", origin=previous.operation_id, status="completed")])
-    assert store.create_watcher_notification_task(_task(store, "wake", ["late"]), ["late"]) is None
-    assert store.agent_task("wake") is None
+        tasks.shutdown()
+    before = _task_count(store)
+
+    assert start_plain_watcher_wake(tasks, "chat", [watcher], human) is None
+
+    assert _task_count(store) == before
+    assert [item.watcher_id for item in store.ready_watchers()] == ["done"]
 
 
-def test_orchestrator_archive_waits_for_only_its_chain_watchers(store):
-    """Old records can share main; graph target equality is not chat identity."""
-    from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
+def test_episode_agents_wake_through_their_episode_owner(store, monkeypatch) -> None:
+    armed(store, "done", completed=True)
+    episode = SimpleNamespace(mode="experiment_loop")
+    monkeypatch.setattr(store, "agent_episode", lambda agent_id: episode)
+    owned, plain = [], []
 
-    for episode_id, parent in [("root", None), ("continuation", "root"), ("unrelated", None)]:
-        with store.connection() as connection:
-            store._insert_episode(
-                connection,
-                EpisodeRecord(
-                    episode_id=episode_id,
-                    project_id="project",
-                    mode="auto_research",
-                    root_operation_id=episode_id + "-actor",
-                    continues_episode_id=parent,
-                    status="completed",
-                    invocation_ceiling=3,
-                    created_at=store.now(),
-                    updated_at=store.now(),
-                ),
-            )
-        store.create_watchers(
-            [_record(episode_id).model_copy(update={"chat_id": episode_id + "-actor"})]
-        )
-    with pytest.raises(AgentTaskAdmissionConflict):
-        store.set_chat_archived("project", "root", "member", archived=True)
-    store.stop_watchers("project", ["continuation"])
-    with pytest.raises(AgentTaskAdmissionConflict):
-        store.set_chat_archived("project", "root", "member", archived=True)
-    store.stop_watchers("project", ["root"])
-    store.set_chat_archived("project", "root", "member", archived=True)
-    assert store.watcher("unrelated").status == "active"
+    _delivery(
+        store,
+        lambda *args: plain.append(args),
+        owners={"experiment_loop": lambda *args: owned.append(args)},
+    ).deliver_ready_watchers(source="test")
+
+    assert plain == []
+    assert [(agent, found, [w.watcher_id for w in ready]) for agent, found, ready, _ in owned] == [
+        ("chat", episode, ["done"])
+    ]

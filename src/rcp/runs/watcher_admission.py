@@ -1,187 +1,85 @@
-"""Admission for a watcher-attributed Work turn.
+"""Admission for a watcher wake of an agent outside any episode.
 
-Watcher policy, not engine plumbing: consuming completed watchers atomically and
-deciding what an Experiment wake may carry is specific to watcher delivery.
+The wake continues the agent's newest turn settings, is authorized by the
+human whose turn armed the watchers, spends nothing, and claims the watchers
+in the same transaction that queues the turn.
 
 The delivery-admission flag it reads belongs to the engine — ``shutdown`` clears
-it and ``accept_watcher_notifications`` sets it, and those two stay there as one
-matched pair.  This module reads it under the engine's own lock rather than
-copying the fence.
+it and ``accept_watcher_notifications`` sets it. This module reads it under the
+engine's own lock rather than copying the fence.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from rcp.core.models import AuthorizedHuman
-from rcp.runs.auto_research_admission import start_auto_research_child_work_watcher_wake
 from rcp.runs.provider_login import AdmissionRefused
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import RunRequest
-from rcp.storage import (
-    AgentTaskRecord,
-    AutoResearchExperimentAllowanceReached,
-    EpisodeInvocationCeilingReached,
-    EpisodeNotRunning,
-    EpisodeRecord,
-)
+from rcp.storage import AgentTaskRecord, WatcherRecord
+from rcp.watchers import watcher_wake_message
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
 
 
-def start_watcher_notification(
+def start_plain_watcher_wake(
     tasks: BackgroundAgentTasks,
-    project_id: str,
-    kind: Literal["node_chat", "project_chat"],
-    request: RunRequest,
-    watcher_ids: list[str],
-    *,
+    agent_id: str,
+    ready: list[WatcherRecord],
     authorized_by: AuthorizedHuman,
-    episode_stage_machine_id: str | None = None,
-    episode_stage_root: str | None = None,
-    admission_fence: Callable[[Callable[[], None]], bool] | None = None,
+    fence: Callable[[Callable[[], None]], bool] | None = None,
 ) -> AgentTaskRecord | None:
-    """Atomically consume completed watchers and start their attributed Work turn.
+    """Queue one ordinary turn that wakes the agent for its ready watchers."""
 
-    An Experiment-loop wake carries the episode's native session so the turn
-    continues that bounded session. It is still a new task at the next
-    invocation, so it uses the `watcher_wake` cause rather than Resume.
-    """
-
-    if not authorized_by.display_name.strip():
-        raise ValueError("A watcher notification requires a named human authorizer snapshot.")
-
-    source_watchers = [tasks.store.watcher(watcher_id) for watcher_id in watcher_ids]
-    if any(item is None for item in source_watchers):
-        raise ValueError("A watcher notification requires every durable watcher record.")
-    resolved_watchers = [item for item in source_watchers if item is not None]
-    graph_targets = {item.graph_target.key: item.graph_target for item in resolved_watchers}
-    if len(graph_targets) != 1:
-        raise ValueError("A watcher notification cannot cross graph targets.")
-    graph_target = next(iter(graph_targets.values()))
-    branch_episode_ids = {
-        item.episode_id for item in resolved_watchers if item.episode_id is not None
-    }
-    experiment_delivery = request.patch_kind == "experiment_loop" and all(
-        item.continuation.patch_kind == "experiment_loop" and item.worker_id is None
-        for item in resolved_watchers
+    store = tasks.store
+    project_id = ready[0].project_id
+    latest = store.newest_chat_turn(project_id, agent_id)
+    if latest is None or latest.kind not in {"node_chat", "project_chat"}:
+        return None
+    watcher_ids = [watcher.watcher_id for watcher in ready]
+    request = RunRequest.model_validate(latest.request).model_copy(
+        update={
+            "message": watcher_wake_message(ready),
+            "session_id": None,
+            "mode": "work",
+            "trigger": "watcher",
+            "patch_kind": "work",
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "watcher_ids": watcher_ids,
+            "attachments": [],
+            "browser_requested": store.chat_browser_requested(project_id, agent_id),
+        }
     )
-    if (
-        graph_target.kind == "branch"
-        and not experiment_delivery
-        and len({item.episode_id for item in resolved_watchers}) != 1
-    ):
-        raise ValueError("A branch watcher notification requires one exact episode binding.")
-
-    worker_ids = {item.worker_id for item in resolved_watchers}
-    if worker_ids != {None}:
-        if len(worker_ids) != 1 or None in worker_ids or len(branch_episode_ids) != 1:
-            raise ValueError("A child watcher notification requires one exact child route.")
-        if request.watcher_ids != watcher_ids or not request.message:
-            raise ValueError("A child watcher notification requires its exact payload and ids.")
-        started_child: AgentTaskRecord | None = None
-
-        def claim_child_wake() -> None:
-            nonlocal started_child
-            with tasks._watcher_delivery_lock:
-                if not tasks._accepting_watcher_deliveries:
-                    return
-                try:
-                    started_child = start_auto_research_child_work_watcher_wake(
-                        tasks,
-                        next(iter(branch_episode_ids)),
-                        next(iter(worker_ids)),
-                        watcher_ids,
-                        request=request,
-                    )
-                except (EpisodeInvocationCeilingReached, EpisodeNotRunning, AdmissionRefused):
-                    return
-
-        if admission_fence is not None:
-            if not admission_fence(claim_child_wake):
-                return None
-        else:
-            claim_child_wake()
-        return started_child
-
-    experiment_reauthorization = (
-        request.trigger == "experiment_run"
-        and request.patch_kind == "experiment_loop"
-        and request.control_invocation == 1
-        and bool(request.watcher_ids)
-    )
-    experiment_wake = request.trigger == "watcher" and request.patch_kind == "experiment_loop"
-    if (
-        (request.trigger != "watcher" and not experiment_reauthorization)
-        or request.mode != "work"
-        or (request.session_id and not experiment_wake)
-    ):
-        raise ValueError("A watcher notification must be a fresh watcher-attributed Work turn.")
-    if experiment_wake and (not request.session_id or not episode_stage_root):
-        raise ValueError(
-            "An Experiment watcher wake requires its episode's session and exact stage."
-        )
-    episode: EpisodeRecord | None = None
-    if experiment_wake:
-        episode = tasks.store.episode(request.control_episode_id or "")
-        if (
-            episode is None
-            or episode.mode != "experiment_loop"
-            or episode.project_id != project_id
-            or episode.graph_target != graph_target
-        ):
-            raise ValueError("The Experiment watcher wake lost its episode parent.")
-        if episode.authorized_by is None:
-            raise ValueError("The Experiment episode lost its human authorizer snapshot.")
-        authorized_by = episode.authorized_by
-    if request.watcher_ids != watcher_ids:
-        raise ValueError("The watcher notification request must name its watcher records.")
-    if not isinstance(request, RunRequest):
-        raise TypeError(f"{kind} requires a RunRequest")
-    if not experiment_wake and not experiment_reauthorization and request.chat_id:
-        # Provider admission checks the agent the wake reaches, not the one that armed it;
-        # insertion confirms the same session atomically.
-        agent = tasks.store.current_chat_agent(project_id, kind, request.chat_id)
-        if agent is not None and agent.pop("run_on") == request.run_on:
-            request = request.model_copy(update=agent)
     request_data = request.model_dump(mode="json")
-    estimate, samples = tasks.store.agent_task_estimate(project_id, kind, request_data)
-    dispatch_authority = resolved_dispatch_authority(
-        tasks.store,
-        tasks.dispatch_authority_resolver,
-        kind,
-        request,
-        project_id=project_id,
-    )
-    operation_id = str(uuid.uuid4())
-    now = tasks.store.now()
+    estimate, samples = store.agent_task_estimate(project_id, latest.kind, request_data)
+    now = store.now()
     record = AgentTaskRecord(
-        operation_id=operation_id,
+        operation_id=str(uuid.uuid4()),
         project_id=project_id,
-        episode_id=request.control_episode_id
-        if experiment_wake or experiment_reauthorization
-        else next(iter(branch_episode_ids), None)
-        if graph_target.kind == "branch"
-        else None,
-        graph_target=graph_target,
-        kind=kind,
+        graph_target=latest.graph_target,
+        kind=latest.kind,
         status="queued",
         request=request_data,
         created_at=now,
         updated_at=now,
         status_message="Waiting to deliver a watcher update.",
-        native_session_id=request.session_id if experiment_wake else None,
-        stage_machine_id=episode_stage_machine_id if experiment_wake else None,
-        stage_root=episode_stage_root if experiment_wake else None,
         estimate_seconds=estimate,
         estimate_samples=samples,
         phase="queued",
         last_activity_at=now,
         authorized_by=authorized_by,
-        dispatch_authority=dispatch_authority,
+        dispatch_authority=resolved_dispatch_authority(
+            store,
+            tasks.dispatch_authority_resolver,
+            latest.kind,
+            request,
+            project_id=project_id,
+        ),
     )
     started: AgentTaskRecord | None = None
 
@@ -192,44 +90,20 @@ def start_watcher_notification(
                 return
             try:
                 tasks.admit_provider_task(
-                    project_id, request, authorized_by=record.authorized_by, automatic=True
+                    project_id, request, authorized_by=authorized_by, automatic=True
                 )
             except AdmissionRefused:
                 return
-            if experiment_reauthorization:
-                stored = tasks.store.create_experiment_episode_with_invocation(
-                    record,
-                    watcher_ids,
+            stored = store.create_watcher_wake_task(record, agent_id, watcher_ids)
+            if stored is not None:
+                started = (
+                    tasks.launch_admitted(stored.operation_id)
+                    if stored.status == "queued"
+                    else stored
                 )
-            elif experiment_wake:
-                try:
-                    stored = tasks.store.create_experiment_watcher_invocation(
-                        record,
-                        watcher_ids,
-                    )
-                except (
-                    AutoResearchExperimentAllowanceReached,
-                    EpisodeInvocationCeilingReached,
-                    EpisodeNotRunning,
-                ):
-                    # Keep completion pending when the atomic claim finds a
-                    # spent budget or an ending parent, including preflight races.
-                    return
-            else:
-                stored = tasks.store.create_watcher_notification_task(
-                    record,
-                    watcher_ids,
-                    continuation_cause="watcher_wake",
-                )
-            if stored is None:
-                return
-            started = (
-                tasks.launch_admitted(stored.operation_id) if stored.status == "queued" else stored
-            )
 
-    if admission_fence is not None:
-        if not admission_fence(claim_and_spawn):
-            return None
+    if fence is not None:
+        fence(claim_and_spawn)
     else:
         claim_and_spawn()
     return started

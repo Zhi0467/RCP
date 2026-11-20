@@ -419,7 +419,6 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
             resume=unavailable,
             stop=unavailable,
             message=message,
-            watch_graph=unavailable,
             apply=unavailable,
             episode=unavailable,
             inbox=unavailable,
@@ -988,7 +987,6 @@ async def test_orchestrator_stream_uses_elevated_profile_commands_and_work_apply
             validate=lambda *_args: AutoResearchCommandEffectResult(),
             worker_request_factory=worker_request_factory,
             graph_state=service.history.state,
-            machine_id=BACKEND_MACHINE_ID,
             apply_patch=apply_patch,
         ),
     )
@@ -1282,7 +1280,6 @@ async def test_orchestrator_final_settlement_recovers_apply_committed_before_con
             validate=lambda *_args: AutoResearchCommandEffectResult(),
             worker_request_factory=worker_request_factory,
             graph_state=service.history.state,
-            machine_id=BACKEND_MACHINE_ID,
             apply_patch=apply_patch,
         ),
     )

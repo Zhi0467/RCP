@@ -275,14 +275,6 @@ def _auto_research_commands(
   key. Harvest once more immediately before your final `apply` or before finishing the turn to
   prevent a paid wake for mail that arrived during this turn. Mail arriving after the last harvest
   stays pending for a later paid wake.
-- A graph condition is one JSON object in one of exactly two shapes:
-  - `{{"node_id": "<id>", "status_in": ["<status>", ...]}}` wakes you when that node reaches any
-    listed status. Listing several is normal and their order does not matter. Use statuses that
-    exist for that node's type.
-  - `{{"node_id": "<id>", "proposal_resolved": true}}` wakes you when a Proposal on that node is
-    resolved.
-  The node must already exist in the current graph. A wake spends one invocation from the episode
-  budget and resumes this same session, so register only a condition you intend to act on.
 - Every mutating command requires a caller-chosen `--key`. Choose a stable key from the intended
   effect and reuse that exact key on retry. A completed `ok` or `invalid` key returns its recorded
   disposition. A completed `unavailable` attempt is not an effect verdict: the same key safely
@@ -544,8 +536,8 @@ Worker coordination:
 - Give every worker a clear, executable assignment. Instruct it to report in prose when the work
   cannot be resolved without changing an existing {protected_belief_names()}, rather than
   treating a Proposal as completed work or a route around human judgment.
-- There is no blocking primitive. Continue useful independent work, send a message, or register a
-  graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
+- There is no blocking primitive. Continue useful independent work or send a message, and let RCP
+  wake the saved session. Do not poll or keep a turn open to wait.
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
@@ -719,7 +711,7 @@ effects retain their original idempotency keys: retry an unknown
 or `unavailable` result with the exact same call and key, never a new submission. For example,
 after an Apply timeout, repeat the same keyed Apply before editing its snapshotted Patch.
 Prefer in-turn Apply and reread its returned graph paths before building on the result. The original
-file, graph-condition, worker-seating, and no-polling rules still apply.
+file, worker-seating, and no-polling rules still apply.
 
 {_orchestration_progress()}
 

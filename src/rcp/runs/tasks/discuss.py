@@ -72,7 +72,7 @@ from rcp.runs.chat import (
     retained_work_values,
     stage_artifact_context,
 )
-from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources, stage_chat_loop_status
+from rcp.runs.experiment_loop import stage_chat_loop_status
 from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.question_snapshots import (
@@ -970,16 +970,6 @@ async def stream_discuss_run(
                 }
             )
             token = _task_token(execution)
-            experiment_resources = await stage_chat_experiment_watcher_resources(
-                request,
-                execution,
-                local_stage,
-                remote_stage,
-                workspace=workspace,
-                token=token,
-                clear_stale=not reusing_checkpoint,
-            )
-            experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
             skill_selection = service.resolve_skill_selection(request)
             workflow_ids, skill_ids = official_registry().validate_invocations(
                 skill_selection,
@@ -1060,7 +1050,6 @@ async def stream_discuss_run(
                 repositories=repositories,
                 compute_profiles=compute_profiles,
                 skill_pointers=skill_pointers,
-                experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
             graph_prompt = GraphReadPrompt(graph_read_scope, service.paper.store)
@@ -1177,7 +1166,6 @@ async def stream_discuss_run(
                         human_request_path=human_request_path,
                         artifact_path=str(artifact_directory),
                         retry_diagnostics_path=retry_diagnostics_path,
-                        experiment_watcher_resources=experiment_resource_pointers,
                         skill_pointers=skill_pointers,
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
@@ -1309,7 +1297,6 @@ async def stream_discuss_run(
                     command_client=patch_values["command_client"],
                     watch_path=patch_values["watch_path"],
                     execution_host=execution_host,
-                    experiment_watcher_resources=experiment_resource_pointers,
                     skill_pointers=skill_pointers,
                     compute_connections=compute_profiles,
                     discuss_execution_instructions=instructions,

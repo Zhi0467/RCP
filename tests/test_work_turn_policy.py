@@ -106,7 +106,6 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
         "validate",
         "bulletin",
         "name",
-        "watcher",
         "projects",
     }
     assert restored["validate"]("candidate").status == "valid"
@@ -236,7 +235,6 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
             "validate",
             "bulletin",
             "name",
-            "watcher",
             "projects",
         }
     else:

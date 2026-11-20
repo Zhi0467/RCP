@@ -30,7 +30,6 @@ from rcp.agents.command_protocol import (
     NameCommandRequest,
     ProjectsCommandRequest,
     ScheduleCommandRequest,
-    WatcherCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import AuthorizedHuman
@@ -39,10 +38,8 @@ from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.work_experiment_commands import (
     handle_work_episode_command,
-    member_work_chat_turn,
     work_experiment_allowed,
 )
-from rcp.runs.work_watcher_commands import handle_work_watcher_command
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import bound_thread
 from rcp.storage.question_models import (
@@ -554,11 +551,6 @@ class WorkCommandHandler:
     ) -> CommandResponse:
         return handle_work_episode_command(execution, self.mailbox, request)
 
-    def _watcher(
-        self, execution: AgentTaskExecution, request: WatcherCommandRequest
-    ) -> CommandResponse:
-        return handle_work_watcher_command(execution, request)
-
     def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
         task = execution.store.agent_task(execution.operation_id)
         try:
@@ -623,11 +615,6 @@ _BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]
     EpisodeCommandRequest: (
         WorkCommandHandler._episode,
         "Episode commands require this Work turn's broker authority.",
-        None,
-    ),
-    WatcherCommandRequest: (
-        WorkCommandHandler._watcher,
-        "Watcher control requires this Work turn's broker authority.",
         None,
     ),
     AskCommandRequest: (
@@ -826,7 +813,6 @@ def work_command_handler(
         and task.dispatch_authority.task_contract == "work_auto"
         and execution.store.bulletin_enabled_for_task(execution.operation_id),
         ask=ask_allowed and asks,
-        member_turn=member_work_chat_turn(execution),
         episode_start=work_experiment_allowed(execution),
         projects=execution is not None
         and (

@@ -552,10 +552,10 @@ def test_chain_joins_moved_child_to_original_issuer(timeline, monkeypatch):
 
 
 def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
-    from rcp.storage import WatcherRecord
+    from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 
     from .test_episode_api_serialization import _project
-    from .test_experiment_episode_storage import _admit_root, _bind, _continuation, _task
+    from .test_experiment_episode_storage import _admit_root, _bind, _task
 
     store = AppStore(tmp_path / "data")
     _project(store)
@@ -583,27 +583,31 @@ def test_experiment_loop_rows_retries_reports_and_shell_watcher(tmp_path):
     with store.connection() as connection:
         for task in (retry, report):
             store._insert_agent_task(connection, task, continuation_cause="fresh")
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="shell",
-                project_id="project",
-                origin_operation_id=root.operation_id,
-                origin_task_kind="node_chat",
-                chat_id="episode-chat",
-                node_id="exp-one",
-                episode_id=episode_id,
-                continuation=_continuation(episode_id),
-                created_at=now,
-                check_command="true",
-                log_path="/tmp/check.log",
-                cwd="/tmp",
-                status="completed",
-                completed_at=now,
-                notification_operation_id=retry.operation_id,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="shell",
+            agent_id="episode-chat",
+            project_id="project",
+            purpose="Shell check",
+            origin_turn_id=root.operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="shell",
+                    watcher_id="shell",
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/check.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
+        )
     )
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assert store.claim_watcher_wake(connection, "episode-chat", ["shell"], retry.operation_id)
     response = build_episode_timeline(store, store.episode(episode_id))
     assert {actor.kind for actor in response.actors} == {"human", "agent", "watcher"}
     spans = {span.task_id: span for span in response.spans}
@@ -693,10 +697,7 @@ def test_text_endpoint_immutable_body_and_chain_ownership(timeline, kind):
     "state,event", [("active", "armed"), ("completed", "fired"), ("stopped", "stopped")]
 )
 def test_graph_watcher_names_node_without_inventing_episode(timeline, state, event):
-    from rcp.storage import GraphWatcherRecord
-    from rcp.storage.models import NodeStatusGraphCondition
-
-    from .test_experiment_episode_storage import _continuation
+    from rcp.storage.models import NodeStatusGraphCondition, WatcherCheckRecord, WatcherRecord
 
     store, episode, _ = timeline
     prefix = episode.episode_id
@@ -706,27 +707,36 @@ def test_graph_watcher_names_node_without_inventing_episode(timeline, state, eve
             "UPDATE episodes SET status='running', ending=NULL, wrapup_state='not_started', wrapup_error=NULL, stop_requested_at=NULL, ended_at=NULL WHERE episode_id=?",
             (prefix,),
         )
-    store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="graph",
-                project_id=episode.project_id,
-                origin_operation_id=f"{prefix}-root",
-                origin_task_kind="auto_research",
-                chat_id="episode-chat",
-                episode_id=prefix,
-                continuation=_continuation(prefix),
-                created_at=now,
-                graph_target=episode.graph_target,
-                armed_revision=1,
-                condition=NodeStatusGraphCondition(node_id="exp/timeline", status_in=["completed"]),
-                status=state,
-                completed_at=now if state == "completed" else None,
-                stopped_at=now if state == "stopped" else None,
-                notification_operation_id=f"{prefix}-wake" if state == "completed" else None,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="graph",
+            agent_id="episode-chat",
+            project_id=episode.project_id,
+            purpose="Graph condition",
+            origin_turn_id=f"{prefix}-root",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="graph",
+                    watcher_id="graph",
+                    definition="graph",
+                    condition=NodeStatusGraphCondition(
+                        node_id="exp/timeline", status_in=["completed"]
+                    ),
+                    graph_target=episode.graph_target,
+                    armed_head=1,
+                    created_at=now,
+                    completed_at=now if state == "completed" else None,
+                )
+            ],
+        )
     )
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if state == "completed":
+            assert store.claim_watcher_wake(connection, "episode-chat", ["graph"], f"{prefix}-wake")
+        elif state == "stopped":
+            store.cancel_watchers(["graph"], by="human", connection=connection, reason=None)
     response = build_episode_timeline(store, episode)
     signal = next(item for item in response.signals if item.item_id == "watcher:graph")
     assert signal.event == event

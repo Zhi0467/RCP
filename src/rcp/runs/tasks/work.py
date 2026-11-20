@@ -104,9 +104,6 @@ from rcp.runs.consolidation import (
 )
 from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.experiment_loop import (
-    StagedExperimentWatcherResource,
-    read_experiment_watcher_outputs,
-    stage_chat_experiment_watcher_resources,
     stage_chat_loop_status,
 )
 from rcp.runs.operational_context import stage_operational_context_pointer
@@ -170,9 +167,6 @@ from rcp.runs.shared import (
     stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
-from rcp.runs.tasks.experiment_watcher_maintenance import (
-    _process_experiment_watcher_maintenance,
-)
 from rcp.runs.tasks.work_staging import (
     StagedArtifactAccess,
     WorkStageLayout,
@@ -182,7 +176,6 @@ from rcp.runs.tasks.work_turn_runtime import (
     WORK_CORRECTION_SESSION_ROLE,
     WorkFinalizationContext,
     WorkTurn,
-    _AppliedWorkTurn,
     _ComposedWorkPrompt,
     _CorrectionPatchRead,
     _DeliverableFailure,
@@ -218,8 +211,6 @@ from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AppStore,
-    ExperimentWatcherResourceRecord,
-    WatcherContinuation,
 )
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
@@ -240,14 +231,6 @@ _WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
 _WORK_READ_SCOPE_ROLE = "work_read_scope"
 
 
-class _StoredExperimentFinalizationResource(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    resource: ExperimentWatcherResourceRecord
-    watcher_state_path: str
-    watch_path: str
-
-
 class _StoredWorkFinalizationContext(BaseModel):
     """Immutable launch snapshot consumed only after the provider has stopped."""
 
@@ -255,10 +238,13 @@ class _StoredWorkFinalizationContext(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def discard_retired_empty_view(cls, value: object) -> object:
-        if isinstance(value, dict) and value.get("result_view", True) is None:
-            return {key: item for key, item in value.items() if key != "result_view"}
-        return value
+    def discard_retired_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        retired = {"experiment_resources"}
+        if value.get("result_view", True) is None:
+            retired.add("result_view")
+        return {key: item for key, item in value.items() if key not in retired}
 
     version: Literal[1] = 1
     request: RunRequest
@@ -271,7 +257,6 @@ class _StoredWorkFinalizationContext(BaseModel):
     write_scope: ProjectWriteScope
     artifact_scope_id: str
     artifact_directory: str
-    experiment_resources: list[_StoredExperimentFinalizationResource]
     skill_selection: SkillSelection
     compute_commands: bool
     # The native session this launch pinned its provider to, so recovery can
@@ -469,7 +454,6 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         repositories=staged.repositories,
         compute_profiles=turn.compute_profiles,
         skill_pointers=staged.skill_pointers,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         patch=turn.patch_inputs.prompt_values(),
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
@@ -532,7 +516,6 @@ def _work_finalization_context(
         outcome=turn.outcome,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=staged.artifact_directory,
-        experiment_resources=list(staged.experiment_resources),
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands,
         finalization_role=role,
@@ -570,14 +553,6 @@ def _record_work_finalization_context(
         write_scope=turn.write_scope,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=str(staged.artifact_directory),
-        experiment_resources=[
-            _StoredExperimentFinalizationResource(
-                resource=item.resource,
-                watcher_state_path=item.watcher_state_path,
-                watch_path=item.watch_path,
-            )
-            for item in staged.experiment_resources
-        ],
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands is not None,
         required_session_id=required_session_id,
@@ -654,15 +629,6 @@ def _load_work_finalization_context(
         owner=owner,
     )
 
-    experiment_resources = [
-        StagedExperimentWatcherResource(
-            resource=item.resource,
-            host=host_of(execution.store, item.resource.machine_id),
-            watcher_state_path=item.watcher_state_path,
-            watch_path=item.watch_path,
-        )
-        for item in stored.experiment_resources
-    ]
     compute_commands = (
         WorkComputeCommands(
             execution,
@@ -688,7 +654,6 @@ def _load_work_finalization_context(
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
         artifact_directory=artifact_directory,
-        experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
         finalization_role=role,
@@ -788,9 +753,7 @@ async def _stage_work_turn(
             }
         )
 
-    async def stage_chat_resources(
-        layout: WorkStageLayout, read_scope: GraphReadScope
-    ) -> list[StagedExperimentWatcherResource]:
+    def stage_loop_status(layout: WorkStageLayout, read_scope: GraphReadScope) -> None:
         layout.context.loop_status = stage_chat_loop_status(
             request,
             execution,
@@ -799,15 +762,6 @@ async def _stage_work_turn(
             state=service.history.state(),
             graph_target=service.history.graph_target,
             read_scope=read_scope,
-        )
-        return await stage_chat_experiment_watcher_resources(
-            request,
-            execution,
-            layout.local_stage,
-            layout.remote_stage,
-            workspace=layout.workspace,
-            token=layout.token,
-            clear_stale=clear_stale_handoffs,
         )
 
     turn, staged, _ = await stage_work_turn(
@@ -822,7 +776,7 @@ async def _stage_work_turn(
         start_validator_mailbox=_start_work_validator_mailbox,
         bind_context=bind_conversation_worktree,
         stage_artifacts=stage_artifacts,
-        stage_experiment_resources=stage_chat_resources,
+        stage_loop_status=stage_loop_status,
         select_skills=select_skills,
     )
     return turn, staged
@@ -910,7 +864,6 @@ def _work_contract_text(
         retry_diagnostics_path=retry_diagnostics_path,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         command_client=turn.patch_inputs.command_client,
         graph_read_prompt=turn.graph_read_prompt,
         write_scope=turn.write_scope,
@@ -1153,7 +1106,6 @@ def _work_chat_master_context(
         graph_read_prompt=turn.graph_read_prompt,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
         compute_connections=turn.compute_profiles,
         write_scope=turn.write_scope,
@@ -1315,18 +1267,11 @@ def _compose_retry_prompt(
 
 def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBaseline:
     if not turn.retrying:
-        return _RetryDeliverableBaseline(None, None, {})
+        return _RetryDeliverableBaseline(None, None)
     assert turn.execution is not None
     predecessor_patch = _read_chat_patch(turn.workspace, turn.remote_stage)
     predecessor_watch = _read_watch_request(turn.workspace, turn.remote_stage)
     predecessor_outcome = _read_turn_outcome(turn.workspace, turn.remote_stage)
-    experiment_watch_digests = {
-        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-        for name, text in read_experiment_watcher_outputs(
-            turn.workspace,
-            turn.remote_stage,
-        ).items()
-    }
     patch_digest = (
         hashlib.sha256(predecessor_patch.encode("utf-8")).hexdigest()
         if predecessor_patch is not None
@@ -1349,14 +1294,12 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
             "patch_sha256": patch_digest,
             "watch_sha256": watch_digest,
             "outcome_sha256": outcome_digest,
-            "experiment_watch_sha256": experiment_watch_digests,
         },
         tier="diagnostic",
     )
     return _RetryDeliverableBaseline(
         patch_digest=patch_digest,
         watch_digest=watch_digest,
-        experiment_watch_digests=experiment_watch_digests,
         outcome_digest=outcome_digest,
     )
 
@@ -1467,26 +1410,6 @@ async def _validate_patch_deliverable(
         # its result on an outage.
         raise StateUnavailable(failure.message)
     return _DeliverableStep(failure=failure)
-
-
-def _watcher_continuation(
-    turn: WorkFinalizationContext,
-) -> WatcherContinuation:
-    request_values = turn.request.model_dump(mode="json")
-    values = {
-        name: request_values[name]
-        for name in WatcherContinuation.model_fields
-        if name in request_values
-    }
-    values.update(
-        provider=turn.request.provider or "",
-        run_on=turn.request.run_on or "",
-        run_truth_scope=turn.run_truth_scope,
-        workflow_ids=turn.skill_selection.workflow_ids,
-        skill_ids=turn.skill_selection.skill_ids,
-        resolved_skill_packages=turn.skill_selection.resolved_skill_packages,
-    )
-    return WatcherContinuation.model_validate(values)
 
 
 def _patch_correction_contract(diagnostics_path: str) -> str:
@@ -1639,20 +1562,14 @@ async def _validate_watch_deliverable(
             )
         specs = ordinary_handoff.external
         graph_conditions = ordinary_handoff.graph
-        child_route = turn.execution.store.auto_research_child_work_for_operation(
-            turn.execution.operation_id
-        )
+        if not turn.request.chat_id:
+            raise ValueError("Watcher arming requires the turn's agent.")
         binding = WatcherBinding(
             project_id=origin_task.project_id,
-            origin_operation_id=turn.execution.operation_id,
-            origin_task_kind=turn.surface,
-            chat_id=turn.request.chat_id or "",
-            node_id=turn.request.node_id,
-            episode_id=origin_task.episode_id,
-            worker_id=child_route.worker_id if child_route is not None else None,
+            agent_id=turn.request.chat_id,
+            origin_turn_id=turn.execution.operation_id,
             graph_target=origin_task.graph_target,
             machine_id=turn.write_scope.machine_id,
-            continuation=_watcher_continuation(turn),
         )
         graph_state = (
             await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
@@ -2183,72 +2100,6 @@ async def _settle_watch_deliverable(
             failure = None
 
 
-async def _apply_work_turn(
-    turn: WorkFinalizationContext,
-    launcher: AgentLauncher,
-    retry_baseline: _RetryDeliverableBaseline,
-    applied: _AppliedWorkTurn,
-    *,
-    launch_turn: WorkTurn | None = None,
-    composed: _ComposedWorkPrompt | None = None,
-    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
-    if is_consolidation(turn.execution):
-        return
-    (
-        maintenance_frames,
-        native_session_id,
-        maintenance_paused,
-    ) = await _process_experiment_watcher_maintenance(
-        service=turn.service,
-        launcher=launcher,
-        request=turn.request,
-        execution=turn.execution,
-        staged_resources=turn.experiment_resources,
-        workspace=turn.workspace,
-        remote_stage=turn.remote_stage,
-        local_stage=turn.local_stage,
-        token=_task_token(turn.execution),
-        native_session_id=applied.native_session_id,
-        read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
-        write_dirs=launch_turn.write_dirs if launch_turn is not None else [],
-        write_scope=turn.write_scope,
-        execution_host=turn.execution_host,
-        provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
-        retry_output_digests=retry_baseline.experiment_watch_digests,
-        maximum_corrections=maximum_corrections,
-        continuation=_maintenance_continuation(launch_turn, composed),
-    )
-    applied.native_session_id = native_session_id
-    for frame in maintenance_frames:
-        yield frame
-    if maintenance_paused:
-        applied.stop = True
-
-
-def _maintenance_continuation(
-    turn: WorkTurn | None,
-    composed: _ComposedWorkPrompt | None,
-) -> Callable[[str, str], str] | None:
-    """Compose a watcher maintenance correction in the Work session it corrects."""
-
-    if turn is None or composed is None or composed.prompt_values is None:
-        return None
-    values = composed.prompt_values
-
-    def continuation(session_id: str, part: str) -> str:
-        return _work_continuation(
-            turn,
-            composed.render_master,
-            session_id=session_id,
-            node=classify(LaunchPhase(session_id=session_id, phase="correction")),
-            part=part,
-            values=values,
-        )
-
-    return continuation
-
-
 def _work_observed_apply_revision(
     execution: AgentTaskExecution | None, graph_update: GraphUpdateResult
 ) -> int | None:
@@ -2580,29 +2431,10 @@ async def finalize_work_result(
             yield frame
     if settled.stop:
         return
-    applied = _AppliedWorkTurn(
-        graph_update=settled.graph_update,
-        native_session_id=settled.native_session_id,
-    )
-    apply_stream = _apply_work_turn(
-        turn,
-        launcher,
-        retry_baseline,
-        applied,
-        launch_turn=launch_turn,
-        composed=composed,
-        maximum_corrections=maximum_corrections,
-    )
-    async with aclosing(apply_stream) as stream:
-        async for frame in stream:
-            yield frame
-    if applied.stop:
-        return
-
     for artifact in _finalize_work_artifacts(turn):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
-    for frame in _finalize_work_turn(turn, answer, applied.graph_update, settled.turn_outcome):
+    for frame in _finalize_work_turn(turn, answer, settled.graph_update, settled.turn_outcome):
         yield frame
 
 
@@ -3019,8 +2851,6 @@ async def _stream_work_graph_repair(
             token=token,
             artifact_scope_id=execution.operation_id,
             artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
-            experiment_resources=[],
-            experiment_resource_pointers=[],
             skill_selection=skill_selection,
             skill_pointers=stage_skill_selection(
                 skill_selection,
@@ -3549,16 +3379,14 @@ def _recorded_retry_deliverable_baseline(
         if receipt.category != "retry_deliverable_baseline":
             continue
         payload = receipt.payload
-        digests = payload.get("experiment_watch_sha256")
         return _RetryDeliverableBaseline(
             patch_digest=payload.get("patch_sha256"),
             watch_digest=payload.get("watch_sha256"),
-            experiment_watch_digests=digests if isinstance(digests, dict) else {},
             outcome_digest=(
                 outcome if isinstance(outcome := payload.get("outcome_sha256"), str) else None
             ),
         )
-    return _RetryDeliverableBaseline(None, None, {})
+    return _RetryDeliverableBaseline(None, None)
 
 
 def open_recorded_work_turn(

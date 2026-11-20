@@ -1138,7 +1138,7 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("deliverable", ["patch.json", "watch.json", "experiment-watch"])
+@pytest.mark.parametrize("deliverable", ["patch.json", "watch.json"])
 async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     tmp_path, monkeypatch, deliverable
 ) -> None:
@@ -1147,10 +1147,8 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     The correction continues the pass it corrects, so the pin has to outlive the stream.
     """
 
-    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
     import rcp.runs.tasks.work_turn_runtime as runtime_module
     from rcp.agents import AgentEvent
-    from rcp.runs.experiment_loop import experiment_watcher_output_name
     from rcp.runs.shared import _sse
 
     service, request, execution = _one_result_app(tmp_path)
@@ -1199,32 +1197,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
 
     monkeypatch.setattr(work_module, "_start_work_validator_mailbox", remote_correction_owner)
     monkeypatch.setattr(runtime_module, "_stream_agent_events", disconnected_correction)
-    monkeypatch.setattr(maintenance_module, "_stream_agent_events", disconnected_correction)
-    if deliverable == "experiment-watch":
-        name = experiment_watcher_output_name("exp/test", GraphTargetRef())
-        resource = SimpleNamespace(control_node_id="exp/test", graph_target=GraphTargetRef())
-        finalization.experiment_resources = [
-            SimpleNamespace(
-                resource=resource,
-                watch_path=str(primed.workspace / name),
-                prompt_value=lambda: {
-                    "control_node_id": "exp/test",
-                    "execution_host": "",
-                    "watcher_state_path": "/stage/inputs/watcher-state.json",
-                    "watch_path": str(primed.workspace / name),
-                },
-            )
-        ]
-        monkeypatch.setattr(
-            maintenance_module,
-            "_experiment_maintenance_binding",
-            lambda *_args: SimpleNamespace(origin_task_kind="project_chat"),
-        )
-        monkeypatch.setattr(
-            execution.store, "admit_experiment_watcher_maintenance", lambda *_args: None
-        )
-    else:
-        name = deliverable
+    name = deliverable
     (primed.workspace / name).write_text("not valid JSON", encoding="utf-8")
     if deliverable != "patch.json":
         (primed.workspace / "patch.json").write_text(
@@ -1236,7 +1209,7 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         async for frame in work_module.finalize_work_result(
             finalization,
             launcher,
-            work_module._RetryDeliverableBaseline(None, None, {}),
+            work_module._RetryDeliverableBaseline(None, None),
             original_answer,
             launch_turn=primed,
             staged=staged,
@@ -1246,25 +1219,13 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
     if execution.command_mailbox is not None:
         await asyncio.to_thread(execution.command_mailbox.settle)
     assert len(correction_calls) == 1
-    if deliverable == "experiment-watch":
-        assert correction_calls[0]["required_session_id"] == "recorded-thread"
-        prompt = correction_prompts[0]
-        rules = next((primed.local_stage / "inputs").glob("experiment-watcher-rules-*.md"))
-        assert str(rules) in prompt
-        assert len(prompt) < 3000
-        assert (
-            execution.store.agent_task_contract(
-                execution.operation_id, runtime_module.WORK_CORRECTION_SESSION_ROLE
-            )
-            == "recorded-thread"
-        )
     assert [json.loads(frame.removeprefix("data: "))["event"] for frame in frames] == [
         "remote_result_pending"
     ]
     if deliverable != "patch.json":
         assert service.history.state().revision == 2
     assert not any(
-        receipt.category in {"graph_patch_rejected", "experiment_watcher_maintenance_rejected"}
+        receipt.category == "graph_patch_rejected"
         for receipt in execution.store.agent_task_receipts(execution.operation_id)
     )
 
@@ -1314,7 +1275,7 @@ async def test_finalization_cannot_enable_corrections_without_launch_context(tmp
         async for _frame in work_module.finalize_work_result(
             work_module._work_finalization_context(turn, staged),
             launcher,
-            work_module._RetryDeliverableBaseline(None, None, {}),
+            work_module._RetryDeliverableBaseline(None, None),
             "A recorded answer",
             maximum_corrections=1,
         ):
@@ -1380,6 +1341,32 @@ async def test_a_recorded_correction_that_failed_keeps_the_reply_it_already_gave
     assert next(item["text"] for item in events_out if item["event"] == "answer") == original_answer
 
 
+@pytest.mark.asyncio
+async def test_a_retained_work_context_from_an_old_writer_still_loads(tmp_path) -> None:
+    service, request, execution = _one_result_app(tmp_path)
+    resolved = work_module._resolve_work_execution(service, request, execution)
+    primed, staged = await work_module._stage_work_turn(
+        service, resolved, tmp_path / "data", execution
+    )
+    await primed.validator_lifecycle.close()
+    work_module._record_work_finalization_context(primed, staged)
+    current = json.loads(
+        execution.store.agent_task_contract(
+            execution.operation_id, work_module.WORK_FINALIZATION_CONTEXT_ROLE
+        )
+    )
+    old = {
+        **current,
+        "experiment_resources": [
+            {"resource": {}, "watcher_state_path": "/stage/a.json", "watch_path": "/stage/b.json"}
+        ],
+    }
+
+    loaded = work_module._StoredWorkFinalizationContext.model_validate_json(json.dumps(old))
+
+    assert loaded.model_dump(mode="json") == current
+
+
 def test_recovery_makes_the_stage_hold_exactly_the_watcher_outputs_the_pass_wrote(
     tmp_path,
 ) -> None:
@@ -1434,48 +1421,6 @@ def test_a_journal_predating_watcher_snapshots_leaves_the_stage_alone(tmp_path) 
     assert workspace.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == existing
 
 
-@pytest.mark.asyncio
-async def test_a_host_lost_during_watcher_maintenance_leaves_the_task_waiting(
-    tmp_path, monkeypatch
-) -> None:
-    """An unreachable host is not a turn that asked for no maintenance.
-
-    Swallowing the outage completes the task as a success with its requested
-    maintenance silently undone, and nothing retries it: Background only sees a
-    finalizer that ran to the end. Letting it out is what leaves the task
-    waiting for its stage to come back.
-    """
-
-    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
-    from rcp.transport import StateUnavailable
-
-    service, request, execution = _one_result_app(tmp_path)
-    resolved = work_module._resolve_work_execution(service, request, execution)
-    primed, staged = await work_module._stage_work_turn(
-        service, resolved, tmp_path / "data", execution
-    )
-    work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope)
-    await work_module._prepare_work_prompt_context(primed, staged)
-    await primed.validator_lifecycle.close()
-
-    def host_went_away(*_args, **_kwargs):
-        raise StateUnavailable("could not inspect chat watcher outputs: ssh exited 255")
-
-    monkeypatch.setattr(maintenance_module, "read_experiment_watcher_outputs", host_went_away)
-
-    with pytest.raises(StateUnavailable):
-        async for _frame in work_module.finalize_recorded_work_result(
-            service,
-            ScriptedLauncher([{}], message="must not launch"),
-            request,
-            tmp_path / "not-used",
-            execution,
-            _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
-        ):
-            pass
-
-
 @pytest.mark.parametrize("outage", ["patch_read", "apply_before_commit"])
 @pytest.mark.asyncio
 async def test_a_recorded_settlement_that_loses_canonical_state_retries(
@@ -1524,58 +1469,6 @@ async def test_a_recorded_settlement_that_loses_canonical_state_retries(
             tmp_path / "not-used",
             execution,
             _recorded_pass(agent_patch_json(seed_patch()), "The work is done."),
-        ):
-            pass
-
-
-@pytest.mark.asyncio
-async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
-    tmp_path, monkeypatch
-) -> None:
-    """After the provider stopped there is no unread pass, so nothing can wait for one.
-
-    Reconciliation only ever revisits a pass with no recorded stop: both the
-    scheduler's query and `reconcile_remote_pass` are built on that. Once the
-    live stream has consumed the turn and written the stop down, parking the
-    task on a remote result it already has would leave it there forever, so the
-    outage is reported instead. A completed provider spoke for itself, so this
-    failure is not classified as a lost link and no retry repeats the turn.
-    """
-
-    import rcp.runs.tasks.experiment_watcher_maintenance as maintenance_module
-    from rcp.transport import StateUnavailable
-
-    service, request, execution = _one_result_app(tmp_path)
-    resolved = work_module._resolve_work_execution(service, request, execution)
-    primed, staged = await work_module._stage_work_turn(
-        service, resolved, tmp_path / "data", execution
-    )
-    work_module._record_work_finalization_context(primed, staged)
-    execution.bind_write_scope(primed.write_scope)
-    await work_module._prepare_work_prompt_context(primed, staged)
-    composed = work_module._compose_fresh_prompt(primed, staged, retry_diagnostics_path=None)
-    await primed.validator_lifecycle.close()
-    primed.outcome.completed = True
-    primed.outcome.session_id = "recorded-thread"
-    primed.outcome.answers = ["The research work is complete."]
-    finalization = work_module._work_finalization_context(primed, staged)
-    assert work_module._settle_work_outcome(finalization) == []
-    (primed.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-
-    def host_went_away(*_args, **_kwargs):
-        raise StateUnavailable("could not inspect chat watcher outputs: ssh exited 255")
-
-    monkeypatch.setattr(maintenance_module, "read_experiment_watcher_outputs", host_went_away)
-
-    with pytest.raises(StateUnavailable):
-        async for _frame in work_module.finalize_work_result(
-            finalization,
-            ScriptedLauncher([{}], message="must not launch"),
-            work_module._RetryDeliverableBaseline(None, None, {}),
-            "The research work is complete.",
-            launch_turn=primed,
-            staged=staged,
-            composed=composed,
         ):
             pass
 
