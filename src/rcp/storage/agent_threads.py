@@ -207,7 +207,9 @@ def migrate_agent_thread_queue(connection: sqlite3.Connection) -> None:
 
 
 def migrate_agent_thread_queue_picks(connection: sqlite3.Connection) -> None:
-    connection.execute("ALTER TABLE agent_thread_queue ADD COLUMN picks_json TEXT")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_thread_queue)")}
+    if "picks_json" not in columns:
+        connection.execute("ALTER TABLE agent_thread_queue ADD COLUMN picks_json TEXT")
 
 
 def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
