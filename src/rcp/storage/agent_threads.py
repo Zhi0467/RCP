@@ -715,18 +715,21 @@ def _require_queued_turn(
     connection: sqlite3.Connection, row: sqlite3.Row, record: AgentTaskRecord
 ) -> None:
     """The turn is the member's own ordinary Work turn on the open thread, with this text and files."""
-    thread = connection.execute(
-        "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (row["thread_id"],)
+    from rcp.storage.agents import agent
+
+    owner = agent(connection, row["thread_id"])
+    closed = connection.execute(
+        "SELECT closed_at FROM agent_threads WHERE thread_id=?", (row["thread_id"],)
     ).fetchone()
-    space_id = connection.execute(
-        "SELECT space_id FROM space_identity WHERE singleton=1"
-    ).fetchone()[0]
     request = record.request
     if (
-        thread is None
-        or thread["kind"] != "project"
-        or thread["user_id"] != row["user_id"]
-        or not thread_binds_task(AgentThreadRecord.model_validate(dict(thread)), record, space_id)
+        owner is None
+        or (closed is not None and closed[0] is not None)
+        or (owner.owner_user_id is not None and owner.owner_user_id != row["user_id"])
+        or record.authorized_by is None
+        or record.authorized_by.user_id != row["user_id"]
+        or record.project_id != (owner.project_id or owner.space_id)
+        or request.get("chat_id") != row["thread_id"]
         or request.get("mode") != "work"
         or request.get("trigger", "human") != "human"
         or request.get("source") is not None

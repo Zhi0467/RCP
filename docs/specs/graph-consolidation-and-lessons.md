@@ -293,7 +293,7 @@ on every target, and deletes consolidation schedules until a member configures t
 
 ## Private agent schedules
 
-Private threads expose `schedule add`, `list`, `pause`, `resume`, and `cancel` to
+Private and shared agents expose `schedule add`, `list`, `pause`, `resume`, and `cancel` to
 every thread turn, wakes included. The agent adds one when the member asks for a
 reminder or a recurring check. Mutations carry an idempotency key scoped to the
 turn's Resume/Retry lineage root and action. Separate actions may reuse a key.
@@ -304,7 +304,7 @@ current schedule unchanged, including a later Pause, Resume, fire or restore.
 The same action/key with different typed arguments or a different schedule
 refuses. Request identity includes the original count and whether the timezone
 was omitted; transport ids, mailboxes and credentials are excluded. Both fresh
-commands and replay require the current task's live private thread and project
+commands and replay require the current task's live agent and authorizing member's project
 membership, rechecked inside the transaction. List always reads current schedules.
 
 Schedules created before command receipts retain the limited Add match over their
@@ -345,18 +345,20 @@ and a plain reason saying what to do.
 
 The consolidation poller advances due schedules and preserves their first pending
 occurrence in one transaction before the automatic-launch cooldown check. Wake
-dispatch then runs first in the tick, in its own error boundary, per thread.
+dispatch then runs first in the tick, in its own error boundary, per agent and authorizing member.
 One-shot schedules, and repeats past their bounds, become done. Notes stay pending while the thread's turn is
 active or awaiting Resume. A wake that provider sign-in, machine dependencies, or
 a thread or project refusal defers, at admission or at the claim, keeps its notes
 pending, records `deferred_reason`, and retries each tick. Once eligible, one atomic admission claims all observed notes
-for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
+from one authorizing member for one Work wake, listing each note, its zone, its local `due_at` and `now`, and
 its missed fire count, which counts only fires within `--until` and `--count`. The wake runs the thread's saved agent pick, else
 the Space default on a Space thread or the latest turn's agent on a project
-thread. Admission retains the thread's latest native session, scratch, and member
-binding through ordinary current-session resolution,
-including its receipt, also after a restore made that turn history-only, and
-rechecks the ordinary project write fence and session constraints. A claimed wake
+thread. Admission retains the agent's latest native session and scratch through
+ordinary current-session resolution, including its receipt after a restore made
+that turn history-only. Each schedule retains the member who authorized its
+creating turn, even after another member uses the shared agent, and its wake
+runs as that member. Admission rechecks the ordinary project write fence and
+session constraints. A claimed wake
 whose thread closed before launch settles failed. A succeeded schedule wake on a
 project thread pushes the owner's `agent_thread` notification. Lost thread access,
 whether found at dispatch or by closing the thread, disables active schedules and
@@ -368,7 +370,7 @@ A schedule whose next occurrence cannot be computed is disabled with reason
 Pause keeps a schedule's next fire and bounds and drops its waiting note; a paused
 schedule never fires. Resume picks the next fire after now, so fires missed while
 paused are skipped. A schedule with no fire left, such as one past `--until`, is
-done on resume. Schedule controls are owner-only. Backup restore disables active and disabled
+done on resume. A member lists and controls only the schedules they authorized. Backup restore disables active and disabled
 schedules with reason `restore`, clears every pending wake, and requires explicit
 re-enabling; a done one-shot stays done. A schedule with no fire left, such as a
 past one-shot, cannot be re-enabled. Consolidation's separate restore behavior remains

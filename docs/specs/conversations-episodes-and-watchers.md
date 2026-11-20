@@ -170,9 +170,10 @@ message as `handoff_report` for display. The Space thread shows only the agent a
 status; the reply stays in the project thread that wrote it. Content is omitted
 once the member has left the project.
 
-A member can queue a message, with files and project references, on their own
-project thread instead of steering it. `agent_thread_queue` keeps it until the
-thread is free; a Space thread has no queue. Queueing claims the files for the
+A member can queue a message, with files and project references, on any agent
+they can access instead of steering it. Each message retains its sending member
+as its authorizer, including on shared agents. `agent_thread_queue` keeps it until the
+agent is free, including single-entry agents. Queueing claims the files for the
 queued turn's derived operation id, so they stay staged. The handoff drain then
 starts each free thread's oldest queued message, after its handoff deliveries;
 each kind is first in, first out. A paused turn makes queued messages wait,

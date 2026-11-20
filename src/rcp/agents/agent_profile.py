@@ -91,6 +91,15 @@ class AgentProfile:
     verbs: frozenset[str]
 
     @property
+    def controls(self) -> dict[str, bool]:
+        return {
+            "can_queue": True,
+            "can_schedule": "schedule" in self.verbs,
+            "can_fork": True,
+            "can_archive": True,
+        }
+
+    @property
     def ordered_verbs(self) -> tuple[CommandVerb, ...]:
         return tuple(verb for verb in VERBS if verb in self.verbs)
 

@@ -174,7 +174,7 @@
   "src/rcp/release_check.py": {"comment": 8},
   "src/rcp/repository_preview.py": {"comment": 2},
   "src/rcp/repository_window.py": {"comment": 9},
-  "src/rcp/runs/agent_schedules.py": {"comment": 11},
+  "src/rcp/runs/agent_schedules.py": {"comment": 6},
   "src/rcp/runs/agent_thread_commands.py": {"comment": 13},
   "src/rcp/runs/agent_threads.py": {"comment": 19},
   "src/rcp/runs/approval_cards.py": {"comment": 3},

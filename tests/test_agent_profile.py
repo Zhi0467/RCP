@@ -186,3 +186,13 @@ def test_every_project_agent_may_read_the_authorizing_members_projects() -> None
     turn = AgentTurn(projects=True)
     for placement in (PRIVATE_PROJECT, SHARED_PROJECT):
         assert "projects" in resolve_agent_profile(placement, None, turn).verbs
+
+
+@pytest.mark.parametrize("placement", PLACEMENTS)
+def test_every_placement_exposes_agent_controls(placement) -> None:
+    assert resolve_agent_profile(placement, None, OFFER).controls == {
+        "can_queue": True,
+        "can_schedule": True,
+        "can_fork": True,
+        "can_archive": True,
+    }
