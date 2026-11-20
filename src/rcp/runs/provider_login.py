@@ -333,8 +333,17 @@ def resolved_task_login(
         return result.login
     # Older tasks can carry a different member's login. Only an eligible login
     # may represent this task while it waits for sign-in.
-    parked = LoginKey(provider, machine_id, task.login_id)
-    return parked if store.provider_login_state(parked).permits_member(authorizer) else None
+    row = next(
+        (
+            row
+            for row in store.provider_logins(provider, machine_id)
+            if row.login_id == task.login_id
+        ),
+        None,
+    )
+    if row is None or not row.permits_member(authorizer):
+        return None
+    return LoginKey(provider, machine_id, task.login_id)
 
 
 def provider_login_changed(
