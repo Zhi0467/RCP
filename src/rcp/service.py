@@ -428,7 +428,7 @@ def _merge_split_chat(first: _Chat, second: _Chat) -> _Chat:
     history file. Both are read as one: the node file names the chat, and the
     messages interleave by time.
     """
-    named, other = (second, first) if second.kind == "node_chat" else (first, second)
+    named, other = (second, first) if second.node_id is not None else (first, second)
     newer = max(first, second, key=lambda item: item.updated_at)
     update: dict[str, object] = {
         "updated_at": newer.updated_at,

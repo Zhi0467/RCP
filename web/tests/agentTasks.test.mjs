@@ -862,8 +862,34 @@ test("artifact edit tasks follow their resolved chat and exclude the orchestrato
     relatedChatTasks(tasks, "project_chat", null, "project-chat").map((item) => item.operation_id),
     ["project-edit"],
   );
-  assert.deepEqual(relatedChatTasks(tasks, "node_chat", "other", "node-chat"), []);
   assert.deepEqual(relatedChatTasks(tasks, "project_chat", null, "another-chat"), []);
+});
+
+test("a chat window keeps every turn of its chat, whatever scope the turn was labelled", () => {
+  const tasks = [
+    task({
+      operation_id: "on-node",
+      kind: "node_chat",
+      created_at: "2026-11-20T10:00:00Z",
+      request: { chat_scope: "node", chat_id: "chat", node_id: "experiment" },
+    }),
+    task({
+      operation_id: "mislabelled",
+      kind: "project_chat",
+      created_at: "2026-11-20T11:00:00Z",
+      request: { chat_scope: "project", chat_id: "chat" },
+    }),
+    task({
+      operation_id: "started-experiment",
+      kind: "experiment",
+      created_at: "2026-11-20T12:00:00Z",
+      request: { chat_id: "chat" },
+    }),
+  ];
+  assert.deepEqual(
+    relatedChatTasks(tasks, "node_chat", "experiment", "chat").map((item) => item.operation_id),
+    ["on-node", "mislabelled"],
+  );
 });
 
 test("chat session follows the server projection without reviving historical native sessions", () => {

@@ -53,7 +53,12 @@ class AgentOwner:
                 yield
 
     def turn_kind(self, body: dict[str, object]) -> AgentTaskKind:
-        return "node_chat" if body.get("chat_scope") == "node" else "project_chat"
+        return chat_turn_kind(body.get("chat_scope"))
+
+
+def chat_turn_kind(chat_scope: object) -> AgentTaskKind:
+    """The task kind of a project agent's turn in this chat scope."""
+    return "node_chat" if chat_scope == "node" else "project_chat"
 
 
 def resolve_agent(

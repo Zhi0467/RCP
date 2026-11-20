@@ -232,6 +232,16 @@ export function relatedChatTasks(
   nodeId?: string | null,
   requestedChatId?: string | null,
 ): AgentTask[] {
+  if (requestedChatId)
+    return tasks
+      .filter(
+        (task) =>
+          task.request.chat_id === requestedChatId &&
+          (task.kind === kind ||
+            task.request.chat_scope === "node" ||
+            task.request.chat_scope === "project"),
+      )
+      .sort(compareTaskTime);
   const candidates = tasks
     .filter(
       (task) =>
@@ -242,7 +252,6 @@ export function relatedChatTasks(
         (kind === "project_chat" || task.request.node_id === nodeId),
     )
     .sort(compareTaskTime);
-  if (requestedChatId) return candidates.filter((task) => task.request.chat_id === requestedChatId);
   const latest = candidates.at(-1);
   if (!latest) return [];
   const chatId = textValue(latest.request.chat_id);
