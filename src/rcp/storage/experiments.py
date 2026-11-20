@@ -38,10 +38,7 @@ from rcp.storage.models import (
     ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    WatcherCheckRecord,
-    WatcherClaimConflict,
     WatcherRecord,
-    WatcherStopRequest,
     _experiment_pinned_value,
     _optional_str,
 )
@@ -52,7 +49,7 @@ from rcp.storage.watchers import _OPEN, _watcher_records
 if TYPE_CHECKING:
     from rcp.storage import AppStore
     from rcp.watcher_folder import WatcherFolderChange
-    from rcp.watchers import ExperimentWatchSpec, WatcherBinding
+    from rcp.watchers import WatcherBinding
 
 _STOP_LOOP_CANCEL_REASON = "Stop loop ended this Experiment episode."
 
@@ -1282,276 +1279,6 @@ class ExperimentStoreMixin(StoreMixinBase):
                 "update."
             )
 
-    def _persist_experiment_watchers_idempotently(
-        self,
-        connection: sqlite3.Connection,
-        records: list[WatcherRecord],
-        *,
-        binding: WatcherBinding,
-        episode_id: str,
-        stops: list[WatcherStopRequest] | None = None,
-    ) -> list[WatcherRecord]:
-        """Persist one loop handoff in the caller's transaction.
-
-        Deterministic watcher ids make Retry and crash recovery safe. The same
-        ``BEGIN IMMEDIATE`` boundary used by Stop loop ensures either the handoff
-        lands first and Stop cancels it, or the handoff sees stop intent and
-        is born cancelled.
-        """
-
-        stop_requests = list(stops or [])
-        if not records and not stop_requests:
-            return []
-        if any(
-            record.agent_id != binding.agent_id
-            or record.project_id != binding.project_id
-            or record.origin_turn_id != binding.origin_turn_id
-            for record in records
-        ):
-            raise ValueError("Experiment watcher handoff changed its bound agent or turn.")
-        episode = self._experiment_episode_row(connection, episode_id)
-        if episode is None or (
-            episode["project_id"] != binding.project_id
-            or self._experiment_episode_record(episode).graph_target != binding.graph_target
-        ):
-            raise ValueError("This watcher handoff belongs to a different Experiment episode.")
-        if stop_requests:
-            self._apply_agent_watcher_stops(connection, binding, stop_requests, episode)
-        stopped = episode["stop_requested_at"] is not None
-        ids = [record.watcher_id for record in records]
-        existing = (
-            {
-                item.watcher_id
-                for item in _watcher_records(
-                    connection, f"w.watcher_id IN ({','.join('?' * len(ids))})", ids
-                )
-            }
-            if ids
-            else set()
-        )
-        if not stopped:
-            # A re-armed id is idempotent replay rather than a second observation.
-            self._reject_repeated_experiment_observers(
-                connection,
-                binding,
-                [
-                    check
-                    for record in records
-                    if record.watcher_id not in existing
-                    for check in record.checks
-                ],
-                retiring=set(),
-            )
-        for record in records:
-            cast("AppStore", self).arm_watcher(record, connection=connection)
-        if stopped and ids:
-            cast("AppStore", self).cancel_watchers(
-                ids, by="rcp", reason=_STOP_LOOP_CANCEL_REASON, connection=connection
-            )
-        stored = (
-            {
-                item.watcher_id: item
-                for item in _watcher_records(
-                    connection, f"w.watcher_id IN ({','.join('?' * len(ids))})", ids
-                )
-            }
-            if ids
-            else {}
-        )
-        return [stored[watcher_id] for watcher_id in ids]
-
-    @staticmethod
-    def _reject_repeated_experiment_observers(
-        connection: sqlite3.Connection,
-        binding: WatcherBinding,
-        checks: list[WatcherCheckRecord],
-        *,
-        retiring: set[str],
-    ) -> None:
-        """Refuse a repeat of work a live check of this agent already covers.
-
-        Two watchers of one job notice its completion in separate polls and each
-        buys the episode a wake for the single event. Only an exact repeat of the
-        check on the same host and directory is refused; observing one job
-        through different commands stays a judgement the agent makes from its
-        staged watcher state. `retiring` names watchers or checks the same
-        handoff stops, so a retire-and-replace validates as persistence sees it.
-        """
-
-        armed: set[tuple[str, ...]] = set()
-        for check in checks:
-            if check.definition != "external":
-                continue
-            assert check.check_command and check.log_path and check.cwd
-            identity = (check.machine_id, check.cwd, check.check_command, check.log_path)
-            if identity in armed:
-                raise ValueError(
-                    "this watch list arms one check twice; observe this work once: "
-                    f"{check.check_command}"
-                )
-            armed.add(identity)
-            rows = connection.execute(
-                f"""
-                SELECT c.check_id, w.watcher_id FROM watcher_checks AS c
-                JOIN watchers AS w USING (watcher_id)
-                WHERE w.agent_id = ? AND {_OPEN} AND c.removed_at IS NULL
-                  AND c.definition = 'external' AND c.machine_id = ? AND c.cwd = ?
-                  AND c.check_command = ? AND c.log_path = ?
-                ORDER BY c.created_at, c.check_id
-                """,
-                (binding.agent_id, *identity),
-            ).fetchall()
-            for row in rows:
-                if {str(row["check_id"]), str(row["watcher_id"])} & retiring:
-                    continue
-                raise ValueError(
-                    "an identical observer already covers this work: "
-                    f"{row['check_id']}; rely on it, or retire it with a stop "
-                    "item in this same handoff and arm the replacement"
-                )
-
-    def validate_experiment_observer_duplicates(
-        self,
-        binding: WatcherBinding,
-        observers: list[ExperimentWatchSpec],
-        *,
-        stops: list[WatcherStopRequest] | None = None,
-        rearmed_watcher_ids: list[str] | None = None,
-    ) -> None:
-        """Fail a repeated observer while the turn can still correct it.
-
-        The arming transaction keeps the same lookup as its atomic backstop.
-        `rearmed_watcher_ids` are the check ids this declaration resolves to;
-        a replayed handoff re-arms them rather than repeating them.
-        """
-
-        if not observers:
-            return
-        now = self.now()
-        candidates = [
-            WatcherCheckRecord(
-                check_id=f"candidate-{index}",
-                watcher_id="candidate",
-                machine_id=binding.machine_id,
-                definition="external",
-                check_command=item.check_command,
-                log_path=item.log_path,
-                cwd=item.cwd,
-                created_at=now,
-            )
-            for index, item in enumerate(observers)
-        ]
-        with self.connection() as connection:
-            self._reject_repeated_experiment_observers(
-                connection,
-                binding,
-                candidates,
-                retiring={item.stop_watcher_id for item in (stops or [])}
-                | set(rearmed_watcher_ids or []),
-            )
-
-    def persist_experiment_watchers_idempotently(
-        self,
-        records: list[WatcherRecord],
-        *,
-        binding: WatcherBinding,
-        episode_id: str,
-        stops: list[WatcherStopRequest] | None = None,
-    ) -> list[WatcherRecord]:
-        """Persist one loop handoff atomically with the episode's graceful stop."""
-
-        if not records and not stops:
-            return []
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            return self._persist_experiment_watchers_idempotently(
-                connection, records, binding=binding, episode_id=episode_id, stops=stops
-            )
-
-    def validate_experiment_agent_watcher_stops(
-        self,
-        binding: WatcherBinding,
-        episode_id: str,
-        stops: list[WatcherStopRequest],
-    ) -> None:
-        """Fail a malformed stop handoff before its Patch can be accepted."""
-
-        if not stops:
-            return
-        with self.connection() as connection:
-            episode = self._experiment_episode_row(connection, episode_id)
-            if episode is None:
-                raise ValueError("An agent watcher stop requires the current Experiment episode.")
-            self._apply_agent_watcher_stops(connection, binding, stops, episode, apply=False)
-
-    def _apply_agent_watcher_stops(
-        self,
-        connection: sqlite3.Connection,
-        binding: WatcherBinding,
-        stops: list[WatcherStopRequest],
-        episode_row: sqlite3.Row,
-        *,
-        apply: bool = True,
-    ) -> None:
-        """Cancel a named watcher, or remove a named check from a multi-check watcher.
-
-        A stop names a watcher id or one of its check ids. A replay of an
-        applied stop, or one Stop loop already settled, is satisfied.
-        """
-
-        watchers = _watcher_records(connection, "w.agent_id = ?", (binding.agent_id,))
-        by_id = {watcher.watcher_id: watcher for watcher in watchers}
-        by_check = {check.check_id: watcher for watcher in watchers for check in watcher.checks}
-        stop_requested = episode_row["stop_requested_at"] is not None
-        now = self.now()
-        for stop in stops:
-            name = stop.stop_watcher_id
-            watcher = by_id.get(name) or by_check.get(name)
-            if watcher is None:
-                raise ValueError(f"Watcher stop names an unknown staged watcher: {name}")
-            live = watcher.live_checks
-            whole = name == watcher.watcher_id or [check.check_id for check in live] == [name]
-            if not watcher.open:
-                if watcher.wake_turn_id is not None:
-                    raise WatcherClaimConflict("A watcher update was already claimed for delivery.")
-                if stop_requested or (
-                    watcher.cancelled_by == "agent" and watcher.cancel_reason == stop.reason
-                ):
-                    continue
-                raise ValueError(f"Watcher stop was already resolved: {name}")
-            if not whole and name not in {check.check_id for check in live}:
-                # An earlier application already removed this check.
-                continue
-            if not apply:
-                continue
-            if whole:
-                cast("AppStore", self).cancel_watchers(
-                    [watcher.watcher_id], by="agent", reason=stop.reason, connection=connection
-                )
-            else:
-                cast("AppStore", self).revise_watcher(
-                    connection,
-                    watcher.watcher_id,
-                    purpose=watcher.purpose,
-                    removed_check_ids=[name],
-                    new_checks=[],
-                    at=now,
-                )
-
-    def experiment_handoff_has_live_watcher_after_stops(
-        self,
-        binding: WatcherBinding,
-        stop_watcher_ids: list[str],
-    ) -> bool:
-        """Whether a stop-only handoff leaves another watcher that can wake the agent."""
-
-        stopped = set(stop_watcher_ids)
-        return any(
-            watcher.watcher_id not in stopped
-            and any(check.check_id not in stopped for check in watcher.live_checks)
-            for watcher in cast("AppStore", self).agent_watchers(binding.agent_id, open_only=True)
-        )
-
     def experiment_episode(self, episode_id: str) -> ExperimentEpisodeRecord | None:
         with self.connection() as connection:
             row = self._experiment_episode_row(connection, episode_id)
@@ -2034,7 +1761,6 @@ class ExperimentStoreMixin(StoreMixinBase):
 
     def commit_experiment_episode_handoff(
         self,
-        records: list[WatcherRecord],
         *,
         binding: WatcherBinding,
         episode_id: str,
@@ -2048,20 +1774,18 @@ class ExperimentStoreMixin(StoreMixinBase):
         graph_result: str,
         context_baseline: dict[str, object],
         folder_change: WatcherFolderChange | None = None,
-        stops: list[WatcherStopRequest] | None = None,
         ending_signal: dict[str, object] | None = None,
         replace_binding: bool = False,
         replacement_provenance: dict[str, object] | None = None,
     ) -> tuple[list[WatcherRecord], ExperimentEpisodeRecord]:
-        """Atomically persist loop watchers and commit their episode handoff.
+        """Atomically apply the turn's watcher folder and commit its episode handoff.
 
-        ``binding.origin_turn_id`` remains the watcher identity root. The
-        separate ``operation_id`` is the current completed task whose session
-        and episode turn are being committed.
+        A handoff that lands after Stop was requested leaves its watchers cancelled.
         """
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            stored_watchers: list[WatcherRecord] = []
             if folder_change is not None:
                 if (
                     folder_change.binding.agent_id != binding.agent_id
@@ -2070,13 +1794,16 @@ class ExperimentStoreMixin(StoreMixinBase):
                 ):
                     raise ValueError("Watcher folder does not belong to this episode turn.")
                 stored_watchers = folder_change.commit(cast("AppStore", self), connection)
-            else:
-                stored_watchers = self._persist_experiment_watchers_idempotently(
+            episode = self._experiment_episode_row(connection, episode_id)
+            live = [item.watcher_id for item in stored_watchers if item.open]
+            if live and episode is not None and episode["stop_requested_at"] is not None:
+                cast("AppStore", self).cancel_watchers(
+                    live, by="rcp", reason=_STOP_LOOP_CANCEL_REASON, connection=connection
+                )
+                stored_watchers = _watcher_records(
                     connection,
-                    records,
-                    stops=stops,
-                    binding=binding,
-                    episode_id=episode_id,
+                    f"w.watcher_id IN ({','.join('?' * len(stored_watchers))})",
+                    [item.watcher_id for item in stored_watchers],
                 )
             self._commit_experiment_episode_turn(
                 connection,

@@ -664,8 +664,8 @@ So a saved stage outside the current data directory, after the directory moved
 or was copied, cannot resume: that turn fails and records
 `continuation_context_unavailable`, and Retry or the next message starts a
 fresh session with that recorded reason.
-Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
-`patch.json` and `watch.json` fail-closed. Committed native context retains its
+Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear a stale
+`patch.json` fail-closed and restage `watchers/` from the agent's live watchers. Committed native context retains its
 stage and master even while idle.
 
 Human chat turns and human Experiment invocations may `ask`; the question
@@ -1283,7 +1283,7 @@ job launched by the turn. A still-running job absent from the declared job
 observers is a correctable handoff defect listing the unobserved job ids. The same correction
 round repairs it without another invocation; jobs already exited need no
 observer, and a turn that launched nothing is unaffected. Child Work uses the
-ordinary Work reader, validator, and arming path for its final `watch.json`.
+ordinary Work reader, validator, and reconcile path for its `watchers/` folder.
 
 A child watcher claim creates one continuation atomically and spends no parent
 budget. It requires a running parent, a route without a Stop fence, and a

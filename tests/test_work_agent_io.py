@@ -434,7 +434,6 @@ async def test_validator_cleanup_finishes_under_caller_cancellation_without_remo
     workspace = Path(staged.workspace)
     handoffs = {
         "patch.json": "patch survives",
-        "watch.json": "watch survives",
         "messages.json": "messages survive",
     }
     for name, content in handoffs.items():
@@ -787,8 +786,6 @@ async def _delivered_live(
 def _recorded_pass(
     patch_text: str,
     answer: str,
-    watch_text: str | None = None,
-    experiment_watch: dict[str, str] | None = None,
     thread_id: str = "recorded-thread",
     *,
     watcher_folder: dict[str, str] | None = None,
@@ -819,17 +816,6 @@ def _recorded_pass(
         "events_sha256": hashlib.sha256(events.encode("utf-8")).hexdigest(),
         "patch_present": True,
         "patch_sha256": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
-        "watch_present": watch_text is not None,
-        "watch_sha256": (
-            hashlib.sha256(watch_text.encode("utf-8")).hexdigest()
-            if watch_text is not None
-            else None
-        ),
-        "experiment_watch_snapshotted": True,
-        "experiment_watch_sha256": {
-            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-            for name, text in (experiment_watch or {}).items()
-        },
         "watcher_folder_sha256": {
             name: hashlib.sha256(text.encode()).hexdigest()
             for name, text in (watcher_folder or {}).items()
@@ -846,9 +832,7 @@ def _recorded_pass(
             "events": events,
             "stderr": "",
             "patch": patch_text,
-            "watch": watch_text,
             "watcher_folder": dict(watcher_folder or {}),
-            "experiment_watch": dict(experiment_watch or {}),
         },
     )
 
@@ -1087,7 +1071,7 @@ async def test_a_recorded_retry_keeps_the_baseline_it_launched_with(tmp_path) ->
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "retry_deliverable_baseline",
-        {"patch_sha256": "the-previous-attempt", "watch_sha256": None},
+        {"patch_sha256": "the-previous-attempt"},
         tier="diagnostic",
     )
     (primed.workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
@@ -1333,41 +1317,26 @@ async def test_a_retained_work_context_from_an_old_writer_still_loads(tmp_path) 
     assert loaded.model_dump(mode="json") == current
 
 
-def test_recovery_makes_the_stage_hold_exactly_the_watcher_outputs_the_pass_wrote(
+def test_recovery_makes_the_stage_hold_exactly_the_watcher_folder_the_pass_wrote(
     tmp_path,
 ) -> None:
-    """Watcher maintenance is read by discovery, so the whole set is evidence.
-
-    Settling reads whichever `experiment-watch-*.json` files the stage holds at
-    the time. A file replaced after the host finished would arm different
-    observers under this turn's authority, and one added afterwards would be
-    admitted as this turn's, so restoring the record has to remove it.
-    """
+    """Settling reads the whole folder, so restoring the record replaces it exactly."""
 
     from rcp.runs.recorded_settlement import write_recorded_patch
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True)
-    kept = '{"observers": [{"purpose": "job finishes", "check_command": "true"}], "stops": []}'
-    workspace.joinpath("experiment-watch-aaaa.json").write_text("{}", encoding="utf-8")
-    workspace.joinpath("experiment-watch-cccc.json").write_text("{}", encoding="utf-8")
+    folder = workspace / "watchers"
+    folder.mkdir(parents=True)
+    kept = '{"purpose": "job finishes", "checks": []}'
+    folder.joinpath("aaaa.json").write_text("{}", encoding="utf-8")
+    folder.joinpath("cccc.json").write_text("{}", encoding="utf-8")
 
-    recorded = _recorded_pass(
-        "",
-        "done",
-        experiment_watch={
-            "experiment-watch-aaaa.json": kept,
-            "experiment-watch-bbbb.json": kept,
-        },
-    )
+    recorded = _recorded_pass("", "done", watcher_folder={"aaaa.json": kept, "bbbb.json": kept})
     write_recorded_patch(workspace, None, recorded)
 
-    assert sorted(item.name for item in workspace.glob("experiment-watch-*.json")) == [
-        "experiment-watch-aaaa.json",
-        "experiment-watch-bbbb.json",
-    ]
-    assert workspace.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == kept
-    assert workspace.joinpath("experiment-watch-bbbb.json").read_text(encoding="utf-8") == kept
+    assert sorted(item.name for item in folder.iterdir()) == ["aaaa.json", "bbbb.json"]
+    assert folder.joinpath("aaaa.json").read_text(encoding="utf-8") == kept
+    assert folder.joinpath("bbbb.json").read_text(encoding="utf-8") == kept
 
 
 def test_a_journal_predating_watcher_snapshots_leaves_the_stage_alone(tmp_path) -> None:
@@ -1376,15 +1345,15 @@ def test_a_journal_predating_watcher_snapshots_leaves_the_stage_alone(tmp_path) 
     from rcp.runs.recorded_settlement import write_recorded_patch
 
     workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True)
-    existing = '{"observers": [], "stops": []}'
-    workspace.joinpath("experiment-watch-aaaa.json").write_text(existing, encoding="utf-8")
+    folder = workspace / "watchers"
+    folder.mkdir(parents=True)
+    existing = '{"purpose": "job finishes", "checks": []}'
+    folder.joinpath("aaaa.json").write_text(existing, encoding="utf-8")
 
-    recorded = _recorded_pass("", "done")
-    older = dataclasses.replace(recorded, experiment_watch={}, experiment_watch_snapshotted=False)
+    older = dataclasses.replace(_recorded_pass("", "done"), watcher_folder=None)
     write_recorded_patch(workspace, None, older)
 
-    assert workspace.joinpath("experiment-watch-aaaa.json").read_text(encoding="utf-8") == existing
+    assert folder.joinpath("aaaa.json").read_text(encoding="utf-8") == existing
 
 
 @pytest.mark.parametrize("outage", ["patch_read", "apply_before_commit"])

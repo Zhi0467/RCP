@@ -153,7 +153,6 @@ def _prepare_auto_research_child_work_handoffs(
             "version": 1,
             "files": [
                 "patch.json",
-                "watch.json",
                 "inputs/messages.json" if local_stage is not None else "messages.json",
                 "lifecycle.json",
             ],

@@ -184,9 +184,7 @@ async def test_later_node_turn_refreshes_status_without_maintenance_authority(
         assert status["current"]["episode_id"] == loop.episode_id
         assert status["current"]["stop_initiated_by"] is not None
         assert status["current"]["stop_settled_at"] is not None
-        assert [(item["watcher_id"], item["status"]) for item in watchers] == [
-            ("loop-observer", "stopped")
-        ]
+        assert watchers == []
         assert status["watcher_state_path"] != before["watcher_state_path"]
         for operation_id in ("first", "second"):
             master = loop.store.agent_task_contract(operation_id, "session_master")
@@ -239,7 +237,7 @@ def test_experiment_loop_prompt_receives_other_target_rows_from_shared_renderer(
         "change_summary": [],
     }
     launcher = ScriptedLauncher(
-        [{"patch.json": json.dumps(patch), "watch.json": '{"external":[],"graph":[]}'}],
+        [{"patch.json": json.dumps(patch)}],
         message="Completed branch experiment.",
     )
     monkeypatch.setattr(loop.app.state.launcher, "stream", launcher.stream)

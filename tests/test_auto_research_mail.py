@@ -369,7 +369,7 @@ def test_claimed_inbound_mail_is_staged_as_one_exact_hearsay_only_batch(tmp_path
     delivery = _claimed_delivery(tmp_path)
     workspace = tmp_path / "stage"
     workspace.mkdir()
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (workspace / name).write_text("stale", encoding="utf-8")
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
 
@@ -391,7 +391,6 @@ def test_claimed_inbound_mail_is_staged_as_one_exact_hearsay_only_batch(tmp_path
     assert parsed.messages[1].sender_role == "worker"
     assert parsed.messages[1].authorized_by is None
     assert not (workspace / "patch.json").exists()
-    assert not (workspace / "watch.json").exists()
 
 
 def test_ordinary_child_work_stages_and_reuses_only_its_exact_claimed_mail(tmp_path) -> None:
@@ -780,7 +779,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         if receipt.category == "agent_launch"
     )
     assert launch.payload["canonical_write_roots"][0] == str(workspace)
-    assert not (launcher.workspaces[0] / "watch.json").exists()
     if legacy_layout:
         with store.connection() as connection:
             connection.execute(
@@ -836,7 +834,6 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     )
     assert staged_mail.delivery_operation_id == wake.operation_id
     assert staged_mail.message_ids == [message.message_id]
-    assert not (launcher.workspaces[1] / "watch.json").exists()
     assert not (stage / "messages.json").exists()
     assert launcher.workspaces[1] == (stage if legacy_layout else workspace)
     assert stage / "inputs" in launcher.launch_kwargs[1]["read_dirs"]

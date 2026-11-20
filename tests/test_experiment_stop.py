@@ -23,6 +23,7 @@ from rcp.storage import (
     AppStore,
     WatcherRecord,
 )
+from rcp.watcher_folder import WatcherFolderChange
 from rcp.watchers import WatcherBinding
 
 from .helpers import (
@@ -1937,15 +1938,28 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path
         checks=[loop._check("final-handoff")],
     )
 
-    stored = loop.store.persist_experiment_watchers_idempotently(
-        [desired],
-        binding=WatcherBinding(
-            project_id=loop.project_id,
-            agent_id=loop.chat_id,
-            origin_turn_id="loop-root",
-            machine_id=BACKEND_MACHINE_ID,
-        ),
+    binding = WatcherBinding(
+        project_id=loop.project_id,
+        agent_id=loop.chat_id,
+        origin_turn_id="loop-root",
+        machine_id=BACKEND_MACHINE_ID,
+    )
+    request = loop.root_request()
+    assert request.control_invocation is not None and request.provider is not None
+
+    stored, _episode = loop.store.commit_experiment_episode_handoff(
+        binding=binding,
         episode_id=loop.episode_id,
+        control_node_id=EXPERIMENT_ID,
+        invocation=request.control_invocation,
+        provider=request.provider,
+        operation_id="loop-root",
+        native_session_id="native-session",
+        stage_machine_id=None,
+        stage_root=str(tmp_path / "stage"),
+        graph_result="no graph change",
+        context_baseline={},
+        folder_change=WatcherFolderChange(binding, "final", {}, [desired], [], []),
     )
 
     assert stored[0].state == "cancelled"

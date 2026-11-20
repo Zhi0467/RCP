@@ -450,7 +450,8 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     store.fail_agent_task(root.operation_id, "Interrupted before the message wake.")
     (workspace / "patch.json").write_text("stale patch", encoding="utf-8")
-    (workspace / "watch.json").write_text("stale watch", encoding="utf-8")
+    (workspace / "watchers").mkdir(exist_ok=True)
+    (workspace / "watchers" / "stale.json").write_text("stale watch", encoding="utf-8")
 
     wake_request = request.model_copy(
         update={
@@ -475,7 +476,7 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     try:
         assert not (workspace / "patch.json").exists()
-        assert not (workspace / "watch.json").exists()
+        assert not (workspace / "watchers" / "stale.json").exists()
         assert wake_turn.workspace == workspace
         assert wake_turn.write_scope.stage_root == str(stage)
         assert wake_turn.write_scope.workspace_root == str(workspace)
@@ -1138,7 +1139,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert wake_execution.stage_root is not None
     stale_workspace = Path(wake_execution.stage_root) / "workspace"
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
-    (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
     launcher.patch_payload = {
         "summary": "Tried to update an unavailable graph node.",
         "ops": [

@@ -1134,14 +1134,12 @@ def _hand_off(world: World, task: AgentTaskRecord, ending: dict | None) -> None:
     commit_experiment_episode_handoff(
         execution,
         request,
-        [],
         scope,
         native_session_id=task.native_session_id,
         stage_machine_id=execution.stage_machine_id,
         stage_root=execution.stage_root,
         graph_result="applied",
         context_baseline={},
-        stops=[],
         ending_signal=ending,
     )
 

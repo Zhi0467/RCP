@@ -53,7 +53,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
 ) -> None:
     workspace = tmp_path / "stage"
     workspace.mkdir()
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (workspace / name).write_text(f"retained {name}", encoding="utf-8")
     issued = []
     original_issue = command_mailbox_module.CommandTurnCredential.issue
@@ -108,8 +108,8 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
         )
     assert {
         name: (workspace / name).read_text(encoding="utf-8")
-        for name in ("patch.json", "watch.json", "messages.json")
-    } == {name: f"retained {name}" for name in ("patch.json", "watch.json", "messages.json")}
+        for name in ("patch.json", "messages.json")
+    } == {name: f"retained {name}" for name in ("patch.json", "messages.json")}
 
 
 def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
@@ -876,17 +876,15 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     workspace = tmp_path / "stage"
     workspace.mkdir()
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
-    for name in ("patch.json", "watch.json", "messages.json", "outcome.json"):
+    for name in ("patch.json", "messages.json", "outcome.json"):
         (workspace / name).write_text("stale", encoding="utf-8")
 
     clear_turn_handoff_files(mailbox)
     assert not any(
-        (workspace / name).exists()
-        for name in ("patch.json", "watch.json", "messages.json", "outcome.json")
+        (workspace / name).exists() for name in ("patch.json", "messages.json", "outcome.json")
     )
 
     (workspace / "patch.json").write_text("stale", encoding="utf-8")
-    (workspace / "watch.json").write_text("stale", encoding="utf-8")
     (workspace / "messages.json").mkdir()
     with pytest.raises(ValueError, match="unsafe directory"):
         clear_turn_handoff_files(mailbox)

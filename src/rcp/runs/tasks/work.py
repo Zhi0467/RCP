@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import json
 import shlex
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
@@ -85,7 +84,6 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
     _read_turn_outcome,
-    _read_watch_request,
     _record_artifact_discovery_receipt,
     _stage_chat_patch_inputs,
     _stage_chat_turn_contract,
@@ -230,8 +228,6 @@ from rcp.watcher_folder import (
 )
 from rcp.watchers import (
     WatcherInitialCheckError,
-    arm_watchers,
-    parse_watch_json,
 )
 
 # Auto-research shares the same patch-failure value while its orchestration remains separate.
@@ -888,8 +884,6 @@ async def _stage_work_turn(
         stage_loop_status=stage_loop_status,
         select_skills=select_skills,
     )
-    if execution and request.chat_id and not is_consolidation(execution):
-        turn.patch_inputs = replace(turn.patch_inputs, watch_path=str(turn.workspace / "watchers"))
     return turn, staged
 
 
@@ -1381,16 +1375,10 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         return _RetryDeliverableBaseline(None, None)
     assert turn.execution is not None
     predecessor_patch = _read_chat_patch(turn.workspace, turn.remote_stage)
-    predecessor_watch = _read_watch_request(turn.workspace, turn.remote_stage)
     predecessor_outcome = _read_turn_outcome(turn.workspace, turn.remote_stage)
     patch_digest = (
         hashlib.sha256(predecessor_patch.encode("utf-8")).hexdigest()
         if predecessor_patch is not None
-        else None
-    )
-    watch_digest = (
-        hashlib.sha256(predecessor_watch.encode("utf-8")).hexdigest()
-        if predecessor_watch is not None
         else None
     )
     outcome_digest = (
@@ -1403,14 +1391,13 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         "retry_deliverable_baseline",
         {
             "patch_sha256": patch_digest,
-            "watch_sha256": watch_digest,
             "outcome_sha256": outcome_digest,
         },
         tier="diagnostic",
     )
     return _RetryDeliverableBaseline(
         patch_digest=patch_digest,
-        watch_digest=watch_digest,
+        watch_digest=None,
         outcome_digest=outcome_digest,
     )
 
@@ -1453,10 +1440,10 @@ def _folder_baseline(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> 
     )
 
 
-def _watcher_output(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> str | None:
-    if _folder_baseline(turn, attempt) is not None:
-        return json.dumps(read_watcher_folder(turn.workspace, turn.remote_stage), sort_keys=True)
-    return _read_watch_request(turn.workspace, turn.remote_stage)
+def _watcher_output(turn: WorkFinalizationContext | WorkTurn) -> str | None:
+    if turn.execution is None or not turn.request.chat_id:
+        return None
+    return json.dumps(read_watcher_folder(turn.workspace, turn.remote_stage), sort_keys=True)
 
 
 def _read_initial_watch_deliverable(
@@ -1464,7 +1451,7 @@ def _read_initial_watch_deliverable(
     predecessor_digest: str | None,
 ) -> _DeliverableRead:
     try:
-        text = _watcher_output(turn, 0)
+        text = _watcher_output(turn)
     except (OSError, StateUnavailable, ValueError) as exc:
         if turn.recorded and isinstance(exc, StateUnavailable):
             raise
@@ -1478,7 +1465,7 @@ def _read_initial_watch_deliverable(
         failure = None
     if _retry_deliverable_is_unchanged(
         turn.execution,
-        filename="watch.json",
+        filename="watchers",
         predecessor_digest=predecessor_digest,
         current_text=text,
     ):
@@ -1618,9 +1605,9 @@ def _read_corrected_patch_deliverable(
     )
 
 
-def _read_corrected_watch_deliverable(turn: WorkTurn, attempt: int) -> _DeliverableRead:
+def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
     try:
-        corrected_watch = _watcher_output(turn, attempt)
+        corrected_watch = _watcher_output(turn)
     except (OSError, StateUnavailable, ValueError) as exc:
         return _DeliverableRead(
             text=None,
@@ -1633,7 +1620,7 @@ def _read_corrected_watch_deliverable(turn: WorkTurn, attempt: int) -> _Delivera
         return _DeliverableRead(
             text=None,
             failure=_DeliverableFailure(
-                "The correction completed without writing watch.json.",
+                "The correction left no readable watcher folder.",
                 correctable=True,
             ),
         )
@@ -1684,59 +1671,24 @@ async def _validate_watch_deliverable(
             turn.request.chat_id,
             turn.write_scope.machine_id,
         )
-        baseline = _folder_baseline(turn, correction_rounds)
-        if baseline is not None:
-            files = json.loads(watch_text)
-            definitions = [WatcherFile.model_validate_json(raw) for raw in files.values()]
-            if turn.compute_commands is not None:
-                await asyncio.to_thread(
-                    turn.compute_commands.validate_handoff,
-                    {item.check_command for entry in definitions for item in entry.checks},
-                )
-            graphs = any(entry.graph is not None for entry in definitions)
-            state = await asyncio.to_thread(turn.service.history.state) if graphs else None
-            armed = await asyncio.to_thread(
-                reconcile_watcher_files,
-                turn.execution.store,
-                binding,
-                json.loads(baseline),
-                files,
-                state=state,
+        files = json.loads(watch_text)
+        definitions = [WatcherFile.model_validate_json(raw) for raw in files.values()]
+        if turn.compute_commands is not None:
+            await asyncio.to_thread(
+                turn.compute_commands.validate_handoff,
+                {item.check_command for entry in definitions for item in entry.checks},
             )
-            turn.execution.armed_graph_watchers |= graphs
-        else:
-            ordinary_handoff = parse_watch_json(watch_text)
-            if turn.compute_commands is not None:
-                await asyncio.to_thread(
-                    turn.compute_commands.validate_handoff,
-                    {item.check_command for item in ordinary_handoff.external},
-                )
-            specs = ordinary_handoff.external
-            graph_conditions = ordinary_handoff.graph
-            graph_state = (
-                await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
-            )
-            if graph_conditions:
-                turn.execution.armed_graph_watchers = True
-            watcher_ids = [
-                str(
-                    uuid.uuid5(
-                        uuid.NAMESPACE_URL,
-                        f"rcp-work-watcher:{turn.execution.operation_id}:{index}",
-                    )
-                )
-                for index in range(len(specs) + len(graph_conditions))
-            ]
-            armed = await asyncio.to_thread(
-                arm_watchers,
-                turn.execution.store,
-                specs,
-                binding,
-                graph_conditions=graph_conditions,
-                state=graph_state,
-                watcher_ids=watcher_ids,
-                reuse_live=True,
-            )
+        graphs = any(entry.graph is not None for entry in definitions)
+        state = await asyncio.to_thread(turn.service.history.state) if graphs else None
+        armed = await asyncio.to_thread(
+            reconcile_watcher_files,
+            turn.execution.store,
+            binding,
+            json.loads(_folder_baseline(turn, correction_rounds) or "{}"),
+            files,
+            state=state,
+        )
+        turn.execution.armed_graph_watchers |= graphs
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except ValueError as exc:
@@ -2123,8 +2075,7 @@ async def _settle_watch_deliverable(
             phase="correcting",
             event=True,
         )
-        if _folder_baseline(turn, 0) is not None:
-            assert turn.request.chat_id is not None
+        if turn.request.chat_id:
             stage_watcher_folder(
                 turn.execution.store,
                 watcher_binding(
@@ -2248,7 +2199,7 @@ async def _settle_watch_deliverable(
             correction_rounds = maximum_corrections
             continue
         if watch_failure is not None:
-            corrected = _read_corrected_watch_deliverable(launch_turn, correction_rounds)
+            corrected = _read_corrected_watch_deliverable(launch_turn)
             text = corrected.text
             failure = corrected.failure
         else:

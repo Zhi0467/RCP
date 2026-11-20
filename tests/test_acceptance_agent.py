@@ -210,7 +210,7 @@ def test_acceptance_launcher_refuses_remote_execution(tmp_path) -> None:
     assert readiness.installed is False
     assert readiness.authenticated is False
     assert [event.event for event in events] == ["error"]
-    assert not (tmp_path / "watch.json").exists()
+    assert not list((tmp_path / "watchers").glob("*"))
     assert launcher.launch_records[0].action == "remote_rejected"
 
 
@@ -271,7 +271,7 @@ def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
         "session_id": session_id,
     }
     assert not (stage / "patch.json").exists()
-    assert not (stage / "watch.json").exists()
+    assert not list((stage / "watchers").glob("*"))
     assert not (stage / "messages.json").exists()
 
     with pytest.raises(ValueError, match="changed its native session"):

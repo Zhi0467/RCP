@@ -37,6 +37,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.transport import StateUnavailable
+from rcp.watcher_folder import FileCheck, WatcherFile, reconcile_watcher_files
 from rcp.watchers import (
     AgentWatchSpec,
     WatcherBinding,
@@ -46,7 +47,6 @@ from rcp.watchers import (
     WatcherRetryGeneration,
     WatcherRetryWorker,
     WatchSpec,
-    arm_watchers,
     graph_check_boundary_result,
     graph_condition_result,
 )
@@ -363,24 +363,32 @@ def _current() -> WatcherRetryGeneration:
     return WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
 
 
-def test_watch_validation_is_all_or_none_across_external_and_graph(store) -> None:
-    invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
-    checked: list[str] = []
+def _files(**conditions: NodeStatusGraphCondition | None) -> dict[str, str]:
+    return {
+        f"{name}.json": WatcherFile(
+            purpose="Wait for the result",
+            checks=[]
+            if condition
+            else [FileCheck.model_validate(_SPEC.model_dump(exclude={"purpose"}))],
+            graph=condition,
+        ).model_dump_json(exclude_none=True)
+        for name, condition in conditions.items()
+    }
 
-    def active_check(candidate: WatchSpec, host: str, timeout: float) -> WatcherCheckResult:
-        checked.append(candidate.check_command)
-        return _active_check(candidate, host, timeout)
+
+def test_watch_validation_is_all_or_none_across_external_and_graph(store) -> None:
+    _completed_origin(store, "project", "origin")
+    invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
 
     with pytest.raises(ValueError, match="invalid statuses"):
-        arm_watchers(
+        reconcile_watcher_files(
             store,
-            [_SPEC],
             _binding(),
-            graph_conditions=[invalid],
+            {},
+            _files(a_graph=invalid, b_external=None),
             state=_state(),
-            check_runner=active_check,
+            check_runner=_active_check,
         )
-    assert checked == []
     assert store.project_watchers("project") == []
 
     def failed_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
@@ -388,117 +396,41 @@ def test_watch_validation_is_all_or_none_across_external_and_graph(store) -> Non
             state="error", checked_at=_CREATED_AT, exit_code=2, error="scheduler unavailable"
         )
 
+    files = _files(a_graph=_RESOLVED, b_external=None)
     with pytest.raises(WatcherInitialCheckError):
-        arm_watchers(
-            store,
-            [_SPEC],
-            _binding(),
-            graph_conditions=[_RESOLVED],
-            state=_state(),
-            check_runner=failed_check,
+        reconcile_watcher_files(
+            store, _binding(), {}, files, state=_state(), check_runner=failed_check
         )
     assert store.project_watchers("project") == []
 
-    armed = arm_watchers(
-        store,
-        [_SPEC],
-        _binding(),
-        graph_conditions=[_RESOLVED],
-        state=_state(revision=4),
-        watcher_ids=["external-id", "graph-id"],
-        check_runner=active_check,
+    armed = reconcile_watcher_files(
+        store, _binding(), {}, files, state=_state(revision=4), check_runner=_active_check
     )
-    assert [watcher.watcher_id for watcher in armed] == ["external-id", "graph-id"]
-    assert [watcher.checks[0].definition for watcher in armed] == ["external", "graph"]
-    assert armed[1].checks[0].armed_head == 4
+    by_id = {watcher.watcher_id: watcher for watcher in armed}
+    assert {key: value.checks[0].definition for key, value in by_id.items()} == {
+        "a_graph": "graph",
+        "b_external": "external",
+    }
+    assert by_id["a_graph"].checks[0].armed_head == 4
 
     def unexpected_check(*_args):
         raise AssertionError("an already-persisted handoff must not run its check again")
 
-    replayed = arm_watchers(
-        store,
-        [_SPEC],
-        _binding(),
-        graph_conditions=[_RESOLVED],
-        state=_state(revision=4),
-        watcher_ids=["external-id", "graph-id"],
-        check_runner=unexpected_check,
+    replayed = reconcile_watcher_files(
+        store, _binding(), {}, files, state=_state(revision=4), check_runner=unexpected_check
     )
-    assert replayed == armed
+    assert sorted(replayed, key=lambda w: w.watcher_id) == sorted(armed, key=lambda w: w.watcher_id)
     assert len(store.project_watchers("project")) == 2
-
-
-@pytest.mark.parametrize(
-    "watcher_ids",
-    [[], ["only-one"], ["same", "same"], ["external", "  "]],
-)
-def test_invalid_supplied_watcher_ids_fail_before_checks_or_insertion(
-    store,
-    watcher_ids: list[str],
-) -> None:
-    def unexpected_check(*_args):
-        raise AssertionError("invalid ids must fail before any check runs")
-
-    with pytest.raises(ValueError, match="watcher_ids"):
-        arm_watchers(
-            store,
-            [_SPEC],
-            _binding(),
-            graph_conditions=[_RESOLVED],
-            state=_state(),
-            watcher_ids=watcher_ids,
-            check_runner=unexpected_check,
-        )
-    assert store.project_watchers("project") == []
-
-
-def test_a_later_turn_rearming_the_same_conditions_reuses_the_agents_open_watchers(
-    store,
-) -> None:
-    def arm(origin: str, agent_id: str = "chat", *, reuse_live: bool = True) -> list[str]:
-        armed = arm_watchers(
-            store,
-            [_SPEC],
-            _binding(origin, agent_id),
-            graph_conditions=[_RESOLVED],
-            state=_state(),
-            watcher_ids=[f"{origin}-{agent_id}-0", f"{origin}-{agent_id}-1"],
-            reuse_live=reuse_live,
-            check_runner=_active_check,
-        )
-        return [watcher.watcher_id for watcher in armed]
-
-    first = arm("turn-1")
-    assert arm("turn-2") == first
-    assert arm("turn-2") == first
-    assert len(store.project_watchers("project")) == 2
-
-    keyed = arm("command-1", reuse_live=False)
-    assert keyed == ["command-1-chat-0", "command-1-chat-1"]
-    store.cancel_watchers(keyed, by="agent")
-
-    other_agent = arm("turn-3", agent_id="other")
-    assert set(other_agent).isdisjoint(first)
-    assert len(store.project_watchers("project")) == 6
-
-    store.cancel_watchers(first, by="agent")
-    rearmed = arm("turn-4")
-    assert set(rearmed).isdisjoint(first)
-    assert len(store.agent_watchers("chat")) == 6
 
 
 def test_initially_satisfied_graph_condition_is_immediately_ready(store) -> None:
-    armed = arm_watchers(
-        store,
-        [],
-        _binding(),
-        graph_conditions=[_RESOLVED],
-        state=_state(blocker_status="resolved"),
+    _completed_origin(store, "project", "origin")
+    (armed,) = reconcile_watcher_files(
+        store, _binding(), {}, _files(done=_RESOLVED), state=_state(blocker_status="resolved")
     )
 
-    assert len(armed) == 1
-    assert armed[0].checks[0].completed_at is not None
-    assert [watcher.watcher_id for watcher in store.ready_watchers()] == [armed[0].watcher_id]
+    assert armed.checks[0].completed_at is not None
+    assert [watcher.watcher_id for watcher in store.ready_watchers()] == [armed.watcher_id]
 
 
 def test_status_and_proposal_conditions_use_the_closed_vocabulary() -> None:

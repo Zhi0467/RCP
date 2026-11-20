@@ -6,7 +6,6 @@ the episode owner decides in one step whether the wake runs and spends.
 
 from __future__ import annotations
 
-import json
 import logging
 import shlex
 import sqlite3
@@ -17,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Literal, Protocol
-from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
@@ -46,7 +44,6 @@ from rcp.storage import (
     ProposalResolvedGraphCondition,
     WatcherCheckRecord,
     WatcherRecord,
-    WatcherStopRequest,
 )
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
@@ -101,47 +98,6 @@ class AgentWatchSpec(WatchSpec):
         if not stripped:
             raise ValueError("purpose must not be blank")
         return stripped
-
-
-class WatchHandoff(BaseModel):
-    """One all-or-none watcher declaration with two closed condition kinds."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    external: list[AgentWatchSpec]
-    graph: list[GraphCondition]
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.external and not self.graph
-
-
-class ExperimentWatchSpec(AgentWatchSpec):
-    """An Experiment observer may opt into one immutable delivery group."""
-
-    group: str | None = None
-
-    @field_validator("group")
-    @classmethod
-    def group_is_not_blank(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("group must not be blank")
-        return stripped
-
-
-class ExperimentWatchHandoff(BaseModel):
-    """The Experiment-only mixed observer/retirement watcher file."""
-
-    observers: list[ExperimentWatchSpec]
-    graph_conditions: list[GraphCondition]
-    stops: list[WatcherStopRequest]
-
-    @property
-    def is_empty(self) -> bool:
-        return not self.observers and not self.graph_conditions and not self.stops
 
 
 class WatcherBinding(BaseModel):
@@ -264,67 +220,12 @@ class WatcherInitialCheckError(ValueError):
         super().__init__(detail)
 
 
-def parse_watch_json(payload: str) -> WatchHandoff:
-    handoff = WatchHandoff.model_validate_json(payload)
-    if handoff.is_empty:
-        raise ValueError("a watch handoff must contain at least one watcher")
-    _validate_unique_graph_conditions(handoff.graph)
-    return handoff
-
-
-def parse_experiment_watch_json(payload: str) -> ExperimentWatchHandoff:
-    """Parse the one Experiment-only watcher handoff without loosening Work."""
-
-    raw = json.loads(payload)
-    if not isinstance(raw, dict) or set(raw) != {"external", "graph"}:
-        raise ValueError("Experiment watch.json must contain exactly the external and graph lists")
-    external = raw["external"]
-    graph = raw["graph"]
-    if not isinstance(external, list) or not isinstance(graph, list):
-        raise ValueError("Experiment watch.json external and graph values must be lists")
-    observers: list[ExperimentWatchSpec] = []
-    stops: list[WatcherStopRequest] = []
-    for item in external:
-        if not isinstance(item, dict):
-            raise ValueError("Experiment watch.json items must be objects")
-        if "stop_watcher_id" in item or "reason" in item:
-            stops.append(WatcherStopRequest.model_validate(item))
-        else:
-            observers.append(ExperimentWatchSpec.model_validate(item))
-    stop_ids = [item.stop_watcher_id for item in stops]
-    if len(stop_ids) != len(set(stop_ids)):
-        raise ValueError("Experiment watcher stop ids must be unique")
-    group_sizes: dict[str, int] = {}
-    for observer in observers:
-        if observer.group is not None:
-            group_sizes[observer.group] = group_sizes.get(observer.group, 0) + 1
-    undersized = sorted(label for label, count in group_sizes.items() if count < 2)
-    if undersized:
-        raise ValueError(
-            "an Experiment watcher group requires at least two observers: " + ", ".join(undersized)
-        )
-    graph_conditions = TypeAdapter(list[GraphCondition]).validate_python(graph)
-    _validate_unique_graph_conditions(graph_conditions)
-    return ExperimentWatchHandoff(
-        observers=observers,
-        graph_conditions=graph_conditions,
-        stops=stops,
-    )
-
-
-def _validate_unique_graph_conditions(conditions: list[GraphCondition]) -> None:
-    identities = [item.model_dump_json() for item in conditions]
-    if len(identities) != len(set(identities)):
-        raise ValueError("a watch handoff cannot repeat a graph condition")
-
-
 def validate_graph_conditions(
     conditions: list[GraphCondition],
     state: GraphState,
 ) -> None:
     """Validate graph conditions against one complete canonical state."""
 
-    _validate_unique_graph_conditions(conditions)
     if state.replay_status != "complete":
         raise ValueError("graph conditions cannot be validated while graph replay is degraded")
     for condition in conditions:
@@ -987,111 +888,6 @@ def graph_check(
     )
 
 
-def _condition_purpose(condition: GraphCondition) -> str:
-    return f"Graph condition on {condition.node_id}"
-
-
-def arm_watchers(
-    store: AppStore,
-    specs: list[AgentWatchSpec],
-    binding: WatcherBinding,
-    *,
-    graph_conditions: list[GraphCondition] | None = None,
-    state: GraphState | None = None,
-    watcher_ids: list[str] | None = None,
-    reuse_live: bool = False,
-    check_runner: WatcherCheckRunner = run_watcher_check,
-    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
-) -> list[WatcherRecord]:
-    """Arm one watcher per external spec and per graph condition, all or none.
-
-    ``reuse_live`` resolves a request identical to one of the agent's open
-    single-check watchers to that watcher instead of stacking a second wake.
-    """
-
-    conditions = list(graph_conditions or [])
-    count = len(specs) + len(conditions)
-    if not count:
-        raise ValueError("a watch list must contain at least one watcher")
-    ids = watcher_ids if watcher_ids is not None else [str(uuid4()) for _ in range(count)]
-    if len(ids) != count or len(set(ids)) != count or any(not item.strip() for item in ids):
-        raise ValueError("watcher_ids must be unique, nonblank, and match the handoff exactly")
-    live = store.agent_watchers(binding.agent_id, open_only=True) if reuse_live else []
-
-    def twin(definition: tuple[object, ...]) -> WatcherRecord | None:
-        for watcher in live:
-            checks = watcher.live_checks
-            if len(checks) == 1 and _definition(checks[0]) == definition:
-                live.remove(watcher)
-                return watcher
-        return None
-
-    twins = [
-        *(twin(("external", spec.check_command, spec.log_path, spec.cwd)) for spec in specs),
-        *(
-            twin(("graph", condition.model_dump_json(), binding.graph_target.key))
-            for condition in conditions
-        ),
-    ]
-    existing = [store.watcher(watcher_id) for watcher_id in ids]
-    if any(item is not None for item in existing):
-        if any(item is None and found is None for item, found in zip(existing, twins, strict=True)):
-            raise ValueError("the watcher handoff was only partly persisted")
-        return [item or found for item, found in zip(existing, twins, strict=True) if item or found]  # type: ignore[misc]
-    if conditions:
-        if state is None:
-            raise ValueError("graph watcher arming requires canonical graph state")
-        validate_graph_conditions(conditions, state)
-    fresh_specs = [(ids[i], spec) for i, spec in enumerate(specs) if twins[i] is None]
-    results = (
-        validate_watch_specs(
-            [spec for _, spec in fresh_specs],
-            host_of(store, binding.machine_id),
-            check_runner=check_runner,
-            timeout=timeout,
-        )
-        if fresh_specs
-        else []
-    )
-    created_at = _now()
-    armed: dict[str, WatcherRecord] = {}
-    for (watcher_id, spec), result in zip(fresh_specs, results, strict=True):
-        armed[watcher_id] = _new_watcher(
-            binding,
-            watcher_id,
-            spec.purpose,
-            external_check(
-                watcher_id, spec, result, machine_id=binding.machine_id, created_at=created_at
-            ),
-            created_at,
-        )
-    for index, condition in enumerate(conditions):
-        watcher_id = ids[len(specs) + index]
-        if twins[len(specs) + index] is not None:
-            continue
-        assert state is not None
-        armed[watcher_id] = _new_watcher(
-            binding,
-            watcher_id,
-            _condition_purpose(condition),
-            graph_check(
-                watcher_id,
-                condition,
-                state,
-                graph_target=binding.graph_target,
-                machine_id=binding.machine_id,
-                created_at=created_at,
-            ),
-            created_at,
-        )
-    if armed:
-        store.arm_watchers(list(armed.values()))
-    return [
-        found if found is not None else store.watcher(watcher_id) or armed[watcher_id]
-        for watcher_id, found in zip(ids, twins, strict=True)
-    ]
-
-
 def _new_watcher(
     binding: WatcherBinding,
     watcher_id: str,
@@ -1108,13 +904,6 @@ def _new_watcher(
         created_at=created_at,
         checks=[check],
     )
-
-
-def _definition(check: WatcherCheckRecord) -> tuple[object, ...]:
-    if check.definition == "external":
-        return ("external", check.check_command, check.log_path, check.cwd)
-    assert check.condition is not None and check.graph_target is not None
-    return ("graph", check.condition.model_dump_json(), check.graph_target.key)
 
 
 class WatcherPoller:

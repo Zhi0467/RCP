@@ -3195,23 +3195,6 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
-class WatcherStopRequest(BaseModel):
-    """An Experiment agent's narrow request to retire one staged observer."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stop_watcher_id: str = Field(min_length=1)
-    reason: str = Field(min_length=1)
-
-    @field_validator("stop_watcher_id", "reason")
-    @classmethod
-    def is_not_blank(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("watcher stop fields must not be blank")
-        return stripped
-
-
 class NodeStatusGraphCondition(BaseModel):
     """Wake when one canonical node reaches any named status."""
 
@@ -3957,7 +3940,6 @@ __all__ = [
     "WatcherCheckRecord",
     "WatcherRecord",
     "WatcherState",
-    "WatcherStopRequest",
     "normalize_space_access_url",
     "normalize_space_name",
     "watcher_next_check_at",

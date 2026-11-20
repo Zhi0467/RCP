@@ -394,11 +394,11 @@ def space_result_summary(
 
 def _space_stage_outputs(stage: Path) -> list[Path]:
     """Only the locations a Space agent could mean as a deliverable, not the whole stage."""
-    paths = [stage / "patch.json", stage / "watch.json"]
+    paths = [stage / "patch.json"]
     root = stage / "projects"
     if root.is_dir() and not root.is_symlink():
         for folder in sorted(root.iterdir()):
-            paths.extend((folder / "patch.json", folder / "watch.json"))
+            paths.append(folder / "patch.json")
     return [path for path in paths if path.is_symlink() or path.exists()]
 
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from rcp.agents import AgentEvent
 from rcp.limits import TURN_JOURNAL_MAX_EVENT_BYTES
@@ -46,26 +46,11 @@ class RecordedProviderTurn:
     events: str
     stderr: str
     patch: str | None
-    watch: str | None
 
     #: Derived only from the host's own `accepted.json`, never from the copy the
     #: end-of-pass outcome carries. One linearization point, one fact.
     accepted: bool
 
-    #: Whether the host snapshotted the watcher handoff at all. A journal written
-    #: before supervisors did so says nothing about watch.json, which is not the
-    #: same as saying the turn wrote none -- and restoring "none" over a stage
-    #: that holds the real handoff would destroy it.
-    watch_snapshotted: bool = False
-
-    #: Each per-resource Experiment watcher output this pass wrote, by filename.
-    #: Discovered rather than named, so the record carries the whole set and the
-    #: settling turn is handed exactly the files the pass produced.
-    experiment_watch: dict[str, str] = field(default_factory=dict)
-
-    #: Whether the host snapshotted that set at all, told apart from a pass that
-    #: wrote none, for the same reason `watch_snapshotted` is.
-    experiment_watch_snapshotted: bool = False
     watcher_folder: dict[str, str] | None = None
 
     @property
@@ -154,7 +139,7 @@ def _verified_watcher_files(
     outcome: dict[str, object],
     field: str,
 ) -> dict[str, str]:
-    """Every per-resource watcher output the host snapshotted, each by its digest.
+    """Every watcher file the host snapshotted, each by its digest.
 
     The outcome names the set, so a file added to the journal directory after
     the fact is not read, and one the outcome names but the journal lost is an
@@ -163,15 +148,15 @@ def _verified_watcher_files(
 
     digests = outcome.get(f"{field}_sha256") or {}
     if not isinstance(digests, dict):
-        raise ValueError("The provider journal's Experiment watcher digests are not a mapping.")
+        raise ValueError("The provider journal's watcher digests are not a mapping.")
     contents = journal.get(field) or {}
     if not isinstance(contents, dict):
-        raise ValueError("The provider journal's Experiment watcher outputs are not a mapping.")
+        raise ValueError("The provider journal's watcher files are not a mapping.")
     verified: dict[str, str] = {}
     for name, digest in sorted(digests.items()):
         value = contents.get(name)
         if not isinstance(value, str) or not isinstance(digest, str):
-            raise ValueError(f"The provider journal is missing its {name} Experiment output.")
+            raise ValueError(f"The provider journal is missing its {name} watcher file.")
         if hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest() != digest:
             raise ValueError(f"The provider journal's {name} does not match its recorded digest.")
         verified[name] = value
@@ -198,8 +183,6 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
     if hashlib.sha256(events.encode("utf-8", "surrogateescape")).hexdigest() != digest:
         raise ValueError("The provider journal's events do not match the digest it recorded.")
     patch = _verified_deliverable(journal, outcome, "patch")
-    watch = _verified_deliverable(journal, outcome, "watch")
-    experiment_watch = _verified_watcher_files(journal, outcome, "experiment_watch")
     marker = journal.get("accepted")
     if marker is not None and (
         not isinstance(marker, dict)
@@ -223,15 +206,11 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         events=events,
         stderr=str(journal.get("stderr") or ""),
         patch=patch,
-        watch=watch,
-        watch_snapshotted="watch_present" in outcome,
         watcher_folder=(
             _verified_watcher_files(journal, outcome, "watcher_folder")
             if outcome.get("watcher_folder_sha256") is not None
             else None
         ),
-        experiment_watch=experiment_watch,
-        experiment_watch_snapshotted=bool(outcome.get("experiment_watch_snapshotted")),
         accepted=accepted,
     )
 
