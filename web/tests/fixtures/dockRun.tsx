@@ -34,6 +34,12 @@ createRoot(document.getElementById("root")!).render(
               link: "#/run",
               questions: [],
             },
+            {
+              episode: { ...base, episode_id: "episode/beta", tasks: [] },
+              title: "A running Auto-research branch that asks nothing",
+              link: "#/running",
+              questions: [],
+            },
           ],
           [],
         )}
