@@ -188,7 +188,7 @@ def thread_projections(
                 "watching": watchers,
                 # A running turn's member message reaches the transcript only when it settles.
                 "latest_operation_id": task["operation_id"],
-                "browser_requested": browser.get((scope, thread_id), False),
+                "browser_requested": browser.get((scope, thread_id), True),
                 # The member's stored pick; null until one is made, when the default applies.
                 "agent": thread.agent,
                 "capabilities": resolve_agent_profile(placement, None, OFFER).welcome(),

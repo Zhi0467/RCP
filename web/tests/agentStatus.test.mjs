@@ -90,28 +90,68 @@ test("a resumed turn shows its session's last context until it reports one", () 
   assert.equal(agentContextTokens(reported, [previous, reported]), 38_000);
 });
 
-test("older turns outside the task list come from the transcript", () => {
-  const listed = task("b");
+test("older turns outside the task list come from the transcript, in time order", () => {
+  const listed = task("b", { created_at: "2026-11-20T10:00:00Z" });
   const messages = [
-    { role: "user", operation_id: "a" },
-    { role: "assistant", operation_id: "a", agent_status: status({ context_window: 200_000 }) },
-    { role: "assistant", operation_id: "b", agent_status: status({ context_window: 1 }) },
-    { role: "assistant", operation_id: "c", agent_status: null },
+    { role: "user", operation_id: "a", timestamp: "2026-11-20T09:00:00Z" },
+    {
+      role: "assistant",
+      operation_id: "a",
+      timestamp: "2026-11-20T09:05:00Z",
+      agent_status: status({ context_window: 200_000 }),
+    },
+    {
+      role: "assistant",
+      operation_id: "b",
+      timestamp: "2026-11-20T10:05:00Z",
+      agent_status: status({ context_window: 1 }),
+    },
+    {
+      role: "assistant",
+      operation_id: "c",
+      timestamp: "2026-11-20T11:05:00Z",
+      agent_status: null,
+    },
   ];
   const turns = chatStatusTasks([listed], messages);
   assert.deepEqual(
     turns.map((turn) => turn.operation_id),
-    ["a", "c", "b"],
+    ["a", "b", "c"],
   );
-  assert.equal(turns[2], listed);
+  assert.equal(turns[1], listed);
   const defaulted = chatStatusTasks(
     [],
-    [{ role: "assistant", operation_id: "d", model: "provider-default", agent_status: status() }],
+    [
+      {
+        role: "assistant",
+        operation_id: "d",
+        timestamp: "2026-11-20T09:00:00Z",
+        model: "provider-default",
+        agent_status: status(),
+      },
+    ],
   );
   assert.equal(defaulted[0].request.model, null);
   // The latest turn reported no status, so the strip shows none rather than an older one.
-  assert.equal(agentStatusView(turns.slice(0, 2)).contextTokens, null);
-  assert.equal(agentStatusView(turns.slice(0, 2)).task.operation_id, "c");
+  assert.equal(agentStatusView(turns).contextTokens, null);
+  assert.equal(agentStatusView(turns).task.operation_id, "c");
+});
+
+test("an old paused turn never holds the chip over a newer answer", () => {
+  const paused = task("p", {
+    finished: false,
+    created_at: "2026-11-19T22:07:00Z",
+    agent_status: status({ context_tokens: 90_000 }),
+  });
+  const newer = {
+    role: "assistant",
+    operation_id: "n",
+    timestamp: "2026-11-20T10:12:00Z",
+    agent_status: status({ context_tokens: 153_000 }),
+  };
+  const view = agentStatusView(chatStatusTasks([paused], [newer]));
+  assert.equal(view.task.operation_id, "n");
+  assert.equal(view.contextTokens, 153_000);
 });
 
 test("view counts running subagents and gathers compactions across turns", () => {

@@ -323,12 +323,13 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             return self._chat_browser_requested(connection, project_id, chat_id)
 
     def _chat_browser_requested(self, connection: Any, project_id: str, chat_id: str) -> bool:
+        """A chat uses the browser unless its member turned it off."""
         row = connection.execute(
             "SELECT browser_requested FROM chat_browser_preferences "
             "WHERE project_id = ? AND chat_id = ?",
             (project_id, chat_id),
         ).fetchone()
-        return bool(row["browser_requested"]) if row is not None else False
+        return bool(row["browser_requested"]) if row is not None else True
 
     def set_chat_browser_requested(
         self, project_id: str, chat_id: str, *, browser_requested: bool

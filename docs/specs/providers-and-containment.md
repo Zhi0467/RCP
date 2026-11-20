@@ -473,8 +473,8 @@ containment that forbids that is not usable containment.
 
 ### Browser grants
 
-Browser is a per-chat human grant, off by default for ordinary chats and on when
-a member's agent thread is created, resolved immutably at admission
+Browser is a per-chat human grant, on until a member turns it off, resolved
+immutably at admission
 and passed through launch construction. Work, orchestration and Discuss
 may use it; recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.

@@ -405,7 +405,7 @@ The answer and graph outcome remain independently visible. A stray Patch left by
 a Discuss run is retained as a receipt and discarded; a file cannot grant its
 author a different mode.
 
-Browser consent is an app-local per-chat preference, off by default except for agent threads. The browser
+Browser consent is an app-local per-chat preference, on until a member turns it off. The browser
 preference API reads and sets it without rewriting transcripts. Admission of every
 chat turn, including a watcher wake and a question answer, snapshots it into
 `browser_requested`; changing the toggle affects the next turn.

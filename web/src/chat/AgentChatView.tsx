@@ -164,6 +164,7 @@ import type {
 } from "../core/types";
 import { launchProviderReady, profileRunConfig } from "../core/AgentConfigControls";
 import { useSkillPicker } from "../core/SkillPicker";
+import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
 import { AgentStatusStrip } from "./AgentStatusStrip";
 import { BrowserToggle, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
@@ -1258,7 +1259,15 @@ export function AgentChatView({
     // Enter reaches here without the button, so a new turn checks readiness itself.
     if (!providerReady) return refuse("The agent is not ready to start a turn.");
     if (!confirmDiscardKeptSpeech("send")) return refuse("Sending was cancelled.");
-    const queued = queueing ? JSON.stringify([text, composer.turnFields()]) : null;
+    const queued = queueing
+      ? JSON.stringify([
+          text,
+          composer.turnFields(),
+          skills.selection,
+          skills.providerSkillNames,
+          [config.provider, config.model, config.reasoning],
+        ])
+      : null;
     const requestId =
       threads?.key ??
       (queued && queueFailure?.request === queued ? queueFailure.requestId : crypto.randomUUID());
@@ -1302,7 +1311,23 @@ export function AgentChatView({
       : queueing
         ? queueThreadTurn(
             { thread_id: chatId },
-            { message: submission.message.trim(), ...submission.attachments },
+            {
+              message: submission.message.trim(),
+              ...submission.attachments,
+              ...skillInvocationFields(
+                submission.skills ?? EMPTY_SKILL_SELECTION,
+                submission.providerSkillNames ?? [],
+              ),
+              ...(configOverride?.chatId === chatId
+                ? {
+                    provider: submission.config.provider,
+                    ...(submission.config.model ? { model: submission.config.model } : {}),
+                    ...(submission.config.reasoning
+                      ? { reasoning: submission.config.reasoning }
+                      : {}),
+                  }
+                : {}),
+            },
             requestId,
           ).then(() => upcoming.refresh())
         : startConversationTurn(onStartTask!, submission, requestId);

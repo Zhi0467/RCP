@@ -421,6 +421,26 @@ def test_queue_insert_is_idempotent_and_refuses_a_reused_key(tmp_path: Path) -> 
         _queued(store, thread, "one-too-many", "More")
 
 
+def test_a_queue_row_from_before_picks_loads_empty_and_still_starts(tmp_path: Path) -> None:
+    from rcp.storage.agent_threads import QueuedTurnPicks
+
+    store, actor, thread = _queue_world(tmp_path)
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE agent_thread_queue DROP COLUMN picks_json")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 94")
+        connection.execute(
+            "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
+            "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at) "
+            "VALUES('old-row',?,?,'old-key','Old message',NULL,NULL,0,'hash',?)",
+            (thread.thread_id, thread.user_id, store.now()),
+        )
+    reopened = AppStore(tmp_path / "rcp.sqlite3")
+    (row,) = reopened.agent_thread_queue(thread.thread_id)
+    assert row.picks == QueuedTurnPicks()
+    turn = _queued_turn(reopened, actor, thread, row, "old-turn")
+    assert reopened.create_agent_task(turn, queue_id=row.queue_id).operation_id == "old-turn"
+
+
 def test_queued_turn_claim_is_fifo_once_and_never_for_a_removed_row(tmp_path: Path) -> None:
     import threading
 

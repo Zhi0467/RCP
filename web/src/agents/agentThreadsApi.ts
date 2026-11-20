@@ -109,7 +109,7 @@ export async function loadThreadQueue(
   return request(`${threadPath(thread.thread_id)}/queue`);
 }
 
-/** Queues a project send's message, files and references; the request id makes a resend safe. */
+/** Queues a send's message, files, references, agent pick and skills; the request id makes a resend safe. */
 export function queueThreadTurn(
   thread: Pick<AgentThread, "thread_id">,
   {
@@ -117,9 +117,24 @@ export function queueThreadTurn(
     attachment_set_id,
     attachment_client_id,
     references,
+    provider,
+    model,
+    reasoning,
+    invoked_workflow_ids,
+    invoked_skill_ids,
+    invoked_provider_skill_names,
   }: Pick<
     AgentThreadTurnRequest,
-    "message" | "attachment_set_id" | "attachment_client_id" | "references"
+    | "message"
+    | "attachment_set_id"
+    | "attachment_client_id"
+    | "references"
+    | "provider"
+    | "model"
+    | "reasoning"
+    | "invoked_workflow_ids"
+    | "invoked_skill_ids"
+    | "invoked_provider_skill_names"
   >,
   requestId: string,
   request: Request = api,
@@ -128,7 +143,18 @@ export function queueThreadTurn(
     `${threadPath(thread.thread_id)}/queue`,
     {
       method: "POST",
-      body: JSON.stringify({ message, attachment_set_id, attachment_client_id, references }),
+      body: JSON.stringify({
+        message,
+        attachment_set_id,
+        attachment_client_id,
+        references,
+        provider,
+        model,
+        reasoning,
+        invoked_workflow_ids,
+        invoked_skill_ids,
+        invoked_provider_skill_names,
+      }),
       headers: { "Idempotency-Key": requestId },
     },
     { retryIdentity: false },

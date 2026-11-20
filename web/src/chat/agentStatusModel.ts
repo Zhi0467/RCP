@@ -21,33 +21,38 @@ export type StatusTask = Pick<
   | "parent_operation_id"
 > & { request: Pick<AgentTaskRequest, "provider" | "model" | "session_id"> };
 
-/** The chat's tasks, preceded by earlier turns that fell outside the bounded task
- *  list and are known only from the transcript the chat route joined status into.
+/** The chat's tasks and the turns that fell outside the bounded task list, known
+ *  only from the transcript the chat route joined status into, in time order.
  *  A turn without status stays, so a later status-less turn is still the latest. */
 export function chatStatusTasks(tasks: AgentTask[], messages: ChatMessage[]): StatusTask[] {
   const known = new Set(tasks.map((task) => task.operation_id));
-  const history: StatusTask[] = [];
+  const history: { at: string; task: StatusTask }[] = [];
   for (const message of messages) {
     const operationId = message.operation_id;
     if (message.role !== "assistant" || !operationId || known.has(operationId)) continue;
     known.add(operationId);
     history.push({
-      operation_id: operationId,
-      active: false,
-      finished: true,
-      native_session_id: message.native_session_id,
-      runtime_id: "",
-      runtime_label: "",
-      parent_operation_id: null,
-      agent_status: message.agent_status ?? null,
-      request: {
-        provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
-        // The transcript names an unset model "provider-default"; a task leaves it null.
-        model: message.model === "provider-default" ? null : message.model,
+      at: message.timestamp,
+      task: {
+        operation_id: operationId,
+        active: false,
+        finished: true,
+        native_session_id: message.native_session_id,
+        runtime_id: "",
+        runtime_label: "",
+        parent_operation_id: null,
+        agent_status: message.agent_status ?? null,
+        request: {
+          provider: (message.provider as AgentTaskRequest["provider"]) ?? null,
+          // The transcript names an unset model "provider-default"; a task leaves it null.
+          model: message.model === "provider-default" ? null : message.model,
+        },
       },
     });
   }
-  return [...history, ...tasks];
+  return [...history, ...tasks.map((task) => ({ at: task.created_at, task }))]
+    .sort((left, right) => Date.parse(left.at) - Date.parse(right.at))
+    .map((entry) => entry.task);
 }
 
 export interface ChatCompaction extends AgentCompaction {
@@ -67,14 +72,12 @@ export interface AgentStatusView {
   compactions: ChatCompaction[];
 }
 
-/** The chat's current turn (running, queued or paused), else its latest finished turn. */
+/** The chat's running or queued turn, else its newest turn; a paused turn leads only while newest. */
 export function agentStatusTask(tasks: StatusTask[]): StatusTask | null {
   // A retry is a child attempt; its paused parent is no longer the current turn.
   const retried = new Set(tasks.map((task) => task.parent_operation_id).filter(Boolean));
   const current = tasks.filter((task) => !retried.has(task.operation_id));
-  return (
-    lastWhere(current, (task) => !task.finished) ?? lastWhere(current, (task) => task.finished)
-  );
+  return lastWhere(current, (task) => task.active) ?? current.at(-1) ?? null;
 }
 
 /** The task's own window, else the newest one an earlier task of the chat
