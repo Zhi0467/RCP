@@ -8,6 +8,7 @@ import {
   startExperimentRun,
   loadClientRequest,
   TURN_REFUSAL_REASONS,
+  REQUEST_REFUSAL_REASONS,
   api,
   branchChat,
   clearAllProjectCaches,
@@ -852,6 +853,36 @@ test("turn admission refusals resolve through the shared code map", async () => 
           return true;
         });
       }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a refusal reads as a sentence, never its raw body", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const [detail, expected] of [
+      [{ code: "host_invalid" }, REQUEST_REFUSAL_REASONS.host_invalid],
+      [{ code: "unmapped_code" }, null],
+      [{ code: "constructor" }, null],
+      [{ fields: ["a"] }, null],
+      [["not", "a", "validation", "list"], null],
+      [42, null],
+    ]) {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ detail }), {
+          status: 421,
+          headers: { "Content-Type": "application/json" },
+        });
+      await assert.rejects(api("/api/projects/p/chats/c/worktree"), (error) => {
+        assert.ok(error instanceof ApiError);
+        if (expected) assert.equal(error.message, expected);
+        assert.equal(typeof error.message, "string");
+        assert.doesNotMatch(error.message, /[{}[\]"]/);
+        assert.equal(error.status, 421);
+        return true;
+      });
     }
   } finally {
     globalThis.fetch = originalFetch;

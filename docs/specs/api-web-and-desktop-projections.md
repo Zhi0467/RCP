@@ -464,6 +464,11 @@ these projections; UI inputs such as the trust lens stay client-side.
 `web/src/core/types.ts` restates shapes, using opaque lifecycle types to prevent
 raw-status branching.
 
+The Web client turns a refusal into one sentence where it reads the error
+body, in `apiError`: a known stable `code` reads as its shared reason, else the
+route's `message` or string `detail`, else a plain sentence naming the status.
+A notice never shows a raw JSON body.
+
 Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
 plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw,
 and its subset `refreshable_proposal_ids` that ordinary Work can re-file, and

@@ -404,6 +404,23 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "This chat still has a running or paused turn, Experiment, or watcher. Stop it before archiving.",
 };
 
+/** Stable request refusal codes outside turn admission, each read as one sentence. */
+export const REQUEST_REFUSAL_REASONS: Readonly<Record<string, string>> = {
+  host_invalid:
+    "RCP did not accept the address this page was opened from. Open RCP at its usual address.",
+};
+
+function knownReason(code: unknown): string | undefined {
+  if (typeof code !== "string") return undefined;
+  if (Object.hasOwn(TURN_REFUSAL_REASONS, code)) return TURN_REFUSAL_REASONS[code];
+  return Object.hasOwn(REQUEST_REFUSAL_REASONS, code) ? REQUEST_REFUSAL_REASONS[code] : undefined;
+}
+
+/** What a refusal without a readable reason says, rather than its raw body. */
+function unexplained(status: number): string {
+  return `The server refused this request (${status}).`;
+}
+
 function apiError(status: number, body: unknown): ApiError {
   const detail =
     body && typeof body === "object" && "detail" in body
@@ -411,17 +428,15 @@ function apiError(status: number, body: unknown): ApiError {
       : undefined;
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
     const { message, code } = detail as { message?: unknown; code?: unknown };
-    const reason = typeof code === "string" ? TURN_REFUSAL_REASONS[code] : undefined;
     return new ApiError(
-      reason ?? (typeof message === "string" ? message : JSON.stringify(detail)),
+      knownReason(code) ?? (typeof message === "string" ? message : unexplained(status)),
       status,
       detail as Record<string, unknown>,
     );
   }
   // Task admission currently returns its stable refusal code as string detail.
-  if (typeof detail === "string" && Object.hasOwn(TURN_REFUSAL_REASONS, detail)) {
-    return new ApiError(TURN_REFUSAL_REASONS[detail], status, { code: detail });
-  }
+  const codeReason = knownReason(detail);
+  if (codeReason !== undefined) return new ApiError(codeReason, status, { code: detail as string });
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
     return new ApiError(detail[0].msg, status);
   }
@@ -429,7 +444,7 @@ function apiError(status: number, body: unknown): ApiError {
   if (detail === undefined && typeof reason === "string") {
     return new ApiError(reason, status, { reason });
   }
-  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
+  return new ApiError(typeof detail === "string" ? detail : unexplained(status), status);
 }
 
 export function clearProjectCaches(apiBase: string): Promise<ProjectCacheClearResult> {
