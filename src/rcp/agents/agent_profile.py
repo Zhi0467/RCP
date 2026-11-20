@@ -28,6 +28,7 @@ Visibility = Literal["private", "shared"]
 EpisodeRole = Literal[
     "experiment_loop", "orchestrator", "auto_research_worker", "child", "consolidation", "discuss"
 ]
+EXPERIMENT_ROLE: EpisodeRole = "experiment_loop"
 
 
 @dataclass(frozen=True)

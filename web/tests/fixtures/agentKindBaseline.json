@@ -1,8 +1,7 @@
 {
   "App.tsx": 18,
-  "agents/AgentHome.tsx": 3,
+  "agents/AgentHome.tsx": 1,
   "agents/AgentTaskInspector.tsx": 1,
-  "agents/AgentThreadView.tsx": 7,
   "agents/AgentUsageWidgets.tsx": 3,
   "agents/ApprovalCardStack.tsx": 2,
   "agents/EpisodePlanCard.tsx": 4,

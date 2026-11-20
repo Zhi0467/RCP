@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from pydantic import BaseModel, JsonValue
 
@@ -116,6 +116,7 @@ _TRANSFER_STOPPED_BY: dict[str, Literal["agent", "loop", "human"]] = {
 }
 _TRANSFER_CANCELLED_BY = {"agent": "agent", "loop": "rcp", "human": "human"}
 _IMPORTED_EXTERNAL_CHECK = ("true", "/dev/null", "/")
+_WATCHER_ORIGIN_KINDS = get_args(TransferWatcherRecord.model_fields["origin_task_kind"].annotation)
 _TRANSFER_IMPORT_INERT_STAGE_ROOT = "/history-only"
 
 
@@ -752,7 +753,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                         kind=check.definition,
                         origin_operation_id=watcher.origin_turn_id,
                         origin_task_kind=turn["kind"]
-                        if turn["kind"] in {"node_chat", "project_chat", "auto_research"}
+                        if turn["kind"] in _WATCHER_ORIGIN_KINDS
                         else "project_chat",
                         chat_id=watcher.agent_id,
                         node_id=request.get("node_id") or request.get("control_node_id"),

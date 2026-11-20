@@ -2135,15 +2135,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """The chat's newest visible turn, whose settings a wake continues."""
 
         with self.connection() as connection:
+            kinds = sorted(SESSION_TASK_KINDS)
             row = connection.execute(
-                """
+                f"""
                 SELECT * FROM graph_runs
                 WHERE project_id = ? AND visible = 1
-                  AND kind IN ('node_chat', 'project_chat', 'space_chat')
+                  AND kind IN ({", ".join("?" for _ in kinds)})
                   AND json_extract(request_json, '$.chat_id') = ?
                 ORDER BY created_at DESC, rowid DESC LIMIT 1
                 """,
-                (project_id, chat_id),
+                (project_id, *kinds, chat_id),
             ).fetchone()
         return self._agent_task_record(row) if row is not None else None
 

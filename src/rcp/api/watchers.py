@@ -14,6 +14,7 @@ from rcp.api.dependencies import (
 from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
+from rcp.storage.agent_tasks import SESSION_TASK_KINDS
 from rcp.storage.models import AgentTaskRecord, WatcherCheckRecord, WatcherRecord
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -72,7 +73,7 @@ def _check_view(
 ) -> dict[str, object]:
     request = turn.request if turn is not None else {}
     arming_target = turn.graph_target if turn is not None else GraphTargetRef()
-    patch_kind = "experiment_loop" if request.get("patch_kind") == "experiment_loop" else "work"
+    loop = request.get("patch_kind") == "experiment_loop"
     removed = watcher.cancelled_at is None and check.removed_at is not None
     status = (
         "stopped"
@@ -94,7 +95,7 @@ def _check_view(
         "graph_target": (check.graph_target or arming_target).model_dump(mode="json"),
         "machine_id": check.machine_id,
         "continuation": {
-            "patch_kind": patch_kind,
+            "patch_kind": request["patch_kind"] if loop else "work",
             "control_node_id": request.get("control_node_id"),
             "control_episode_id": request.get("control_episode_id"),
         },
@@ -115,8 +116,8 @@ def _check_view(
         "can_stop_watching": False,
         "wakes_chat": (
             turn is not None
-            and turn.kind in {"node_chat", "project_chat"}
-            and patch_kind == "work"
+            and turn.kind in SESSION_TASK_KINDS
+            and not loop
             and status in {"active", "degraded"}
             and watcher.open
         ),

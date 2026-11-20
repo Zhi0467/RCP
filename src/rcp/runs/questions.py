@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rcp.agents.agent_profile import (
+    EXPERIMENT_ROLE,
     PRIVATE_PROJECT,
     SHARED_PROJECT,
     AgentProfile,
@@ -270,7 +271,7 @@ def question_origin(profile: AgentProfile, task: AgentTaskRecord) -> QuestionOri
         raise ValueError(
             "The asking turn has no complete native session and authority binding yet."
         )
-    episode_id = task.episode_id if profile.episode_role == "experiment_loop" else None
+    episode_id = task.episode_id if profile.episode_role == EXPERIMENT_ROLE else None
     return QuestionOrigin.model_validate(
         {
             "owner_kind": "episode" if episode_id else "chat",
@@ -838,7 +839,7 @@ def work_command_handler(
     return WorkCommandHandler(
         execution,
         compute_commands,
-        resolve_agent_profile(placement, "experiment_loop" if experiment else None, turn),
+        resolve_agent_profile(placement, EXPERIMENT_ROLE if experiment else None, turn),
         service=service,
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,

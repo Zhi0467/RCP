@@ -26,6 +26,7 @@ import {
 } from "./agentThreadModel";
 
 const RAIL_FOLDED_KEY = "rcp:agent-rail-collapsed";
+const isSpace = (thread: AgentThread) => thread.kind === "space";
 
 function RailRow({
   thread,
@@ -38,7 +39,8 @@ function RailRow({
   now: number;
   onOpen: () => void;
 }) {
-  const subtitle = thread.kind === "space" ? "Space" : (thread.project_name ?? "");
+  const space = isSpace(thread);
+  const subtitle = space ? "Space" : (thread.project_name ?? "");
   const unread = threadShowsUnread(thread, active ? thread.thread_id : null);
   return (
     <div className="agent-row thread-row">
@@ -53,7 +55,7 @@ function RailRow({
         onClick={onOpen}
       >
         <span className="thread-row-icon" aria-hidden="true">
-          {thread.kind === "space" ? (
+          {space ? (
             <LayoutGrid size={15} />
           ) : threadIsLive(thread) ? (
             <LoaderCircle className="spin" size={14} />
@@ -157,7 +159,7 @@ export function AgentHome({
                 now={now}
                 onOpen={() => (window.location.hash = agentThreadHash(thread.thread_id))}
               />
-              {thread.kind === "space" && index < rail.length - 1 && (
+              {isSpace(thread) && index < rail.length - 1 && (
                 <div className="thread-rail-divider" aria-hidden="true" />
               )}
             </div>
@@ -176,7 +178,7 @@ export function AgentHome({
             revision={revision}
             voice={voice}
             onThreadChanged={patch}
-            headerTools={open.kind === "space" && <RunningPopover />}
+            headerTools={isSpace(open) && <RunningPopover />}
             leading={
               narrow ? (
                 <button

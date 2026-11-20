@@ -20,7 +20,7 @@
   "api/task_requests.py": 12,
   "api/tasks.py": 39,
   "api/terminal_projection.py": 1,
-  "api/watchers.py": 2,
+  "api/watchers.py": 1,
   "api/work_episodes.py": 1,
   "approval_actions.py": 2,
   "background.py": 21,
@@ -97,7 +97,7 @@
   "storage/request_compat.py": 3,
   "storage/resource_deadlines.py": 3,
   "storage/resource_versions.py": 4,
-  "storage/transfer.py": 2,
+  "storage/transfer.py": 3,
   "storage/watchers.py": 2,
   "transfer/records.py": 19
 }
