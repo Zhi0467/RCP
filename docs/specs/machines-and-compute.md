@@ -161,7 +161,8 @@ prove job completion. A confirmed Merge with a code worktree always runs the
 code merge agent. The agent receives the confirmed jobs and stops them before it
 merges. If a job still reads as unfinished afterwards, Merge keeps the worktree
 for a later Merge to remove. The gate itself never cancels a job. RCP runs a
-job's cancel action only on a human's Cancel or a confirmed project deletion.
+job's cancel action only on a human's Cancel or, for a helper job, a confirmed
+project deletion.
 
 ## One watcher and human Cancel contract
 
@@ -174,6 +175,13 @@ observer form. Checks report operational liveness, never scientific success.
 `GET /api/projects/{project_id}/watchers` supplies the job UI's observation,
 log, diagnostic, cancellation history and backend-computed `can_cancel`. There
 is no separate compute-job list API.
+
+`GET /api/agent-threads/{thread_id}/watchers` lists the watchers one agent armed,
+Space agents included, and
+`POST /api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel` cancels one
+of them. Both need access to the agent. A watcher that agent did not arm returns
+404. A project agent's Cancel keeps project write admission. A Space agent's
+Cancel needs none.
 
 A human request to
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires membership,
@@ -196,14 +204,17 @@ receipts for recovery. Background reconciliation does not block startup. It
 reaches the saved machine id through its card's current route, even when the
 project manifest or graph history is unavailable. Transport errors remain diagnostics rather than evidence of
 completion. Helper job directories are not included in whole-database backup
-payloads. Restoring a row does not recreate its outputs. Project deletion finally
-runs the saved cancel action of each running helper job and each watched external
-job, and confirms each with its saved check. A job it cannot stop, or a watched
-job without a cancel action that still runs, is reported without refusing deletion
-([deletion](projects-spaces-and-operations.md#deletion)).
+payloads. Restoring a row does not recreate its outputs. Project deletion stops
+every open watcher. It then runs the saved cancel action of each running helper
+job and confirms each with its saved check. A helper job it cannot stop is
+reported without refusing deletion
+([deletion](projects-spaces-and-operations.md#deletion)). Watched external jobs
+keep running. Deletion neither checks nor reports them.
 
-Project transfer retains watcher worker identity and cancellation attribution,
-time, and diagnostics as history. It strips executable check and cancel actions.
-It does not move or cancel external work. Offline restore also clears every
-watcher's cancel action, including already-stopped watchers, while detaching
-continuations. Ordinary restart retains watchers and their human actions.
+Project transfer retains watcher worker identity, stop attribution, reason and
+time, and the last check diagnostics as history. It drops the cancel requester,
+time and error. It strips executable check and cancel actions. It does not move
+or cancel external work. Offline restore stops every still-open watcher,
+attributed to the confirming human, while detaching continuations. Saved cancel
+commands stay in their rows. Ordinary restart retains watchers and their human
+actions.

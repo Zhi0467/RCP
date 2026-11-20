@@ -239,9 +239,10 @@ This neither cancels jobs nor widens human retire controls.
 
 The RCP-authored prefix exposes the resolved closed vocabulary from
 [the agent profile](../../src/rcp/agents/agent_profile.py). It includes validation,
-keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
-merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
-guarded finish, a one-time self-name, and the graph history reads. Workers get
+keyed Apply, status, worker and Experiment lifecycle, star mail, fork merge and
+archive, inbox harvest and clear, Bulletin while enabled, root ask, guarded
+finish, a one-time self-name, and the graph history reads. Graph conditions are
+not a verb; the orchestrator arms them through its watcher folder. Workers get
 validation, status, message, and the same Bulletin and history verbs. Spawn and kickoff may choose the provider, model, and effort.
 The root has no helper verbs. Child Work uses ordinary generic launch or direct
 scheduler submission.

@@ -483,8 +483,8 @@ name the already-open session and invocation directory, starting with `goto`.
 
 The CLI tool directory prefixes PATH; SSH uses the host's PATH after login-shell
 initialization, never the controller's. Codex's `shell_environment_policy`
-inherits the environment, sets nothing, and excludes the hidden-read
-credential-name globs.
+inherits the whole environment, sets nothing, and excludes only the
+hidden-read environment deny list (`CLAUDE_CODE_OAUTH_TOKEN`).
 Owners release grants even on prompt failures. Detached remote work retains its
 lease until settlement proves the provider stopped; restart restores routing and
 adopts pending leases. Settlement records browser status before deferred cleanup,

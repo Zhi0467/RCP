@@ -65,12 +65,14 @@ when a default thread is missing or closed.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base
-are both on the backend's machine (`same_machine`). Experiments, compute `launch`, watch files and plain
-questions belong to the member's own project thread, reached through
-`handoff`. The verbs each client receives enforce this; the
+are both on the backend's machine (`same_machine`). It may keep its own watch
+files, with external `checks` only, observed on the backend's machine.
+Experiments, compute `launch`, graph-condition watchers and plain questions
+belong to the member's own project thread, reached through `handoff`. The verbs
+each client receives enforce this; the
 [Space scope](providers-and-containment.md#space-thread-scopes-and-commands)
-owns them. **Why:** watchers, episodes and notifications are keyed by project,
-so they always carry a real project id. The one exception is the
+owns them. **Why:** episodes, graph conditions and notifications are keyed by
+project, so they always carry a real project id. The one exception is the
 [approval card](authority-and-proposals.md#private-thread-approval-cards): the
 Space thread asks one itself for any decision a project's Inbox, branch view or
 Settings would take, so the member decides everything from one place. Its
@@ -122,9 +124,9 @@ another member's private work
 
 A Space turn is a `space_chat` task. Its bookkeeping project id is the space id
 from `space_identity`, which never names a project. That id appears only in
-task, usage, chat display, read, pin, browser, session-context, artifact and
-client-request rows, and in the Space thread's own approval-card questions,
-whose action names the project. Other questions, watchers, episodes and
+task, usage, chat display, read, pin, browser, session-context, artifact,
+client-request and watcher rows, and in the Space thread's own approval-card
+questions, whose action names the project. Other questions, episodes and
 notifications never carry it. `task_owner` in [`agent_threads.py`](../../src/rcp/runs/agent_threads.py)
 resolves a task row to its project service or Space owner for recovery, Stop,
 Pause, Resume, Retry, steering and sign-in settlement. A Space thread cannot
@@ -134,7 +136,8 @@ reply with no outcome file is not stated, as in project Work.
 
 `handoff` passes a Space request to the same member's default project thread,
 with that member's authority. It is not mail. Its usage lists the project thread's
-capabilities from `thread_capabilities("project")`, so the Space agent knows
+capabilities from `resolve_agent_profile(PRIVATE_PROJECT, None, OFFER).welcome()`
+in [`agent_profile.py`](../../src/rcp/agents/agent_profile.py), so the Space agent knows
 what a handoff can ask for. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
 that turn's own Patch lands first. A Space turn that ends without succeeding
@@ -195,9 +198,10 @@ other text, files or references is refused. A removed message keeps its row as
 removed, so a late retry of its request finds it removed and queues nothing.
 
 A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
-a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules). A
-project thread also wakes on its own watch file through conversation watchers
-and on a resolved approval card through question answer delivery. The Space
+a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules).
+Each thread also wakes on its own watch file through conversation watchers. A
+project thread also wakes on a resolved approval card through question answer
+delivery. The Space
 thread also wakes on a settled handoff. A project thread also wakes on its
 [episode mailbox](#work-started-episodes) and on Bulletin mentions; only those
 wakes have cooldowns and a chain cap. Mailbox and mention wakes are not member
@@ -787,9 +791,7 @@ chat turns admit them; steering and other run kinds refuse them,
 and question or watcher follow-ups clear them.
 
 Answer-text selections offer a floating Comment action without disturbing Copy.
-Overshoots clamp to answer text; a Comment command after each answer provides a
-keyboard text-control alternative. In agent threads it shows only while keyboard
-focus is on it, because a mouse or touch selection already opens the comment. The comment editor stays within the keyboard-adjusted
+Overshoots clamp to answer text. The comment editor stays within the keyboard-adjusted
 viewport at every width.
 
 In project chats and agent threads, Space threads included, a comment on a
@@ -1150,7 +1152,9 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
-Project Work and Experiment invocations receive their current definitions in `watchers/<watcher_id>.json`.
+Project Work, Space thread and Experiment invocations receive their current
+definitions in `watchers/<watcher_id>.json`. Space files may hold only external
+checks.
 Each file has a short `purpose` and either a list of external `checks` or one
 `graph` condition. At turn end RCP applies file additions, edits, and removals
 together. Removing a definition cancels its wake and leaves its job running.
@@ -1237,10 +1241,13 @@ so this control is not its answer. A live condition can therefore still hold an 
 episode shut.
 
 An optional saved `cancel_command` runs only on a member's Cancel request, from
-Runs or that member's own chat, following the
+Runs or from the agent that armed the watcher through that agent's watcher
+route, following the
 [human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract).
-An accepted Cancel also ends the watcher. Transfer and offline restore remove
-executable actions; ordinary restart preserves them.
+A project agent's Cancel also needs project write admission. An accepted Cancel
+also ends the watcher. Transfer removes executable actions; offline restore
+stops open watchers and keeps their saved cancel commands; ordinary restart
+preserves them.
 
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
