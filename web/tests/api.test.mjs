@@ -437,7 +437,7 @@ test("chat attachment ingress preserves multipart content and client scope", asy
       "set-a",
     );
     assert.equal(result.attachment.name, "notes.md");
-    assert.equal(request.path, "/api/projects/demo/chats/chat-a/attachments");
+    assert.equal(request.path, "/api/agent-threads/chat-a/attachments?project_id=demo");
     assert.equal(request.init.method, "POST");
     assert.ok(request.init.body instanceof FormData);
     assert.equal(request.init.body.get("client_id"), "client-a");
@@ -460,7 +460,10 @@ test("removing an unsent attachment preserves the claimed set scope", async () =
   };
   try {
     await removeChatAttachment("/api/projects/demo", "chat-a", "set-a", "attachment-a", "client-a");
-    assert.match(request.path, /attachment-a\?/);
+    assert.equal(
+      request.path,
+      "/api/agent-threads/chat-a/attachments/attachment-a?project_id=demo&attachment_set_id=set-a&client_id=client-a",
+    );
     assert.match(request.path, /attachment_set_id=set-a/);
     assert.match(request.path, /client_id=client-a/);
   } finally {
@@ -657,7 +660,7 @@ test("steering sends the exact attempt once and returns its stored human receipt
   try {
     assert.deepEqual(await steerChatTurn("project/a", "attempt/b", request), receipt);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].path, "/api/projects/project%2Fa/tasks/attempt%2Fb/steer");
+    assert.equal(calls[0].path, "/api/agent-threads/project%2Fa/tasks/attempt%2Fb/steer");
     assert.equal(calls[0].init.method, "POST");
     assert.deepEqual(JSON.parse(calls[0].init.body), request);
   } finally {
@@ -794,9 +797,17 @@ test("browser clients encode owners and send strict preference and install bodie
       browser_requested: true,
     });
     assert.deepEqual(calls, [
-      [`${base}/chats/chat%2F1/browser`, "GET", null],
-      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: true }],
-      [`${base}/chats/chat%2F1/browser`, "PUT", { browser_requested: false }],
+      ["/api/agent-threads/chat%2F1/browser?project_id=project%2F1", "GET", null],
+      [
+        "/api/agent-threads/chat%2F1/browser?project_id=project%2F1",
+        "PUT",
+        { browser_requested: true },
+      ],
+      [
+        "/api/agent-threads/chat%2F1/browser?project_id=project%2F1",
+        "PUT",
+        { browser_requested: false },
+      ],
       ["/api/space/machines/host%2F1/browser", "GET", null],
       ["/api/space/machines/host%2F1/browser/install", "POST", {}],
       [

@@ -39,28 +39,13 @@ def upload(client, base, client_id):
 
 
 @pytest.mark.parametrize("method", ["post", "delete", "turn"])
-@pytest.mark.parametrize("target", ["project", "closed_space"])
-def test_space_thread_routes_require_an_open_space_thread(space, method, target):
+def test_space_thread_routes_require_an_open_space_thread(space, method):
     app, client, base, thread_id = space
     store = app.state.background_tasks.store
     client_id = str(uuid.uuid4())
     uploaded = upload(client, base, client_id)
     params = dict(client_id=client_id, attachment_set_id=uploaded["attachment_set_id"])
-    if target == "project":
-        owner = store.agent_thread(thread_id)
-        assert owner is not None
-        project_id = app.state.default_project_id
-        store.seat_project_member(project_id, owner.user_id)
-        project = next(
-            row
-            for row in store.ensure_agent_threads(
-                owner.user_id, [project_id], default_names=("Pip",)
-            )
-            if row.kind == "project"
-        )
-        base = f"/api/agent-threads/{project.thread_id}"
-    else:
-        store.close_agent_thread(thread_id, reason="access_lost")
+    store.close_agent_thread(thread_id, reason="access_lost")
     if method == "post":
         response = client.post(
             base + "/attachments", data=params, files={"file": ("next.txt", b"next")}

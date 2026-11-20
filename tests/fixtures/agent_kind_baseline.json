@@ -2,7 +2,7 @@
   "agents/acceptance.py": 5,
   "agents/memory_files.py": 3,
   "agents/schema.py": 1,
-  "api/agent_threads.py": 7,
+  "api/agent_threads.py": 4,
   "api/app.py": 21,
   "api/approval_cards.py": 6,
   "api/artifacts.py": 9,

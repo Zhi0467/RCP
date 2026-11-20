@@ -354,9 +354,9 @@ export async function mockApi(page, writes) {
         agent_threads: { version: "1" },
       });
     if (path === "/api/agent-threads/space/transcript") return json(spaceTranscript);
-    if (path === "/api/projects/p1/chats/moss") return json(mossTranscript);
-    if (/^\/api\/projects\/p\d\/chats\/[^/]+$/.test(path))
-      return json(transcript(path.split("/").at(-1), []));
+    if (path === "/api/agent-threads/moss/transcript") return json(mossTranscript);
+    if (/^\/api\/agent-threads\/[^/]+\/transcript$/.test(path))
+      return json(transcript(path.split("/").at(-2), []));
     if (path === "/api/projects/p1/chats/moss/questions") return json([card]);
     if (path.endsWith("/questions")) return json([]);
     if (path === "/api/agent-threads/space/tasks/op-space")
@@ -377,7 +377,8 @@ export async function mockApi(page, writes) {
     if (/^\/api\/agent-threads\/[^/]+\/schedules$/.test(path))
       return json({ schedules: path.includes("/space/") ? schedules : schedules.slice(1) });
     if (method === "DELETE") return route.fulfill({ status: 204 });
-    if (path === "/api/agent-threads/space/turns") return json({ operation_id: "op-new" }, 202);
+    if (/^\/api\/agent-threads\/[^/]+\/turns$/.test(path))
+      return json({ operation_id: "op-new" }, 202);
     if (/\/read$/.test(path)) {
       const id = path.split("/").at(-2);
       return json({

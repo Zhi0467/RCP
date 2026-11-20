@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import type { ResourceProfile } from "../core/resourceStore";
 import { api } from "../core/api";
 import { artifactUrl } from "../agents/agentTasks";
@@ -59,7 +60,7 @@ export function projectAgentWindowEndpoints(
   return {
     scopeKey: `${projectId}:${chatId}`,
     projectId,
-    attachmentsUrl: `${base}/chats/${encodeURIComponent(chatId)}/attachments`,
+    attachmentsUrl: projectAgentPath(base, chatId, "attachments"),
     artifactUrl: (operation, artifact, action) =>
       artifactUrl(projectId, operation, artifact, action),
     artifactState: (artifactId) => artifactStateProfile(projectId, artifactId),
@@ -119,7 +120,6 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
   };
 }
 
-/** A member agent thread's routes: its project's chat routes, or the Space thread's own. */
 export function threadAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpoints {
   return thread.project_id
     ? projectAgentWindowEndpoints(thread.project_id, thread.thread_id)

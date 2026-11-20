@@ -1,3 +1,4 @@
+import { projectAgentPath, threadPath } from "../agents/agentRoutes.ts";
 import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
   AddProjectMachineRequest,
@@ -587,7 +588,7 @@ export function uploadChatAttachment(
   attachmentSetId?: string | null,
 ): Promise<ChatAttachmentUpload> {
   return uploadComposerAttachment(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    projectAgentPath(apiBase, chatId, "attachments"),
     file,
     clientId,
     attachmentSetId,
@@ -619,7 +620,7 @@ export function removeChatAttachment(
   clientId: string,
 ): Promise<{ removed: boolean }> {
   return removeComposerAttachment(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    projectAgentPath(apiBase, chatId, "attachments"),
     attachmentSetId,
     attachmentId,
     clientId,
@@ -632,36 +633,30 @@ export function removeComposerAttachment(
   attachmentId: string,
   clientId: string,
 ): Promise<{ removed: boolean }> {
-  const query = new URLSearchParams({
-    attachment_set_id: attachmentSetId,
-    client_id: clientId,
+  const [path, search] = attachmentsUrl.split("?");
+  const query = new URLSearchParams(search);
+  query.set("attachment_set_id", attachmentSetId);
+  query.set("client_id", clientId);
+  return api<{ removed: boolean }>(`${path}/${encodeURIComponent(attachmentId)}?${query}`, {
+    method: "DELETE",
   });
-  return api<{ removed: boolean }>(
-    `${attachmentsUrl}/${encodeURIComponent(attachmentId)}?${query}`,
-    { method: "DELETE" },
-  );
 }
 
 /** Refuses a chat that cannot branch, before a new graph branch is created for it. */
-export function requireChatBranchable(projectId: string, chatId: string): Promise<void> {
-  return api<void>(
-    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
-  );
+export function requireChatBranchable(_projectId: string, chatId: string): Promise<void> {
+  return api<void>(`${threadPath(chatId)}/branch`);
 }
 
 export function branchChat(
-  projectId: string,
+  _projectId: string,
   chatId: string,
   graphTarget: GraphTargetRef,
   requestId: string,
 ): Promise<ChatTranscript> {
-  return api<ChatTranscript>(
-    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
-    {
-      method: "POST",
-      body: JSON.stringify({ graph_target: graphTarget, request_id: requestId }),
-    },
-  );
+  return api<ChatTranscript>(`${threadPath(chatId)}/branch`, {
+    method: "POST",
+    body: JSON.stringify({ graph_target: graphTarget, request_id: requestId }),
+  });
 }
 
 export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
@@ -863,12 +858,12 @@ export function sendEpisodeMessage(
 }
 
 export function steerChatTurn(
-  projectId: string,
+  agentId: string,
   operationId: string,
   request: SteerRequest,
 ): Promise<ChatMessage> {
   return api<ChatMessage>(
-    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(operationId)}/steer`,
+    `${threadPath(agentId)}/tasks/${encodeURIComponent(operationId)}/steer`,
     { method: "POST", body: JSON.stringify(request) },
     { retryIdentity: false },
   );
@@ -892,7 +887,7 @@ export function setChatArchived(
   chatId: string,
   archived: boolean,
 ): Promise<ChatDisplay> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
+  return api(projectAgentPath(apiBase, chatId, "archive"), {
     method: "POST",
     body: JSON.stringify({ archived }),
   });
@@ -943,7 +938,7 @@ export function setChatPinned(
 
 /** Renames the agent; the server refuses a blank title. */
 export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
+  return api(projectAgentPath(apiBase, chatId, "title"), {
     method: "POST",
     body: JSON.stringify({ title }),
   });
@@ -1184,7 +1179,7 @@ export function dismissQuestion(apiBase: string, questionId: string) {
 }
 
 export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBrowserPreference> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`);
+  return api(projectAgentPath(apiBase, chatId, "browser"));
 }
 
 export function loadProjectMachineBrowser(
@@ -1199,7 +1194,7 @@ export function setChatBrowser(
   chatId: string,
   browserRequested: boolean,
 ): Promise<ChatBrowserPreference> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`, {
+  return api(projectAgentPath(apiBase, chatId, "browser"), {
     method: "PUT",
     body: JSON.stringify({ browser_requested: browserRequested }),
   });

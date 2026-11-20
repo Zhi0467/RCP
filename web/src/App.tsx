@@ -1,3 +1,4 @@
+import { projectAgentPath, threadPath } from "./agents/agentRoutes.ts";
 import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { StaleEdgeProvider } from "./graph/StaleEdgeContext";
@@ -3122,7 +3123,10 @@ function MemberApp({
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
-            ? graphTargetUrl(`${apiBase}/tasks/${kind}`, target)
+            ? graphTargetUrl(
+                projectAgentPath(apiBase, request.chat_id ?? admissionId, "turns"),
+                target,
+              )
             : `${apiBase}/tasks/${kind}`,
           {
             method: "POST",
@@ -3918,11 +3922,16 @@ function MemberApp({
     const requestId = taskActionRequestIds.current.get(admissionKey) ?? crypto.randomUUID();
     taskActionRequestIds.current.set(admissionKey, requestId);
     try {
-      const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
-        method: "POST",
-        headers: { "Idempotency-Key": requestId },
-        body,
-      });
+      const next = await api<AgentTask>(
+        task.request.chat_id
+          ? `${threadPath(task.request.chat_id)}/tasks/${encodeURIComponent(task.operation_id)}/retry`
+          : `${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/retry`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": requestId },
+          body,
+        },
+      );
       taskActionRequestIds.current.delete(admissionKey);
       mutation.settle(next);
       if (isActiveGraph(task.project_id)) {

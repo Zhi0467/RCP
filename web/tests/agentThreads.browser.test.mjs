@@ -341,12 +341,12 @@ test("a send, a read mark and history reads stay with the thread they belong to"
       await sendHeld;
       await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
     });
-    await page.route("**/api/projects/p1/chats/moss", async (route) => {
+    await page.route("**/api/agent-threads/moss/transcript", async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       await route.fallback();
     });
     let historyReads = 0;
-    await page.route("**/api/projects/p1/tasks/op-check", async (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-check", async (route) => {
       historyReads += 1;
       await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
     });
@@ -394,7 +394,7 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     // An upload that finishes after switching threads stays owned by its old route.
     let releaseUpload;
     const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
-    await page.route("**/api/projects/p1/chats/moss/attachments", async (route) => {
+    await page.route("**/api/agent-threads/moss/attachments?*", async (route) => {
       await uploadHeld;
       await route.fulfill({
         json: {
@@ -422,7 +422,7 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     const cleaned = page.waitForRequest(
       (request) =>
         request.method() === "DELETE" &&
-        new URL(request.url()).pathname === "/api/projects/p1/chats/moss/attachments/old-file",
+        new URL(request.url()).pathname === "/api/agent-threads/moss/attachments/old-file",
     );
     releaseUpload();
     await cleaned;
@@ -461,7 +461,7 @@ test("a sent turn stays live when an older reload answers late", async () => {
     // project transcript gains the new turn only when it settles.
     let release;
     const held = new Promise((resolve) => (release = resolve));
-    await page.route("**/api/projects/p1/tasks/op-moss", async (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", async (route) => {
       await held;
       await route.fallback();
     });
@@ -471,10 +471,10 @@ test("a sent turn stays live when an older reload answers late", async () => {
       settled: false,
       status_message: "Running",
     };
-    await page.route("**/api/projects/p1/tasks/project_chat", (route) =>
+    await page.route("**/api/agent-threads/moss/turns", (route) =>
       route.fulfill({ status: 202, json: running }),
     );
-    await page.route("**/api/projects/p1/tasks/op-new", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-new", (route) =>
       route.fulfill({ json: running }),
     );
     await page.goto(
@@ -548,7 +548,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
         );
       return transcript(space ? "space" : "moss", messages);
     };
-    await page.route("**/api/projects/p1/chats/moss", (route) =>
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
       route.fulfill({ json: windowTranscript(false) }),
     );
     await page.route("**/api/agent-threads/space/transcript", (route) =>
@@ -571,13 +571,10 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       writes.push({ path: "/api/approval-cards/q1", body: route.request().postDataJSON() });
       return route.fulfill({ json: { outcome: "approved" } });
     });
-    await page.route(
-      /\/api\/(?:projects\/p1|agent-threads\/space)\/tasks\/op-(?:moss|space)$/,
-      (route) => {
-        const op = new URL(route.request().url()).pathname.split("/").at(-1);
-        return route.fulfill({ json: { ...settled(op), result: { artifacts: [artifact] } } });
-      },
-    );
+    await page.route(/\/api\/agent-threads\/(?:moss|space)\/tasks\/op-(?:moss|space)$/, (route) => {
+      const op = new URL(route.request().url()).pathname.split("/").at(-1);
+      return route.fulfill({ json: { ...settled(op), result: { artifacts: [artifact] } } });
+    });
     await page.route("**/api/projects/p1/artifacts/report/state", (route) =>
       route.fulfill({
         json: {
@@ -608,7 +605,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
     );
-    await page.route(/\/attachments$/, (route) => {
+    await page.route(/\/attachments(?:\?.*)?$/, (route) => {
       writes.push({
         path: new URL(route.request().url()).pathname,
         body: route.request().postData(),
@@ -630,9 +627,9 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     let sawProjectSend;
     const projectSendHeld = new Promise((resolve) => (admitProjectSend = resolve));
     const projectSendStarted = new Promise((resolve) => (sawProjectSend = resolve));
-    await page.route("**/api/projects/p1/tasks/project_chat", async (route) => {
+    await page.route("**/api/agent-threads/moss/turns", async (route) => {
       writes.push({
-        path: "/api/projects/p1/tasks/project_chat",
+        path: "/api/agent-threads/moss/turns",
         body: route.request().postDataJSON(),
       });
       sawProjectSend();
@@ -699,11 +696,11 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       () => !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
     assert.equal(await space.getByRole("button", { name: "1 comment" }).count(), 1);
-    const sent = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
+    const sent = writes.find((write) => write.path === "/api/agent-threads/moss/turns");
     assert.deepEqual(sent.body.comment_thread_ids, ["comment-1"]);
     assert.equal(sent.body.attachment_set_id, "set-1");
     assert.equal(typeof sent.body.attachment_client_id, "string");
-    assert.ok(writes.some((write) => write.path === "/api/projects/p1/chats/moss/attachments"));
+    assert.ok(writes.some((write) => write.path === "/api/agent-threads/moss/attachments"));
     const spaceFrame = space.locator(".chat-inline-artifact-frame");
     await spaceFrame.waitFor();
     assert.equal(
@@ -975,7 +972,7 @@ test("Space and project threads pick their agent from the header's agent chip", 
           await page.waitForFunction(() =>
             document.querySelector(".chat-send-button:not(:has(.spin))"),
           );
-          const turn = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
+          const turn = writes.find((write) => write.path === "/api/agent-threads/moss/turns");
           assert.deepEqual(
             [turn.body.provider, turn.body.model, turn.body.reasoning],
             ["claude", "opus", "high"],
@@ -993,7 +990,7 @@ test("/ in either thread window offers the official skills and sends the chosen 
   await withFixture(async (browser, base) => {
     for (const [url, name, path] of [
       [`${base}#/agent/space`, "Pip", "/api/agent-threads/space/turns"],
-      [`${base}?view=project`, "Moss", "/api/projects/p1/tasks/project_chat"],
+      [`${base}?view=project`, "Moss", "/api/agent-threads/moss/turns"],
     ]) {
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       const errors = [];
@@ -1052,7 +1049,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       await mockApi(page, []);
-      await page.route("**/api/projects/p1/chats/moss", (route) =>
+      await page.route("**/api/agent-threads/moss/transcript", (route) =>
         route.fulfill({
           json: transcript("moss", [message("f1", "user", "Run the 64k sweep", "op-fail")]),
         }),
@@ -1060,7 +1057,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
       await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
         route.fulfill({ json: [] }),
       );
-      await page.route("**/api/projects/p1/tasks/op-fail", (route) =>
+      await page.route("**/api/agent-threads/moss/tasks/op-fail", (route) =>
         route.fulfill({
           json: {
             ...settled("op-fail"),
@@ -1100,7 +1097,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
       const retried = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === "/api/projects/p1/tasks/op-fail/retry",
+          new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-fail/retry",
       );
       await retry.click();
       await retried;
@@ -1350,7 +1347,7 @@ test("Space and project replies link and embed repository files and saved artifa
         await page.route("**/api/agent-threads/space/transcript", (route) =>
           route.fulfill({ json: replyTranscript("space") }),
         );
-        await page.route("**/api/projects/p1/chats/moss", (route) =>
+        await page.route("**/api/agent-threads/moss/transcript", (route) =>
           route.fulfill({ json: replyTranscript("moss") }),
         );
         await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
@@ -1653,7 +1650,7 @@ test("both thread kinds show the context ring just left of the thread menu", asy
     await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
       route.fulfill({ json: withContext("op-space") }),
     );
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
       route.fulfill({ json: withContext("op-moss") }),
     );
     for (const [hash, name] of [
@@ -1703,7 +1700,7 @@ test("handoff results read as one row and browser loss shows on its turn", async
       }),
     );
     const lost = { status: "unavailable", reason_code: "not_installed", detail: "not_installed" };
-    await page.route("**/api/projects/p1/chats/moss", (route) =>
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
       route.fulfill({
         json: transcript(
           "moss",
@@ -1906,12 +1903,14 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
       message(`h${index}a`, "assistant", answer(index), `op-h${index}`),
     ]).flat();
     const live = transcript("moss", [...history, message("n1", "user", "Run it", "op-live")]);
-    await page.route("**/api/projects/p1/chats/moss", (route) => route.fulfill({ json: live }));
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
+      route.fulfill({ json: live }),
+    );
     const running = { ...settled("op-live"), active: true, settled: false };
-    await page.route("**/api/projects/p1/tasks/op-live", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-live", (route) =>
       route.fulfill({ json: running }),
     );
-    await page.route("**/api/projects/p1/tasks/op-h29", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-h29", (route) =>
       route.fulfill({ status: 404, contentType: "application/json", body: "{}" }),
     );
     const reads = [];
@@ -1933,16 +1932,18 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     await moss.locator(".agent-turn-live").waitFor();
     await page.waitForTimeout(1000);
     // Only turns near the view load their detail, each once.
-    const history_reads = reads.filter((read) => read.startsWith("/api/projects/p1/tasks/op-h"));
+    const history_reads = reads.filter((read) =>
+      read.startsWith("/api/agent-threads/moss/tasks/op-h"),
+    );
     const opened = { total: history_reads.length, distinct: new Set(history_reads).size };
 
     reads.length = 0;
     await page.waitForTimeout(4500);
     const visible = {
-      transcript: count("/api/projects/p1/chats/moss"),
+      transcript: count("/api/agent-threads/moss/transcript"),
       questions: count("/api/projects/p1/chats/moss/questions"),
-      failed: count("/api/projects/p1/tasks/op-h29"),
-      live: count("/api/projects/p1/tasks/op-live"),
+      failed: count("/api/agent-threads/moss/tasks/op-h29"),
+      live: count("/api/agent-threads/moss/tasks/op-live"),
     };
 
     await setHidden(true);
@@ -1951,7 +1952,7 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     const hidden = reads.filter((read) => read.startsWith("/api/")).length;
 
     const back = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-live",
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-live",
       { timeout: 1000 },
     );
     await setHidden(false);
@@ -1960,11 +1961,11 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     reads.length = 0;
     await page.evaluate(() => (window.agentThreadsVersion = "2"));
     await page.waitForTimeout(2500);
-    const moved = count("/api/projects/p1/chats/moss");
+    const moved = count("/api/agent-threads/moss/transcript");
 
     // Scrolling back loads the oldest turn once its row nears the view.
     const oldest = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-h0",
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-h0",
     );
     await moss.locator(".agent-chat-view-lines").evaluate((lines) => (lines.scrollTop = 0));
     await oldest;
@@ -2970,14 +2971,16 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
       status_message: "Working",
     };
     let task = running;
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
+      route.fulfill({ json: task }),
+    );
     const steers = [];
-    await page.route("**/api/projects/p1/tasks/op-moss/steer", (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss/steer", (route) => {
       const body = route.request().postDataJSON();
       steers.push(body);
       return route.fulfill({ json: message(body.message_id, "user", body.message, "op-moss") });
     });
-    await page.route(/\/attachments$/, (route) =>
+    await page.route(/\/attachments(?:\?.*)?$/, (route) =>
       route.fulfill({
         json: {
           attachment_set_id: "set-1",
@@ -3055,7 +3058,7 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await rows.nth(2).waitFor();
     assert.deepEqual(served.posted[2].body, { message: "And summarize" });
     assert.equal(
-      writes.filter((write) => write.path === "/api/projects/p1/tasks/project_chat").length,
+      writes.filter((write) => write.path === "/api/agent-threads/moss/turns").length,
       0,
     );
 
@@ -3103,9 +3106,11 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
       can_pause: true,
       status_message: "Working",
     };
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
+      route.fulfill({ json: task }),
+    );
     const paused = [];
-    await page.route("**/api/projects/p1/tasks/op-moss/pause", (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss/pause", (route) => {
       paused.push(route.request().method());
       task = {
         ...settled("op-moss"),
@@ -3117,7 +3122,7 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
       return route.fulfill({ json: task });
     });
     const sent = [];
-    await page.route("**/api/projects/p1/tasks/project_chat", (route) => {
+    await page.route("**/api/agent-threads/moss/turns", (route) => {
       sent.push(route.request().postDataJSON());
       return route.fulfill({ json: { operation_id: "op-next" } });
     });

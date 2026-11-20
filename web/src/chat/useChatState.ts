@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import { useProjectTabResources } from "../projects/projectTabResources";
 import { useRefreshRuntime, useResource, useResourcePresentation } from "../core/useResource";
 import { resourceKeyId, type ResourceView } from "../core/resourceStore";
@@ -405,7 +406,7 @@ export function useChatState({
         ]),
       );
       void markChatRead(
-        `${apiBase}/chats/${encodeURIComponent(visibleChatId)}/read?inventory=true`,
+        `${projectAgentPath(apiBase, visibleChatId, "read")}&inventory=true`,
         readThrough,
       )
         .then((reads) => {

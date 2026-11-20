@@ -6,8 +6,8 @@ import hashlib
 import logging
 import uuid
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager, nullcontext
+from collections.abc import Iterable
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote, urlencode
@@ -27,6 +27,8 @@ from fastapi import (
 )
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
+from rcp.agents.agent_owner import resolve_agent
+from rcp.api import tasks as task_routes
 from rcp.api.chats import (
     AttachmentStoreDependency,
     CatalogDependency,
@@ -38,6 +40,8 @@ from rcp.api.chats import (
     _artifact_comments,
     _delete_browser_if_still_off,
     add_attachment,
+    chat,
+    chat_browser,
     mark_chat_read,
     remove_attachment,
     rename_chat,
@@ -67,27 +71,19 @@ from rcp.api.questions import (
 )
 from rcp.api.tasks import (
     BackgroundTasksDependency,
-    ExperimentAdmissionDependency,
-    RetryAgentTaskRequest,
-    SteerAgentTaskRequest,
     _agent_artifact_descriptor,
-    _agent_task_response,
     _artifact_viewer_response,
-    _reject_history_only_control,
     content_agent_artifact,
     download_agent_artifact,
     released_unless_started,
     require_attachment_pair,
-    resume_task_as,
-    retry_task_as,
 )
 from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
 from rcp.comments.models import COMMENT_MEDIA_TYPES
-from rcp.comments.send import chat_turn_send, thread_send_text
+from rcp.comments.send import chat_turn_send
 from rcp.config import load_manifest
-from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
@@ -105,15 +101,13 @@ from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_thread_queue import queued_turn_operation_id, release_queued_files
 from rcp.runs.agent_threads import (
     episode_watching,
-    task_owner,
     thread_projection,
     thread_projections,
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
 from rcp.runs.artifact_edit_admission import _edit_version, artifact_comment_message
-from rcp.runs.space_chat import SpaceThreadOwner, admit_space_invocations, space_transcript_lock
-from rcp.runs.steering import begin_chat_steer, finish_chat_steer
+from rcp.runs.space_chat import admit_space_invocations, space_transcript_lock
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
     ArtifactContextRequest,
@@ -152,7 +146,7 @@ def owned_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRe
 
 def owned_space_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
     thread = owned_thread(store, thread_id, user_id)
-    if thread.kind != "space" or thread.closed_at is not None:
+    if thread.project_id is not None or thread.closed_at is not None:
         raise HTTPException(status_code=404, detail="Space thread not found")
     return thread
 
@@ -656,13 +650,19 @@ def thread_transcript(
     thread_id: str,
     request: Request,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     identity_access: IdentityDependency,
+    catalog: CatalogDependency,
+    branch_id: str | None = None,
 ):
     """The Space thread's transcript; a project thread's is its project chat's."""
-    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    if thread.kind != "space":
-        raise HTTPException(status_code=404, detail="Space thread not found")
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
+    )
+    if owner.project_id is not None:
+        return chat(owner.project_id, thread_id, catalog=catalog, store=store, branch_id=branch_id)
+    thread = owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
     title = store.chat_name(store.space_id, thread_id, "")
     try:
         # Under the appenders' lock, so a read never sees a half-written record.
@@ -697,10 +697,25 @@ def rename_thread(
     body: ChatTitleBody,
     request: Request,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ):
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
+    )
+    if owner.project_id is not None and owner.agent.visibility == "shared":
+        with project_write_admission(owner.project_id, request):
+            return rename_chat(
+                owner.project_id,
+                thread_id,
+                body,
+                request,
+                catalog=catalog,
+                store=store,
+                identity_access=identity_access,
+            )
     thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
     if thread.project_id:
         with project_write_admission(thread.project_id, request):
@@ -755,10 +770,28 @@ def read_thread(
     body: ChatReadBody,
     request: Request,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
+    branch_id: str | None = None,
+    inventory: bool = False,
 ):
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
+    )
+    if owner.project_id is not None and owner.agent.visibility == "shared":
+        return mark_chat_read(
+            owner.project_id,
+            thread_id,
+            body,
+            request,
+            catalog=catalog,
+            store=store,
+            identity_access=identity_access,
+            branch_id=branch_id,
+            inventory=inventory,
+        )
     thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
     if thread.project_id:
         mark_chat_read(
@@ -777,6 +810,26 @@ def read_thread(
     return thread_projection(store, thread)
 
 
+@router.get("/api/agent-threads/{thread_id}/browser", response_model=ChatBrowserPreference)
+def get_thread_browser(
+    thread_id: str,
+    request: Request,
+    *,
+    project_id: str | None = None,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+    identity_access: IdentityDependency,
+):
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
+    )
+    if owner.project_id is not None:
+        return chat_browser(owner.project_id, thread_id, catalog=catalog, store=store)
+    return ChatBrowserPreference(
+        browser_requested=store.chat_browser_requested(owner.scope_id, thread_id)
+    )
+
+
 @router.put("/api/agent-threads/{thread_id}/browser", response_model=ChatBrowserPreference)
 def thread_browser(
     thread_id: str,
@@ -784,17 +837,20 @@ def thread_browser(
     request: Request,
     background_tasks: BackgroundTasks,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ):
-    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    if thread.project_id:
-        with project_write_admission(thread.project_id, request):
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
+    )
+    if owner.project_id:
+        with project_write_admission(owner.project_id, request):
             return set_chat_browser(
-                thread.project_id, thread_id, body, background_tasks, catalog=catalog, store=store
+                owner.project_id, thread_id, body, background_tasks, catalog=catalog, store=store
             )
-    scope = thread_scope_id(store, thread)
+    scope = owner.scope_id
     store.set_chat_browser_requested(scope, thread_id, browser_requested=body.browser_requested)
     if not body.browser_requested:
         background_tasks.add_task(_delete_browser_if_still_off, store, scope, thread_id)
@@ -809,14 +865,18 @@ def upload_space_attachment(
     client_id: Annotated[str, Form()],
     attachment_set_id: Annotated[str | None, Form()] = None,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
 ) -> ChatAttachmentUpload:
-    owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    return add_attachment(
-        attachment_store, store.space_id, thread_id, file, client_id, attachment_set_id
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
     )
+    with owner.write_admission(request):
+        return add_attachment(
+            attachment_store, owner.scope_id, thread_id, file, client_id, attachment_set_id
+        )
 
 
 @router.delete("/api/agent-threads/{thread_id}/attachments/{attachment_id}")
@@ -827,19 +887,23 @@ def remove_space_attachment(
     attachment_set_id: str,
     request: Request,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
 ) -> dict[str, bool]:
-    owned_space_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    return remove_attachment(
-        attachment_store, store.space_id, thread_id, attachment_id, client_id, attachment_set_id
+    owner = resolve_agent(
+        store, thread_id, identity_access.acting_user(request).user_id, project_id
     )
+    with owner.write_admission(request):
+        return remove_attachment(
+            attachment_store, owner.scope_id, thread_id, attachment_id, client_id, attachment_set_id
+        )
 
 
 def owned_project_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
     thread = owned_thread(store, thread_id, user_id)
-    if thread.kind != "project" or thread.project_id is None:
+    if thread.project_id is None:
         raise HTTPException(status_code=404, detail="Project thread not found")
     return thread
 
@@ -1089,17 +1153,41 @@ def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -
 @router.post("/api/agent-threads/{thread_id}/turns", status_code=202)
 def space_turn(
     thread_id: str,
-    body: SpaceTurnBody,
+    body: dict[str, object],
     request: Request,
     *,
+    project_id: str | None = None,
     store: StoreDependency,
     catalog: CatalogDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     attachment_store: AttachmentStoreDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
+    branch_id: str | None = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
+    owner = resolve_agent(store, thread_id, authorized.user_id, project_id)
+    if owner.project_id is not None:
+        if body.get("chat_id") not in (None, thread_id):
+            raise HTTPException(status_code=422, detail="Turn belongs to another agent")
+        with project_write_admission(owner.project_id, request):
+            return task_routes.start_agent_task(
+                owner.project_id,
+                owner.turn_kind(body),
+                {**body, "chat_id": thread_id},
+                request,
+                catalog=catalog,
+                store=store,
+                identity_access=identity_access,
+                attachment_store=attachment_store,
+                background_tasks=background_tasks,
+                idempotency_key=idempotency_key,
+                branch_id=branch_id,
+            )
+    try:
+        payload = SpaceTurnBody.model_validate(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     thread = owned_space_thread(store, thread_id, authorized.user_id)
     key = str(idempotency_key) if idempotency_key is not None else None
     sent = (
@@ -1107,13 +1195,13 @@ def space_turn(
             store,
             store.space_id,
             authorized.user_id,
-            body.comment_thread_ids,
+            payload.comment_thread_ids,
             key or "",
-            message=body.message,
+            message=payload.message,
             chat_id=thread_id,
             paper=False,
         )
-        if body.comment_thread_ids
+        if payload.comment_thread_ids
         else None
     )
     try:
@@ -1135,21 +1223,21 @@ def space_turn(
             context = sent.context if sent is not None else None
             with store.artifact_lock(context.artifact_id) if context is not None else nullcontext():
                 artifact_context, message = _space_artifact_comment(
-                    store, thread, context, sent.text if sent is not None else body.message
+                    store, thread, context, sent.text if sent is not None else payload.message
                 )
                 workflows, skills = admit_space_invocations(
-                    body.invoked_workflow_ids, body.invoked_skill_ids
+                    payload.invoked_workflow_ids, payload.invoked_skill_ids
                 )
                 turn = RunRequest.model_validate(
                     {
-                        **sent_thread_agent(store, thread, body.model_dump()),
+                        **sent_thread_agent(store, thread, payload.model_dump()),
                         "invoked_workflow_ids": workflows,
                         "invoked_skill_ids": skills,
                         "chat_id": thread_id,
                         "chat_scope": "project",
                         "mode": "work",
                         "message": message,
-                        "timezone": body.timezone,
+                        "timezone": payload.timezone,
                         "artifact_context": artifact_context,
                         "browser_requested": store.chat_browser_requested(
                             store.space_id, thread_id
@@ -1158,12 +1246,12 @@ def space_turn(
                 )
                 operation_id = str(uuid.uuid4())
                 claimed = None
-                if body.attachment_set_id is not None:
+                if payload.attachment_set_id is not None:
                     claimed = attachment_store.claim(
                         project_id=store.space_id,
                         chat_id=thread_id,
-                        client_id=body.attachment_client_id,
-                        attachment_set_id=body.attachment_set_id,
+                        client_id=payload.attachment_client_id,
+                        attachment_set_id=payload.attachment_set_id,
                         operation_id=operation_id,
                     )
                     turn = turn.model_copy(
@@ -1190,187 +1278,6 @@ def space_turn(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}
-
-
-@router.get("/api/agent-threads/{thread_id}/tasks/{operation_id}")
-def space_task(
-    thread_id: str,
-    operation_id: str,
-    request: Request,
-    *,
-    store: StoreDependency,
-    identity_access: IdentityDependency,
-    background_tasks: BackgroundTasksDependency,
-):
-    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    task = _space_task(store, thread, operation_id)
-    detail = _agent_task_response(store, task, background_tasks)
-    detail["events"] = [
-        event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
-    ]
-    return detail
-
-
-@router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/pause", status_code=202)
-def pause_space_task(
-    thread_id: str,
-    operation_id: str,
-    request: Request,
-    *,
-    store: StoreDependency,
-    identity_access: IdentityDependency,
-    background_tasks: BackgroundTasksDependency,
-):
-    thread = owned_thread(store, thread_id, identity_access.acting_user(request).user_id)
-    _reject_history_only_control(_space_task(store, thread, operation_id))
-    try:
-        return background_tasks.pause(operation_id).model_dump(mode="json")
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/resume", status_code=202)
-def resume_space_task(
-    thread_id: str,
-    operation_id: str,
-    request: Request,
-    *,
-    store: StoreDependency,
-    catalog: CatalogDependency,
-    identity_access: IdentityDependency,
-    background_tasks: BackgroundTasksDependency,
-    experiment_admission: ExperimentAdmissionDependency,
-    idempotency_key: Annotated[UUID4 | None, Header()] = None,
-):
-    authorized = identity_access.require_patch_capable_identity(request)
-    thread = owned_thread(store, thread_id, authorized.user_id)
-    previous = _space_task(store, thread, operation_id)
-    _reject_history_only_control(previous)
-    with _space_control_admission(store, authorized, idempotency_key, operation_id, "resume") as (
-        existing
-    ):
-        return existing or resume_task_as(
-            previous,
-            authorized,
-            catalog=catalog,
-            background_tasks=background_tasks,
-            experiment_admission=experiment_admission,
-        ).model_dump(mode="json")
-
-
-@router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/retry", status_code=202)
-def retry_space_task(
-    thread_id: str,
-    operation_id: str,
-    request: Request,
-    *,
-    store: StoreDependency,
-    catalog: CatalogDependency,
-    identity_access: IdentityDependency,
-    background_tasks: BackgroundTasksDependency,
-    experiment_admission: ExperimentAdmissionDependency,
-    body: RetryAgentTaskRequest | None = None,
-    idempotency_key: Annotated[UUID4 | None, Header()] = None,
-):
-    authorized = identity_access.require_patch_capable_identity(request)
-    thread = owned_thread(store, thread_id, authorized.user_id)
-    previous = _space_task(store, thread, operation_id)
-    _reject_history_only_control(previous)
-    # A Space thread always runs on the backend machine, so a retry's run_on is not a choice.
-    overrides = body.model_dump(exclude_none=True, exclude={"run_on"}) if body else {}
-    with _space_control_admission(store, authorized, idempotency_key, operation_id, "retry") as (
-        existing
-    ):
-        return existing or retry_task_as(
-            previous,
-            authorized,
-            overrides,
-            catalog=catalog,
-            background_tasks=background_tasks,
-            experiment_admission=experiment_admission,
-        ).model_dump(mode="json")
-
-
-@contextmanager
-def _space_control_admission(
-    store: AppStore,
-    authorized: AuthorizedHuman,
-    idempotency_key: UUID4 | None,
-    operation_id: str,
-    action: str,
-) -> Iterator[dict[str, object] | None]:
-    """Admit one Retry or Resume per key; a repeat gets the task the first one started."""
-    try:
-        with store.client_request_admission(
-            store.space_id,
-            authorized.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
-            f"tasks/{operation_id}/{action}",
-        ) as admitted:
-            record = store.agent_task(admitted.operation_id or "") if admitted else None
-            yield record.model_dump(mode="json") if record else None
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/steer")
-def steer_space_task(
-    thread_id: str,
-    operation_id: str,
-    body: SteerAgentTaskRequest,
-    request: Request,
-    *,
-    store: StoreDependency,
-    catalog: CatalogDependency,
-    identity_access: IdentityDependency,
-    background_tasks: BackgroundTasksDependency,
-):
-    authorized = identity_access.require_patch_capable_identity(request)
-    thread = owned_thread(store, thread_id, authorized.user_id)
-    task = _space_task(store, thread, operation_id)
-    owner = task_owner(store, task, catalog=catalog)
-    if not isinstance(owner, SpaceThreadOwner):
-        raise HTTPException(status_code=404, detail="Space thread not found")
-    sent = (
-        thread_send_text(
-            store,
-            store.space_id,
-            authorized.user_id,
-            body.comment_thread_ids,
-            str(body.message_id),
-            message=body.message,
-            chat_id=thread_id,
-            paper=False,
-        )
-        if body.comment_thread_ids
-        else None
-    )
-    try:
-        delivery = begin_chat_steer(
-            owner,
-            background_tasks,
-            task,
-            message_id=str(body.message_id),
-            attempt=body.attempt,
-            expected_turn_id=body.expected_turn_id,
-            text=sent.text if sent is not None else body.message,
-        )
-        message = finish_chat_steer(owner, background_tasks, task, delivery)
-        if (
-            sent is not None
-            and message.steering is not None
-            and message.steering.status != "refused"
-        ):
-            store.mark_threads_sent(
-                sent.rendered_through, operation_id, str(body.message_id), authorized.user_id
-            )
-        return message
-    except CommentError:
-        raise
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/api/agent-threads/{thread_id}/artifacts/{artifact_id}/state")

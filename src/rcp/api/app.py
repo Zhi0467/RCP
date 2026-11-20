@@ -38,6 +38,7 @@ from rcp.api.approval_cards import membership_router as approval_cards_membershi
 from rcp.api.approval_cards import router as approval_cards_router
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
+from rcp.api.chats import agent_router as agent_metadata_router
 from rcp.api.chats import router as chats_router
 from rcp.api.client_events import ClientEventLimiter
 from rcp.api.client_events import router as client_events_router
@@ -95,6 +96,7 @@ from rcp.api.space_comments import router as space_comments_router
 from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
+from rcp.api.tasks import agent_router as agent_tasks_router
 from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
@@ -2900,6 +2902,7 @@ def create_app(
     app.include_router(episode_router)
     app.include_router(experiments_router)
     app.include_router(chats_router)
+    app.include_router(agent_metadata_router)
     app.include_router(agent_threads_router)
     app.include_router(space_comments_router)
     app.include_router(questions_router)
@@ -2920,6 +2923,7 @@ def create_app(
     app.include_router(research_views_router)
     app.include_router(sync_router)
     app.include_router(tasks_router)
+    app.include_router(agent_tasks_router)
     app.include_router(watchers_router)
     app.include_router(terminals_router)
 

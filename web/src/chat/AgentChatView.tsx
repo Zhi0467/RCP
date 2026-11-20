@@ -1392,8 +1392,8 @@ export function AgentChatView({
     });
   };
   const chatCommentScope = useMemo<CommentScope>(
-    () => ({ kind: "project", projectId: projectId ?? "" }),
-    [projectId],
+    () => ({ kind: "project", projectId: projectId ?? "", threadId: chatId }),
+    [projectId, chatId],
   );
   const commentScope = feed?.commentScope ?? chatCommentScope;
   const inlineArtifactComments = useInlineArtifactComments({

@@ -7,7 +7,11 @@ import {
   encodeCommentMentions,
   decodeCommentMentions,
 } from "../src/comments/mentions.ts";
-import { createCommentsClient, fetchRequest } from "../src/comments/api.ts";
+import {
+  createCommentsClient,
+  createScopedCommentsClient,
+  fetchRequest,
+} from "../src/comments/api.ts";
 import { textLocatorCases } from "./fixtures/textLocatorCases.mjs";
 
 const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
@@ -200,4 +204,24 @@ test("PDF anchors without a rectangle refind their quote on the same page", () =
     height: 10,
   });
   assert.equal(findAnchor({ kind: "pdf", page: 2, rect: null, text: "" }, context), null);
+});
+
+test("project agent and Space comments share the agent endpoint family", async () => {
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push([path, init.method]);
+    return { thread: { thread_id: "comment" }, threads: [] };
+  };
+  for (const scope of [
+    { kind: "project", projectId: "project", threadId: "agent/a" },
+    { kind: "space", threadId: "agent/a" },
+  ]) {
+    const client = createScopedCommentsClient(scope, request);
+    await client.listChatReplies("agent/a");
+    await client.reply("comment", "Reply");
+    await client.resolve("comment");
+    await client.reopen("comment");
+  }
+  assert.deepEqual(calls.slice(0, 4), calls.slice(4));
+  assert.equal(calls[1][0], "/api/agent-threads/agent%2Fa/comment-threads/comment/posts");
 });

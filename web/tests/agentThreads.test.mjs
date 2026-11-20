@@ -299,7 +299,7 @@ test("the latest turn is the newest message that names an operation", () => {
   assert.equal(latestTurnId([]), null);
 });
 
-test("project threads use the chat routes and the Space thread uses its own", async () => {
+test("project and Space threads use the same agent route family", async () => {
   const calls = [];
   const request = async (path, init) => {
     calls.push({ path, method: init?.method ?? "GET", body: init?.body && JSON.parse(init.body) });
@@ -315,9 +315,9 @@ test("project threads use the chat routes and the Space thread uses its own", as
   assert.deepEqual(
     calls.map(({ method, path }) => `${method} ${path}`),
     [
-      "GET /api/projects/p%201/chats/chat%201",
+      "GET /api/agent-threads/chat%201/transcript",
       "GET /api/agent-threads/space/transcript",
-      "POST /api/projects/p%201/tasks/project_chat",
+      "POST /api/agent-threads/chat%201/turns",
       "POST /api/agent-threads/space/turns",
       "GET /api/projects/p%201/chats/chat%201/questions",
     ],
