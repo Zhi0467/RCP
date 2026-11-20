@@ -294,7 +294,7 @@ def test_only_a_paper_scope_names_the_paper_writable_and_carries_its_guidance(pa
 
 def test_the_auto_research_orchestrator_names_the_paper() -> None:
     from rcp.agents import auto_research_prompt as auto
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     arguments = dict(
         graph_path="/stage/graph.json",

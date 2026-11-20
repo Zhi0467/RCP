@@ -9,8 +9,9 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
+from rcp.agents.agent_profile import SINGLE_ENTRY, AgentProfile, AgentTurn, resolve_agent_profile
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
     AskCommandRequest,
@@ -154,11 +155,10 @@ class ThreadCommandHandler:
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         try:
-            verb = _THREAD_VERBS.get(request.verb)
-            if verb is None:
+            if request.verb not in self.allowed_verbs:
                 raise ValueError("This thread does not authorize that command")
             task, thread = self._owner(identity)
-            outcome = verb.handle(self, request, task, thread)
+            outcome = getattr(self, request.verb)(request, task, thread)
         except (ValueError, KeyError, OSError, UnicodeError) as exc:
             return CommandResponse(
                 request_id=request.request_id, status="invalid", message=str(exc)
@@ -168,8 +168,12 @@ class ThreadCommandHandler:
         return CommandResponse(request_id=request.request_id, status="ok", result=outcome)
 
     @property
+    def profile(self) -> AgentProfile:
+        return resolve_agent_profile(SINGLE_ENTRY, None, AgentTurn())
+
+    @property
     def allowed_verbs(self) -> frozenset[str]:
-        return frozenset(_THREAD_VERBS)
+        return self.profile.verbs
 
     def _owner(self, identity: CommandTurnIdentity) -> tuple[AgentTaskRecord, AgentThreadRecord]:
         task = self.store.agent_task(self.operation_id)
@@ -211,7 +215,7 @@ class ThreadCommandHandler:
             if action is not None and card_project_allowed(self.store, thread, action.project_id)
             else None
         )
-        return handle_space_ask(self.store, request, task, thread, service)
+        return handle_space_ask(self.store, request, task, self.profile, service)
 
     def handoff(self, request, task, thread) -> dict[str, object]:
         assert isinstance(request, HandoffCommandRequest)
@@ -263,82 +267,6 @@ class ThreadCommandHandler:
             model=arguments.model,
             reasoning=arguments.reasoning,
         )
-
-
-@dataclass(frozen=True)
-class _ThreadVerb:
-    handle: Callable[..., dict[str, object] | CommandResponse]
-    usages: Callable[[], tuple[str, ...]]
-    #: The member-facing line an empty thread's welcome shows for this verb.
-    capability: str
-
-
-def _handoff_usages() -> tuple[str, ...]:
-    from rcp.agents.staged_command_client import handoff_usage
-
-    return (
-        f"{handoff_usage()} (message file up to {AGENT_HANDOFF_MAX_CHARS} characters; "
-        "a pick becomes the project thread's agent; the request is delivered after this "
-        "turn succeeds; a later wake reports its status, failure kind and reason, and "
-        "answer, so a failed provider can be retried with another pick). A project "
-        "thread's agent can do this for its member: "
-        + "; ".join(thread_capabilities("project"))
-        + ".",
-    )
-
-
-def _projects_usages() -> tuple[str, ...]:
-    from rcp.agents.staged_command_client import projects_usages
-
-    return projects_usages()
-
-
-def _ask_usages() -> tuple[str, ...]:
-    from rcp.runs.approval_cards import space_card_usage
-
-    return (space_card_usage(),)
-
-
-def _schedule_usages() -> tuple[str, ...]:
-    from rcp.agents.staged_command_client import schedule_usages
-
-    return schedule_usages()
-
-
-#: One table grants each verb, routes it, and renders its usage and capability.
-_THREAD_VERBS: dict[str, _ThreadVerb] = {
-    "projects": _ThreadVerb(
-        ThreadCommandHandler.projects,
-        _projects_usages,
-        "Answers questions about any project's graph",
-    ),
-    "handoff": _ThreadVerb(
-        ThreadCommandHandler.handoff, _handoff_usages, "Hands work to a project's own agent"
-    ),
-    "schedule": _ThreadVerb(
-        ThreadCommandHandler.schedule, _schedule_usages, "Schedules reminders and weekly catch-ups"
-    ),
-    "ask": _ThreadVerb(
-        ThreadCommandHandler.ask,
-        _ask_usages,
-        "Brings any project's approvals and merges here for your tap",
-    ),
-}
-
-
-def thread_capabilities(kind: Literal["space", "project"]) -> list[str]:
-    """One line per capability of a thread kind's agent, from the verbs its turns are granted.
-
-    A Space turn's handler grants every verb of `_THREAD_VERBS`; a project thread's
-    Work turn may be granted each verb of `WORK_THREAD_VERB_CAPABILITIES`.
-    """
-    if kind == "space":
-        lines = [verb.capability for verb in _THREAD_VERBS.values()]
-    else:
-        from rcp.runs.questions import WORK_THREAD_VERB_CAPABILITIES
-
-        lines = [line for line in WORK_THREAD_VERB_CAPABILITIES.values() if line]
-    return list(dict.fromkeys(lines))
 
 
 def _thread_busy(store: AppStore, thread: AgentThreadRecord) -> bool:
@@ -804,17 +732,6 @@ def _turn_content(task: AgentTaskRecord) -> dict[str, object]:
         "turn_outcome": TurnOutcome.model_validate(outcome) if isinstance(outcome, dict) else None,
         "answer": str(last)[:AGENT_HANDOFF_MAX_CHARS] if last is not None else None,
     }
-
-
-def space_command_usages(allowed_verbs: frozenset[str]) -> tuple[str, ...]:
-    """Render the Space handler's resolved grants using the client's option records."""
-    return tuple(usage for verb in sorted(allowed_verbs) for usage in _THREAD_VERBS[verb].usages())
-
-
-def projects_command_usage(client: str) -> str:
-    from rcp.agents.staged_command_client import projects_usages
-
-    return "\n".join(f"- `{client} {usage}`" for usage in projects_usages())
 
 
 def unstarted_thread_turns(store: AppStore) -> list[AgentTaskRecord]:

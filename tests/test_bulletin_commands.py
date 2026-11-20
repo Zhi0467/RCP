@@ -99,7 +99,7 @@ async def test_child_work_link_follows_the_usage_it_renders(store, monkeypatch):
         validate=lambda _: pytest.fail("a link must not validate a patch"),
         stop=asyncio.Event(),
         budget=patch_validator.PatchValidationBudget(),
-        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        compute_commands=SimpleNamespace(launch_available=False),
         allowed_verbs=frozenset({"validate", "bulletin"}),
     )
     assert seen == [True]

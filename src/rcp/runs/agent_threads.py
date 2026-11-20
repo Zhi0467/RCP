@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, SINGLE_ENTRY, resolve_agent_profile
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import classify_terminal_error
-from rcp.runs.agent_thread_commands import thread_capabilities
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
@@ -178,8 +178,9 @@ def thread_projections(
                 "browser_requested": browser.get((scope, thread_id), False),
                 # The member's stored pick; null until one is made, when the default applies.
                 "agent": thread.agent,
-                # What this kind's agent can do, from its granted verbs; an empty thread shows it.
-                "capabilities": thread_capabilities(thread.kind),
+                "capabilities": resolve_agent_profile(
+                    SINGLE_ENTRY if thread.kind == "space" else PRIVATE_PROJECT, None, OFFER
+                ).welcome(),
                 "can_queue": thread.project_id is not None,
             }
         )

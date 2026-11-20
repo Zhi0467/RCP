@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, SINGLE_ENTRY, resolve_agent_profile
 from tests.helpers import create_named_app, signed_in_client
 
 
@@ -17,7 +18,10 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
         assert [row["agent_name"] for row in rows] == ["Pip", "Puck"]
         assert [row["latest_operation_id"] for row in rows] == [None, None]
         assert all(row["browser_requested"] for row in rows)
-        assert rows[0]["capabilities"] and rows[0]["capabilities"] != rows[1]["capabilities"]
+        assert [row["capabilities"] for row in rows] == [
+            resolve_agent_profile(placement, None, OFFER).welcome()
+            for placement in (SINGLE_ENTRY, PRIVATE_PROJECT)
+        ]
         assert [row["can_queue"] for row in rows] == [False, True]
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:

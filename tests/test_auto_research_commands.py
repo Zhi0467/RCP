@@ -2724,9 +2724,9 @@ def test_a_launch_bound_surface_is_the_one_enforced(tmp_path):
 
 
 def test_history_commands_bypass_effects_and_command_ledger(tmp_path, monkeypatch):
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
     from rcp.agents.command_protocol import GraphLogCommandRequest
     from rcp.agents.graph_read_scope import GraphReadScope
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     store, episode, root = _setup_auto_research(tmp_path)
     scope = GraphReadScope(project_id="project", target=episode.graph_target)

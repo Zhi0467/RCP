@@ -675,13 +675,14 @@ def test_schedule_controls_are_owner_only_and_reenable_disabled(schedule_store):
     assert client.delete(path + "/" + past.schedule_id).status_code == 204
     assert client.delete(path + "/" + schedule.schedule_id).status_code == 204
     assert client.get(path).json()["schedules"][0]["state"] == "cancelled"
+    from rcp.agents.agent_profile import PRIVATE_PROJECT, AgentProfile
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.runs.questions import WorkCommandHandler
 
     handler = WorkCommandHandler(
         execution=SimpleNamespace(store=schedule_store, operation_id="origin"),
         compute_commands=None,
-        allowed_verbs=frozenset({"schedule"}),
+        profile=AgentProfile(PRIVATE_PROJECT, None, frozenset({"schedule"})),
     )
     turn = CommandTurnIdentity(None, "origin", "test-turn", "broker")
     added = handler(

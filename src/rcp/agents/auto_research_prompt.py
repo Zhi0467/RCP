@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentProfile, UsageContext
 from rcp.agents.command_protocol import CommandVerb
-from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
-    AGENT_NAME_INSTRUCTION,
-    BULLETIN_RULES,
-    BULLETIN_SYNTAX,
     EPISODE_MAILBOX_RULES,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
@@ -27,15 +25,6 @@ from rcp.agents.prompts import (
     skill_prompt_values,
     write_scope_section,
 )
-from rcp.agents.staged_command_client import (
-    branch_usage,
-    bulletin_usages,
-    child_target_usage,
-    experiment_kickoff_usage,
-    merge_usage,
-    name_usage,
-    spawn_seat_usage,
-)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.project_types import ProjectType, project_type_of
@@ -48,7 +37,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v19"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v20"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -121,53 +110,17 @@ def _command_invocations(
     allowed_verbs: tuple[CommandVerb, ...],
     role: Literal["orchestrator", "worker"] = "orchestrator",
 ) -> str:
-    """Refresh the complete callable surface and its turn-bound command prefix."""
+    """Refresh the complete callable surface from the profile its dispatcher enforces."""
 
-    invocations: dict[CommandVerb, tuple[str, ...]] = {
-        "validate": ("validate patch.json",),
-        "apply": ("apply --key <key> patch.json",),
-        "status": ("status [--worker-id <worker-id> | --episode-id <episode-id>]",),
-        "spawn": (
-            f"spawn --key <key> {spawn_seat_usage()} --instruction-file <filename> "
-            f"{child_target_usage()} "
-            "[--provider <provider>] [--model <model>] [--effort <effort>]",
-        ),
-        "merge": (merge_usage(),),
-        "branch": (branch_usage(),),
-        "pause": ("pause --key <key> <worker-id>",),
-        "resume": ("resume --key <key> <worker-id>",),
-        "stop": ("stop --key <key> <worker-id>",),
-        "message": (
-            "message --key <key> --recipient <worker-id> <body>"
-            if role == "orchestrator"
-            else "message --key <reply-key> <body>",
-        ),
-        "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
-        "episode": (
-            "episode --key <key> "
-            + experiment_kickoff_usage(goal_required=False, child_targets=True),
-            "episode --key <key> --stop <episode-id>",
-            "episode --key <key> --resume <episode-id>",
-        ),
-        "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
-        "finish": ("finish --key <key>",),
-        "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
-        "bulletin": bulletin_usages(turn_artifacts=False),
-        "name": (name_usage(),),
-    }
-    commands = "\n".join(
-        f"  - `{invocation}`"
-        for verb in allowed_verbs
-        if verb not in GRAPH_HISTORY_VERBS
-        for invocation in invocations[verb]
+    profile = AgentProfile(
+        SHARED_PROJECT,
+        "orchestrator" if role == "orchestrator" else "auto_research_worker",
+        frozenset(allowed_verbs),
     )
-    if "name" in allowed_verbs:
-        commands += f"\n  {AGENT_NAME_INSTRUCTION}"
-    if "bulletin" in allowed_verbs:
-        commands += "".join(f"\n  {rule}" for rule in (*BULLETIN_RULES, *BULLETIN_SYNTAX))
+    commands = profile.instructions(UsageContext(client=command_client))
     return f"""Staged command client:
 - Command prefix: `{command_client}`
-- Exact invocations, all prefixed by that command:
+- Exact invocations:
 {commands}
   Each response is one JSON object. Treat its `status` and structured `result` as the authoritative
   disposition; `message` is the concise explanation. Use returned stable worker and episode ids in

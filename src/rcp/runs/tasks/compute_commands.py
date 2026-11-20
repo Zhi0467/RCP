@@ -51,7 +51,7 @@ class WorkComputeCommands:
         return self.execution.store.path.parent
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        if not isinstance(request, LaunchCommandRequest) or request.verb not in self.allowed_verbs:
+        if not isinstance(request, LaunchCommandRequest) or not self.launch_available:
             return self._refused(request, "This Work turn does not authorize that command.")
         if identity.authority != "broker" or identity.task_id != self.execution.operation_id:
             return self._refused(request, "Compute requires this Work turn's broker authority.")
@@ -154,8 +154,8 @@ class WorkComputeCommands:
         return backend
 
     @property
-    def allowed_verbs(self) -> frozenset[str]:
-        return frozenset({"launch"}) if self.helper_backend is not None else frozenset()
+    def launch_available(self) -> bool:
+        return self.helper_backend is not None
 
     def execution_instructions(self, launch_command: str) -> str:
         waiting = (
@@ -185,7 +185,7 @@ class WorkComputeCommands:
 
         availability = (
             f"Helper owner: {self.helper_backend.id}."
-            if "launch" in self.allowed_verbs
+            if self.launch_available
             else "No helper owner resolves on this machine; launch is unavailable."
         )
         return waiting + helper + "\n\n" + availability

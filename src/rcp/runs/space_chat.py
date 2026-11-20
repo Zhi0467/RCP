@@ -45,6 +45,7 @@ from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
+    from rcp.agents.agent_profile import AgentProfile
     from rcp.agents.write_scope import CompositeWriteScope, RegisteredRepositoryRoot
     from rcp.runs.space_projects import SpaceProjects
 
@@ -343,7 +344,7 @@ async def stream_space_chat_run(
         gate, handler = _start_space_mailboxes(turn, lifecycles)
         async with _space_browser(turn) as browser:
             prompt = render_space_prompt(
-                turn, handler.allowed_verbs, seed, _previous_space_results(owner.store, prior)
+                turn, handler.profile, seed, _previous_space_results(owner.store, prior)
             )
             _record_space_launch(turn, prompt)
             async with aclosing(
@@ -717,7 +718,7 @@ def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):
                 budget=PatchValidationBudget() if writer else None,
                 validate=writer.validate if writer else None,
                 command_handler=client.command,
-                allowed_verbs=client.verbs,
+                profile=client.profile,
             )
         )
         _write_space_client(directory, staged.client_command())
@@ -734,7 +735,7 @@ def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):
             budget=None,
             validate=None,
             command_handler=handler,
-            allowed_verbs=handler.allowed_verbs,
+            profile=handler.profile,
         )
     )
     _write_space_client(turn.stage, top.client_command())
@@ -762,7 +763,7 @@ SPACE_MASTER_POLICY = "space-master-v6"
 
 def render_space_prompt(
     turn: _SpaceTurn,
-    allowed_verbs: frozenset[str],
+    profile: AgentProfile,
     seed: str,
     last_results: dict[str, object] | None,
 ) -> str:
@@ -776,7 +777,7 @@ def render_space_prompt(
     from rcp.runs.session_master import continuation_session_master, start_session_master
 
     skill_pointers = _space_skill_pointers(turn)
-    fixed = render_space_master(turn, allowed_verbs)
+    fixed = render_space_master(turn, profile)
     values = space_master_values(turn.found, turn.request, skill_pointers=skill_pointers)
     content = _with_master_values(fixed, values)
     key = f"{SPACE_MASTER_POLICY}-{hashlib.sha256(fixed.encode()).hexdigest()[:16]}"
@@ -810,15 +811,15 @@ def _with_master_values(fixed: str, values: dict[str, object]) -> str:
     )
 
 
-def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
+def render_space_master(turn: _SpaceTurn, profile: AgentProfile) -> str:
     """The Space contract that holds for a whole native session, without its values."""
+    from rcp.agents.agent_profile import UsageContext
     from rcp.agents.artifact_contract import artifact_contract
     from rcp.agents.prompts import APP_PLACES, STAGED_SKILL_RULE, write_scope_section
-    from rcp.runs.agent_thread_commands import space_command_usages
     from rcp.turn_outcomes import work_turn_outcome_contract
 
     stage = turn.stage
-    usages = "\n".join(f"- `{usage}`" for usage in space_command_usages(allowed_verbs))
+    usages = profile.instructions(UsageContext(client=str(stage / "rcp")))
     sections = [
         "You are the member's Space agent. Each turn is a captured Work turn. Read across "
         "their projects; make direct file and graph changes only inside the writable "
@@ -826,7 +827,7 @@ def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
         "Patch belongs only in its own projects/<id>/patch.json.",
         render_agent_graph_authority_contract(),
         f"Top-level command client: `{stage / 'rcp'}`. Available commands:\n{usages}",
-        space_limits_section(allowed_verbs, turn.scope, turn.found),
+        space_limits_section(profile.verbs, turn.scope, turn.found),
         write_scope_section(turn.scope),
         space_clients_section(turn.found, stage),
         APP_PLACES,

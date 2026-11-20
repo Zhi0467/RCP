@@ -394,9 +394,9 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
     if not requests:
         return
     from rcp.runs.agent_threads import task_owner
-    from rcp.runs.questions import question_origin
+    from rcp.runs.questions import question_origin, work_command_handler
 
-    origin = question_origin(execution)
+    origin = question_origin(work_command_handler(execution, None).profile, task)
     service = task_owner(store, task, catalog=catalog)
     assert isinstance(service, ProjectService) and task.authorized_by is not None
     state = service.history.state()

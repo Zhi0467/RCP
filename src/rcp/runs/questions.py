@@ -7,6 +7,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from rcp.agents.agent_profile import (
+    PRIVATE_PROJECT,
+    SHARED_PROJECT,
+    AgentProfile,
+    AgentTurn,
+    Placement,
+    resolve_agent_profile,
+)
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
     ApplyCommandRequest,
@@ -15,12 +23,12 @@ from rcp.agents.command_protocol import (
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
-    CommandVerb,
     EpisodeCommandRequest,
     FlagCommandRequest,
     GraphDiffCommandRequest,
     GraphLogCommandRequest,
     NameCommandRequest,
+    ProjectsCommandRequest,
     ScheduleCommandRequest,
     WatcherCommandRequest,
 )
@@ -36,7 +44,7 @@ from rcp.runs.work_experiment_commands import (
 )
 from rcp.runs.work_watcher_commands import handle_work_watcher_command
 from rcp.storage import AgentTaskRecord, AppStore
-from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
+from rcp.storage.agent_threads import bound_thread
 from rcp.storage.question_models import (
     SPACE_QUESTION_CAPABILITY,
     QuestionArgumentConflict,
@@ -215,52 +223,71 @@ def discuss_command_handler(
     *,
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
+    ask_allowed: bool = True,
 ) -> WorkCommandHandler:
     """Discuss resolves questions and explicitly granted history reads."""
-    verbs = {"ask"} if discuss_ask_authorized(execution) else set()
     from rcp.runs.agent_names import resolve_agent_name_state
 
-    if resolve_agent_name_state(execution).get("can_self_name"):
-        verbs.add("name")
-    if graph_read_scope is not None:
-        verbs.update(graph_read_scope.verbs)
+    turn = AgentTurn(
+        read_verbs=graph_read_scope.verbs if graph_read_scope is not None else frozenset(),
+        can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
+        ask=ask_allowed and discuss_ask_authorized(execution),
+    )
     return WorkCommandHandler(
         execution,
         None,
-        frozenset(verbs),
+        resolve_agent_profile(_placement(execution), "discuss", turn),
         service=service,
         graph_read_scope=graph_read_scope,
     )
 
 
-def question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
-    """Resolve after the provider session checkpoint, never from command arguments."""
-    if not (work_ask_authorized(execution) or discuss_ask_authorized(execution)):
-        raise ValueError("This turn does not authorize human questions.")
+def _placement(execution: AgentTaskExecution | None) -> Placement:
+    if execution is None:
+        return SHARED_PROJECT
     task = execution.store.agent_task(execution.operation_id)
-    assert task is not None and task.dispatch_authority is not None
+    if task is not None and bound_thread(execution.store, task) is not None:
+        return PRIVATE_PROJECT
+    return SHARED_PROJECT
+
+
+def question_origin(profile: AgentProfile, task: AgentTaskRecord) -> QuestionOrigin:
+    """Resolve after the provider session checkpoint, never from command arguments.
+
+    An unbound origin (a single-entry agent's approval card) resumes no session, so it
+    binds no write scope.
+    """
     authority = task.dispatch_authority
-    episode_id = task.episode_id if authority.scope.patch_kind == "experiment_loop" else None
+    if "ask" not in profile.verbs or (profile.binds_questions and authority is None):
+        raise ValueError("This turn does not authorize human questions.")
+    if authority is not None and profile.binds_questions:
+        capability, chat_id = authority.task_contract, authority.scope.chat_id
+    else:
+        capability, chat_id = SPACE_QUESTION_CAPABILITY, task.request["chat_id"]
+    unbound = capability in {"discuss", SPACE_QUESTION_CAPABILITY}
     if (
         not task.native_session_id
         or not task.stage_root
-        or (authority.task_contract != "discuss" and not task.write_scope_fingerprint)
+        or (not unbound and not task.write_scope_fingerprint)
     ):
         raise ValueError(
             "The asking turn has no complete native session and authority binding yet."
         )
-    return QuestionOrigin(
-        owner_kind="episode" if episode_id else "chat",
-        project_id=task.project_id,
-        owner_id=episode_id or authority.scope.chat_id,
-        operation_id=task.operation_id,
-        provider=task.request["provider"],
-        native_session_id=task.native_session_id,
-        stage_root=task.stage_root,
-        stage_machine_id=task.stage_machine_id,
-        capability=authority.task_contract,
-        write_scope_fingerprint=task.write_scope_fingerprint,
-        graph_target=task.graph_target,
+    episode_id = task.episode_id if profile.episode_role == "experiment" else None
+    return QuestionOrigin.model_validate(
+        {
+            "owner_kind": "episode" if episode_id else "chat",
+            "project_id": task.project_id,
+            "owner_id": episode_id or chat_id,
+            "operation_id": task.operation_id,
+            "provider": task.request.get("provider"),
+            "native_session_id": task.native_session_id,
+            "stage_root": task.stage_root,
+            "stage_machine_id": task.stage_machine_id,
+            "capability": capability,
+            "write_scope_fingerprint": task.write_scope_fingerprint,
+            "graph_target": task.graph_target,
+        }
     )
 
 
@@ -268,39 +295,21 @@ def handle_space_ask(
     store: AppStore,
     request: AskCommandRequest,
     task: AgentTaskRecord,
-    thread: AgentThreadRecord,
+    profile: AgentProfile,
     service: ProjectService | None,
 ) -> CommandResponse:
-    """A Space turn asks only approval cards, owned by its thread under the Space scope.
+    """A single-entry turn asks only approval cards, owned by its agent under the Space scope.
 
-    The origin is resolved from the turn's own record. No answer resumes a Space session,
-    so the origin binds no write scope; the same key in a later turn reads the outcome.
+    The same key in a later turn reads the outcome.
     """
     from rcp.runs.approval_cards import approval_card_member
 
     if request.arguments.action is None:
         return _refuse(request, "A Space ask raises an approval card; add --action.")
-    if not task.native_session_id or not task.stage_root:
-        return _refuse(
-            request, "The asking turn has no complete native session and authority binding yet."
-        )
     try:
-        origin = QuestionOrigin.model_validate(
-            {
-                "owner_kind": "chat",
-                "project_id": store.space_id,
-                "owner_id": thread.thread_id,
-                "operation_id": task.operation_id,
-                "provider": task.request.get("provider"),
-                "native_session_id": task.native_session_id,
-                "stage_root": task.stage_root,
-                "stage_machine_id": task.stage_machine_id,
-                "capability": SPACE_QUESTION_CAPABILITY,
-                "write_scope_fingerprint": task.write_scope_fingerprint,
-                "graph_target": task.graph_target,
-            }
+        origin = _reused_origin(
+            store, question_origin(profile, task), request, bound=profile.binds_questions
         )
-        origin = _reused_origin(store, origin, request, bound=False)
     except ValueError as exc:
         return _refuse(request, str(exc))
     return handle_ask(
@@ -390,25 +399,6 @@ def reconcile_question_receipt(store: AppStore, question_id: str) -> None:
         record_settled_question_receipts(store, operation_id)
 
 
-_JOBS_CAPABILITY = "Runs and stops jobs on the project's machines and pings you when they end"
-
-#: The welcome line for each verb `work_command_handler` may grant a member's
-#: project thread turn; None marks a verb with no member-facing capability.
-#: Its keys are exactly that grant with every gate open, which a test enforces.
-WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
-    "graph_diff": "Answers questions about the graph and records results in it",
-    "graph_log": "Answers questions about the graph and records results in it",
-    "validate": "Answers questions about the graph and records results in it",
-    "projects": "Reads your other projects when you ask",
-    "launch": _JOBS_CAPABILITY,
-    "watcher": _JOBS_CAPABILITY,
-    "episode": "Starts, pauses, steers, extends and stops experiments and Auto-research you ask for",
-    "ask": "Asks your approval to merge a branch",
-    "schedule": "Schedules reminders and weekly catch-ups",
-    "bulletin": "Talks with other agents on the project Bulletin",
-    "name": None,
-}
-
 # Every Work launch, an Auto-research child's included, stages and publishes a turn
 # artifact directory, so its Bulletin --link can name a file written there.
 WORK_TURN_ARTIFACTS = True
@@ -420,7 +410,7 @@ class WorkCommandHandler:
 
     execution: AgentTaskExecution | None
     compute_commands: WorkComputeCommands | None
-    allowed_verbs: frozenset[str]
+    profile: AgentProfile
     consolidation_apply: (
         Callable[[ApplyCommandRequest, CommandTurnIdentity], CommandResponse] | None
     ) = None
@@ -428,10 +418,15 @@ class WorkCommandHandler:
     service: ProjectService | None = None
     graph_read_scope: GraphReadScope | None = None
     mailbox: RunStageMailbox | None = None
+    open_service: Callable[[], ProjectService] | None = None
     #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
     #: The member an `ask` may present an approval card to; the usage renders it.
     approval_card_member: AuthorizedHuman | None = None
+
+    @property
+    def allowed_verbs(self) -> frozenset[str]:
+        return self.profile.verbs
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         graph_history = isinstance(request, (GraphDiffCommandRequest, GraphLogCommandRequest))
@@ -476,16 +471,32 @@ class WorkCommandHandler:
         return execution
 
     def _projects(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        from rcp.runs.agent_thread_commands import ThreadCommandHandler
+        """A shared agent reads the projects of the member who authorized its turn."""
+        from rcp.runs.agent_thread_commands import project_details, projects_projection
 
-        if self.execution is None or self.service is None or self.service.project_catalog is None:
+        assert isinstance(request, ProjectsCommandRequest)
+        execution = self._broker_execution(identity)
+        member_id = _turn_member(execution) if execution is not None else None
+        service = self.service or (self.open_service() if self.open_service else None)
+        if (
+            execution is None
+            or member_id is None
+            or service is None
+            or service.project_catalog is None
+        ):
             return _refuse(request, "Project listing is unavailable for this turn.")
-        return ThreadCommandHandler(
-            self.execution.store,
-            self.service.project_catalog,
-            self.execution.operation_id,
-            self.mailbox.workspace if self.mailbox is not None else None,
-        )(request, identity)
+        store, catalog = execution.store, service.project_catalog
+        result: dict[str, object]
+        try:
+            if request.arguments.action == "list":
+                result = {"projects": projects_projection(store, catalog, member_id)}
+            else:
+                result = project_details(
+                    store, catalog, member_id, request.arguments.project_id or ""
+                )
+        except (ValueError, KeyError, OSError) as exc:
+            return _refuse(request, str(exc))
+        return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     def _graph_history(
         self,
@@ -549,8 +560,13 @@ class WorkCommandHandler:
         return handle_work_watcher_command(execution, request)
 
     def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
+        task = execution.store.agent_task(execution.operation_id)
         try:
-            current = question_origin(execution)
+            if task is None or not (
+                work_ask_authorized(execution) or discuss_ask_authorized(execution)
+            ):
+                raise ValueError("This turn does not authorize human questions.")
+            current = question_origin(self.profile, task)
             origin = _reused_origin(execution.store, current, request)
         except ValueError as exc:
             return _refuse(request, str(exc))
@@ -758,6 +774,17 @@ def _acknowledge(execution: AgentTaskExecution, token: str, offered: dict) -> No
         )
 
 
+def _turn_member(execution: AgentTaskExecution) -> str | None:
+    """The member a turn acts for: its private agent's owner, else its authorizer."""
+    store = execution.store
+    task = store.agent_task(execution.operation_id)
+    thread = bound_thread(store, task) if task is not None else None
+    if thread is not None:
+        return None if thread.closed_at else thread.user_id
+    authorizer = store.agent_task_authorizer(execution.operation_id)
+    return authorizer.user_id if authorizer is not None else None
+
+
 def work_command_handler(
     execution: AgentTaskExecution | None,
     compute_commands: WorkComputeCommands | None,
@@ -767,65 +794,68 @@ def work_command_handler(
     service: ProjectService | None = None,
     graph_read_scope: GraphReadScope | None = None,
     mailbox: RunStageMailbox | None = None,
+    ask_allowed: bool = True,
+    open_service: Callable[[], ProjectService] | None = None,
 ) -> WorkCommandHandler:
+    """Resolve one Work turn's handler; a resumed turn opens its service only on use."""
+    from rcp.runs.agent_names import resolve_agent_name_state
+    from rcp.runs.agent_schedules import schedule_thread
     from rcp.runs.consolidation import is_consolidation
 
+    read_verbs = graph_read_scope.verbs if graph_read_scope is not None else frozenset()
+    placement = _placement(execution)
     if is_consolidation(execution):
         return WorkCommandHandler(
             execution,
             None,
-            frozenset({"validate", "apply", "flag", "bulletin"})
-            | (graph_read_scope.verbs if graph_read_scope else frozenset()),
+            resolve_agent_profile(placement, "consolidation", AgentTurn(read_verbs=read_verbs)),
             consolidation_apply,
             service,
             graph_read_scope,
             mailbox,
         )
-    from rcp.runs.agent_names import resolve_agent_name_state
-
-    verbs = {"validate"}
-    if resolve_agent_name_state(execution).get("can_self_name"):
-        verbs.add("name")
-    if graph_read_scope is not None:
-        verbs.update(graph_read_scope.verbs)
-    if compute_commands is not None:
-        verbs.update(compute_commands.allowed_verbs)
-    if execution is not None:
-        task = execution.store.agent_task(execution.operation_id)
-        if (
-            task is not None
-            and task.dispatch_authority is not None
-            and task.dispatch_authority.task_contract == "work_auto"
-            and execution.store.bulletin_enabled_for_task(execution.operation_id)
-        ):
-            verbs.add("bulletin")
-    if execution is not None and service is not None and service.project_catalog is not None:
-        task = execution.store.agent_task(execution.operation_id)
-        if task is not None and bound_thread(execution.store, task) is not None:
-            verbs.add("projects")
-    if execution is not None:
-        from rcp.runs.agent_schedules import schedule_thread
-
-        if schedule_thread(execution.store, execution.operation_id) is not None:
-            verbs.add("schedule")
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    asks = work_ask_authorized(execution)
+    turn = AgentTurn(
+        read_verbs=read_verbs,
+        launch=compute_commands is not None and compute_commands.launch_available,
+        can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
+        bulletin=execution is not None
+        and task is not None
+        and task.dispatch_authority is not None
+        and task.dispatch_authority.task_contract == "work_auto"
+        and execution.store.bulletin_enabled_for_task(execution.operation_id),
+        ask=ask_allowed and asks,
+        member_turn=member_work_chat_turn(execution),
+        episode_start=work_experiment_allowed(execution),
+        projects=execution is not None
+        and (
+            (service is not None and service.project_catalog is not None)
+            or open_service is not None
+        )
+        and _turn_member(execution) is not None,
+        schedule=execution is not None
+        and schedule_thread(execution.store, execution.operation_id) is not None,
+    )
+    experiment = (
+        task is not None
+        and task.episode_id is not None
+        and task.dispatch_authority is not None
+        and task.dispatch_authority.scope.patch_kind == "experiment_loop"
+    )
     card_member = None
-    if work_ask_authorized(execution):
+    if asks and task is not None:
         from rcp.runs.approval_cards import approval_card_member
 
         assert execution is not None
-        verbs.add("ask")
-        task = execution.store.agent_task(execution.operation_id)
-        card_member = approval_card_member(execution.store, task) if task else None
-    if work_experiment_allowed(execution):
-        verbs.add("episode")
-    if member_work_chat_turn(execution):
-        verbs.add("watcher")
+        card_member = approval_card_member(execution.store, task)
     return WorkCommandHandler(
         execution,
         compute_commands,
-        frozenset(verbs),
+        resolve_agent_profile(placement, "experiment" if experiment else None, turn),
         service=service,
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,
         approval_card_member=card_member,
+        open_service=open_service,
     )

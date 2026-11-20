@@ -178,8 +178,8 @@ def test_orchestrator_launch_stages_fresh_store_snapshot_and_retains_dismissals(
     from pathlib import Path
     from types import SimpleNamespace
 
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
     from rcp.runs.tasks.auto_research_stream import _orchestrator_prompt
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     from .test_auto_research_stream import _execution
     from .test_prompts import _work_write_scope

@@ -83,11 +83,14 @@ def test_the_child_rule_names_ask_only_for_a_chat_started_episode_that_may_ask()
 def test_an_ungranted_verb_refusal_names_the_verbs_this_turn_has():
     import uuid
 
+    from rcp.agents.agent_profile import SHARED_PROJECT, AgentProfile
     from rcp.agents.command_mailbox import CommandTurnIdentity
     from rcp.agents.command_protocol import EpisodeCommandRequest
     from rcp.runs.questions import WorkCommandHandler
 
-    handler = WorkCommandHandler(None, None, frozenset({"ask", "bulletin"}))
+    handler = WorkCommandHandler(
+        None, None, AgentProfile(SHARED_PROJECT, None, frozenset({"ask", "bulletin"}))
+    )
     refused = handler(
         EpisodeCommandRequest.model_validate(
             {
