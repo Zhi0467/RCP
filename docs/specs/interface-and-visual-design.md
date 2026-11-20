@@ -303,7 +303,7 @@ The agent header's ⋯ menu holds the Browser use switch. The composer's + menu
 holds Work in a worktree below its file items, and + shows a count of enabled
 options. On phones, the + menu spans the screen-height composer. An outside
 click, Escape, or a chat change closes either menu.
-Browser use starts off in new chats. A failed save returns to the server value,
+Browser use starts on in new chats. A failed save returns to the server value,
 outlines the control in red, and offers one icon-only retry with the error on
 hover. The Coach's Browser use sits at the bottom of its agent picker, starts on,
 and is remembered per paper in this browser, since checking its own figures is

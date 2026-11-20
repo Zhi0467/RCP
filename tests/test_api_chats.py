@@ -428,20 +428,20 @@ def test_browser_preference_is_local_and_snapshotted_at_admission(manifest, tmp_
     chat_id = str(uuid.uuid4())
     url = f"/api/projects/{project_id}/chats/{chat_id}/browser"
     request = RunRequest(
-        chat_id=chat_id, chat_scope="project", message="hello", browser_requested=True
+        chat_id=chat_id, chat_scope="project", message="hello", browser_requested=False
     )
     _append_chat_exchange(app.state.service, request, "answer", None, None)
     before = app.state.service.chat_transcript(chat_id)
-    assert client.get(url).json() == {"browser_requested": False}
+    assert client.get(url).json() == {"browser_requested": True}
+    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
+        assert admitted.browser_requested
+    assert client.put(url, json={"browser_requested": False}).status_code == 200
     with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
         assert not admitted.browser_requested
-    assert client.put(url, json={"browser_requested": True}).status_code == 200
-    with admit_fresh_chat_turn(app.state.service, store, project_id, request) as admitted:
-        assert admitted.browser_requested
-        assert client.put(url, json={"browser_requested": False}).status_code == 200
-        assert admitted.browser_requested
+        assert client.put(url, json={"browser_requested": True}).status_code == 200
+        assert not admitted.browser_requested
     assert app.state.service.chat_transcript(chat_id) == before
-    assert client.get(url).json() == {"browser_requested": False}
+    assert client.get(url).json() == {"browser_requested": True}
     assert client.put(url, json={"browser_requested": True, "env": {}}).status_code == 422
 
 
