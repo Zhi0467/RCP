@@ -328,13 +328,17 @@ def main(argv=None):
     except OSError:
         os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
     status_read, status_write = os.pipe()
-    process = subprocess.Popen(
-        [argv[0], "--json-status-fd", str(status_write), *argv[1:]],
-        env=env,
-        pass_fds=(status_write,),
-    )
-    os.close(status_write)
     with os.fdopen(status_read, encoding="utf-8") as status:
+        try:
+            process = subprocess.Popen(
+                [argv[0], "--json-status-fd", str(status_write), *argv[1:]],
+                env=env,
+                pass_fds=(status_write,),
+            )
+        except OSError:
+            os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
+        finally:
+            os.close(status_write)
         started = "child-pid" in status.read()
     code = process.wait()
     if not started:

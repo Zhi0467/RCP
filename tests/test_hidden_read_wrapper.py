@@ -152,8 +152,11 @@ def test_probe_reports_tool_and_namespace_readiness(monkeypatch, available, retu
     assert result["reason"] == reason
 
 
+@pytest.mark.parametrize("probe_ready", [False, True])
 @pytest.mark.parametrize("status", ["unhidden", "enforced"])
-def test_unavailable_wrapper_runs_the_command_unwrapped(tmp_path, monkeypatch, capsys, status):
+def test_unavailable_wrapper_runs_the_command_unwrapped(
+    tmp_path, monkeypatch, capsys, status, probe_ready
+):
     from rcp.agents import staged_hidden_read
 
     policy = tmp_path / "policy.json"
@@ -169,8 +172,10 @@ def test_unavailable_wrapper_runs_the_command_unwrapped(tmp_path, monkeypatch, c
     monkeypatch.setattr(
         staged_hidden_read,
         "probe_hidden_read_wrapper",
-        lambda: {"ready": False, "reason": "userns_blocked"},
+        lambda: {"ready": probe_ready},
     )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shutil, "which", lambda _: str(tmp_path / "missing-bwrap"))
     calls = []
 
     class Executed(Exception):
