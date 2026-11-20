@@ -642,3 +642,19 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
         assert PROPOSAL_CARD_SHOWN in rendered
     finally:
         staged.cleanup()
+
+
+def test_a_resumed_shared_turn_without_a_graph_scope_keeps_projects(tmp_path):
+    from rcp.runs.tasks import work
+
+    execution, _ = work_execution(tmp_path)
+    execution.stage_root = str(tmp_path)
+    service = cast(ProjectService, SimpleNamespace(project_catalog=object()))
+    handler = work._resume_work_command_handler(
+        execution,
+        work._WorkMailboxContext(run_truth_scope=[], graph_read_scope=None),
+        lambda: service,
+    )
+    assert handler is not None and "projects" in handler.allowed_verbs
+    assert handler.service is None and handler.open_service is not None
+    assert handler.open_service() is service

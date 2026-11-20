@@ -3307,6 +3307,7 @@ def _resume_work_command_handler(
             graph_read_scope=context.graph_read_scope,
             mailbox=mailbox,
             ask_allowed=context.ask_allowed,
+            open_service=service,
         )
     return handler if len(handler.allowed_verbs) > 1 else None
 

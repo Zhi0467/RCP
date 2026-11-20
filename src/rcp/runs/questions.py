@@ -418,6 +418,7 @@ class WorkCommandHandler:
     service: ProjectService | None = None
     graph_read_scope: GraphReadScope | None = None
     mailbox: RunStageMailbox | None = None
+    open_service: Callable[[], ProjectService] | None = None
     #: Whether Bulletin --link may name this turn's artifact files; the usage renders it.
     turn_artifacts: bool = WORK_TURN_ARTIFACTS
     #: The member an `ask` may present an approval card to; the usage renders it.
@@ -476,14 +477,15 @@ class WorkCommandHandler:
         assert isinstance(request, ProjectsCommandRequest)
         execution = self._broker_execution(identity)
         member_id = _turn_member(execution) if execution is not None else None
+        service = self.service or (self.open_service() if self.open_service else None)
         if (
             execution is None
             or member_id is None
-            or self.service is None
-            or self.service.project_catalog is None
+            or service is None
+            or service.project_catalog is None
         ):
             return _refuse(request, "Project listing is unavailable for this turn.")
-        store, catalog = execution.store, self.service.project_catalog
+        store, catalog = execution.store, service.project_catalog
         result: dict[str, object]
         try:
             if request.arguments.action == "list":
@@ -793,7 +795,9 @@ def work_command_handler(
     graph_read_scope: GraphReadScope | None = None,
     mailbox: RunStageMailbox | None = None,
     ask_allowed: bool = True,
+    open_service: Callable[[], ProjectService] | None = None,
 ) -> WorkCommandHandler:
+    """Resolve one Work turn's handler; a resumed turn opens its service only on use."""
     from rcp.runs.agent_names import resolve_agent_name_state
     from rcp.runs.agent_schedules import schedule_thread
     from rcp.runs.consolidation import is_consolidation
@@ -825,8 +829,10 @@ def work_command_handler(
         member_turn=member_work_chat_turn(execution),
         episode_start=work_experiment_allowed(execution),
         projects=execution is not None
-        and service is not None
-        and service.project_catalog is not None
+        and (
+            (service is not None and service.project_catalog is not None)
+            or open_service is not None
+        )
         and _turn_member(execution) is not None,
         schedule=execution is not None
         and schedule_thread(execution.store, execution.operation_id) is not None,
@@ -851,4 +857,5 @@ def work_command_handler(
         graph_read_scope=graph_read_scope,
         mailbox=mailbox,
         approval_card_member=card_member,
+        open_service=open_service,
     )
