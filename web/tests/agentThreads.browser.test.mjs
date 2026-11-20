@@ -1885,7 +1885,10 @@ test("Wakes shows each schedule's zone, next run and waiting state, with Cancel 
       }));
       assert.ok(box.scroll, "a long list scrolls inside the popover");
       assert.ok(box.right <= width);
-      assert.ok(box.bottom <= box.frame, "the popover ends inside the thread's frame");
+      assert.ok(
+        box.bottom <= box.frame,
+        `the popover ends inside the thread's frame at ${width}px: ${JSON.stringify(box)}`,
+      );
       await page.waitForTimeout(200);
       if (shots) await page.screenshot({ path: `${shots}/upcoming-${width}.png` });
       // An Enable the backend refuses says why.
