@@ -32,12 +32,10 @@ def test_a_read_only_repository_reaches_every_launch_but_is_never_a_write_root(
     state = GraphState(project_truth_scope=["repo-a"])
     backend = AppStore(tmp_path / "app.sqlite3").backend_space_machine()
     assembler = ContextAssembler(manifest, cards={BACKEND_MACHINE_ID: backend})
-    run = assembler.assemble(state)
     chat = assembler.chat_context(state, graph_target=GraphTargetRef())
 
-    for context in (run, chat):
-        assert [pointer.alias for pointer in context.repositories] == ["repo-a", "repo-b"]
-    assert run.run_truth_scope == chat.run_truth_scope == ["repo-a"]
+    assert [pointer.alias for pointer in chat.repositories] == ["repo-a", "repo-b"]
+    assert chat.run_truth_scope == ["repo-a"]
     with pytest.raises(ValueError):
         assembler.chat_context(state, graph_target=GraphTargetRef(), writable=["repo-b"])
     assert admitted_write_repositories(state, ["repo-b"], worktree=False) == ["repo-a"]
@@ -127,13 +125,8 @@ def test_a_resumed_task_keeps_its_recorded_write_set(manifest, tmp_path) -> None
     stored = RunRequest(run_truth_scope=["repo-a"], chat_scope="project")
 
     chat = service.assemble_chat(stored)
-    run = ContextAssembler(
-        manifest, cards={BACKEND_MACHINE_ID: store.backend_space_machine()}
-    ).assemble(history.state(), writable=stored.run_truth_scope)
-
-    for context in (chat, run):
-        assert context.run_truth_scope == ["repo-a"]
-        assert [pointer.alias for pointer in context.repositories] == ["repo-a", "repo-b"]
+    assert chat.run_truth_scope == ["repo-a"]
+    assert [pointer.alias for pointer in chat.repositories] == ["repo-a", "repo-b"]
 
 
 def test_personal_folder_add_and_writable_toggle_are_human_approvals(manifest, tmp_path) -> None:

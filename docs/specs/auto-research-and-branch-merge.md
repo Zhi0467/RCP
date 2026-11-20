@@ -238,7 +238,7 @@ This neither cancels jobs nor widens human retire controls.
 ## Staged command client
 
 The RCP-authored prefix exposes the resolved closed vocabulary from
-[Auto-research commands](../../src/rcp/agents/auto_research_commands.py). It includes validation,
+[the agent profile](../../src/rcp/agents/agent_profile.py). It includes validation,
 keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
 merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
 guarded finish, a one-time self-name, and the graph history reads. Workers get

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from rcp.agents.context import ContextAssembler
 from rcp.agents.write_scope import registered_repository_roots, resolve_project_write_scope
 from rcp.core.models import EpisodeWorktreeBinding
 from rcp.machine_cards import BACKEND_MACHINE_ID
@@ -27,21 +26,13 @@ from .test_branch_context import branch_services as branch_services
 
 @pytest.mark.parametrize("target", ["main", "branch"])
 @pytest.mark.parametrize("remote", [False, True])
-@pytest.mark.parametrize("kind", ["chat", "run"])
 def test_parent_graph_is_an_immutable_execution_host_input(
-    branch_services, tmp_path, monkeypatch, target, remote, kind
+    branch_services, tmp_path, monkeypatch, target, remote
 ):
     main, branch = branch_services
     service = main if target == "main" else branch
     request = RunRequest(chat_scope="project", run_truth_scope=["repo-a"])
-    context = (
-        service.assemble_chat(request)
-        if kind == "chat"
-        else ContextAssembler(
-            service.manifest,
-            cards={BACKEND_MACHINE_ID: service.paper.store.backend_space_machine()},
-        ).assemble(service.history.state())
-    )
+    context = service.assemble_chat(request)
     stage = tmp_path / "stage"
     stage.mkdir()
     remote_stage = None

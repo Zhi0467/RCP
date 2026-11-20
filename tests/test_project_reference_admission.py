@@ -11,7 +11,6 @@ from .helpers import create_named_app as create_app
 @pytest.mark.parametrize(
     "route,body",
     [
-        ("tasks/seed", {}),
         ("tasks/branch_merge", {}),
         ("experiments/missing/run", {}),
         ("episodes", {"mode": "auto_research", "invocation_ceiling": 1}),

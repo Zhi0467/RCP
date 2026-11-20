@@ -28,7 +28,7 @@ from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.transition_models import GraphTargetRef
 
 _SOURCE = Path(__file__).resolve().parent.parent / "src" / "rcp"
-_ROLES = (None, "experiment", "orchestrator", "auto_research_worker", "child", "consolidation")
+_ROLES = (None, "experiment_loop", "orchestrator", "auto_research_worker", "child", "consolidation")
 _PROFILES = [
     (placement, role)
     for placement in PLACEMENTS
@@ -176,7 +176,7 @@ def test_episode_roles_keep_their_grants() -> None:
     }
     worker = resolve_agent_profile(SHARED_PROJECT, "auto_research_worker", OFFER)
     assert worker.verbs == {"validate", "status", "message", "bulletin", "graph_diff", "graph_log"}
-    experiment = resolve_agent_profile(SHARED_PROJECT, "experiment", OFFER)
+    experiment = resolve_agent_profile(SHARED_PROJECT, "experiment_loop", OFFER)
     plain = resolve_agent_profile(SHARED_PROJECT, None, OFFER)
     assert experiment.verbs == plain.verbs - {"episode"}
 

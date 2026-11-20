@@ -17,7 +17,7 @@ def _store(tmp_path) -> AppStore:
             AgentTaskRecord(
                 operation_id=operation_id,
                 project_id=operation_id,
-                kind="seed",
+                kind="project_chat",
                 status="queued",
                 request={},
                 created_at=store.now(),

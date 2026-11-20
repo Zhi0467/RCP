@@ -149,14 +149,7 @@ def verify(base_url: str, root: Path) -> None:
             "execution": {"location": "ssh", "host": HOST},
             "agents": {
                 name: profile
-                for name in (
-                    "seed",
-                    "refresh",
-                    "node_chat",
-                    "project_chat",
-                    "paper_coach",
-                    "orchestrator",
-                )
+                for name in ("node_chat", "project_chat", "paper_coach", "orchestrator")
             },
         },
     )

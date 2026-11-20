@@ -246,7 +246,7 @@ def test_live_task_settles_before_member_tombstone_completes(tmp_path) -> None:
         AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
-            kind="refresh",
+            kind="project_chat",
             status="running",
             request={},
             created_at=now,
@@ -361,7 +361,7 @@ def test_background_member_pause_does_not_signal_a_live_provider_control(tmp_pat
         AgentTaskRecord(
             operation_id=operation_id,
             project_id=project_id,
-            kind="refresh",
+            kind="project_chat",
             status="running",
             request={},
             created_at=now,

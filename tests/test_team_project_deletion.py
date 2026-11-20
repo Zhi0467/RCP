@@ -317,7 +317,7 @@ def test_team_delete_stops_an_active_task_and_leaves_the_checkout(tmp_path: Path
         AgentTaskRecord(
             operation_id="active-team-delete-test",
             project_id=project_id,
-            kind="seed",
+            kind="project_chat",
             status="queued",
             request={},
             created_at=now,

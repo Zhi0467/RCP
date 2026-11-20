@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 Entry = Literal["single_entry", "project"]
 Visibility = Literal["private", "shared"]
 EpisodeRole = Literal[
-    "experiment", "orchestrator", "auto_research_worker", "child", "consolidation", "discuss"
+    "experiment_loop", "orchestrator", "auto_research_worker", "child", "consolidation", "discuss"
 ]
 
 
@@ -115,11 +115,11 @@ def resolve_agent_profile(
     placement: Placement, episode_role: EpisodeRole | None, turn: AgentTurn
 ) -> AgentProfile:
     """Grant a turn its verbs; an Experiment turn never starts another episode."""
-    if episode_role is None or episode_role == "experiment":
+    if episode_role is None or episode_role == "experiment_loop":
         verbs = _placement_grants(placement, turn)
     else:
         verbs = _ROLE_GRANTS[episode_role](turn)
-    if episode_role == "experiment":
+    if episode_role == "experiment_loop":
         verbs = verbs - {"episode"}
     return AgentProfile(placement, episode_role, frozenset(verbs))
 
