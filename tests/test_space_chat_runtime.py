@@ -212,6 +212,23 @@ def test_served_space_refreshes_machine_grants_in_the_same_session(
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
+def _key() -> dict[str, str]:
+    return {"Idempotency-Key": str(uuid.uuid4())}
+
+
+def _artifact_comment(client, base: str, artifact_id: str) -> str:
+    response = client.post(
+        base + "/comment-threads",
+        json={
+            "target": {"kind": "artifact", "id": artifact_id},
+            "anchor": {"kind": "text", "text": "observation", "comment": ""},
+            "text": "Maintain α",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["thread"]["thread_id"]
+
+
 @pytest.mark.parametrize("comment", [False, True])
 @pytest.mark.parametrize("name", ["blog_notes.md", "page.html"])
 def test_served_space_artifact_edits_keep_identity_and_follow_undo(
@@ -235,8 +252,7 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         stage = kwargs["cwd"]
         if paths and comment:
             assert str(paths[0]) in prompt
-            if name.endswith("html"):
-                assert '"number": 1' in prompt and '"comment": "Maintain α"' in prompt
+            assert "Maintain α" in prompt
         if not paths:
             path = stage / "turns" / kwargs["operation_id"] / "artifacts" / name
             path.write_text(first)
@@ -259,13 +275,16 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         base = f"/api/agent-threads/{thread['thread_id']}"
         assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
 
-        def send_turn(context=None):
+        def send_turn(artifact_id=None):
             sent = client.post(
                 base + "/turns",
+                headers=_key(),
                 json={
                     "provider": "claude",
                     "message": "Maintain the note.",
-                    "artifact_context": context,
+                    "comment_thread_ids": [_artifact_comment(client, base, artifact_id)]
+                    if artifact_id
+                    else [],
                 },
             )
             assert sent.status_code == 202, sent.text
@@ -280,19 +299,10 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
             assert result["status"] == "succeeded", result
             return operation_id, result
 
-        first_operation, result = send_turn()
+        _, result = send_turn()
         (artifact,) = result["result"]["artifacts"]
         artifact_id = artifact["artifact_id"]
-        initial = store.artifact(artifact_id)
-        context = {
-            "operation_id": first_operation,
-            "artifact_id": artifact_id,
-            "base_version": initial.current_version,
-            "selections": [{"kind": "text", "text": "First observation.", "comment": "Maintain α"}]
-            if name.endswith("html")
-            else [],
-        }
-        second_operation, result = send_turn(context if comment else None)
+        second_operation, result = send_turn(artifact_id if comment else None)
         assert [item["artifact_id"] for item in result["result"].get("artifacts", [])] == [
             artifact_id
         ]
@@ -304,8 +314,7 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         assert downloaded.status_code == 200 and downloaded.content == second.encode()
         assert result["result"]["artifact_edit_outcomes"][0]["status"] == "published"
         store.undo_artifact(artifact_id)
-        context["operation_id"] = second_operation
-        _, result = send_turn(context if comment else None)
+        _, result = send_turn(artifact_id if comment else None)
         assert not result["result"].get("artifacts")
         assert store.read_artifact_bytes(artifact_id) == first.encode()
     assert len(paths) == 3
@@ -372,23 +381,28 @@ def test_served_space_fresh_comment_restores_published_bytes_but_retry_keeps_dir
             assert result["status"] == status, result
             return operation_id, result
 
-        origin, result = finish(
+        _, result = finish(
             client.post(base + "/turns", json={"provider": "claude", "message": "Keep notes."}),
             "succeeded",
         )
         (descriptor,) = result["result"]["artifacts"]
         artifact_id = descriptor["artifact_id"]
         initial = store.artifact(artifact_id)
-        comment = {
-            "provider": "claude",
-            "message": "Revise the note.",
-            "artifact_context": {"operation_id": origin, "artifact_id": artifact_id},
-        }
-        failed, _ = finish(client.post(base + "/turns", json=comment), "failed")
+
+        def comment():
+            return {
+                "provider": "claude",
+                "message": "Revise the note.",
+                "comment_thread_ids": [_artifact_comment(client, base, artifact_id)],
+            }
+
+        failed, _ = finish(client.post(base + "/turns", headers=_key(), json=comment()), "failed")
         retry, _ = finish(client.post(base + f"/tasks/{failed}/retry", json={}), "failed")
         assert store.agent_task(retry).parent_operation_id == failed
         assert store.read_artifact_bytes(artifact_id) == published.encode()
-        fresh, result = finish(client.post(base + "/turns", json=comment), "succeeded")
+        fresh, result = finish(
+            client.post(base + "/turns", headers=_key(), json=comment()), "succeeded"
+        )
         assert (
             store.agent_task(fresh).request["artifact_context"]["base_version"]
             == initial.current_version
