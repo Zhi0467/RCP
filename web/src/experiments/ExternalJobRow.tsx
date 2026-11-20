@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { cancelWatcher } from "../core/api";
 import type { ExternalWatcherRecord } from "../core/types";
-import { jobLabel } from "./runProjection";
+import { externalWatcherLabel } from "./runProjection";
 
 export function ExternalJobRow({
   apiBase,
@@ -19,7 +19,7 @@ export function ExternalJobRow({
   // The backend's can_cancel owns availability; view locks never disable Cancel.
   useEffect(() => setResult(null), [watcher]);
   const cancellation = result ?? watcher;
-  const label = jobLabel(watcher.log_path) || watcher.watcher_id;
+  const label = externalWatcherLabel(watcher);
   const cancel = async () => {
     if (cancelling) return;
     setCancelling(true);

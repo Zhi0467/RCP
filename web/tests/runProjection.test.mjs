@@ -8,6 +8,7 @@ import {
   experimentRecommendation,
   experimentRunConfig,
   experimentWatcherDisplayItems,
+  externalWatcherLabel,
   graphConditionLabel,
   isGraphWatcherRecord,
   visibleChatWatchers,
@@ -764,4 +765,16 @@ test("the next episode keeps the agent the latest episode ran on", () => {
     reasoning: "medium",
     run_on: "backend",
   });
+});
+
+test("a watcher row reads by its purpose, and a legacy log-named one by its job", () => {
+  const watcher = {
+    watcher_id: "w1",
+    log_path: "/jobs/off3-turn-prep-26908.log",
+    purpose: "Wake when the tail-32 stages finish",
+  };
+  assert.equal(externalWatcherLabel(watcher), watcher.purpose);
+  const legacy = { ...watcher, purpose: watcher.log_path };
+  assert.equal(externalWatcherLabel(legacy), "off3-turn-prep-26908.log");
+  assert.equal(externalWatcherLabel({ ...watcher, purpose: null }), "off3-turn-prep-26908.log");
 });
