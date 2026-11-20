@@ -203,15 +203,17 @@ class ChatForkStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             row = connection.execute(
                 """
-                SELECT kind, json_extract(request_json, '$.node_id') FROM graph_runs
-                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
-                  AND json_extract(request_json, '$.chat_id') = ?
-                ORDER BY kind = 'node_chat' DESC, created_at DESC LIMIT 1
+                SELECT json_extract(request_json, '$.chat_scope'),
+                       json_extract(request_json, '$.node_id') FROM graph_runs
+                WHERE project_id = ? AND json_extract(request_json, '$.chat_id') = ?
+                  AND json_extract(request_json, '$.chat_scope') IN ('node', 'project')
+                ORDER BY json_extract(request_json, '$.chat_scope') = 'node' DESC,
+                         created_at DESC LIMIT 1
                 """,
                 (project_id, chat_id),
             ).fetchone()
         if row is not None:
-            return ("node", str(row[1])) if row[0] == "node_chat" else ("project", None)
+            return ("node", str(row[1])) if row[0] == "node" else ("project", None)
         fork = self.pending_chat_fork_profile(project_id, chat_id)
         if fork is None:
             return None

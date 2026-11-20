@@ -2573,8 +2573,10 @@ returns 404. `watchers` and `schedules` check access to the agent with
 `accessible_agent` and have their own rules (job Cancel above, schedules in
 their own section). `voice-entries` and `memory` serve only the thread's owner. A project agent that has no row yet takes a `project_id` query
 parameter, checked against membership; once the row exists, a different
-`project_id` returns 404. A project agent's `turns` body is the project chat
-send, and a `chat_id` naming another agent returns 422. `archive` and `branch`
+`project_id` returns 404. A project agent's `turns` body is the chat send, and
+a `chat_id` naming another agent returns 422. A chat with turns or a pending
+branch keeps its own scope and node, whatever the body names, so a node chat's
+send stays a node turn. Its first send takes the body's `chat_scope`. `archive` and `branch`
 serve project agents only. A private project thread's Send must be
 `project_chat` Work on main; anything else returns 422.
 
