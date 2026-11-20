@@ -27,7 +27,6 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
     tasks, episode, child, watchers, _ = _waiting_child(tmp_path, browser_requested=requested)
     assert episode.browser_requested is requested
     assert child.request["browser_requested"] is requested
-    assert watchers[0].continuation.browser_requested is requested
     if path == "watcher":
         next_task = _deliver(tasks, episode, watchers)
         assert next_task is not None
@@ -39,11 +38,11 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
             sender_role="orchestrator",
             sender_task_id=episode.root_operation_id,
             authorized_by=None,
-            recipient_task_id=watchers[0].worker_id,
+            recipient_task_id=watchers[0].agent_id,
             body="Continue the work.",
         )
         operation_id = deliver_pending_auto_research_mail(
-            tasks, episode_id=episode.episode_id, recipient_task_id=watchers[0].worker_id
+            tasks, episode_id=episode.episode_id, recipient_task_id=watchers[0].agent_id
         )
         assert operation_id is not None
     else:
@@ -52,7 +51,7 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
                 "UPDATE graph_runs SET status = 'failed', error = 'interrupted' WHERE operation_id = ?",
                 (child.operation_id,),
             )
-        resumed = resume_auto_research_child_work(tasks, episode.episode_id, watchers[0].worker_id)
+        resumed = resume_auto_research_child_work(tasks, episode.episode_id, watchers[0].agent_id)
         assert resumed.task is not None, resumed.reason
         operation_id = resumed.task.operation_id
     continued = wait_for_task(tasks.store, operation_id, expect="succeeded")

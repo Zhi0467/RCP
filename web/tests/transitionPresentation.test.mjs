@@ -134,12 +134,10 @@ test("Experiment detail labels retained stale guidance without presenting it as 
       runDisabled: false,
       stopBusy: false,
       recoveryBusy: false,
-      watcherCheckBusyId: null,
       onRun() {},
       onStopLoop() {},
       onRecover() {},
       onSwitchProvider() {},
-      onCheckWatcher() {},
       episodeReportHref: () => "#report",
     }),
   );

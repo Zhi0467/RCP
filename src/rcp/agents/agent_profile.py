@@ -363,8 +363,10 @@ def _episode_usage(profile: AgentProfile, context: UsageContext) -> str:
 
 
 def _launch_usage(_profile: AgentProfile, context: UsageContext) -> str:
-    arguments = ("launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>")
-    command = f"{context.client} {shlex.join((*arguments, '--', '<argv...>'))}"
+    command = (
+        f"{context.client} launch --key '<idempotency-key>' --cwd '<working-directory>'"
+        " -- '<argv...>'"
+    )
     if context.compute_commands is None:
         return f"- `{command}`"
     return context.compute_commands.execution_instructions(command)

@@ -757,7 +757,7 @@ def test_an_auto_research_chain_is_one_orchestrator_conversation_on_its_branch(
     assert client.get(f"{url}/{root.episode_id}").status_code == 404
 
 
-def test_private_thread_cannot_be_archived(manifest, tmp_path):
+def test_private_thread_can_be_archived(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = signed_in_client(app)
     project_id = app.state.default_project_id
@@ -769,8 +769,8 @@ def test_private_thread_cannot_be_archived(manifest, tmp_path):
     response = client.post(
         f"/api/projects/{project_id}/chats/{thread.thread_id}/archive", json={"archived": True}
     )
-    assert response.status_code == 409
-    assert not store.chat_archived(project_id, thread.thread_id)
+    assert response.status_code == 200, response.text
+    assert store.chat_archived(project_id, thread.thread_id)
 
 
 @pytest.mark.parametrize("status", ["queued", "paused"])

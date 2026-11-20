@@ -630,6 +630,8 @@ _UNMODELED = {
     WatcherStoreMixin.revise_watcher: (
         "agent stop items come from a turn's handoff, which no action stages"
     ),
+    WatcherStoreMixin.claim_job_cancel: "a member's job Cancel is not modeled",
+    WatcherStoreMixin.finish_job_cancel: "a member's job Cancel is not modeled",
     WatcherStoreMixin._record_graph_result: "the observer is not a graph condition",
     WatcherStoreMixin.initialize_graph_check_baseline: "the observer is not a graph condition",
     WatcherStoreMixin.initialize_graph_watcher_target_baselines: (

@@ -455,14 +455,19 @@ def schedule_wake_message(schedules, now: datetime) -> str:
 
 
 def _queued_schedule_wakes(store) -> list[tuple[str, bool]]:
-    """Claimed, unlaunched wakes and whether their thread is still open."""
+    """Claimed, unlaunched wakes and whether their thread is still open.
+
+    A consolidation run's queued turn is scheduled too, and its own poller launches it.
+    """
     with store.connection() as connection:
         return [
             (row["operation_id"], row["closed_at"] is None)
             for row in connection.execute(
                 "SELECT operation_id, agent_threads.closed_at FROM graph_runs LEFT JOIN agent_threads "
                 "ON agent_threads.thread_id=json_extract(request_json, '$.chat_id') "
-                "WHERE status='queued' AND json_extract(request_json, '$.trigger')='schedule'"
+                "WHERE status='queued' AND json_extract(request_json, '$.trigger')='schedule' "
+                "AND operation_id NOT IN (SELECT operation_id FROM consolidation_runs "
+                "WHERE operation_id IS NOT NULL)"
             ).fetchall()
         ]
 

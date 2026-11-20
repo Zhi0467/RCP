@@ -48,6 +48,7 @@ from rcp.api.dependencies import (
     ApiServices,
     HealthComposition,
     ServerStatusComposition,
+    require_agent_project_membership,
     require_project_membership,
 )
 from rcp.api.digest import router as digest_router
@@ -2871,6 +2872,7 @@ def create_app(
     # Exposed so the route-enumeration test can prove membership is attached,
     # rather than trusting that every project route was declared in one place.
     app.state.project_membership_dependency = require_project_membership
+    app.state.agent_membership_dependency = require_agent_project_membership
 
     app.include_router(provider_login_router)
     app.include_router(service_connections_router)

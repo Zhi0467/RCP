@@ -453,6 +453,33 @@ class WatcherStoreMixin(StoreMixinBase):
             ).fetchone()
         return cast("AppStore", self)._episode_record(row) if row is not None else None
 
+    def watcher_authorizer_groups(self, watcher_ids: list[str]) -> list[list[str]]:
+        """Watchers grouped by the member whose arming turn authorized them, oldest first.
+
+        Watchers whose authority cannot be read form one group, which resolution closes.
+        """
+
+        ids = list(dict.fromkeys(watcher_ids))
+        if not ids:
+            return []
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT w.watcher_id, run.authorized_space_id, run.authorized_user_id
+                FROM watchers AS w LEFT JOIN graph_runs AS run
+                  ON run.operation_id = w.origin_turn_id
+                WHERE w.watcher_id IN ({",".join("?" * len(ids))})
+                ORDER BY w.created_at, w.watcher_id
+                """,
+                ids,
+            ).fetchall()
+        groups: dict[tuple[str, str] | None, list[str]] = {}
+        for row in rows:
+            space_id, user_id = row["authorized_space_id"], row["authorized_user_id"]
+            key = (space_id, user_id) if space_id and user_id else None
+            groups.setdefault(key, []).append(str(row["watcher_id"]))
+        return list(groups.values())
+
     def resolve_watcher_authorizer(self, watcher_ids: list[str]) -> AuthorizedHuman | None:
         """The one human whose arming turns authorized these watchers.
 
@@ -482,8 +509,13 @@ class WatcherStoreMixin(StoreMixinBase):
                 ]
             except RuntimeError:
                 found = [None]
-            if found[0] is not None and all(item == found[0] for item in found):
-                return found[0]
+            first = found[0]
+            if first is not None and all(
+                item is not None
+                and (item.space_id, item.user_id) == (first.space_id, first.user_id)
+                for item in found
+            ):
+                return first
             self.close_watcher_delivery(
                 connection,
                 ids,

@@ -1157,7 +1157,6 @@ interface ExecutionProps {
   selectedAutoResearchEpisodeId?: string | null;
   runBusy: boolean;
   stopBusyIds: ReadonlySet<string>;
-  watcherCheckBusyId: string | null;
   taskActionId: string | null;
   selectedExperimentConversation?: ReactNode;
   /** Offers the Experiment agent picker on each Run row. */
@@ -1195,7 +1194,6 @@ interface ExecutionProps {
     message?: string,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
-  onCheckExperimentWatcher: (watcherId: string) => void;
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
@@ -1221,7 +1219,6 @@ export function ExecutionView({
   selectedAutoResearchEpisodeId: requestedAutoResearchEpisodeId = null,
   runBusy,
   stopBusyIds,
-  watcherCheckBusyId,
   taskActionId,
   selectedExperimentConversation,
   project,
@@ -1247,7 +1244,6 @@ export function ExecutionView({
   onOpenHistory,
   onRunExperiment,
   onStopExperiment,
-  onCheckExperimentWatcher,
   onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
@@ -1666,7 +1662,6 @@ export function ExecutionView({
         }
         runBusy={runBusy}
         stopBusy={stopBusyIds.has(episode.episode_id)}
-        watcherCheckBusyId={watcherCheckBusyId}
         taskActionId={taskActionId}
         archiveDisabled={episodeAction !== null}
         onArchive={onArchiveEpisode}
@@ -1685,8 +1680,7 @@ export function ExecutionView({
           mutationsDisabled ||
           runBusy ||
           stopBusyIds.has(episode.episode_id) ||
-          Boolean(taskActionId) ||
-          Boolean(watcherCheckBusyId)
+          Boolean(taskActionId)
         }
         onInspectTask={onInspectTask}
         onContinueEpisode={onContinueEpisode}
@@ -1694,7 +1688,6 @@ export function ExecutionView({
         project={project}
         onRunExperiment={onRunExperiment}
         onStopExperiment={onStopExperiment}
-        onCheckExperimentWatcher={onCheckExperimentWatcher}
         onStopExperimentWatcher={onStopExperimentWatcher}
         onRecoverExperiment={onRecoverExperiment}
         onSwitchExperimentProvider={onSwitchExperimentProvider}
@@ -1725,7 +1718,6 @@ function ExperimentEpisodeCard({
   detailRef,
   runBusy,
   stopBusy,
-  watcherCheckBusyId,
   taskActionId,
   archiveDisabled,
   onArchive,
@@ -1742,7 +1734,6 @@ function ExperimentEpisodeCard({
   onInspectTask,
   onRunExperiment,
   onStopExperiment,
-  onCheckExperimentWatcher,
   onStopExperimentWatcher,
   onRecoverExperiment,
   onSwitchExperimentProvider,
@@ -1757,7 +1748,6 @@ function ExperimentEpisodeCard({
   detailRef?: Ref<HTMLDivElement>;
   runBusy: boolean;
   stopBusy: boolean;
-  watcherCheckBusyId: string | null;
   taskActionId: string | null;
   archiveDisabled: boolean;
   onArchive: ArchiveEpisodeAction;
@@ -1780,7 +1770,6 @@ function ExperimentEpisodeCard({
     message?: string,
   ) => void;
   onStopExperiment: (nodeId: string, episodeId: string) => void;
-  onCheckExperimentWatcher: (watcherId: string) => void;
   onStopExperimentWatcher: (watcherId: string) => void;
   onRecoverExperiment: (task: AgentTask, action: "resume" | "retry") => void;
   onSwitchExperimentProvider: (task: AgentTask) => void;
@@ -1864,7 +1853,6 @@ function ExperimentEpisodeCard({
             startDisabled={experimentStartsDisabled}
             stopBusy={stopBusy}
             recoveryBusy={Boolean(run.currentTask && taskActionId === run.currentTask.operation_id)}
-            watcherCheckBusyId={watcherCheckBusyId}
             conversation={experimentConversation}
             ownedByAutoResearch={Boolean(indexedEntry?.parent_episode_id)}
             watchedByParentAutoResearch={watchedByParentAutoResearch}
@@ -1877,7 +1865,6 @@ function ExperimentEpisodeCard({
               void onContinueEpisode(episodeId, invocationCeiling)
             }
             onStopLoop={() => onStopExperiment(run.node.id, episode.episode_id)}
-            onCheckWatcher={onCheckExperimentWatcher}
             onStopWatcher={onStopExperimentWatcher}
             onRecover={(action) => {
               if (run.currentTask) onRecoverExperiment(run.currentTask, action);

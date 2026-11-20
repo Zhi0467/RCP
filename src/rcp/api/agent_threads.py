@@ -51,6 +51,7 @@ from rcp.api.chats import (
 )
 from rcp.api.dependencies import (
     project_write_admission,
+    require_agent_project_membership,
     require_project_membership,
     require_registered_project,
 )
@@ -133,6 +134,7 @@ from rcp.storage.question_models import QuestionRecord
 from rcp.transport.state import StateUnavailable
 
 router = APIRouter()
+_agent_member = Depends(require_agent_project_membership)
 logger = logging.getLogger(__name__)
 
 
@@ -659,7 +661,11 @@ def space_reference(
     return SpaceReference(project_id=matches[0])
 
 
-@router.get("/api/agent-threads/{thread_id}/transcript", response_model=ChatTranscript)
+@router.get(
+    "/api/agent-threads/{thread_id}/transcript",
+    response_model=ChatTranscript,
+    dependencies=[_agent_member],
+)
 def thread_transcript(
     thread_id: str,
     request: Request,
@@ -705,7 +711,7 @@ def thread_transcript(
     )
 
 
-@router.post("/api/agent-threads/{thread_id}/title")
+@router.post("/api/agent-threads/{thread_id}/title", dependencies=[_agent_member])
 def rename_thread(
     thread_id: str,
     body: ChatTitleBody,
@@ -778,7 +784,7 @@ def pick_thread_agent(
     return thread_projection(store, store.agent_thread(thread_id) or thread)
 
 
-@router.post("/api/agent-threads/{thread_id}/read")
+@router.post("/api/agent-threads/{thread_id}/read", dependencies=[_agent_member])
 def read_thread(
     thread_id: str,
     body: ChatReadBody,
@@ -824,7 +830,11 @@ def read_thread(
     return thread_projection(store, thread)
 
 
-@router.get("/api/agent-threads/{thread_id}/browser", response_model=ChatBrowserPreference)
+@router.get(
+    "/api/agent-threads/{thread_id}/browser",
+    response_model=ChatBrowserPreference,
+    dependencies=[_agent_member],
+)
 def get_thread_browser(
     thread_id: str,
     request: Request,
@@ -844,7 +854,11 @@ def get_thread_browser(
     )
 
 
-@router.put("/api/agent-threads/{thread_id}/browser", response_model=ChatBrowserPreference)
+@router.put(
+    "/api/agent-threads/{thread_id}/browser",
+    response_model=ChatBrowserPreference,
+    dependencies=[_agent_member],
+)
 def thread_browser(
     thread_id: str,
     body: ChatBrowserPreference,
@@ -871,7 +885,11 @@ def thread_browser(
     return body
 
 
-@router.post("/api/agent-threads/{thread_id}/attachments", response_model=ChatAttachmentUpload)
+@router.post(
+    "/api/agent-threads/{thread_id}/attachments",
+    response_model=ChatAttachmentUpload,
+    dependencies=[_agent_member],
+)
 def upload_space_attachment(
     thread_id: str,
     request: Request,
@@ -893,7 +911,9 @@ def upload_space_attachment(
         )
 
 
-@router.delete("/api/agent-threads/{thread_id}/attachments/{attachment_id}")
+@router.delete(
+    "/api/agent-threads/{thread_id}/attachments/{attachment_id}", dependencies=[_agent_member]
+)
 def remove_space_attachment(
     thread_id: str,
     attachment_id: str,
@@ -1175,7 +1195,7 @@ def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -
     return task
 
 
-@router.post("/api/agent-threads/{thread_id}/turns", status_code=202)
+@router.post("/api/agent-threads/{thread_id}/turns", status_code=202, dependencies=[_agent_member])
 def space_turn(
     thread_id: str,
     body: dict[str, object],

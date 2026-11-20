@@ -365,3 +365,44 @@ def _failed_remote_loop(store: AppStore) -> tuple[str, AgentTaskRecord]:
     store.fail_agent_task(root.operation_id, "interrupted fixture", status="interrupted")
     store.request_episode_stop(episode_id)
     return episode_id, root
+
+
+def test_a_watcher_of_a_replaced_run_is_closed_with_a_reason_not_retried(tmp_path) -> None:
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from rcp.core.models import Experiment, GraphState
+    from rcp.runs.experiment_loop import deliver_experiment_watchers
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, root = _create_episode(store, "root", GraphTargetRef())
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    stale = _watcher(store, "stale", root).model_copy(update={"agent_id": "earlier-run-chat"})
+    store.arm_watcher(stale)
+    node = Experiment(
+        type="experiment",
+        id=_CONTROL_NODE_ID,
+        title="Shared Experiment",
+        objective="Run it.",
+        completion_criteria=["It ran."],
+    )
+    state = GraphState(nodes={node.id: node})
+    episode = store.episode(episode_id)
+    assert episode is not None
+
+    deliver_experiment_watchers(
+        "earlier-run-chat",
+        episode,
+        [store.watcher("stale")],
+        None,
+        tasks=SimpleNamespace(store=store),
+        graph_project_service=lambda *_: SimpleNamespace(
+            history=SimpleNamespace(state=lambda: state)
+        ),
+        experiment_operation_lock=lambda _project_id: nullcontext(),
+    )
+
+    closed = store.watcher("stale")
+    assert closed.state == "cancelled" and closed.cancelled_by == "rcp"
+    assert closed.cancel_reason
+    assert store.ready_watchers() == []
