@@ -36,7 +36,6 @@ import {
 import { loadProjectReadiness, loadSpaceMachines, loadSpaceSkills } from "../core/api";
 import { useSkillPicker, type SkillSource } from "../core/SkillPicker";
 import { browserReason } from "../core/browserStatus";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { memberDraftKey } from "../core/draftStorage";
 import { readPref, writePref } from "../core/prefStorage";
 import { useResource } from "../core/useResource";
@@ -54,7 +53,7 @@ import {
 } from "../chat/chatInput";
 import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
 import { AgentStatusStrip } from "../chat/AgentStatusStrip";
-import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
+import { AgentWindowTranscript, TurnProgress } from "../agentWindow/AgentWindowTranscript";
 import {
   useAgentWindowLines,
   type PendingAgentWindowTurn,
@@ -115,8 +114,6 @@ import {
   scheduleInstant,
   scheduleLimits,
   scheduleWhen,
-  turnSteps,
-  turnStepsSummary,
   upcomingSchedules,
   watcherFacts,
   watcherWake,
@@ -431,38 +428,6 @@ export function FreshSessionMarker({
       <RotateCcw size={11} aria-hidden="true" />
       Fresh start
     </span>
-  );
-}
-
-/** A turn's steps: open while it runs, folded under one line once it settles. */
-function TurnProgress({ task, live = false }: { task: AgentTask; live?: boolean }) {
-  const steps = turnSteps(task);
-  if (!steps.length) return null;
-  const list = (
-    <ol>
-      {steps.map((step) =>
-        step.kind === "message" ? (
-          <li key={step.id} className="turn-message">
-            <MarkdownAnswer text={step.text} />
-          </li>
-        ) : (
-          <li key={step.id}>
-            {step.text}
-            {step.seconds !== null && <span>{step.seconds}s</span>}
-          </li>
-        ),
-      )}
-    </ol>
-  );
-  if (live) return <div className="chat-progress live">{list}</div>;
-  return (
-    <details className="chat-progress">
-      <summary>
-        <ChevronRight className="chev" size={12} aria-hidden="true" />
-        {turnStepsSummary(steps)}
-      </summary>
-      {list}
-    </details>
   );
 }
 

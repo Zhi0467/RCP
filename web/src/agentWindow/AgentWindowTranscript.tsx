@@ -1,6 +1,20 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { History, Inbox, LoaderCircle, Play, RotateCcw, TriangleAlert } from "lucide-react";
-import { localClock, timeDividerLabel } from "../agents/agentThreadModel";
+import {
+  ChevronRight,
+  History,
+  Inbox,
+  LoaderCircle,
+  Play,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
+import {
+  localClock,
+  timeDividerLabel,
+  turnCommands,
+  turnSteps,
+  turnStepsSummary,
+} from "../agents/agentThreadModel";
 import {
   isActiveTask,
   isNewestOfTurnClass,
@@ -362,10 +376,6 @@ export function AgentWindowTranscript({
                         onResume={() => onResumeTask?.(pausedLineTask)}
                         onRetry={() => onRetryTask?.(pausedLineTask)}
                       />
-                    ) : activeLineTask ? (
-                      <InlineTaskProgress task={activeLineTask} />
-                    ) : failedTurn ? null : pendingLine ? (
-                      <InlineTaskProgress task={null} />
                     ) : null}
                   </>
                 ))
@@ -461,6 +471,14 @@ export function AgentWindowTranscript({
                 </time>
               )}
             </div>
+            {line.role === "human" &&
+              !agentProgress &&
+              !pausedLineTask &&
+              (activeLineTask || (pendingLine && !failedTurn)) && (
+                <div className="agent-chat-view-line agent">
+                  <InlineTaskProgress task={activeLineTask} />
+                </div>
+              )}
             {compaction?.placement === "after" && (
               <CompactionDivider compactions={compaction.compactions} />
             )}
@@ -637,24 +655,57 @@ export function agentWindowEntries(
   return grouped;
 }
 function InlineTaskProgress({ task }: { task: AgentTask | null }) {
-  const label = task
-    ? task.status_message || `${taskKindLabel(task.kind)} is running`
-    : "Starting task";
+  const running = task
+    ? turnCommands(task)
+        .filter((command) => command.seconds === null)
+        .at(-1)
+    : undefined;
+  const label =
+    running?.text ??
+    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting task");
   return (
     <>
+      {task && <TurnProgress task={task} live />}
       <span className="chat-task-live" role="status" aria-live="polite" aria-atomic="true">
         {label}
       </span>
-      <details className="chat-task-activity">
-        <summary>
-          <LoaderCircle className="spin" size={12} />
-          <span>Activity</span>
-        </summary>
-        <div className="chat-task-inline running">
-          <span>{label}</span>
-        </div>
-      </details>
+      <span className="agent-turn-live" aria-hidden="true">
+        <LoaderCircle className="spin" size={12} />
+        {label}
+      </span>
     </>
+  );
+}
+
+/** A turn's steps: open while it runs, folded under one line once it settles. */
+export function TurnProgress({ task, live = false }: { task: AgentTask; live?: boolean }) {
+  const steps = turnSteps(task);
+  if (!steps.length) return null;
+  const list = (
+    <ol>
+      {steps.map((step) =>
+        step.kind === "message" ? (
+          <li key={step.id} className="turn-message">
+            <MarkdownAnswer text={step.text} />
+          </li>
+        ) : (
+          <li key={step.id}>
+            {step.text}
+            {step.seconds !== null && <span>{step.seconds}s</span>}
+          </li>
+        ),
+      )}
+    </ol>
+  );
+  if (live) return <div className="chat-progress live">{list}</div>;
+  return (
+    <details className="chat-progress">
+      <summary>
+        <ChevronRight className="chev" size={12} aria-hidden="true" />
+        {turnStepsSummary(steps)}
+      </summary>
+      {list}
+    </details>
   );
 }
 

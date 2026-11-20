@@ -347,7 +347,9 @@ Use the shipped provider logos, with Claude in orange and others in monochrome.
 Use labels when a logo is unavailable.
 
 Human requests are quiet paper cards in one readable column.
-Assistant prose is unboxed. Progress folds behind Activity.
+Assistant prose is unboxed. A running turn streams in its own agent row: its
+in-between messages and RCP commands in order, then its current step beside a
+spinner.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with

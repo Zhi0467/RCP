@@ -43,8 +43,10 @@ version reloads the thread list and the open thread's transcript, questions,
 and schedules. While the open thread's turn
 runs, only that task is read, every 2 s while the page shows, one read at a time.
 Earlier turns load their task detail once, when their row nears the view.
-Only a task's detail carries its live status `messages`; task list rows and
-the transcript's joined `agent_status` send them empty.
+A task list row carries its live status `messages` only while the task is
+active, so a project chat shows a running turn's messages from the list it
+already reads. Settled rows and the transcript's joined `agent_status` send
+them empty; the task detail always carries them.
 Space artifact state uses that same member counter. Global interests stay out of
 the request's project set. Like project observations, global observations carry
 a ticket captured before dispatch: a response issued before view entry cannot
