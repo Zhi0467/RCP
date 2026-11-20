@@ -397,7 +397,7 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
         raise AssertionError(family)
 
     task = tasks.start("project", kind, request, authorized_by=authorizer)
-    task = wait_for_task(store, task.operation_id, expect="succeeded")
+    wait_for_task(store, task.operation_id, expect="succeeded")
     return "fresh task admitted"
 
 

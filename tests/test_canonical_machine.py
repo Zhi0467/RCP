@@ -17,7 +17,7 @@ def test_setup_rejects_graph_profile_off_canonical_machine(tmp_path) -> None:
     local = tmp_path / "local"
     local.mkdir()
 
-    with pytest.raises(ValueError, match="paper coach must run beside canonical state"):
+    with pytest.raises(ValueError, match="must run beside canonical state"):
         ProjectSetupRequest.model_validate(
             {
                 "name": "mixed",
@@ -150,6 +150,7 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert effective["project_chat"]["model"] == ""
     assert effective["project_chat"]["effective_model"] == "gpt-5.6-sol"
     assert effective["project_chat"]["reasoning"] == "medium"
+    assert effective["node_chat"]["effective_model"] == "gpt-5.6-sol"
     assert set(effective) == {
         "node_chat",
         "project_chat",

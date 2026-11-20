@@ -125,6 +125,7 @@ def test_a_resumed_task_keeps_its_recorded_write_set(manifest, tmp_path) -> None
     stored = RunRequest(run_truth_scope=["repo-a"], chat_scope="project")
 
     chat = service.assemble_chat(stored)
+
     assert chat.run_truth_scope == ["repo-a"]
     assert [pointer.alias for pointer in chat.repositories] == ["repo-a", "repo-b"]
 
